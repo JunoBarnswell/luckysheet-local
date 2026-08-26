@@ -19,6 +19,7 @@ export interface RibbonHostProps {
   columnDimensions: ColumnDimensionController;
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenDefaultColumnWidthDialog: () => void;
+  onOpenRowHeightDialog: (rows: number[]) => void;
   commands: Pick<
     EditorCommandController,
     | "buildSortDescriptor"
@@ -46,6 +47,7 @@ export function RibbonHost({
   columnDimensions,
   onOpenColumnWidthDialog,
   onOpenDefaultColumnWidthDialog,
+  onOpenRowHeightDialog,
   commands,
 }: RibbonHostProps): ReactNode {
   const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
@@ -118,6 +120,10 @@ export function RibbonHost({
       onHideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), true)}
       onUnhideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), false)}
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
+      onOpenRowHeight={() => onOpenRowHeightDialog(columnDimensions.selectedRows())}
+      onAutoFitRows={() => { void columnDimensions.autoFitRows(columnDimensions.selectedRows()); }}
+      onHideRows={() => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), true)}
+      onUnhideRows={() => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), false)}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
       onCreateSheetTable={() => session.openCreateTableDialog()}

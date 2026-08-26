@@ -877,6 +877,28 @@ test('sheet commands: hide and unhide rows and columns are undoable commands', (
   assert.equal(sheet.hiddenRows.has(2), true);
 });
 
+test('sheet rows visibility is one atomic selection-aware mutation and replays remotely', () => {
+  const workbook = new WorkbookModel('unit-rows-visibility', 'Rows visibility');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const initial = workbook.snapshot();
+
+  runtime.execute('sheet.rows.visibility.set', { sheetId: sheet.id, rows: [1, 2, 2, 99999], hidden: true });
+  assert.deepEqual([...sheet.hiddenRows].sort((left, right) => left - right), [1, 2]);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.deepEqual([...sheet.hiddenRows], []);
+  runtime.redo();
+  assert.deepEqual([...sheet.hiddenRows].sort((left, right) => left - right), [1, 2]);
+
+  const remote = WorkbookModel.fromSnapshot(initial);
+  const remoteRuntime = new CommandRuntime(remote);
+  registerSheetCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(runtime.getUndoEntries()[0]!.redo);
+  assert.deepEqual([...remote.getSheet('sheet-1').hiddenRows].sort((left, right) => left - right), [1, 2]);
+});
+
 test('sheet commands: row insert/delete use StructuralTransform and preserve undo', () => {
   const workbook = new WorkbookModel('unit-structural', 'Structural');
   const runtime = new CommandRuntime(workbook);

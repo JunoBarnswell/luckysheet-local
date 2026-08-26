@@ -368,7 +368,11 @@
     "autoFitColumnWidth": "AutoFit Column Width",
     "hideColumns": "Hide Columns",
     "unhideColumns": "Unhide Columns",
-    "defaultColumnWidth": "Default Width…"
+    "defaultColumnWidth": "Default Width…",
+    "rowHeight": "Row Height…",
+    "autoFitRowHeight": "AutoFit Row Height",
+    "hideRows": "Hide Rows",
+    "unhideRows": "Unhide Rows"
   },
   "ribbon": {
     "comingSoon": "Commands for this tab will appear here.",

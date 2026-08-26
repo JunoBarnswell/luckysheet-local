@@ -139,6 +139,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.autoFilter.reapply': 'structure',
   'sheetTable.autoFilter.set': 'structure',
   'sheet.row.hide': 'structure',
+  'sheet.rows.visibility.set': 'structure',
   'sheet.column.hide': 'structure',
   'sheet.protect.set': 'protect',
   'sheet.protect.remove': 'protect',

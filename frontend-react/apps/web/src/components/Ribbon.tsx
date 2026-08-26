@@ -75,6 +75,10 @@ export interface RibbonProps {
   onHideColumns: () => void;
   onUnhideColumns: () => void;
   onOpenDefaultColumnWidth: () => void;
+  onOpenRowHeight: () => void;
+  onAutoFitRows: () => void;
+  onHideRows: () => void;
+  onUnhideRows: () => void;
   /** Host-owned Create PivotTable dialog entry point. */
   onCreatePivotDialog?: () => void;
   /** Host-owned selection-aware sort builder. */
@@ -234,6 +238,10 @@ export function Ribbon({
   onHideColumns,
   onUnhideColumns,
   onOpenDefaultColumnWidth,
+  onOpenRowHeight,
+  onAutoFitRows,
+  onHideRows,
+  onUnhideRows,
   onCreatePivotDialog,
   buildSortDescriptor,
   onCreateSheetTable,
@@ -453,6 +461,10 @@ export function Ribbon({
             onMergeCells={onMergeCells}
             onOpenColumnWidth={onOpenColumnWidth}
             onOpenDefaultColumnWidth={onOpenDefaultColumnWidth}
+            onOpenRowHeight={onOpenRowHeight}
+            onAutoFitRows={onAutoFitRows}
+            onHideRows={onHideRows}
+            onUnhideRows={onUnhideRows}
             onUnhideColumns={onUnhideColumns}
             renderCommand={renderHomeCommand}
           />

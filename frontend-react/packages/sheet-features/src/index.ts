@@ -177,6 +177,11 @@ export interface ColumnsVisibilityParams {
   states: Array<{ column: number; hidden: boolean }>;
 }
 
+export interface RowsVisibilityParams {
+  sheetId: string;
+  states: Array<{ row: number; hidden: boolean }>;
+}
+
 export interface SetMergeParams {
   sheetId: string;
   range: RangeRef;
@@ -253,6 +258,11 @@ function isWorksheetPane(value: unknown): value is WorksheetPane {
 function isColumnVisibilityMutation(value: unknown): value is ColumnsVisibilityParams {
   return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.states) && value.states.length > 0
     && value.states.every((state) => isRecord(state) && Number.isSafeInteger(state.column) && Number(state.column) >= 0 && typeof state.hidden === 'boolean');
+}
+
+function isRowVisibilityMutation(value: unknown): value is RowsVisibilityParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.states) && value.states.length > 0
+    && value.states.every((state) => isRecord(state) && Number.isSafeInteger(state.row) && Number(state.row) >= 0 && typeof state.hidden === 'boolean');
 }
 
 function isRange(value: unknown): value is RangeRef {
@@ -429,6 +439,10 @@ function isSheetIndicesMutation(value: unknown): value is { sheetId: string; ind
 
 function rowAffectedRange(value: { sheetId: string; row: number }): RangeRef[] {
   return [{ sheetId: value.sheetId, startRow: value.row, endRow: value.row, startColumn: 0, endColumn: 0 }];
+}
+
+function rowsVisibilityAffectedRanges(value: RowsVisibilityParams): RangeRef[] {
+  return value.states.map((state) => rowAffectedRange({ sheetId: value.sheetId, row: state.row })[0]!);
 }
 
 function columnAffectedRange(value: { sheetId: string; column: number }): RangeRef[] {
@@ -1751,6 +1765,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['row.unhidden'],
     },
   });
+  runtime.registry.registerMutation<RowsVisibilityParams>({
+    id: 'rows.visibility',
+    handler: (item, context) => {
+      if (!isRowVisibilityMutation(item.params)) throw new Error('Invalid rows.visibility mutation payload');
+      const hiddenRows = context.workbook.getSheet(item.params.sheetId).hiddenRows;
+      for (const state of item.params.states) {
+        if (state.hidden) hiddenRows.add(state.row);
+        else hiddenRows.delete(state.row);
+      }
+    },
+    metadata: {
+      schema: { name: 'RowsVisibility', validate: isRowVisibilityMutation },
+      permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: rowsVisibilityAffectedRanges, mode: 'declared' },
+      inverseIds: ['rows.visibility'],
+    },
+  });
   runtime.registry.registerMutation<ColumnsVisibilityParams>({
     id: 'columns.visibility',
     handler: (item, context) => {
@@ -1883,6 +1914,25 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         affectedRanges,
         inverse: [{ id: 'row.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
         apply: () => hiddenRows.add(params.index),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string; rows: number[]; hidden: boolean }>({
+    id: 'sheet.rows.visibility.set',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const rows = [...new Set(params.rows)].filter((row) => Number.isSafeInteger(row) && row >= 0 && row < sheet.rowCount);
+      const changed = rows.filter((row) => sheet.hiddenRows.has(row) !== params.hidden);
+      if (!changed.length) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const states = changed.map((row) => ({ row, hidden: params.hidden }));
+      const inverseStates = changed.map((row) => ({ row, hidden: !params.hidden }));
+      const affectedRanges = rowsVisibilityAffectedRanges({ sheetId: params.sheetId, states });
+      context.applyMutation({
+        id: 'rows.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, states }, affectedRanges,
+        inverse: [{ id: 'rows.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states: inverseStates }, affectedRanges }],
+        apply: () => { for (const state of states) { if (state.hidden) sheet.hiddenRows.add(state.row); else sheet.hiddenRows.delete(state.row); } },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

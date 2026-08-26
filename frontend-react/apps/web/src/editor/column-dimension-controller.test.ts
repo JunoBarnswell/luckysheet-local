@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ColumnDimensionController } from './column-dimension-controller';
-import type { CanvasSheetSnapshot, WorkbookSession } from '@react-sheets/spreadsheet-app';
+import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
 type TestCell = { value: string; displayValue?: string; formula?: string; style?: { padding?: number } };
 
@@ -69,16 +69,33 @@ function installCanvas(): { restore: () => void } {
   return { restore: () => { (globalThis as { document?: unknown }).document = previousDocument; } };
 }
 
-function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }): ColumnDimensionController {
+function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }, selection: SelectionState = { ranges: [], activeCell: { row: 0, column: 0 }, anchorCell: { row: 0, column: 0 }, primaryRangeIndex: 0 }): ColumnDimensionController {
   return new ColumnDimensionController(
     {
       applyColumnWidths: (entries: readonly unknown[]) => { calls.columns = [...entries]; },
       applyRowHeights: (entries: readonly unknown[]) => { calls.rows = [...entries]; },
     } as unknown as WorkbookSession,
     () => sheet,
-    () => ({ ranges: [], activeCell: { row: 0, column: 0 } }) as never,
+    () => selection as never,
   );
 }
+
+test('selectedRows uses full-row and ordinary cell selections through one deterministic rule', () => {
+  const sheet = makeSheet({}, 10, 4);
+  const controller = controllerFor(sheet, {}, {
+    ranges: [
+      { sheetId: sheet.id, startRow: 2, endRow: 3, startColumn: 0, endColumn: 3 },
+      { sheetId: sheet.id, startRow: 7, endRow: 8, startColumn: 1, endColumn: 2 },
+    ],
+    primaryRangeIndex: 0,
+    activeCell: { row: 2, column: 0 },
+    anchorCell: { row: 2, column: 0 },
+  });
+  assert.deepEqual(controller.selectedRows(), [2, 3, 7, 8]);
+  assert.deepEqual(controller.selectedRows(false), [2, 3]);
+  assert.deepEqual(controller.rowsForBoundary(3), [2, 3]);
+  assert.deepEqual(controller.rowsForBoundary(5), [5]);
+});
 
 test('AutoFit rows and main-thread columns measure canonical 0, FALSE, formatted text and errors', async () => {
   const canvas = installCanvas();

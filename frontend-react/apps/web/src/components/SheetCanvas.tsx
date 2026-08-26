@@ -104,6 +104,7 @@ export interface SheetCanvasProps {
   onResizeRow: (row: number, heightPx: number) => void;
   columnDimensions: ColumnDimensionController;
   onOpenColumnWidthDialog: (columns: number[]) => void;
+  onOpenRowHeightDialog: (rows: number[]) => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
   drawingSelectionMode?: boolean;
   onExitDrawingSelectionMode?: () => void;
@@ -433,6 +434,7 @@ export function SheetCanvas({
   onResizeRow,
   columnDimensions,
   onOpenColumnWidthDialog,
+  onOpenRowHeightDialog,
   onFillRange,
   drawingSelectionMode = false,
   onExitDrawingSelectionMode,
@@ -777,11 +779,14 @@ export function SheetCanvas({
       const range = getContextRange();
       const startRow = range?.startRow ?? selection.activeCell.row;
       const rowCount = range ? range.endRow - range.startRow + 1 : 1;
+      const rows = columnDimensions.selectedRows();
       return [
         { id: 'row-insert', label: 'Insert rows above', onSelect: () => onCommand({ commandId: 'sheet.rows.insert', params: { sheetId, at: startRow, count: rowCount } }) },
         { id: 'row-delete', label: 'Delete rows', danger: true, onSelect: () => onCommand({ commandId: 'sheet.rows.delete', params: { sheetId, at: startRow, count: rowCount } }) },
-        { id: 'row-hide', label: 'Hide rows', onSelect: () => onCommand({ commandId: 'sheet.row.hide', params: { sheetId, index: startRow } }) },
-        { id: 'row-unhide', label: 'Unhide rows', onSelect: () => onCommand({ commandId: 'sheet.rows.unhide.all', params: { sheetId } }) },
+        { id: 'row-height', label: 'Row Height…', onSelect: () => onOpenRowHeightDialog(rows) },
+        { id: 'row-autofit', label: 'AutoFit Row Height', onSelect: () => { void columnDimensions.autoFitRows(rows); } },
+        { id: 'row-hide', label: 'Hide rows', onSelect: () => columnDimensions.setRowsHidden(rows, true) },
+        { id: 'row-unhide', label: 'Unhide rows', onSelect: () => columnDimensions.setRowsHidden(rows, false) },
       ];
     }
     const items: ContextMenuItem[] = [
@@ -794,16 +799,16 @@ export function SheetCanvas({
       { id: "delete-row", label: "Delete row", danger: true, onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.rows.delete", params: { sheetId, at: range.startRow, count: range.endRow - range.startRow + 1 } }); } },
       { id: "delete-column", label: "Delete column", danger: true, onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.columns.delete", params: { sheetId, at: range.startColumn, count: range.endColumn - range.startColumn + 1 } }); } },
       { id: "sep-2", label: "", separator: true },
-      { id: "hide-row", label: "Hide rows", onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.row.hide", params: { sheetId, index: range.startRow } }); } },
+      { id: "hide-row", label: "Hide rows", onSelect: () => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), true) },
       { id: "hide-col", label: "Hide columns", onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.column.hide", params: { sheetId, index: range.startColumn } }); } },
-      { id: "unhide-all", label: "Unhide all", onSelect: () => onCommand({ commandId: "sheet.rows.unhide.all", params: { sheetId } }) },
+      { id: "unhide-rows", label: "Unhide rows", onSelect: () => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), false) },
       { id: "sep-3", label: "", separator: true },
       { id: "clear", label: "Clear contents", onSelect: () => onClearSelection("contents") },
       { id: "clear-formats", label: "Clear formats", onSelect: () => onClearSelection("formats") },
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selectedFloatingId, selection, sheetId]);
+  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onOpenRowHeightDialog, onPaste, onPivotShowDetails, selectedFloatingId, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();

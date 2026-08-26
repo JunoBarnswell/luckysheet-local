@@ -52,6 +52,10 @@ export interface HomeRibbonProps {
   onHideColumns: () => void;
   onUnhideColumns: () => void;
   onOpenDefaultColumnWidth: () => void;
+  onOpenRowHeight: () => void;
+  onAutoFitRows: () => void;
+  onHideRows: () => void;
+  onUnhideRows: () => void;
 }
 
 type HomeBreakpoint = RibbonSurfaceBreakpoint;
@@ -84,6 +88,10 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'cells-delete-menu': return homeText(locale, 'delete');
     case 'cells-format-menu': return homeText(locale, 'format');
     case 'clear-menu': return homeText(locale, 'clear');
+    case 'row-height': return homeText(locale, 'rowHeight');
+    case 'auto-fit-row-height': return homeText(locale, 'autoFitRowHeight');
+    case 'hide-rows': return homeText(locale, 'hideRows');
+    case 'unhide-rows': return homeText(locale, 'unhideRows');
     case 'column-width': return homeText(locale, 'columnWidth');
     case 'auto-fit-column-width': return homeText(locale, 'autoFitColumnWidth');
     case 'hide-columns': return homeText(locale, 'hideColumns');
@@ -114,6 +122,10 @@ export function HomeRibbon({
   onHideColumns,
   onUnhideColumns,
   onOpenDefaultColumnWidth,
+  onOpenRowHeight,
+  onAutoFitRows,
+  onHideRows,
+  onUnhideRows,
 }: HomeRibbonProps) {
   const breakpoint = breakpointFor(layout);
   const cellStyle = homeState.style;
@@ -212,6 +224,18 @@ export function HomeRibbon({
           'hide-columns': onHideColumns,
           'unhide-columns': onUnhideColumns,
           'default-column-width': onOpenDefaultColumnWidth,
+        };
+        return <Button aria-label={label} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
+      }
+      case 'row-height':
+      case 'auto-fit-row-height':
+      case 'hide-rows':
+      case 'unhide-rows': {
+        const actions: Record<typeof controlId, () => void> = {
+          'row-height': onOpenRowHeight,
+          'auto-fit-row-height': onAutoFitRows,
+          'hide-rows': onHideRows,
+          'unhide-rows': onUnhideRows,
         };
         return <Button aria-label={label} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }

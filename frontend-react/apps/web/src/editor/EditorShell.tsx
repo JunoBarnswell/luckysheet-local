@@ -15,6 +15,7 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
+import { RowHeightDialog } from '../components/dialogs/RowHeightDialog';
 import { buildPivotTimelineTiles, pivotMemberKey } from '@react-sheets/core-model';
 import type { PivotControlAction } from '../components/canvas/drawing-renderers';
 
@@ -114,6 +115,7 @@ export function EditorShell({
             columnDimensions={columnDimensions}
             onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
             onOpenDefaultColumnWidthDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns: columnDimensions.selectedColumns(), defaultMode: true } })}
+            onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
           />
         )}
         sheetTabs={(
@@ -270,6 +272,7 @@ export function EditorShell({
                 onResizeRow={session.resizeRow.bind(session)}
                 columnDimensions={columnDimensions}
                 onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
+                onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
@@ -350,6 +353,16 @@ export function EditorShell({
         onApply={(excelWidth) => {
           if (state.dialogs.columnWidth?.defaultMode) columnDimensions.setDefaultExcelWidth(excelWidth);
           else columnDimensions.setExcelWidth(state.dialogs.columnWidth?.columns ?? [], excelWidth);
+          session.closeActiveDialog();
+        }}
+      />
+      <RowHeightDialog
+        open={state.dialogs.active === 'row-height'}
+        rowCount={state.dialogs.rowHeight?.rows.length ?? 0}
+        initialHeightPx={state.selectedSheet.rowHeightsPx[state.dialogs.rowHeight?.rows[0] ?? -1] ?? state.selectedSheet.defaultRowHeightPx}
+        onClose={() => session.closeActiveDialog()}
+        onApply={(points) => {
+          columnDimensions.setRowHeightPoints(state.dialogs.rowHeight?.rows ?? [], points);
           session.closeActiveDialog();
         }}
       />

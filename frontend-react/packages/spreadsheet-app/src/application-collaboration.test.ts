@@ -59,6 +59,23 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
   });
 
+  it('replays a canonical bulk row visibility mutation without splitting history semantics', () => {
+    const workbook = new WorkbookModel('wb-rows-visibility-replay', 'Rows visibility replay');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const session = new CollaborationSession(runtime);
+    const sheetId = workbook.primarySheetId;
+    const affectedRanges = [1, 2].map((row) => ({ sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: 0 }));
+
+    session.applyRemote({
+      schema: 'OperationEnvelope', operationId: 'remote-rows-visibility', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
+      clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{ id: 'rows.visibility', sheetId, params: { sheetId, states: [{ row: 1, hidden: true }, { row: 2, hidden: true }] }, affectedRanges }],
+    });
+    assert.deepEqual([...workbook.getSheet(sheetId).hiddenRows].sort((left, right) => left - right), [1, 2]);
+    assert.equal(runtime.undo(), false);
+  });
+
   it('replays canonical font-family mutations and rejects an empty family atomically', () => {
     const workbook = new WorkbookModel('wb-font-replay', 'Font replay');
     const runtime = new CommandRuntime(workbook);

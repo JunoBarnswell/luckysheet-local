@@ -15,7 +15,7 @@ describe('HOME responsive localization catalogs', () => {
   });
 
   it('uses one complete localized descriptor for compact and wide Cells actions', () => {
-    assert.deepEqual(HOME_CELLS_ACTIONS.map(({ id }) => id), ['columnWidth', 'autoFitColumnWidth', 'hideColumns', 'unhideColumns', 'defaultColumnWidth']);
+    assert.deepEqual(HOME_CELLS_ACTIONS.map(({ id }) => id), ['rowHeight', 'autoFitRowHeight', 'hideRows', 'unhideRows', 'columnWidth', 'autoFitColumnWidth', 'hideColumns', 'unhideColumns', 'defaultColumnWidth']);
     for (const { id, labelKey } of HOME_CELLS_ACTIONS) {
       assert.notEqual(enUS.homeUi[labelKey], undefined, `${id} is missing from en-US`);
       assert.notEqual(zhCN.homeUi[labelKey], undefined, `${id} is missing from zh-CN`);

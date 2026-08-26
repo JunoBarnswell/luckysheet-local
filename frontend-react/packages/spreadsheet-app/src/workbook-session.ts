@@ -478,7 +478,7 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
+  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert' };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
   private findCursorSignature = '';
@@ -1287,7 +1287,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -1986,10 +1986,10 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace'): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
@@ -2001,7 +2001,7 @@ export class WorkbookSession {
   closeActiveDialog(): void {
     if (!this.dialogs.active) return;
     if (this.dialogs.active === 'find-replace') this.resetFindCursor();
-    this.dialogs = { ...this.dialogs, active: null, columnWidth: null, sheet: null };
+    this.dialogs = { ...this.dialogs, active: null, columnWidth: null, rowHeight: null, sheet: null };
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -3705,14 +3705,14 @@ export class WorkbookSession {
     const range = sel.ranges[sel.primaryRangeIndex];
     const start = range?.startRow ?? sel.activeCell.row;
     const end = range?.endRow ?? sel.activeCell.row;
-    for (let row = start; row <= end; row++) this.runCommand('sheet.row.hide', { sheetId: this.activeSheetId, index: row });
+    this.setRowsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
   }
   hideColumnsAtPrimary(): void {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
     const start = range?.startColumn ?? sel.activeCell.column;
     const end = range?.endColumn ?? sel.activeCell.column;
-    for (let column = start; column <= end; column++) this.runCommand('sheet.column.hide', { sheetId: this.activeSheetId, index: column });
+    this.setColumnsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
   }
   unhideAll(): void {
     this.runCommand('sheet.rows.unhide.all', { sheetId: this.activeSheetId });
@@ -3930,6 +3930,16 @@ export class WorkbookSession {
     for (const entry of entries) if (Number.isSafeInteger(entry.row) && entry.row >= 0 && Number.isFinite(entry.heightPx) && entry.heightPx > 0) unique.set(entry.row, entry.heightPx);
     if (!unique.size) return;
     this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [...unique].map(([row, heightPx]) => ({ row, heightPx })) });
+  }
+  resizeRows(rows: readonly number[], heightPx: number): void {
+    const unique = [...new Set(rows)].filter((row) => Number.isSafeInteger(row) && row >= 0);
+    if (!unique.length) return;
+    this.applyRowHeights(unique.map((row) => ({ row, heightPx: Math.max(1, heightPx) })));
+  }
+  setRowsHidden(rows: readonly number[], hidden: boolean): void {
+    const unique = [...new Set(rows)].filter((row) => Number.isSafeInteger(row) && row >= 0);
+    if (!unique.length) return;
+    this.runCommand('sheet.rows.visibility.set', { sheetId: this.activeSheetId, rows: unique, hidden });
   }
   setColumnsHidden(columns: readonly number[], hidden: boolean): void {
     const unique = [...new Set(columns)].filter((column) => Number.isSafeInteger(column) && column >= 0);
