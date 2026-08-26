@@ -33,6 +33,9 @@ import {
   type QueryLoadTargetSnapshot,
 } from './workbook-state';
 import { normalizeFontFamily } from './font-family';
+import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
+
+export * from './sheet-extent';
 
 export * from './font-family';
 export {
@@ -868,12 +871,31 @@ export class WorksheetModel {
     return copy;
   }
 
+  private readonly extent: SheetExtent;
+
   constructor(
     readonly id: SheetId,
     public name: string,
-    public rowCount = 1000,
-    public columnCount = 26,
-  ) {}
+    rowCount = DEFAULT_SHEET_ROW_COUNT,
+    columnCount = DEFAULT_SHEET_COLUMN_COUNT,
+  ) {
+    this.extent = new SheetExtent(rowCount, columnCount);
+  }
+
+  get rowCount(): number { return this.extent.rowCount; }
+  set rowCount(value: number) { this.extent.rowCount = value; }
+  get columnCount(): number { return this.extent.columnCount; }
+  set columnCount(value: number) { this.extent.columnCount = value; }
+
+  get sheetExtent(): SheetExtent { return this.extent; }
+
+  ensureCellExtent(row: number, column: number): void {
+    this.extent.ensureCell(row, column);
+  }
+
+  ensureRangeExtent(startRow: number, endRow: number, startColumn: number, endColumn: number): void {
+    this.extent.ensureRange(startRow, endRow, startColumn, endColumn);
+  }
 
   isMerged(row: Row, column: Column): MergeSpan | undefined {
     return this.merges.find(
@@ -1197,7 +1219,7 @@ export class WorkbookModel {
     return table;
   }
 
-  addSheet(id: SheetId, name: string, rowCount = 1000, columnCount = 26): WorksheetModel {
+  addSheet(id: SheetId, name: string, rowCount = DEFAULT_SHEET_ROW_COUNT, columnCount = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
