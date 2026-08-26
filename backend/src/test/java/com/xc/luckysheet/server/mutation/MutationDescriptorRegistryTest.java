@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class MutationDescriptorRegistryTest {
@@ -565,8 +566,8 @@ class MutationDescriptorRegistryTest {
         ObjectNode difference = (ObjectNode) pivot.params().deepCopy();
         ObjectNode differenceValue = (ObjectNode) difference.path("layout").path("values").get(0);
         differenceValue.put("baseFieldId", "sheet:sheet-1:column:0:range:0");
-        differenceValue.set("baseItem", mapper.readTree("""{"type":"text","value":"East"}"""));
-        differenceValue.set("showAs", mapper.readTree("""{"kind":"difference","base":"grand"}"""));
+        differenceValue.set("baseItem", mapper.createObjectNode().put("type", "text").put("value", "East"));
+        differenceValue.set("showAs", mapper.createObjectNode().put("kind", "difference").put("base", "grand"));
         registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", difference), WorkbookAclRole.EDITOR);
 
         ObjectNode missingOperand = (ObjectNode) difference.deepCopy();

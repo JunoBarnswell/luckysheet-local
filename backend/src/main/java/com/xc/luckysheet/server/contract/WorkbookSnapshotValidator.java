@@ -525,10 +525,6 @@ public final class WorkbookSnapshotValidator {
         ids.add(id);
     }
 
-    private static String canonicalJson(JsonNode value) {
-        return value == null ? "null" : value.toString();
-    }
-
     private static boolean containsLegacyImageData(JsonNode value) {
         if (value == null) return false;
         if (value.isArray()) {

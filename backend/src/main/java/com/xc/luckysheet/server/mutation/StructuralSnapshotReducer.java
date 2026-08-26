@@ -125,9 +125,9 @@ final class StructuralSnapshotReducer {
         if (sourceRows.size() != expected) throw ServiceException.validation("Row permutation length does not match range");
         validatePermutationPreservation(sheet, selected);
         int[] mapping = validatePermutation(selected, (ArrayNode) sourceRows);
-        validatePermutationMetadataExact(sheet, selected, mapping);
+        validatePermutationMetadataExact(root, sheet, selected, mapping);
         remapPermutedCells(sheet, selected, mapping);
-        remapPermutationMetadata(sheet, selected, mapping);
+        remapPermutationMetadata(root, sheet, selected, mapping);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
 
@@ -727,7 +727,7 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void remapPermutationMetadata(ObjectNode sheet, RangeRef range, int[] sourceRows) {
+    private static void remapPermutationMetadata(ObjectNode root, ObjectNode sheet, RangeRef range, int[] sourceRows) {
         int[] rowMap = new int[sourceRows.length];
         for (int targetOffset = 0; targetOffset < sourceRows.length; targetOffset++) rowMap[sourceRows[targetOffset] - range.startRow()] = range.startRow() + targetOffset;
         SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> contains(range, coordinate.row(), coordinate.column())
@@ -899,7 +899,7 @@ final class StructuralSnapshotReducer {
         return a.sheetId().equals(b.sheetId()) && a.startRow() <= b.endRow() && b.startRow() <= a.endRow() && a.startColumn() <= b.endColumn() && b.startColumn() <= a.endColumn();
     }
 
-    private static void validatePermutationMetadataExact(ObjectNode sheet, RangeRef range, int[] rowMap) {
+    private static void validatePermutationMetadataExact(ObjectNode root, ObjectNode sheet, RangeRef range, int[] rowMap) {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) validateDrawingExact(requireObject(raw, "Drawing"), range);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) requireSingleRange(requireObject(raw, "Sparkline").get("sourceRange"), range, rowMap, "sparkline source");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) requireSingleRange(requireObject(raw, "Spill range").get("range"), range, rowMap, "spill range");

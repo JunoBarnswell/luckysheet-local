@@ -472,7 +472,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         }
         JsonNode values = copy.get(field);
         if (values == null || !values.isObject()) return result;
-        ObjectNode remapped = values.objectNode();
+        ObjectNode remapped = JsonNodeFactory.instance.objectNode();
         values.fields().forEachRemaining(entry -> {
             String newId = allocateId(existing, entry.getKey(), targetSheetId);
             existing.add(newId);
@@ -650,7 +650,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
             group.put("sheetId", targetSheetId);
             if (group.path("id").isTextual()) group.put("id", groupIds.getOrDefault(group.path("id").asText(), group.path("id").asText()));
             JsonNode members = group.get("memberDrawingIds");
-            if (members != null && members.isArray()) for (int index = 0; index < members.size(); index++) if (members.get(index).isTextual()) members.set(index, JsonNodeFactory.instance.textNode(drawingIds.getOrDefault(members.get(index).asText(), members.get(index).asText())));
+            if (members != null && members.isArray()) for (int index = 0; index < members.size(); index++) if (members.get(index).isTextual()) ((ArrayNode) members).set(index, JsonNodeFactory.instance.textNode(drawingIds.getOrDefault(members.get(index).asText(), members.get(index).asText())));
         }
     }
 

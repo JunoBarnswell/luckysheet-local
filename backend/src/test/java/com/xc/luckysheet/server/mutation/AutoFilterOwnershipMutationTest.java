@@ -85,6 +85,7 @@ class AutoFilterOwnershipMutationTest {
         assertEquals(0, replaced.path("sheets").get(0).path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
 
         ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1").put("tableId", "table-1");
+        params.set("dataRegionContext", dataRegionContext(range(0, 4, 0, 2), "sheet-table", "table-1", true));
         OperationMutation remove = new OperationMutation("sheetTable.autoFilter.set", "sheet-1", params);
         JsonNode removed = registry.applyPublicMutations(replaced, List.of(remove));
         assertEquals(0, removed.path("sheets").get(0).path("sheetTables").get(0).path("autoFilter").size());
@@ -122,14 +123,32 @@ class AutoFilterOwnershipMutationTest {
 
     private OperationMutation worksheetFilter(int startRow, int endRow, int startColumn, int endColumn) {
         ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1");
+        ObjectNode filterRange = range(startRow, endRow, startColumn, endColumn);
         params.set("autoFilter", filter(startRow, endRow, startColumn, endColumn));
+        params.set("dataRegionContext", dataRegionContext(filterRange, "worksheet", null, false));
         return new OperationMutation("autoFilter.set", "sheet-1", params);
     }
 
     private OperationMutation tableFilter(String tableId, int startRow, int endRow, int startColumn, int endColumn) {
         ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1").put("tableId", tableId);
+        ObjectNode filterRange = range(startRow, endRow, startColumn, endColumn);
         params.set("autoFilter", filter(startRow, endRow, startColumn, endColumn));
+        params.set("dataRegionContext", dataRegionContext(filterRange, "sheet-table", tableId, true));
         return new OperationMutation("sheetTable.autoFilter.set", "sheet-1", params);
+    }
+
+    private ObjectNode dataRegionContext(ObjectNode range, String ownerKind, String tableId, boolean hasHeader) {
+        ObjectNode context = mapper.createObjectNode().put("schema", "DataRegionContext").put("version", 1);
+        context.set("selection", range.deepCopy());
+        context.set("currentRegion", range.deepCopy());
+        context.set("usedRange", range.deepCopy());
+        context.set("range", range.deepCopy());
+        ObjectNode owner = context.putObject("owner").put("kind", ownerKind);
+        if (tableId != null) owner.put("tableId", tableId);
+        ObjectNode header = context.putObject("header").put("kind", hasHeader ? "present" : "absent");
+        if (hasHeader) header.put("row", range.path("startRow").asInt());
+        context.putArray("visibleRows");
+        return context;
     }
 
     private ObjectNode filter(int startRow, int endRow, int startColumn, int endColumn) {

@@ -24,7 +24,7 @@ class CanonicalRowsPermutedRangesMigrationTest {
             Context context = mock(Context.class);
             when(context.getConnection()).thenReturn(connection);
 
-            new db.migration.h2.V5__canonical_rows_permuted_ranges().migrate(context);
+            new db.migration.h2.V6__canonical_rows_permuted_ranges().migrate(context);
 
             try (var statement = connection.createStatement(); var rows = statement.executeQuery("select envelope_json from operation_log where operation_id = 'op-1'")) {
                 rows.next();
@@ -49,7 +49,7 @@ class CanonicalRowsPermutedRangesMigrationTest {
             Context context = mock(Context.class);
             when(context.getConnection()).thenReturn(connection);
 
-            assertThrows(IllegalStateException.class, () -> new db.migration.h2.V5__canonical_rows_permuted_ranges().migrate(context));
+            assertThrows(IllegalStateException.class, () -> new db.migration.h2.V6__canonical_rows_permuted_ranges().migrate(context));
         }
     }
 
