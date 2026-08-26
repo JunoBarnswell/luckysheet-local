@@ -1,5 +1,6 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
+import { matchesCriteria, parseCriteria, projectCriteriaRange, toCriteriaRange } from '../criteria';
 import { flattenNumericArgs } from './math';
 
 export const statisticalFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
@@ -98,67 +99,53 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
   },
 
   COUNTIF: (args) => {
-    const range = args[0];
-    const criteria = args[1];
-    if (!Array.isArray(range)) return 0;
-
+    const range = toCriteriaRange(args[0] ?? null);
+    const criteria = parseCriteria(args[1] ?? null);
+    if (range.columns < 0) return createFormulaError('#VALUE!', 'COUNTIF range must be rectangular');
     let count = 0;
-    const criteriaStr = String(criteria ?? '');
-    const isComparison = /^[><]=?/.test(criteriaStr);
-
-    for (const row of range) {
-      if (Array.isArray(row)) {
-        for (const cell of row) {
-          if (matchesCriteria(cell, criteriaStr, isComparison)) count += 1;
-        }
+    for (const row of range.values) {
+      for (const cell of row) {
+        if (matchesCriteria(cell, criteria)) count += 1;
       }
     }
     return count;
   },
 
   SUMIF: (args) => {
-    const range = args[0];
-    const criteria = args[1];
-    const sumRange = args[2] !== undefined ? args[2] : range;
-    if (!Array.isArray(range) || !Array.isArray(sumRange)) return 0;
-
+    const criteriaRange = toCriteriaRange(args[0] ?? null);
+    const criteria = parseCriteria(args[1] ?? null);
+    const sumRange = toCriteriaRange(args[2] ?? args[0] ?? null);
+    if (criteriaRange.columns < 0 || sumRange.columns < 0) return createFormulaError('#VALUE!', 'SUMIF ranges must be rectangular');
+    const projectedSumRange = projectCriteriaRange(sumRange, criteriaRange.rows, criteriaRange.columns);
     let sum = 0;
-    const criteriaStr = String(criteria ?? '');
-    const isComparison = /^[><]=?/.test(criteriaStr);
-
-    for (let r = 0; r < range.length; r++) {
-      const row = range[r];
-      const sumRow = sumRange[r];
-      if (Array.isArray(row)) {
-        for (let c = 0; c < row.length; c++) {
-          if (matchesCriteria(row[c], criteriaStr, isComparison)) {
-            const sumVal = Array.isArray(sumRow) ? sumRow[c] : sumRow;
-            if (typeof sumVal === 'number') sum += sumVal;
-            else if (typeof sumVal === 'string') {
-              const numeric = coerceExcelNumber(sumVal);
-              if (!isFormulaError(numeric)) sum += numeric;
-            }
-          }
-        }
+    for (let row = 0; row < criteriaRange.rows; row += 1) {
+      for (let column = 0; column < criteriaRange.columns; column += 1) {
+        if (!matchesCriteria(criteriaRange.values[row]![column]!, criteria)) continue;
+        const numeric = coerceExcelNumber(projectedSumRange.values[row]![column]!);
+        if (!isFormulaError(numeric)) sum += numeric;
       }
     }
     return normalizeExcelPrecision(sum);
   },
-};
 
-function matchesCriteria(cellValue: unknown, criteria: string, isComparison: boolean): boolean {
-  if (isComparison) {
-    const num = coerceExcelNumber(cellValue as FormulaValue);
-    const threshold = (text: string) => coerceExcelNumber(text);
-    if (isFormulaError(num)) return false;
-    if (criteria.startsWith('>=')) { const value = threshold(criteria.slice(2)); return !isFormulaError(value) && num >= value; }
-    if (criteria.startsWith('<=')) { const value = threshold(criteria.slice(2)); return !isFormulaError(value) && num <= value; }
-    if (criteria.startsWith('>')) { const value = threshold(criteria.slice(1)); return !isFormulaError(value) && num > value; }
-    if (criteria.startsWith('<')) { const value = threshold(criteria.slice(1)); return !isFormulaError(value) && num < value; }
-  }
-  if (typeof cellValue === 'number') {
-    const numericCriteria = coerceExcelNumber(criteria);
-    if (!isFormulaError(numericCriteria)) return cellValue === numericCriteria;
-  }
-  return String(cellValue ?? '').toLowerCase() === criteria.toLowerCase();
-}
+  AVERAGEIF: (args) => {
+    const criteriaRange = toCriteriaRange(args[0] ?? null);
+    const criteria = parseCriteria(args[1] ?? null);
+    const averageRange = toCriteriaRange(args[2] ?? args[0] ?? null);
+    if (criteriaRange.columns < 0 || averageRange.columns < 0) return createFormulaError('#VALUE!', 'AVERAGEIF ranges must be rectangular');
+    const projectedAverageRange = projectCriteriaRange(averageRange, criteriaRange.rows, criteriaRange.columns);
+    let sum = 0;
+    let count = 0;
+    for (let row = 0; row < criteriaRange.rows; row += 1) {
+      for (let column = 0; column < criteriaRange.columns; column += 1) {
+        if (!matchesCriteria(criteriaRange.values[row]![column]!, criteria)) continue;
+        const numeric = coerceExcelNumber(projectedAverageRange.values[row]![column]!);
+        if (!isFormulaError(numeric)) {
+          sum += numeric;
+          count += 1;
+        }
+      }
+    }
+    return count === 0 ? createFormulaError('#DIV/0!', 'No matching values') : normalizeExcelPrecision(sum / count);
+  },
+};

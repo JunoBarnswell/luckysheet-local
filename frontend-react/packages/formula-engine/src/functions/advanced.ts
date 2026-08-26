@@ -1,5 +1,6 @@
 import type { FormulaValue } from "../values";
 import { createFormulaError, isFormulaError } from "../values";
+import { matchesCriteria, parseCriteria, sameCriteriaShape, toCriteriaRange, type CriteriaExpression, type CriteriaRange } from "../criteria";
 import type { RangeDependency, FormulaDependency } from "../range-index";
 import type { CellAddress } from "../ast";
 
@@ -43,101 +44,117 @@ function numbersOf(values: FormulaValue[]): number[] {
   return out;
 }
 
-function matchesCriteria(cellValue: FormulaValue, criterion: FormulaValue): boolean {
-  if (isFormulaError(criterion)) return false;
-  if (typeof criterion === "string") {
-    const match = /^(>=|<=|<>|>|<|=)(.*)$/.exec(criterion.trim());
-    if (match) {
-      const operator = match[1]!;
-      const operandRaw = match[2]!.trim();
-      const operandNumber = Number(operandRaw.replace(/[$,%]/g, ""));
-      const cellNumber = typeof cellValue === "number" ? cellValue : Number(cellValue);
-      switch (operator) {
-        case ">": return Number.isFinite(operandNumber) && cellNumber > operandNumber;
-        case "<": return Number.isFinite(operandNumber) && cellNumber < operandNumber;
-        case ">=": return Number.isFinite(operandNumber) && cellNumber >= operandNumber;
-        case "<=": return Number.isFinite(operandNumber) && cellNumber <= operandNumber;
-        case "<>":
-          return String(cellValue ?? "").toLowerCase() !== operandRaw.toLowerCase();
-        case "=":
-        default:
-          if (operandRaw === "") return cellValue == null || cellValue === "";
-          return String(cellValue ?? "").toLowerCase() === operandRaw.toLowerCase();
-      }
-    }
-    return String(cellValue ?? "").toLowerCase() === criterion.toLowerCase();
-  }
-  if (typeof criterion === "number") return cellValue === criterion;
-  if (typeof criterion === "boolean") return cellValue === criterion;
-  return false;
-}
-
-interface CriteriaPair { values: FormulaValue[]; criteria: FormulaValue }
+interface CriteriaPair { range: CriteriaRange; criteria: CriteriaExpression }
 
 function collectCriteriaPairs(args: AdvancedFunctionArgs, startIndex: number): CriteriaPair[] {
   const pairs: CriteriaPair[] = [];
   for (let i = startIndex; i + 1 < args.values.length; i += 2) {
     pairs.push({
-      values: flattenMatrix(args.values[i] as FormulaValue | FormulaValue[][]),
-      criteria: args.values[i + 1]!,
+      range: toCriteriaRange(args.values[i] ?? null),
+      criteria: parseCriteria(args.values[i + 1] ?? null),
     });
   }
   return pairs;
 }
 
-function rowsPass(pairs: CriteriaPair[]): boolean[] {
-  if (pairs.length === 0) return [];
-  const rowCount = Math.max(...pairs.map((pair) => pair.values.length));
-  const pass: boolean[] = new Array(rowCount).fill(true);
-  for (let row = 0; row < rowCount; row++) {
-    for (const pair of pairs) {
-      if (!matchesCriteria(pair.values[row] ?? null, pair.criteria)) pass[row] = false;
+function rowsPass(pairs: CriteriaPair[]): boolean[] | ReturnType<typeof createFormulaError> {
+  if (pairs.length === 0) return createFormulaError('#VALUE!', 'At least one criteria range is required');
+  const shape = pairs[0]!.range;
+  if (shape.columns < 0 || pairs.some((pair) => !sameCriteriaShape(shape, pair.range))) {
+    return createFormulaError('#VALUE!', 'Criteria ranges must have identical shape');
+  }
+  const pass: boolean[] = new Array(shape.rows * shape.columns).fill(true);
+  for (let row = 0; row < shape.rows; row += 1) {
+    for (let column = 0; column < shape.columns; column += 1) {
+      const index = row * shape.columns + column;
+      for (const pair of pairs) {
+        if (!matchesCriteria(pair.range.values[row]![column]!, pair.criteria)) pass[index] = false;
+      }
     }
   }
   return pass;
 }
 
+function targetWithPass(target: CriteriaRange, pairs: CriteriaPair[], pass: boolean[] | ReturnType<typeof createFormulaError>): FormulaValue | undefined {
+  if (isFormulaError(pass)) return pass;
+  if (target.columns < 0 || pairs.length === 0 || !sameCriteriaShape(target, pairs[0]!.range)) {
+    return createFormulaError('#VALUE!', 'Target and criteria ranges must have identical shape');
+  }
+  return undefined;
+}
+
 export const ADVANCED_FUNCTIONS: Record<string, AdvancedFn> = {
   SUMIFS: (args) => {
-    const sumRange = flattenMatrix(args.values[0]);
+    const sumRange = toCriteriaRange(args.values[0] ?? null);
     const pairs = collectCriteriaPairs(args, 1);
     const pass = rowsPass(pairs);
+    const shapeError = targetWithPass(sumRange, pairs, pass);
+    if (shapeError !== undefined) return shapeError;
+    if (isFormulaError(pass)) return pass;
     let total = 0;
-    for (let i = 0; i < sumRange.length; i++) {
-      if (pass[i] && typeof sumRange[i] === "number") total += sumRange[i] as number;
+    for (let row = 0; row < sumRange.rows; row += 1) {
+      for (let column = 0; column < sumRange.columns; column += 1) {
+        const index = row * sumRange.columns + column;
+        const value = sumRange.values[row]![column]!;
+        if (pass[index] && typeof value === "number") total += value;
+      }
     }
     return total;
   },
   COUNTIFS: (args) => {
     const pairs = collectCriteriaPairs(args, 0);
-    return rowsPass(pairs).filter(Boolean).length;
+    const pass = rowsPass(pairs);
+    return isFormulaError(pass) ? pass : pass.filter(Boolean).length;
   },
   AVERAGEIFS: (args) => {
-    const avgRange = flattenMatrix(args.values[0]);
+    const avgRange = toCriteriaRange(args.values[0] ?? null);
     const pairs = collectCriteriaPairs(args, 1);
     const pass = rowsPass(pairs);
+    const shapeError = targetWithPass(avgRange, pairs, pass);
+    if (shapeError !== undefined) return shapeError;
+    if (isFormulaError(pass)) return pass;
     let total = 0;
     let count = 0;
-    for (let i = 0; i < avgRange.length; i++) {
-      if (pass[i] && typeof avgRange[i] === "number") { total += avgRange[i] as number; count++; }
+    for (let row = 0; row < avgRange.rows; row += 1) {
+      for (let column = 0; column < avgRange.columns; column += 1) {
+        const index = row * avgRange.columns + column;
+        const value = avgRange.values[row]![column]!;
+        if (pass[index] && typeof value === "number") { total += value; count++; }
+      }
     }
     return count === 0 ? createFormulaError("#DIV/0!", "No matching values") : total / count;
   },
   MAXIFS: (args) => {
-    const target = Array.isArray(args.values[0]) ? flattenMatrix(args.values[0] as FormulaValue[]) : [];
-    const pass = rowsPass(collectCriteriaPairs(args, 1));
+    const target = toCriteriaRange(args.values[0] ?? null);
+    const pairs = collectCriteriaPairs(args, 1);
+    const pass = rowsPass(pairs);
+    const shapeError = targetWithPass(target, pairs, pass);
+    if (shapeError !== undefined) return shapeError;
+    if (isFormulaError(pass)) return pass;
     let max = -Infinity;
-    for (let i = 0; i < target.length; i++) {
-      if (pass[i] && typeof target[i] === "number") max = Math.max(max, target[i] as number);
+    for (let row = 0; row < target.rows; row += 1) {
+      for (let column = 0; column < target.columns; column += 1) {
+        const index = row * target.columns + column;
+        const value = target.values[row]![column]!;
+        if (pass[index] && typeof value === "number") max = Math.max(max, value);
+      }
     }
     return max === -Infinity ? 0 : max;
   },
   MINIFS: (args) => {
-    const target = Array.isArray(args.values[0]) ? flattenMatrix(args.values[0] as FormulaValue[]) : [];
-    const pass = rowsPass(collectCriteriaPairs(args, 1));
+    const target = toCriteriaRange(args.values[0] ?? null);
+    const pairs = collectCriteriaPairs(args, 1);
+    const pass = rowsPass(pairs);
+    const shapeError = targetWithPass(target, pairs, pass);
+    if (shapeError !== undefined) return shapeError;
+    if (isFormulaError(pass)) return pass;
     let min = Infinity;
-    for (let i = 0; i < target.length; i++) {
-      if (pass[i] && typeof target[i] === "number") min = Math.min(min, target[i] as number);
+    for (let row = 0; row < target.rows; row += 1) {
+      for (let column = 0; column < target.columns; column += 1) {
+        const index = row * target.columns + column;
+        const value = target.values[row]![column]!;
+        if (pass[index] && typeof value === "number") min = Math.min(min, value);
+      }
     }
     return min === Infinity ? 0 : min;
   },
