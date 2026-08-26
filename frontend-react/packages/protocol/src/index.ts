@@ -241,7 +241,7 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
 
 const PIVOT_FORMULA_ERROR_CODES = new Set([
   '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
-  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
+  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!',
 ]);
 
 function validatePivotScalar(value: unknown, label: string): void {

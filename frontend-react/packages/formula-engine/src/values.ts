@@ -11,8 +11,7 @@ export type FormulaErrorCode =
   | '#CALC!'
   | '#BLOCKED!'
   | '#SPILL!'
-  | '#PARSE!'
-  | '#CYCLE!';
+  | '#PARSE!';
 
 export interface FormulaError {
   readonly kind: 'error';

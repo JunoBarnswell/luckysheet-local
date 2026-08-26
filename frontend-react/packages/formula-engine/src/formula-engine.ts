@@ -20,6 +20,8 @@ import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
+import { findFormulaComponents } from './circular';
+import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSettings, type WorkbookCalculationMode, type WorkbookCalculationSettings } from './calculation-settings';
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
@@ -90,6 +92,7 @@ export interface FormulaEngineOptions {
   /** Stable host/workbook seed; authoritative collaboration code may replace it. */
   readonly calculationEntropySeed?: string;
   readonly collationContext?: Partial<WorkbookCollationContext>;
+  readonly calculationSettings?: Partial<WorkbookCalculationSettings>;
 }
 
 export interface CalculationTaskPortOptions {
@@ -99,7 +102,7 @@ export interface CalculationTaskPortOptions {
   readonly useWorker?: boolean;
 }
 
-export type RecalculationMode = 'automatic' | 'manual';
+export type RecalculationMode = WorkbookCalculationMode;
 
 interface StoredCell {
   readonly address: CellAddress;
@@ -134,12 +137,19 @@ export class FormulaEngine {
   private calculationCycleSequence = 0;
   private activeCalculationEntropy?: CalculationEntropyContext;
   private readonly collationContext: WorkbookCollationContext;
+  private calculationSettings: WorkbookCalculationSettings;
+  private iterationFallbackValues?: ReadonlyMap<string, FormulaValue>;
 
   private readonly cells = new Map<string, StoredCell>();
 
   constructor(options: FormulaEngineOptions = {}) {
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
-    this.recalculationMode = options.recalculationMode ?? 'automatic';
+    this.calculationSettings = normalizeWorkbookCalculationSettings({
+      ...DEFAULT_WORKBOOK_CALCULATION_SETTINGS,
+      ...options.calculationSettings,
+      mode: options.recalculationMode ?? options.calculationSettings?.mode ?? DEFAULT_WORKBOOK_CALCULATION_SETTINGS.mode,
+    });
+    this.recalculationMode = this.calculationSettings.mode;
     this.dateSystem = options.dateSystem ?? '1900';
     this.canonicalReferenceDate = options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined;
     this.numericContext = normalizeExcelNumericContext(options.numericContext ?? DEFAULT_EXCEL_NUMERIC_CONTEXT);
@@ -155,6 +165,7 @@ export class FormulaEngine {
     const engine = new FormulaEngine({
       defaultSheetId: snapshot.defaultSheetId,
       recalculationMode: 'manual',
+      calculationSettings: { ...snapshot.calculationSettings, mode: 'manual' },
       dateSystem: snapshot.dateSystem,
       canonicalReferenceDate: snapshot.canonicalReferenceDate,
       numericContext: snapshot.numericContext,
@@ -179,7 +190,8 @@ export class FormulaEngine {
       else engine.loadValue(cell.address, cell.input.value);
     }
     engine.pendingRecalculationRoots = new Set(snapshot.pendingRoots.map(cellAddressKey));
-    engine.recalculationMode = snapshot.recalculationMode;
+    engine.calculationSettings = structuredClone(snapshot.calculationSettings);
+    engine.recalculationMode = snapshot.calculationSettings.mode;
     return engine;
   }
 
@@ -191,7 +203,7 @@ export class FormulaEngine {
     const address = this.resolveAddress(addressInput);
     const result = this.loadValue(address, value);
     this.markCalculationStateChanged();
-    if (this.recalculationMode === 'automatic') {
+    if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
     } else {
       this.pendingRecalculationRoots.add(cellAddressKey(address));
@@ -203,7 +215,7 @@ export class FormulaEngine {
     const address = this.resolveAddress(addressInput);
     const result = this.loadFormula(address, formula);
     this.markCalculationStateChanged();
-    if (this.recalculationMode === 'automatic') {
+    if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
     } else {
       this.evaluateChangedCell(address);
@@ -226,6 +238,22 @@ export class FormulaEngine {
 
   getRecalculationMode(): RecalculationMode {
     return this.recalculationMode;
+  }
+
+  getCalculationSettings(): WorkbookCalculationSettings {
+    return structuredClone(this.calculationSettings);
+  }
+
+  setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): RecalculationReport {
+    this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
+    this.recalculationMode = this.calculationSettings.mode;
+    this.markCalculationStateChanged();
+    const affected = this.allFormulaAddresses();
+    if (this.recalculationMode === 'manual') {
+      for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
+      return { recalculated: [], results: new Map() };
+    }
+    return this.recalculateAffected(affected);
   }
 
   getCanonicalReferenceDate(): CanonicalExcelDateParts | undefined {
@@ -415,7 +443,7 @@ export class FormulaEngine {
 
     return {
       defaultSheetId: this.defaultSheetId,
-      recalculationMode: this.recalculationMode,
+      calculationSettings: structuredClone(this.calculationSettings),
       dateSystem: this.dateSystem,
       canonicalReferenceDate: this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined,
       numericContext: { ...this.numericContext },
@@ -460,6 +488,7 @@ export class FormulaEngine {
 
   setRecalculationMode(mode: RecalculationMode): void {
     this.recalculationMode = mode;
+    this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, mode });
     this.markCalculationStateChanged();
   }
 
@@ -707,7 +736,7 @@ export class FormulaEngine {
   }
 
   private scheduleRecalculation(address: CellAddress): RecalculationReport | undefined {
-    if (this.recalculationMode === 'automatic') return this.recalculate(address);
+    if (isAutomaticCalculationMode(this.recalculationMode)) return this.recalculate(address);
     this.pendingRecalculationRoots.add(cellAddressKey(address));
     return undefined;
   }
@@ -843,9 +872,29 @@ export class FormulaEngine {
 
   private recalculateAffected(affected: Map<string, CellAddress>): RecalculationReport {
     const evaluationCache = new Map<string, FormulaValue>();
-    const visiting = new Set<string>();
     const recalculated: CellAddress[] = [];
     const results = new Map<string, FormulaResult>();
+
+    const graphNodes = [...this.cells.values()]
+      .filter((cell) => cell.formula !== undefined)
+      .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
+    const circularComponents = findFormulaComponents(graphNodes).filter((component) =>
+      component.cyclic && component.members.some((address) => affected.has(cellAddressKey(address))),
+    );
+    const handledCircularCells = new Set<string>();
+    const circularFallback = new Map<string, FormulaValue>();
+    for (const component of circularComponents) {
+      for (const address of component.members) circularFallback.set(cellAddressKey(address), this.cells.get(cellAddressKey(address))?.result.value ?? null);
+    }
+    this.iterationFallbackValues = circularFallback;
+    try {
+      for (const component of circularComponents) {
+        this.evaluateCircularComponent(component.members, evaluationCache);
+        for (const address of component.members) handledCircularCells.add(cellAddressKey(address));
+      }
+    } finally {
+      this.iterationFallbackValues = undefined;
+    }
 
     const affectedEntries = [...affected.entries()]
       .map(([key, address]) => ({ key, address }))
@@ -853,7 +902,7 @@ export class FormulaEngine {
     for (const { key, address } of affectedEntries) {
       const cell = this.cells.get(key);
       if (cell?.formula === undefined) continue;
-      this.evaluateCell(address, evaluationCache, visiting);
+      if (!handledCircularCells.has(key)) this.evaluateCell(address, evaluationCache, new Set<string>());
       recalculated.push({ ...address });
       const result = this.cells.get(key)?.result;
       if (result) results.set(key, result);
@@ -870,6 +919,44 @@ export class FormulaEngine {
     }
 
     return { recalculated, results };
+  }
+
+  private evaluateCircularComponent(
+    members: readonly CellAddress[],
+    cache: Map<string, FormulaValue>,
+  ): void {
+    const orderedMembers = [...members].sort(compareCellAddresses);
+    if (!this.calculationSettings.iterativeCalculation) {
+      for (const address of orderedMembers) {
+        const key = cellAddressKey(address);
+        const cell = this.cells.get(key);
+        if (!cell?.formula) continue;
+        const value = createFormulaError('#NUM!', `Circular reference component: ${orderedMembers.map(cellAddressKey).join(',')}`);
+        cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+        cache.set(key, value);
+        this.spills.delete(spillKey(address));
+      }
+      return;
+    }
+
+    let previous = new Map<string, FormulaValue>(orderedMembers.map((address) => {
+      const key = cellAddressKey(address);
+      return [key, this.iterationFallbackValues?.get(key) ?? this.cells.get(key)?.result.value ?? null];
+    }));
+    for (let pass = 0; pass < this.calculationSettings.maximumIterations; pass += 1) {
+      const iterationCache = new Map<string, FormulaValue>();
+      for (const address of orderedMembers) this.evaluateCell(address, iterationCache, new Set<string>());
+      const current = new Map<string, FormulaValue>();
+      for (const address of orderedMembers) {
+        const key = cellAddressKey(address);
+        current.set(key, this.cells.get(key)?.result.value ?? null);
+      }
+      const delta = Math.max(...orderedMembers.map((address) => formulaValueDelta(previous.get(cellAddressKey(address)), current.get(cellAddressKey(address)))));
+      previous = current;
+      for (const [key, value] of current) cache.set(key, value);
+      if (delta <= this.calculationSettings.maximumChange) break;
+      this.iterationFallbackValues = new Map([...(this.iterationFallbackValues ?? []), ...current]);
+    }
   }
 
   private parseFormula(formula: string): FormulaAst {
@@ -919,7 +1006,12 @@ export class FormulaEngine {
     const key = cellAddressKey(address);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
-    if (visiting.has(key)) return createFormulaError('#CYCLE!', 'Circular reference detected');
+    if (visiting.has(key)) {
+      const fallback = this.iterationFallbackValues?.get(key);
+      return fallback === undefined
+        ? createFormulaError('#NUM!', 'Circular reference requires iterative calculation')
+        : fallback;
+    }
 
     const cell = this.cells.get(key);
     if (!cell) {
@@ -1179,6 +1271,15 @@ function formulaErrorFrom(error: unknown): FormulaError {
     return createFormulaError('#PARSE!', error.message, error.position);
   }
   return createFormulaError('#PARSE!', error instanceof Error ? error.message : 'Unable to parse formula');
+}
+
+function isAutomaticCalculationMode(mode: RecalculationMode): boolean {
+  return mode === 'automatic' || mode === 'automatic-except-data-tables';
+}
+
+function formulaValueDelta(previous: FormulaValue | undefined, current: FormulaValue | undefined): number {
+  if (typeof previous === 'number' && typeof current === 'number') return Math.abs(current - previous);
+  return JSON.stringify(previous) === JSON.stringify(current) ? 0 : Number.POSITIVE_INFINITY;
 }
 
 function isOccupiedInput(cell: StoredCell): boolean {

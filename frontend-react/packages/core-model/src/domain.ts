@@ -54,8 +54,7 @@ export type FormulaErrorCode =
   | '#CALC!'
   | '#BLOCKED!'
   | '#SPILL!'
-  | '#PARSE!'
-  | '#CYCLE!';
+  | '#PARSE!';
 
 export interface FormulaError {
   readonly kind: 'error';
@@ -818,7 +817,7 @@ function isPivotMemberKey(value: unknown): value is PivotMemberKey {
   if (value.type === 'text') return typeof value.value === 'string';
   if (value.type === 'number') return typeof value.value === 'number' && Number.isFinite(value.value);
   if (value.type === 'error') return typeof value.value === 'string'
-    && ['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!'].includes(value.value);
+    && ['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!'].includes(value.value);
   return typeof value.value === 'boolean';
 }
 

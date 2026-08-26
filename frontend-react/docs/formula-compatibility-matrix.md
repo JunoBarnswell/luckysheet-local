@@ -26,7 +26,7 @@
 | `#BLOCKED!` | Partial | 被保护/策略阻止 |
 | `#SPILL!` | Partial | 溢出区被阻挡 |
 | `#PARSE!` | N/A (引擎扩展) | 解析失败;Excel 显示为公式栏错误 |
-| `#CYCLE!` | Full (引擎扩展) | 循环引用检测 |
+| Circular reference diagnostic | Full (calculation settings) | SCC/iterative calculation uses standard `#NUM!` value plus component diagnostic; no private cycle token |
 
 ## 引用语义
 

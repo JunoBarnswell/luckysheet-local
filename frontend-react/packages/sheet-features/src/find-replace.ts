@@ -59,7 +59,7 @@ export type ReplacementValue =
 
 const REPLACEMENT_ERROR_CODES: ReadonlySet<string> = new Set([
   '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
-  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
+  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!',
 ]);
 
 /** Parse replacement input exactly once; numeric zero is a valid typed value. */

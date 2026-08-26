@@ -225,8 +225,8 @@ test('FormulaEngine supports qualified references and detects cycles', () => {
   const firstCycle = engine.setFormula('B1', '=C1 + 1').value;
   const secondCycle = engine.setFormula('C1', '=B1 + 1').value;
   assert.equal(firstCycle, 1);
-  assertError(secondCycle, '#CYCLE!');
-  assertError(engine.getCellValue('B1'), '#CYCLE!');
+  assertError(secondCycle, '#NUM!');
+  assertError(engine.getCellValue('B1'), '#NUM!');
 });
 
 function address(sheetId: string, row: number, column: number): CellAddress {
@@ -235,7 +235,7 @@ function address(sheetId: string, row: number, column: number): CellAddress {
 
 function assertError(
   value: FormulaValue,
-  code: '#DIV/0!' | '#VALUE!' | '#REF!' | '#NAME?' | '#NUM!' | '#N/A' | '#PARSE!' | '#CYCLE!' | '#SPILL!',
+  code: '#DIV/0!' | '#VALUE!' | '#REF!' | '#NAME?' | '#NUM!' | '#N/A' | '#PARSE!' | '#SPILL!',
 ): void {
   assert.equal(isFormulaError(value), true);
   if (!isFormulaError(value)) throw new Error('Expected a formula error');

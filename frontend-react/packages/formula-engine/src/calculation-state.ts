@@ -1,5 +1,5 @@
 import type { CellAddress } from './ast';
-import type { RecalculationMode } from './formula-engine';
+import { isWorkbookCalculationSettings, type WorkbookCalculationSettings } from './calculation-settings';
 import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
 import type { FormulaDefinedName } from './defined-names';
@@ -14,7 +14,7 @@ import type { WorkbookCollationContext } from './collation';
  */
 export interface FormulaCalculationSnapshot {
   readonly defaultSheetId: string;
-  readonly recalculationMode: RecalculationMode;
+  readonly calculationSettings: WorkbookCalculationSettings;
   readonly dateSystem: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   readonly numericContext: ExcelNumericContext;
@@ -52,9 +52,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (typeof value.defaultSheetId !== 'string' || value.defaultSheetId.length === 0) {
     throw new Error('Calculation snapshot requires a default worksheet id');
   }
-  if (value.recalculationMode !== 'automatic' && value.recalculationMode !== 'manual') {
-    throw new Error('Calculation snapshot has an invalid recalculation mode');
-  }
+  if (!isWorkbookCalculationSettings(value.calculationSettings)) throw new Error('Calculation snapshot has invalid calculation settings');
   if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation snapshot has an invalid date system');
   if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
     throw new Error('Calculation snapshot has an invalid canonical reference date');
