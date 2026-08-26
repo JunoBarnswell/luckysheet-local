@@ -9,6 +9,7 @@ import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import { filterWorkbookCatalog, WORKBOOK_SYNC_STATE_PRIORITY } from './state';
 import { WorkbookCatalogService } from './service';
 import { createTemplateSnapshot } from './templates';
+import { WorkbookResolutionError } from './resolver';
 import type { WorkbookCatalogRemoteClient } from './types';
 
 function service(name: string): WorkbookCatalogService {
@@ -22,14 +23,41 @@ function service(name: string): WorkbookCatalogService {
 }
 
 describe('WorkbookCatalogService', () => {
+  it('keeps resolution read-only and records MRU only after the session is ready', async () => {
+    let now = new Date('2026-08-26T00:00:00.000Z');
+    const persistence = new WorkspacePersistence({ databaseName: 'catalog-resolution', indexedDB: null });
+    const catalog = new WorkbookCatalogService({ persistence, now: () => now });
+    const created = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'resolution-unit') });
+    const before = await persistence.store.open(created.unitId);
+
+    const resolution = await catalog.resolve(created.unitId);
+    assert.equal(resolution.binding.location, 'local');
+    assert.equal((await persistence.store.open(created.unitId))?.userState.lastOpenedAt, before?.userState.lastOpenedAt);
+
+    now = new Date('2026-08-26T00:01:00.000Z');
+    await catalog.markOpened(resolution);
+    assert.equal((await persistence.store.open(created.unitId))?.userState.lastOpenedAt, now.toISOString());
+  });
+
+  it('rejects an unknown route without discovering another local workbook', async () => {
+    const catalog = service('unknown-route');
+    const existing = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'existing-unit') });
+
+    await assert.rejects(
+      () => catalog.resolve('unknown-unit'),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'permission-denied',
+    );
+    assert.equal((await catalog.resolve(existing.unitId)).unitId, existing.unitId);
+  });
+
   it('creates independent template workbooks and keeps one local record per unitId', async () => {
     const catalog = service('identity');
     const first = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'workbook-a') });
     const second = await catalog.create({ snapshot: createTemplateSnapshot('budget', 'workbook-b') });
 
     assert.notEqual(first.unitId, second.unitId);
-    assert.equal((await catalog.open(first.unitId)).snapshot.name, '空白工作簿');
-    assert.equal((await catalog.open(second.unitId)).snapshot.name, '预算模板');
+    assert.equal((await catalog.resolve(first.unitId)).snapshot.name, '空白工作簿');
+    assert.equal((await catalog.resolve(second.unitId)).snapshot.name, '预算模板');
     assert.equal((await catalog.list()).length, 2);
   });
 
@@ -45,7 +73,7 @@ describe('WorkbookCatalogService', () => {
     assert.equal(restored.lifecycle, 'active');
     assert.equal((await catalog.list()).some((entry) => entry.unitId === created.unitId), true);
     await catalog.purge(created.unitId);
-    await assert.rejects(() => catalog.open(created.unitId), /not found/i);
+    await assert.rejects(() => catalog.resolve(created.unitId), /not found/i);
   });
 
   it('imports XLSX as a new workbook and exports it through the same catalog boundary', async () => {
@@ -59,7 +87,7 @@ describe('WorkbookCatalogService', () => {
   const imported = await catalog.importWorkbook({ fileName: 'source.xlsx', buffer: generated.buffer!, execution: 'inline-test' });
     assert.notEqual(imported.entry.unitId, original.unitId);
     assert.notEqual(imported.entry.unitId, source.unitId);
-    assert.equal((await catalog.open(original.unitId)).snapshot.name, '会议记录模板');
+    assert.equal((await catalog.resolve(original.unitId)).snapshot.name, '会议记录模板');
   const exported = await catalog.exportWorkbook(imported.entry.unitId, { execution: 'inline-test' });
     assert.ok(exported.buffer.byteLength > 0);
     assert.equal(exported.fileName, 'source.xlsx');

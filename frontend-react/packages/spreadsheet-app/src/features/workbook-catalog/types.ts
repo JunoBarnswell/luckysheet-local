@@ -8,6 +8,7 @@ import type {
 import type {
   WorkbookAclRole,
   ApiRequestOptions,
+  WorkbookAccessResponse,
   WorkbookApiClient,
   CursorPage,
   WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
@@ -118,9 +119,27 @@ export interface WorkbookCatalogExportResult {
   report: CompatibilityReport;
 }
 
-export interface WorkbookCatalogOpenResult {
-  entry: WorkbookCatalogEntry;
+export interface WorkbookResolutionBinding {
+  location: WorkbookStorageLocation;
+  syncMode: WorkspaceRecord['syncMode'];
+}
+
+/**
+ * Pure workbook identity/access resolution.  Resolution is read-only; the
+ * editor is responsible for consuming it and the ready callback is the only
+ * place that records a successful open.
+ */
+export interface WorkbookResolution {
+  schema: 'WorkbookResolution';
+  unitId: string;
+  source: 'local' | 'remote' | 'mirrored' | 'shared';
+  mode: 'local' | 'remote' | 'offline';
+  lifecycle: 'active';
+  binding: WorkbookResolutionBinding;
   snapshot: WorkbookSnapshot;
+  revision: number;
+  access: WorkbookAccessResponse | null;
+  localRecord: WorkspaceRecord | null;
 }
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,

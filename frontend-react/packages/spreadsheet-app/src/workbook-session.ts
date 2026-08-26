@@ -241,12 +241,17 @@ import type {
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
 import type { AssetStore } from './features/persistence';
+import type { WorkbookResolution } from './features/workbook-catalog';
 
 export interface WorkbookSessionOptions {
   unitId?: string;
   api?: WorkbookApiClient;
   workspacePersistence?: WorkspacePersistence;
   assetStore?: AssetStore;
+  /** The route-level resolver owns identity/access reads; the session consumes the result. */
+  resolution?: WorkbookResolution;
+  /** Called once after the persistence/runtime phase reaches a usable ready state. */
+  onReady?: () => void | Promise<unknown>;
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -462,6 +467,8 @@ export class WorkbookSession {
   private readonly actorId: string;
   private readonly automationWorkerFactory?: AutomationWorkerFactory;
   private readonly xlsxExecution: 'worker' | 'inline-test';
+  private readonly onReady?: () => void | Promise<unknown>;
+  private readyCallback: Promise<void> | null = null;
 
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
@@ -552,13 +559,16 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+    const sessionUnitId = resolution?.unitId ?? unitId;
+    if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
-      unitId,
+      unitId: sessionUnitId,
       api,
       workspacePersistence,
       assetStore,
+      resolution,
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
@@ -573,6 +583,7 @@ export class WorkbookSession {
     });
     this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
+    this.onReady = onReady;
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
@@ -706,6 +717,7 @@ export class WorkbookSession {
     this.runtime.handlers.onPhaseChange = (phase) => {
       this.phase = phase;
       this.emit();
+      if (phase === 'ready' && this.saveState !== 'error') this.runReadyCallback();
     };
     this.runtime.handlers.onActiveSheetChange = (sheetId) => {
       this.activeSheetId = sheetId;
@@ -1945,6 +1957,16 @@ export class WorkbookSession {
       this.emit();
       throw error instanceof Error ? error : new Error('Save failed');
     }
+  }
+
+  private runReadyCallback(): void {
+    if (!this.onReady || this.readyCallback) return;
+    this.readyCallback = Promise.resolve()
+      .then(() => this.onReady?.())
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        if (!this.disposed) this.notify(error instanceof Error ? error.message : 'Workbook ready callback failed');
+      });
   }
 
   notify(message: string): void {

@@ -37,6 +37,7 @@ import {
 } from './features/persistence';
 import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
 import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
+import type { WorkbookResolution } from './features/workbook-catalog';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -95,6 +96,7 @@ export interface SpreadsheetRuntime {
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
+  resolution?: WorkbookResolution;
   /** Runtime lifecycle is explicit so late Worker/IndexedDB callbacks cannot
    * publish into a disposed session. */
   disposed: boolean;
@@ -127,10 +129,13 @@ export function createSpreadsheetRuntime(options: {
   persistence?: IndexedDbWorkspaceStoreOptions;
   workspacePersistence?: WorkspacePersistence;
   assetStore?: AssetStore;
+  resolution?: WorkbookResolution;
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
 } = {}): SpreadsheetRuntime {
-  const model = new WorkbookModel(options.unitId ?? resolveUnitId(), 'Untitled workbook');
+  const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
+  if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
+  const model = new WorkbookModel(unitId, 'Untitled workbook');
   const dateSystem = options.dateSystem ?? '1900';
   const canonicalReferenceDate = options.canonicalReferenceDate
     ? structuredClone(options.canonicalReferenceDate)
@@ -205,6 +210,7 @@ export function createSpreadsheetRuntime(options: {
     connectors,
     authTokenProvider: options.authTokenProvider,
     shareTokenProvider: options.shareTokenProvider,
+    resolution: options.resolution,
     disposed: false,
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
@@ -468,7 +474,14 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   const snapshot = runtime.model.snapshot();
   const localRevision = runtime.localRevision;
   const serverRevision = runtime.remoteRevision;
-  const syncMode = runtime.localOnly ? 'local-only' as const : 'remote' as const;
+  const resolution = runtime.resolution;
+  const syncMode = resolution?.binding.syncMode ?? (runtime.localOnly ? 'local-only' as const : 'remote' as const);
+  const metadata = resolution ? {
+    location: resolution.binding.location,
+    lifecycle: resolution.lifecycle,
+    source: runtime.workspaceRecord?.metadata.source ?? 'native' as const,
+    role: resolution.access?.role ?? runtime.workspaceRecord?.metadata.role ?? 'viewer' as const,
+  } : undefined;
   const pendingJournal = runtime.operationJournal.read(runtime.model.unitId);
   const previous = checkpointChains.get(runtime) ?? Promise.resolve();
   const next = previous
@@ -481,6 +494,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
         serverRevision,
         syncMode,
         pendingJournal,
+        metadata,
       );
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
@@ -963,20 +977,37 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
 }
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
+  const resolution = runtime.resolution;
   const localPendingBeforeLoad = runtime.collaboration?.getPendingOperations() ?? [];
-  if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
   let localRecord: WorkspaceRecord | null = null;
-  try {
-    localRecord = await runtime.workspacePersistence.load(runtime.model.unitId, runtime.assetStore);
-    const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
-      && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
-    if (!localRecord && canDiscoverLocalDefault) {
-      const summaries = await runtime.workspacePersistence.list();
-      const first = summaries[0];
-      if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
+  let resolvedRemote: SnapshotResponse | null = null;
+  if (resolution) {
+    if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
+    localRecord = resolution.localRecord ? structuredClone(resolution.localRecord) : null;
+    if (localRecord) runtime.operationJournal.hydrate(localRecord);
+    if (resolution.mode === 'remote') {
+      runtime.localOnly = false;
+      runtime.remoteSyncRequested = true;
+      resolvedRemote = { snapshot: structuredClone(resolution.snapshot), revision: resolution.revision };
+    } else {
+      if (!localRecord) throw new Error('Local workbook resolution is missing its WorkspaceRecord');
+      runtime.localOnly = true;
+      runtime.remoteSyncRequested = resolution.mode === 'offline';
     }
-  } catch {
-    runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+  } else {
+    if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
+    try {
+      localRecord = await runtime.workspacePersistence.load(runtime.model.unitId, runtime.assetStore);
+      const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
+        && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
+      if (!localRecord && canDiscoverLocalDefault) {
+        const summaries = await runtime.workspacePersistence.list();
+        const first = summaries[0];
+        if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
+      }
+    } catch {
+      runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+    }
   }
 
   if (!isActive()) return;
@@ -984,17 +1015,19 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (localRecord) {
     runtime.workspaceRecord = localRecord;
     runtime.localRevision = localRecord.localRevision;
-    runtime.remoteRevision = localRecord.serverRevision;
+    runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
-    if (!isActive()) return;
-    hydrateRuntime(runtime, {
-      snapshot: localRecord.snapshot,
-      revision: localRecord.serverRevision,
-    });
-    replaceCollaborationSession(runtime, localRecord);
-    if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
-    runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+    if (resolution?.mode !== 'remote') {
+      if (!isActive()) return;
+      hydrateRuntime(runtime, {
+        snapshot: resolution?.snapshot ?? localRecord.snapshot,
+        revision: resolution?.revision ?? localRecord.serverRevision,
+      });
+      replaceCollaborationSession(runtime, localRecord);
+      if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
+      runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+    }
   }
 
   if (runtime.localOnly) {
@@ -1015,8 +1048,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   }
 
   try {
-    const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-    const access = await runtime.api.getAccess(runtime.model.unitId);
+    const snapshotResponse = resolvedRemote ?? await runtime.api.getSnapshot(runtime.model.unitId);
+    const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
+    if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
     hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
     runtime.remoteRevision = snapshotResponse.revision;
@@ -1025,7 +1059,19 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
     if (!isActive()) return;
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+      runtime.model.snapshot(),
+      runtime.localRevision,
+      runtime.remoteRevision,
+      'remote',
+      undefined,
+      resolution ? {
+        location: resolution.binding.location,
+        lifecycle: resolution.lifecycle,
+        source: localRecord?.metadata.source ?? 'native',
+        role: resolution.access?.role ?? localRecord?.metadata.role ?? 'viewer',
+      } : undefined,
+    );
     runtime.remoteConnected = true;
     runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
@@ -1073,11 +1119,19 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
  */
 async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<boolean> {
   try {
+    const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
     runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
       runtime.model.snapshot(),
       runtime.localRevision,
       runtime.remoteRevision,
-      'local-only',
+      offlineResolution?.binding.syncMode ?? 'local-only',
+      undefined,
+      offlineResolution ? {
+        location: offlineResolution.binding.location,
+        lifecycle: offlineResolution.lifecycle,
+        source: runtime.workspaceRecord?.metadata.source ?? 'native',
+        role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
+      } : undefined,
     );
     return true;
   } catch (error) {

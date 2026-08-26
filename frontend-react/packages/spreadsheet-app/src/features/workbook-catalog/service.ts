@@ -32,12 +32,13 @@ import type {
   WorkbookCatalogImportInput,
   WorkbookCatalogImportResult,
   WorkbookCatalogPage,
-  WorkbookCatalogOpenResult,
   WorkbookCatalogQuery,
   WorkbookCatalogRequestOptions,
   WorkbookCatalogRemoteClient,
   WorkbookRole,
+  WorkbookResolution,
 } from './types';
+import { WorkbookResolver } from './resolver';
 
 export const DEFAULT_XLSX_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
 
@@ -57,6 +58,7 @@ export interface WorkbookCatalogServiceOptions {
   now?: () => Date;
   unitIdFactory?: () => string;
   remoteAvailable?: () => boolean;
+  shareTokenProvider?: import('@react-sheets/protocol').ShareTokenProvider;
 }
 
 export interface WorkbookCatalogMoveInput {
@@ -234,6 +236,7 @@ function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): Workboo
 export class WorkbookCatalogService {
   readonly persistence: WorkspacePersistence;
   readonly remote?: WorkbookCatalogRemoteClient;
+  readonly resolver: WorkbookResolver;
   private readonly now: () => Date;
   private readonly unitIdFactory: () => string;
   private readonly remoteAvailable?: () => boolean;
@@ -244,6 +247,12 @@ export class WorkbookCatalogService {
     this.now = options.now ?? (() => new Date());
     this.unitIdFactory = options.unitIdFactory ?? (() => createWorkbookUnitId());
     this.remoteAvailable = options.remoteAvailable;
+    this.resolver = new WorkbookResolver({
+      persistence: this.persistence,
+      remote: this.remote,
+      remoteAvailable: () => this.canUseRemote(),
+      shareTokenProvider: options.shareTokenProvider,
+    });
   }
 
   private canUseRemote(): boolean {
@@ -332,31 +341,33 @@ export class WorkbookCatalogService {
     return localEntry(record, false);
   }
 
-  async open(unitId: string): Promise<WorkbookCatalogOpenResult> {
-    let record = await this.persistence.load(unitId);
-    if (record?.metadata.lifecycle === 'trashed') throw new WorkbookCatalogError('not-found', `Workbook is in trash: ${unitId}`);
-    if (!record && this.canUseRemote()) {
-      const response = await this.requireRemote().getSnapshot(unitId);
-      const access = await this.requireRemote().getAccess(unitId);
-      record = await this.persistence.checkpoint(response.snapshot, 0, response.revision, 'remote', undefined, {
-        location: 'remote', lifecycle: 'active', source: 'native', role: normalizeRole(access.role),
-      });
+  resolve(unitId: string, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookResolution> {
+    return this.resolver.resolve(unitId, options);
+  }
+
+  async markOpened(resolution: WorkbookResolution): Promise<WorkbookCatalogEntry> {
+    if (resolution.schema !== 'WorkbookResolution' || resolution.lifecycle !== 'active') {
+      throw new WorkbookCatalogError('conflict', `Workbook resolution is not openable: ${resolution.unitId}`);
     }
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
+    let record = await this.persistence.store.open(resolution.unitId);
+    if (!record) throw new WorkbookCatalogError('not-found', `Workbook session was not persisted: ${resolution.unitId}`);
+    if (record.metadata.lifecycle === 'trashed') throw new WorkbookCatalogError('not-found', `Workbook is in trash: ${resolution.unitId}`);
     const openedAt = this.now().toISOString();
-    record = await this.persistence.updateUserState(unitId, { lastOpenedAt: openedAt });
-    if (this.canUseRemote()) {
+    record = await this.persistence.updateUserState(resolution.unitId, { lastOpenedAt: openedAt });
+    if (resolution.mode === 'remote' && this.canUseRemote()) {
       try {
-        const remoteState = await this.requireRemote().getWorkbookUserState(unitId);
-        record = await this.persistence.updateUserState(unitId, userStateFromRemote(remoteState));
-        record = await this.persistence.updateUserState(unitId, { lastOpenedAt: openedAt });
-        await this.requireRemote().putWorkbookUserState(unitId, userStateToRemote(record.userState));
+        const remoteState = await this.requireRemote().getWorkbookUserState(resolution.unitId);
+        record = await this.persistence.updateUserState(resolution.unitId, {
+          ...userStateFromRemote(remoteState),
+          lastOpenedAt: openedAt,
+        });
+        await this.requireRemote().putWorkbookUserState(resolution.unitId, userStateToRemote(record.userState));
       } catch (error) {
         if (!isRemoteUnavailable(error)
           && !(error instanceof ApiRequestError && [401, 403, 404].includes(error.status))) throw error;
       }
     }
-    return { entry: localEntry(record, this.canUseRemote()), snapshot: clone(record.snapshot) };
+    return localEntry(record, this.canUseRemote());
   }
 
   async importWorkbook(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
@@ -434,7 +445,7 @@ export class WorkbookCatalogService {
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
-    const opened = await this.open(unitId);
+    const resolved = await this.resolve(unitId);
     let artifact = await this.persistence.nativePackages.load(unitId);
     if (!artifact && this.canUseRemote()) {
       try {
@@ -452,9 +463,9 @@ export class WorkbookCatalogService {
         if (!isRemoteUnavailable(error)) throw error;
       }
     }
-    const exported = await exchangeExportXlsx(opened.snapshot, {
+    const exported = await exchangeExportXlsx(resolved.snapshot, {
       ...input,
-      fileName: input.fileName ?? `${opened.snapshot.name || 'workbook'}.xlsx`,
+      fileName: input.fileName ?? `${resolved.snapshot.name || 'workbook'}.xlsx`,
       nativePackage: artifact ?? undefined,
     });
     if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', 'XLSX export did not produce a file');
@@ -540,7 +551,7 @@ export class WorkbookCatalogService {
   }
 
   async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'local' | 'remote' } = {}): Promise<WorkbookCatalogEntry> {
-    const source = await this.open(unitId);
+    const source = await this.resolve(unitId);
     const newUnitId = this.unitIdFactory();
     let snapshot = reidentifySnapshot(renameSnapshot(source.snapshot, request.name ?? `${source.snapshot.name} - 副本`), newUnitId);
     const destination = request.destination ?? (this.canUseRemote() ? 'remote' : 'local');
@@ -554,10 +565,10 @@ export class WorkbookCatalogService {
     const artifact = await this.persistence.nativePackages.load(unitId);
     const saved = artifact
       ? await this.persistence.checkpointWithArtifact(snapshot, 1, remoteRevision, destination === 'remote' ? 'remote' : 'local-only', artifact, undefined, {
-        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.entry.source, role: destination === 'remote' ? 'owner' : 'owner', spaceId: request.spaceId, folderId: request.folderId,
+        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: destination === 'remote' ? 'owner' : 'owner', spaceId: request.spaceId, folderId: request.folderId,
       })
       : await this.persistence.checkpoint(snapshot, 1, remoteRevision, destination === 'remote' ? 'remote' : 'local-only', undefined, {
-        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.entry.source, role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
+        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
       });
     return localEntry(saved, destination === 'remote');
   }
