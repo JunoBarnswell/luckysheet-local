@@ -21,8 +21,9 @@ import {
   type UiSnapshot,
   type WorkbookSession,
 } from "@react-sheets/spreadsheet-app";
+import type { RibbonPivotActions } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
-import type { PivotConnectionOption, PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
+import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
 import type { Locale } from '../i18n';
 import { pivotDefinedNameScopeText, pivotText } from '../components/pivot/pivot-localization';
 
@@ -47,10 +48,9 @@ export interface EditorCommandController {
   pivotFields: PivotFieldDefinition[];
   pivotSlicerControls: PivotSlicerControl[];
   pivotTimelineControls: PivotTimelineControl[];
-  pivotConnectionControlId: string | undefined;
-  pivotConnectionOptions: PivotConnectionOption[];
   pivotPanelState: PivotPanelState;
   pivotCallbacks: PivotPanelCallbacks;
+  pivotRibbonActions: RibbonPivotActions;
   pivotSourceOptions: PivotSourceOption[];
   selectedDrawing: UiSnapshot["selectedSheet"]["drawings"][number] | undefined;
   buildTotalRowCommand: () => CommandDescriptor | undefined;
@@ -184,15 +184,6 @@ export function useEditorCommandController({
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
     ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections }]
     : []);
-  const connectionControl = pivotControlRecords.find((record) => (record.payload.kind === 'slicer' || record.payload.kind === 'timeline') && record.payload.fieldId === (pivotFields[0]?.fieldId ?? ''));
-  const connectionControlId = connectionControl?.drawing.id;
-  const connectionOptions: PivotConnectionOption[] = connectionControl && activePivot
-    ? session.listCompatiblePivotControlConnections(activePivot.id, connectionControl.payload.fieldId, connectionControl.payload.kind).map((connection) => ({
-      ...connection,
-      label: state.selectedSheet.pivots.find((candidate) => candidate.id === connection.pivotId)?.id ?? connection.pivotId,
-      selected: connectionControl.payload.connections?.some((candidate) => candidate.pivotId === connection.pivotId) ?? false,
-    }))
-    : [];
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
     const table = state.selectedSheet.sheetTables.find((entry) =>
@@ -272,6 +263,27 @@ export function useEditorCommandController({
     dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, layout: nextLayout } });
     session.notify(pivotText(locale, 'layoutUpdated'));
   };
+  const setPivotReportLayout = (reportLayout: PivotLayout['reportLayout']) => {
+    if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), reportLayout });
+  };
+  const createPivotSlicer = () => {
+    const fieldId = pivotFields[0]?.fieldId;
+    if (activePivot && fieldId) session.createPivotSlicerControl(activePivot.id, fieldId);
+  };
+  const createPivotTimeline = () => {
+    const fieldId = pivotFields.find((field) => field.dataType === 'date')?.fieldId;
+    if (activePivot && fieldId) session.createPivotTimelineControl(activePivot.id, fieldId);
+  };
+  const createPivotChart = () => {
+    if (!activePivot) return;
+    const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
+    const drawing: DrawingObject = { id: `drawing-${chartId}`, sheetId: activePivotSheetId, kind: "chart", payloadId: chartId, anchor: { kind: "absolute" }, transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 }, zIndex: 0 };
+    const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: 'column', sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [], elements: { title: pivotText(locale, 'pivotChart'), legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show' } };
+    dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
+  };
+  const removePivotTimeline = () => {
+    for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);
+  };
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: () => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" }),
     onPivotSelect: setActivePivotId,
@@ -324,8 +336,6 @@ export function useEditorCommandController({
     onGroupChange: (fieldId, group) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, group } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, group } : field) }); },
     onSubtotalChange: (fieldId, subtotal) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field) }); },
     onSubtotalLocationChange: (subtotalLocation) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), subtotalLocation }); },
-    onRefresh: () => { if (activePivot) session.refreshPivot(activePivot.id); },
-    onLayoutChange: (reportLayout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), reportLayout }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
     onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
     onDisplayOptionsChange: (displayOptions: PivotDisplayOptions) => {
@@ -342,27 +352,7 @@ export function useEditorCommandController({
       } });
     },
     onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, refreshPolicy: structuredClone(refreshPolicy) } }); },
-    onExpansionCommand: (command: PivotExpansionCommand) => {
-      if (!activePivot) return;
-      const base = { sheetId: activePivotSheetId, pivotId: activePivot.id };
-      if (command.kind === 'expand-field' || command.kind === 'collapse-field') dispatchCommand({ commandId: 'pivot.expansion.field', params: { ...base, fieldId: command.fieldId, expanded: command.kind === 'expand-field' } });
-      else if (command.kind === 'toggle-buttons') dispatchCommand({ commandId: 'pivot.expansion.buttons', params: { ...base, showButtons: command.showButtons } });
-    },
-    onSlicerChange: (fieldId, enabled) => {
-      if (!activePivot) return;
-      if (enabled) session.createPivotSlicerControl(activePivot.id, fieldId);
-      else {
-        const control = pivotControlRecords.find((record) => record.payload.kind === "slicer" && record.payload.fieldId === fieldId);
-        if (control) session.removePivotControl(control.drawing.id);
-      }
-    },
-    onConnectionsChange: (controlId, connections) => session.setPivotControlConnections(controlId, connections),
-    onTimelineChange: (fieldId) => {
-      if (!activePivot) return;
-      if (!fieldId) {
-        for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);
-      } else session.createPivotTimelineControl(activePivot.id, fieldId);
-    },
+    onTimelineRemove: removePivotTimeline,
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
     onTimelineLevelChange: (timelineId, level) => session.setPivotTimelineLevel(timelineId, level),
@@ -370,13 +360,12 @@ export function useEditorCommandController({
     onTimelineDisplayChange: (timelineId, display) => session.setPivotTimelineDisplay(timelineId, display),
     onTimelineCaptionChange: (timelineId, caption) => session.setPivotTimelineCaption(timelineId, caption),
     onTimelineStyleChange: (timelineId, styleName) => session.setPivotTimelineStyle(timelineId, styleName),
-    onPivotChartChange: (chart) => {
-      if (!activePivot || !chart) return;
-      const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
-      const drawing: DrawingObject = { id: `drawing-${chartId}`, sheetId: activePivotSheetId, kind: "chart", payloadId: chartId, anchor: { kind: "absolute" }, transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 }, zIndex: 0 };
-      const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: chart.type, sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [], elements: { title: chart.title, legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show' } };
-      dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
-    },
+  };
+  const pivotRibbonActions: RibbonPivotActions = {
+    onSlicer: createPivotSlicer,
+    onTimeline: createPivotTimeline,
+    onPivotChart: createPivotChart,
+    onLayoutChange: setPivotReportLayout,
   };
 
   const pivotPanelState: PivotPanelState = { disabled: state.phase !== "ready", loading: state.phase === "loading", error: state.phase === "error" ? pivotText(locale, 'error') : undefined, empty: pivotFields.length === 0 };
@@ -464,10 +453,9 @@ export function useEditorCommandController({
     pivotFields,
     pivotSlicerControls,
     pivotTimelineControls,
-    pivotConnectionControlId: connectionControlId,
-    pivotConnectionOptions: connectionOptions,
     pivotPanelState,
     pivotCallbacks,
+    pivotRibbonActions,
     pivotSourceOptions,
     selectedDrawing,
     buildTotalRowCommand,

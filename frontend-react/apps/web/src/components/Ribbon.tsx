@@ -23,6 +23,7 @@ import {
   type RibbonCommandId,
   type RibbonCommandResult,
   type RibbonMergeOperation,
+  type RibbonPivotActions,
   type UiSessionIntent,
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
@@ -121,6 +122,7 @@ export interface RibbonProps {
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
+  pivotActions?: RibbonPivotActions;
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
   activeReportSheet?: { sheetId: string; tableId?: string };
@@ -282,6 +284,7 @@ export function Ribbon({
   onTabChange,
   phase,
   activePivot,
+  pivotActions,
   activeTableSheet,
   activeGanttSheet,
   activeReportSheet,
@@ -373,6 +376,7 @@ export function Ribbon({
     buildSortDescriptor,
     openCreatePivotDialog: onCreatePivotDialog,
     activePivot,
+    pivotActions,
     activeTableSheet,
     activeGanttSheet,
     activeReportSheet,

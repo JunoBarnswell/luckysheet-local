@@ -30,6 +30,7 @@ export interface RibbonHostProps {
     | "buildSubtotalCommand"
     | "buildRemoveDuplicatesCommand"
     | "buildTextToColumnsCommand"
+    | "pivotRibbonActions"
   >;
 }
 
@@ -60,6 +61,7 @@ export function RibbonHost({
       activePivot={state.activeContext.kind === "pivot"
         ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
         : undefined}
+      pivotActions={commands.pivotRibbonActions}
       activeTableSheet={state.activeContext.kind === "table-sheet"
         ? { sheetId: state.activeContext.sheetId, viewId: state.activeContext.viewId }
         : undefined}
