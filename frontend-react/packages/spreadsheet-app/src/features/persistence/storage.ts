@@ -5,6 +5,8 @@ import { computeChecksum, verifyChecksum } from './checksum';
 import { LocalDataBlockStore } from './data-block-store';
 import { buildNativePackageRecord, LocalNativePackageStore } from './native-package-store';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
+import type { AssetStore } from './asset-store';
+import { normalizeWorkspaceRecordWithAssets } from './asset-migration';
 import {
   openWorkspaceDatabase,
   requestResult,
@@ -279,12 +281,12 @@ export class IndexedDbWorkspaceStore {
     this.options = options;
   }
 
-  async load(unitId: string): Promise<WorkspaceRecord | null> {
+  async load(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
     const database = await this.database();
     if (!database) {
       const value = memoryWorkspaceRecords(this.databaseName).get(unitId);
       if (!value) return null;
-      try { return normalizeWorkspaceRecord(value); } catch { return null; }
+      try { return assetStore ? await normalizeWorkspaceRecordWithAssets(value, assetStore) : normalizeWorkspaceRecord(value); } catch { return null; }
     }
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
     const complete = transactionComplete(transaction);
@@ -294,7 +296,7 @@ export class IndexedDbWorkspaceStore {
     if (!verifyWorkspaceRecord(value)) {
       return null;
     }
-    try { return normalizeWorkspaceRecord(value); } catch { return null; }
+    try { return assetStore ? await normalizeWorkspaceRecordWithAssets(value, assetStore) : normalizeWorkspaceRecord(value); } catch { return null; }
   }
 
   async save(record: WorkspaceRecord): Promise<void> {
@@ -380,8 +382,8 @@ export class LocalWorkspaceStore {
     this.indexedDb = new IndexedDbWorkspaceStore(options);
   }
 
-  open(unitId: string): Promise<WorkspaceRecord | null> {
-    return this.indexedDb.load(unitId);
+  open(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
+    return this.indexedDb.load(unitId, assetStore);
   }
 
   async create(input: WorkspaceRecordInput | WorkspaceRecord): Promise<WorkspaceRecord> {
@@ -475,8 +477,8 @@ export class WorkspacePersistence {
     this.operationJournal = operationJournal;
   }
 
-  async load(unitId: string): Promise<WorkspaceRecord | null> {
-    const record = await this.store.open(unitId);
+  async load(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
+    const record = await this.store.open(unitId, assetStore);
     if (record) this.operationJournal.hydrate(record);
     else this.operationJournal.clear(unitId);
     return record;

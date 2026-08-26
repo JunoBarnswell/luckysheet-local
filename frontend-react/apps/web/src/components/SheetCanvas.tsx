@@ -146,6 +146,7 @@ export interface SheetCanvasProps {
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
+  resolveAssetUrl?: (asset: import('@react-sheets/core-model').AssetRef) => Promise<string>;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
@@ -445,9 +446,13 @@ export function SheetCanvas({
   getValidationList,
   onRetry,
   onCreateSheet,
+  resolveAssetUrl,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
+  const assetUrlCacheRef = useRef(new Map<string, string>());
+  const assetUrlPendingRef = useRef(new Set<string>());
+  const assetUrlErrorsRef = useRef(new Map<string, string>());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
@@ -573,11 +578,15 @@ export function SheetCanvas({
     imageCache: imageCacheRef.current,
     pivotResults,
     requestRender: () => engineRef.current?.requestRender(),
+    resolveAssetUrl,
+    assetUrlCache: assetUrlCacheRef.current,
+    assetUrlPending: assetUrlPendingRef.current,
+    assetUrlErrors: assetUrlErrorsRef.current,
     sheet,
     skeleton,
     sparklines,
     tables,
-  }), [allSheets, drawingPayloads, drawings, pivotResults, sparklines, skeleton, sheet, tables]);
+  }), [allSheets, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
 
   // ---------- 引擎生命周期与 chrome 同步 ----------
 
@@ -984,6 +993,7 @@ export function SheetCanvas({
             onContextMenu={handleContextMenu}
           >
             <CanvasRenderSurface
+              options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
               onReady={(engine) => {
                 engineRef.current = engine;
                 setEngineReady(true);

@@ -57,12 +57,13 @@ export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookS
 export function exportSnapshotToXlsxBase64(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> } = {},
 ): string {
   return bytesToBase64(new Uint8Array(exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
     includeCachedValues: options.includeCachedValues,
     preserveMacros: options.preserveMacros ?? true,
+    assetBytes: options.assetBytes,
   }, preserved)));
 }
 
@@ -70,12 +71,13 @@ export function exportSnapshotToXlsxBase64(
 export function exportSnapshotToXlsxBuffer(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> } = {},
 ): ArrayBuffer {
   return exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
     includeCachedValues: options.includeCachedValues,
     preserveMacros: options.preserveMacros ?? true,
+    assetBytes: options.assetBytes,
   }, preserved);
 }
 

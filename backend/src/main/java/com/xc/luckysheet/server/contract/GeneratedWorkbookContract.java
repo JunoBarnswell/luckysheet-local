@@ -7,7 +7,7 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-08-24";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 5;
+    public static final int SNAPSHOT_VERSION = 7;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");

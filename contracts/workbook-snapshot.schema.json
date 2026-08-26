@@ -6,7 +6,7 @@
   "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 5 },
+    "version": { "const": 7 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {

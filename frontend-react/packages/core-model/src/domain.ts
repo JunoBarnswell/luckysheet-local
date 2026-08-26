@@ -176,7 +176,7 @@ export interface ImageEffects {
 
 export interface ImageDrawingPayload {
   kind: 'image';
-  src: string;
+  asset: import('./asset').AssetRef;
   altText?: string;
   name?: string;
   crop?: ImageCrop;

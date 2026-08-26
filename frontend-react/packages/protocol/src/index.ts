@@ -9,6 +9,7 @@ import type {
   WorkbookSnapshot,
   WorkbookTableBlock,
 } from '@react-sheets/core-model';
+import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 import {
   CONTRACT_ERROR_CODES,
@@ -1505,6 +1506,12 @@ export interface RemoteDataBlockMetadata {
   updatedAt: string;
 }
 
+/** Metadata-only remote representation of a workbook-owned image asset. */
+export interface RemoteAssetMetadata extends AssetRef {
+  unitId: string;
+  updatedAt: string;
+}
+
 async function sha256(blob: Blob): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
@@ -1924,6 +1931,52 @@ export class WorkbookApiClient {
       `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
       { method: 'DELETE' },
     );
+  }
+
+  async putAsset(unitId: string, asset: AssetRef, bytes: ArrayBuffer): Promise<RemoteAssetMetadata> {
+    return this.json<RemoteAssetMetadata>(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(asset.assetId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': asset.mimeType,
+          'x-content-sha256': asset.contentHash,
+          'x-asset-mime-type': asset.mimeType,
+          ...(asset.width === undefined ? {} : { 'x-asset-width': String(asset.width) }),
+          ...(asset.height === undefined ? {} : { 'x-asset-height': String(asset.height) }),
+        },
+        body: bytes,
+      },
+    );
+  }
+
+  async getAsset(unitId: string, assetId: string): Promise<{ bytes: ArrayBuffer; contentHash: string; mimeType: string; byteLength: number }> {
+    const response = await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(assetId)}`,
+    );
+    const contentHash = response.headers.get('x-content-sha256');
+    const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim();
+    const contentLength = response.headers.get('content-length');
+    if (!contentHash || !mimeType || !contentLength) throw new ApiRequestError('Asset response omitted canonical metadata', response.status, 'INTERNAL_ERROR');
+    const bytes = await response.arrayBuffer();
+    const byteLength = Number(contentLength);
+    if (!Number.isSafeInteger(byteLength) || byteLength !== bytes.byteLength) throw new ApiRequestError('Asset response byte length is invalid', response.status, 'INTERNAL_ERROR');
+    return { bytes, contentHash, mimeType, byteLength };
+  }
+
+  async deleteAsset(unitId: string, assetId: string): Promise<void> {
+    await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(assetId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async reconcileAssets(unitId: string, assetIds: readonly string[]): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/assets/reconcile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetIds }),
+    });
   }
 
 }

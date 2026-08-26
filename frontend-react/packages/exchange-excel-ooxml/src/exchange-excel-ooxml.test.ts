@@ -78,7 +78,10 @@ describe('exchange-excel-ooxml', () => {
       sourceRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
       elements: { hiddenData: 'show' },
     });
-    sheet.drawingPayloads.set('image-payload', { kind: 'image', src: 'data:image/png;base64,AA==' });
+    sheet.drawingPayloads.set('image-payload', {
+      kind: 'image',
+      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+    });
 
     const features = scanSnapshotFeatures(workbook.snapshot());
     assert.ok(features.includes('charts'));

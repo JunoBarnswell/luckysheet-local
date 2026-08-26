@@ -12,6 +12,9 @@ import {
   type FloatingDrawable,
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
+import type { AssetRef } from '@react-sheets/core-model';
+
+export type AssetUrlResolver = (asset: AssetRef) => Promise<string>;
 
 export interface PaneDrawOptions {
   context: CanvasRenderingContext2D;
@@ -22,6 +25,11 @@ export interface PaneDrawOptions {
   theme: RenderTheme;
   /** 内容坐标系下的局部重绘矩形 */
   drawRects?: readonly Rect[];
+  resolveAssetUrl?: AssetUrlResolver;
+  assetUrlCache?: Map<string, string>;
+  assetUrlPending?: Set<string>;
+  assetUrlErrors?: Map<string, string>;
+  requestRender?: () => void;
 }
 
 export interface ExtensionsDrawOptions extends PaneDrawOptions {
@@ -194,7 +202,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
 
       if (cell && (!alignmentSpan || alignmentSpan.isAnchor)) {
         if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
-        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation);
+        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation, options);
         else drawCellValue(context, skeleton, options, address, cell, contentRect);
         if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
@@ -268,13 +276,28 @@ function drawBarcodePresentation(
   context.restore();
 }
 
-function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect, presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'image' }>): void {
+function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect, presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'image' }>, options: PaneDrawOptions): void {
   if (typeof Image === 'undefined') return;
-  let image = cellImageCache.get(presentation.src);
+  const assetId = presentation.asset.assetId;
+  const assetUrl = options.assetUrlCache?.get(assetId);
+  if (!assetUrl) {
+    if (options.resolveAssetUrl && options.assetUrlPending && !options.assetUrlPending.has(assetId) && !options.assetUrlErrors?.has(assetId)) {
+      options.assetUrlPending.add(assetId);
+      void options.resolveAssetUrl(presentation.asset)
+        .then((url) => options.assetUrlCache?.set(assetId, url))
+        .catch((error) => options.assetUrlErrors?.set(assetId, error instanceof Error ? error.message : `ASSET_RESOLVE_FAILED: ${assetId}`))
+        .finally(() => {
+          options.assetUrlPending?.delete(assetId);
+          options.requestRender?.();
+        });
+    }
+    return;
+  }
+  let image = cellImageCache.get(assetId);
   if (!image) {
     image = new Image();
-    image.src = presentation.src;
-    cellImageCache.set(presentation.src, image);
+    image.src = assetUrl;
+    cellImageCache.set(assetId, image);
   }
   if (!image.complete || image.naturalWidth <= 0) return;
   let x = rect.x;

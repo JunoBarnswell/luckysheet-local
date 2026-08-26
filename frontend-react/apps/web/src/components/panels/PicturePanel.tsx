@@ -88,7 +88,7 @@ export function PicturePanel({ sheetId, activeCell, sheet, selectedDrawingIds = 
     setBrightness(effects.brightness);
     setContrast(effects.contrast);
     setTransparency(effects.transparency);
-  }, [source?.src, selectedEntry?.drawing.id, activeAddress?.row, activeAddress?.column]);
+  }, [source?.kind === 'image' ? source.asset.assetId : undefined, selectedEntry?.drawing.id, activeAddress?.row, activeAddress?.column]);
 
   if (!source) {
     return (

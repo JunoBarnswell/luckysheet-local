@@ -3,6 +3,7 @@ import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
+import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
@@ -14,7 +15,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, t
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 6;
+  version: 7;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -42,7 +43,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 6 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 7 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -57,6 +58,12 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.version === 6 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+    if (containsLegacyImageDataUrl(input)) throw new Error('ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before runtime load');
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version === 5 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
@@ -235,6 +242,10 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     }
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
+      if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
+    }
+    for (const cell of Object.values(sheet.cells)) {
+      if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
     }
   }
   for (const sheet of snapshot.sheets) {
@@ -298,6 +309,14 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function containsLegacyImageDataUrl(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsLegacyImageDataUrl);
+  const record = value as Record<string, unknown>;
+  if (typeof record.src === 'string' && record.src.startsWith('data:image/')) return true;
+  return Object.values(record).some(containsLegacyImageDataUrl);
 }
 
 function validateDrawingSourceRange(range: RangeRef, snapshot: WorkbookSnapshot, label: string): void {

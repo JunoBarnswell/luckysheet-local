@@ -30,9 +30,13 @@ import {
   OperationJournalStore,
   WorkspacePersistence,
   DataBlockSynchronizer,
+  LocalAssetStore,
+  type AssetStore,
   type IndexedDbWorkspaceStoreOptions,
   type WorkspaceRecord,
 } from './features/persistence';
+import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
+import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -77,6 +81,7 @@ export interface SpreadsheetRuntime {
   operationJournal: OperationJournalStore;
   workspacePersistence: WorkspacePersistence;
   dataBlocks: DataBlockSynchronizer;
+  assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
   dataContentDetachers: Array<() => void>;
   workspaceRecord: WorkspaceRecord | null;
@@ -121,6 +126,7 @@ export function createSpreadsheetRuntime(options: {
   localOnly?: boolean;
   persistence?: IndexedDbWorkspaceStoreOptions;
   workspacePersistence?: WorkspacePersistence;
+  assetStore?: AssetStore;
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
 } = {}): SpreadsheetRuntime {
@@ -152,6 +158,7 @@ export function createSpreadsheetRuntime(options: {
     unitId: () => runtime.model.unitId,
     isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
   });
+  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, options.persistence);
   runtime = {
     api,
     formula: formula as FormulaEngine,
@@ -184,6 +191,7 @@ export function createSpreadsheetRuntime(options: {
     operationJournal,
     workspacePersistence,
     dataBlocks,
+    assetStore,
     dataContent: new Map(),
     dataContentDetachers: [],
     workspaceRecord: null,
@@ -471,10 +479,34 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
       );
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
+      await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
+        ...(pendingJournal?.operations ?? []),
+        ...runtime.commands.getUndoEntries(),
+        ...runtime.commands.getRedoEntries(),
+      ]));
+      if (runtime.disposed) return;
       runtime.handlers.onWorkspacePersisted?.();
     });
   checkpointChains.set(runtime, next);
   return next;
+}
+
+function collectAssetReferences(snapshot: unknown, pending: readonly unknown[]): AssetRef[] {
+  const references: AssetRef[] = [];
+  const visit = (value: unknown): void => {
+    if (isAssetRef(value)) {
+      references.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (value && typeof value === 'object') for (const entry of Object.values(value)) visit(entry);
+  };
+  visit(snapshot);
+  visit(pending);
+  return references;
 }
 
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
@@ -925,13 +957,13 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
   let localRecord: WorkspaceRecord | null = null;
   try {
-    localRecord = await runtime.workspacePersistence.load(runtime.model.unitId);
+    localRecord = await runtime.workspacePersistence.load(runtime.model.unitId, runtime.assetStore);
     const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
       && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
     if (!localRecord && canDiscoverLocalDefault) {
       const summaries = await runtime.workspacePersistence.list();
       const first = summaries[0];
-      if (first) localRecord = await runtime.workspacePersistence.load(first.unitId);
+      if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
     }
   } catch {
     runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
@@ -976,7 +1008,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
     const access = await runtime.api.getAccess(runtime.model.unitId);
     if (!isActive()) return;
-    hydrateRuntime(runtime, snapshotResponse);
+    hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
     runtime.remoteSyncRequested = true;

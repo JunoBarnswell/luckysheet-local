@@ -25,6 +25,7 @@ import type {
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
+export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, type AssetRef } from './asset';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,
@@ -183,7 +184,7 @@ export interface BarcodeCellPresentation {
 
 export interface ImageCellPresentation {
   kind: 'image';
-  src: string;
+  asset: import('./asset').AssetRef;
   altText?: string;
   fit: 'contain' | 'cover' | 'stretch';
   crop?: ImageCrop;
@@ -1370,7 +1371,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 6,
+      version: 7,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -1439,7 +1440,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 6) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 7) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);

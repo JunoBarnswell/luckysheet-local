@@ -47,6 +47,7 @@ import type {
   WorksheetModel,
   CellHyperlink,
   HyperlinkTarget,
+  AssetRef,
 } from '@react-sheets/core-model';
 import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
@@ -236,11 +237,13 @@ import type {
   UndoRedoState,
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
+import type { AssetStore } from './features/persistence';
 
 export interface WorkbookSessionOptions {
   unitId?: string;
   api?: WorkbookApiClient;
   workspacePersistence?: WorkspacePersistence;
+  assetStore?: AssetStore;
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -514,6 +517,7 @@ export class WorkbookSession {
   private readonly pivotTaskGeneration = new Map<string, number>();
   private pivotOpenRefreshStarted = false;
   private readonly insertCoordinator = new InsertCoordinator(nextId);
+  private readonly assetUrls = new Map<string, string>();
 
   private get formulaDraft(): string {
     const active = this.editSession.active;
@@ -545,12 +549,13 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       unitId,
       api,
       workspacePersistence,
+      assetStore,
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
@@ -782,6 +787,8 @@ export class WorkbookSession {
     this.persistenceDispose?.();
     this.collabDispose = null;
     this.persistenceDispose = null;
+    for (const url of this.assetUrls.values()) URL.revokeObjectURL(url);
+    this.assetUrls.clear();
     disposeSpreadsheetRuntime(this.runtime);
     this.sheetProjectionCache.clear();
     this.cachedUiSnapshot = null;
@@ -3514,23 +3521,39 @@ export class WorkbookSession {
     this.notify('Image placed on canvas');
     this.refresh();
   }
+  async resolveAssetUrl(asset: AssetRef): Promise<string> {
+    const existing = this.assetUrls.get(asset.assetId);
+    if (existing) return existing;
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
+    const blob = await this.runtime.assetStore.get(asset);
+    const url = URL.createObjectURL(blob);
+    this.assetUrls.set(asset.assetId, url);
+    return url;
+  }
   async insertImageFile(file: File, placement: 'cell' | 'floating' = 'floating'): Promise<void> {
     if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
-    const src = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
-      reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片读取失败'));
-      reader.readAsDataURL(file);
-    });
-    if (placement === 'cell') {
-      const active = this.selectionService.getState().activeCell;
-      this.runCommand('cell.image.apply', { sheetId: this.activeSheetId, row: active.row, column: active.column, presentation: { kind: 'image', src, altText: file.name, fit: 'contain' } });
-      this.notify('图片已嵌入单元格');
-      this.refresh();
-      return;
+    const asset = await this.runtime.assetStore.put({ content: file, mimeType: file.type });
+    try {
+      if (placement === 'cell') {
+        const active = this.selectionService.getState().activeCell;
+        this.commitInsertMutation({
+          kind: 'image-cell',
+          commandId: 'cell.image.apply',
+          sheetId: this.activeSheetId,
+          params: { sheetId: this.activeSheetId, row: active.row, column: active.column, presentation: { kind: 'image', asset, altText: file.name, fit: 'contain' } },
+          createdObjectIds: [asset.assetId],
+        }, () => {
+          this.notify('图片已嵌入单元格');
+          this.refresh();
+        });
+        return;
+      }
+      const drawing = this.createInsertDrawing('image', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'image', transform: { x: 96, y: 96, width: 320, height: 200, rotation: 0 } });
+      this.addImage(drawing, { kind: 'image', asset, name: file.name, altText: file.name });
+    } catch (error) {
+      await this.runtime.assetStore.release(asset);
+      throw error;
     }
-    const drawing = this.createInsertDrawing('image', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'image', transform: { x: 96, y: 96, width: 320, height: 200, rotation: 0 } });
-    this.addImage(drawing, { kind: 'image', src, name: file.name, altText: file.name });
   }
   updateImageBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -4887,6 +4910,7 @@ export class WorkbookSession {
         nativePackage: this.nativePackage,
         execution: this.xlsxExecution,
         revision: this.version,
+        assetStore: this.runtime.assetStore,
       });
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));

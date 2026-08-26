@@ -241,7 +241,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 6,
+    version: 7,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -280,7 +280,7 @@ function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: stri
 
 export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
-  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
+  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> },
   preserved?: OpcPackageGraph,
 ): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
@@ -317,6 +317,7 @@ export function exportSnapshotToOpcPackageGraph(
   });
   nativeUpdate.files = chartUpdate.files;
   nativeUpdate.relationships = chartUpdate.relationships;
+  synchronizeImageAssets(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes);
   files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
@@ -436,6 +437,79 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
     if (snapshot.definedNameModels?.length || Object.keys(snapshot.definedNames ?? {}).length) features.add('defined-names');
   }
   return [...features];
+}
+
+/** Emits canonical image assets into native DrawingML. Bytes are supplied by
+ * AssetStore at the application boundary; no binary data enters snapshots. */
+function synchronizeImageAssets(
+  files: Record<string, Uint8Array>,
+  relationships: Record<string, XlsxRelationship[]>,
+  snapshot: WorkbookSnapshot,
+  sheetPartById: Record<string, string>,
+  assetBytes: Record<string, Uint8Array> | undefined,
+): void {
+  const imageEntries = snapshot.sheets.flatMap((sheet) => {
+    const entries: Array<{ sheet: SheetSnapshot; id: string; row: number; column: number; endRow: number; endColumn: number; asset: import('@react-sheets/core-model').AssetRef; name?: string }> = [];
+    for (const drawing of sheet.drawings) {
+      const payload = sheet.drawingPayloads[drawing.payloadId];
+      if (payload?.kind !== 'image') continue;
+      const row = drawing.anchor.row ?? 0;
+      const column = drawing.anchor.column ?? 0;
+      entries.push({ sheet, id: drawing.id, row, column, endRow: Math.max(row + 1, drawing.anchor.endRow ?? row + Math.max(1, Math.round(drawing.transform.height / 24))), endColumn: Math.max(column + 1, drawing.anchor.endColumn ?? column + Math.max(1, Math.round(drawing.transform.width / 96))), asset: payload.asset, name: payload.name ?? payload.altText });
+    }
+    for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) {
+      if (cell.presentation?.kind !== 'image') continue;
+      const row = Number(rowKey);
+      const column = Number(columnKey);
+      entries.push({ sheet, id: `cell-image-${row}-${column}`, row, column, endRow: row + 1, endColumn: column + 1, asset: cell.presentation.asset, name: cell.presentation.altText });
+    }
+    return entries;
+  });
+  if (!imageEntries.length) return;
+  if (!assetBytes) throw new Error('ASSET_EXPORT_REQUIRED: image bytes must be resolved from AssetStore before XLSX export');
+
+  const mediaPartFor = (asset: import('@react-sheets/core-model').AssetRef): string => {
+    const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType.split('/')[1]?.toLowerCase();
+    if (!extension || !['png', 'jpg', 'gif', 'webp', 'bmp'].includes(extension)) throw new Error(`UNSUPPORTED_FEATURE: XLSX image MIME type ${asset.mimeType}`);
+    const bytes = assetBytes[asset.assetId];
+    if (!bytes || bytes.byteLength !== asset.byteLength) throw new Error(`ASSET_EXPORT_MISSING: ${asset.assetId}`);
+    const part = `xl/media/${asset.assetId}.${extension}`;
+    files[part] = bytes.slice();
+    return part;
+  };
+  const grouped = new Map<string, typeof imageEntries>();
+  for (const entry of imageEntries) grouped.set(sheetPartById[entry.sheet.id]!, [...(grouped.get(sheetPartById[entry.sheet.id]!) ?? []), entry]);
+  for (const [sheetPart, entries] of grouped) {
+    let sheetRelations = relationships[sheetPart] ?? [];
+    let drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
+    let drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : undefined;
+    if (!drawingPart) {
+      let index = 1;
+      while (files[`xl/drawings/drawing${index}.xml`]) index += 1;
+      drawingPart = `xl/drawings/drawing${index}.xml`;
+      sheetRelations = mergeRelationships(sheetRelations, [{ type: REL_DRAWING, target: relativeTarget(sheetPart, drawingPart) }]);
+      drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
+      relationships[sheetPart] = sheetRelations;
+    }
+    const original = files[drawingPart] ? strFromU8(files[drawingPart]!) : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${NS_DOC_REL}"/>`;
+    const closing = '</xdr:wsDr>';
+    const position = original.lastIndexOf(closing);
+    if (position < 0) throw new Error(`ASSET_EXPORT_INVALID_DRAWING: ${drawingPart}`);
+    let drawingXml = original.slice(0, position);
+    let drawingRelations = relationships[drawingPart] ?? [];
+    const existingIds = descendants(parseXml(original), 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isSafeInteger);
+    let objectId = Math.max(0, ...existingIds, 0) + 1;
+    for (const entry of entries) {
+      const mediaPart = mediaPartFor(entry.asset);
+      drawingRelations = mergeRelationships(drawingRelations, [{ type: `${NS_DOC_REL}/image`, target: relativeTarget(drawingPart, mediaPart) }]);
+      const imageRelation = drawingRelations.find((relation) => isRelationshipKind(relation.type, 'image') && resolveTarget(drawingPart!, relation.target) === mediaPart);
+      if (!imageRelation) throw new Error(`ASSET_EXPORT_RELATIONSHIP_MISSING: ${entry.asset.assetId}`);
+      drawingXml += `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${entry.column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${entry.endColumn}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.endRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${objectId++}" name="${encodeXml(entry.name ?? entry.id)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="${NS_DOC_REL}" r:embed="${encodeXml(imageRelation.id)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+    }
+    files[drawingPart] = strToU8(`${drawingXml}${closing}`);
+    relationships[drawingPart] = drawingRelations;
+    files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(drawingRelations));
+  }
 }
 
 function parseSheet(
@@ -1752,6 +1826,12 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   const original = preserved?.contentTypesXml ? firstElement(parseXml(strFromU8(preserved.contentTypesXml)), 'Types') : undefined;
   for (const node of children(original, 'Default')) if (node.attrs.Extension && node.attrs.ContentType) defaults.set(node.attrs.Extension, node.attrs.ContentType);
   for (const node of children(original, 'Override')) if (node.attrs.PartName && node.attrs.ContentType) overrides.set(node.attrs.PartName, node.attrs.ContentType);
+  for (const name of files.keys()) {
+    if (!name.startsWith('xl/media/')) continue;
+    const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    const mediaTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    if (mediaTypes[extension]) defaults.set(extension, mediaTypes[extension]);
+  }
   for (const name of files.keys()) {
     if (!name.startsWith('xl/worksheets/') || !name.endsWith('.xml')) continue;
     overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');

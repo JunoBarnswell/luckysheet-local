@@ -15,6 +15,7 @@ import type {
 } from '@react-sheets/core-model';
 import {
   assertCanonicalConnector,
+  isAssetRef,
   isDrawingConnectorPayload,
   isShapeDrawingPayload,
   isDrawingGroup,
@@ -391,7 +392,7 @@ function isImageEffects(value: unknown): value is ImageEffects {
 function isImagePayload(value: unknown): value is ImageDrawingPayload {
   return objectParams(value)
     && value.kind === 'image'
-    && typeof value.src === 'string' && value.src.length > 0
+    && isAssetRef(value.asset)
     && (value.altText === undefined || typeof value.altText === 'string')
     && (value.name === undefined || typeof value.name === 'string')
     && (value.crop === undefined || isImageCrop(value.crop))

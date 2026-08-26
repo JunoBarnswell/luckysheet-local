@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import { WorkbookCatalogService, WorkspacePersistence, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
+import { RemoteAssetStore, WorkbookCatalogService, WorkspacePersistence, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
 import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
 
@@ -27,6 +27,7 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       unitId,
       workspacePersistence: persistence,
       authTokenProvider,
+      assetStore: new RemoteAssetStore(unitId, workbookApi),
     });
     return { catalog, persistence, workbookApi, createWorkbookSessionOptions };
   }, [auth]);

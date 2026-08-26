@@ -96,7 +96,12 @@ public final class WorkbookSnapshotValidator {
                 if ("camera".equals(payload.path("kind").asText())) {
                     validateDrawingSourceRange(payload.get("sourceRange"), sheetDimensions, "Camera");
                 }
+                if ("image".equals(payload.path("kind").asText())) validateAssetRef(payload.get("asset"), "Drawing image");
             });
+            sheet.path("cells").fields().forEachRemaining(row -> row.getValue().fields().forEachRemaining(cell -> {
+                JsonNode presentation = cell.getValue().get("presentation");
+                if (presentation != null && "image".equals(presentation.path("kind").asText())) validateAssetRef(presentation.get("asset"), "Cell image");
+            }));
             JsonNode pane = sheet.path("pane");
             if (!"none".equals(pane.path("kind").asText())) {
                 String state = pane.path("state").asText();
@@ -190,6 +195,15 @@ public final class WorkbookSnapshotValidator {
         return null;
     }
 
+    private static void validateAssetRef(JsonNode asset, String label) {
+        if (asset == null || !asset.isObject() || !"AssetRef".equals(asset.path("schema").asText())
+                || asset.path("assetId").asText().isBlank() || !asset.path("contentHash").asText().matches("[a-f0-9]{64}")
+                || !asset.path("mimeType").asText().startsWith("image/") || !asset.path("byteLength").canConvertToInt()
+                || asset.path("byteLength").asInt(-1) < 0) {
+            throw ServiceException.validation(label + " asset is invalid");
+        }
+    }
+
     private static boolean compatiblePivotField(JsonNode primary, JsonNode target) {
         return target != null
                 && primary.path("ordinal").asInt(-1) == target.path("ordinal").asInt(-1)
@@ -250,8 +264,20 @@ public final class WorkbookSnapshotValidator {
     public static ObjectNode migrateStored(JsonNode value, String expectedUnitId) {
         if (value == null || !value.isObject()) throw ServiceException.validation("Stored workbook snapshot must be an object");
         ObjectNode snapshot = ((ObjectNode) value).deepCopy();
+        if (snapshot.path("version").asInt(-1) != GeneratedWorkbookContract.SNAPSHOT_VERSION && containsLegacyImageData(snapshot)) {
+            throw ServiceException.validation("ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before server persistence");
+        }
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 6 && snapshot.path("sheets").isArray()) {
+            if (containsLegacyImageData(snapshot)) throw ServiceException.validation("ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before server persistence");
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 5 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", 6);
+            return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 4 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
@@ -333,6 +359,19 @@ public final class WorkbookSnapshotValidator {
             sheet.remove(java.util.List.of("defaultRowHeight", "defaultColumnWidth", "rowHeights", "columnWidths", "freeze"));
         }
         return migrateStored(snapshot, expectedUnitId);
+    }
+
+    private static boolean containsLegacyImageData(JsonNode value) {
+        if (value == null) return false;
+        if (value.isArray()) {
+            for (JsonNode entry : value) if (containsLegacyImageData(entry)) return true;
+            return false;
+        }
+        if (!value.isObject()) return false;
+        if ("image".equals(value.path("kind").asText()) && value.path("src").isTextual()) return true;
+        var fields = value.fields();
+        while (fields.hasNext()) if (containsLegacyImageData(fields.next().getValue())) return true;
+        return false;
     }
 
     private static double positiveOr(JsonNode value, double fallback) {

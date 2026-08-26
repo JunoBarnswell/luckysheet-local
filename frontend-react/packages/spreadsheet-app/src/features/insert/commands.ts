@@ -1,4 +1,4 @@
-import { BARCODE_SYMBOLOGIES, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
@@ -237,7 +237,7 @@ function validateBarcodeValue(presentation: BarcodeCellPresentation, rawValue: C
 }
 
 function validateImagePresentation(presentation: ImageCellPresentation): void {
-  if (!presentation || presentation.kind !== 'image' || typeof presentation.src !== 'string' || presentation.src.length === 0) throw new Error('Image presentation source is required');
+  if (!presentation || presentation.kind !== 'image' || !isAssetRef(presentation.asset)) throw new Error('Image presentation asset reference is required');
   if (!['contain', 'cover', 'stretch'].includes(presentation.fit)) throw new Error('Image fit mode is invalid');
   const crop = presentation.crop;
   if (crop && (![crop.left, crop.top, crop.right, crop.bottom].every((value) => Number.isFinite(value) && value >= 0) || crop.left + crop.right >= 1 || crop.top + crop.bottom >= 1)) throw new Error('Image crop is invalid');
@@ -271,7 +271,7 @@ function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDr
   validateImagePresentation(presentation);
   return {
     kind: 'image',
-    src: presentation.src,
+    asset: structuredClone(presentation.asset),
     altText: presentation.altText,
     crop: presentation.crop ? structuredClone(presentation.crop) : undefined,
     effects: presentation.effects ? structuredClone(presentation.effects) : undefined,
@@ -281,7 +281,7 @@ function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDr
 function convertDrawingImageToPresentation(payload: ImageDrawingPayload): ImageCellPresentation {
   return {
     kind: 'image',
-    src: payload.src,
+    asset: structuredClone(payload.asset),
     altText: payload.altText,
     fit: 'contain',
     crop: payload.crop ? structuredClone(payload.crop) : undefined,

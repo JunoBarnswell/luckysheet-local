@@ -331,6 +331,7 @@ export function EditorShell({
                 getValidationList={session.getValidationAt.bind(session)}
                 onRetry={session.retry.bind(session)}
                 onCreateSheet={session.addSheet.bind(session)}
+                resolveAssetUrl={session.resolveAssetUrl.bind(session)}
               />
             </Suspense>
           </Box>

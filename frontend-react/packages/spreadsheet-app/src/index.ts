@@ -60,6 +60,9 @@ export {
   LocalDataBlockStore,
   DataBlockSynchronizer,
   LocalNativePackageStore,
+  LocalAssetStore,
+  RemoteAssetStore,
+  migrateLegacyImageAssets,
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
@@ -72,6 +75,8 @@ export {
   type DataBlockRecord,
   type DataBlockSyncOptions,
   type NativePackageRecord,
+  type AssetStore,
+  type AssetPutInput,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
