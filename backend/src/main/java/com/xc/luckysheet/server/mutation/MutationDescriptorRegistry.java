@@ -52,7 +52,8 @@ public class MutationDescriptorRegistry {
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore"
+            "style.set", "style.preset.set", "format.painter.applied", "cf.reorder", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore",
+            "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
             Map.entry("automation.recording.changed", "Recorder state is transient session state and must not enter workbook history."),
@@ -75,6 +76,8 @@ public class MutationDescriptorRegistry {
         register(new CellDescriptor("range.clear"));
         register(new CellDescriptor("range.clear.restore"));
         register(new PresentationDescriptor("style.set"));
+        register(new PresentationDescriptor("style.preset.set"));
+        register(new PresentationDescriptor("format.painter.applied"));
         register(new CellTemplateDescriptor("cellTemplate.set"));
         register(new CellTemplateDescriptor("cellTemplate.remove"));
         for (String id : FillMutationDescriptor.IDS) register(new FillMutationDescriptor(id));
@@ -104,6 +107,7 @@ public class MutationDescriptorRegistry {
         register(new RestoreDescriptor());
         for (String id : SheetDataMutationDescriptor.IDS) register(new SheetDataMutationDescriptor(id));
         for (String id : DrawingMutationDescriptor.IDS) register(new DrawingMutationDescriptor(id));
+        register(new ConditionalFormatMutationDescriptor("cf.reorder"));
         for (String id : PivotMutationDescriptor.IDS) register(new PivotMutationDescriptor(id));
         for (String id : PivotDrillDownMutationDescriptor.IDS) register(new PivotDrillDownMutationDescriptor(id));
         for (String id : SparklineMutationDescriptor.IDS) register(new SparklineMutationDescriptor(id));
@@ -732,7 +736,8 @@ public class MutationDescriptorRegistry {
             ObjectNode root = SnapshotMutationSupport.root(snapshot);
             ObjectNode params = SnapshotMutationSupport.params(mutation);
             return switch (id()) {
-                case "style.set" -> SnapshotMutationSupport.styleRanges(root, mutation.sheetId(), params);
+                case "style.set", "style.preset.set" -> SnapshotMutationSupport.styleRanges(root, mutation.sheetId(), params);
+                case "format.painter.applied" -> List.of(SnapshotMutationSupport.range(root, params.get("targetRange")));
                 case "merge.set", "merge.remove" -> List.of(ownRange(root, mutation.sheetId(), params));
                 case "row.resize" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), params));
                 case "column.resize" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), params));
@@ -748,7 +753,8 @@ public class MutationDescriptorRegistry {
             ObjectNode params = SnapshotMutationSupport.params(mutation);
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
             switch (id()) {
-                case "style.set" -> style(root, sheet, mutation.sheetId(), params);
+                case "style.set", "style.preset.set" -> style(root, sheet, mutation.sheetId(), params);
+                case "format.painter.applied" -> formatPainter(root, sheet, mutation.sheetId(), params);
                 case "merge.set" -> setMerge(root, sheet, mutation.sheetId(), params);
                 case "merge.remove" -> removeMerge(root, sheet, mutation.sheetId(), params);
                 case "freeze.set" -> freeze(params, sheet);
@@ -781,6 +787,38 @@ public class MutationDescriptorRegistry {
                             cell.set("style", merged);
                         }
                         if (numberFormat != null && numberFormat.isTextual()) cell.set("numberFormat", numberFormat.deepCopy());
+                    }
+                }
+            }
+        }
+
+        private void formatPainter(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            RangeRef target = SnapshotMutationSupport.range(root, params.get("targetRange"));
+            SnapshotMutationSupport.requireSheet(target, sheetId);
+            JsonNode styles = params.get("styles");
+            if (styles == null || !styles.isArray()) throw ServiceException.validation("format.painter.applied requires styles");
+            int height = target.endRow() - target.startRow() + 1;
+            int width = target.endColumn() - target.startColumn() + 1;
+            if (styles.size() != height) throw ServiceException.validation("format painter row count does not match target range");
+            for (int rowOffset = 0; rowOffset < height; rowOffset++) {
+                JsonNode row = styles.get(rowOffset);
+                if (!row.isArray() || row.size() != width) throw ServiceException.validation("format painter column count does not match target range");
+                for (int columnOffset = 0; columnOffset < width; columnOffset++) {
+                    JsonNode styleEntry = row.get(columnOffset);
+                    if (!styleEntry.isObject()) throw ServiceException.validation("format painter style entry must be an object");
+                    ObjectNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(target.startRow() + rowOffset, target.startColumn() + columnOffset), true);
+                    JsonNode style = styleEntry.get("style");
+                    if (style != null && !style.isNull()) {
+                        if (!style.isObject()) throw ServiceException.validation("format painter style must be an object");
+                        validateStyle((ObjectNode) style);
+                        ObjectNode merged = cell.path("style").isObject() ? ((ObjectNode) cell.get("style")).deepCopy() : cell.objectNode();
+                        merged.setAll((ObjectNode) style.deepCopy());
+                        cell.set("style", merged);
+                    }
+                    JsonNode numberFormat = styleEntry.get("numberFormat");
+                    if (numberFormat != null && !numberFormat.isNull()) {
+                        if (!numberFormat.isTextual()) throw ServiceException.validation("format painter numberFormat must be text");
+                        cell.set("numberFormat", numberFormat.deepCopy());
                     }
                 }
             }

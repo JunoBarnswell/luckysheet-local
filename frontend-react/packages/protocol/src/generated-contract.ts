@@ -14,6 +14,7 @@ export interface MutationCapability {
   rebasePolicy: 'none' | 'range' | 'exact';
   javaReducer: boolean;
   replacement?: string;
+  collaborationKind?: 'cell-value' | 'cell-style' | 'clear' | 'insert-rows' | 'delete-rows' | 'insert-columns' | 'delete-columns' | 'move-range' | 'sort' | 'merge' | 'table-resize' | 'drawing' | 'comment' | 'pivot-config' | 'unknown';
 }
 export const MUTATION_CAPABILITIES = {
   "automation.recording.changed": { durability: "transient", remote: false, schema: "AutomationRecordingChanged", minRole: "editor", rebasePolicy: "none", javaReducer: false },
@@ -36,6 +37,11 @@ export const MUTATION_CAPABILITIES = {
   "ganttSheet.update": { durability: "remote", remote: true, schema: "GanttSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "reportSheet.update": { durability: "remote", remote: true, schema: "ReportSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "query.load.workbook-table": { durability: "local", remote: false, schema: "QueryLoadWorkbookTable", minRole: "editor", rebasePolicy: "none", javaReducer: false },
+  "format.painter.applied": { durability: "remote", remote: true, schema: "FormatPainterApplied", minRole: "editor", rebasePolicy: "range", javaReducer: true, collaborationKind: "cell-style" },
+  "style.preset.set": { durability: "remote", remote: true, schema: "CellStylePreset", minRole: "editor", rebasePolicy: "range", javaReducer: true, collaborationKind: "cell-style" },
+  "cf.reorder": { durability: "remote", remote: true, schema: "ConditionalFormatReorder", minRole: "editor", rebasePolicy: "exact", javaReducer: true, collaborationKind: "cell-style" },
+  "drawing.visibility.set": { durability: "remote", remote: true, schema: "DrawingVisibilitySet", minRole: "editor", rebasePolicy: "exact", javaReducer: true, collaborationKind: "drawing" },
+  "drawing.rename": { durability: "remote", remote: true, schema: "DrawingRename", minRole: "editor", rebasePolicy: "exact", javaReducer: true, collaborationKind: "drawing" },
 } as const satisfies Record<string, MutationCapability>;
 export function mutationCapability(id: string): MutationCapability | undefined {
   return MUTATION_CAPABILITIES[id as keyof typeof MUTATION_CAPABILITIES];

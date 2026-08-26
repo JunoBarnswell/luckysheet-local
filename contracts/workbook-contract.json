@@ -37,6 +37,11 @@
     "tableSheet.update": { "durability": "remote", "remote": true, "schema": "TableSheetDefinitionUpdate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "ganttSheet.update": { "durability": "remote", "remote": true, "schema": "GanttSheetDefinitionUpdate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "reportSheet.update": { "durability": "remote", "remote": true, "schema": "ReportSheetDefinitionUpdate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
-    "query.load.workbook-table": { "durability": "local", "remote": false, "schema": "QueryLoadWorkbookTable", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false }
+    "query.load.workbook-table": { "durability": "local", "remote": false, "schema": "QueryLoadWorkbookTable", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false },
+    "format.painter.applied": { "durability": "remote", "remote": true, "schema": "FormatPainterApplied", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true, "collaborationKind": "cell-style" },
+    "style.preset.set": { "durability": "remote", "remote": true, "schema": "CellStylePreset", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true, "collaborationKind": "cell-style" },
+    "cf.reorder": { "durability": "remote", "remote": true, "schema": "ConditionalFormatReorder", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "cell-style" },
+    "drawing.visibility.set": { "durability": "remote", "remote": true, "schema": "DrawingVisibilitySet", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" },
+    "drawing.rename": { "durability": "remote", "remote": true, "schema": "DrawingRename", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" }
   }
 }

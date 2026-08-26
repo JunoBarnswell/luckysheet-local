@@ -16,7 +16,8 @@ import java.util.Set;
 final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
             "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch",
-            "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore"
+            "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
+            "drawing.visibility.set", "drawing.rename"
     );
 
     DrawingMutationDescriptor(String id) {
@@ -45,6 +46,8 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
             case "drawing.payload.update" -> payload(root, sheet, params);
             case "drawing.zorder" -> zOrder(sheet, params);
             case "drawing.zorder.restore" -> restoreZOrder(sheet, params);
+            case "drawing.visibility.set" -> visibility(sheet, params);
+            case "drawing.rename" -> rename(sheet, params);
             default -> throw ServiceException.validation("Unsupported drawing mutation: " + id());
         }
         return root;
@@ -160,6 +163,19 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
             if (zIndex == null || !zIndex.isNumber() || !Double.isFinite(zIndex.asDouble())) throw ServiceException.validation("Drawing zIndex is invalid");
             drawing(sheet, SnapshotMutationSupport.text(entry, "drawingId")).set("zIndex", zIndex.deepCopy());
         }
+    }
+
+    private void visibility(ObjectNode sheet, ObjectNode params) {
+        ObjectNode drawing = drawing(sheet, SnapshotMutationSupport.text(params, "drawingId"));
+        JsonNode visible = params.get("visible");
+        if (visible == null || !visible.isBoolean()) throw ServiceException.validation("drawing.visibility.set requires visible");
+        drawing.set("visible", visible.deepCopy());
+    }
+
+    private void rename(ObjectNode sheet, ObjectNode params) {
+        ObjectNode drawing = drawing(sheet, SnapshotMutationSupport.text(params, "drawingId"));
+        String name = SnapshotMutationSupport.text(params, "name");
+        if (name.trim().isEmpty()) drawing.remove("name"); else drawing.put("name", name);
     }
 
     private ObjectNode drawing(ObjectNode sheet, String id) {

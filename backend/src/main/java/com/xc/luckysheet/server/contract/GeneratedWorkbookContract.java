@@ -31,7 +31,12 @@ public final class GeneratedWorkbookContract {
         Map.entry("tableSheet.update", new MutationCapability("remote", true, "TableSheetDefinitionUpdate", "editor", "exact", true)),
         Map.entry("ganttSheet.update", new MutationCapability("remote", true, "GanttSheetDefinitionUpdate", "editor", "exact", true)),
         Map.entry("reportSheet.update", new MutationCapability("remote", true, "ReportSheetDefinitionUpdate", "editor", "exact", true)),
-        Map.entry("query.load.workbook-table", new MutationCapability("local", false, "QueryLoadWorkbookTable", "editor", "none", false))
+        Map.entry("query.load.workbook-table", new MutationCapability("local", false, "QueryLoadWorkbookTable", "editor", "none", false)),
+        Map.entry("format.painter.applied", new MutationCapability("remote", true, "FormatPainterApplied", "editor", "range", true)),
+        Map.entry("style.preset.set", new MutationCapability("remote", true, "CellStylePreset", "editor", "range", true)),
+        Map.entry("cf.reorder", new MutationCapability("remote", true, "ConditionalFormatReorder", "editor", "exact", true)),
+        Map.entry("drawing.visibility.set", new MutationCapability("remote", true, "DrawingVisibilitySet", "editor", "exact", true)),
+        Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true))
     );
 
     private GeneratedWorkbookContract() {}
