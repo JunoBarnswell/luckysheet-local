@@ -243,8 +243,8 @@ function applyAxis(
   shiftDataRegionAxis(workbook, sheet, axis, at, count, direction);
 
   shiftMerges(sheet, axis, at, count, direction);
-  shiftRuleRanges(sheet.conditionalFormats, axis, at, count, direction);
-  shiftRuleRanges(sheet.dataValidations, axis, at, count, direction);
+  shiftRuleRanges(sheet.conditionalFormats, axis, at, count, direction, sheet.id);
+  shiftRuleRanges(sheet.dataValidations, axis, at, count, direction, sheet.id);
   shiftFilter(sheet, axis, at, count, direction);
   shiftFreeze(sheet, axis, at, count, direction);
   shiftHiddenAndSizes(sheet, axis, at, count, direction);
@@ -393,6 +393,13 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
   }
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
     rule.ranges = rule.ranges.filter(shiftRange);
+    if (rule.formulaAnchor && rule.formulaAnchor.sheetId === sheet.id) {
+      if (insideCell(plan.band, rule.formulaAnchor.row, rule.formulaAnchor.column)) {
+        const nextRow = mapCellShiftCoordinate(plan, rule.formulaAnchor.row, rule.formulaAnchor.column);
+        if (!nextRow) throw new Error(`Rule ${rule.id} formula anchor is removed by cell shift`);
+        rule.formulaAnchor = { ...rule.formulaAnchor, row: nextRow.row, column: nextRow.column };
+      }
+    }
   }
   if (sheet.autoFilter) shiftRange(sheet.autoFilter.range);
   for (const table of sheet.sheetTables) {
@@ -586,8 +593,15 @@ function shiftMerges(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
   }
 }
 
-function shiftRuleRanges(rules: Array<{ ranges: RangeRef[] }>, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+function shiftRuleRanges(rules: Array<{ id: string; ranges: RangeRef[]; formulaAnchor?: { sheetId: string; row: number; column: number } }>, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1, sheetId: string): void {
   for (const rule of rules) {
+    if (rule.formulaAnchor?.sheetId === sheetId) {
+      const shifted = shiftIndex(axis === 'row' ? rule.formulaAnchor.row : rule.formulaAnchor.column, at, count, direction);
+      if (shifted === null) throw new Error(`Rule ${rule.id} formula anchor is removed by structural mutation`);
+      rule.formulaAnchor = axis === 'row'
+        ? { ...rule.formulaAnchor, row: shifted }
+        : { ...rule.formulaAnchor, column: shifted };
+    }
     rule.ranges = rule.ranges.filter((range) => shiftRangeRef(range, axis, at, count, direction));
   }
 }

@@ -488,6 +488,8 @@ export interface ConditionalFormatRule {
   id: string;
   sheetId: SheetId;
   ranges: RangeRef[];
+  /** Canonical origin used to project relative rule references. */
+  formulaAnchor?: CellAddress;
   type: ConditionalFormatType;
   /** Lower values are evaluated first. Excel defaults to the insertion order. */
   priority?: number;
@@ -513,6 +515,8 @@ export interface DataValidationRule {
   id: string;
   sheetId: SheetId;
   ranges: RangeRef[];
+  /** Canonical origin used to project relative custom/list formulas. */
+  formulaAnchor?: CellAddress;
   type: DataValidationType;
   operator?: DataValidationOperator;
   formula1?: string;

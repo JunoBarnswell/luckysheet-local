@@ -24,6 +24,7 @@ import {
   isArrayValue,
   isFormulaError,
   mapAstReferences,
+  offsetAst,
   parseFormula,
   type ParsedCellReference,
   type FormulaError,
@@ -251,6 +252,7 @@ export function normalizeConditionalFormatRule(
   if (ranges.length === 0) throw new Error(`Conditional format ${rule.id} requires at least one range`);
   if (!rule.id.trim()) throw new Error('Conditional format id is required');
   if (ranges.some((range) => range.sheetId !== rule.sheetId)) throw new Error('Conditional format ranges must target the rule sheet');
+  if (rule.formulaAnchor && (rule.formulaAnchor.sheetId !== rule.sheetId || !Number.isSafeInteger(rule.formulaAnchor.row) || rule.formulaAnchor.row < 0 || !Number.isSafeInteger(rule.formulaAnchor.column) || rule.formulaAnchor.column < 0)) throw new Error(`Conditional format ${rule.id} has an invalid formula anchor`);
   if (rule.priority !== undefined && (!Number.isInteger(rule.priority) || rule.priority <= 0)) throw new Error('Conditional format priority must be a positive integer');
   if (rule.stopIfTrue !== undefined && typeof rule.stopIfTrue !== 'boolean') throw new Error('Conditional format stopIfTrue must be boolean');
   if (rule.operator === 'formula') {
@@ -277,6 +279,7 @@ export function normalizeConditionalFormatRule(
   return {
     ...structuredClone(rule),
     ranges,
+    formulaAnchor: rule.formulaAnchor ? structuredClone(rule.formulaAnchor) : { sheetId: ranges[0]!.sheetId, row: ranges[0]!.startRow, column: ranges[0]!.startColumn },
     priority: Number.isFinite(rule.priority) && (rule.priority ?? 0) > 0 ? rule.priority : fallbackPriority,
     stopIfTrue: rule.stopIfTrue ?? false,
   };
@@ -285,6 +288,7 @@ export function normalizeConditionalFormatRule(
 export function normalizeDataValidationRule(rule: DataValidationRule): DataValidationRule {
   if (!rule.id.trim()) throw new Error('Data validation id is required');
   if (rule.ranges.length === 0) throw new Error(`Data validation ${rule.id} requires at least one range`);
+  if (rule.formulaAnchor && (rule.formulaAnchor.sheetId !== rule.sheetId || !Number.isSafeInteger(rule.formulaAnchor.row) || rule.formulaAnchor.row < 0 || !Number.isSafeInteger(rule.formulaAnchor.column) || rule.formulaAnchor.column < 0)) throw new Error(`Data validation ${rule.id} has an invalid formula anchor`);
   if (rule.type === 'list' && !rule.formula1 && !rule.listSource) {
     throw new Error(`List validation ${rule.id} requires a list source`);
   }
@@ -308,6 +312,7 @@ export function normalizeDataValidationRule(rule: DataValidationRule): DataValid
   return {
     ...structuredClone(rule),
     ranges: rule.ranges.map(normalizeRangeRef),
+    formulaAnchor: rule.formulaAnchor ? structuredClone(rule.formulaAnchor) : { sheetId: rule.ranges[0]!.sheetId, row: rule.ranges[0]!.startRow, column: rule.ranges[0]!.startColumn },
     alertStyle: rule.alertStyle ?? 'stop',
     showErrorMessage: rule.showErrorMessage ?? true,
     showInputMessage: rule.showInputMessage ?? false,
@@ -589,16 +594,17 @@ function evaluateHighlight(
     case "notContainsText": return typeof firstValue === "string" && !text.toLowerCase().includes(String(firstValue).toLowerCase());
     case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
     case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
-    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell);
+    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     default: return false;
   }
 }
 
-function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined): boolean {
+function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }): boolean {
   const source = formula.trim();
   if (!source) return false;
   try {
-    const ast = parseFormula(source.startsWith('=') ? source : `=${source}`);
+    const parsed = parseFormula(source.startsWith('=') ? source : `=${source}`);
+    const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     const result = evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
       readCell: (address): FormulaValue => {
@@ -1240,7 +1246,7 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel)
   const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
   if (!formula) return undefined;
   if (sheet && formula.trim().startsWith('=')) {
-    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined);
+    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     if (isArrayValue(evaluated)) {
       return evaluated.flat().filter((value): value is string | number | boolean =>
         value !== null && !isFormulaError(value)).map(String);
@@ -1272,9 +1278,11 @@ function evaluateValidationFormula(
   row: number,
   column: number,
   candidate: CellData['value'] | undefined,
+  anchor?: { sheetId: string; row: number; column: number },
 ): FormulaValue {
   try {
-    const ast = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
+    const parsed = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
+    const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     return evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
       readCell: (address): FormulaValue => {
@@ -1387,7 +1395,7 @@ export function validateDataInput(
   }
   if (rule.type === "custom") {
     if (!rule.formula1) return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") };
-    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value);
+    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     const ok = evaluated === true || (typeof evaluated === 'number' && evaluated !== 0) || (typeof evaluated === 'string' && evaluated.length > 0);
     return judge(ok, rule);
   }
