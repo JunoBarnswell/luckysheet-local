@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
  * exist before a mutation can be committed.
  */
 final class PivotSourceResolver {
+    private static final int MAX_SOURCE_FIELDS = 10_000;
     private static final Pattern CELL = Pattern.compile("\\$?([A-Za-z]{1,3})\\$?([0-9]+)");
 
     private PivotSourceResolver() {
@@ -56,8 +57,8 @@ final class PivotSourceResolver {
     private static Resolution resolveWorksheetRanges(ObjectNode root, ObjectNode source) {
         ArrayNode ranges = SnapshotMutationSupport.requiredArray(source, "ranges");
         List<RangeRef> resolved = new ArrayList<>();
-        List<String> fieldIds = new ArrayList<>();
         Set<String> sourceIds = new HashSet<>();
+        long fieldCount = 0;
         for (JsonNode raw : ranges) {
             if (!raw.isObject()) throw ServiceException.validation("Pivot source range must be an object");
             ObjectNode entry = (ObjectNode) raw;
@@ -65,11 +66,21 @@ final class PivotSourceResolver {
             if (!sourceIds.add(sourceId)) throw ServiceException.validation("Pivot sourceId is duplicated: " + sourceId);
             RangeRef range = SnapshotMutationSupport.range(root, entry.get("range"));
             resolved.add(range);
+            fieldCount = Math.addExact(fieldCount, (long) range.endColumn() - range.startColumn() + 1L);
+            if (fieldCount > MAX_SOURCE_FIELDS) {
+                throw ServiceException.validation("Pivot worksheet range sources exceed the field limit");
+            }
+        }
+        if (resolved.isEmpty()) throw ServiceException.validation("Pivot source ranges are empty");
+
+        List<String> fieldIds = new ArrayList<>((int) fieldCount);
+        for (int rangeIndex = 0; rangeIndex < resolved.size(); rangeIndex++) {
+            RangeRef range = resolved.get(rangeIndex);
+            String sourceId = SnapshotMutationSupport.text((ObjectNode) ranges.get(rangeIndex), "sourceId");
             for (int ordinal = 0; ordinal <= range.endColumn() - range.startColumn(); ordinal++) {
                 fieldIds.add("source:" + sourceId + ":column:" + ordinal);
             }
         }
-        if (resolved.isEmpty()) throw ServiceException.validation("Pivot source ranges are empty");
         return new Resolution(resolved, fieldIds);
     }
 

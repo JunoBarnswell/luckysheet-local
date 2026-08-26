@@ -671,6 +671,31 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void pivotWorksheetRangeSourcesEnforceAggregateFieldLimitBeforeMaterialization() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":2,"columnCount":10001,"cells":{}}]}
+                """);
+        ObjectNode accepted = (ObjectNode) mapper.readTree("""
+                {"kind":"worksheet-ranges","ranges":[
+                  {"sourceId":"left","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":4999}},
+                  {"sourceId":"right","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":5000,"endColumn":9999}}
+                ]}
+                """);
+
+        PivotSourceResolver.Resolution resolution = PivotSourceResolver.resolve(snapshot, accepted);
+
+        assertEquals(10_000, resolution.fieldIds().size());
+        assertEquals("source:right:column:4999", resolution.fieldIds().get(9_999));
+
+        ObjectNode oversized = accepted.deepCopy();
+        ((ObjectNode) oversized.path("ranges").get(1).path("range")).put("endColumn", 10_000);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> PivotSourceResolver.resolve(snapshot, oversized));
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("Pivot worksheet range sources exceed the field limit", error.getMessage());
+    }
+
+    @Test
     void pivotSourceSwitchRejectsStaleFieldCatalogBeforeApplying() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
