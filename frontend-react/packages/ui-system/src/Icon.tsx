@@ -40,6 +40,7 @@ export type IconName =
   | 'comment'
   | 'columns'
   | 'copy'
+  | 'database'
   | 'dollar-sign'
   | 'decimal-decrease'
   | 'decimal-increase'
@@ -55,11 +56,16 @@ export type IconName =
   | 'file-text'
   | 'form-control'
   | 'filter'
+  | 'filter-clear'
+  | 'flip-horizontal'
+  | 'flip-vertical'
   | 'freeze'
   | 'function'
   | 'folder'
   | 'folder-open'
   | 'grid'
+  | 'group'
+  | 'group-columns'
   | 'help'
   | 'home'
   | 'history'
@@ -71,6 +77,7 @@ export type IconName =
   | 'layout'
   | 'link'
   | 'loader'
+  | 'locate'
   | 'lock'
   | 'maximize'
   | 'menu'
@@ -87,6 +94,7 @@ export type IconName =
   | 'printer'
   | 'redo'
   | 'refresh'
+  | 'remove-duplicates'
   | 'rows'
   | 'save'
   | 'scissors'
@@ -96,12 +104,15 @@ export type IconName =
   | 'shape-square'
   | 'share'
   | 'sliders'
+  | 'sigma'
   | 'sort'
+  | 'split-columns'
   | 'star'
   | 'sparkles'
   | 'sparkline'
   | 'strikethrough'
   | 'table'
+  | 'table-plus'
   | 'table-sheet'
   | 'gantt-sheet'
   | 'report-sheet'
@@ -109,8 +120,12 @@ export type IconName =
   | 'trash'
   | 'type'
   | 'textbox'
+  | 'text-to-columns'
+  | 'transpose'
+  | 'ungroup'
   | 'underline'
   | 'undo'
+  | 'ungroup-columns'
   | 'upload'
   | 'users'
   | 'wrap-text'
@@ -212,6 +227,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="5" y="5" width="5" height="14" rx="1" /><rect x="14" y="5" width="5" height="14" rx="1" /></>;
     case 'copy':
       return <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>;
+    case 'database':
+      return <><ellipse cx="12" cy="5" rx="7" ry="3" /><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7" /></>;
     case 'dollar-sign':
       return <><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></>;
     case 'decimal-decrease':
@@ -232,6 +249,10 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="4" y="5" width="11" height="14" rx="1" /><path d="M8 12h10M14 8l4 4-4 4" /></>;
     case 'fill-left':
       return <><rect x="9" y="5" width="11" height="14" rx="1" /><path d="M16 12H6M10 8l-4 4 4 4" /></>;
+    case 'flip-horizontal':
+      return <><path d="M12 4v16M5 8l-3 4 3 4M19 8l3 4-3 4" /><path d="M5 12h5M19 12h-5" /></>;
+    case 'flip-vertical':
+      return <><path d="M4 12h16M8 5l4-3 4 3M8 19l4 3 4-3" /><path d="M12 5v5M12 19v-5" /></>;
     case 'file-plus':
       return <><path d="M7 3.5h6l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" /><path d="M13 3.5v4h4" /><path d="M12 11v5M9.5 13.5h5" /></>;
     case 'file-spreadsheet':
@@ -240,6 +261,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" /></>;
     case 'filter':
       return <><path d="M4 6h16" /><path d="M7 12h10" /><path d="M10 18h4" /></>;
+    case 'filter-clear':
+      return <><path d="M4 6h16M7 12h6M10 18h1" /><path d="m16 15 5 5M21 15l-5 5" /></>;
     case 'freeze':
       return <><rect x="5" y="5" width="14" height="14" rx="1" /><path d="M5 10h14M10 5v14" /><path d="m16 8 2-2" /></>;
     case 'form-control':
@@ -252,6 +275,10 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M3.5 8.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 1.9 2.6l-1.6 5.4a2 2 0 0 1-1.9 1.4H5a2 2 0 0 1-1.9-1.4L1.9 11a2 2 0 0 1 1.6-2.5Z" /><path d="M3 11h16" /></>;
     case 'grid':
       return <><rect x="4.5" y="4.5" width="15" height="15" rx="2" /><path d="M4.5 10h15M4.5 15h15M10 4.5v15M15 4.5v15" /></>;
+    case 'group':
+      return <><rect x="5" y="5" width="12" height="4" rx="1" /><rect x="5" y="15" width="12" height="4" rx="1" /><path d="M20 10v5M17.5 12.5h5" /></>;
+    case 'group-columns':
+      return <><rect x="5" y="5" width="4" height="12" rx="1" /><rect x="15" y="5" width="4" height="12" rx="1" /><path d="M10 20h5M12.5 17.5v5" /></>;
     case 'help':
       return <><circle cx="12" cy="12" r="9" /><path d="M9.6 9a2.5 2.5 0 1 1 4.1 1.94c-.9.7-1.7 1.14-1.7 2.56" /><path d="M12 16.5h.01" /></>;
     case 'home':
@@ -274,6 +301,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="m9 15-2 2a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0" /><path d="m15 9 2-2a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0" /><path d="m8 12 8 0" /></>;
     case 'loader':
       return <path d="M12 4a8 8 0 1 0 8 8" />;
+    case 'locate':
+      return <><circle cx="12" cy="12" r="5" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" /></>;
     case 'lock':
       return <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /><path d="M12 14v2" /></>;
     case 'maximize':
@@ -306,6 +335,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M17 7h4v4" /><path d="M21 7 14 14a5 5 0 0 1-7 0l-2-2" /></>;
     case 'refresh':
       return <><path d="M19 8a7 7 0 1 0 1 6" /><path d="M19 4v4h-4" /></>;
+    case 'remove-duplicates':
+      return <><rect x="4" y="5" width="16" height="14" rx="1" /><path d="M4 10h16M10 5v14M15 5v5" /><path d="m14 14 5 5M19 14l-5 5" /></>;
     case 'rows':
       return <><rect x="5" y="5" width="14" height="5" rx="1" /><rect x="5" y="14" width="14" height="5" rx="1" /></>;
     case 'save':
@@ -324,8 +355,12 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5" /></>;
     case 'sliders':
       return <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="17" r="2" /></>;
+    case 'sigma':
+      return <path d="M18 5H7l6 7-6 7h11" />;
     case 'sort':
       return <><path d="M8 5v14" /><path d="m5 8 3-3 3 3" /><path d="M16 19V5" /><path d="m13 16 3 3 3-3" /></>;
+    case 'split-columns':
+      return <><rect x="4" y="5" width="16" height="14" rx="1" /><path d="M12 5v14M8 9l-2 3 2 3M16 9l2 3-2 3" /></>;
     case 'star':
       return <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z" />;
     case 'sparkles':
@@ -336,6 +371,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M16 4H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H8M4 12h16" /></>;
     case 'table':
       return <><rect x="4" y="5" width="16" height="14" rx="1" /><path d="M4 10h16M4 14h16M10 5v14M15 5v14" /></>;
+    case 'table-plus':
+      return <><rect x="3.5" y="4.5" width="13" height="15" rx="1" /><path d="M3.5 9.5h13M3.5 14h13M8 4.5v15" /><path d="M19 12v7M15.5 15.5h7" /></>;
     case 'table-sheet':
       return <><rect x="3" y="4" width="18" height="16" rx="1" /><path d="M3 9h18M8 4v16M14 4v16" /><path d="M5 6h1M10 6h2M16 6h3" stroke="#3b82f6" /></>;
     case 'gantt-sheet':
@@ -350,6 +387,14 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M4 7V4h16v3M9 20h6M12 4v16" /></>;
     case 'textbox':
       return <><rect x="3" y="5" width="18" height="14" rx="1" /><path d="M7 9V7h10v2M10 17h4M12 7v10" /></>;
+    case 'text-to-columns':
+      return <><rect x="4" y="5" width="16" height="14" rx="1" /><path d="M10 5v14M15 5v14M7 9l-2 3 2 3M17 9l2 3-2 3" /></>;
+    case 'transpose':
+      return <><path d="M5 7h10M5 7l3-3M5 7l3 3M19 17H9M19 17l-3-3M19 17l-3 3" /><path d="M16 5v6M8 13v6" /></>;
+    case 'ungroup':
+      return <><rect x="5" y="5" width="12" height="4" rx="1" /><rect x="5" y="15" width="12" height="4" rx="1" /><path d="M17.5 12.5h5" /></>;
+    case 'ungroup-columns':
+      return <><rect x="5" y="5" width="4" height="12" rx="1" /><rect x="15" y="5" width="4" height="12" rx="1" /><path d="M12.5 17.5v5" /></>;
     case 'underline':
       return <><path d="M7 5v5a5 5 0 0 0 10 0V5" /><path d="M5 19h14" /></>;
     case 'undo':

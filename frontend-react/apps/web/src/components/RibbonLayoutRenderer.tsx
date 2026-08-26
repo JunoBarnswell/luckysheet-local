@@ -32,6 +32,7 @@ export interface RibbonLayoutRendererProps {
 
 interface NodeRenderContext {
   inMenu: boolean;
+  tab: RibbonLayoutSpec['tab'];
 }
 
 /**
@@ -48,6 +49,13 @@ const RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
   styles: 'w-[216px]',
   cells: 'w-[216px]',
   editing: 'w-[216px]',
+  pageSetup: 'w-[320px]',
+  scaleToFit: 'w-[128px]',
+  sheetOptions: 'w-[236px]',
+  calculation: 'w-[208px]',
+  functionLibrary: 'w-[240px]',
+  formulaAudit: 'w-[292px]',
+  definedNames: 'w-[144px]',
   insertSheets: 'w-[220px]',
   insertTables: 'w-[220px]',
   insertCharts: 'w-[220px]',
@@ -56,10 +64,10 @@ const RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
   insertLinks: 'w-[104px]',
   insertControls: 'w-[152px]',
   sortFilter: 'w-[240px]',
-  dataTools: 'w-[232px]',
-  findTransform: 'w-[256px]',
-  outline: 'w-[224px]',
-  whatIf: 'w-[128px]',
+  dataTools: 'w-[320px]',
+  findTransform: 'w-[320px]',
+  outline: 'w-[320px]',
+  whatIf: 'w-[176px]',
 };
 
 export function ribbonGroupWidthClass(groupId: RibbonGroupId): string {
@@ -71,12 +79,13 @@ function iconFor(node: { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) {
 }
 
 function commandOptions(node: Extract<RibbonLayoutNode, { kind: 'command' }>, context: NodeRenderContext): HomeRibbonCommandOptions {
+  const compactClass = context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0';
   return {
     iconOverride: node.icon ? iconFor(node as { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) : undefined,
     iconOnly: false,
     ribbonLayoutNodeId: node.id,
     tile: node.size === 'large' && !context.inMenu,
-    className: context.inMenu ? 'w-full justify-start rounded-none' : undefined,
+    className: context.inMenu ? 'w-full justify-start rounded-none' : node.size === 'small' ? compactClass : undefined,
   };
 }
 
@@ -98,10 +107,10 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'split':
       return (
         <Inline key={node.id} gap="none" className={context.inMenu ? 'w-full flex-nowrap' : 'flex-nowrap'}>
-          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), ribbonLayoutNodeId: node.id, tile: !context.inMenu, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : undefined })}
+          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0' })}
           <DropdownMenu
             align="left"
-            trigger={<Button aria-label="More options" data-ribbon-layout-node={`${node.id}.menu`} icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-8 !w-5 rounded-none px-0" />}
+            trigger={<Button aria-label="More options" data-ribbon-layout-node={`${node.id}.menu`} icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-7 !w-5 rounded-none px-0" />}
           >
             <Stack gap="none" className="min-w-[12rem] p-1">
               {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), ribbonLayoutNodeId: `${node.id}.item.${item.commandId}`, className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
@@ -114,7 +123,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
         <DropdownMenu
           key={node.id}
           align="left"
-          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), ribbonLayoutNodeId: node.id, tile: !context.inMenu, className: context.inMenu ? 'w-full justify-start rounded-none' : undefined })}
+          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'w-full justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0' })}
         >
           <Stack gap="none" className="min-w-[12rem] p-1">
             {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), ribbonLayoutNodeId: `${node.id}.item.${item.commandId}`, className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
@@ -139,7 +148,7 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
       {spec.groups.map((group, index) => {
         const collapsed = layout.mode === 'narrow' || (layout.mode === 'compact' && group.collapsePriority >= 50);
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
-        const content = group.children.map((node) => renderLayoutNode(node, { inMenu: collapsed }, props));
+        const content = group.children.map((node) => renderLayoutNode(node, { inMenu: collapsed, tab }, props));
         return (
           <React.Fragment key={group.id}>
             {index > 0 ? <Divider orientation="vertical" className="h-[96px]" /> : null}
