@@ -158,6 +158,7 @@ function CatalogButton({
   variant = 'ghost',
   className,
   testId,
+  ribbonSurfaceId,
   mixed = false,
   iconOverride,
 }: {
@@ -170,6 +171,7 @@ function CatalogButton({
   variant?: 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
   className?: string;
   testId?: string;
+  ribbonSurfaceId?: string;
   iconOverride?: import('@react-sheets/ui-system').IconName;
   mixed?: boolean;
 }) {
@@ -187,6 +189,8 @@ function CatalogButton({
       aria-pressed={definition.active ? active : undefined}
       title={mixedLabel}
       data-testid={testId}
+      data-ribbon-command={id}
+      data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
       disabled={!enabled}
       icon={iconOverride ?? definition.icon}
@@ -415,6 +419,7 @@ export function Ribbon({
       iconOverride={options.iconOverride}
       textBelow={options.tile}
       className={options.className}
+      ribbonSurfaceId={options.ribbonSurfaceId}
       testId={options.testId}
     />
   );

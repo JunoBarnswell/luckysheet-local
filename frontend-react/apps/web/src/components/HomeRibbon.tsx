@@ -30,6 +30,7 @@ export interface HomeRibbonCommandOptions {
   className?: string;
   iconOnly?: boolean;
   iconOverride?: import('@react-sheets/ui-system').IconName;
+  ribbonSurfaceId?: string;
   testId?: string;
   tile?: boolean;
 }
@@ -159,23 +160,23 @@ export function HomeRibbon({
   const menuMembers = (menuId: string): readonly RibbonSurfaceDefinition[] => HOME_GROUPS.flatMap((group) => allSurfaces(group)).filter((surface) => surface.menuId === menuId);
 
   const renderSurface = (surface: RibbonSurfaceDefinition, mode: 'wide' | 'menu'): React.ReactNode => {
-    if (surface.controlId) return renderControl(surface.controlId, mode);
+    if (surface.controlId) return renderControl(surface.controlId, mode, surface.id);
     if (!surface.commandId) return null;
-    if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start' });
+    if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
     const tile = surface.appearance === 'large' || surface.appearance === 'tile';
-    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? undefined : '!h-8 !min-h-0 !rounded-none' });
+    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? undefined : '!h-8 !min-h-0 !rounded-none', ribbonSurfaceId: surface.id });
   };
 
-  const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu'): React.ReactNode => {
+  const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu', surfaceId: string): React.ReactNode => {
     const label = surfaceLabel(locale, controlId);
     const menuTrigger = (icon: React.ComponentProps<typeof Button>['icon']) => mode === 'wide'
-      ? <HomeTile aria-label={label} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
-      : <Button aria-label={label} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
+      ? <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
+      : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
-        return <Button aria-label={label} aria-pressed={formatPainterActive} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-8 !rounded-none' : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
+        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-8 !rounded-none' : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
       case 'font-family':
-        return <Box className={mode === 'wide' ? 'w-[124px] shrink-0' : 'w-full'}><FontFamilyControl
+        return <Box data-ribbon-surface={surfaceId} className={mode === 'wide' ? 'w-[124px] shrink-0' : 'w-full'}><FontFamilyControl
           value={cellStyle.fontFamily}
           fallbackValue="Microsoft YaHei"
           mixed={mixed('fontFamily')}
@@ -189,6 +190,7 @@ export function HomeRibbon({
       case 'font-size':
         return <TextInput
           aria-label={label}
+          data-ribbon-surface={surfaceId}
           className={mode === 'wide' ? '!w-[48px]' : 'w-full'}
           disabled={!canFormat}
           inputMode="decimal"
@@ -236,7 +238,7 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'number-format':
-        return <Select aria-label={label} className="w-full" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
+        return <Select aria-label={label} data-ribbon-surface={surfaceId} className="w-full" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
           {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
           {HOME_NUMBER_FORMAT_OPTIONS.map(({ value, labelKey }) => <option key={value} value={value}>{homeText(locale, labelKey)}</option>)}
         </Select>;
@@ -274,7 +276,7 @@ export function HomeRibbon({
           'unhide-columns': onUnhideColumns,
           'default-column-width': onOpenDefaultColumnWidth,
         };
-        return <Button aria-label={label} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
+        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
       case 'row-height':
       case 'auto-fit-row-height':
@@ -286,7 +288,7 @@ export function HomeRibbon({
           'hide-rows': onHideRows,
           'unhide-rows': onUnhideRows,
         };
-        return <Button aria-label={label} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
+        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
       case 'merge-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('columns')}>

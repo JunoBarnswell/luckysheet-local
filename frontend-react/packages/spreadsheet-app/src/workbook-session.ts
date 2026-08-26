@@ -2788,7 +2788,8 @@ export class WorkbookSession {
         ranges,
         presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, parameters: { symbology }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', labelPosition: symbology === 'qr' || symbology === 'data-matrix' ? 'none' : 'below', quietZone: 2 },
       },
-      createdObjectIds: [],
+    },
+    createdObjectIds: [],
     }, () => {
       this.panels = { ...this.panels, active: 'barcode', open: true };
       this.notify('条形码已应用');

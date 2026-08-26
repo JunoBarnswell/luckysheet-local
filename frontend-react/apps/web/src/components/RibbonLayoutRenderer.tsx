@@ -112,12 +112,12 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
             {collapsed ? (
               <DropdownMenu
                 align="left"
-                trigger={<Button aria-label={groupLabel} title={groupLabel} icon="chevron-down" size="sm" variant="ghost" className="h-[68px] min-w-[76px] shrink-0 flex-col gap-1 rounded-none px-1 text-[10px] leading-3">{groupLabel}</Button>}
+                trigger={<Button aria-label={groupLabel} data-ribbon-group={group.id} title={groupLabel} icon="chevron-down" size="sm" variant="ghost" className="h-[68px] min-w-[76px] shrink-0 flex-col gap-1 rounded-none px-1 text-[10px] leading-3">{groupLabel}</Button>}
               >
                 <Stack gap="none" className="min-w-[14rem] p-1">{content}</Stack>
               </DropdownMenu>
             ) : (
-              <Stack gap="none" className="h-[102px] min-w-[76px] shrink-0 justify-between px-1">
+              <Stack data-ribbon-group={group.id} gap="none" className="h-[102px] min-w-[76px] shrink-0 justify-between px-1">
                 <Inline gap="none" className="min-h-0 flex-1 flex-nowrap items-start pt-2">{content}</Inline>
                 <Text size="xs" tone="subtle" className="h-4 text-center text-[10px] font-medium text-[#5b555a]">{groupLabel}</Text>
               </Stack>
