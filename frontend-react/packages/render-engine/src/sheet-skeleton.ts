@@ -69,6 +69,10 @@ export class SheetSkeleton {
   private readonly columnWidthOverrides: Map<number, number>;
   private hiddenRowSet: Set<number>;
   private hiddenColumnSet: Set<number>;
+  private rowAdjustmentRows: number[] = [];
+  private rowAdjustmentPrefix: number[] = [0];
+  private columnAdjustmentRows: number[] = [];
+  private columnAdjustmentPrefix: number[] = [0];
 
   /** 可见模型行号 → 累计顶部 y */
   private visibleRowTops: number[] = [0];
@@ -84,8 +88,8 @@ export class SheetSkeleton {
     this.defaultRowHeight = normalizeSize(options.defaultRowHeight ?? 24, 24);
     this.defaultColumnWidth = normalizeSize(options.defaultColumnWidth ?? 100, 100);
     this.zoom = options.zoom && options.zoom > 0 ? options.zoom : 1;
-    this.hiddenRowSet = new Set(options.hiddenRows ?? []);
-    this.hiddenColumnSet = new Set(options.hiddenColumns ?? []);
+    this.hiddenRowSet = new Set([...options.hiddenRows ?? []].filter((row) => Number.isSafeInteger(row) && row >= 0 && row < this.rowCount));
+    this.hiddenColumnSet = new Set([...options.hiddenColumns ?? []].filter((column) => Number.isSafeInteger(column) && column >= 0 && column < this.columnCount));
     this.virtualRows = this.rowCount > VIRTUAL_GEOMETRY_THRESHOLD;
     this.virtualColumns = this.columnCount > VIRTUAL_GEOMETRY_THRESHOLD;
     this.rowHeightOverrides = readOverrides(options.rowHeights);
@@ -93,6 +97,8 @@ export class SheetSkeleton {
 
     this.rowHeightsByModel = this.virtualRows ? [] : Array.from({ length: this.rowCount }, (_, row) => this.getVirtualRowHeight(row));
     this.columnWidthsByModel = this.virtualColumns ? [] : Array.from({ length: this.columnCount }, (_, column) => this.getVirtualColumnWidth(column));
+
+    this.rebuildVirtualGeometryIndexes();
 
     this.rebuildVisibleMappings();
   }
@@ -156,12 +162,7 @@ export class SheetSkeleton {
       return total;
     }
     let total = (endRow - startRow + 1) * this.defaultRowHeight * this.zoom;
-    for (const [row, height] of this.rowHeightOverrides) {
-      if (row >= startRow && row <= endRow) total += (height * this.zoom) - (this.defaultRowHeight * this.zoom);
-    }
-    for (const row of this.hiddenRowSet) {
-      if (row >= startRow && row <= endRow) total -= this.getVirtualRowHeight(row);
-    }
+    total += this.adjustmentBetween(startRow, endRow, this.rowAdjustmentRows, this.rowAdjustmentPrefix);
     return Math.max(0, total);
   }
 
@@ -173,12 +174,7 @@ export class SheetSkeleton {
       return total;
     }
     let total = (endColumn - startColumn + 1) * this.defaultColumnWidth * this.zoom;
-    for (const [column, width] of this.columnWidthOverrides) {
-      if (column >= startColumn && column <= endColumn) total += (width * this.zoom) - (this.defaultColumnWidth * this.zoom);
-    }
-    for (const column of this.hiddenColumnSet) {
-      if (column >= startColumn && column <= endColumn) total -= this.getVirtualColumnWidth(column);
-    }
+    total += this.adjustmentBetween(startColumn, endColumn, this.columnAdjustmentRows, this.columnAdjustmentPrefix);
     return Math.max(0, total);
   }
 
@@ -188,6 +184,64 @@ export class SheetSkeleton {
 
   private virtualColumnLeft(column: number): number {
     return this.visibleColumnExtent(0, column - 1);
+  }
+
+  private rebuildVirtualGeometryIndexes(): void {
+    const rowAdjustments = new Map<number, number>();
+    for (const [row, height] of this.rowHeightOverrides) {
+      if (row < 0 || row >= this.rowCount || this.hiddenRowSet.has(row)) continue;
+      rowAdjustments.set(row, (height - this.defaultRowHeight) * this.zoom);
+    }
+    for (const row of this.hiddenRowSet) {
+      rowAdjustments.set(row, -(this.rowHeightOverrides.get(row) ?? this.defaultRowHeight) * this.zoom);
+    }
+    [this.rowAdjustmentRows, this.rowAdjustmentPrefix] = this.buildAdjustmentPrefix(rowAdjustments);
+
+    const columnAdjustments = new Map<number, number>();
+    for (const [column, width] of this.columnWidthOverrides) {
+      if (column < 0 || column >= this.columnCount || this.hiddenColumnSet.has(column)) continue;
+      columnAdjustments.set(column, (width - this.defaultColumnWidth) * this.zoom);
+    }
+    for (const column of this.hiddenColumnSet) {
+      columnAdjustments.set(column, -(this.columnWidthOverrides.get(column) ?? this.defaultColumnWidth) * this.zoom);
+    }
+    [this.columnAdjustmentRows, this.columnAdjustmentPrefix] = this.buildAdjustmentPrefix(columnAdjustments);
+  }
+
+  private buildAdjustmentPrefix(adjustments: ReadonlyMap<number, number>): [number[], number[]] {
+    const rows = [...adjustments.keys()].sort((left, right) => left - right);
+    const prefix = [0];
+    for (const row of rows) prefix.push(prefix[prefix.length - 1]! + adjustments.get(row)!);
+    return [rows, prefix];
+  }
+
+  private adjustmentBetween(start: number, end: number, rows: readonly number[], prefix: readonly number[]): number {
+    if (end < start || rows.length === 0) return 0;
+    const first = this.lowerBound(rows, start);
+    const after = this.upperBound(rows, end);
+    return (prefix[after] ?? 0) - (prefix[first] ?? 0);
+  }
+
+  private lowerBound(values: readonly number[], target: number): number {
+    let low = 0;
+    let high = values.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (values[middle]! < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  private upperBound(values: readonly number[], target: number): number {
+    let low = 0;
+    let high = values.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (values[middle]! <= target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
   }
 
   get totalWidth(): number {
@@ -357,6 +411,7 @@ export class SheetSkeleton {
     if (!this.isValidRow(modelRow)) throw new Error("Unknown row: " + modelRow);
     if (this.virtualRows) this.rowHeightOverrides.set(modelRow, heightPx);
     else this.rowHeightsByModel[modelRow] = normalizeSize(heightPx * zoom, 0);
+    this.rebuildVirtualGeometryIndexes();
     this.rebuildVisibleMappings();
   }
 
@@ -364,6 +419,7 @@ export class SheetSkeleton {
     if (!this.isValidColumn(modelColumn)) throw new Error("Unknown column: " + modelColumn);
     if (this.virtualColumns) this.columnWidthOverrides.set(modelColumn, widthPx);
     else this.columnWidthsByModel[modelColumn] = normalizeSize(widthPx * zoom, 0);
+    this.rebuildVirtualGeometryIndexes();
     this.rebuildVisibleMappings();
   }
 
