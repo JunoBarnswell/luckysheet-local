@@ -46,7 +46,7 @@ export type AcceptanceDomain =
   | 'backstage'
   | 'responsive-shell'
   | 'collaboration';
-export type AcceptancePersistence = 'not-applicable' | 'local-reload' | 'server-roundtrip' | 'xlsx-roundtrip';
+export type AcceptancePersistence = 'not-applicable' | 'page-session' | 'server-roundtrip' | 'xlsx-roundtrip';
 export type AcceptanceCollaboration = 'not-applicable' | 'server-snapshot-replay';
 export type AcceptanceTransient = 'not-applicable' | 'must-not-persist';
 
@@ -212,24 +212,24 @@ export const CORE_INTERACTION_CASES: readonly CoreInteractionAcceptanceCase[] = 
   coreInteraction('CORE-003', 'keyboard navigation moves the active cell', 'keyboard', 'e2e/spreadsheet.spec.ts', ['interaction', 'browser'], ['arrow navigation', 'active cell identity']),
   coreInteraction('CORE-004', 'direct typing commits cell editing', 'editing', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['editor commit', 'canonical cell value']),
   coreInteraction('CORE-005', 'clicking another cell commits the old editor before accepting the new value', 'editing', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['old editor commit', 'new target identity']),
-  coreInteraction('CORE-006', 'clipboard copy and paste round-trip', 'clipboard', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['clipboard payload', 'paste result'], 'local-reload'),
+  coreInteraction('CORE-006', 'clipboard copy and paste round-trip', 'clipboard', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['clipboard payload', 'paste result'], 'page-session'),
   coreInteraction('CORE-007', 'formula bar cancel restores the draft', 'editing', 'e2e/spreadsheet.spec.ts', ['interaction', 'browser', 'transient'], ['draft state', 'cancel restores value'], 'not-applicable', 'must-not-persist'),
   coreInteraction('CORE-008', 'undo reverts the last edit', 'history', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'undo-redo', 'browser'], ['one history entry', 'inverse mutation']),
-  coreInteraction('CORE-009', 'adds and activates a new editable worksheet from the sheet tab control', 'worksheet', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['sheet creation', 'active sheet', 'editable value'], 'local-reload'),
+  coreInteraction('CORE-009', 'adds and activates a new editable worksheet from the sheet tab control', 'worksheet', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['sheet creation', 'active sheet', 'editable value'], 'page-session'),
   coreInteraction('CORE-010', 'F2 editing keeps Chinese IME text intact before one committed operation', 'ime', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'undo-redo', 'browser'], ['composition lifecycle', 'single commit']),
   coreInteraction('CORE-011', 'a dragged A2:C9 selection edits and places the editor at active cell C9', 'pointer-selection', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['drag range', 'release cell', 'editor anchor']),
   coreInteraction('CORE-012', 'a dragged selection accepts direct typing at the release cell', 'pointer-selection', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['release target', 'typed value']),
   coreInteraction('CORE-013', 'reverse drag keeps the release cell active for F2 editing', 'pointer-selection', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['reverse selection', 'F2 target']),
   coreInteraction('CORE-014', 'row and column header drags commit the final header target', 'dimension', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser'], ['row header', 'column header', 'final target']),
-  coreInteraction('CORE-015', 'Excel-style column width paths share one multi-column transaction surface', 'dimension', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'undo-redo', 'browser', 'persistence'], ['drag width', 'menu width', 'single transaction'], 'local-reload'),
+  coreInteraction('CORE-015', 'Excel-style column width paths share one multi-column transaction surface', 'dimension', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'undo-redo', 'browser', 'persistence'], ['drag width', 'menu width', 'single transaction'], 'page-session'),
   coreInteraction('CORE-016', 'right click changes the command target before the context menu opens', 'context-menu', 'e2e/spreadsheet.spec.ts', ['interaction', 'contract', 'browser'], ['context target', 'menu identity']),
-  coreInteraction('CORE-017', 'fill handle follows the primary range bottom-right', 'fill', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['fill handle', 'primary range', 'filled values'], 'local-reload'),
-  coreInteraction('CORE-018', 'local formula calculation works in the page memory session without an API request', 'formula', 'e2e/spreadsheet.spec.ts', ['domain', 'mutation', 'browser', 'persistence'], ['formula result', 'session reset after reload', 'no API request'], 'local-reload'),
+  coreInteraction('CORE-017', 'fill handle follows the primary range bottom-right', 'fill', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['fill handle', 'primary range', 'filled values'], 'page-session'),
+  coreInteraction('CORE-018', 'local formula calculation works in the page memory session without an API request', 'formula', 'e2e/spreadsheet.spec.ts', ['domain', 'mutation', 'browser', 'persistence'], ['formula result', 'session reset after reload', 'no API request'], 'page-session'),
   coreInteraction('CORE-019', 'Home ribbon opens shared format, sort, find, and paste dialogs without rendering Add-ins', 'ribbon', 'e2e/spreadsheet.spec.ts', ['contract', 'interaction', 'browser'], ['shared entrypoint', 'dialog identity', 'no Add-ins surface']),
-  coreInteraction('CORE-020', 'Selection Pane selects, renames, and toggles a drawing through host callbacks', 'drawing', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['selection pane', 'host callback', 'drawing state'], 'local-reload'),
+  coreInteraction('CORE-020', 'Selection Pane selects, renames, and toggles a drawing through host callbacks', 'drawing', 'e2e/spreadsheet.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['selection pane', 'host callback', 'drawing state'], 'page-session'),
   coreInteraction('CORE-021', 'Format Painter enters a transient Home state and completes after one target selection', 'transient-ui', 'e2e/spreadsheet.spec.ts', ['contract', 'interaction', 'mutation', 'browser', 'transient'], ['active transient state', 'one target selection', 'style mutation only'], 'not-applicable', 'must-not-persist'),
   coreInteraction('CORE-022', 'renders the file-center shell and never exposes inactive workbook commands', 'workbook-hub', 'e2e/workbook-hub.spec.ts', ['contract', 'interaction', 'browser'], ['file-center shell', 'inactive command absence']),
-  coreInteraction('CORE-023', 'creates a local workbook then preserves its session through Backstage', 'backstage', 'e2e/workbook-hub.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['create workbook', 'Backstage session'], 'local-reload'),
+  coreInteraction('CORE-023', 'creates a local workbook then preserves its session through Backstage', 'backstage', 'e2e/workbook-hub.spec.ts', ['interaction', 'mutation', 'browser', 'persistence'], ['create workbook', 'Backstage session'], 'page-session'),
   coreInteraction('CORE-024', 'does not turn an unknown unauthenticated route into a blank local workbook', 'routing', 'e2e/workbook-hub.spec.ts', ['contract', 'interaction', 'browser'], ['unknown route', 'no blank workbook']),
   coreInteraction('CORE-025', 'keeps the supplied 1672×941 shell geometry', 'responsive-shell', 'e2e/workbook-hub.spec.ts', ['interaction', 'browser', 'visual'], ['fixed shell geometry', 'no overflow']),
   coreInteraction('CORE-026', 'Designer Shell visual contract 1280x720', 'designer-shell', 'e2e/designer-visual.spec.ts', ['contract', 'browser', 'visual'], ['shell geometry', 'Name Box', 'palette state']),
@@ -293,10 +293,10 @@ export const HOME_BEHAVIOR_CASES: readonly AcceptanceCase[] = [
   { id: 'H-CLIPBOARD-PASTE-SPECIAL', title: 'Clipboard and Paste Special preserve the selected semantic mode', layers: ['domain', 'contract', 'browser', 'persistence'], evidence: ['typed sparse payload', 'one paste mutation', 'round-trip'] },
   { id: 'H-FONT-STYLE-TRANSACTION', title: 'Font controls commit through the canonical style mutation', layers: ['domain', 'contract', 'browser'], evidence: ['active/disabled state', 'style snapshot', 'one history entry'] },
   { id: 'H-ALIGNMENT-MERGE-TRANSACTION', title: 'Alignment and Merge use the same selection target', layers: ['domain', 'contract', 'browser'], evidence: ['selection target', 'canonical style/merge result', 'reject invalid range'] },
-  { id: 'H-NUMBER-FORMAT-TRANSACTION', title: 'Number format controls preserve exact custom format semantics', layers: ['domain', 'contract', 'browser', 'persistence'], evidence: ['canonical format value', 'Undo/Redo', 'reload'] },
+  { id: 'H-NUMBER-FORMAT-TRANSACTION', title: 'Number format controls preserve exact custom format semantics', layers: ['domain', 'contract', 'browser', 'persistence'], evidence: ['canonical format value', 'Undo/Redo', 'page-session readback'] },
   { id: 'H-STYLES-GALLERY', title: 'Styles gallery exposes every catalog entry without a second list', layers: ['contract', 'browser', 'visual'], evidence: ['catalog-driven membership', 'semantic command identity', 'menu geometry'] },
   { id: 'H-CELLS-DIMENSIONS', title: 'Cells and Dimensions controls share the selection-aware command path', layers: ['domain', 'contract', 'browser'], evidence: ['row/column extent', 'hide/unhide', 'single mutation'] },
-  { id: 'H-EDITING-AUTOSUM-FILL', title: 'Editing, AutoSum, Fill, Sort, Filter, Clear and Find retain authored semantics', layers: ['domain', 'contract', 'browser', 'persistence'], evidence: ['result snapshot', 'one operation', 'save/reload'] },
+  { id: 'H-EDITING-AUTOSUM-FILL', title: 'Editing, AutoSum, Fill, Sort, Filter, Clear and Find retain authored semantics', layers: ['domain', 'contract', 'browser', 'persistence'], evidence: ['result snapshot', 'one operation', 'same-session checkpoint'] },
 ];
 
 export const INSERT_VARIANT_GROUPS = [
@@ -321,13 +321,13 @@ export const INSERT_VARIANT_CASES = INSERT_VARIANT_GROUPS.flatMap((group) => gro
 export const ELASTIC_GRID_CASES: readonly AcceptanceCase[] = [
   { id: 'G-SCROLL-HIGH-INDEX', title: 'Scroll keeps canonical geometry across high indexes', layers: ['domain', 'browser', 'visual'], evidence: ['virtual geometry', 'no clipped extent', 'no page overflow'] },
   { id: 'G-KEYBOARD-BOUNDARY', title: 'Keyboard navigation resolves high row and column addresses', layers: ['domain', 'browser'], evidence: ['Name Box address', 'active cell identity'] },
-  { id: 'G-NAME-BOX-HIGH-ADDRESS', title: 'Name Box accepts high canonical coordinates', layers: ['contract', 'browser', 'persistence'], evidence: ['exact address', 'resolved cell', 'reload'] },
+  { id: 'G-NAME-BOX-HIGH-ADDRESS', title: 'Name Box accepts high canonical coordinates', layers: ['contract', 'browser', 'persistence'], evidence: ['exact address', 'resolved cell', 'same-session readback'] },
   { id: 'G-DRAG-AUTO-SCROLL', title: 'Pointer drag auto-scroll preserves the release target', layers: ['domain', 'browser'], evidence: ['selection state', 'release cell'] },
   { id: 'G-PASTE-FILL-SPILL-EXTENT', title: 'Paste, Fill and Spill grow the canonical sheet extent', layers: ['domain', 'contract', 'parity', 'persistence'], evidence: ['extent ensure', 'overlay result', 'round-trip'] },
   { id: 'G-STRUCTURAL-SHIFT', title: 'Structural insert and shift transform dependent coordinates', layers: ['domain', 'contract', 'parity', 'persistence'], evidence: ['participant transform', 'history inverse', 'replay'] },
   { id: 'G-HIGH-INDEX-DIMENSIONS', title: 'High-index resize and hide use exact dimension commands', layers: ['domain', 'contract', 'browser'], evidence: ['dimension state', 'visibility projection'] },
   { id: 'G-MILLION-ROW-VIRTUAL-GEOMETRY', title: 'Million-row geometry is virtualized without truncation', layers: ['domain', 'browser', 'visual'], evidence: ['virtual extent', 'bounded render work', 'no hardcoded row cap'] },
-  { id: 'G-COLLABORATION-EXTENT-CONVERGENCE', title: 'Local, reload and collaboration converge on the same extent', layers: ['contract', 'parity', 'persistence'], evidence: ['canonical snapshot', 'remote replay', 'extent equality'] },
+  { id: 'G-COLLABORATION-EXTENT-CONVERGENCE', title: 'Local, page session and collaboration converge on the same extent', layers: ['contract', 'parity', 'persistence'], evidence: ['canonical snapshot', 'remote replay', 'extent equality'] },
   { id: 'G-XLSX-EXTENT-PREFLIGHT', title: 'XLSX extent compatibility is explicit before exchange', layers: ['contract', 'parity', 'persistence'], evidence: ['capability preflight', 'explicit unsupported result'] },
 ];
 
@@ -357,7 +357,7 @@ export const PERMISSION_MATRIX_CASES = PERMISSION_ROLES.flatMap((role) => PROTEC
 }))));
 
 export const PERSISTENCE_CASES: readonly AcceptanceCase[] = [
-  { id: 'G-LOCAL-SAVE-RELOAD', title: 'Local save and reload preserve the canonical workbook snapshot', layers: ['contract', 'browser', 'persistence'], evidence: ['save checkpoint', 'reload', 'semantic value equality'] },
+  { id: 'G-LOCAL-SAVE-RELOAD', title: 'Local save uses one page-session canonical workbook checkpoint', layers: ['contract', 'browser', 'persistence'], evidence: ['save checkpoint', 'same-session readback', 'reset after reload'] },
   { id: 'G-SERVER-COLLABORATION-ROUNDTRIP', title: 'Server collaboration round-trip preserves the committed snapshot', layers: ['contract', 'parity', 'persistence'], evidence: ['server commit', 'second-client replay', 'canonical equality'] },
 ];
 

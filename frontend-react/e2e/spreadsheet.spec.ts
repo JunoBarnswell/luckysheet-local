@@ -364,9 +364,8 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
 
     await page.reload();
-    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
-    await focusCanvas(page);
-    await expect(page.getByTestId('formula-input')).toHaveValue('');
+    await expect(page.getByRole('heading', { name: '内存会话已重置' })).toBeVisible();
+    await expect(page.getByText('本地工作簿只存在于当前页面的内存会话中；刷新或关闭页面后无法恢复。请返回工作簿中心重新创建或导入。')).toBeVisible();
     expect(apiRequests).toEqual([]);
     expect(socketCount).toBe(0);
   });
