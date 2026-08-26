@@ -208,6 +208,7 @@ export class WorkspaceDatabaseCoordinator {
   private readonly openTimeoutMs: number;
   private database: IDBDatabase | null = null;
   private opening: Promise<IDBDatabase> | null = null;
+  private closing: Promise<void> | null = null;
   private cancelOpening: ((error: WorkspaceStorageError) => void) | null = null;
   private stateValue: WorkspaceDatabaseState = 'idle';
   private activeTransactions = 0;
@@ -232,6 +233,7 @@ export class WorkspaceDatabaseCoordinator {
   get state(): WorkspaceDatabaseState { return this.stateValue; }
 
   open(): Promise<IDBDatabase> {
+    if (this.closing) return this.closing.then(() => this.open());
     if (this.database && this.stateValue === 'ready') return Promise.resolve(this.database);
     if (this.opening) return this.opening;
     if (!this.factory) {
@@ -352,8 +354,8 @@ export class WorkspaceDatabaseCoordinator {
     return transaction;
   }
 
-  async close(reason: 'dispose' | 'pagehide' | 'versionchange' | 'upgrade-request' = 'dispose'): Promise<void> {
-    if (this.stateValue === 'closing') return;
+  close(reason: 'dispose' | 'pagehide' | 'versionchange' | 'upgrade-request' = 'dispose'): Promise<void> {
+    if (this.closing) return this.closing;
     this.cancelOpening?.(storageError(
       'STORAGE_UNAVAILABLE',
       this.databaseName,
@@ -363,16 +365,22 @@ export class WorkspaceDatabaseCoordinator {
     ));
     this.cancelOpening = null;
     this.stateValue = 'closing';
-    if (this.activeTransactions > 0) await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
-    this.database?.close();
-    this.database = null;
-    this.opening = null;
-    this.stateValue = 'idle';
-    if (reason === 'upgrade-request') {
-      this.channel?.postMessage({
-        type: 'closed', databaseName: this.databaseName, targetVersion: WORKSPACE_DATABASE_VERSION, instanceId: this.instanceId,
-      } satisfies WorkspaceDatabaseMessage);
-    }
+    const closing = Promise.resolve().then(async () => {
+      if (this.activeTransactions > 0) await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
+      this.database?.close();
+      this.database = null;
+      this.opening = null;
+      this.stateValue = 'idle';
+      if (reason === 'upgrade-request') {
+        this.channel?.postMessage({
+          type: 'closed', databaseName: this.databaseName, targetVersion: WORKSPACE_DATABASE_VERSION, instanceId: this.instanceId,
+        } satisfies WorkspaceDatabaseMessage);
+      }
+    }).finally(() => {
+      if (this.closing === closing) this.closing = null;
+    });
+    this.closing = closing;
+    return closing;
   }
 
   dispose(): void {
@@ -395,6 +403,7 @@ export class WorkspaceDatabaseCoordinator {
 
 type CoordinatorMap = Map<string, WorkspaceDatabaseCoordinator>;
 const coordinatorByFactory = new WeakMap<object, CoordinatorMap>();
+const ownedCoordinators = new Set<WorkspaceDatabaseCoordinator>();
 
 export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptions = {}): WorkspaceDatabaseCoordinator {
   if (options.coordinator) return options.coordinator;
@@ -410,9 +419,16 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
   if (!coordinator) {
     coordinator = new WorkspaceDatabaseCoordinator({ databaseName: name, indexedDB: factory });
     byName.set(name, coordinator);
+    ownedCoordinators.add(coordinator);
   }
   return coordinator;
 }
+
+const hotModule = (import.meta as ImportMeta & { hot?: { dispose(callback: () => void): void } }).hot;
+hotModule?.dispose(() => {
+  for (const coordinator of ownedCoordinators) coordinator.dispose();
+  ownedCoordinators.clear();
+});
 
 export function resolveIndexedDbFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
   return resolveFactory(explicit);

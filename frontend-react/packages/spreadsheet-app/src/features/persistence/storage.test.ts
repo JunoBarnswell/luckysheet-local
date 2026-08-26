@@ -233,6 +233,36 @@ describe('persistence storage', () => {
     const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'version-change-test', indexedDB: factory, broadcast: false });
     assert.equal(await coordinator.open(), database);
     (database as unknown as { onversionchange: (() => void) | null }).onversionchange?.();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     assert.equal(closed, true);
+  });
+
+  it('serializes reopen behind an in-flight lifecycle close', async () => {
+    let openAttempts = 0;
+    const databases = [fakeDatabase(), fakeDatabase()];
+    const factory = {
+      open: () => {
+        const request: FakeOpenRequest = {
+          result: databases[openAttempts]!,
+          onupgradeneeded: null,
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+        };
+        openAttempts += 1;
+        queueMicrotask(() => request.onsuccess?.());
+        return request;
+      },
+    };
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'close-reopen-test', indexedDB: factory, broadcast: false });
+    assert.equal(await coordinator.open(), databases[0]);
+
+    const closing = coordinator.close('dispose');
+    const reopening = coordinator.open();
+    await closing;
+
+    assert.equal(await reopening, databases[1]);
+    assert.equal(coordinator.state, 'ready');
+    assert.equal(openAttempts, 2);
   });
 });

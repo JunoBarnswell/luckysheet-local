@@ -19,7 +19,6 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
   const services = useMemo<ApplicationServices>(() => {
     const persistence = new WorkspacePersistence();
     const ensureStorageReady = () => persistence.coordinator.open();
-    void ensureStorageReady().catch(() => undefined);
     const shareTokenProvider = () => resolveShareToken();
     const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
     const catalog = new WorkbookCatalogService({
@@ -38,7 +37,9 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     });
     return { catalog, persistence, ensureStorageReady, workbookApi, createWorkbookSessionOptions };
   }, [auth]);
-  useEffect(() => () => services.persistence.coordinator.dispose(), [services]);
+  useEffect(() => {
+    void services.ensureStorageReady().catch(() => undefined);
+  }, [services]);
   return <ApplicationServicesContext.Provider value={services}>{children}</ApplicationServicesContext.Provider>;
 }
 
