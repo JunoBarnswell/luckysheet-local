@@ -226,16 +226,36 @@ interface LegacyWorkspaceRecord {
 function isLegacyWorkspaceRecord(value: unknown): value is LegacyWorkspaceRecord {
   if (!value || typeof value !== 'object') return false;
   const record = value as Partial<LegacyWorkspaceRecord>;
+  const snapshot = record.snapshot as { schema?: unknown; unitId?: unknown } | undefined;
+  const pendingOperations = record.pending?.operations;
+  let previousSequence = 0;
+  const validOperations = pendingOperations === undefined || pendingOperations.every((operation) => {
+    if (!operation || typeof operation !== 'object') return false;
+    const candidate = operation as Record<string, unknown>;
+    const sequence = candidate.clientSequence;
+    const valid = candidate.schema === 'OperationEnvelope'
+      && typeof candidate.operationId === 'string'
+      && candidate.operationId.trim().length > 0
+      && candidate.unitId === record.unitId
+      && Number.isSafeInteger(sequence)
+      && Number(sequence) > previousSequence
+      && Number(sequence) <= Number(record.pending?.nextClientSequence);
+    if (valid) previousSequence = Number(sequence);
+    return valid;
+  });
   return typeof record.unitId === 'string'
     && record.unitId.trim().length > 0
-    && Boolean(record.snapshot && typeof record.snapshot === 'object')
+    && snapshot?.schema === 'WorkbookSnapshot'
+    && snapshot.unitId === record.unitId
     && typeof record.checksum === 'string'
+    && /^[a-f0-9]{64}$/i.test(record.checksum)
     && Number.isSafeInteger(record.localRevision)
     && Number(record.localRevision) >= 0
     && Number.isSafeInteger(record.serverRevision)
     && Number(record.serverRevision) >= 0
     && (record.syncMode === 'remote' || record.syncMode === 'local-only')
     && typeof record.updatedAt === 'string'
+    && validOperations
     && (!record.pending || (
       Number.isSafeInteger(record.pending.nextClientSequence)
       && record.pending.nextClientSequence >= 0
@@ -316,6 +336,7 @@ function migrateLegacyWorkspaceRecords(
 
 interface IndexedDbOpenRequest {
   result: IDBDatabase;
+  transaction?: IDBTransaction | null;
   onupgradeneeded: ((event: IDBVersionChangeEvent) => void) | null;
   onsuccess: (() => void) | null;
   onerror: (() => void) | null;
@@ -485,16 +506,28 @@ export class WorkspaceDatabaseCoordinator {
           try { request.result.close(); } catch { /* ignore zombie upgrade handle */ }
           return;
         }
-        ensureWorkspaceStores(request.result);
-        migrateLegacyWorkspaceRecords(request.result, event, (message) => {
+        try {
+          ensureWorkspaceStores(request.result);
+          migrateLegacyWorkspaceRecords(request.result, event, (message) => {
+            upgradeError = storageError(
+              'STORAGE_SCHEMA_INVALID',
+              this.databaseName,
+              'migrate-schema',
+              message,
+              '数据库迁移未完成；请保留浏览器数据并联系管理员执行显式恢复。',
+            );
+          });
+        } catch (error) {
           upgradeError = storageError(
             'STORAGE_SCHEMA_INVALID',
             this.databaseName,
             'migrate-schema',
-            message,
+            '本地工作簿存储迁移失败。',
             '数据库迁移未完成；请保留浏览器数据并联系管理员执行显式恢复。',
+            error,
           );
-        });
+          try { request.transaction?.abort(); } catch { /* transaction already aborted */ }
+        }
       };
       request.onblocked = () => {
         if (!this.isCurrentGeneration(generation)) return;
@@ -571,7 +604,10 @@ export class WorkspaceDatabaseCoordinator {
     const release = (): void => {
       if (released) return;
       released = true;
-      this.activeTransactions -= 1;
+      // A forced drain timeout detaches the transaction from the coordinator.
+      // Its eventual browser completion event must not resurrect the counter
+      // or make a later close wait forever.
+      if (this.activeTransactions > 0) this.activeTransactions -= 1;
       if (this.activeTransactions === 0) {
         const waiters = this.drainWaiters;
         this.drainWaiters = [];
@@ -753,6 +789,11 @@ export class WorkspaceDatabaseCoordinator {
 type CoordinatorMap = Map<string, WorkspaceDatabaseCoordinator>;
 const coordinatorByFactory = new WeakMap<object, CoordinatorMap>();
 const ownedCoordinators = new Set<WorkspaceDatabaseCoordinator>();
+const coordinatorRegistryEntries = new Set<{
+  factory: object;
+  databaseName: string;
+  coordinator: WorkspaceDatabaseCoordinator;
+}>();
 
 export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptions = {}): WorkspaceDatabaseCoordinator {
   if (options.coordinator) return options.coordinator;
@@ -775,6 +816,7 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
     });
     byName.set(name, coordinator);
     ownedCoordinators.add(coordinator);
+    coordinatorRegistryEntries.add({ factory: factory as object, databaseName: name, coordinator });
   }
   return coordinator;
 }
@@ -783,6 +825,12 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
 export async function disposeOwnedWorkspaceCoordinators(): Promise<void> {
   const pending = [...ownedCoordinators];
   ownedCoordinators.clear();
+  for (const entry of [...coordinatorRegistryEntries]) {
+    if (!pending.includes(entry.coordinator)) continue;
+    const byName = coordinatorByFactory.get(entry.factory);
+    if (byName?.get(entry.databaseName) === entry.coordinator) byName.delete(entry.databaseName);
+    coordinatorRegistryEntries.delete(entry);
+  }
   await Promise.all(pending.map((coordinator) => coordinator.disposeAsync()));
 }
 

@@ -24,7 +24,9 @@ import {
   WORKSPACE_CATALOG_STORE_NAME,
   WorkspaceDatabaseCoordinator,
   WorkspaceStorageError,
+  disposeOwnedWorkspaceCoordinators,
   requestResult,
+  resolveWorkspaceDatabaseCoordinator,
   transactionComplete,
 } from './indexed-db';
 
@@ -390,5 +392,24 @@ describe('persistence storage', () => {
     (coordinator as unknown as { activeTransactions: number }).activeTransactions = 0;
     assert.equal(await coordinator.open(), database);
     assert.equal(opens, 2);
+  });
+
+  it('removes disposed coordinators from the registry before the next HMR open', async () => {
+    const databaseName = `hmr-registry-${Date.now()}-${Math.random()}`;
+    const database = fakeDatabase();
+    const factory = {
+      open: () => {
+        const request: FakeOpenRequest = { result: database, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+        queueMicrotask(() => request.onsuccess?.());
+        return request;
+      },
+    };
+    const first = resolveWorkspaceDatabaseCoordinator({ databaseName, indexedDB: factory, broadcast: false });
+    await first.open();
+    await disposeOwnedWorkspaceCoordinators();
+    const second = resolveWorkspaceDatabaseCoordinator({ databaseName, indexedDB: factory, broadcast: false });
+    assert.notEqual(second, first);
+    await second.open();
+    await disposeOwnedWorkspaceCoordinators();
   });
 });
