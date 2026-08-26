@@ -27,6 +27,7 @@ import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-oox
 import type { Locale } from '../i18n';
 import { translateRibbonText } from '../i18n';
 import { HOME_NUMBER_FORMAT_OPTIONS, homeText } from './home/home-localization';
+import { FontFamilyControl } from './FontFamilyControl';
 
 export interface HomeRibbonCommandOptions {
   className?: string;
@@ -149,10 +150,17 @@ export function HomeRibbon({
       case 'format-painter':
         return <Button aria-label={label} aria-pressed={formatPainterActive} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-8 !rounded-none' : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
       case 'font-family':
-        return <Box className={mode === 'wide' ? 'w-[124px] shrink-0' : 'w-full'}><Select aria-label={label} className="w-full" disabled={!canFormat} sizeVariant="sm" value={mixed('fontFamily') ? '__mixed__' : cellStyle.fontFamily ?? 'Microsoft YaHei'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ fontFamily: event.target.value }); }}>
-          {mixed('fontFamily') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
-          <option value="Microsoft YaHei">微软雅黑</option><option value="Arial">Arial</option><option value="Calibri">Calibri</option><option value="Segoe UI">Segoe UI</option><option value="Times New Roman">Times New Roman</option>
-        </Select></Box>;
+        return <Box className={mode === 'wide' ? 'w-[124px] shrink-0' : 'w-full'}><FontFamilyControl
+          value={cellStyle.fontFamily}
+          fallbackValue="Microsoft YaHei"
+          mixed={mixed('fontFamily')}
+          mixedPlaceholder={homeText(locale, 'mixed')}
+          className="w-full"
+          disabled={!canFormat}
+          label={label}
+          testId="home-font-family"
+          onCommit={(fontFamily) => onEmitStyle({ fontFamily })}
+        /></Box>;
       case 'font-size':
         return <TextInput aria-label={label} className={mode === 'wide' ? '!w-[48px]' : 'w-full'} disabled={!canFormat} inputMode="decimal" value={mixed('fontSizePx') ? '' : String(Math.round(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11))))} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 1 && value <= 409) onEmitStyle({ fontSizePx: pointsToPixels(value) }); }} />;
       case 'font-increase':

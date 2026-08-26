@@ -109,6 +109,32 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.fileName, 'roundtrip.xlsx');
   });
 
+  it('round-trips canonical and imported font families through OOXML styles', async () => {
+    const workbook = new WorkbookModel('wb-font-family-roundtrip', 'Font families');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'listed', style: { fontFamily: '  sEgOe Ui  ' } });
+    sheet.cells.set(1, 0, { value: 'imported', style: { fontFamily: '  Imported Local Font  ' } });
+
+    const imported = await importXlsx({
+      fileName: 'font-family.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'B' },
+    });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    assert.equal(importedSheet.cells['0']?.['0']?.style?.fontFamily, 'Segoe UI');
+    assert.equal(importedSheet.cells['1']?.['0']?.style?.fontFamily, 'Imported Local Font');
+
+    const exported = await exportXlsx({
+      snapshot: imported.snapshot,
+      fileName: 'font-family.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const packageGraph = loadOpcPackageGraph(exported.buffer);
+    const stylesXml = strFromU8(packageGraph.files['xl/styles.xml']!);
+    assert.match(stylesXml, /name val="Imported Local Font"/);
+    assert.match(stylesXml, /name val="Segoe UI"/);
+  });
+
   it('round-trips native sheet protection allow flags and cell protection styles', async () => {
     const workbook = new WorkbookModel('wb-protection-roundtrip', 'Protection');
     const sheet = workbook.getSheet(workbook.primarySheetId);

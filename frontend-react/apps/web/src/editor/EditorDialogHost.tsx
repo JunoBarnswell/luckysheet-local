@@ -23,7 +23,7 @@ export interface EditorDialogHostProps {
   session: WorkbookSession;
   locale: Locale;
   sortColumns: UiSnapshot["selectedSheet"]["columns"];
-  formatCellsInitial: { numberFormat: string; style: UiSnapshot["homeRibbon"]["style"] };
+  formatCellsInitial: { numberFormat: string; style: UiSnapshot["homeRibbon"]["style"]; mixedFontFamily?: boolean };
   pivotSourceOptions: EditorCommandController["pivotSourceOptions"];
   createPivotFromDialog: EditorCommandController["createPivotFromDialog"];
 }

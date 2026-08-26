@@ -4,10 +4,13 @@ import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-oox
 import { Box, Button, CheckToggle, ColorPicker, Dialog, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
+import { FontFamilyControl } from '../FontFamilyControl';
 
 export interface FormatCellsDraft {
   numberFormat: string;
   style: Partial<CellStyle>;
+  /** UI-only mixed-state marker; it is not submitted to the workbook model. */
+  mixedFontFamily?: boolean;
 }
 
 export interface FormatCellsDialogProps {
@@ -62,7 +65,11 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
   }, [open, initial]);
 
   const style = draft.style;
-  const setStyle = (patch: Partial<CellStyle>) => setDraft((prev) => ({ ...prev, style: { ...prev.style, ...patch } }));
+  const setStyle = (patch: Partial<CellStyle>) => setDraft((prev) => ({
+    ...prev,
+    style: { ...prev.style, ...patch },
+    ...(patch.fontFamily === undefined ? {} : { mixedFontFamily: false }),
+  }));
   const activeLocale = resolveHomeLocale(locale);
 
   return (
@@ -179,17 +186,15 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
                 <Stack gap="md">
                   <Stack gap="xs">
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'fontFamily')}</Text>
-                    <Select
-                      sizeVariant="sm"
-                      value={style.fontFamily ?? 'Segoe UI'}
-                      onChange={(event) => setStyle({ fontFamily: event.target.value })}
-                    >
-                      <option value="Segoe UI">Segoe UI</option>
-                      <option value="Arial">Arial</option>
-                      <option value="Calibri">Calibri</option>
-                      <option value="Times New Roman">Times New Roman</option>
-                      <option value="Courier New">Courier New</option>
-                    </Select>
+                    <FontFamilyControl
+                      value={style.fontFamily}
+                      fallbackValue="Segoe UI"
+                      mixed={Boolean(draft.mixedFontFamily)}
+                      mixedPlaceholder={homeText(activeLocale, 'mixed')}
+                      label={homeText(activeLocale, 'fontFamily')}
+                      testId="format-font-family"
+                      onCommit={(fontFamily) => setStyle({ fontFamily })}
+                    />
                   </Stack>
                   <Stack gap="xs">
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'fontSize')}</Text>

@@ -17,7 +17,7 @@ import type {
   GanttSheetDefinition,
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
-import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
+import { StructuralTransform, normalizeDefinedNameModel, normalizeFontFamily } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { buildCellFromText } from './text-input';
@@ -351,6 +351,11 @@ function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheet
   if (isRange(value.range)) return isRecord(value.style) || value.style === undefined || typeof value.numberFormat === 'string';
   return Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange)
     && typeof value.numberFormat === 'string';
+}
+
+function normalizeStyleFontFamily(style: Partial<CellStyle> | undefined): Partial<CellStyle> | undefined {
+  if (!style || style.fontFamily === undefined) return style;
+  return { ...style, fontFamily: normalizeFontFamily(style.fontFamily) };
 }
 
 function styleAffectedRanges(value: SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string }): RangeRef[] {
@@ -1224,7 +1229,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     const ranges = 'range' in params ? [params.range] : params.ranges;
     const style = 'numberFormat' in params && !('style' in params)
       ? { numberFormat: params.numberFormat }
-      : (params as SetRangeStyleParams).style;
+      : normalizeStyleFontFamily((params as SetRangeStyleParams).style) ?? {};
     for (const range of ranges) {
       for (let row = range.startRow; row <= range.endRow; row += 1) {
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
@@ -1278,11 +1283,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.style.set',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      const canonicalParams: SetRangeStyleParams = {
+        ...params,
+        style: normalizeStyleFontFamily(params.style) ?? {},
+      };
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const affectedRanges: RangeRef[] = [params.range];
+      const affectedRanges: RangeRef[] = [canonicalParams.range];
 
-      for (let r = params.range.startRow; r <= params.range.endRow; r++) {
-        for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+      for (let r = canonicalParams.range.startRow; r <= canonicalParams.range.endRow; r++) {
+        for (let c = canonicalParams.range.startColumn; c <= canonicalParams.range.endColumn; c++) {
           const cell = sheet.cells.get(r, c);
           previous.push({ row: r, column: c, value: cell ? structuredClone(cell) : undefined });
         }
@@ -1291,8 +1300,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'style.set',
         unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params,
+        sheetId: canonicalParams.sheetId,
+        params: canonicalParams,
         affectedRanges,
         inverse: previous.map((item) => ({
           id: 'cell.restore',
@@ -1309,7 +1318,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             },
           ],
         })),
-        apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
+        apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: canonicalParams.sheetId, params: canonicalParams, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

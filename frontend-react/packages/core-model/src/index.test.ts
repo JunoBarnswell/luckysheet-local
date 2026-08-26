@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CellMatrix,
+  isCanonicalFontFamily,
+  normalizeFontFamily,
   buildPivotTimelineTiles,
   normalizePivotNumberFormat,
   normalizePivotTimelinePeriod,
@@ -46,6 +48,21 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(matrix.has(100_000, 4), false);
   assert.equal(matrix.count(), 0);
   assert.equal(cloned.has(100_000, 4), true);
+});
+
+test('font families use one canonical trim/case contract while preserving unknown names', () => {
+  assert.equal(normalizeFontFamily('  arial  '), 'Arial');
+  assert.equal(normalizeFontFamily('  My Imported Font  '), 'My Imported Font');
+  assert.equal(isCanonicalFontFamily('Arial'), true);
+  assert.equal(isCanonicalFontFamily(' arial '), false);
+  assert.throws(() => normalizeFontFamily('   '), /must not be empty/);
+  assert.throws(() => normalizeFontFamily('A\u0000B'), /control characters/);
+
+  const matrix = new CellMatrix();
+  matrix.set(0, 0, { value: 'listed', style: { fontFamily: '  SEGOE UI ' } });
+  matrix.set(0, 1, { value: 'imported', style: { fontFamily: '  My Imported Font  ' } });
+  assert.equal(matrix.get(0, 0)?.style?.fontFamily, 'Segoe UI');
+  assert.equal(matrix.get(0, 1)?.style?.fontFamily, 'My Imported Font');
 });
 
 test('Pivot numeric value resolution preserves canonical scalar types', () => {

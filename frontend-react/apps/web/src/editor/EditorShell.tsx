@@ -71,6 +71,7 @@ export function EditorShell({
   const formatCellsInitial = {
     numberFormat: selectedCellStyle.numberFormat ?? "general",
     style: { ...selectedCellStyle },
+    mixedFontFamily: state.homeRibbon.mixedStyleKeys.includes('fontFamily'),
   };
 
   const handleSelectionChange = (selection: SelectionState) => controller.applySelection(selection);

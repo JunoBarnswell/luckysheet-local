@@ -18,7 +18,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
 import {
   canonicalExcelDateDayOfWeek,
   canonicalExcelDateFromParts,
@@ -923,7 +923,7 @@ function parseStyles(
   const normalBaseXf = baseXfs[Number(normalStyle?.attrs.xfId ?? 0)] ?? baseXfs[0];
   const normalFontNode = fonts[Number(normalBaseXf?.attrs.fontId ?? 0)] ?? fonts[0];
   const normalFont: OoxmlNormalFont = {
-    family: child(normalFontNode, 'name')?.attrs.val ?? fallbackFont.family,
+    family: normalizeFontFamily(child(normalFontNode, 'name')?.attrs.val ?? fallbackFont.family),
     sizePt: finitePositive(child(normalFontNode, 'sz')?.attrs.val, fallbackFont.sizePt),
   };
   const records = xfs.map((xf) => {
@@ -1024,10 +1024,9 @@ function parseFontStyle(font: XmlNode | undefined, themeColors: string[]): CellS
   if (!font) return {};
   const sizePt = Number(child(font, 'sz')?.attrs.val);
   const textColor = resolveColor(child(font, 'color'), themeColors);
+  const rawFamily = child(font, 'name')?.attrs.val ?? child(font, 'rFont')?.attrs.val;
   return {
-    ...(child(font, 'name')?.attrs.val || child(font, 'rFont')?.attrs.val
-      ? { fontFamily: child(font, 'name')?.attrs.val ?? child(font, 'rFont')!.attrs.val }
-      : {}),
+    ...(rawFamily === undefined ? {} : { fontFamily: normalizeFontFamily(rawFamily) }),
     ...(Number.isFinite(sizePt) && sizePt > 0 ? { fontSizePx: pointsToPixels(sizePt) } : {}),
     ...(child(font, 'b') ? { bold: xmlBoolean(child(font, 'b')?.attrs.val ?? '1') } : {}),
     ...(child(font, 'i') ? { italic: xmlBoolean(child(font, 'i')?.attrs.val ?? '1') } : {}),

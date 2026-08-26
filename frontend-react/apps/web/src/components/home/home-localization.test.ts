@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import enUS from '../../locales/en-US.json';
 import zhCN from '../../locales/zh-CN.json';
 import { HOME_CELLS_ACTIONS, HOME_NUMBER_FORMAT_OPTIONS } from './home-localization';
+import { commitFontFamilyValue } from '../FontFamilyControl';
 
 describe('HOME responsive localization catalogs', () => {
   it('keeps canonical number-format values stable while localizing every label', () => {
@@ -26,5 +27,12 @@ describe('HOME responsive localization catalogs', () => {
   it('does not leak mixed-language HOME copy from the English responsive path', () => {
     for (const { labelKey } of HOME_CELLS_ACTIONS) assert.doesNotMatch(enUS.homeUi[labelKey], /[\u3400-\u9fff]/, labelKey);
     for (const { labelKey } of HOME_NUMBER_FORMAT_OPTIONS) assert.doesNotMatch(enUS.homeUi[labelKey], /[\u3400-\u9fff]/, labelKey);
+  });
+
+  it('shares an editable font-family commit contract with unknown imported names', () => {
+    assert.equal(commitFontFamilyValue('  aRiAl  '), 'Arial');
+    assert.equal(commitFontFamilyValue('  Imported Local Font  '), 'Imported Local Font');
+    assert.equal(commitFontFamilyValue(''), undefined);
+    assert.equal(commitFontFamilyValue('   '), undefined);
   });
 });

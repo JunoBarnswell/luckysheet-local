@@ -59,6 +59,30 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
   });
 
+  it('replays canonical font-family mutations and rejects an empty family atomically', () => {
+    const workbook = new WorkbookModel('wb-font-replay', 'Font replay');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const session = new CollaborationSession(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+
+    session.applyRemote({
+      schema: 'OperationEnvelope', operationId: 'remote-font', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
+      clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{ id: 'style.set', sheetId: sheet.id, params: { sheetId: sheet.id, range, style: { fontFamily: '  aRiAl  ' } }, affectedRanges: [range] }],
+    });
+    assert.equal(sheet.cells.get(0, 0)?.style?.fontFamily, 'Arial');
+    assert.equal(runtime.undo(), false);
+
+    assert.throws(() => session.applyRemote({
+      schema: 'OperationEnvelope', operationId: 'remote-empty-font', unitId: workbook.unitId, actorId: 'actor-3', origin: 'client',
+      clientSequence: 2, baseRevision: 1, revision: 2, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{ id: 'style.set', sheetId: sheet.id, params: { sheetId: sheet.id, range, style: { fontFamily: '   ' } }, affectedRanges: [range] }],
+    }), /must not be empty/);
+    assert.equal(sheet.cells.get(0, 0)?.style?.fontFamily, 'Arial');
+  });
+
   it('replays canonical clear families and conditional-format cropping remotely', () => {
     const workbook = new WorkbookModel('wb-clear-replay', 'Clear Replay');
     const runtime = new CommandRuntime(workbook);
