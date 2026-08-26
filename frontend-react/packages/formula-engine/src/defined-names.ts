@@ -1,8 +1,9 @@
 import type { CellAddress } from './ast';
-import { parseCellAddress } from './address';
-import { normalizeRange, type RangeDependency } from './range-index';
+import type { RangeDependency } from './range-index';
 import { evaluateFormula } from './evaluator';
 import { parseFormula } from './parser';
+import { offsetAst } from './ast-rewrite';
+import type { FormulaAst } from './ast';
 import { createFormulaError, isArrayValue, type ArrayValue, type FormulaValue } from './values';
 import type { ExcelNumericContext } from './numeric';
 
@@ -12,12 +13,15 @@ export interface FormulaDefinedName {
   readonly formula: string;
   readonly scope: 'workbook' | 'sheet';
   readonly sheetId?: string;
+  readonly anchor?: CellAddress;
 }
 
 export interface DefinedNameContext {
   currentCell: CellAddress;
   readCell: (address: CellAddress) => FormulaValue;
   readRangeMatrix: (range: RangeDependency) => ArrayValue;
+  resolveName?: (name: string) => FormulaValue | undefined;
+  anchor?: CellAddress;
   numericContext?: ExcelNumericContext;
 }
 
@@ -43,21 +47,23 @@ export function normalizeDefinedNameModels(names: readonly FormulaDefinedName[])
     if (input.scope !== 'workbook' && input.scope !== 'sheet') throw new Error(`Invalid defined name scope: ${String(input.scope)}`);
     if (input.scope === 'sheet' && !input.sheetId?.trim()) throw new Error(`Sheet-scoped defined name ${name} requires a sheetId`);
     if (input.scope === 'workbook' && input.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
+    if (input.anchor && (!input.anchor.sheetId || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0)) throw new Error(`Defined name ${name} has an invalid anchor`);
     const sheetId = input.sheetId?.trim();
     const key = input.scope === 'sheet'
-      ? `sheet:${sheetId!.toLocaleLowerCase()}:${name.toLocaleLowerCase()}`
-      : `workbook:${name.toLocaleLowerCase()}`;
+      ? `sheet:${stableNameKey(sheetId!)}:${stableNameKey(name)}`
+      : `workbook:${stableNameKey(name)}`;
     normalized.set(key, {
       name,
       formula,
       scope: input.scope,
       ...(sheetId ? { sheetId } : {}),
+      ...(input.anchor ? { anchor: structuredClone(input.anchor) } : {}),
     });
   }
   return [...normalized.values()].sort((left, right) => {
-    const leftKey = `${left.scope}:${left.sheetId ?? ''}:${left.name.toLocaleLowerCase()}`;
-    const rightKey = `${right.scope}:${right.sheetId ?? ''}:${right.name.toLocaleLowerCase()}`;
-    return leftKey.localeCompare(rightKey);
+    const leftKey = `${left.scope}:${stableNameKey(left.sheetId ?? '')}:${stableNameKey(left.name)}`;
+    const rightKey = `${right.scope}:${stableNameKey(right.sheetId ?? '')}:${stableNameKey(right.name)}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
   });
 }
 
@@ -65,15 +71,15 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
   const trimmed = source.trim();
   if (!trimmed) return createFormulaError('#NAME?', 'Empty defined name');
 
-  const range = tryParseDefinedRange(trimmed, context.currentCell.sheetId);
-  if (range) return context.readRangeMatrix(range);
-
   const scalar = tryParseDefinedScalar(trimmed);
   if (scalar !== undefined) return scalar;
 
   try {
     const formulaText = trimmed.startsWith('=') ? trimmed : `=${trimmed}`;
-    const ast = parseFormula(formulaText);
+    const parsed = parseFormula(formulaText);
+    const ast = context.anchor
+      ? offsetAst(parsed, context.currentCell.row - context.anchor.row, context.currentCell.column - context.anchor.column)
+      : parsed;
     return evaluateFormula(ast, {
       currentCell: context.currentCell,
       readCell: context.readCell,
@@ -83,7 +89,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
         for (const row of matrix) values.push(...row);
         return values;
       },
-      resolveName: undefined,
+      resolveName: context.resolveName,
       numericContext: context.numericContext,
     });
   } catch {
@@ -112,17 +118,16 @@ function tryParseDefinedScalar(text: string): FormulaValue | undefined {
   return undefined;
 }
 
-function tryParseDefinedRange(text: string, defaultSheetId: string): RangeDependency | undefined {
-  if (text.startsWith('=')) return undefined;
-  const rangeText = text.includes(':') ? text : undefined;
-  if (!rangeText) return undefined;
-  const [startText, endText] = rangeText.split(':');
-  if (!startText || !endText) return undefined;
+export function parseDefinedNameFormula(source: string): FormulaAst | undefined {
+  const trimmed = source.trim();
+  if (!trimmed || tryParseDefinedScalar(trimmed) !== undefined) return undefined;
   try {
-    const start = parseCellAddress(startText, defaultSheetId);
-    const end = parseCellAddress(endText, defaultSheetId);
-    return normalizeRange(start, end);
+    return parseFormula(trimmed.startsWith('=') ? trimmed : `=${trimmed}`);
   } catch {
     return undefined;
   }
+}
+
+function stableNameKey(value: string): string {
+  return value.trim().toUpperCase();
 }

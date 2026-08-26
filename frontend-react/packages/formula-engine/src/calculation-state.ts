@@ -139,7 +139,8 @@ function isFormulaDefinedName(value: unknown): value is FormulaDefinedName {
     && (value.scope === 'workbook' || value.scope === 'sheet')
     && (value.scope === 'workbook'
       ? value.sheetId === undefined
-      : typeof value.sheetId === 'string' && value.sheetId.trim().length > 0);
+      : typeof value.sheetId === 'string' && value.sheetId.trim().length > 0)
+    && (value.anchor === undefined || isCellAddress(value.anchor));
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

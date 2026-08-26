@@ -1,4 +1,4 @@
-import type { AutoFilterModel, CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
+import type { AutoFilterModel, CellAddress, CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
 import type { PivotMemberKey } from './pivot';
 
 /**
@@ -14,6 +14,8 @@ export interface DefinedNameModel {
   formula: string;
   scope: DefinedNameScope;
   sheetId?: SheetId;
+  /** Active-cell anchor captured when a relative Refers To was created. */
+  anchor?: CellAddress;
   hidden?: boolean;
   comment?: string;
 }
@@ -30,6 +32,9 @@ export function normalizeDefinedNameModel(input: DefinedNameModel): DefinedNameM
   if (input.scope === 'workbook' && input.sheetId !== undefined) {
     throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
   }
+  if (input.anchor && (!input.anchor.sheetId || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0)) {
+    throw new Error(`Defined name ${name} has an invalid anchor`);
+  }
   const formula = input.formula.trim();
   if (!formula) throw new Error(`Defined name ${name} requires a formula`);
   return {
@@ -37,6 +42,7 @@ export function normalizeDefinedNameModel(input: DefinedNameModel): DefinedNameM
     formula,
     scope: input.scope,
     ...(input.sheetId ? { sheetId: input.sheetId } : {}),
+    ...(input.anchor ? { anchor: structuredClone(input.anchor) } : {}),
     ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
     ...(input.comment === undefined ? {} : { comment: input.comment }),
   };

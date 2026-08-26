@@ -1,7 +1,7 @@
 import type { CellAddress, CellReferenceNode, FormulaAst, FormulaReferenceNode, RangeReferenceNode, ParsedCellReference } from './ast';
 import { assertCellAddress, cellAddressKey } from './address';
 import { FormulaReferenceError } from './errors';
-import { normalizeRange, type CellDependency, type FormulaDependency, type RangeDependency } from './range-index';
+import { normalizeRange, type CellDependency, type FormulaDependency, type NameDependency, type RangeDependency } from './range-index';
 import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { isFormulaError } from './values';
 
@@ -75,8 +75,11 @@ function visit(
     case 'function-call':
       for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables);
       return;
-    case 'name-reference':
+    case 'name-reference': {
+      const dependency: NameDependency = { kind: 'name', name: node.name.trim().toUpperCase() };
+      addDependency(dependency, dependencies, seen);
       return;
+    }
     case 'invalid-reference':
       // An invalidated reference has no dependency target.  Keeping it out
       // of the index prevents a later write to the deleted coordinate from
@@ -116,7 +119,9 @@ function addDependency(dependency: FormulaDependency, dependencies: FormulaDepen
     ? `cell:${cellAddressKey(dependency.address)}`
     : dependency.kind === 'range'
       ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
-      : `reference:${JSON.stringify(dependency.reference)}`;
+      : dependency.kind === 'reference'
+        ? `reference:${JSON.stringify(dependency.reference)}`
+        : `name:${dependency.name}`;
   if (seen.has(key)) return;
   seen.add(key);
   dependencies.push(dependency);

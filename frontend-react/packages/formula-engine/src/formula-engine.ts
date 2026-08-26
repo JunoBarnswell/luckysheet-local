@@ -8,12 +8,12 @@ import {
   type FormulaEvaluationTrace,
 } from './evaluator';
 import { formatFormula } from './ast-format';
-import { remapAst } from './ast-rewrite';
+import { offsetAst, remapAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
 import { parseFormula as parseFormulaSource } from './parser';
 import { RangeIndex, type FormulaDependency, type RangeDependency } from './range-index';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
-import { normalizeDefinedNameModels, normalizeDefinedNames, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
+import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
@@ -633,6 +633,16 @@ export class FormulaEngine {
   setDefinedNameModels(names: readonly FormulaDefinedName[]): RecalculationReport {
     this.definedNameModels = normalizeDefinedNameModels(names);
     this.markCalculationStateChanged();
+    for (const cell of this.cells.values()) {
+      if (cell.formula === undefined || !cell.ast) continue;
+      const dependencies = this.expandNameDependencies(
+        collectFormulaDependencies(cell.ast, cell.address, { sheetTables: this.sheetTables }),
+        cell.address,
+        new Set<string>(),
+      );
+      this.dependencies.set(cell.address, dependencies);
+      cell.result = { ...cell.result, dependencies };
+    }
     const affected = new Map<string, CellAddress>();
     for (const refs of this.nameIndex.values()) {
       for (const key of refs) {
@@ -786,7 +796,7 @@ export class FormulaEngine {
             ? dependency.address.sheetId === sheetId
             : dependency.kind === 'range'
               ? dependency.start.sheetId === sheetId
-              : referenceMentionsSheet(dependency.reference, sheetId),
+              : dependency.kind === 'reference' && referenceMentionsSheet(dependency.reference, sheetId),
         );
       if (!relevantSheet) continue;
       const remapped = remapAst(cell.ast, shift);
@@ -823,9 +833,10 @@ export class FormulaEngine {
     try {
       const parsed = this.parseFormula(formula);
       const extractedDependencies = collectFormulaDependencies(parsed, address, { sheetTables: this.sheetTables });
-      this.dependencies.set(address, extractedDependencies);
+      const expandedDependencies = this.expandNameDependencies(extractedDependencies, address, new Set<string>());
+      this.dependencies.set(address, expandedDependencies);
       ast = parsed;
-      formulaDependencies = extractedDependencies;
+      formulaDependencies = expandedDependencies;
     } catch (error) {
       parseError = formulaErrorFrom(error);
       this.dependencies.set(address, []);
@@ -1139,20 +1150,63 @@ export class FormulaEngine {
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
   ): FormulaValue | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
-    const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
-      && entry.sheetId?.toLocaleLowerCase() === currentCell.sheetId.toLocaleLowerCase()
-      && entry.name.toLocaleLowerCase() === normalized);
-    const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
-      && entry.name.toLocaleLowerCase() === normalized);
-    const source = local?.formula ?? global?.formula;
-    if (source === undefined) return undefined;
-    return resolveDefinedNameSource(source, {
-      currentCell,
-      readCell: (reference) => this.evaluateCell(reference, cache, visiting),
-      readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
-      numericContext: this.numericContext,
-    });
+    const definition = this.findDefinedName(name, currentCell);
+    if (!definition) return undefined;
+    const identity = this.definedNameIdentity(definition);
+    const visitingKey = `name:${identity}`;
+    if (visiting.has(visitingKey)) return createFormulaError('#NUM!', `Circular defined name dependency: ${identity}`);
+    visiting.add(visitingKey);
+    try {
+      return resolveDefinedNameSource(definition.formula, {
+        currentCell,
+        anchor: definition.anchor,
+        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
+        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
+        resolveName: (nestedName) => this.resolveDefinedName(nestedName, currentCell, cache, visiting),
+        numericContext: this.numericContext,
+      });
+    } finally {
+      visiting.delete(visitingKey);
+    }
+  }
+
+  private expandNameDependencies(
+    dependencies: readonly FormulaDependency[],
+    owner: CellAddress,
+    visiting: Set<string>,
+  ): FormulaDependency[] {
+    const expanded = [...dependencies];
+    for (const dependency of dependencies) {
+      if (dependency.kind !== 'name') continue;
+      const definition = this.findDefinedName(dependency.name, owner);
+      if (!definition) continue;
+      const identity = this.definedNameIdentity(definition);
+      if (visiting.has(identity)) continue;
+      const source = parseDefinedNameFormula(definition.formula);
+      if (!source) continue;
+      const projected = definition.anchor
+        ? offsetAst(source, owner.row - definition.anchor.row, owner.column - definition.anchor.column)
+        : source;
+      const nested = collectFormulaDependencies(projected, owner, { sheetTables: this.sheetTables });
+      expanded.push(...this.expandNameDependencies(nested, owner, new Set([...visiting, identity])));
+    }
+    return expanded;
+  }
+
+  private findDefinedName(name: string, currentCell: CellAddress): FormulaDefinedName | undefined {
+    const normalized = name.trim().toUpperCase();
+    const sheetKey = currentCell.sheetId.trim().toUpperCase();
+    return this.definedNameModels.find((entry) => entry.scope === 'sheet'
+      && entry.sheetId?.trim().toUpperCase() === sheetKey
+      && entry.name.trim().toUpperCase() === normalized)
+      ?? this.definedNameModels.find((entry) => entry.scope === 'workbook'
+        && entry.name.trim().toUpperCase() === normalized);
+  }
+
+  private definedNameIdentity(definition: FormulaDefinedName): string {
+    return definition.scope === 'sheet'
+      ? `sheet:${definition.sheetId?.trim().toUpperCase()}:${definition.name.trim().toUpperCase()}`
+      : `workbook:${definition.name.trim().toUpperCase()}`;
   }
 
   private resolveReference(reference: FormulaReferenceNode, currentCell: CellAddress): FormulaEvaluationReference | FormulaError {
@@ -1291,7 +1345,9 @@ function copyDependency(dependency: FormulaDependency): FormulaDependency {
     ? { kind: 'cell', address: { ...dependency.address } }
     : dependency.kind === 'range'
       ? { kind: 'range', start: { ...dependency.start }, end: { ...dependency.end } }
-      : { kind: 'reference', reference: structuredClone(dependency.reference) };
+      : dependency.kind === 'reference'
+        ? { kind: 'reference', reference: structuredClone(dependency.reference) }
+        : { kind: 'name', name: dependency.name };
 }
 
 function referenceMentionsSheet(reference: FormulaReferenceNode, sheetId: string): boolean {

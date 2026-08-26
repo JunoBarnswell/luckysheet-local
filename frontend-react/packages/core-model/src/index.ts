@@ -1153,23 +1153,23 @@ export class WorkbookModel {
   }
 
   getDefinedName(name: string, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     if (sheetId) {
       const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
         && entry.sheetId === sheetId
-        && entry.name.toLocaleLowerCase() === normalized);
+        && entry.name.toUpperCase() === normalized);
       if (local) return structuredClone(local);
     }
     const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     return global ? structuredClone(global) : undefined;
   }
 
   getDefinedNameExact(name: string, scope: DefinedNameScope, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     const exact = this.definedNameModels.find((entry) => entry.scope === scope
       && entry.sheetId === sheetId
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     return exact ? structuredClone(exact) : undefined;
   }
 
@@ -1183,17 +1183,17 @@ export class WorkbookModel {
     const model = normalizeDefinedNameModel(input);
     const index = this.definedNameModels.findIndex((entry) => entry.scope === model.scope
       && entry.sheetId === model.sheetId
-      && entry.name.toLocaleLowerCase() === model.name.toLocaleLowerCase());
+      && entry.name.toUpperCase() === model.name.toUpperCase());
     if (index >= 0) this.definedNameModels[index] = structuredClone(model);
     else this.definedNameModels.push(structuredClone(model));
     return structuredClone(model);
   }
 
   removeDefinedName(name: string, scope: DefinedNameScope = 'workbook', sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     const index = this.definedNameModels.findIndex((entry) => entry.scope === scope
       && entry.sheetId === sheetId
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     const previous = index >= 0 ? this.definedNameModels[index] : undefined;
     if (index >= 0) this.definedNameModels.splice(index, 1);
     return previous ? structuredClone(previous) : undefined;

@@ -528,10 +528,12 @@ function rewriteReferencesForMovedRegion(
 }
 
 function transformFormula(formula: string, transform: (ast: ReturnType<typeof parseFormula>) => ReturnType<typeof parseFormula>): string {
-  if (!formula.trim().startsWith('=')) return formula;
+  const hasFormulaPrefix = formula.trim().startsWith('=');
   try {
-    return formatFormula(transform(parseFormula(formula)));
+    const formatted = formatFormula(transform(parseFormula(hasFormulaPrefix ? formula : `=${formula}`)));
+    return hasFormulaPrefix ? formatted : formatted.replace(/^=/, '');
   } catch (error) {
+    if (!hasFormulaPrefix) return formula;
     throw new Error(`Formula transformation failed: ${formula}`, { cause: error as Error });
   }
 }
@@ -907,6 +909,20 @@ function rewriteFormulas(workbook: WorkbookModel, sheetId: string, axis: 'row' |
 function rewriteDefinedNames(workbook: WorkbookModel, targetSheet: WorksheetModel, shift: StructuralShift): void {
   for (const entry of workbook.definedNameModels) {
     if (entry.scope === 'sheet' && entry.sheetId !== targetSheet.id) continue;
+    if (entry.anchor?.sheetId === targetSheet.id) {
+      const position = shift.axis === 'row' ? entry.anchor.row : entry.anchor.column;
+      if (shift.op === 'delete' && position >= shift.at && position < shift.at + shift.count) {
+        throw new Error(`Defined name ${entry.name} anchor is removed by structural mutation`);
+      }
+      const delta = shift.op === 'insert'
+        ? position >= shift.at ? shift.count : 0
+        : position >= shift.at + shift.count ? -shift.count : 0;
+      if (delta !== 0) {
+        entry.anchor = shift.axis === 'row'
+          ? { ...entry.anchor, row: entry.anchor.row + delta }
+          : { ...entry.anchor, column: entry.anchor.column + delta };
+      }
+    }
     entry.formula = transformFormula(entry.formula, (ast) => remapAst(
       ast,
       shift,

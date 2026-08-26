@@ -18,7 +18,13 @@ export interface StructuralReferenceDependency {
   readonly reference: FormulaReferenceNode;
 }
 
-export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency;
+export interface NameDependency {
+  readonly kind: 'name';
+  /** Display-independent name token; scope binding happens in FormulaEngine. */
+  readonly name: string;
+}
+
+export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency | NameDependency;
 
 interface IndexEntry {
   readonly owner: CellAddress;
@@ -220,7 +226,9 @@ function deduplicateDependencies(dependencies: readonly FormulaDependency[]): re
       ? { kind: 'cell' as const, address: copyAddress(assertAndReturn(dependency.address)) }
       : dependency.kind === 'range'
         ? normalizeRange(dependency.start, dependency.end)
-        : { kind: 'reference' as const, reference: dependency.reference };
+        : dependency.kind === 'reference'
+          ? { kind: 'reference' as const, reference: dependency.reference }
+          : { kind: 'name' as const, name: dependency.name };
     const key = dependencyKey(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -234,7 +242,9 @@ function dependencyKey(dependency: FormulaDependency): string {
     ? `cell:${cellAddressKey(dependency.address)}`
     : dependency.kind === 'range'
       ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
-      : `reference:${JSON.stringify(dependency.reference)}`;
+      : dependency.kind === 'reference'
+        ? `reference:${JSON.stringify(dependency.reference)}`
+        : `name:${dependency.name}`;
 }
 
 function assertAndReturn(address: CellAddress): CellAddress {
@@ -251,7 +261,9 @@ function copyDependency(dependency: FormulaDependency): FormulaDependency {
     ? { kind: 'cell', address: copyAddress(dependency.address) }
     : dependency.kind === 'range'
       ? { kind: 'range', start: copyAddress(dependency.start), end: copyAddress(dependency.end) }
-      : { kind: 'reference', reference: structuredClone(dependency.reference) };
+      : dependency.kind === 'reference'
+        ? { kind: 'reference', reference: structuredClone(dependency.reference) }
+        : { kind: 'name', name: dependency.name };
 }
 
 function referenceContainsAddress(reference: FormulaReferenceNode, address: CellAddress): boolean {
