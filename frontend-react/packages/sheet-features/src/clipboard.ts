@@ -9,7 +9,7 @@ import type {
   WorkbookModel,
 } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
-import { parseCellText } from './text-input';
+import { parseCellText, type CellInputInterpretationContext } from './text-input';
 
 /** Stable MIME names understood by every host (browser, desktop and headless). */
 export const CLIPBOARD_INTERNAL_MIME = 'application/x-react-sheets-cells';
@@ -249,7 +249,8 @@ export function formatTsv(values: CellData[][]): string {
     .join('\n');
 }
 
-export function parseTsv(text: string): CellData[][] {
+export function parseTsv(text: string, inputContext: CellInputInterpretationContext): CellData[][] {
+  parseCellText('', inputContext);
   if (text.length === 0) return [];
   const rows: string[][] = [];
   let row: string[] = [];
@@ -287,11 +288,12 @@ export function parseTsv(text: string): CellData[][] {
     row.push(field);
     if (row.length > 0 && !(row.length === 1 && row[0] === '' && rows.length > 0)) rows.push(row);
   }
-  return rows.map((values) => values.map(parseClipboardScalar));
+  return rows.map((values) => values.map((value) => parseClipboardScalar(value, inputContext)));
 }
 
 /** Parse a serialized clipboard payload supplied by a host ClipboardItem. */
-export function parseClipboardPayload(payload: ClipboardPayload): CellData[][] {
+export function parseClipboardPayload(payload: ClipboardPayload, inputContext: CellInputInterpretationContext): CellData[][] {
+  parseCellText('', inputContext);
   const internal = payload.representations?.find((entry) => entry.mime === CLIPBOARD_INTERNAL_MIME)?.data;
   if (internal) {
     try {
@@ -305,9 +307,9 @@ export function parseClipboardPayload(payload: ClipboardPayload): CellData[][] {
   }
   if (payload.values.length > 0) return payload.values.map((row) => row.map((cell) => structuredClone(cell)));
   const html = payload.representations?.find((entry) => entry.mime === CLIPBOARD_HTML_MIME)?.data ?? payload.html;
-  if (html) return parseHtmlTable(html);
+  if (html) return parseHtmlTable(html, inputContext);
   const text = payload.representations?.find((entry) => entry.mime === CLIPBOARD_TEXT_MIME)?.data ?? payload.text;
-  return text ? parseTsv(text) : [];
+  return text ? parseTsv(text, inputContext) : [];
 }
 
 function isRangeMetadata(value: unknown): value is ClipboardRangeMetadata {
@@ -325,8 +327,15 @@ function escapeTsvField(value: string): string {
   return /[\t\r\n"]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
 
-function parseClipboardScalar(value: string): CellData {
-  return parseCellText(value);
+function parseClipboardScalar(value: string, inputContext: CellInputInterpretationContext): CellData {
+  const parsed = parseCellText(value, inputContext);
+  const cell: CellData = { value: parsed.value };
+  if (parsed.formula !== undefined) cell.formula = parsed.formula;
+  if (parsed.numberFormatIntent.kind === 'set') {
+    cell.numberFormat = parsed.numberFormatIntent.format;
+    cell.style = { numberFormat: parsed.numberFormatIntent.format };
+  }
+  return cell;
 }
 
 function formatHtml(values: CellData[][]): string {
@@ -338,7 +347,7 @@ function formatHtml(values: CellData[][]): string {
   return `<table>${rows}</table>`;
 }
 
-function parseHtmlTable(html: string): CellData[][] {
+function parseHtmlTable(html: string, inputContext: CellInputInterpretationContext): CellData[][] {
   const rows: CellData[][] = [];
   const rowMatches = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) ?? [];
   for (const rowHtml of rowMatches) {
@@ -349,7 +358,7 @@ function parseHtmlTable(html: string): CellData[][] {
       const formula = attributes.match(/\bdata-formula\s*=\s*["']([^"']*)["']/i)?.[1];
       const body = cellHtml.replace(/^<(?:td|th)\b[^>]*>/i, '').replace(/<\/(?:td|th)>$/i, '');
       const text = decodeHtml(body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''));
-      const parsed = parseClipboardScalar(text);
+      const parsed = parseClipboardScalar(text, inputContext);
       if (formula) {
         parsed.value = null;
         parsed.formula = decodeHtml(formula);

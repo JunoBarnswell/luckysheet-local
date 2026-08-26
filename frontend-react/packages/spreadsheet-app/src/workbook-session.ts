@@ -85,6 +85,8 @@ import {
   type FindScope,
   type FillDirection,
   type FillMode,
+  createCellInputInterpretationContext,
+  type CellInputSourceKind,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
@@ -2426,6 +2428,17 @@ export class WorkbookSession {
     return { sheetId: table.sourceRange.sheetId, row: sourceRow, column: table.sourceRange.startColumn + field.ordinal };
   }
 
+  private createInputContext(sourceKind: CellInputSourceKind, cell?: CellData) {
+    const referenceDate = this.runtime.canonicalReferenceDate;
+    if (!referenceDate) throw new Error('Workbook input interpretation requires a canonical reference date');
+    return createCellInputInterpretationContext(this.runtime.model, {
+      sourceKind,
+      dateSystem: this.runtime.dateSystem,
+      referenceDate,
+      cell,
+    });
+  }
+
   beginEdit(initialText?: string): boolean {
     const sel = this.selectionService.getState();
     const canonicalTarget = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
@@ -2476,13 +2489,15 @@ export class WorkbookSession {
     const row = target.row;
     const column = target.column;
     const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
-    const style = this.runtime.model.getSheet(target.sheetId).cells.get(row, column)?.style;
+    const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
+    const style = cell?.style;
     try {
       this.runCommand('sheet.cell.commitText', {
         sheetId: target.sheetId,
         row,
         column,
         text,
+        inputContext: this.createInputContext('direct-entry', cell),
         style,
       });
       return true;
@@ -3719,7 +3734,7 @@ export class WorkbookSession {
     const { result } = this.planFindDialog(params);
     const match = findAtCursor(result.matches, this.findCursor, 'next');
     if (!match) { this.notify('No matches found'); return 0; }
-    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'one', matchKey: match.key };
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'one', matchKey: match.key, inputContext: this.createInputContext('find-replace') };
     const committed = await this.executeCommandAfterMaterialization('find.replace', command);
     const remaining = result.matches.filter((entry) => entry.key !== match.key);
     const next = findAtCursor(remaining, null, 'next');
@@ -3731,7 +3746,7 @@ export class WorkbookSession {
 
   async replaceAll(params: FindDialogParams): Promise<number> {
     if (!params.replace) throw new Error('Replacement text must not be empty');
-    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all' };
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all', inputContext: this.createInputContext('find-replace') };
     const committed = await this.executeCommandAfterMaterialization('find.replace', command);
     this.resetFindCursor();
     const count = typeof committed.event?.payload.count === 'number' ? committed.event.payload.count : committed.mutationCount;
@@ -3828,12 +3843,14 @@ export class WorkbookSession {
   }
   async paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): Promise<DispatchOutcome> {
     const sel = this.selectionService.getState();
+    const inputContext = this.createInputContext('clipboard-text', this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.activeCell.row, sel.activeCell.column));
     const internal = this.clipboardData;
     if (internal) {
       const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
+        inputContext,
         transfer: internal.transfer,
         spec,
       } });
@@ -3859,7 +3876,7 @@ export class WorkbookSession {
     if (!text) return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard is empty'));
     const clipboard: ClipboardPayload = {
       range: this.getPrimaryRange(),
-      values: parseTsv(text),
+      values: parseTsv(text, inputContext),
       transfer: 'copy',
       rangeMetadata: {
         columnWidths: [],
@@ -3874,6 +3891,7 @@ export class WorkbookSession {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard,
+        inputContext,
         transfer: 'copy',
         spec,
       } });

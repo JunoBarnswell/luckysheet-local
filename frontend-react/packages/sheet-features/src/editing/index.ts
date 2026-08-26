@@ -27,6 +27,7 @@ import {
   type PasteSpecialSpec,
   isPasteSpecialSpecSupported,
 } from '../clipboard';
+import { isCellInputInterpretationContext, type CellInputInterpretationContext } from '../text-input';
 
 export type FreezePreset = 'none' | 'firstRow' | 'firstColumn' | 'both';
 export type GoToSpecialKind =
@@ -53,6 +54,7 @@ export interface PasteRangeParams {
   sheetId: string;
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
+  inputContext: CellInputInterpretationContext;
   transfer: ClipboardTransfer;
   spec: PasteSpecialSpec;
 }
@@ -183,6 +185,7 @@ interface PasteSnapshot {
 function isPasteMutation(value: unknown): value is PasteMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string'
     && isRecord(value.targetOrigin) && Number.isInteger(value.targetOrigin.row) && Number.isInteger(value.targetOrigin.column)
+    && isCellInputInterpretationContext(value.inputContext)
     && (value.transfer === 'copy' || value.transfer === 'move')
     && isRecord(value.clipboard) && value.clipboard.transfer === value.transfer
     && isRecord(value.clipboard.rangeMetadata)
@@ -779,7 +782,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       if (!isPasteSpecialSpec(params.spec)) throw new Error('Paste Special requires a canonical specification');
-      const sourceValues = parseClipboardPayload(params.clipboard);
+      const sourceValues = parseClipboardPayload(params.clipboard, params.inputContext);
       const sourceRange = params.clipboard.range;
       const transfer = params.transfer;
       if (transfer !== 'copy' && transfer !== 'move' || params.clipboard.transfer !== transfer) {

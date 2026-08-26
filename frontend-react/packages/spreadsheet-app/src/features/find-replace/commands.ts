@@ -12,6 +12,8 @@ import {
   type FindSearchOrder,
   type FindScope,
   type FindSearchTarget,
+  type CellInputInterpretationContext,
+  isCellInputInterpretationContext,
 } from '@react-sheets/sheet-features';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 
@@ -28,6 +30,7 @@ export interface FindReplaceParams {
   matchCase?: boolean;
   entireCell?: boolean;
   wildcard?: boolean;
+  inputContext: CellInputInterpretationContext;
 }
 
 export interface FindCellReplacementMutationPatch {
@@ -101,6 +104,7 @@ function isValidFindReplace(value: unknown): value is FindReplaceParams {
     || typeof value.query !== 'string' || value.query.length === 0 || typeof value.replace !== 'string'
     || (value.mode !== 'one' && value.mode !== 'all')
     || (value.searchOrder !== 'rows' && value.searchOrder !== 'columns')) return false;
+  if (!isCellInputInterpretationContext(value.inputContext)) return false;
   if (value.mode === 'one' && (typeof value.matchKey !== 'string' || value.matchKey.length === 0)) return false;
   if (value.scope !== undefined && value.scope !== 'sheet' && value.scope !== 'workbook' && value.scope !== 'selection') return false;
   if (value.scope === 'selection' && value.range === undefined) return false;
@@ -198,8 +202,6 @@ function assertCurrentMatch(match: FindMatch, params: FindReplaceParams, context
 }
 
 function buildPatches(params: FindReplaceParams, context: CommandContext): ReplacementPatch[] {
-  const replacementInput = parseReplacementValue(params.replace);
-  if (replacementInput.kind === 'empty') throw new Error('Replacement text must not be empty');
   const result = planFind(context.workbook, {
     sheetId: params.sheetId,
     query: params.query,
@@ -227,7 +229,12 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
       if (!cell) throw new Error(`Find result cell disappeared at ${match.key}`);
       const replaced = replaceFindText(match.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Find result no longer matches at ${match.key}`);
-      const replacement = parseReplacementValue(replaced);
+      const replacement = parseReplacementValue(replaced, {
+        ...params.inputContext,
+        currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
+        currentCellType: cell.editor?.kind,
+      });
+      if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
       if (match.target === 'formulas' && replacement.kind !== 'formula') throw new Error(`Formula replacement at ${match.key} must produce a formula`);
       patches.push({ kind: 'cell', match, previous: structuredClone(cell), next: replacementCell(cell, replacement) });
       touchedCells.add(key);

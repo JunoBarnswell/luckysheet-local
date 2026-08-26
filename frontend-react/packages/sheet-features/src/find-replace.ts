@@ -8,8 +8,8 @@ import type {
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { createFormulaError, getCellNote, noteCellKey } from '@react-sheets/core-model';
-import { isFormulaError, parseFormula } from '@react-sheets/formula-engine';
-import { parseCellText } from './text-input';
+import { isFormulaError } from '@react-sheets/formula-engine';
+import { parseCellText, type CellInputInterpretationContext, type NumberFormatIntent } from './text-input';
 
 /** Canonical content families that Find/Replace may inspect. */
 export type FindSearchTarget = 'values' | 'formulas' | 'notes' | 'comments';
@@ -50,39 +50,40 @@ export interface FindSearchResult {
 }
 
 export type ReplacementValue =
-  | { kind: 'empty'; value: null }
-  | { kind: 'text'; value: string }
-  | { kind: 'number'; value: number }
-  | { kind: 'boolean'; value: boolean }
-  | { kind: 'formula'; value: null; formula: string }
-  | { kind: 'error'; value: null; code: FormulaErrorCode };
+  | { kind: 'empty'; value: null; numberFormatIntent?: NumberFormatIntent }
+  | { kind: 'text'; value: string; numberFormatIntent?: NumberFormatIntent }
+  | { kind: 'number'; value: number; numberFormatIntent?: NumberFormatIntent }
+  | { kind: 'boolean'; value: boolean; numberFormatIntent?: NumberFormatIntent }
+  | { kind: 'formula'; value: null; formula: string; numberFormatIntent?: NumberFormatIntent }
+  | { kind: 'error'; value: null; code: FormulaErrorCode; numberFormatIntent?: NumberFormatIntent };
 
 const REPLACEMENT_ERROR_CODES: ReadonlySet<string> = new Set([
   '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
   '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!',
 ]);
 
-/** Parse replacement input exactly once; numeric zero is a valid typed value. */
-export function parseReplacementValue(text: string): ReplacementValue {
+/** Parse replacement input through the same workbook interpreter as cell entry. */
+export function parseReplacementValue(text: string, inputContext: CellInputInterpretationContext): ReplacementValue {
   if (text === '') return { kind: 'empty', value: null };
-  if (text.startsWith("'")) return { kind: 'text', value: text.slice(1) };
-  if (text.startsWith('=')) {
-    try { parseFormula(text); }
-    catch (error) { throw new Error(`Invalid replacement formula: ${error instanceof Error ? error.message : String(error)}`); }
-    return { kind: 'formula', value: null, formula: text };
+  let parsed: ReturnType<typeof parseCellText>;
+  try { parsed = parseCellText(text, inputContext); }
+  catch (error) {
+    if (text.startsWith('=')) throw new Error(`Invalid replacement formula: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
   }
+  if (parsed.formula !== undefined) return { kind: 'formula', value: null, formula: parsed.formula, numberFormatIntent: parsed.numberFormatIntent };
   const upper = text.toUpperCase();
-  if (REPLACEMENT_ERROR_CODES.has(upper)) return { kind: 'error', value: null, code: upper as FormulaErrorCode };
-  const parsed = parseCellText(text);
-  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value };
-  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value };
+  if (REPLACEMENT_ERROR_CODES.has(upper) && parsed.value === text && !isTextInputContext(inputContext)) return { kind: 'error', value: null, code: upper as FormulaErrorCode };
+  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
+  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
   if (parsed.value === null) return { kind: 'empty', value: null };
-  if (isNumericLiteral(text)) throw new Error(`Replacement number is not finite: ${text}`);
-  return { kind: 'text', value: parsed.value };
+  return { kind: 'text', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
 }
 
-function isNumericLiteral(text: string): boolean {
-  return /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(text);
+function isTextInputContext(context: CellInputInterpretationContext): boolean {
+  if (context.currentCellType === 'text') return true;
+  const section = context.currentNumberFormat?.split(';')[0];
+  return Boolean(section?.replace(/"(?:[^"]|"")*"/g, '').replace(/\\./g, '').includes('@'));
 }
 
 export function replacementCell(cell: CellData, replacement: ReplacementValue): CellData {
@@ -100,6 +101,10 @@ export function replacementCell(cell: CellData, replacement: ReplacementValue): 
     next.formulaValue = createFormulaError(replacement.code);
   } else {
     next.value = replacement.value;
+  }
+  if (replacement.numberFormatIntent?.kind === 'set') {
+    next.numberFormat = replacement.numberFormatIntent.format;
+    next.style = { ...(next.style ?? {}), numberFormat: replacement.numberFormatIntent.format };
   }
   return next;
 }

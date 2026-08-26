@@ -17,7 +17,8 @@ import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } 
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
-import { parseReplacementValue, replacementCell, replaceFindText, type ReplacementValue } from './find-replace';
+import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
+import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
 import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
 
 /**
@@ -82,6 +83,7 @@ export interface ReplaceRangeParams {
   sheetId: string;
   find: string;
   replace: string;
+  inputContext: CellInputInterpretationContext;
   range?: RangeRef;
   matchCase?: boolean;
   entireCell?: boolean;
@@ -345,6 +347,7 @@ function isValidFillParams(value: unknown): value is HomeFillParams {
 
 function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || typeof value.find !== 'string' || typeof value.replace !== 'string') return false;
+  if (!isCellInputInterpretationContext(value.inputContext)) return false;
   return (value.range === undefined || isRange(value.range))
     && (value.matchCase === undefined || typeof value.matchCase === 'boolean')
     && (value.entireCell === undefined || typeof value.entireCell === 'boolean')
@@ -1104,8 +1107,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidReplaceParams(params)) throw new Error('Invalid replace parameters');
       if (!params.find) return homeResult(context, []);
-      const requestedReplacement = parseReplacementValue(params.replace);
-      if (requestedReplacement.kind === 'empty') throw new Error('Replacement text must not be empty');
       const sheets = params.scope === 'workbook' ? context.workbook.getSheets() : [context.workbook.getSheet(params.sheetId)];
       const defaultRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
       const patches: Array<{ sheetId: string; row: number; column: number; next: CellData; previous?: CellData }> = [];
@@ -1121,7 +1122,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           if (!candidate) continue;
           const replaced = replaceText(candidate.text, params);
           if (replaced === undefined) continue;
-          const replacement = parseReplacementValue(replaced);
+          const replacement = parseReplacementValue(replaced, {
+            ...params.inputContext,
+            currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
+            currentCellType: cell.editor?.kind,
+          });
+          if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
           if (candidate.formula && replacement.kind !== 'formula') {
             throw new Error(`Formula replacement at ${sheet.id}!${row}:${column} must produce a formula`);
           }

@@ -31,7 +31,7 @@ import {
 import { isHorizontalAlignment, isReadingOrder, isVerticalAlignment } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
-import { buildCellFromText } from './text-input';
+import { buildCellFromText, type CellInputInterpretationContext } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
@@ -90,6 +90,7 @@ export interface CommitTextParams {
   row: number;
   column: number;
   text: string;
+  inputContext: CellInputInterpretationContext;
   style?: Partial<CellStyle>;
 }
 
@@ -1096,7 +1097,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
 
       const previous = sheet.cells.get(params.row, params.column);
-      const next = buildCellFromText(params.text, previous, params.style);
+      const next = buildCellFromText(params.text, previous, params.inputContext, params.style);
       if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
       // A formula is validated by the FormulaEngine after commit and does not
       // have a scalar value to validate at this boundary. Scalar input must
