@@ -75,7 +75,13 @@ export class LocalDataBlockStore {
   }
 
   private async getDatabase(): Promise<IDBDatabase | null> {
-    this.database ??= openWorkspaceDatabase(this.options);
+    if (!this.database) {
+      const pending = openWorkspaceDatabase(this.options);
+      this.database = pending.catch((error) => {
+        this.database = null;
+        throw error;
+      });
+    }
     return this.database;
   }
 

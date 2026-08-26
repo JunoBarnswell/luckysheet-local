@@ -981,6 +981,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('insertControls', 'insert', 70),
   group('sortFilter', 'data', 10),
   group('dataTools', 'data', 20),
+  group('findTransform', 'data', 30),
   group('outline', 'data', 40),
   group('whatIf', 'data', 70),
   group('comments', 'review', 10),
@@ -1062,6 +1063,7 @@ const BASE_RIBBON_LAYOUT_SPECS: Readonly<Record<Extract<RibbonLayoutSpec['tab'],
     groups: [
       groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort'), commandNode('sortDescending', 'sortDescending', 'sort')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'sort')))),
       groupSpec('dataTools', 20, columnNode('dataTools.primary', commandNode('dataSource', 'dataSource', 'data-tools', 'large'), stackNode('dataTools.secondary', commandNode('createDataSource', 'createDataSource', 'data-tools'), commandNode('dataValidation', 'dataValidation', 'data-tools'), commandNode('filterSelection', 'filterSelection', 'filter'), commandNode('clearFilter', 'clearFilter', 'filter')))),
+      groupSpec('findTransform', 30, columnNode('findTransform.primary', rowNode('findTransform.search', commandNode('findReplace', 'findReplace', 'find-transform', 'large'), commandNode('goTo', 'goTo', 'find-transform')), rowNode('findTransform.transform', commandNode('transpose', 'transpose', 'find-transform'), commandNode('flipHorizontal', 'flipHorizontal', 'find-transform'), commandNode('flipVertical', 'flipVertical', 'find-transform'), commandNode('splitByDelimiter', 'splitByDelimiter', 'find-transform')))),
       groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'outline'), commandNode('ungroupRows', 'ungroupRows', 'outline'), commandNode('showLevel1', 'showLevel1', 'outline')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'outline'), commandNode('ungroupColumns', 'ungroupColumns', 'outline'), commandNode('showLevel2', 'showLevel2', 'outline')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'outline'), commandNode('removeDuplicates', 'removeDuplicates', 'outline'), commandNode('textToColumns', 'textToColumns', 'outline'), commandNode('showLevel3', 'showLevel3', 'outline')))),
       groupSpec('whatIf', 70, columnNode('whatIf.primary', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'), commandNode('sjsTable', 'sjsTable', 'function', 'large'))),
     ],
@@ -1256,7 +1258,7 @@ const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups:
     const group = RIBBON_GROUP_CATALOG.find((candidate) => candidate.id === groupId);
     if (!group) throw new Error(`Unknown Ribbon group: ${groupId}`);
     const surfaces = RIBBON_TAB_SURFACES.filter((surface) => surface.tab === tab && surface.group === groupId && !surface.menuId);
-    return groupSpec(groupId, group.priority, columnNode(`${groupId}.layout`, ...surfaces.map(surfaceNode)));
+    return groupSpec(groupId, group.priority, ...surfaces.map(surfaceNode));
   }),
 });
 

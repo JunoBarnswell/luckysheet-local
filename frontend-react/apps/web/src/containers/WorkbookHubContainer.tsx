@@ -127,6 +127,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const [memberRole, setMemberRole] = useState<'editor' | 'commenter' | 'viewer'>('viewer');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [operationError, setOperationError] = useState<string>();
   const [error, setError] = useState<string>();
   const [activeDialog, setActiveDialog] = useState<ActiveDialog>(() => {
     if (typeof window === 'undefined') return null;
@@ -212,13 +213,16 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const execute = useCallback(async (operation: () => Promise<void>) => {
     setSubmitting(true);
     setError(undefined);
+    setOperationError(undefined);
     try {
       await operation();
       setActiveDialog(null);
       setTargetId(undefined);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '工作簿操作失败');
+      const message = cause instanceof Error ? cause.message : '工作簿操作失败';
+      setError(message);
+      setOperationError(message);
     } finally {
       setSubmitting(false);
     }
@@ -254,6 +258,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       return;
     }
     setPendingTemplate(templateId);
+    setOperationError(undefined);
     setActiveDialog('create');
   }, []);
 
@@ -364,6 +369,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       <CreateWorkbookDialog
         defaultLocationId={defaultLocationId}
         defaultName={pendingTemplate === 'blank' ? '未命名工作簿' : undefined}
+        error={operationError}
         locationOptions={locationOptions}
         onClose={() => setActiveDialog(null)}
         onSubmit={createWorkbook}

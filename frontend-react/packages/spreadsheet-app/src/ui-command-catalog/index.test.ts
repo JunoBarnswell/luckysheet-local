@@ -13,6 +13,7 @@ import {
   isRibbonCommandEnabled,
   RIBBON_COMMAND_CATALOG,
   RIBBON_GROUP_CATALOG,
+  validateRibbonLayoutSpecs,
   type RibbonCommandActions,
   type RibbonCommandContext,
 } from './index';
@@ -109,6 +110,10 @@ describe('Ribbon UI command catalog', () => {
         assert.equal(getRibbonGroupDefinition(placement.group).tab, placement.tab);
       }
     }
+  });
+
+  it('keeps every ribbon layout group and command placement resolvable', () => {
+    assert.deepEqual(validateRibbonLayoutSpecs(), []);
   });
 
   it('builds typed commands, callbacks and UI intents from one context', () => {

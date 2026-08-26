@@ -107,7 +107,7 @@ export function RibbonShell({
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[106px] overflow-hidden border-t-0 bg-white px-2 py-0">
+      <Box className="h-[106px] overflow-x-auto overflow-y-hidden border-t-0 bg-white px-0 py-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

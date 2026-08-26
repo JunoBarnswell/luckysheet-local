@@ -22,6 +22,18 @@ export interface IndexedDbFactory {
 
 export type IndexedDbFactoryLike = IDBFactory | IndexedDbFactory;
 
+export type WorkspaceDatabaseOpenErrorCode = 'blocked' | 'failed' | 'timeout';
+
+export class WorkspaceDatabaseOpenError extends Error {
+  readonly code: WorkspaceDatabaseOpenErrorCode;
+
+  constructor(code: WorkspaceDatabaseOpenErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'WorkspaceDatabaseOpenError';
+    this.code = code;
+  }
+}
+
 export interface IndexedDbStoreOptions {
   databaseName?: string;
   indexedDB?: IndexedDbFactoryLike | null;
@@ -108,8 +120,18 @@ export function ensureWorkspaceStores(database: IDBDatabase): void {
   createAssetStore(database);
 }
 
+interface IndexedDbOpenRequest {
+  result: IDBDatabase;
+  onupgradeneeded: (() => void) | null;
+  onsuccess: (() => void) | null;
+  onerror: (() => void) | null;
+  onblocked: (() => void) | null;
+  error?: DOMException | null;
+}
+
 type DatabasePromiseMap = Map<string, Promise<IDBDatabase>>;
 const databasePromises = new WeakMap<object, DatabasePromiseMap>();
+const WORKSPACE_DATABASE_OPEN_TIMEOUT_MS = 15_000;
 
 /**
  * Opens the shared workbook database and guarantees the complete current
@@ -130,17 +152,42 @@ export function openWorkspaceDatabase(options: IndexedDbStoreOptions = {}): Prom
   const existing = byName.get(name);
   if (existing) return existing;
 
-  const promise = new Promise<IDBDatabase>((resolve, reject) => {
-    const request = (factory as IndexedDbFactory).open(name, WORKSPACE_DATABASE_VERSION) as {
-      result: IDBDatabase;
-      onupgradeneeded: (() => void) | null;
-      onsuccess: (() => void) | null;
-      onerror: (() => void) | null;
-      error?: DOMException | null;
+  let promise!: Promise<IDBDatabase>;
+  promise = new Promise<IDBDatabase>((resolve, reject) => {
+    let settled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const rejectOpen = (error: WorkspaceDatabaseOpenError): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (byName.get(name) === promise) byName.delete(name);
+      reject(error);
     };
+    const request = (factory as IndexedDbFactory).open(name, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
     request.onupgradeneeded = () => ensureWorkspaceStores(request.result);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+      settled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
+    request.onblocked = () => rejectOpen(new WorkspaceDatabaseOpenError(
+      'blocked',
+      '本地工作簿存储正在被其他页面占用，请关闭其他工作簿页面后重试。',
+    ));
+    request.onerror = () => rejectOpen(new WorkspaceDatabaseOpenError(
+      'failed',
+      '无法打开本地工作簿存储，请刷新页面后重试。',
+      { cause: request.error },
+    ));
+    timeoutId = setTimeout(() => rejectOpen(new WorkspaceDatabaseOpenError(
+      'timeout',
+      '打开本地工作簿存储超时，请关闭其他工作簿页面后刷新重试。',
+    )), WORKSPACE_DATABASE_OPEN_TIMEOUT_MS);
   });
   byName.set(name, promise);
   return promise;

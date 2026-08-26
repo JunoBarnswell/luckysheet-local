@@ -245,11 +245,17 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
   }
 
   private database(): Promise<IDBDatabase> {
-    this.databasePromise ??= openWorkspaceDatabase({ databaseName: this.databaseName, indexedDB: this.factory })
-      .then((database) => {
-        if (!database) fail('requires IndexedDB');
-        return database;
+    if (!this.databasePromise) {
+      const pending = openWorkspaceDatabase({ databaseName: this.databaseName, indexedDB: this.factory })
+        .then((database) => {
+          if (!database) fail('requires IndexedDB');
+          return database;
+        });
+      this.databasePromise = pending.catch((error) => {
+        this.databasePromise = null;
+        throw error;
       });
+    }
     return this.databasePromise;
   }
 

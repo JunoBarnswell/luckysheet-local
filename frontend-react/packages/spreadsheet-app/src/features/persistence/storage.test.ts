@@ -12,6 +12,23 @@ import {
   buildPersistenceMeta,
   verifyWorkspaceRecord,
 } from './storage';
+import { openWorkspaceDatabase, WorkspaceDatabaseOpenError } from './indexed-db';
+
+interface FakeOpenRequest {
+  result: IDBDatabase;
+  onupgradeneeded: (() => void) | null;
+  onsuccess: (() => void) | null;
+  onerror: (() => void) | null;
+  onblocked: (() => void) | null;
+  error?: DOMException | null;
+}
+
+function fakeDatabase(): IDBDatabase {
+  return {
+    onversionchange: null,
+    close: () => undefined,
+  } as unknown as IDBDatabase;
+}
 
 describe('persistence storage', () => {
   it('tracks pending local operation metadata', () => {
@@ -107,5 +124,64 @@ describe('persistence storage', () => {
     const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
     assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
     assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
+  });
+
+  it('fails closed when the database upgrade is blocked and permits an explicit retry', async () => {
+    let attempts = 0;
+    const database = fakeDatabase();
+    const factory = {
+      open: () => {
+        const request: FakeOpenRequest = {
+          result: database,
+          onupgradeneeded: null,
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+        };
+        attempts += 1;
+        queueMicrotask(() => {
+          if (attempts === 1) request.onblocked?.();
+          else request.onsuccess?.();
+        });
+        return request;
+      },
+    };
+
+    await assert.rejects(
+      openWorkspaceDatabase({ databaseName: 'blocked-retry-test', indexedDB: factory }),
+      (error: unknown) => {
+        assert.equal(error instanceof WorkspaceDatabaseOpenError, true);
+        assert.equal((error as WorkspaceDatabaseOpenError).code, 'blocked');
+        assert.match((error as Error).message, /其他页面占用/);
+        return true;
+      },
+    );
+
+    assert.equal(await openWorkspaceDatabase({ databaseName: 'blocked-retry-test', indexedDB: factory }), database);
+  });
+
+  it('closes an open connection when a later schema upgrade requests a version change', async () => {
+    let closed = false;
+    const database = {
+      onversionchange: null as (() => void) | null,
+      close: () => { closed = true; },
+    } as unknown as IDBDatabase;
+    const factory = {
+      open: () => {
+        const request: FakeOpenRequest = {
+          result: database,
+          onupgradeneeded: null,
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+        };
+        queueMicrotask(() => request.onsuccess?.());
+        return request;
+      },
+    };
+
+    assert.equal(await openWorkspaceDatabase({ databaseName: 'version-change-test', indexedDB: factory }), database);
+    (database as unknown as { onversionchange: (() => void) | null }).onversionchange?.();
+    assert.equal(closed, true);
   });
 });

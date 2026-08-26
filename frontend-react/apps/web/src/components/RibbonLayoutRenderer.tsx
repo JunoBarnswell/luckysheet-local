@@ -13,6 +13,7 @@ import {
   RIBBON_LAYOUT_SPECS,
   RIBBON_TAB_SURFACES,
   type RibbonCommandId,
+  type RibbonGroupId,
   type RibbonLayoutNode,
   type RibbonLayoutSpec,
   type RibbonSurfaceDefinition,
@@ -31,6 +32,38 @@ export interface RibbonLayoutRendererProps {
 
 interface NodeRenderContext {
   inMenu: boolean;
+}
+
+/**
+ * The Designer keeps a stable footprint for each ribbon group so dense
+ * groups wrap inside their own area instead of pushing neighboring groups
+ * into the viewport or clipping their controls vertically.
+ */
+const RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
+  history: 'w-[144px]',
+  clipboard: 'w-[216px]',
+  font: 'w-[240px]',
+  alignment: 'w-[240px]',
+  number: 'w-[196px]',
+  styles: 'w-[216px]',
+  cells: 'w-[216px]',
+  editing: 'w-[216px]',
+  insertSheets: 'w-[220px]',
+  insertTables: 'w-[220px]',
+  insertCharts: 'w-[220px]',
+  insertDataCharts: 'w-[104px]',
+  illustrations: 'w-[288px]',
+  insertLinks: 'w-[104px]',
+  insertControls: 'w-[152px]',
+  sortFilter: 'w-[240px]',
+  dataTools: 'w-[232px]',
+  findTransform: 'w-[256px]',
+  outline: 'w-[224px]',
+  whatIf: 'w-[128px]',
+};
+
+export function ribbonGroupWidthClass(groupId: RibbonGroupId): string {
+  return RIBBON_GROUP_WIDTH_CLASSES[groupId] ?? 'min-w-[76px]';
 }
 
 function iconFor(node: { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) {
@@ -53,7 +86,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'column':
       return <Stack key={node.id} gap="none" className="min-w-0 items-stretch">{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
     case 'row':
-      return <Inline key={node.id} gap="none" className="min-w-0 flex-nowrap items-start">{node.children.map((child) => renderLayoutNode(child, context, props))}</Inline>;
+      return <Inline key={node.id} gap="none" className="w-full min-w-0 flex-wrap content-start items-start">{node.children.map((child) => renderLayoutNode(child, context, props))}</Inline>;
     case 'stack':
       return <Stack key={node.id} gap="none" className="min-w-0 items-stretch">{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
     case 'command':
@@ -102,7 +135,7 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
   return (
-    <Inline gap="none" className="h-[102px] min-w-0 flex-nowrap items-start overflow-hidden" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" className="h-[102px] w-max min-w-full flex-nowrap items-start overflow-visible" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {spec.groups.map((group, index) => {
         const collapsed = layout.mode === 'narrow' || (layout.mode === 'compact' && group.collapsePriority >= 50);
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
@@ -118,8 +151,8 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
                 <Stack gap="none" className="min-w-[14rem] p-1">{content}</Stack>
               </DropdownMenu>
             ) : (
-              <Stack data-ribbon-group={group.id} gap="none" className="h-[102px] min-w-[76px] shrink-0 justify-between px-1">
-                <Inline gap="none" className="min-h-0 flex-1 flex-nowrap items-start pt-2">{content}</Inline>
+              <Stack data-ribbon-group={group.id} gap="none" className={`h-[102px] shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id)}`}>
+                <Inline gap="none" className="min-h-0 flex-1 flex-wrap content-start items-start pt-2">{content}</Inline>
                 <Text size="xs" tone="subtle" className="h-4 text-center text-[10px] font-medium text-[#5b555a]">{groupLabel}</Text>
               </Stack>
             )}

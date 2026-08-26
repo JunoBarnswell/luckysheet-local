@@ -85,7 +85,13 @@ export class LocalAssetStore implements AssetStore {
   }
 
   private database(): Promise<IDBDatabase | null> {
-    this.databasePromise ??= openWorkspaceDatabase(this.options);
+    if (!this.databasePromise) {
+      const pending = openWorkspaceDatabase(this.options);
+      this.databasePromise = pending.catch((error) => {
+        this.databasePromise = null;
+        throw error;
+      });
+    }
     return this.databasePromise;
   }
 
