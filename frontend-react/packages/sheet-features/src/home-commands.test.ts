@@ -5,7 +5,14 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createFormulaError } from '@react-sheets/formula-engine';
 import { registerSheetCommands } from './index';
 import './fill-series.test';
-import { parseReplacementValue } from './home-commands';
+import { parseReplacementValue as parseReplacementValueWithContext } from './home-commands';
+import type { CellInputInterpretationContext } from './text-input';
+
+const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
+  sourceKind: 'direct-entry', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
+  referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
+};
+const parseReplacementValue = (text: string) => parseReplacementValueWithContext(text, TEST_INPUT_CONTEXT);
 
 function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
   const workbook = new WorkbookModel('home-commands', 'Home Commands');

@@ -224,7 +224,7 @@ describe('canonical drawing UI projection', () => {
       hyperlink: 'https://legacy.invalid',
       hyperlinkDetail: { id: 'legacy', target: { kind: 'url', url: 'https://legacy.invalid' } },
       comment: { id: 'legacy-comment', author: 'old', text: 'old', createdAt: '2020-01-01' },
-    });
+    } as unknown as import('@react-sheets/core-model').CellData);
     setCellHyperlink(sheet, 0, 0, { id: 'canonical', target: { kind: 'url', url: 'https://canonical.invalid' } });
     sheet.review.addThread({
       id: 'thread-1', sheetId: sheet.id, row: 0, column: 0, author: 'Alice', text: 'Review',

@@ -11,7 +11,7 @@ import type {
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { protectionResolver } from '@react-sheets/core-model';
-import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
 import { assertDataRegionContextMatches, filterOwnerFromDataRegionContext, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
@@ -1407,7 +1407,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const previous = ranges.flatMap((range) => cellsInRange(sheet, range));
       ranges.forEach((range) => assertNoDataRegionIntersection(sheet, range, 'Cell style preset'));
       const affectedRanges = ranges.map((range) => structuredClone(range));
-      const inverse = previous.map(({ row, column, cell }) => ({
+      const inverse: MutationInfo[] = previous.map(({ row, column, cell }) => ({
         id: 'cell.restore' as const,
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,

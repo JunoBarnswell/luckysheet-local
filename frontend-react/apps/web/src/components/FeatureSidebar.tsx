@@ -58,7 +58,6 @@ import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
 import { DataValidationPanel } from './panels/DataValidationPanel';
 import { PrintPanel } from './panels/PrintPanel';
 import { QueryPanel } from './panels/QueryPanel';
-import { AutomationPanel } from './panels/AutomationPanel';
 import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
@@ -161,13 +160,6 @@ export interface FeatureSidebarProps {
   onLoadQuery: (query: QueryDefinition) => Promise<void>;
   onRefreshQuery: (queryId: string) => Promise<void>;
   onTestQueryConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
-  automationRecording?: boolean;
-  recordedScript?: string;
-  lastScriptResult?: { ok: boolean; durationMs: number; error?: string } | null;
-  canRunScripts: boolean;
-  onRunAutomationScript: (source: string) => void;
-  onStartAutomationRecording: () => void;
-  onStopAutomationRecording: () => void;
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
   onGoalSeek: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
@@ -204,7 +196,6 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'dataValidation', label: 'Validate', icon: 'check-circle' },
   { id: 'print', label: 'Print', icon: 'printer' },
   { id: 'query', label: 'Query', icon: 'table' },
-  { id: 'automate', label: 'Automate', icon: 'function' },
   { id: 'extended', label: 'Extended', icon: 'sparkles' },
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'data', label: 'Tables', icon: 'table' },
@@ -386,13 +377,6 @@ export function FeatureSidebar({
   onLoadQuery,
   onRefreshQuery,
   onTestQueryConnection,
-  automationRecording = false,
-  recordedScript = '',
-  lastScriptResult = null,
-  canRunScripts,
-  onRunAutomationScript,
-  onStartAutomationRecording,
-  onStopAutomationRecording,
   lastWhatIfMessage = null,
   canRunExtended,
   onGoalSeek,
@@ -665,22 +649,10 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'print' ? (
           <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} />
         ) : null}
-        {phase === 'ready' && activePanel === 'automate' ? (
-          <AutomationPanel
-            recording={automationRecording}
-            recordedScript={recordedScript}
-            lastResult={lastScriptResult}
-            canRunScripts={canRunScripts}
-            onRunScript={onRunAutomationScript}
-            onStartRecording={onStartAutomationRecording}
-            onStopRecording={onStopAutomationRecording}
-          />
-        ) : null}
         {phase === 'ready' && activePanel === 'extended' ? (
           <ExtendedPanel
             lastWhatIfMessage={lastWhatIfMessage}
             canRunExtended={canRunExtended}
-            sheetId={sheetId}
             onGoalSeek={onGoalSeek}
             onRunScenario={onRunScenario}
           />

@@ -35,7 +35,7 @@ public class MutationDescriptorRegistry {
     private static final Set<String> TEXT_ORIENTATIONS = Set.of("horizontal", "stacked", "rotateUp", "rotateDown");
     private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
-            "automation.recording.changed", "banded.set",
+            "banded.set",
             "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set", "fill.applied", "fill.restored",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
@@ -57,7 +57,6 @@ public class MutationDescriptorRegistry {
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
-            Map.entry("automation.recording.changed", "Recorder state is transient session state and must not enter workbook history."),
             Map.entry("rows.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),

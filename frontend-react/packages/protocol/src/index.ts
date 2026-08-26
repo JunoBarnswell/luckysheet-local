@@ -266,7 +266,9 @@ function validateReviewSnapshot(value: unknown, sheetId: string): void {
   }
   const indexedNotes = new Set<string>();
   for (const [key, id] of Object.entries(notesByCell)) {
-    const [row, column] = key.split(':').map(Number);
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
     if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
       || !isNonEmptyString(id) || !noteIds.has(id) || indexedNotes.has(id)) throw new Error(`WorkbookSnapshot review note index is invalid: ${key}`);
     indexedNotes.add(id);
@@ -274,7 +276,9 @@ function validateReviewSnapshot(value: unknown, sheetId: string): void {
   if (indexedNotes.size !== noteIds.size) throw new Error(`WorkbookSnapshot review contains an unindexed note on ${sheetId}`);
   const indexedThreads = new Set<string>();
   for (const [key, ids] of Object.entries(threadIdsByCell)) {
-    const [row, column] = key.split(':').map(Number);
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
     if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
       || !Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(`WorkbookSnapshot review thread index is invalid: ${key}`);
     for (const id of ids) {

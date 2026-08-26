@@ -120,10 +120,12 @@ export interface SheetRangeQualifier {
   readonly endSheetId: string;
 }
 
+type QualifiedReferenceNode = CellReferenceNode | InvalidReferenceNode | RangeReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode;
+
 export interface SheetRangeReferenceNode {
   readonly type: 'sheet-range-reference';
   readonly qualifier: SheetRangeQualifier;
-  readonly reference: Exclude<FormulaReferenceNode, SpillReferenceNode | TableReferenceNode | ReferenceUnionNode | ReferenceIntersectionNode | SheetRangeReferenceNode | ExternalReferenceNode>;
+  readonly reference: QualifiedReferenceNode;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -136,7 +138,7 @@ export interface ExternalWorkbookQualifier {
 export interface ExternalReferenceNode {
   readonly type: 'external-reference';
   readonly qualifier: ExternalWorkbookQualifier;
-  readonly reference: Exclude<FormulaReferenceNode, SpillReferenceNode | TableReferenceNode | ReferenceUnionNode | ReferenceIntersectionNode | SheetRangeReferenceNode | ExternalReferenceNode>;
+  readonly reference: QualifiedReferenceNode;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }

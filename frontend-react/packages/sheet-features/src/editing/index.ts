@@ -186,30 +186,32 @@ interface PasteSnapshot {
 }
 
 function isPasteMutation(value: unknown): value is PasteMutationParams {
-  return isRecord(value) && typeof value.sheetId === 'string'
+  if (!isRecord(value) || !isRecord(value.clipboard) || !isRecord(value.clipboard.sourceExtent)) return false;
+  const clipboard = value.clipboard;
+  const sourceExtent = clipboard.sourceExtent as Record<string, unknown>;
+  return typeof value.sheetId === 'string'
     && isRecord(value.targetOrigin) && Number.isInteger(value.targetOrigin.row) && Number.isInteger(value.targetOrigin.column)
     && isCellInputInterpretationContext(value.inputContext)
     && isRecord(value.entryIntent) && value.entryIntent.kind === 'paste'
     && (value.transfer === 'copy' || value.transfer === 'move')
-    && isRecord(value.clipboard) && value.clipboard.transfer === value.transfer
-    && value.clipboard.schema === 'SparseClipboardPayload'
-    && isRecord(value.clipboard.sourceExtent)
-    && Number.isInteger(value.clipboard.sourceExtent.rows) && Number(value.clipboard.sourceExtent.rows) > 0
-    && Number.isInteger(value.clipboard.sourceExtent.columns) && Number(value.clipboard.sourceExtent.columns) > 0
-    && Array.isArray(value.clipboard.occupiedCells)
-    && value.clipboard.occupiedCells.every((cell) => isRecord(cell)
-      && Number.isInteger(cell.rowOffset) && Number(cell.rowOffset) >= 0 && Number(cell.rowOffset) < Number(value.clipboard.sourceExtent!.rows)
-      && Number.isInteger(cell.columnOffset) && Number(cell.columnOffset) >= 0 && Number(cell.columnOffset) < Number(value.clipboard.sourceExtent!.columns)
+    && clipboard.transfer === value.transfer
+    && clipboard.schema === 'SparseClipboardPayload'
+    && Number.isInteger(sourceExtent.rows) && Number(sourceExtent.rows) > 0
+    && Number.isInteger(sourceExtent.columns) && Number(sourceExtent.columns) > 0
+    && Array.isArray(clipboard.occupiedCells)
+    && clipboard.occupiedCells.every((cell) => isRecord(cell)
+      && Number.isInteger(cell.rowOffset) && Number(cell.rowOffset) >= 0 && Number(cell.rowOffset) < Number(sourceExtent.rows)
+      && Number.isInteger(cell.columnOffset) && Number(cell.columnOffset) >= 0 && Number(cell.columnOffset) < Number(sourceExtent.columns)
       && isCellData(cell.value))
-    && isRecord(value.clipboard.rangeMetadata)
-    && Array.isArray(value.clipboard.rangeMetadata.columnWidths)
-    && Array.isArray(value.clipboard.rangeMetadata.validations)
-    && Array.isArray(value.clipboard.rangeMetadata.conditionalFormats)
-    && Array.isArray(value.clipboard.rangeMetadata.notes)
-    && Array.isArray(value.clipboard.rangeMetadata.comments)
-    && Array.isArray(value.clipboard.rangeMetadata.hyperlinks)
+    && isRecord(clipboard.rangeMetadata)
+    && Array.isArray(clipboard.rangeMetadata.columnWidths)
+    && Array.isArray(clipboard.rangeMetadata.validations)
+    && Array.isArray(clipboard.rangeMetadata.conditionalFormats)
+    && Array.isArray(clipboard.rangeMetadata.notes)
+    && Array.isArray(clipboard.rangeMetadata.comments)
+    && Array.isArray(clipboard.rangeMetadata.hyperlinks)
     && isPasteSpecialSpec(value.spec)
-    && isPasteSpecialSpecSupported(value.spec, value.clipboard as unknown as ClipboardPayload)
+    && isPasteSpecialSpecSupported(value.spec, clipboard as unknown as ClipboardPayload)
     && isRecord(value.sourceExtent) && Number.isInteger(value.sourceExtent.rows) && Number.isInteger(value.sourceExtent.columns)
     && isPasteSnapshot(value.snapshot)
     && (value.sourceSnapshot === undefined || isPasteSnapshot(value.sourceSnapshot))
@@ -587,6 +589,15 @@ function keyFor(row: number, column: number): string {
   return `${row}:${column}`;
 }
 
+function coordinatesFromKey(key: string): { row: number; column: number } {
+  if (!/^\d+:\d+$/.test(key)) throw new Error(`Invalid cell metadata key: ${key}`);
+  const [rowText, columnText] = key.split(':');
+  const row = Number(rowText);
+  const column = Number(columnText);
+  if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column)) throw new Error(`Invalid cell metadata key: ${key}`);
+  return { row, column };
+}
+
 function snapshotCells(sheet: WorksheetModel, ranges: RangeRef[]): CellSnapshot[] {
   const output: CellSnapshot[] = [];
   const seen = new Set<string>();
@@ -605,7 +616,7 @@ function snapshotMetadata(sheet: WorksheetModel, ranges: RangeRef[], include: Pa
   const contains = (row: number, column: number) => ranges.some((range) => rangeContains(range, row, column));
   const notes = include.commentsNotes ? sheet.review.noteEntries().filter((entry) => contains(entry.row, entry.column)).map((entry) => ({ key: entry.key, value: entry.note })) : undefined;
   const hyperlinks = include.hyperlinks ? [...sheet.hyperlinks.entries()].filter(([key]) => {
-    const [row, column] = key.split(':').map(Number);
+    const { row, column } = coordinatesFromKey(key);
     return Number.isInteger(row) && Number.isInteger(column) && contains(row, column);
   }).map(([key, value]) => ({ key, value: structuredClone(value) })) : undefined;
   const commentCells = include.commentsNotes ? sheet.review.threadEntries().filter((thread) => contains(thread.row, thread.column)).map((thread) => keyFor(thread.row, thread.column)) : undefined;
@@ -627,7 +638,7 @@ function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): voi
     if (range.sheetId !== sheet.id) continue;
     for (const entry of sheet.review.noteEntries()) if (rangeContains(range, entry.row, entry.column)) sheet.review.removeNote(entry.row, entry.column);
     for (const key of [...sheet.hyperlinks.keys()]) {
-      const [row, column] = key.split(':').map(Number);
+      const { row, column } = coordinatesFromKey(key);
       if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.hyperlinks.delete(key);
     }
     for (const thread of sheet.review.threadEntries()) if (rangeContains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
@@ -839,15 +850,15 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       const inRanges = (row: number, column: number, ranges: RangeRef[]) => ranges.some((range) => rangeContains(range, row, column));
       after.cells = after.cells.filter((entry) => !inRanges(entry.row, entry.column, after.clearRanges ?? []));
       if (after.notes) after.notes = after.notes.filter((entry) => {
-        const [row, column] = entry.key.split(':').map(Number);
+        const { row, column } = coordinatesFromKey(entry.key);
         return !inRanges(row, column, after.clearMetadataRanges ?? []);
       });
       if (after.hyperlinks) after.hyperlinks = after.hyperlinks.filter((entry) => {
-        const [row, column] = entry.key.split(':').map(Number);
+        const { row, column } = coordinatesFromKey(entry.key);
         return !inRanges(row, column, after.clearMetadataRanges ?? []);
       });
       if (after.commentCells) after.commentCells = after.commentCells.filter((key) => {
-        const [row, column] = key.split(':').map(Number);
+        const { row, column } = coordinatesFromKey(key);
         return !inRanges(row, column, after.clearMetadataRanges ?? []);
       });
       if (after.comments) after.comments = after.comments.filter((entry) => !inRanges(entry.row, entry.column, after.clearMetadataRanges ?? []));

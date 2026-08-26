@@ -1,10 +1,10 @@
-import { isFormulaError, type FormulaValue } from '../values';
+import { isFormulaError, isReferenceValue, type FormulaValue } from '../values';
 import { compareWorkbookValues, type WorkbookCollationContext } from '../collation';
 
 export type LookupMatchMode = 0 | -1 | 1 | 2;
 
 function scalar(value: FormulaValue): number | string | boolean | null {
-  return isFormulaError(value) || Array.isArray(value) ? null : value;
+  return isFormulaError(value) || isReferenceValue(value) || Array.isArray(value) ? null : value;
 }
 
 export function lookupCompare(left: FormulaValue, right: FormulaValue, context?: WorkbookCollationContext): number | null {

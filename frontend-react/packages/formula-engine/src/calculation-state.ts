@@ -152,28 +152,32 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isCanonicalDateParts(value: unknown): value is CanonicalExcelDateParts {
   if (!isRecord(value)) return false;
-  return Number.isInteger(value.year) && value.year >= 1 && value.year <= 9999
-    && Number.isInteger(value.month) && value.month >= 1 && value.month <= 12
-    && Number.isInteger(value.day) && value.day >= 1 && value.day <= 31
-    && Number.isInteger(value.hour) && value.hour >= 0 && value.hour <= 23
-    && Number.isInteger(value.minute) && value.minute >= 0 && value.minute <= 59
-    && Number.isInteger(value.second) && value.second >= 0 && value.second <= 59
-    && Number.isInteger(value.millisecond) && value.millisecond >= 0 && value.millisecond <= 999;
+  const integerInRange = (candidate: unknown, minimum: number, maximum: number): candidate is number => typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= minimum && candidate <= maximum;
+  return integerInRange(value.year, 1, 9999)
+    && integerInRange(value.month, 1, 12)
+    && integerInRange(value.day, 1, 31)
+    && integerInRange(value.hour, 0, 23)
+    && integerInRange(value.minute, 0, 59)
+    && integerInRange(value.second, 0, 59)
+    && integerInRange(value.millisecond, 0, 999);
 }
 
 function isExcelNumericContext(value: unknown): value is ExcelNumericContext {
   if (!isRecord(value)) return false;
-  return Number.isSafeInteger(value.significantDigits)
+  return typeof value.significantDigits === 'number'
+    && Number.isSafeInteger(value.significantDigits)
     && value.significantDigits >= 1
     && value.significantDigits <= 15;
 }
 
 function isCalculationEntropyContext(value: unknown): value is CalculationEntropyContext {
   if (!isRecord(value)) return false;
-  return Number.isSafeInteger(value.cycleId)
+  return typeof value.cycleId === 'number'
+    && Number.isSafeInteger(value.cycleId)
     && value.cycleId >= 0
     && typeof value.entropySeed === 'string'
     && value.entropySeed.trim().length > 0
+    && typeof value.passIndex === 'number'
     && Number.isSafeInteger(value.passIndex)
     && value.passIndex >= 0;
 }

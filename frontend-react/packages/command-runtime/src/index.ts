@@ -559,7 +559,7 @@ function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
   if (!direction || !isRecord(mutation.params)) return undefined;
   const at = mutation.params.at;
   const count = mutation.params.count;
-  if (!Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
+  if (typeof at !== 'number' || typeof count !== 'number' || !Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
   return { axis, at, count, direction, sheetId: mutation.sheetId };
 }
 

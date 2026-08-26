@@ -1,0 +1,520 @@
+[     731ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[    1096ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:4180/favicon.ico:0
+[   93020ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2038000ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038010ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038011ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038012ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038012ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038012ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038013ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038013ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038014ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038014ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038014ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038014ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038015ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038015ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038015ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038016ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038016ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038016ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2038017ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2038017ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106529ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106530ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106531ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106531ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106533ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106533ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106534ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106534ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106541ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106541ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106542ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106542ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106543ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106543ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106543ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106544ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106544ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106544ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2106559ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2106560ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117087ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117088ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117089ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117089ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117090ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117091ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117093ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117094ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117095ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117096ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117098ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117099ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117101ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117102ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117104ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117105ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117106ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117106ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2117107ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2117109ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142362ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142363ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142363ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142364ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142364ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142364ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142365ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142365ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142366ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142366ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142366ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142367ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142367ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142367ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142368ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142368ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142368ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142368ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2142369ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2142369ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179134ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179135ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179136ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179136ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179137ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179138ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179140ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179142ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179143ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179145ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179146ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2179147ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2179148ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202449ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202450ms] [ERROR] [vite] Failed to reload /src/components/HomeRibbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202450ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202450ms] [ERROR] [vite] Failed to reload /src/components/ReportViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202451ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202451ms] [ERROR] [vite] Failed to reload /src/components/GanttViewOverlay.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202451ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202451ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202452ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202452ms] [ERROR] [vite] Failed to reload /src/ApplicationServicesProvider.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202452ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202452ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202452ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] Failed to reload /src/components/SheetCanvas.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] Failed to reload /src/components/RibbonLayoutRenderer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] Failed to reload /src/components/RibbonTabPresenter.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/features/persistence/indexed-db.ts?t=1787760995704' does not provide an export named 'openWorkspaceDatabase' @ http://127.0.0.1:4180/@vite/client:881
+[ 2202453ms] [ERROR] [vite] Failed to reload /src/containers/WorkbookHubContainer.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2278689ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2313141ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2325703ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2342166ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2357775ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761299476:61:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761299476:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2357769ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2358793ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2438299ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2446964ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2463732ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2474336ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2514564ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761471360:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761471358:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2514563ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2514635ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761471360:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761471360:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2514635ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2515657ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2570632ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/index.ts?t=1787761528396' does not provide an export named 'SAMPLE_AUTOMATION_SCRIPT' @ http://127.0.0.1:4180/@vite/client:881
+[ 2570633ms] [ERROR] [vite] Failed to reload /src/App.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2570633ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/index.ts?t=1787761528396' does not provide an export named 'SAMPLE_AUTOMATION_SCRIPT' @ http://127.0.0.1:4180/@vite/client:881
+[ 2570633ms] [ERROR] [vite] Failed to reload /src/components/Ribbon.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2570634ms] [ERROR] [vite] SyntaxError: The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/index.ts?t=1787761528396' does not provide an export named 'SAMPLE_AUTOMATION_SCRIPT' @ http://127.0.0.1:4180/@vite/client:881
+[ 2570634ms] [ERROR] [vite] Failed to reload /src/editor/EditorShell.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://127.0.0.1:4180/@vite/client:881
+[ 2570688ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761471360:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761471360:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2570673ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2572570ms] The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/index.ts?t=1787761528396' does not provide an export named 'SAMPLE_AUTOMATION_SCRIPT'
+[ 2575259ms] The requested module '/@fs/C:/Users/kuo13/Projects/luckysheet-local/frontend-react/packages/spreadsheet-app/src/index.ts?t=1787761528396' does not provide an export named 'SAMPLE_AUTOMATION_SCRIPT'
+[ 2605682ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2732005ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2752337ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 2785561ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761743573:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761743564:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2785560ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2786035ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761743573:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761743567:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2786034ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2786118ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787761743573:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787761743573:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 2786118ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 2787293ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3040008ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3139665ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3277535ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762234903:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762234898:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3277531ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3277995ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762234903:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762234903:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3277995ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3279611ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3317835ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3354560ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762312251:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762312239:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3354559ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3355218ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762312251:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762312241:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3355217ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3356539ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3384937ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762342594:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762342589:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3384932ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3385371ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762342594:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762342594:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3385370ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3386980ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3474889ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762431970:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762431961:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3474888ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3478564ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3482052ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3519611ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3546821ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762504592:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762504586:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3546821ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3547427ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762504592:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762504592:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3547428ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3549550ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3613626ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3633832ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3639737ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762597458:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762597450:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3639736ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3640490ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762597458:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762597453:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3640490ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3640560ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762597458:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762597458:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3640560ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3642777ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3717108ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762674455:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762674446:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3717107ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3717521ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762674455:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762674455:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3717520ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3719917ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3774935ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3786131ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3876082ms] Error: useApplicationServices must be used inside ApplicationServicesProvider
+    at useApplicationServices (http://127.0.0.1:4180/src/ApplicationServicesProvider.tsx?t=1787762833845:62:24)
+    at WorkbookRouteGate (http://127.0.0.1:4180/src/App.tsx?t=1787762833824:34:23)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:18509:20)
+    at renderWithHooks (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:7475:21)
+    at beginWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:997:72)
+    at performUnitOfWork (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12561:98)
+    at workLoopSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12424:43)
+    at renderRootSync (http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:12408:13)
+[ 3876082ms] [WARNING] %s
+
+%s
+ An error occurred in the <WorkbookRouteGate> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:6965
+[ 3877856ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3883384ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3943855ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 3964399ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 4003785ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 4156032ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102
+[ 4165428ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4180/node_modules/.vite/deps/react-dom_client.js?v=7e03b88e:20102

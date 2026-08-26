@@ -1,11 +1,11 @@
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import { loadOpcPackageGraph, verifyNativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import {
-  openWorkspaceDatabase,
+  resolveWorkspaceDatabaseCoordinator,
   requestResult,
   transactionComplete,
   type IndexedDbStoreOptions,
-  WORKSPACE_DATABASE_NAME,
+  type WorkspaceDatabaseCoordinator,
   NATIVE_PACKAGE_STORE_NAME,
 } from './indexed-db';
 
@@ -15,17 +15,6 @@ export interface NativePackageRecord {
   unitId: string;
   artifact: NativePackageState;
   updatedAt: string;
-}
-
-const memoryDatabases = new Map<string, Map<string, NativePackageRecord>>();
-
-function memoryArtifacts(databaseName: string): Map<string, NativePackageRecord> {
-  let records = memoryDatabases.get(databaseName);
-  if (!records) {
-    records = new Map<string, NativePackageRecord>();
-    memoryDatabases.set(databaseName, records);
-  }
-  return records;
 }
 
 function copyArtifact(artifact: NativePackageState): NativePackageState {
@@ -73,76 +62,37 @@ export async function buildNativePackageRecord(unitId: string, artifact: NativeP
 
 /** Per-workbook persisted native package bytes; never part of a Snapshot. */
 export class LocalNativePackageStore {
-  private readonly options: IndexedDbStoreOptions;
-  private readonly databaseName: string;
-  private databasePromise: Promise<IDBDatabase | null> | null = null;
+  private readonly coordinator: WorkspaceDatabaseCoordinator;
 
   constructor(options: IndexedDbStoreOptions = {}) {
-    this.options = options;
-    this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
-  }
-
-  private getDatabase(): Promise<IDBDatabase | null> {
-    if (!this.databasePromise) {
-      const pending = openWorkspaceDatabase(this.options);
-      this.databasePromise = pending.catch((error) => {
-        this.databasePromise = null;
-        throw error;
-      });
-    }
-    return this.databasePromise;
+    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
   }
 
   async save(unitId: string, artifact: NativePackageState): Promise<NativePackageRecord> {
     const record = await buildNativePackageRecord(unitId, artifact);
-    const db = await this.getDatabase();
-    if (!db) {
-      memoryArtifacts(this.databaseName).set(unitId, copyRecord(record));
-      return copyRecord(record);
-    }
-    const transaction = db.transaction(NATIVE_PACKAGE_STORE_NAME, 'readwrite');
+    const transaction = await this.coordinator.transaction(NATIVE_PACKAGE_STORE_NAME, 'readwrite');
     transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).put(record);
     await transactionComplete(transaction);
     return copyRecord(record);
   }
 
   async load(unitId: string): Promise<NativePackageState | null> {
-    const db = await this.getDatabase();
-    const record = db
-      ? await (async () => {
-        const transaction = db.transaction(NATIVE_PACKAGE_STORE_NAME, 'readonly');
-        const value = await requestResult(transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).get(unitId)) as NativePackageRecord | undefined;
-        await transactionComplete(transaction);
-        return value;
-      })()
-      : memoryArtifacts(this.databaseName).get(unitId);
-    if (!record || record.schema !== 'NativePackageRecord' || record.version !== 1 || record.unitId !== unitId) return null;
-    try {
-      await verifyNativePackageState(record.artifact);
-      let packageGraph = record.artifact.packageGraph;
-      if (Object.keys(packageGraph.parts).length === 0) {
-        try {
-          packageGraph = loadOpcPackageGraph(record.artifact.sourceBytes, {}, record.artifact.fileName).packageGraph;
-        } catch {
-          // Focused persistence tests and explicit memory callers may provide
-          // a verified native state whose source bytes are not a full archive.
-          // Keep its canonical metadata instead of deleting a checksummed record.
-        }
-      }
-      return copyArtifact({ ...record.artifact, packageGraph });
-    } catch {
-      await this.remove(unitId);
-      return null;
+    const transaction = await this.coordinator.transaction(NATIVE_PACKAGE_STORE_NAME, 'readonly');
+    const record = await requestResult(transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).get(unitId)) as NativePackageRecord | undefined;
+    await transactionComplete(transaction);
+    if (!record) return null;
+    if (record.schema !== 'NativePackageRecord' || record.version !== 1 || record.unitId !== unitId) {
+      throw new Error(`NATIVE_PACKAGE_SCHEMA_INVALID: ${unitId}`);
     }
+    await verifyNativePackageState(record.artifact);
+    const packageGraph = Object.keys(record.artifact.packageGraph.parts).length === 0
+      ? loadOpcPackageGraph(record.artifact.sourceBytes, {}, record.artifact.fileName).packageGraph
+      : record.artifact.packageGraph;
+    return copyArtifact({ ...record.artifact, packageGraph });
   }
 
   async remove(unitId: string): Promise<void> {
-    const db = await this.getDatabase();
-    if (!db) {
-      memoryArtifacts(this.databaseName).delete(unitId);
-      return;
-    }
-    const transaction = db.transaction(NATIVE_PACKAGE_STORE_NAME, 'readwrite');
+    const transaction = await this.coordinator.transaction(NATIVE_PACKAGE_STORE_NAME, 'readwrite');
     transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).delete(unitId);
     await transactionComplete(transaction);
   }

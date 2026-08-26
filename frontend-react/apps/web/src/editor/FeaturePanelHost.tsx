@@ -145,13 +145,6 @@ export function FeaturePanelHost({
           onLoadQuery={session.loadQuery.bind(session)}
           onRefreshQuery={session.refreshQuery.bind(session)}
           onTestQueryConnection={session.testQueryConnection.bind(session)}
-          automationRecording={state.automationRecording}
-          recordedScript={state.recordedScript}
-          lastScriptResult={state.lastScriptResult}
-          canRunScripts={state.permissions.script}
-          onRunAutomationScript={session.runAutomationScript.bind(session)}
-          onStartAutomationRecording={session.startAutomationRecording.bind(session)}
-          onStopAutomationRecording={session.stopAutomationRecording.bind(session)}
           lastWhatIfMessage={state.lastWhatIfResult && "message" in state.lastWhatIfResult
             ? state.lastWhatIfResult.message
             : state.lastWhatIfResult && "status" in state.lastWhatIfResult

@@ -137,9 +137,12 @@ describe('WorkbookSession core editing integration', () => {
     const sheetId = app.getActiveSheetId();
     selectCell(app, 0, 0);
     app.setClipboard({
+      schema: 'SparseClipboardPayload',
       range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-      values: [[{ value: 'blocked' }]],
+      sourceExtent: { rows: 1, columns: 1 },
+      occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 'blocked' } }],
       transfer: 'move',
+      representations: [],
       rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     });
     const historyDepth = app['runtime'].commands.getHistoryDepth();

@@ -293,7 +293,7 @@ export interface AddDataValidationParams {
   rule: DataValidationRule;
 }
 
-function cellRange(params: SetCellValueParams): RangeRef[] {
+function cellRange(params: Pick<SetCellValueParams, 'sheetId' | 'row' | 'column'> & Partial<Pick<SetCellValueParams, 'value' | 'entryIntent'>>): RangeRef[] {
   return [
     {
       sheetId: params.sheetId,

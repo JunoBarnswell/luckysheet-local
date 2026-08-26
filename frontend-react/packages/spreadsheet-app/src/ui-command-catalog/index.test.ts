@@ -94,7 +94,6 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     cellStyle: {},
     actions,
     dispatchSessionIntent: () => undefined,
-    sampleAutomationScript: 'return 1;',
     ...overrides,
   };
 }

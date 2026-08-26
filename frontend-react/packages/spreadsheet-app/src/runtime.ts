@@ -34,6 +34,7 @@ import {
   type AssetStore,
   type IndexedDbWorkspaceStoreOptions,
   type WorkspaceRecord,
+  WorkspaceStorageError,
 } from './features/persistence';
 import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
 import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
@@ -163,7 +164,10 @@ export function createSpreadsheetRuntime(options: {
     unitId: () => runtime.model.unitId,
     isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
   });
-  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, options.persistence);
+  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, {
+    ...options.persistence,
+    coordinator: workspacePersistence.coordinator,
+  });
   runtime = {
     api,
     formula: formula as FormulaEngine,
@@ -1004,8 +1008,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         const first = summaries[0];
         if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
       }
-    } catch {
-      runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+    } catch (error) {
+      publishPersistenceFailure(runtime, error);
+      return;
     }
   }
 
@@ -1036,9 +1041,14 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     // though the workbook remains local-only. Recreate the journal owner
     // before the first post-remount command so edits remain durable.
     if (!runtime.collaboration) replaceCollaborationSession(runtime, localRecord);
-    const checkpointed = await checkpointStartupLocally(runtime);
+    try {
+      await checkpointStartupLocally(runtime);
+    } catch (error) {
+      publishPersistenceFailure(runtime, error);
+      return;
+    }
     if (isActive()) {
-      runtime.handlers.onSaveState?.(checkpointed ? (runtime.remoteSyncRequested ? 'offline' : 'saved') : 'error');
+      runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
       runtime.handlers.onMutationsApplied?.();
@@ -1101,9 +1111,14 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.remoteConnected = false;
     runtime.remoteSyncRequested = true;
     runtime.handlers.onAccessRole?.(null);
-    const checkpointed = await checkpointStartupLocally(runtime);
+    try {
+      await checkpointStartupLocally(runtime);
+    } catch (persistenceError) {
+      publishPersistenceFailure(runtime, persistenceError);
+      return;
+    }
     if (isActive()) {
-      runtime.handlers.onSaveState?.(checkpointed ? 'offline' : 'error');
+      runtime.handlers.onSaveState?.('offline');
       runtime.handlers.onNotice?.('Server unavailable; using local IndexedDB workspace');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onMutationsApplied?.();
@@ -1111,33 +1126,34 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   }
 }
 
-/**
- * Startup may continue with an in-memory local workbook when IndexedDB is
- * unavailable. A server failure must never become a blank or permanently
- * loading frontend merely because local persistence also reports an error.
- */
-async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<boolean> {
-  try {
-    const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
-      runtime.model.snapshot(),
-      runtime.localRevision,
-      runtime.remoteRevision,
-      offlineResolution?.binding.syncMode ?? 'local-only',
-      undefined,
-      offlineResolution ? {
-        location: offlineResolution.binding.location,
-        lifecycle: offlineResolution.lifecycle,
-        source: runtime.workspaceRecord?.metadata.source ?? 'native',
-        role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
-      } : undefined,
-    );
-    return true;
-  } catch (error) {
-    runtime.workspaceRecord = null;
-    runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local workspace persistence is unavailable');
-    return false;
+async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<void> {
+  const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
+  runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+    runtime.model.snapshot(),
+    runtime.localRevision,
+    runtime.remoteRevision,
+    offlineResolution?.binding.syncMode ?? 'local-only',
+    undefined,
+    offlineResolution ? {
+      location: offlineResolution.binding.location,
+      lifecycle: offlineResolution.lifecycle,
+      source: runtime.workspaceRecord?.metadata.source ?? 'native',
+      role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
+    } : undefined,
+  );
+}
+
+function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {
+  runtime.workspaceRecord = null;
+  runtime.remoteConnected = false;
+  runtime.handlers.onAccessRole?.(null);
+  runtime.handlers.onSaveState?.('error');
+  runtime.handlers.onPhaseChange?.('error');
+  if (error instanceof WorkspaceStorageError) {
+    runtime.handlers.onNotice?.(`${error.code}: ${error.message} ${error.recovery}`);
+    return;
   }
+  runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'STORAGE_TRANSACTION_FAILED: 本地工作簿持久化失败。');
 }
 
 function isAuthoritativeRemoteFailure(error: unknown): boolean {

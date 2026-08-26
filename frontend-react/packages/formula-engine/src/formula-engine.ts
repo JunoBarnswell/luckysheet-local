@@ -1042,7 +1042,7 @@ export class FormulaEngine {
   }
 
   private createEvaluationContext(
-    cell: StoredCell & { ast: FormulaAst },
+    cell: StoredCell,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[],

@@ -69,7 +69,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
       id: 'platform',
       version: '1.0.0',
       commandIds: platformCommandIds,
-      permissions: ['history.restore', 'persistence.write', 'print.export', 'xlsx.exchange', 'query.execute', 'automation.run'],
+      permissions: ['history.restore', 'persistence.write', 'print.export', 'xlsx.exchange', 'query.execute'],
     },
   ];
   return registeredManifests;

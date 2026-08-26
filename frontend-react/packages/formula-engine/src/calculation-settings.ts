@@ -41,6 +41,7 @@ export function isWorkbookCalculationSettings(value: unknown): value is Workbook
   const settings = value as Partial<WorkbookCalculationSettings>;
   return (settings.mode === 'automatic' || settings.mode === 'manual' || settings.mode === 'partial')
     && typeof settings.iterativeCalculation === 'boolean'
+    && typeof settings.maximumIterations === 'number'
     && Number.isSafeInteger(settings.maximumIterations)
     && settings.maximumIterations >= 1
     && typeof settings.maximumChange === 'number'

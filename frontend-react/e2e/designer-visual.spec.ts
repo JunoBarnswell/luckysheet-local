@@ -45,9 +45,9 @@ for (const viewport of viewports) {
       };
     });
     expect(geometry.shell).toMatchObject({ x: 0, y: 0, width: viewport.width, height: viewport.height });
-    expect(geometry.ribbon).toMatchObject({ x: 0, y: 0, width: viewport.width, height: 142 });
-    expect(geometry.formula).toMatchObject({ x: 0, y: 142, width: viewport.width, height: 37 });
-    expect(geometry.workspace).toMatchObject({ x: 0, y: 179, width: viewport.width, height: viewport.height - 201 });
+    expect(geometry.ribbon).toMatchObject({ x: 0, y: 0, width: viewport.width, height: 157 });
+    expect(geometry.formula).toMatchObject({ x: 0, y: 157, width: viewport.width, height: 37 });
+    expect(geometry.workspace).toMatchObject({ x: 0, y: 194, width: viewport.width, height: viewport.height - 216 });
     expect(geometry.tabs).toMatchObject({ x: 0, y: viewport.height - 51, width: viewport.width, height: 29 });
     expect(geometry.status).toMatchObject({ x: 0, y: viewport.height - 22, width: viewport.width, height: 22 });
     expect(geometry.scrollWidth).toBeLessThanOrEqual(viewport.width);

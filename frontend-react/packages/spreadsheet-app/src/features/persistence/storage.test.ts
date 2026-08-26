@@ -12,7 +12,15 @@ import {
   buildPersistenceMeta,
   verifyWorkspaceRecord,
 } from './storage';
-import { openWorkspaceDatabase, WorkspaceDatabaseOpenError } from './indexed-db';
+import {
+  ASSET_STORE_NAME,
+  DATA_BLOCK_STORE_NAME,
+  NATIVE_PACKAGE_STORE_NAME,
+  OVERLAY_STORE_NAME,
+  WORKSPACE_STORE_NAME,
+  WorkspaceDatabaseCoordinator,
+  WorkspaceStorageError,
+} from './indexed-db';
 
 interface FakeOpenRequest {
   result: IDBDatabase;
@@ -27,6 +35,9 @@ function fakeDatabase(): IDBDatabase {
   return {
     onversionchange: null,
     close: () => undefined,
+    objectStoreNames: {
+      contains: (name: string) => [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME, ASSET_STORE_NAME].includes(name),
+    },
   } as unknown as IDBDatabase;
 }
 
@@ -77,7 +88,7 @@ describe('persistence storage', () => {
     assert.equal(verifyWorkspaceRecord(record), true);
   });
 
-  it('opens, lists, checkpoints, and deletes local workspaces without browser storage', async () => {
+  it('opens, lists, checkpoints, and deletes local workspaces through IndexedDB', async () => {
     const store = new LocalWorkspaceStore({ databaseName: 'persistence-test-catalog' });
     const persistence = new WorkspacePersistence({ databaseName: 'persistence-test-catalog' });
     const snapshot = new WorkbookModel('wb-catalog', 'Catalog').snapshot();
@@ -101,7 +112,7 @@ describe('persistence storage', () => {
 
   it('checkpoints the workspace and source artifact through the same persistence namespace', async () => {
     const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
-    const persistence = new WorkspacePersistence({ databaseName, indexedDB: null });
+    const persistence = new WorkspacePersistence({ databaseName });
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
     const artifact = await createNativePackageState({
       fileName: 'artifact.xlsx',
@@ -147,17 +158,18 @@ describe('persistence storage', () => {
       },
     };
 
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'blocked-retry-test', indexedDB: factory, openTimeoutMs: 10, broadcast: false });
     await assert.rejects(
-      openWorkspaceDatabase({ databaseName: 'blocked-retry-test', indexedDB: factory }),
+      coordinator.open(),
       (error: unknown) => {
-        assert.equal(error instanceof WorkspaceDatabaseOpenError, true);
-        assert.equal((error as WorkspaceDatabaseOpenError).code, 'blocked');
-        assert.match((error as Error).message, /其他页面占用/);
+        assert.equal(error instanceof WorkspaceStorageError, true);
+        assert.equal((error as WorkspaceStorageError).code, 'STORAGE_UPGRADE_BLOCKED');
+        assert.match((error as WorkspaceStorageError).recovery, /刷新|关闭旧页面/);
         return true;
       },
     );
 
-    assert.equal(await openWorkspaceDatabase({ databaseName: 'blocked-retry-test', indexedDB: factory }), database);
+    assert.equal(await coordinator.open(), database);
   });
 
   it('closes an open connection when a later schema upgrade requests a version change', async () => {
@@ -180,7 +192,8 @@ describe('persistence storage', () => {
       },
     };
 
-    assert.equal(await openWorkspaceDatabase({ databaseName: 'version-change-test', indexedDB: factory }), database);
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'version-change-test', indexedDB: factory, broadcast: false });
+    assert.equal(await coordinator.open(), database);
     (database as unknown as { onversionchange: (() => void) | null }).onversionchange?.();
     assert.equal(closed, true);
   });

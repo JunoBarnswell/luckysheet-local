@@ -85,7 +85,7 @@ async function materializeImportedAssets(snapshot: WorkbookSnapshot, parts: Reco
   for (const ref of refs) {
     const media = Object.entries(parts).find(([name]) => name.startsWith(`xl/media/${ref.assetId}.`))?.[1];
     if (!media) throw new Error(`ASSET_IMPORT_MISSING: ${ref.assetId}`);
-    const stored = await assetStore.put({ content: new Blob([media], { type: ref.mimeType }), mimeType: ref.mimeType, width: ref.width, height: ref.height });
+    const stored = await assetStore.put({ content: new Blob([Uint8Array.from(media).buffer], { type: ref.mimeType }), mimeType: ref.mimeType, width: ref.width, height: ref.height });
     if (stored.assetId !== ref.assetId || stored.contentHash !== ref.contentHash) throw new Error(`ASSET_IMPORT_MISMATCH: ${ref.assetId}`);
   }
 }

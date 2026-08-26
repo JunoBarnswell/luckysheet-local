@@ -1,0 +1,90 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "返回工作簿中心" [ref=e6] [cursor=pointer]
+      - generic [ref=e10]: 云表格
+      - separator [ref=e11]
+      - generic [ref=e12]: 已保存到服务器
+    - generic [ref=e17]:
+      - button "帮助" [ref=e18] [cursor=pointer]
+      - button "设置" [ref=e22] [cursor=pointer]
+      - separator [ref=e26]
+  - generic [ref=e34]:
+    - navigation "工作簿导航" [ref=e36]:
+      - generic [ref=e37]:
+        - button "开始" [ref=e38] [cursor=pointer]
+        - button "新建" [ref=e43] [cursor=pointer]
+        - button "打开" [ref=e48] [cursor=pointer]
+        - button "最近" [ref=e51] [cursor=pointer]
+        - button "共享" [ref=e55] [cursor=pointer]
+      - separator [ref=e61]
+      - generic [ref=e62]:
+        - button "信息" [disabled] [ref=e63]
+        - button "保存" [disabled] [ref=e66]
+        - button "导入" [ref=e70] [cursor=pointer]
+        - button "导出" [disabled] [ref=e73]
+      - separator [ref=e76]
+      - generic [ref=e77]:
+        - button "回收站" [ref=e78] [cursor=pointer]
+        - button "关闭" [disabled] [ref=e83]
+      - generic [ref=e86]:
+        - separator [ref=e87]
+        - button "选项" [ref=e88] [cursor=pointer]
+    - generic [ref=e95]:
+      - heading "早上好" [level=1] [ref=e96]
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - generic [ref=e99]: 新建
+          - button "更多模板" [ref=e103] [cursor=pointer]
+        - generic [ref=e106]:
+          - button "空白工作簿" [ref=e107] [cursor=pointer]:
+            - generic [ref=e123]:
+              - generic [ref=e124]: 空白工作簿
+              - generic [ref=e125]: 从空白表格开始
+          - button "从模板创建" [ref=e129] [cursor=pointer]:
+            - generic [ref=e143]:
+              - generic [ref=e144]: 从模板创建
+              - generic [ref=e145]: 浏览更多模板
+          - button "导入 Excel 文件" [ref=e146] [cursor=pointer]:
+            - generic [ref=e159]:
+              - generic [ref=e160]: 导入 Excel 文件
+              - generic [ref=e161]: 从 .xlsx 文件开始
+          - button "数据透视表模板" [ref=e162] [cursor=pointer]:
+            - generic [ref=e169]:
+              - generic [ref=e170]: 数据透视表模板
+              - generic [ref=e171]: 快速分析业务数据
+          - button "项目计划模板" [ref=e172] [cursor=pointer]:
+            - generic [ref=e184]:
+              - generic [ref=e185]: 项目计划模板
+              - generic [ref=e186]: 规划项目进度与任务
+          - button "预算模板" [ref=e187] [cursor=pointer]:
+            - generic [ref=e194]:
+              - generic [ref=e195]: 预算模板
+              - generic [ref=e196]: 管理收支与预算
+          - button "Designer Demo" [ref=e197] [cursor=pointer]:
+            - generic [ref=e228]:
+              - generic [ref=e229]: Designer Demo
+              - generic [ref=e230]: SpreadJS Designer 视觉验收
+      - generic [ref=e231]:
+        - generic [ref=e232]: 工作簿可持久化存储在服务端，也可导入 / 导出 Excel 文件。
+        - button "了解更多" [ref=e237] [cursor=pointer]
+      - generic [ref=e240]:
+        - generic [ref=e242]:
+          - button "新建工作簿" [ref=e243] [cursor=pointer]
+          - button "上传导入" [ref=e246] [cursor=pointer]
+          - button "导出当前工作簿" [disabled] [ref=e249]
+          - button "同步到服务端" [disabled] [ref=e252]
+          - button "移动" [disabled] [ref=e256]
+        - generic [ref=e259]:
+          - tablist "工作簿分类" [ref=e261]:
+            - tab "最近" [selected] [ref=e262] [cursor=pointer]
+            - tab "我的云文档" [ref=e263] [cursor=pointer]
+            - tab "本地文件" [ref=e264] [cursor=pointer]
+            - tab "与我共享" [ref=e265] [cursor=pointer]
+          - generic [ref=e267]:
+            - textbox "搜索文件、位置或人员" [ref=e269]
+            - button "筛选" [ref=e270] [cursor=pointer]
+            - button "切换卡片视图" [ref=e272] [cursor=pointer]
+        - generic [ref=e277]:
+          - heading "加载文件" [level=3] [ref=e281]
+          - generic [ref=e282]: 正在加载工作簿目录。

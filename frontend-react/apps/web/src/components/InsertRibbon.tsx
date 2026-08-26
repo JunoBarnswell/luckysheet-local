@@ -22,8 +22,8 @@ export interface InsertRibbonProps {
   onInsertFormControl: (type: FormControlType) => void;
 }
 
-function RibbonLarge({ children, icon, disabled, surfaceId, title }: { children: React.ReactNode; icon: React.ComponentProps<typeof Button>['icon']; disabled?: boolean; surfaceId: string; title: string }) {
-  return <Button aria-label={title} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={icon} size="sm" variant="ghost" className="!h-[68px] !min-h-0 !w-[68px] flex-col gap-1 rounded-none px-1 text-[11px] leading-4 [&>svg]:!h-6 [&>svg]:!w-6">{children}</Button>;
+function RibbonLarge({ children, compact = false, icon, disabled, surfaceId, title }: { children: React.ReactNode; compact?: boolean; icon: React.ComponentProps<typeof Button>['icon']; disabled?: boolean; surfaceId: string; title: string }) {
+  return <Button aria-label={title} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={icon} size="sm" variant="ghost" className={compact ? '!h-7 !min-h-0 !w-8 rounded-none px-0 [&>svg]:!h-4 [&>svg]:!w-4' : '!h-[68px] !min-h-0 !w-[68px] flex-col gap-1 rounded-none px-1 text-[11px] leading-4 [&>svg]:!h-6 [&>svg]:!w-6'}>{compact ? null : children}</Button>;
 }
 
 function variantButton({ id, icon, label, onSelect, surfaceId, disabled }: { id: string; icon: React.ComponentProps<typeof Button>['icon']; label: string; onSelect: () => void; surfaceId: string; disabled?: boolean }) {
@@ -52,7 +52,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
     if (variants.length > 0) {
       const title = insertText(locale, surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : surface.commandId === 'shapesLines' ? 'shape' : surface.commandId === 'formControls' ? 'formControl' : surface.commandId === 'dataChart' ? 'dataChart' : 'barcode');
       if (mode === 'menu') return <React.Fragment key={surface.id}>{variants}</React.Fragment>;
-      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge disabled={disabled} icon={surface.commandId === 'chartBuilder' ? 'chart-column' : surface.commandId === 'sparkline' ? 'sparkline' : surface.commandId === 'shapesLines' ? 'shape-square' : surface.commandId === 'formControls' ? 'form-control' : surface.commandId === 'dataChart' ? 'data-chart' : 'barcode'} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
+      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={layout.mode !== 'wide'} disabled={disabled} icon={surface.commandId === 'chartBuilder' ? 'chart-column' : surface.commandId === 'sparkline' ? 'sparkline' : surface.commandId === 'shapesLines' ? 'shape-square' : surface.commandId === 'formControls' ? 'form-control' : surface.commandId === 'dataChart' ? 'data-chart' : 'barcode'} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
     }
     return <React.Fragment key={surface.id}>{renderCommand(surface.commandId, mode === 'menu' ? { className: 'w-full justify-start', ribbonSurfaceId: surface.id } : { tile: surface.appearance === 'large' || surface.appearance === 'gallery', ribbonSurfaceId: surface.id })}</React.Fragment>;
   };

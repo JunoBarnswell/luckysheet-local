@@ -3,6 +3,12 @@ export type SheetId = string;
 export type Row = number;
 export type Column = number;
 
+export interface CellAddress {
+  readonly sheetId: SheetId;
+  readonly row: Row;
+  readonly column: Column;
+}
+
 import type {
   CellHyperlink,
   CellNote,
@@ -271,6 +277,7 @@ export type {
   OutlineModel,
   DrawingKind,
   DrawingTransform,
+  DrawingAnchor,
   DrawingObject,
   CellHyperlink,
   HyperlinkTarget,
@@ -916,8 +923,8 @@ export class WorksheetModel {
   constructor(
     readonly id: SheetId,
     public name: string,
-    rowCount = DEFAULT_SHEET_ROW_COUNT,
-    columnCount = DEFAULT_SHEET_COLUMN_COUNT,
+    rowCount: number = DEFAULT_SHEET_ROW_COUNT,
+    columnCount: number = DEFAULT_SHEET_COLUMN_COUNT,
   ) {
     this.extent = new SheetExtent(rowCount, columnCount);
     this.review = new ReviewStore(id);
@@ -1279,7 +1286,7 @@ export class WorkbookModel {
     return table;
   }
 
-  addSheet(id: SheetId, name: string, rowCount = DEFAULT_SHEET_ROW_COUNT, columnCount = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
+  addSheet(id: SheetId, name: string, rowCount: number = DEFAULT_SHEET_ROW_COUNT, columnCount: number = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);

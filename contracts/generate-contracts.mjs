@@ -12,9 +12,9 @@ if (!permissionSource || !permissionSource.allowFields || !permissionSource.comm
   throw new Error('workbook-contract.json must declare command and mutation permission policies');
 }
 const allowFieldEntries = Object.entries(permissionSource.allowFields);
-const protectionActionValues = ['none', ...allowFieldEntries.map(([action]) => action)];
+const protectionActionValues = ['none', 'edit-cell', ...allowFieldEntries.map(([action]) => action)];
 const protectionActionUnion = protectionActionValues.map((value) => JSON.stringify(value)).join(' | ');
-const coreProtectionActionUnion = allowFieldEntries.map(([action]) => JSON.stringify(action)).join(' | ');
+const coreProtectionActionUnion = ['edit-cell', ...allowFieldEntries.map(([action]) => action)].map((action) => JSON.stringify(action)).join(' | ');
 for (const [id] of entries) {
   if (!permissionSource.mutations[id]) throw new Error(`Mutation ${id} is missing a canonical permission policy`);
 }

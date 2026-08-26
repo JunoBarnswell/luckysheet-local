@@ -3,15 +3,15 @@ import type { ReactNode } from 'react';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';
 
 export const DESIGNER_GEOMETRY = {
-  viewportWidth: 1280,
-  viewportHeight: 720,
-  ribbonHeight: 142,
+  viewportWidth: 1920,
+  viewportHeight: 1080,
+  ribbonHeight: 157,
   formulaBarHeight: 37,
-  workspaceHeight: 519,
+  workspaceHeight: 864,
   sheetTabsHeight: 29,
   statusBarHeight: 22,
-  ribbonTabHeight: 36,
-  ribbonContentHeight: 106,
+  ribbonTabHeight: 42,
+  ribbonContentHeight: 115,
 } as const;
 
 export interface PeerCursor {
@@ -30,7 +30,6 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
@@ -53,10 +52,9 @@ export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'pageLayout',
   'formulas',
   'data',
-  'review',
   'view',
+  'review',
   'settings',
-  'automate',
 ] as const;
 
 export type RibbonLayoutMode = 'wide' | 'compact' | 'narrow';

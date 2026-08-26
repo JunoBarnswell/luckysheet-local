@@ -190,16 +190,6 @@ import {
   type QueryResultSnapshot,
   type QuerySessionEntry,
 } from './features/query';
-import {
-  createCommandRecorder,
-  runAutomationScriptAsync,
-  SAMPLE_AUTOMATION_SCRIPT,
-  summarizeScriptResult,
-  type AutomationSnapshot,
-} from './features/automation';
-import type { AutomationWorkerFactory } from './features/automation';
-import { CommandRecorder } from './features/automation/command-recorder';
-import type { ScriptRunResult } from './features/automation';
 import type {
   GoalSeekParams,
   GoalSeekResult,
@@ -256,7 +246,6 @@ export interface WorkbookSessionOptions {
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
-  automationWorkerFactory?: AutomationWorkerFactory;
   /** Workbook calendar and one fixed calculation-cycle clock basis. */
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
@@ -349,9 +338,6 @@ export interface UiSnapshot extends DesignerState {
   lastQueryResult: QueryResultSnapshot | null;
   queryConnectors: readonly string[];
   loadedQueries: readonly QueryResultSnapshot[];
-  automationRecording: boolean;
-  recordedScript: string;
-  lastScriptResult: ScriptRunResult | null;
   lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
   formulaAudit: FormulaAuditProjection;
   version: number;
@@ -466,7 +452,6 @@ export class WorkbookSession {
   private readonly editSession = new EditSession();
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
-  private readonly automationWorkerFactory?: AutomationWorkerFactory;
   private readonly xlsxExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
   private readyCallback: Promise<void> | null = null;
@@ -524,11 +509,6 @@ export class WorkbookSession {
   private printSnapshot: PrintSnapshot | null = null;
   private querySessions = new Map<string, QuerySessionEntry>();
   private lastQueryResult: QueryResultSnapshot | null = null;
-  private readonly commandRecorder: CommandRecorder = createCommandRecorder();
-  private recorderDetach: (() => void) | null = null;
-  private automationRecording = false;
-  private recordedScript = '';
-  private lastScriptResult: ScriptRunResult | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
@@ -545,6 +525,14 @@ export class WorkbookSession {
     const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
     if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
     return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+  }
+
+  /** WorkbookSession is the single allocator for worksheet identity. */
+  private allocateSheetId(): string {
+    const existing = new Set(this.runtime.model.getSheets().map((sheet) => sheet.id));
+    let sequence = 1;
+    while (existing.has(`sheet-${sequence}`)) sequence += 1;
+    return `sheet-${sequence}`;
   }
 
   private selectionService: SelectionService;
@@ -566,7 +554,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -588,7 +576,6 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
     this.onReady = onReady;
     this.permission.setOnline(!this.runtime.localOnly);
@@ -804,8 +791,6 @@ export class WorkbookSession {
     this.disposed = true;
     this.started = false;
     this.lifecycleGeneration += 1;
-    this.recorderDetach?.();
-    this.recorderDetach = null;
     this.collabDispose?.();
     this.persistenceDispose?.();
     this.collabDispose = null;
@@ -1107,9 +1092,6 @@ export class WorkbookSession {
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
-      automationRecording: this.automationRecording,
-      recordedScript: this.recordedScript,
-      lastScriptResult: this.lastScriptResult,
       lastWhatIfResult: this.lastWhatIfResult,
       formulaAudit: this.runtime.formulaAudit.getProjection(),
       version: this.version,
@@ -2761,7 +2743,7 @@ export class WorkbookSession {
 
   createAdvancedSheet(kind: Exclude<SheetKind, 'worksheet'>): void {
     const table = this.buildSelectionWorkbookTable(kind === 'gantt-sheet' ? 'gantt' : kind === 'report-sheet' ? 'report' : 'table');
-    const id = this.insertCoordinator.allocateObjectId('sheet');
+    const id = this.allocateSheetId();
     const name = kind === 'table-sheet' ? '集算表' : kind === 'gantt-sheet' ? '甘特表' : '报表';
     const cells: SheetSnapshot['cells'] = {};
     const setCell = (row: number, column: number, value: CellData['value'], style?: CellStyle) => {
@@ -3186,7 +3168,7 @@ export class WorkbookSession {
       sheetId: string;
     };
     if (params.destination.kind === 'new-sheet') {
-      targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
+      targetSheetId = this.allocateSheetId();
       targetPosition = { row: 0, column: 0 };
       const names = new Set(this.runtime.model.getSheets().map((sheet) => sheet.name.toLocaleLowerCase()));
       let suffix = 1;
@@ -3398,7 +3380,7 @@ export class WorkbookSession {
   }
   drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
     if (paths.length === 0) return;
-    const targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
+    const targetSheetId = this.allocateSheetId();
     this.runCommand('pivot.drillDown', {
       sheetId: this.activeSheetId,
       pivotId,
@@ -4216,7 +4198,7 @@ export class WorkbookSession {
   }
 
   addSheet(): void {
-    const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    const id = this.allocateSheetId();
     this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
     this.selectSheet(id);
     this.refresh();
@@ -4231,7 +4213,7 @@ export class WorkbookSession {
   }
   duplicateSheet(sheetId: string): void {
     const source = this.runtime.model.getSheet(sheetId);
-    const newId = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    const newId = this.allocateSheetId();
     const newName = `${source.name} (2)`;
     this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
     this.selectSheet(newId);
@@ -4863,66 +4845,6 @@ export class WorkbookSession {
     };
   }
 
-  async runAutomationScript(source: string): Promise<void> {
-    if (!this.canExecute('automation.run')) {
-      this.notify('You do not have permission to run scripts');
-      return;
-    }
-    this.lastScriptResult = await runAutomationScriptAsync(this.runtime.model, this.runtime.commands, source, undefined, {
-      workerFactory: this.automationWorkerFactory,
-    });
-    this.panels = { ...this.panels, active: 'automate', open: true };
-    this.ribbonTab = 'automate';
-    this.notify(summarizeScriptResult(this.lastScriptResult));
-    this.refresh();
-  }
-
-  async runSampleAutomationScript(): Promise<void> {
-    await this.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
-  }
-
-  startAutomationRecording(): void {
-    if (!this.canExecute('automation.record.start')) {
-      this.notify('You do not have permission to record scripts');
-      return;
-    }
-    this.runCommand('automation.record.start', {});
-    this.recorderDetach?.();
-    this.commandRecorder.start();
-    this.recorderDetach = this.runtime.commands.onCommand(this.commandRecorder.createListener());
-    this.automationRecording = true;
-    this.recordedScript = '';
-    this.panels = { ...this.panels, active: 'automate', open: true };
-    this.ribbonTab = 'automate';
-    this.notify('Recording automation script');
-    this.emit();
-  }
-
-  stopAutomationRecording(): string {
-    if (!this.canExecute('automation.record.stop')) {
-      this.notify('You do not have permission to stop recording');
-      return this.recordedScript;
-    }
-    this.recorderDetach?.();
-    this.recorderDetach = null;
-    this.runCommand('automation.record.stop', {});
-    const statements = this.commandRecorder.stop();
-    this.automationRecording = false;
-    this.recordedScript = this.commandRecorder.toScript();
-    this.notify(`Recorded ${statements.length} statement(s)`);
-    this.emit();
-    return this.recordedScript;
-  }
-
-  getAutomationSnapshot(): AutomationSnapshot {
-    return {
-      recording: this.automationRecording,
-      recordedScript: this.recordedScript,
-      lastResult: this.lastScriptResult,
-      lastRunAt: this.lastScriptResult ? new Date().toISOString() : null,
-    };
-  }
-
   runGoalSeek(params: GoalSeekParams): GoalSeekResult {
     if (!this.canExecute('extended.whatIf.goalSeek')) {
       this.notify('You do not have permission to run Goal Seek');
@@ -5356,8 +5278,10 @@ export class WorkbookSession {
     const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
     const sourceId = nextId('data-source');
+    const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
+    if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
     const encoded = await encodeSheetDataRegion({
-      sheet,
+      sheet: sheetSnapshot,
       range: sourceRange,
       sourceId,
       sourceName: `${sheet.name} data source`,

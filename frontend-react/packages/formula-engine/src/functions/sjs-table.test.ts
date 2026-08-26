@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { FormulaEngine } from '../formula-engine';
+import { isFormulaError } from '../values';
 
 test('SJS.TABLE returns a dynamic array without writing result cells', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
@@ -19,6 +20,8 @@ test('SJS.TABLE rejects non-paired input arguments', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   engine.setFormula('D1', '=SJS.TABLE(C1,A2:A3)');
 
-  assert.equal(engine.getCellValue('D1')?.kind, 'error');
-  assert.equal(engine.getCellValue('D1')?.code, '#VALUE!');
+  const result = engine.getCellValue('D1');
+  assert.equal(isFormulaError(result), true);
+  if (!isFormulaError(result)) throw new Error('Expected SJS.TABLE to return a formula error');
+  assert.equal(result.code, '#VALUE!');
 });

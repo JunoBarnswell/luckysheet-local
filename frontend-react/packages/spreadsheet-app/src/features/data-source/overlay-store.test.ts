@@ -3,8 +3,13 @@ import test from 'node:test';
 import type { SparseCellOverlayMetadata } from './import';
 import {
   LocalSparseOverlayStore,
-  MemorySparseOverlayStore,
 } from './overlay-store';
+
+let storeSequence = 0;
+function createStore(): LocalSparseOverlayStore {
+  storeSequence += 1;
+  return new LocalSparseOverlayStore({ databaseName: `overlay-test-${String(storeSequence)}-${Date.now()}` });
+}
 
 function overlay(revision: number, row = 2, column = 1): SparseCellOverlayMetadata {
   return {
@@ -25,8 +30,8 @@ function overlay(revision: number, row = 2, column = 1): SparseCellOverlayMetada
   };
 }
 
-test('memory overlay store persists by source, block, and exact revision without aliasing values', async () => {
-  const store = new MemorySparseOverlayStore();
+test('overlay store persists by source, block, and exact revision without aliasing values', async () => {
+  const store = createStore();
   const written = await store.put('source-1', 'block-1', overlay(4));
   assert.equal(written.schema, 'SparseCellOverlayRecord');
   assert.equal(written.revision, 4);
@@ -41,7 +46,7 @@ test('memory overlay store persists by source, block, and exact revision without
 });
 
 test('multiple revisions remain independently addressable and can be deleted precisely', async () => {
-  const store = new MemorySparseOverlayStore();
+  const store = createStore();
   await store.put('source-1', 'block-1', overlay(1, 0, 0));
   await store.put('source-1', 'block-1', overlay(2, 1, 0));
   await store.put('source-1', 'block-2', overlay(1, 0, 1));
@@ -59,7 +64,7 @@ test('multiple revisions remain independently addressable and can be deleted pre
 });
 
 test('overlay writes reject invalid revisions, duplicate coordinates, and empty metadata cells', async () => {
-  const store = new MemorySparseOverlayStore();
+  const store = createStore();
   await assert.rejects(
     store.put('source-1', 'block-1', { ...overlay(1), revision: -1 }),
     /revision must be a non-negative safe integer/,
@@ -80,10 +85,10 @@ test('overlay writes reject invalid revisions, duplicate coordinates, and empty 
   );
 });
 
-test('local store shares its memory namespace across instances when IndexedDB is absent', async () => {
+test('local store shares one IndexedDB namespace across instances', async () => {
   const databaseName = `overlay-test-${Date.now()}-${Math.random()}`;
-  const first = new LocalSparseOverlayStore({ databaseName, indexedDB: null });
-  const second = new LocalSparseOverlayStore({ databaseName, indexedDB: null });
+  const first = new LocalSparseOverlayStore({ databaseName });
+  const second = new LocalSparseOverlayStore({ databaseName });
   await first.put('source-2', 'block-1', overlay(7));
   assert.ok(await second.get('source-2', 'block-1', 7));
   await second.removeSource('source-2');

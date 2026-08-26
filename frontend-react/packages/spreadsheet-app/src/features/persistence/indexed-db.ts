@@ -22,21 +22,42 @@ export interface IndexedDbFactory {
 
 export type IndexedDbFactoryLike = IDBFactory | IndexedDbFactory;
 
-export type WorkspaceDatabaseOpenErrorCode = 'blocked' | 'failed' | 'timeout';
+export type WorkspaceStorageErrorCode =
+  | 'STORAGE_UNAVAILABLE'
+  | 'STORAGE_UPGRADE_BLOCKED'
+  | 'STORAGE_OPEN_TIMEOUT'
+  | 'STORAGE_SCHEMA_INVALID'
+  | 'STORAGE_TRANSACTION_FAILED';
 
-export class WorkspaceDatabaseOpenError extends Error {
-  readonly code: WorkspaceDatabaseOpenErrorCode;
+export class WorkspaceStorageError extends Error {
+  readonly code: WorkspaceStorageErrorCode;
+  readonly databaseName: string;
+  readonly targetVersion: number;
+  readonly operation: string;
+  readonly recovery: string;
 
-  constructor(code: WorkspaceDatabaseOpenErrorCode, message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = 'WorkspaceDatabaseOpenError';
-    this.code = code;
+  constructor(input: {
+    code: WorkspaceStorageErrorCode;
+    databaseName: string;
+    operation: string;
+    message: string;
+    recovery: string;
+    cause?: unknown;
+  }) {
+    super(input.message, input.cause === undefined ? undefined : { cause: input.cause });
+    this.name = 'WorkspaceStorageError';
+    this.code = input.code;
+    this.databaseName = input.databaseName;
+    this.targetVersion = WORKSPACE_DATABASE_VERSION;
+    this.operation = input.operation;
+    this.recovery = input.recovery;
   }
 }
 
 export interface IndexedDbStoreOptions {
   databaseName?: string;
   indexedDB?: IndexedDbFactoryLike | null;
+  coordinator?: WorkspaceDatabaseCoordinator;
   /** Optional owner namespace for source blocks/overlays. */
   unitId?: string | (() => string);
 }
@@ -82,9 +103,18 @@ export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 
 export function transactionComplete(transaction: IDBTransaction): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'));
+    const onComplete = () => resolve();
+    const onError = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'));
+    const onAbort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'));
+    if ('addEventListener' in transaction && typeof transaction.addEventListener === 'function') {
+      transaction.addEventListener('complete', onComplete, { once: true });
+      transaction.addEventListener('error', onError, { once: true });
+      transaction.addEventListener('abort', onAbort, { once: true });
+    } else {
+      transaction.oncomplete = onComplete;
+      transaction.onerror = onError;
+      transaction.onabort = onAbort;
+    }
   });
 }
 
@@ -129,68 +159,247 @@ interface IndexedDbOpenRequest {
   error?: DOMException | null;
 }
 
-type DatabasePromiseMap = Map<string, Promise<IDBDatabase>>;
-const databasePromises = new WeakMap<object, DatabasePromiseMap>();
 const WORKSPACE_DATABASE_OPEN_TIMEOUT_MS = 15_000;
+const WORKSPACE_DATABASE_CHANNEL_PREFIX = 'react-sheets-workspace-db';
+
+export type WorkspaceDatabaseState = 'idle' | 'opening' | 'ready' | 'closing' | 'failed';
+
+interface WorkspaceDatabaseMessage {
+  type: 'close-request' | 'closed';
+  databaseName: string;
+  targetVersion: number;
+  instanceId: string;
+}
+
+function storageError(
+  code: WorkspaceStorageErrorCode,
+  databaseName: string,
+  operation: string,
+  message: string,
+  recovery: string,
+  cause?: unknown,
+): WorkspaceStorageError {
+  return new WorkspaceStorageError({ code, databaseName, operation, message, recovery, cause });
+}
+
+function assertWorkspaceSchema(database: IDBDatabase, databaseName: string): void {
+  const required = [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME, ASSET_STORE_NAME];
+  const missing = required.filter((store) => !database.objectStoreNames.contains(store));
+  if (missing.length > 0) {
+    throw storageError(
+      'STORAGE_SCHEMA_INVALID',
+      databaseName,
+      'open',
+      `本地工作簿存储结构不完整：${missing.join(', ')}`,
+      '请保留当前页面并联系管理员检查数据库迁移；不要清除浏览器数据。',
+    );
+  }
+}
 
 /**
- * Opens the shared workbook database and guarantees the complete current
- * schema during the upgrade transaction.  Null means the runtime has no
- * IndexedDB implementation and callers may use their explicit memory path.
+ * The only owner of the browser workspace database connection. All durable
+ * stores share this lifecycle and must acquire transactions through it.
  */
-export function openWorkspaceDatabase(options: IndexedDbStoreOptions = {}): Promise<IDBDatabase | null> {
-  const factory = resolveFactory(options.indexedDB);
-  if (!factory) return Promise.resolve(null);
+export class WorkspaceDatabaseCoordinator {
+  readonly databaseName: string;
+  readonly instanceId: string;
+  private readonly factory: IndexedDbFactoryLike | null;
+  private readonly channel: BroadcastChannel | null;
+  private readonly openTimeoutMs: number;
+  private database: IDBDatabase | null = null;
+  private opening: Promise<IDBDatabase> | null = null;
+  private stateValue: WorkspaceDatabaseState = 'idle';
+  private activeTransactions = 0;
+  private drainWaiters: Array<() => void> = [];
 
-  const name = options.databaseName ?? WORKSPACE_DATABASE_NAME;
-  const factoryKey = factory as object;
-  let byName = databasePromises.get(factoryKey);
-  if (!byName) {
-    byName = new Map<string, Promise<IDBDatabase>>();
-    databasePromises.set(factoryKey, byName);
+  constructor(options: Omit<IndexedDbStoreOptions, 'coordinator' | 'unitId'> & { openTimeoutMs?: number; broadcast?: boolean } = {}) {
+    this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
+    this.factory = resolveFactory(options.indexedDB);
+    this.openTimeoutMs = options.openTimeoutMs ?? WORKSPACE_DATABASE_OPEN_TIMEOUT_MS;
+    this.instanceId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    this.channel = options.broadcast !== false && typeof BroadcastChannel === 'function'
+      ? new BroadcastChannel(`${WORKSPACE_DATABASE_CHANNEL_PREFIX}:${this.databaseName}`)
+      : null;
+    if (this.channel) this.channel.onmessage = (event: MessageEvent<WorkspaceDatabaseMessage>) => this.receive(event.data);
+    if (typeof globalThis.addEventListener === 'function') {
+      globalThis.addEventListener('pagehide', this.handlePageHide, { capture: true });
+    }
   }
-  const existing = byName.get(name);
-  if (existing) return existing;
 
-  let promise!: Promise<IDBDatabase>;
-  promise = new Promise<IDBDatabase>((resolve, reject) => {
-    let settled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const rejectOpen = (error: WorkspaceDatabaseOpenError): void => {
-      if (settled) return;
-      settled = true;
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-      if (byName.get(name) === promise) byName.delete(name);
-      reject(error);
-    };
-    const request = (factory as IndexedDbFactory).open(name, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
-    request.onupgradeneeded = () => ensureWorkspaceStores(request.result);
-    request.onsuccess = () => {
-      if (settled) {
-        request.result.close();
-        return;
+  get state(): WorkspaceDatabaseState { return this.stateValue; }
+
+  open(): Promise<IDBDatabase> {
+    if (this.database && this.stateValue === 'ready') return Promise.resolve(this.database);
+    if (this.opening) return this.opening;
+    if (!this.factory) {
+      this.stateValue = 'failed';
+      return Promise.reject(storageError(
+        'STORAGE_UNAVAILABLE',
+        this.databaseName,
+        'open',
+        '当前环境不支持本地工作簿存储。',
+        '请使用支持 IndexedDB 的浏览器并允许本地站点存储。',
+      ));
+    }
+
+    this.stateValue = 'opening';
+    this.opening = new Promise<IDBDatabase>((resolve, reject) => {
+      let settled = false;
+      let blocked = false;
+      const request = (this.factory as IndexedDbFactory).open(this.databaseName, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
+      const finishFailure = (error: WorkspaceStorageError): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        this.opening = null;
+        this.stateValue = 'failed';
+        reject(error);
+      };
+      const timeoutId = setTimeout(() => finishFailure(blocked
+        ? storageError(
+          'STORAGE_UPGRADE_BLOCKED',
+          this.databaseName,
+          'upgrade',
+          '本地工作簿存储升级仍被旧页面占用。',
+          '请保存其他工作簿页面中的内容并完整刷新或关闭旧页面，然后重试；现有数据库不会被删除。',
+        )
+        : storageError(
+          'STORAGE_OPEN_TIMEOUT',
+          this.databaseName,
+          'open',
+          '打开本地工作簿存储超时。',
+          '请完整刷新当前页面后重试；若问题持续，请检查浏览器站点存储权限。',
+        )), this.openTimeoutMs);
+
+      request.onupgradeneeded = () => ensureWorkspaceStores(request.result);
+      request.onblocked = () => {
+        blocked = true;
+        this.channel?.postMessage({
+          type: 'close-request',
+          databaseName: this.databaseName,
+          targetVersion: WORKSPACE_DATABASE_VERSION,
+          instanceId: this.instanceId,
+        } satisfies WorkspaceDatabaseMessage);
+      };
+      request.onerror = () => finishFailure(storageError(
+        'STORAGE_TRANSACTION_FAILED',
+        this.databaseName,
+        'open',
+        '无法打开本地工作簿存储。',
+        '请保留浏览器数据并重试；错误详情可用于管理员诊断。',
+        request.error,
+      ));
+      request.onsuccess = () => {
+        if (settled) {
+          request.result.close();
+          return;
+        }
+        try {
+          assertWorkspaceSchema(request.result, this.databaseName);
+        } catch (error) {
+          request.result.close();
+          finishFailure(error instanceof WorkspaceStorageError ? error : storageError(
+            'STORAGE_SCHEMA_INVALID', this.databaseName, 'open', '本地工作簿存储结构无效。', '请联系管理员检查数据库迁移。', error,
+          ));
+          return;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        this.database = request.result;
+        this.database.onversionchange = () => { void this.close('versionchange'); };
+        this.opening = null;
+        this.stateValue = 'ready';
+        resolve(request.result);
+      };
+    });
+    return this.opening;
+  }
+
+  async transaction(storeNames: string | string[], mode: IDBTransactionMode): Promise<IDBTransaction> {
+    const database = await this.open();
+    if (this.stateValue !== 'ready') {
+      throw storageError('STORAGE_TRANSACTION_FAILED', this.databaseName, 'transaction', '本地工作簿存储尚未就绪。', '请等待存储就绪后重试。');
+    }
+    let transaction: IDBTransaction;
+    try {
+      transaction = database.transaction(storeNames, mode);
+    } catch (error) {
+      throw storageError('STORAGE_TRANSACTION_FAILED', this.databaseName, 'transaction', '无法开始本地工作簿事务。', '请重试当前操作；若问题持续，请保留错误详情。', error);
+    }
+    this.activeTransactions += 1;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      this.activeTransactions -= 1;
+      if (this.activeTransactions === 0) {
+        const waiters = this.drainWaiters;
+        this.drainWaiters = [];
+        waiters.forEach((resolve) => resolve());
       }
-      settled = true;
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-      request.result.onversionchange = () => request.result.close();
-      resolve(request.result);
     };
-    request.onblocked = () => rejectOpen(new WorkspaceDatabaseOpenError(
-      'blocked',
-      '本地工作簿存储正在被其他页面占用，请关闭其他工作簿页面后重试。',
-    ));
-    request.onerror = () => rejectOpen(new WorkspaceDatabaseOpenError(
-      'failed',
-      '无法打开本地工作簿存储，请刷新页面后重试。',
-      { cause: request.error },
-    ));
-    timeoutId = setTimeout(() => rejectOpen(new WorkspaceDatabaseOpenError(
-      'timeout',
-      '打开本地工作簿存储超时，请关闭其他工作簿页面后刷新重试。',
-    )), WORKSPACE_DATABASE_OPEN_TIMEOUT_MS);
-  });
-  byName.set(name, promise);
-  return promise;
+    if ('addEventListener' in transaction && typeof transaction.addEventListener === 'function') {
+      transaction.addEventListener('complete', release, { once: true });
+      transaction.addEventListener('abort', release, { once: true });
+      transaction.addEventListener('error', release, { once: true });
+    }
+    return transaction;
+  }
+
+  async close(reason: 'dispose' | 'pagehide' | 'versionchange' | 'upgrade-request' = 'dispose'): Promise<void> {
+    if (this.stateValue === 'closing') return;
+    this.stateValue = 'closing';
+    if (this.activeTransactions > 0) await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
+    this.database?.close();
+    this.database = null;
+    this.opening = null;
+    this.stateValue = 'idle';
+    if (reason === 'upgrade-request') {
+      this.channel?.postMessage({
+        type: 'closed', databaseName: this.databaseName, targetVersion: WORKSPACE_DATABASE_VERSION, instanceId: this.instanceId,
+      } satisfies WorkspaceDatabaseMessage);
+    }
+  }
+
+  dispose(): void {
+    void this.close('dispose');
+    this.channel?.close();
+    if (typeof globalThis.removeEventListener === 'function') {
+      globalThis.removeEventListener('pagehide', this.handlePageHide, { capture: true });
+    }
+  }
+
+  private readonly handlePageHide = (): void => { void this.close('pagehide'); };
+
+  private receive(message: WorkspaceDatabaseMessage): void {
+    if (!message || message.databaseName !== this.databaseName || message.instanceId === this.instanceId) return;
+    if (message.type === 'close-request' && message.targetVersion >= WORKSPACE_DATABASE_VERSION) {
+      void this.close('upgrade-request');
+    }
+  }
+}
+
+type CoordinatorMap = Map<string, WorkspaceDatabaseCoordinator>;
+const coordinatorByFactory = new WeakMap<object, CoordinatorMap>();
+
+export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptions = {}): WorkspaceDatabaseCoordinator {
+  if (options.coordinator) return options.coordinator;
+  const factory = resolveFactory(options.indexedDB);
+  if (!factory) return new WorkspaceDatabaseCoordinator(options);
+  let byName = coordinatorByFactory.get(factory as object);
+  if (!byName) {
+    byName = new Map();
+    coordinatorByFactory.set(factory as object, byName);
+  }
+  const name = options.databaseName ?? WORKSPACE_DATABASE_NAME;
+  let coordinator = byName.get(name);
+  if (!coordinator) {
+    coordinator = new WorkspaceDatabaseCoordinator({ databaseName: name, indexedDB: factory });
+    byName.set(name, coordinator);
+  }
+  return coordinator;
 }
 
 export function resolveIndexedDbFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {

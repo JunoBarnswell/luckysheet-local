@@ -396,7 +396,7 @@ function evaluateReferenceFunction(
   args: readonly FormulaAst[],
   context: FormulaEvaluationContext,
   trace?: EvaluationTraceSink,
-): FormulaValue | EvaluationRange | undefined {
+): FormulaValue | EvaluationRange | FormulaEvaluationReference | undefined {
   switch (name.toUpperCase()) {
     case 'SJS.TABLE':
       return evaluateSjsTable(args, context, trace);

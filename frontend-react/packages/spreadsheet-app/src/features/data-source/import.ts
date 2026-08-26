@@ -143,10 +143,10 @@ function reviewCommentAt(sheet: SheetSnapshot, row: number, column: number): Cel
     author: thread.author,
     text: thread.text,
     createdAt: thread.createdAt,
-    mentions: thread.mentions,
-    replies: thread.replies,
-    resolved: thread.resolved,
-    resolvedAt: thread.resolvedAt,
+    ...(thread.mentions?.length ? { mentions: thread.mentions } : {}),
+    ...(thread.replies.length ? { replies: thread.replies } : {}),
+    ...(thread.resolved === undefined ? {} : { resolved: thread.resolved }),
+    ...(thread.resolvedAt === undefined ? {} : { resolvedAt: thread.resolvedAt }),
   };
 }
 

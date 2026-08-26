@@ -11,7 +11,7 @@ export class SheetExtent {
   private _rowCount: number;
   private _columnCount: number;
 
-  constructor(rowCount = DEFAULT_SHEET_ROW_COUNT, columnCount = DEFAULT_SHEET_COLUMN_COUNT) {
+  constructor(rowCount: number = DEFAULT_SHEET_ROW_COUNT, columnCount: number = DEFAULT_SHEET_COLUMN_COUNT) {
     this._rowCount = SheetExtent.normalizeCount(rowCount, 'rowCount');
     this._columnCount = SheetExtent.normalizeCount(columnCount, 'columnCount');
   }

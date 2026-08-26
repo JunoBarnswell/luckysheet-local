@@ -5,14 +5,22 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   registerSheetCommands,
   formatTsv,
-  parseTsv,
-  parseClipboardPayload,
+  parseTsv as parseTsvWithContext,
+  parseClipboardPayload as parseClipboardPayloadWithContext,
   shiftFormula,
   FormulaRelocationError,
   copyRangeToClipboardData,
   clipboardRepresentations,
   createPasteSpecialSpec,
 } from './index';
+import type { CellInputInterpretationContext } from './text-input';
+
+const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
+  sourceKind: 'clipboard-text', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
+  referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
+};
+const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
+const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd', 'Commands');

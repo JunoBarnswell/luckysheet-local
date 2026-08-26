@@ -8,13 +8,14 @@ import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import type { AssetStore } from './asset-store';
 import { normalizeWorkspaceRecordWithAssets } from './asset-migration';
 import {
-  openWorkspaceDatabase,
+  resolveWorkspaceDatabaseCoordinator,
   requestResult,
   transactionComplete,
-  WORKSPACE_DATABASE_NAME,
   WORKSPACE_STORE_NAME,
   NATIVE_PACKAGE_STORE_NAME,
   type IndexedDbStoreOptions,
+  type WorkspaceDatabaseCoordinator,
+  WorkspaceStorageError,
 } from './indexed-db';
 
 /** Public options retained for all browser and runtime persistence callers. */
@@ -259,97 +260,67 @@ export class OperationJournalStore {
   }
 }
 
-const memoryWorkspaceDatabases = new Map<string, Map<string, WorkspaceRecord>>();
-
-function memoryWorkspaceRecords(databaseName: string): Map<string, WorkspaceRecord> {
-  let records = memoryWorkspaceDatabases.get(databaseName);
-  if (!records) {
-    records = new Map<string, WorkspaceRecord>();
-    memoryWorkspaceDatabases.set(databaseName, records);
-  }
-  return records;
-}
-
-/** IndexedDB-backed WorkspaceRecord storage with a memory-only Node fallback. */
+/** IndexedDB-backed canonical WorkspaceRecord storage. */
 export class IndexedDbWorkspaceStore {
-  private readonly options: IndexedDbWorkspaceStoreOptions;
-  private readonly databaseName: string;
-  private databasePromise: Promise<IDBDatabase | null> | null = null;
+  private readonly coordinator: WorkspaceDatabaseCoordinator;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
-    this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
-    this.options = options;
+    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
   }
 
   async load(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
-    const database = await this.database();
-    if (!database) {
-      const value = memoryWorkspaceRecords(this.databaseName).get(unitId);
-      if (!value) return null;
-      try { return assetStore ? await normalizeWorkspaceRecordWithAssets(value, assetStore) : normalizeWorkspaceRecord(value); } catch { return null; }
-    }
-    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
+    const transaction = await this.coordinator.transaction(WORKSPACE_STORE_NAME, 'readonly');
     const complete = transactionComplete(transaction);
     const value = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).get(unitId)) as WorkspaceRecord | undefined;
     await complete;
     if (!value) return null;
     if (!verifyWorkspaceRecord(value)) {
-      return null;
+      throw new WorkspaceStorageError({
+        code: 'STORAGE_SCHEMA_INVALID',
+        databaseName: this.coordinator.databaseName,
+        operation: 'load-workspace',
+        message: `工作簿记录校验失败：${unitId}`,
+        recovery: '请保留该记录并联系管理员执行显式数据恢复。',
+      });
     }
-    try { return assetStore ? await normalizeWorkspaceRecordWithAssets(value, assetStore) : normalizeWorkspaceRecord(value); } catch { return null; }
+    return assetStore ? await normalizeWorkspaceRecordWithAssets(value, assetStore) : normalizeWorkspaceRecord(value);
   }
 
   async save(record: WorkspaceRecord): Promise<void> {
     if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
     const normalized = normalizeWorkspaceRecord(record);
-    const database = await this.database();
-    if (!database) {
-      memoryWorkspaceRecords(this.databaseName).set(record.unitId, clone(normalized));
-      return;
-    }
-    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
+    const transaction = await this.coordinator.transaction(WORKSPACE_STORE_NAME, 'readwrite');
     transaction.objectStore(WORKSPACE_STORE_NAME).put(clone(normalized));
     await transactionComplete(transaction);
   }
 
   async clear(unitId: string): Promise<void> {
-    const database = await this.database();
-    if (!database) {
-      memoryWorkspaceRecords(this.databaseName).delete(unitId);
-      return;
-    }
-    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
+    const transaction = await this.coordinator.transaction(WORKSPACE_STORE_NAME, 'readwrite');
     transaction.objectStore(WORKSPACE_STORE_NAME).delete(unitId);
     await transactionComplete(transaction);
   }
 
   async list(): Promise<WorkspaceRecord[]> {
-    const database = await this.database();
-    if (!database) {
-      return [...memoryWorkspaceRecords(this.databaseName).values()].map((record) => normalizeWorkspaceRecord(record));
-    }
-    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
+    const transaction = await this.coordinator.transaction(WORKSPACE_STORE_NAME, 'readonly');
     const complete = transactionComplete(transaction);
     const values = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).getAll()) as WorkspaceRecord[];
     await complete;
     const valid: WorkspaceRecord[] = [];
     for (const value of values) {
-      if (!verifyWorkspaceRecord(value)) continue;
-      try { valid.push(normalizeWorkspaceRecord(value)); } catch { /* Leave unreadable records intact for explicit recovery. */ }
+      if (!verifyWorkspaceRecord(value)) {
+        throw new WorkspaceStorageError({
+          code: 'STORAGE_SCHEMA_INVALID',
+          databaseName: this.coordinator.databaseName,
+          operation: 'list-workspaces',
+          message: `工作簿目录包含无法校验的记录：${value?.unitId ?? 'unknown'}`,
+          recovery: '请保留浏览器数据并联系管理员执行显式恢复。',
+        });
+      }
+      valid.push(normalizeWorkspaceRecord(value));
     }
     return valid;
   }
 
-  private database(): Promise<IDBDatabase | null> {
-    if (!this.databasePromise) {
-      const pending = openWorkspaceDatabase(this.options);
-      this.databasePromise = pending.catch((error) => {
-        this.databasePromise = null;
-        throw error;
-      });
-    }
-    return this.databasePromise;
-  }
 }
 
 export interface LocalWorkspaceSummary {
@@ -472,14 +443,15 @@ export class WorkspacePersistence {
   readonly dataBlocks: LocalDataBlockStore;
   readonly sparseOverlays: LocalSparseOverlayStore;
   readonly nativePackages: LocalNativePackageStore;
-  private readonly options: IndexedDbWorkspaceStoreOptions;
+  readonly coordinator: WorkspaceDatabaseCoordinator;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
-    this.options = options;
-    this.store = new LocalWorkspaceStore(options);
-    this.dataBlocks = new LocalDataBlockStore(options);
-    this.sparseOverlays = new LocalSparseOverlayStore(options);
-    this.nativePackages = new LocalNativePackageStore(options);
+    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
+    const coordinatedOptions = { ...options, coordinator: this.coordinator };
+    this.store = new LocalWorkspaceStore(coordinatedOptions);
+    this.dataBlocks = new LocalDataBlockStore(coordinatedOptions);
+    this.sparseOverlays = new LocalSparseOverlayStore(coordinatedOptions);
+    this.nativePackages = new LocalNativePackageStore(coordinatedOptions);
     this.operationJournal = operationJournal;
   }
 
@@ -525,8 +497,7 @@ export class WorkspacePersistence {
 
   /**
    * Commits the canonical workspace checkpoint and its source XLSX artifact
-   * in one IndexedDB transaction.  The memory-only runtime keeps the same
-   * public operation and applies both records through their normal stores.
+   * in one IndexedDB transaction.
    */
   async checkpointWithArtifact(
     snapshot: WorkbookSnapshot,
@@ -551,13 +522,7 @@ export class WorkspacePersistence {
       userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
     });
     const artifactRecord = await buildNativePackageRecord(snapshot.unitId, artifact);
-    const database = await openWorkspaceDatabase(this.options);
-    if (!database) {
-      await this.store.save(record);
-      await this.nativePackages.save(snapshot.unitId, artifact);
-      return record;
-    }
-    const transaction = database.transaction(
+    const transaction = await this.coordinator.transaction(
       [WORKSPACE_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
       'readwrite',
     );

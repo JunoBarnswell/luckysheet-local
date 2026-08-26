@@ -110,7 +110,7 @@ function isAbortError(cause: unknown): boolean {
 }
 
 export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerProps) {
-  const { catalog } = useApplicationServices();
+  const { catalog, ensureStorageReady } = useApplicationServices();
   const auth = useAuthSession();
   const authSnapshot = useAuthSnapshot();
   const [activeSection, setActiveSection] = useState<WorkbookHubSection>('start');
@@ -148,6 +148,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     setLoading(true);
     setError(undefined);
     try {
+      await ensureStorageReady();
       const [listed, remoteSpaces, remotePreferences] = await Promise.all([
         catalog.list({ view: activeSection === 'trash' ? 'trash' : 'all' }, requestOptions),
         authSnapshot.phase === 'authenticated' ? catalog.listSpaces(requestOptions) : Promise.resolve([]),
@@ -168,7 +169,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     } finally {
       if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [activeSection, authSnapshot.phase, catalog]);
+  }, [activeSection, authSnapshot.phase, catalog, ensureStorageReady]);
 
   useEffect(() => { void load(); }, [load]);
 

@@ -12,7 +12,6 @@ public final class GeneratedWorkbookContract {
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
-        Map.entry("automation.recording.changed", new MutationCapability("transient", false, "AutomationRecordingChanged", "editor", "none", false, "none", false, "none", "workbook")),
         Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false, "edit-objects", true, "declared", "drawing")),
         Map.entry("sheet.add", new MutationCapability("remote", true, "SheetAdd", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.remove", new MutationCapability("remote", true, "SheetRemove", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -41,7 +40,6 @@ public final class GeneratedWorkbookContract {
         Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true, "edit-objects", true, "declared", "drawing"))
     );
     public static final Map<String, PermissionPolicy> MUTATION_PERMISSIONS = Map.ofEntries(
-        Map.entry("automation.recording.changed", new PermissionPolicy("script", "none", false, "none", "workbook")),
         Map.entry("banded.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),

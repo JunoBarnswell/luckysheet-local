@@ -138,13 +138,6 @@ export {
 } from './features/query';
 export type { QueryDefinition, LoadTarget, QueryStep } from './features/query/query-steps';
 export type { ConnectorKind, QueryResult, DataConnector } from './features/query';
-export {
-  runAutomationScript,
-  summarizeScriptResult,
-  SAMPLE_AUTOMATION_SCRIPT,
-  type AutomationSnapshot,
-} from './features/automation';
-export type { ScriptRunResult } from './features/automation';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
 export {
   runGoalSeek,

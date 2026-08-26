@@ -145,7 +145,7 @@ function copySourceCoordinate(source: RangeRef, row: number, column: number, dir
   return { row: sourceRow, column: sourceColumn };
 }
 
-function planCopy(sheet: WorksheetModel, source: RangeRef, target: RangeRef, direction: FillDirection): FillPlan {
+function planCopy(sheet: WorksheetModel, source: RangeRef, target: RangeRef, direction: FillDirection, dateSystem: ExcelDateSystem): FillPlan {
   const writes: FillWrite[] = [];
   for (let row = target.startRow; row <= target.endRow; row += 1) {
     for (let column = target.startColumn; column <= target.endColumn; column += 1) {
@@ -159,7 +159,7 @@ function planCopy(sheet: WorksheetModel, source: RangeRef, target: RangeRef, dir
       if (!cellsEqual(current, copied)) writes.push({ row, column, cell: copied });
     }
   }
-  return { sheetId: sheet.id, sourceRange: source, targetRange: target, direction, mode: 'copy', writes };
+  return { sheetId: sheet.id, sourceRange: source, targetRange: target, direction, mode: 'copy', dateSystem, writes };
 }
 
 interface SeriesSeed {
@@ -204,6 +204,7 @@ function seriesSeeds(
       const numericValue = date?.serial ?? (typeof cell?.value === 'number' && Number.isFinite(cell.value) ? cell.value : null);
       if (numericValue === null) throw new Error('Series fill accepts only finite numeric seeds or canonical date seeds; use copy mode for formulas and text');
       const key = seriesTrackKey(direction, row, column);
+      if (!cell) throw new Error('Series fill seed disappeared during planning');
       const seed: SeriesSeed = { row, column, value: numericValue, cell, travel: travelCoordinate(direction, row, column), kind: date ? 'date' : 'number' };
       const entries = tracks.get(key) ?? [];
       entries.push(seed);
@@ -260,7 +261,7 @@ function planSeries(sheet: WorksheetModel, source: RangeRef, target: RangeRef, d
     }
   }
   if (writes.length === 0 && tracks.size === 0) throw new Error('Series fill requires at least one numeric seed');
-  return { sheetId: sheet.id, sourceRange: source, targetRange: target, direction, mode: 'series', writes };
+  return { sheetId: sheet.id, sourceRange: source, targetRange: target, direction, mode: 'series', dateSystem, writes };
 }
 
 /** Validate and normalize the shape shared by command and replay. */
@@ -284,6 +285,6 @@ export function planFill(sheet: WorksheetModel, params: FillPlanParams): FillPla
   const target = validated.targetRange;
   const dateSystem = validated.dateSystem ?? '1900';
   return validated.mode === 'copy'
-    ? { ...planCopy(sheet, source, target, validated.direction), dateSystem }
+    ? planCopy(sheet, source, target, validated.direction, dateSystem)
     : planSeries(sheet, source, target, validated.direction, dateSystem);
 }

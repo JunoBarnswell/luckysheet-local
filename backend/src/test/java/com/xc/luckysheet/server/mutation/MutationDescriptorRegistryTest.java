@@ -23,6 +23,8 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ServiceException error = assertThrows(ServiceException.class, () -> registry.require("unknown.mutation", false));
         assertEquals("VALIDATION_ERROR", error.code());
+        ServiceException removedAutomation = assertThrows(ServiceException.class, () -> registry.require("automation.run", false));
+        assertEquals("VALIDATION_ERROR", removedAutomation.code());
     }
 
     @Test
@@ -312,12 +314,10 @@ class MutationDescriptorRegistryTest {
     void everyKnownNonAcceptedMutationHasAServerOwnedReason() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
-                "automation.recording.changed",
                 "pivot.chart.create",
                 "query.load.workbook-table",
                 "workbook.restore"
         ), registry.unavailableReasons().keySet());
-        assertEquals("Recorder state is transient session state and must not enter workbook history.", registry.unavailableReasons().get("automation.recording.changed"));
     }
 
     @Test

@@ -62,7 +62,6 @@ test('headered sheet data is split into fixed-size blocks with stable fields and
     value: 'Name',
     formula: '="Name"',
     style: { bold: true, background: '#e2e8f0' },
-    comment: { id: 'comment-header', author: 'user', text: 'Header', createdAt: '2026-08-24T00:00:00.000Z' },
   });
   put(cells, 0, 1, { value: 'Amount' });
   for (let row = 0; row < dataRowCount; row += 1) {
@@ -72,12 +71,15 @@ test('headered sheet data is split into fixed-size blocks with stable fields and
       ...(row === 0 ? {
         formula: '="Order "&ROW()',
         style: { italic: true },
-        comment: { id: 'comment-data', author: 'user', text: 'Data', createdAt: '2026-08-24T00:00:00.000Z' },
       } : {}),
     });
     put(cells, sheetRow, 1, { value: row * 10 });
   }
   const sheet = makeSheet(dataRowCount + 1, 2, cells);
+  sheet.review.threadIdsByCell['0:0'] = ['comment-header'];
+  sheet.review.threadsById['comment-header'] = { id: 'comment-header', sheetId: sheet.id, row: 0, column: 0, author: 'user', text: 'Header', createdAt: '2026-08-24T00:00:00.000Z', replies: [] };
+  sheet.review.threadIdsByCell['1:0'] = ['comment-data'];
+  sheet.review.threadsById['comment-data'] = { id: 'comment-data', sheetId: sheet.id, row: 1, column: 0, author: 'user', text: 'Data', createdAt: '2026-08-24T00:00:00.000Z', replies: [] };
   const range = {
     sheetId: sheet.id,
     startRow: 0,

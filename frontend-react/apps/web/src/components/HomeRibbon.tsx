@@ -98,8 +98,8 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
 
 const HOME_COMPACT_ACTION_CLASS = '!h-6 !min-h-0 !w-8 !rounded-none px-0 [&>svg]:!h-4 [&>svg]:!w-4';
 
-function HomeTile({ children, className, ...props }: React.ComponentProps<typeof Button>) {
-  return <Button {...props} className={`!h-[68px] !min-h-0 !w-[68px] flex-col gap-1 rounded-none px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6 ${className ?? ''}`}>{children}</Button>;
+function HomeTile({ children, className, compact = false, ...props }: React.ComponentProps<typeof Button> & { compact?: boolean }) {
+  return <Button {...props} className={`${compact ? '!h-7 !min-h-0 !w-8 px-0 [&>svg]:!h-4 [&>svg]:!w-4' : '!h-[68px] !min-h-0 !w-[64px] flex-col gap-1 px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6'} rounded-none ${className ?? ''}`}>{compact ? null : children}</Button>;
 }
 
 /** HOME visual composition. Surface identity and responsive membership come only from the catalog. */
@@ -177,7 +177,7 @@ export function HomeRibbon({
     const menuTrigger = (icon: React.ComponentProps<typeof Button>['icon']) => mode === 'wide'
       ? compactMenu
         ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} iconOnly size="sm" variant="ghost" className={HOME_COMPACT_ACTION_CLASS} />
-        : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
+        : <HomeTile aria-label={label} compact={layout.mode !== 'wide'} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
       : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':

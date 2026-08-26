@@ -104,6 +104,8 @@ export function resolveCommandPermission(commandId: string): PermissionPolicy | 
     capability: 'navigate',
     protectionAction: 'none',
     checksProtection: false,
+    affectedRangeMode: 'none',
+    objectScope: 'workbook',
   };
   return commandPermission(commandId);
 }

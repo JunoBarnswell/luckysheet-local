@@ -20,6 +20,7 @@ export function isAssetRef(value: unknown): value is AssetRef {
     && /^[a-f0-9]{64}$/.test(candidate.contentHash)
     && typeof candidate.mimeType === 'string'
     && candidate.mimeType.startsWith('image/')
+    && typeof candidate.byteLength === 'number'
     && Number.isSafeInteger(candidate.byteLength)
     && candidate.byteLength >= 0
     && (candidate.width === undefined || (Number.isSafeInteger(candidate.width) && candidate.width > 0))

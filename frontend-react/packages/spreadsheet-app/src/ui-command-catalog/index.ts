@@ -13,7 +13,6 @@ export type RibbonCatalogTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
@@ -31,7 +30,6 @@ export type RibbonCatalogTabId =
 
 export type RibbonGroupId =
   | 'workbook'
-  | 'scripts'
   | 'calculation'
   | 'functionLibrary'
   | 'formulaAudit'
@@ -89,10 +87,6 @@ export type RibbonCommandId =
   | 'importXlsx'
   | 'exportXlsxView'
   | 'importXlsxView'
-  | 'openAutomate'
-  | 'runSampleScript'
-  | 'startRecording'
-  | 'stopRecording'
   | 'calculateNow'
   | 'goalSeek'
   | 'sjsTable'
@@ -518,7 +512,6 @@ export interface RibbonCommandContext {
   activeSparkline?: { sheetId: string; sparklineId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
-  sampleAutomationScript: string;
 }
 
 export interface RibbonPivotActions {
@@ -635,7 +628,8 @@ export type DesignerIconKey =
   | 'transpose'
   | 'flip-horizontal'
   | 'flip-vertical'
-  | 'split-delimiter';
+  | 'split-delimiter'
+  | 'function';
 
 export type RibbonLayoutTab = Extract<RibbonCatalogTabId, 'home' | 'insert' | 'pageLayout' | 'formulas' | 'data'>;
 
@@ -703,7 +697,6 @@ export interface RibbonControlDefinition {
 export const RIBBON_TEXT = {
   groups: {
     workbook: 'groups.workbook',
-    scripts: 'groups.scripts',
     calculation: 'groups.calculation',
     functionLibrary: 'groups.functionLibrary',
     formulaAudit: 'groups.formulaAudit',
@@ -761,10 +754,6 @@ export const RIBBON_TEXT = {
     importXlsx: 'commands.importXlsx',
     exportXlsxView: 'commands.exportXlsxView',
     importXlsxView: 'commands.importXlsxView',
-    openAutomate: 'commands.openAutomate',
-    runSampleScript: 'commands.runSampleScript',
-    startRecording: 'commands.startRecording',
-    stopRecording: 'commands.stopRecording',
     calculateNow: 'commands.calculateNow',
     goalSeek: 'commands.goalSeek',
     sjsTable: 'commands.sjsTable',
@@ -1003,7 +992,6 @@ const group = (
 
 export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('workbook', 'file', 10),
-  group('scripts', 'automate', 70),
   group('calculation', 'formulas', 20),
   group('functionLibrary', 'formulas', 30),
   group('formulaAudit', 'formulas', 50),
@@ -1059,6 +1047,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
 /** The renderer consumes this table as the in-repository vector asset
  * selection. Surface specs never fall back to a tab-wide generic icon. */
 export const DESIGNER_ICON_TO_RIBBON_ICON: Readonly<Record<DesignerIconKey, RibbonIconName>> = {
+  function: 'function',
   'page-setup': 'printer',
   'print-area': 'layout',
   'clear-print-area': 'x',
@@ -1599,10 +1588,6 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('exportXlsx', 'file', 'workbook', RIBBON_TEXT.commands.exportXlsx, (context) => context.actions.onExportXlsx()),
   callback('importXlsx', 'file', 'workbook', RIBBON_TEXT.commands.importXlsx, (context) => context.actions.onImportXlsx()),
 
-  intent('openAutomate', 'automate', 'scripts', RIBBON_TEXT.commands.openAutomate, () => ({ type: 'panel.open', panel: 'automate' })),
-  dynamicCommand('runSampleScript', 'automate', 'scripts', RIBBON_TEXT.commands.runSampleScript, (context) => ({ commandId: 'automation.run', params: { source: context.sampleAutomationScript } })),
-  command('startRecording', 'automate', 'scripts', 'automation.record.start', RIBBON_TEXT.commands.startRecording, undefined, {}),
-  command('stopRecording', 'automate', 'scripts', 'automation.record.stop', RIBBON_TEXT.commands.stopRecording, undefined, {}),
 
   callback('calculateNow', 'formulas', 'calculation', RIBBON_TEXT.commands.calculateNow, (context) => context.actions.onRecalculate(), 'calculator'),
   intent('goalSeek', 'data', 'whatIf', RIBBON_TEXT.commands.goalSeek, () => ({ type: 'panel.open', panel: 'extended' })),
