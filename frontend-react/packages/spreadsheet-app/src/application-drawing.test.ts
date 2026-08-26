@@ -70,6 +70,20 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal(snapshot.selectedFloatingId, null);
   });
 
+  it('enters and leaves Shape Format context from canonical drawing selection', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.addShape({ id: 'shape-context', sheetId, kind: 'shape', payloadId: 'shape-context-payload', anchor: { kind: 'absolute' }, transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 }, zIndex: 0 }, {
+      kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#111827', strokeWidth: 1,
+    });
+    assert.deepEqual(app.getUiSnapshot().activeContext, { kind: 'drawing', sheetId, drawingId: 'shape-context' });
+    assert.equal(app.getUiSnapshot().ribbon.activeTab, 'shapeFormat');
+    assert.equal(app.getUiSnapshot().panels.active, 'shape');
+    app.setDrawingSelection([]);
+    assert.deepEqual(app.getUiSnapshot().activeContext, { kind: 'none' });
+    assert.equal(app.getUiSnapshot().ribbon.activeTab, 'home');
+  });
+
   it('insertShape creates a drawable rectangle', () => {
     const app = new WorkbookSession();
     app.insertShape('rectangle');

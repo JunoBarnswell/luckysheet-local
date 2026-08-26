@@ -4043,9 +4043,11 @@ export class WorkbookSession {
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
+      if (this.panels.active === 'shape') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'formControl') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'textbox') this.panels = { ...this.panels, open: false };
       if (this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
+      if (this.ribbonTab === 'shapeFormat') this.ribbonTab = 'home';
       this.emit();
       return;
     }
@@ -4057,6 +4059,9 @@ export class WorkbookSession {
     if (selectedDrawing?.kind === 'image') {
       this.panels = { ...this.panels, active: 'picture', open: true };
       this.ribbonTab = 'pictureFormat';
+    } else if (selectedDrawing?.kind === 'shape') {
+      this.panels = { ...this.panels, active: 'shape', open: true };
+      this.ribbonTab = 'shapeFormat';
     } else if (selectedDrawing?.kind === 'form-control') {
       this.panels = { ...this.panels, active: 'formControl', open: true };
     } else if (selectedDrawing?.kind === 'textbox') {

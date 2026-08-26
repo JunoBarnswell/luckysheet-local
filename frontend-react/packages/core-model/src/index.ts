@@ -254,6 +254,8 @@ export type {
   ImageCrop,
   ImageEffects,
   ShapeDrawingPayload,
+  ShapeDrawingType,
+  ShapeDrawingCategory,
   TextBoxDrawingPayload,
   TextBoxTextFrame,
   TextBoxHorizontalAlignment,

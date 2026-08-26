@@ -178,9 +178,18 @@ export interface ImageDrawingPayload {
   effects?: ImageEffects;
 }
 
+/**
+ * Shape identities are deliberately limited to the renderer-backed surface.
+ * Connector/group/snap identities are not part of the canonical model until
+ * their drawing, persistence, and collaboration contracts exist.
+ */
+export type ShapeDrawingType = 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+
+export type ShapeDrawingCategory = 'basic-shapes' | 'lines' | 'callouts-and-stars';
+
 export interface ShapeDrawingPayload {
   kind: 'shape';
-  type: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+  type: ShapeDrawingType;
   fill: string;
   stroke: string;
   strokeWidth?: number;

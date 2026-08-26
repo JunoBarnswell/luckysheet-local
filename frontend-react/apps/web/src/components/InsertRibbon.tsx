@@ -5,7 +5,7 @@ import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormCont
 import type { Locale } from '../i18n';
 import { insertText, translateRibbonText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
-import { INSERT_BARCODE_VARIANTS, INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { INSERT_BARCODE_VARIANTS, INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -52,7 +52,10 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
   const galleryItems = (commandId: RibbonCommandId): React.ReactNode[] => {
     if (commandId === 'chartBuilder') return INSERT_CHART_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertChart(variant.value) }));
     if (commandId === 'sparkline') return INSERT_SPARKLINE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertSparkline(variant.value) }));
-    if (commandId === 'shapesLines') return INSERT_SHAPE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertShape(variant.value) }));
+    if (commandId === 'shapesLines') return INSERT_SHAPE_GALLERY.flatMap((category) => [
+      <Text key={`${category.id}.label`} size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, category.labelKey)}</Text>,
+      ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertShape(variant.value) })),
+    ]);
     if (commandId === 'formControls') return INSERT_FORM_CONTROL_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertFormControl(variant.value) }));
     if (commandId === 'dataChart') return INSERT_DATA_CHART_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertDataChart(variant.value) }));
     if (commandId === 'barcode') return INSERT_BARCODE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertBarcode(variant.value) }));

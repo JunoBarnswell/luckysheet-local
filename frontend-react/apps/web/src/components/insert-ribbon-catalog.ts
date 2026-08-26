@@ -1,4 +1,4 @@
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingCategory, ShapeDrawingType, SparklineModel } from '@react-sheets/core-model';
 import type { IconName } from '@react-sheets/ui-system';
 import type { InsertUiTextKey } from '../i18n';
 
@@ -55,15 +55,35 @@ export const INSERT_SPARKLINE_VARIANTS = [
   { id: 'sparkline.win-loss', value: 'win-loss', icon: 'chart-bar', labelKey: 'sparklineWinLoss', ariaLabelKey: 'sparklineWinLoss', tooltipKey: 'sparklineWinLoss' },
 ] as const satisfies readonly InsertVariantDefinition<SparklineModel['type']>[];
 
-export const INSERT_SHAPE_VARIANTS = [
+export interface ShapeGalleryCategory {
+  readonly id: ShapeDrawingCategory;
+  readonly labelKey: InsertUiTextKey;
+  readonly variants: readonly InsertVariantDefinition<ShapeDrawingType>[];
+}
+
+const SHAPE_VARIANTS_BASIC = [
   { id: 'shape.rectangle', value: 'rectangle', icon: 'shape-square', labelKey: 'shapeRectangle', ariaLabelKey: 'shapeRectangle', tooltipKey: 'shapeRectangle' },
   { id: 'shape.rounded-rectangle', value: 'rounded-rectangle', icon: 'shape-square', labelKey: 'shapeRoundedRectangle', ariaLabelKey: 'shapeRoundedRectangle', tooltipKey: 'shapeRoundedRectangle' },
   { id: 'shape.ellipse', value: 'ellipse', icon: 'shape-circle', labelKey: 'shapeEllipse', ariaLabelKey: 'shapeEllipse', tooltipKey: 'shapeEllipse' },
+] as const satisfies readonly InsertVariantDefinition<ShapeDrawingType>[];
+
+const SHAPE_VARIANTS_LINES = [
   { id: 'shape.line', value: 'line', icon: 'arrow-right', labelKey: 'shapeLine', ariaLabelKey: 'shapeLine', tooltipKey: 'shapeLine' },
   { id: 'shape.arrow', value: 'arrow', icon: 'arrow-right', labelKey: 'shapeArrow', ariaLabelKey: 'shapeArrow', tooltipKey: 'shapeArrow' },
+] as const satisfies readonly InsertVariantDefinition<ShapeDrawingType>[];
+
+const SHAPE_VARIANTS_CALLOUTS = [
   { id: 'shape.callout', value: 'callout', icon: 'comment', labelKey: 'shapeCallout', ariaLabelKey: 'shapeCallout', tooltipKey: 'shapeCallout' },
   { id: 'shape.star', value: 'star', icon: 'star', labelKey: 'shapeStar', ariaLabelKey: 'shapeStar', tooltipKey: 'shapeStar' },
-] as const satisfies readonly InsertVariantDefinition<ShapeDrawingPayload['type']>[];
+] as const satisfies readonly InsertVariantDefinition<ShapeDrawingType>[];
+
+/** The gallery is categorized from the exact supported model/renderer set. */
+export const INSERT_SHAPE_GALLERY: readonly ShapeGalleryCategory[] = [
+  { id: 'basic-shapes', labelKey: 'shapeCategoryBasic', variants: SHAPE_VARIANTS_BASIC },
+  { id: 'lines', labelKey: 'shapeCategoryLines', variants: SHAPE_VARIANTS_LINES },
+  { id: 'callouts-and-stars', labelKey: 'shapeCategoryCallouts', variants: SHAPE_VARIANTS_CALLOUTS },
+] as const;
+
 
 export const INSERT_FORM_CONTROL_VARIANTS = [
   { id: 'form-control.button', value: 'button', icon: 'form-control', labelKey: 'formButton', ariaLabelKey: 'formButton', tooltipKey: 'formButton' },

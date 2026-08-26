@@ -35,6 +35,7 @@
   "chartDesign": "图表设计",
   "chartFormat": "图表格式",
   "pictureFormat": "图片格式",
+  "shapeFormat": "形状格式",
   "sparklineDesign": "迷你图设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
@@ -154,6 +155,9 @@
     "sparklineColumn": "柱形",
     "sparklineWinLoss": "盈亏",
     "shape": "形状",
+    "shapeCategoryBasic": "基本形状",
+    "shapeCategoryLines": "线条",
+    "shapeCategoryCallouts": "标注与星形",
     "shapeRectangle": "矩形",
     "shapeRoundedRectangle": "圆角矩形",
     "shapeEllipse": "椭圆",
@@ -425,6 +429,7 @@
       ,"chartDesign": "图表设计"
       ,"chartFormat": "图表格式"
       ,"pictureFormat": "图片格式"
+      ,"shapeFormat": "形状格式"
       ,"sparklineDesign": "迷你图设计"
     },
     "commands": {
@@ -593,6 +598,22 @@
       "pictureFormatPanel": "设置图片格式",
       "sparklineDesign": "迷你图设计",
       "shapesLines": "形状与线条",
+      "shapeFormatPanel": "设置形状格式",
+      "shapeRotateClockwise": "顺时针旋转",
+      "shapeRotateCounterclockwise": "逆时针旋转",
+      "shapeAlignLeft": "左对齐",
+      "shapeAlignCenter": "水平居中",
+      "shapeAlignRight": "右对齐",
+      "shapeAlignTop": "顶端对齐",
+      "shapeAlignMiddle": "垂直居中",
+      "shapeAlignBottom": "底端对齐",
+      "shapeDistributeHorizontal": "水平分布",
+      "shapeDistributeVertical": "垂直分布",
+      "shapeBringForward": "上移一层",
+      "shapeSendBackward": "下移一层",
+      "shapeBringToFront": "置于顶层",
+      "shapeSendToBack": "置于底层",
+      "shapeCopy": "复制形状",
       "deleteRow": "删除行",
       "deleteColumn": "删除列",
       "sortAscending": "升序",

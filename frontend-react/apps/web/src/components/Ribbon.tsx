@@ -129,6 +129,11 @@ export interface RibbonProps {
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
   activePicture?: { sheetId: string; drawingId: string };
+  activeShape?: {
+    sheetId: string;
+    drawingIds: readonly string[];
+    transforms: readonly { drawingId: string; transform: { x: number; y: number; width: number; height: number; rotation?: number } }[];
+  };
   activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
@@ -291,6 +296,7 @@ export function Ribbon({
   activeTable,
   activeChart,
   activePicture,
+  activeShape,
   activeSparkline,
   homeState,
   canExecute,
@@ -383,6 +389,7 @@ export function Ribbon({
     activeTable,
     activeChart,
     activePicture,
+    activeShape,
     activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
@@ -433,6 +440,7 @@ export function Ribbon({
           ...(activeTable ? ['tableDesign'] as const : []),
           ...(activeChart ? ['chartDesign', 'chartFormat'] as const : []),
           ...(activePicture ? ['pictureFormat'] as const : []),
+          ...(activeShape ? ['shapeFormat'] as const : []),
           ...(activeSparkline ? ['sparklineDesign'] as const : []),
         ]}
         disabled={disabled}

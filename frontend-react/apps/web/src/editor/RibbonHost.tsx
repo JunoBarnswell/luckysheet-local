@@ -54,6 +54,14 @@ export function RibbonHost({
   const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
   const activeChartDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'chart');
   const activePictureDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'image');
+  const activeShapeDrawings = state.selectedSheet.drawings.filter((drawing) => state.selectedDrawingIds.includes(drawing.id) && drawing.kind === 'shape');
+  const activeShape = activeShapeDrawings.length > 0
+    ? {
+      sheetId: state.activeSheetId,
+      drawingIds: activeShapeDrawings.map((drawing) => drawing.id),
+      transforms: activeShapeDrawings.map((drawing) => ({ drawingId: drawing.id, transform: drawing.transform })),
+    }
+    : undefined;
   const activeSparklineContext = state.activeContext.kind === 'sparkline' ? state.activeContext : undefined;
   return (
     <Ribbon
@@ -85,6 +93,7 @@ export function RibbonHost({
         : undefined}
       activeChart={activeChartDrawing ? { sheetId: activeChartDrawing.sheetId, chartId: activeChartDrawing.payloadId } : undefined}
       activePicture={activePictureDrawing ? { sheetId: activePictureDrawing.sheetId, drawingId: activePictureDrawing.id } : undefined}
+      activeShape={activeShape}
       activeSparkline={activeSparklineContext ? { sheetId: activeSparklineContext.sheetId, sparklineId: activeSparklineContext.sparklineId } : undefined}
       locale={locale}
       onCommand={dispatchCommand}
