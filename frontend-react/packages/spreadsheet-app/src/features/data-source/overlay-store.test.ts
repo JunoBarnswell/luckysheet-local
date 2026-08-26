@@ -4,11 +4,12 @@ import type { SparseCellOverlayMetadata } from './import';
 import {
   LocalSparseOverlayStore,
 } from './overlay-store';
+import { WorkspaceMemoryCoordinator } from '../persistence/memory';
 
 let storeSequence = 0;
 function createStore(): LocalSparseOverlayStore {
   storeSequence += 1;
-  return new LocalSparseOverlayStore({ databaseName: `overlay-test-${String(storeSequence)}-${Date.now()}` });
+  return new LocalSparseOverlayStore({ coordinator: new WorkspaceMemoryCoordinator() });
 }
 
 function overlay(revision: number, row = 2, column = 1): SparseCellOverlayMetadata {
@@ -85,10 +86,10 @@ test('overlay writes reject invalid revisions, duplicate coordinates, and empty 
   );
 });
 
-test('local store shares one IndexedDB namespace across instances', async () => {
-  const databaseName = `overlay-test-${Date.now()}-${Math.random()}`;
-  const first = new LocalSparseOverlayStore({ databaseName });
-  const second = new LocalSparseOverlayStore({ databaseName });
+test('local stores share one explicit memory context across instances', async () => {
+  const coordinator = new WorkspaceMemoryCoordinator();
+  const first = new LocalSparseOverlayStore({ coordinator });
+  const second = new LocalSparseOverlayStore({ coordinator });
   await first.put('source-2', 'block-1', overlay(7));
   assert.ok(await second.get('source-2', 'block-1', 7));
   await second.removeSource('source-2');

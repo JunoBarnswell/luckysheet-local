@@ -6,6 +6,7 @@ import {
   type TableScalar,
 } from '@react-sheets/core-model';
 import { LocalDataBlockStore } from '../persistence/data-block-store';
+import { WorkspaceMemoryCoordinator } from '../persistence/memory';
 import {
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
@@ -78,7 +79,7 @@ function manifest(sourceId: string, rowCount: number, blocks: DataBlockRef[]): D
 
 test('content query reads blocks, publishes loading/ready, and applies block-local overlays', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'block-1', 0, [['A', 10], ['B', 20], [null, 30]]);
   await store.put(block.ref, block.bytes);
   const query = new DataSourceContentQuery(
@@ -110,7 +111,7 @@ test('content query reads blocks, publishes loading/ready, and applies block-loc
 
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const first = await buildBlock(sourceId, 'block-1', 0, [['A', 10], ['B', 20]]);
   const second = await buildBlock(sourceId, 'block-2', 2, [['C', 30], ['D', 40]]);
   await store.put(first.ref, first.bytes);
@@ -142,7 +143,7 @@ test('concurrent requests share one block read and cross block reads preserve ro
 
 test('missing blocks return an explicit missing state and remain retryable', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'missing-block', 0, [['A', 1]]);
   const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), store);
 
@@ -155,7 +156,7 @@ test('missing blocks return an explicit missing state and remain retryable', asy
 
 test('invalid stored byte length and uncovered rows return explicit errors without empty data', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'bad-length-block', 0, [['A', 1]]);
   await store.put(block.ref, block.bytes);
   const badRef = { ...block.ref, byteLength: block.ref.byteLength + 1 };
@@ -173,7 +174,7 @@ test('invalid stored byte length and uncovered rows return explicit errors witho
 
 test('invalid ranges and fields are errors, while empty ranges are ready and empty', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'query-validation-block', 0, [['A', 1]]);
   await store.put(block.ref, block.bytes);
   const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), store);
@@ -189,7 +190,7 @@ test('invalid ranges and fields are errors, while empty ranges are ready and emp
 
 test('one-time overlay migration preserves block values before canonical resolution', async () => {
   const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'resolved-block', 0, [['A', 10], ['B', 20]]);
   await store.put(block.ref, block.bytes);
   const query = new DataSourceContentQuery(manifest(sourceId, 2, [block.ref]), store);
@@ -270,7 +271,7 @@ test('one-time overlay migration preserves block values before canonical resolut
 test('resolved cells expose loading and missing states without replacing a block with an empty cell', async () => {
   const sourceId = nextSourceId();
   const block = await buildBlock(sourceId, 'unloaded-block', 0, [['A', 10]]);
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), store);
   const workbook = new WorkbookModel('resolved-unloaded', 'Resolved Unloaded');
   const sheet = workbook.getSheet('sheet-1');

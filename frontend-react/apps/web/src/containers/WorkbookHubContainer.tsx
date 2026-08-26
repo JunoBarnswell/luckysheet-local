@@ -206,7 +206,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
 
   const folderLocationOptions = useMemo(() => folderLocations(folders, spaces), [folders, spaces]);
   const locationOptions = useMemo<readonly LocationOption[]>(() => [
-    { id: 'local', label: '此浏览器 · 本地文件' },
+    { id: 'local', label: '此页面 · 内存文件' },
     ...spaces.map((space) => ({ id: `space:${space.spaceId}`, label: `${space.kind === 'team' ? '团队空间' : '我的云端'} · ${space.name}` })),
     ...folderLocationOptions.map(({ folder, label }) => ({ id: `folder:${folder.spaceId}:${folder.folderId}`, label })),
   ], [folderLocationOptions, spaces]);
@@ -490,7 +490,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       </Dialog>
       <Dialog closeLabel="关闭帮助" onClose={() => setActiveDialog(null)} open={activeDialog === 'help'} title="工作簿存储说明">
         <Stack gap="sm">
-          <Text size="sm">云端工作簿由服务器保存，本地文件和离线待同步变更保留在此浏览器的 IndexedDB 中。</Text>
+          <Text size="sm">云端工作簿由服务器保存；本地工作簿和离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
           <Text size="sm">导入 Excel 会创建新工作簿；导出会基于最新快照和原始 XLSX 包生成副本。</Text>
           {authSnapshot.phase !== 'authenticated' ? <Button onClick={() => void auth.signIn('/workbooks')} size="sm" variant="brand">登录以使用云端文件</Button> : null}
         </Stack>

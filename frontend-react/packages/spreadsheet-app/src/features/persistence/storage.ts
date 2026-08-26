@@ -8,21 +8,17 @@ import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import type { AssetStore } from './asset-store';
 import { normalizeWorkspaceRecordWithAssets } from './asset-migration';
 import {
-  resolveWorkspaceDatabaseCoordinator,
-  requestResult,
-  transactionComplete,
-  WORKSPACE_HEAD_STORE_NAME,
-  WORKSPACE_SNAPSHOT_STORE_NAME,
-  WORKSPACE_OPERATION_STORE_NAME,
-  WORKSPACE_CATALOG_STORE_NAME,
-  NATIVE_PACKAGE_STORE_NAME,
-  type IndexedDbStoreOptions,
-  type WorkspaceDatabaseCoordinator,
+  WorkspaceMemoryCoordinator,
   WorkspaceStorageError,
-} from './indexed-db';
+  memoryKey,
+  type WorkspacePersistenceMode,
+  type WorkspacePersistenceState,
+} from './memory';
 
-/** Public options retained for all browser and runtime persistence callers. */
-export type IndexedDbWorkspaceStoreOptions = IndexedDbStoreOptions;
+export interface WorkspacePersistenceOptions {
+  mode?: WorkspacePersistenceMode;
+  unitId?: string | (() => string);
+}
 
 export type WorkspaceLifecycle = 'active' | 'trashed';
 export type WorkspaceStorageLocation = 'local' | 'remote' | 'mirrored';
@@ -234,27 +230,23 @@ function catalogRecordFrom(record: WorkspaceRecord): WorkspaceCatalogRecord {
   };
 }
 
-function schemaError(databaseName: string, unitId: string): WorkspaceStorageError {
+function schemaError(unitId: string): WorkspaceStorageError {
   return new WorkspaceStorageError({
     code: 'STORAGE_SCHEMA_INVALID',
-    databaseName,
     operation: 'load-workspace',
     message: `工作簿记录结构校验失败：${unitId}`,
     recovery: '请保留浏览器数据并联系管理员执行显式数据恢复。',
   });
 }
 
-function revisionConflict(databaseName: string, unitId: string, expected: number, actual: number): WorkspaceStorageError {
+function revisionConflict(unitId: string, expected: number, actual: number): WorkspaceStorageError {
   return new WorkspaceStorageError({
     code: 'STORAGE_REVISION_CONFLICT',
-    databaseName,
     operation: 'write-workspace',
     message: `工作簿本地版本冲突：${unitId}（期望 ${expected}，实际 ${actual}）。`,
     recovery: '请重新加载工作簿并重试，当前版本不会被覆盖。',
   });
 }
-
-const localWriterChains = new Map<string, Promise<void>>();
 
 function isSafeNonNegative(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
@@ -365,13 +357,9 @@ export class OperationJournalStore {
   }
 }
 
-/** IndexedDB-backed canonical WorkspaceRecord storage. */
-export class IndexedDbWorkspaceStore {
-  private readonly coordinator: WorkspaceDatabaseCoordinator;
-
-  constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
-    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
-  }
+/** Canonical workspace record storage backed by the page-session memory root. */
+export class MemoryWorkspaceStore {
+  constructor(private readonly coordinator: WorkspaceMemoryCoordinator) {}
 
   async load(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
     const records = await this.readRecords(unitId);
@@ -382,46 +370,39 @@ export class IndexedDbWorkspaceStore {
   async save(record: WorkspaceRecord): Promise<WorkspaceRecord> {
     if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
     const normalized = normalizeWorkspaceRecord(record);
-    const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
-      'readwrite',
-    );
-    const headStore = transaction.objectStore(WORKSPACE_HEAD_STORE_NAME);
-    const current = await requestResult(headStore.get(normalized.unitId)) as WorkspaceHeadRecord | undefined;
-    const currentRevision = current?.storageRevision ?? 0;
-    if (current && currentRevision !== normalized.storageRevision) {
-      throw revisionConflict(this.coordinator.databaseName, normalized.unitId, normalized.storageRevision, currentRevision);
+    return this.coordinator.transaction((transaction) => {
+    const existing = transaction.get<WorkspaceHeadRecord>('workspaceHeads', normalized.unitId);
+    const currentRevision = existing?.storageRevision ?? 0;
+    if (existing && currentRevision !== normalized.storageRevision) {
+      throw revisionConflict(normalized.unitId, normalized.storageRevision, currentRevision);
     }
     const nextStorageRevision = currentRevision + 1;
-    transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).put(snapshotRecordFrom(normalized));
-    transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME).put(catalogRecordFrom(normalized));
-    const operationStore = transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME);
-    const existingOperations = await requestResult(operationStore.getAll()) as WorkspaceOperationRecord[];
+    transaction.set('workspaceSnapshots', memoryKey(normalized.unitId, normalized.localRevision), snapshotRecordFrom(normalized));
+    transaction.set('workspaceCatalog', normalized.unitId, catalogRecordFrom(normalized));
+    const existingOperations = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations');
     for (const operation of existingOperations) {
-      if (operation.unitId === normalized.unitId) operationStore.delete([operation.unitId, operation.clientSequence]);
+      if (operation.unitId === normalized.unitId) transaction.delete('workspaceOperations', memoryKey(operation.unitId, operation.clientSequence));
     }
     for (const operation of normalized.pending.operations) {
-      operationStore.put({ ...clone(operation), unitId: normalized.unitId });
+      transaction.set('workspaceOperations', memoryKey(normalized.unitId, operation.clientSequence), { ...clone(operation), unitId: normalized.unitId });
     }
-    headStore.put(headRecordFrom(normalized, nextStorageRevision));
-    await transactionComplete(transaction);
-    normalized.storageRevision = nextStorageRevision;
-    return normalized;
+    transaction.set('workspaceHeads', normalized.unitId, headRecordFrom(normalized, nextStorageRevision));
+    return { ...normalized, storageRevision: nextStorageRevision };
+    });
   }
 
   async clear(unitId: string): Promise<void> {
-    const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
-      'readwrite',
-    );
-    transaction.objectStore(WORKSPACE_HEAD_STORE_NAME).delete(unitId);
-    transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME).delete(unitId);
-    transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).delete(unitId);
-    const snapshots = await requestResult(transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).getAll()) as WorkspaceSnapshotRecord[];
-    const operations = await requestResult(transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME).getAll()) as WorkspaceOperationRecord[];
-    for (const snapshot of snapshots) if (snapshot.unitId === unitId) transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).delete([unitId, snapshot.revision]);
-    for (const operation of operations) if (operation.unitId === unitId) transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME).delete([unitId, operation.clientSequence]);
-    await transactionComplete(transaction);
+    await this.coordinator.transaction((transaction) => {
+      transaction.delete('workspaceHeads', unitId);
+      transaction.delete('workspaceCatalog', unitId);
+      transaction.delete('nativePackages', unitId);
+      for (const snapshot of transaction.getAll<WorkspaceSnapshotRecord>('workspaceSnapshots')) {
+        if (snapshot.unitId === unitId) transaction.delete('workspaceSnapshots', memoryKey(unitId, snapshot.revision));
+      }
+      for (const operation of transaction.getAll<WorkspaceOperationRecord>('workspaceOperations')) {
+        if (operation.unitId === unitId) transaction.delete('workspaceOperations', memoryKey(unitId, operation.clientSequence));
+      }
+    });
   }
 
   async list(): Promise<WorkspaceRecord[]> {
@@ -433,54 +414,37 @@ export class IndexedDbWorkspaceStore {
     patch: { metadata?: Partial<WorkspaceRecordMetadata>; userState?: Partial<WorkspaceUserState> },
     expectedStorageRevision?: number,
   ): Promise<WorkspaceRecord> {
-    const transaction = await this.coordinator.transaction([WORKSPACE_HEAD_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME], 'readwrite');
-    const headStore = transaction.objectStore(WORKSPACE_HEAD_STORE_NAME);
-    const catalogStore = transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME);
-    const head = await requestResult(headStore.get(unitId)) as WorkspaceHeadRecord | undefined;
-    const catalog = await requestResult(catalogStore.get(unitId)) as WorkspaceCatalogRecord | undefined;
+    return this.coordinator.transaction((transaction) => {
+    const head = transaction.get<WorkspaceHeadRecord>('workspaceHeads', unitId);
+    const catalog = transaction.get<WorkspaceCatalogRecord>('workspaceCatalog', unitId);
     if (!head || !catalog) throw new Error(`Unknown local workbook: ${unitId}`);
     if (expectedStorageRevision !== undefined && head.storageRevision !== expectedStorageRevision) {
-      throw revisionConflict(this.coordinator.databaseName, unitId, expectedStorageRevision, head.storageRevision);
+      throw revisionConflict(unitId, expectedStorageRevision, head.storageRevision);
     }
-    catalogStore.put({
+    transaction.set('workspaceCatalog', unitId, {
       ...catalog,
       metadata: { ...(catalog.metadata as Partial<WorkspaceRecordMetadata>), ...(patch.metadata ?? {}) },
       userState: { ...(catalog.userState as Partial<WorkspaceUserState>), ...(patch.userState ?? {}) },
       updatedAt: new Date().toISOString(),
     });
-    headStore.put({ ...head, storageRevision: head.storageRevision + 1, updatedAt: new Date().toISOString() });
-    await transactionComplete(transaction);
-    const updated = await this.load(unitId);
-    if (!updated) throw new Error(`Workspace disappeared after catalog patch: ${unitId}`);
-    return updated;
+    transaction.set('workspaceHeads', unitId, { ...head, storageRevision: head.storageRevision + 1, updatedAt: new Date().toISOString() });
+    return this.recordFromTransaction(transaction, unitId);
+    });
   }
 
   private async readRecords(unitId?: string): Promise<WorkspaceRecord[]> {
-    const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME],
-      'readonly',
-    );
-    const complete = transactionComplete(transaction);
-    const headsRequest = transaction.objectStore(WORKSPACE_HEAD_STORE_NAME).getAll();
-    const snapshotsRequest = transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).getAll();
-    const operationsRequest = transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME).getAll();
-    const catalogsRequest = transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME).getAll();
-    const [heads, snapshots, operations, catalogs] = await Promise.all([
-      requestResult(headsRequest) as Promise<WorkspaceHeadRecord[]>,
-      requestResult(snapshotsRequest) as Promise<WorkspaceSnapshotRecord[]>,
-      requestResult(operationsRequest) as Promise<WorkspaceOperationRecord[]>,
-      requestResult(catalogsRequest) as Promise<WorkspaceCatalogRecord[]>,
-    ]);
-    await complete;
-    const records: WorkspaceRecord[] = [];
-    for (const head of heads.filter((candidate) => unitId === undefined || candidate.unitId === unitId)) {
+    return this.coordinator.read((transaction) => {
+    const heads = transaction.getAll<WorkspaceHeadRecord>('workspaceHeads');
+    const snapshots = transaction.getAll<WorkspaceSnapshotRecord>('workspaceSnapshots');
+    const operations = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations');
+    const catalogs = transaction.getAll<WorkspaceCatalogRecord>('workspaceCatalog');
+    return heads.filter((candidate) => unitId === undefined || candidate.unitId === unitId).map((head) => {
       const snapshot = snapshots.find((candidate) => candidate.unitId === head.unitId && candidate.revision === head.snapshotRevision);
       const catalog = catalogs.find((candidate) => candidate.unitId === head.unitId);
-      if (!snapshot || !catalog) throw schemaError(this.coordinator.databaseName, head.unitId);
+      if (!snapshot || !catalog) throw schemaError(head.unitId);
       const pending = buildJournal(head.unitId, head.nextClientSequence, operations
         .filter((candidate) => candidate.unitId === head.unitId)
-        .sort((left, right) => left.clientSequence - right.clientSequence)
-        .map((operation) => operation));
+        .sort((left, right) => left.clientSequence - right.clientSequence));
       const record: WorkspaceRecord = normalizeWorkspaceRecord({
         schema: 'WorkspaceRecord',
         unitId: head.unitId,
@@ -495,10 +459,26 @@ export class IndexedDbWorkspaceStore {
         metadata: catalog.metadata as WorkspaceRecordMetadata,
         userState: catalog.userState as WorkspaceUserState,
       });
-      if (!verifyWorkspaceRecord(record)) throw schemaError(this.coordinator.databaseName, head.unitId);
-      records.push(record);
-    }
-    return records;
+      if (!verifyWorkspaceRecord(record)) throw schemaError(head.unitId);
+      return record;
+    });
+    });
+  }
+
+  private recordFromTransaction(transaction: import('./memory').WorkspaceMemoryTransaction, unitId: string): WorkspaceRecord {
+    const head = transaction.get<WorkspaceHeadRecord>('workspaceHeads', unitId);
+    const snapshot = head && transaction.get<WorkspaceSnapshotRecord>('workspaceSnapshots', memoryKey(unitId, head.snapshotRevision));
+    const catalog = transaction.get<WorkspaceCatalogRecord>('workspaceCatalog', unitId);
+    const operations = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations').filter((candidate) => candidate.unitId === unitId).sort((left, right) => left.clientSequence - right.clientSequence);
+    if (!head || !snapshot || !catalog) throw schemaError(unitId);
+    const record = normalizeWorkspaceRecord({
+      schema: 'WorkspaceRecord', unitId, snapshot: snapshot.snapshot as WorkbookSnapshot, checksum: snapshot.checksum,
+      localRevision: head.localRevision, serverRevision: head.serverRevision, storageRevision: head.storageRevision,
+      syncMode: head.syncMode, pending: buildJournal(unitId, head.nextClientSequence, operations), updatedAt: head.updatedAt,
+      metadata: catalog.metadata as WorkspaceRecordMetadata, userState: catalog.userState as WorkspaceUserState,
+    });
+    if (!verifyWorkspaceRecord(record)) throw schemaError(unitId);
+    return record;
   }
 
 }
@@ -533,14 +513,12 @@ function summarizeWorkspace(record: WorkspaceRecord): LocalWorkspaceSummary {
 
 /** Public direct API for the Web catalog/PWA local workspace surface. */
 export class LocalWorkspaceStore {
-  private readonly indexedDb: IndexedDbWorkspaceStore;
+  private readonly memory: MemoryWorkspaceStore;
 
-  constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
-    this.indexedDb = new IndexedDbWorkspaceStore(options);
-  }
+  constructor(coordinator: WorkspaceMemoryCoordinator) { this.memory = new MemoryWorkspaceStore(coordinator); }
 
   open(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
-    return this.indexedDb.load(unitId, assetStore);
+    return this.memory.load(unitId, assetStore);
   }
 
   async create(input: WorkspaceRecordInput | WorkspaceRecord): Promise<WorkspaceRecord> {
@@ -548,12 +526,12 @@ export class LocalWorkspaceStore {
       ? clone(input as WorkspaceRecord)
       : buildWorkspaceRecord(input as WorkspaceRecordInput);
     const normalized = normalizeWorkspaceRecord(record);
-    return clone(await this.indexedDb.save(normalized));
+    return clone(await this.memory.save(normalized));
   }
 
   async save(record: WorkspaceRecord): Promise<WorkspaceRecord> {
     const normalized = normalizeWorkspaceRecord(record);
-    return clone(await this.indexedDb.save(normalized));
+    return clone(await this.memory.save(normalized));
   }
 
   async checkpoint(input: WorkspaceRecordInput): Promise<WorkspaceRecord> {
@@ -561,20 +539,20 @@ export class LocalWorkspaceStore {
   }
 
   async list(): Promise<LocalWorkspaceSummary[]> {
-    const records = await this.indexedDb.list();
+    const records = await this.memory.list();
     return records.map(summarizeWorkspace);
   }
 
   listRecords(): Promise<WorkspaceRecord[]> {
-    return this.indexedDb.list();
+    return this.memory.list();
   }
 
   updateMetadata(unitId: string, metadata: Partial<WorkspaceRecordMetadata>, expectedStorageRevision?: number): Promise<WorkspaceRecord> {
-    return this.indexedDb.patchCatalog(unitId, { metadata }, expectedStorageRevision);
+    return this.memory.patchCatalog(unitId, { metadata }, expectedStorageRevision);
   }
 
   updateUserState(unitId: string, userState: Partial<WorkspaceUserState>, expectedStorageRevision?: number): Promise<WorkspaceRecord> {
-    return this.indexedDb.patchCatalog(unitId, { userState }, expectedStorageRevision);
+    return this.memory.patchCatalog(unitId, { userState }, expectedStorageRevision);
   }
 
   async moveToTrash(unitId: string, deletedAt = new Date().toISOString(), expectedStorageRevision?: number): Promise<WorkspaceRecord> {
@@ -586,17 +564,8 @@ export class LocalWorkspaceStore {
   }
 
   delete(unitId: string): Promise<void> {
-    return this.indexedDb.clear(unitId);
+    return this.memory.clear(unitId);
   }
-}
-
-let defaultLocalWorkspaceStore: LocalWorkspaceStore | null = null;
-
-export function getLocalWorkspaceStore(options?: IndexedDbWorkspaceStoreOptions): LocalWorkspaceStore {
-  if (!defaultLocalWorkspaceStore || options) {
-    defaultLocalWorkspaceStore = new LocalWorkspaceStore(options);
-  }
-  return defaultLocalWorkspaceStore;
 }
 
 export class WorkspacePersistence {
@@ -605,50 +574,25 @@ export class WorkspacePersistence {
   readonly dataBlocks: LocalDataBlockStore;
   readonly sparseOverlays: LocalSparseOverlayStore;
   readonly nativePackages: LocalNativePackageStore;
-  readonly coordinator: WorkspaceDatabaseCoordinator;
+  readonly coordinator: WorkspaceMemoryCoordinator;
 
-  constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
-    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
-    const coordinatedOptions = { ...options, coordinator: this.coordinator };
-    this.store = new LocalWorkspaceStore(coordinatedOptions);
-    this.dataBlocks = new LocalDataBlockStore(coordinatedOptions);
-    this.sparseOverlays = new LocalSparseOverlayStore(coordinatedOptions);
-    this.nativePackages = new LocalNativePackageStore(coordinatedOptions);
+  constructor(options: WorkspacePersistenceOptions = {}, operationJournal = new OperationJournalStore()) {
+    this.coordinator = new WorkspaceMemoryCoordinator();
+    this.store = new LocalWorkspaceStore(this.coordinator);
+    this.dataBlocks = new LocalDataBlockStore(this.coordinator, options.unitId);
+    this.sparseOverlays = new LocalSparseOverlayStore({ coordinator: this.coordinator, unitId: options.unitId });
+    this.nativePackages = new LocalNativePackageStore(this.coordinator);
     this.operationJournal = operationJournal;
   }
 
+  get state(): WorkspacePersistenceState { return this.coordinator.state; }
+
+  get mode(): WorkspacePersistenceMode { return this.coordinator.mode; }
+
+  async ensureReady(): Promise<void> { this.coordinator.ensureReady(); }
+
   async withWorkbookWriter<T>(unitId: string, operation: () => Promise<T>): Promise<T> {
-    const localWriterKey = `${this.coordinator.databaseName}:${unitId}`;
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      const previous = localWriterChains.get(localWriterKey) ?? Promise.resolve();
-      const next = previous.catch(() => undefined).then(operation);
-      localWriterChains.set(localWriterKey, next.then(() => undefined, () => undefined));
-      return next;
-    }
-    const locks = (globalThis as typeof globalThis & { navigator?: Navigator }).navigator?.locks;
-    if (!locks) {
-      throw new WorkspaceStorageError({
-        code: 'STORAGE_WRITER_UNAVAILABLE',
-        databaseName: this.coordinator.databaseName,
-        operation: 'acquire-writer',
-        message: `浏览器不支持工作簿写入锁：${unitId}`,
-        recovery: '请使用支持 Web Locks 的浏览器后重试；当前工作簿不会被写入。',
-      });
-    }
-    let result!: T;
-    await locks.request(`react-sheets:workbook-writer:${unitId}`, { ifAvailable: true }, async (lock) => {
-      if (!lock) {
-        throw new WorkspaceStorageError({
-          code: 'STORAGE_WRITER_UNAVAILABLE',
-          databaseName: this.coordinator.databaseName,
-          operation: 'acquire-writer',
-          message: `工作簿正在由其他页面编辑：${unitId}`,
-          recovery: '请切换到只读页面，或关闭其他编辑页面后重试。',
-        });
-      }
-      result = await operation();
-    });
-    return result;
+    return this.coordinator.withWorkbookWriter(unitId, operation);
   }
 
   async load(unitId: string, assetStore?: AssetStore): Promise<WorkspaceRecord | null> {
@@ -695,7 +639,7 @@ export class WorkspacePersistence {
 
   /**
    * Commits the canonical workspace checkpoint and its source XLSX artifact
-   * in one IndexedDB transaction.
+   * in one memory transaction.
    */
   async checkpointWithArtifact(
     snapshot: WorkbookSnapshot,
@@ -708,40 +652,39 @@ export class WorkspacePersistence {
     userState?: Partial<WorkspaceUserState>,
   ): Promise<WorkspaceRecord> {
     return this.withWorkbookWriter(snapshot.unitId, async () => {
-    const previous = await this.store.open(snapshot.unitId);
-    const record = buildWorkspaceRecord({
-      unitId: snapshot.unitId,
-      snapshot,
-      localRevision,
-      serverRevision,
-      syncMode,
-      storageRevision: previous?.storageRevision ?? 0,
-      operations: pendingJournal?.operations ?? [],
-      nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
-      metadata: { ...(previous?.metadata ?? {}), ...(metadata ?? {}) },
-      userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
-    });
-    const artifactRecord = await buildNativePackageRecord(snapshot.unitId, artifact);
-    const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
-      'readwrite',
-    );
-    const current = await requestResult(transaction.objectStore(WORKSPACE_HEAD_STORE_NAME).get(record.unitId)) as WorkspaceHeadRecord | undefined;
-    const currentStorageRevision = current?.storageRevision ?? 0;
-    if (current && currentStorageRevision !== record.storageRevision) {
-      throw revisionConflict(this.coordinator.databaseName, record.unitId, record.storageRevision, currentStorageRevision);
-    }
-    const saved = { ...record, storageRevision: currentStorageRevision + 1 };
-    transaction.objectStore(WORKSPACE_HEAD_STORE_NAME).put(headRecordFrom(saved, saved.storageRevision));
-    transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).put(snapshotRecordFrom(saved));
-    transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME).put(catalogRecordFrom(saved));
-    const operationStore = transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME);
-    const existingOperations = await requestResult(operationStore.getAll()) as WorkspaceOperationRecord[];
-    for (const operation of existingOperations) if (operation.unitId === saved.unitId) operationStore.delete([operation.unitId, operation.clientSequence]);
-    for (const operation of saved.pending.operations) operationStore.put({ ...clone(operation), unitId: saved.unitId });
-    transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).put(artifactRecord);
-    await transactionComplete(transaction);
-    return saved;
+      const previous = await this.store.open(snapshot.unitId);
+      const record = buildWorkspaceRecord({
+        unitId: snapshot.unitId,
+        snapshot,
+        localRevision,
+        serverRevision,
+        syncMode,
+        storageRevision: previous?.storageRevision ?? 0,
+        operations: pendingJournal?.operations ?? [],
+        nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
+        metadata: { ...(previous?.metadata ?? {}), ...(metadata ?? {}) },
+        userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
+      });
+      const artifactRecord = await buildNativePackageRecord(snapshot.unitId, artifact);
+      return this.coordinator.transaction((transaction) => {
+        const current = transaction.get<WorkspaceHeadRecord>('workspaceHeads', record.unitId);
+        const currentStorageRevision = current?.storageRevision ?? 0;
+        if (current && currentStorageRevision !== record.storageRevision) {
+          throw revisionConflict(record.unitId, record.storageRevision, currentStorageRevision);
+        }
+        const saved = { ...record, storageRevision: currentStorageRevision + 1 };
+        transaction.set('workspaceHeads', saved.unitId, headRecordFrom(saved, saved.storageRevision));
+        transaction.set('workspaceSnapshots', memoryKey(saved.unitId, saved.localRevision), snapshotRecordFrom(saved));
+        transaction.set('workspaceCatalog', saved.unitId, catalogRecordFrom(saved));
+        for (const operation of transaction.getAll<WorkspaceOperationRecord>('workspaceOperations')) {
+          if (operation.unitId === saved.unitId) transaction.delete('workspaceOperations', memoryKey(operation.unitId, operation.clientSequence));
+        }
+        for (const operation of saved.pending.operations) {
+          transaction.set('workspaceOperations', memoryKey(saved.unitId, operation.clientSequence), { ...clone(operation), unitId: saved.unitId });
+        }
+        transaction.set('nativePackages', saved.unitId, artifactRecord);
+        return saved;
+      });
     });
   }
 
@@ -752,21 +695,19 @@ export class WorkspacePersistence {
     expectedStorageRevision?: number,
   ): Promise<number> {
     return this.withWorkbookWriter(unitId, async () => {
-      const transaction = await this.coordinator.transaction([WORKSPACE_HEAD_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME], 'readwrite');
-      const headStore = transaction.objectStore(WORKSPACE_HEAD_STORE_NAME);
-      const operationStore = transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME);
-      const head = await requestResult(headStore.get(unitId)) as WorkspaceHeadRecord | undefined;
+      return this.coordinator.transaction((transaction) => {
+      const head = transaction.get<WorkspaceHeadRecord>('workspaceHeads', unitId);
       if (!head) throw new Error(`Unknown local workbook: ${unitId}`);
       if (expectedStorageRevision !== undefined && head.storageRevision !== expectedStorageRevision) {
-        throw revisionConflict(this.coordinator.databaseName, unitId, expectedStorageRevision, head.storageRevision);
+        throw revisionConflict(unitId, expectedStorageRevision, head.storageRevision);
       }
-      const existing = await requestResult(operationStore.getAll()) as WorkspaceOperationRecord[];
-      for (const operation of existing) if (operation.unitId === unitId) operationStore.delete([unitId, operation.clientSequence]);
-      for (const operation of operations) operationStore.put({ ...clone(operation), unitId });
+      const existing = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations');
+      for (const operation of existing) if (operation.unitId === unitId) transaction.delete('workspaceOperations', memoryKey(unitId, operation.clientSequence));
+      for (const operation of operations) transaction.set('workspaceOperations', memoryKey(unitId, operation.clientSequence), { ...clone(operation), unitId });
       const storageRevision = head.storageRevision + 1;
-      headStore.put({ ...head, storageRevision, nextClientSequence, updatedAt: new Date().toISOString() });
-      await transactionComplete(transaction);
+      transaction.set('workspaceHeads', unitId, { ...head, storageRevision, nextClientSequence, updatedAt: new Date().toISOString() });
       return storageRevision;
+      });
     });
   }
 

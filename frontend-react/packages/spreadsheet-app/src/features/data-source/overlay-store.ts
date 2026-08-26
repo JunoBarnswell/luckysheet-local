@@ -1,18 +1,6 @@
 import { computeChecksum } from '../persistence/checksum';
-import {
-  namespaceWorkspaceSourceId,
-  requestResult,
-  resolveWorkspaceDatabaseCoordinator,
-  resolveWorkspaceUnitId,
-  transactionComplete,
-  OVERLAY_STORE_NAME,
-  WORKSPACE_DATABASE_NAME,
-  type IndexedDbFactoryLike,
-  type WorkspaceDatabaseCoordinator,
-} from '../persistence/indexed-db';
+import { memoryKey, type WorkspaceMemoryCoordinator } from '../persistence/memory';
 import type { SparseCellOverlayMetadata, SparseCellOverlayMetadataCell } from './import';
-
-const DEFAULT_DATABASE_NAME = WORKSPACE_DATABASE_NAME;
 
 export interface SparseOverlayRecord {
   schema: 'SparseCellOverlayRecord';
@@ -33,14 +21,13 @@ export interface SparseOverlayStore {
 }
 
 export interface SparseOverlayStoreOptions {
-  databaseName?: string;
-  indexedDB?: IndexedDbFactoryLike | null;
-  coordinator?: WorkspaceDatabaseCoordinator;
+  coordinator: WorkspaceMemoryCoordinator;
   unitId?: string | (() => string);
 }
 
 function storageSourceId(options: Pick<SparseOverlayStoreOptions, 'unitId'>, sourceId: string): string {
-  return namespaceWorkspaceSourceId(resolveWorkspaceUnitId(options), sourceId);
+  const unitId = typeof options.unitId === 'function' ? options.unitId() : options.unitId;
+  return unitId?.trim() ? `unit:${unitId.trim()}:source:${sourceId}` : sourceId;
 }
 
 function fail(message: string): never {
@@ -154,36 +141,30 @@ function validateRecord(record: SparseOverlayRecord): SparseOverlayRecord {
   };
 }
 
-/** IndexedDB implementation owned by the shared workspace coordinator. */
-export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
-  private readonly coordinator: WorkspaceDatabaseCoordinator;
+/** Canonical page-session memory overlay store. */
+export class LocalSparseOverlayStore implements SparseOverlayStore {
+  private readonly coordinator: WorkspaceMemoryCoordinator;
   private readonly options: SparseOverlayStoreOptions;
 
-  constructor(options: SparseOverlayStoreOptions = {}) {
+  constructor(options: SparseOverlayStoreOptions) {
     this.options = options;
-    const databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
-    if (!databaseName.trim()) fail('database name cannot be empty');
-    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
+    this.coordinator = options.coordinator;
   }
 
   async put(sourceId: string, blockId: string, overlay: SparseCellOverlayMetadata): Promise<SparseOverlayRecord> {
     validateIdentity(sourceId, blockId, overlay?.revision);
     const storageId = storageSourceId(this.options, sourceId);
     const record = buildRecord(storageId, blockId, overlay);
-    const transaction = await this.coordinator.transaction(OVERLAY_STORE_NAME, 'readwrite');
-    transaction.objectStore(OVERLAY_STORE_NAME).put(record);
-    await transactionComplete(transaction);
-    return clone(record);
+    return this.coordinator.transaction((transaction) => {
+      transaction.set('sparseOverlays', memoryKey(record.sourceId, record.blockId, record.revision), record);
+      return clone(record);
+    });
   }
 
   async get(sourceId: string, blockId: string, revision: number): Promise<SparseOverlayRecord | null> {
     validateIdentity(sourceId, blockId, revision);
-    const transaction = await this.coordinator.transaction(OVERLAY_STORE_NAME, 'readonly');
-    const complete = transactionComplete(transaction);
-    const store = transaction.objectStore(OVERLAY_STORE_NAME);
     const storageId = storageSourceId(this.options, sourceId);
-    const value = await requestResult(store.get([storageId, blockId, revision])) as SparseOverlayRecord | undefined;
-    await complete;
+    const value = await this.coordinator.read((transaction) => transaction.get<SparseOverlayRecord>('sparseOverlays', memoryKey(storageId, blockId, revision)));
     if (!value) return null;
     if (value.sourceId !== storageId
       || value.blockId !== blockId
@@ -195,64 +176,32 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
 
   async remove(sourceId: string, blockId: string, revision: number): Promise<void> {
     validateIdentity(sourceId, blockId, revision);
-    const transaction = await this.coordinator.transaction(OVERLAY_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(OVERLAY_STORE_NAME);
     const storageId = storageSourceId(this.options, sourceId);
-    store.delete([storageId, blockId, revision]);
-    await transactionComplete(transaction);
+    await this.coordinator.transaction((transaction) => transaction.delete('sparseOverlays', memoryKey(storageId, blockId, revision)));
   }
 
   async removeBlock(sourceId: string, blockId: string): Promise<void> {
     if (!sourceId.trim()) fail('requires a source id');
     if (!blockId.trim()) fail('requires a block id');
-    const transaction = await this.coordinator.transaction(OVERLAY_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(OVERLAY_STORE_NAME);
     const storageId = storageSourceId(this.options, sourceId);
-    const complete = transactionComplete(transaction);
-    const rows = await requestResult(store.index('sourceBlock').getAll([storageId, blockId])) as SparseOverlayRecord[];
-    for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
-    await complete;
+    await this.coordinator.transaction((transaction) => {
+      for (const row of transaction.getAll<SparseOverlayRecord>('sparseOverlays')) {
+        if (row.sourceId === storageId && row.blockId === blockId) {
+          transaction.delete('sparseOverlays', memoryKey(row.sourceId, row.blockId, row.revision));
+        }
+      }
+    });
   }
 
   async removeSource(sourceId: string): Promise<void> {
     if (!sourceId.trim()) fail('requires a source id');
-    const transaction = await this.coordinator.transaction(OVERLAY_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(OVERLAY_STORE_NAME);
     const storageId = storageSourceId(this.options, sourceId);
-    const complete = transactionComplete(transaction);
-    const rows = await requestResult(store.index('sourceId').getAll(IDBKeyRange.only(storageId))) as SparseOverlayRecord[];
-    for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
-    await complete;
-  }
-}
-
-/** Canonical local overlay store. */
-export class LocalSparseOverlayStore implements SparseOverlayStore {
-  private readonly indexedDb: IndexedDbSparseOverlayStore;
-
-  constructor(options: SparseOverlayStoreOptions = {}) {
-    const databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
-    if (!databaseName.trim()) fail('database name cannot be empty');
-    this.indexedDb = new IndexedDbSparseOverlayStore({ ...options, databaseName });
-  }
-
-  put(sourceId: string, blockId: string, overlay: SparseCellOverlayMetadata): Promise<SparseOverlayRecord> {
-    return this.indexedDb.put(sourceId, blockId, overlay);
-  }
-
-  get(sourceId: string, blockId: string, revision: number): Promise<SparseOverlayRecord | null> {
-    return this.indexedDb.get(sourceId, blockId, revision);
-  }
-
-  remove(sourceId: string, blockId: string, revision: number): Promise<void> {
-    return this.indexedDb.remove(sourceId, blockId, revision);
-  }
-
-  removeBlock(sourceId: string, blockId: string): Promise<void> {
-    return this.indexedDb.removeBlock(sourceId, blockId);
-  }
-
-  removeSource(sourceId: string): Promise<void> {
-    return this.indexedDb.removeSource(sourceId);
+    await this.coordinator.transaction((transaction) => {
+      for (const row of transaction.getAll<SparseOverlayRecord>('sparseOverlays')) {
+        if (row.sourceId === storageId) {
+          transaction.delete('sparseOverlays', memoryKey(row.sourceId, row.blockId, row.revision));
+        }
+      }
+    });
   }
 }

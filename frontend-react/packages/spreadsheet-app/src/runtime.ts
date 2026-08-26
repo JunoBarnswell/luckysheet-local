@@ -32,7 +32,7 @@ import {
   DataBlockSynchronizer,
   LocalAssetStore,
   type AssetStore,
-  type IndexedDbWorkspaceStoreOptions,
+  type WorkspacePersistenceOptions,
   type WorkspaceRecord,
   WorkspaceStorageError,
 } from './features/persistence';
@@ -100,7 +100,7 @@ export interface SpreadsheetRuntime {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   resolution?: WorkbookResolution;
-  /** Runtime lifecycle is explicit so late Worker/IndexedDB callbacks cannot
+  /** Runtime lifecycle is explicit so late Worker callbacks cannot
    * publish into a disposed session. */
   disposed: boolean;
 }
@@ -129,7 +129,7 @@ export function createSpreadsheetRuntime(options: {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   localOnly?: boolean;
-  persistence?: IndexedDbWorkspaceStoreOptions;
+  persistence?: WorkspacePersistenceOptions;
   workspacePersistence?: WorkspacePersistence;
   assetStore?: AssetStore;
   resolution?: WorkbookResolution;
@@ -166,10 +166,7 @@ export function createSpreadsheetRuntime(options: {
     unitId: () => runtime.model.unitId,
     isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
   });
-  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, {
-    ...options.persistence,
-    coordinator: workspacePersistence.coordinator,
-  });
+  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, workspacePersistence.coordinator);
   runtime = {
     api,
     formula: formula as FormulaEngine,
@@ -222,7 +219,7 @@ export function createSpreadsheetRuntime(options: {
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   // The offline journal records operation intent and its client sequence.
-  // The same IndexedDB transaction also checkpoints the canonical local
+  // The same memory transaction also checkpoints the canonical local
   // workbook snapshot, so a closed browser can resume without any service.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     loadPending: () => {
@@ -1071,7 +1068,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       });
       replaceCollaborationSession(runtime, localRecord);
       if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
-      runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+      runtime.handlers.onNotice?.('Workbook restored from the current memory session');
     }
   }
 
@@ -1160,7 +1157,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     }
     if (isActive()) {
       runtime.handlers.onSaveState?.('offline');
-      runtime.handlers.onNotice?.('Server unavailable; using local IndexedDB workspace');
+      runtime.handlers.onNotice?.('Server unavailable; using the current memory workspace');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onMutationsApplied?.();
     }

@@ -346,7 +346,7 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('fill-source-unique');
   });
 
-  test('local formula calculation and IndexedDB restore work without an API request', async ({ page }) => {
+  test('local formula calculation works in the page memory session without an API request', async ({ page }) => {
     const apiRequests: string[] = [];
     let socketCount = 0;
     page.on('request', (request) => {
@@ -364,9 +364,9 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
 
     await page.reload();
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
     await focusCanvas(page);
-    await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
     expect(apiRequests).toEqual([]);
     expect(socketCount).toBe(0);
   });

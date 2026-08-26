@@ -1,13 +1,6 @@
 import { assertAssetRef, type AssetRef } from '@react-sheets/core-model';
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import {
-  ASSET_STORE_NAME,
-  resolveWorkspaceDatabaseCoordinator,
-  requestResult,
-  transactionComplete,
-  type IndexedDbStoreOptions,
-  type WorkspaceDatabaseCoordinator,
-} from './indexed-db';
+import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
 
 export interface AssetPutInput {
   content: Blob;
@@ -23,7 +16,7 @@ export interface AssetStore {
   reconcile(references: readonly AssetRef[]): Promise<void>;
 }
 
-interface LocalAssetRecord extends AssetRef {
+export interface LocalAssetRecord extends AssetRef {
   unitId: string;
   bytes: ArrayBuffer;
 }
@@ -63,13 +56,11 @@ function validateContent(ref: AssetRef, bytes: ArrayBuffer): void {
 
 /** Browser-local, content-addressed store. It never serializes bytes into WorkbookSnapshot. */
 export class LocalAssetStore implements AssetStore {
-  private readonly coordinator: WorkspaceDatabaseCoordinator;
   private readonly unitId: string;
 
-  constructor(unitId: string, options: IndexedDbStoreOptions = {}) {
+  constructor(unitId: string, private readonly coordinator: WorkspaceMemoryCoordinator) {
     if (!unitId.trim()) throw new Error('AssetStore unitId is required');
     this.unitId = unitId;
-    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
   }
 
   async put(input: AssetPutInput): Promise<AssetRef> {
@@ -80,21 +71,18 @@ export class LocalAssetStore implements AssetStore {
     const ref = refFromContent(input.content, contentHash, { ...input, mimeType });
     const bytes = await input.content.arrayBuffer();
     const record: LocalAssetRecord = { ...ref, unitId: this.unitId, bytes };
-    const transaction = await this.coordinator.transaction(ASSET_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(ASSET_STORE_NAME);
-    const existing = await requestResult(store.get([this.unitId, ref.assetId])) as LocalAssetRecord | undefined;
-    if (existing) validateContent(ref, existing.bytes);
-    else store.put(clone(record));
-    await transactionComplete(transaction);
-    return clone(ref);
+    return this.coordinator.transaction((transaction) => {
+      const key = memoryKey(this.unitId, ref.assetId);
+      const existing = transaction.get<LocalAssetRecord>('assets', key);
+      if (existing) validateContent(ref, existing.bytes);
+      else transaction.set('assets', key, clone(record));
+      return clone(ref);
+    });
   }
 
   async get(ref: AssetRef): Promise<Blob> {
     assertAssetRef(ref);
-    const transaction = await this.coordinator.transaction(ASSET_STORE_NAME, 'readonly');
-    const complete = transactionComplete(transaction);
-    const record = await requestResult(transaction.objectStore(ASSET_STORE_NAME).get([this.unitId, ref.assetId])) as LocalAssetRecord | undefined;
-    await complete;
+    const record = await this.coordinator.read((transaction) => transaction.get<LocalAssetRecord>('assets', memoryKey(this.unitId, ref.assetId)));
     if (!record) throw new Error(`ASSET_MISSING: ${ref.assetId}`);
     if (record.contentHash !== ref.contentHash || record.mimeType !== ref.mimeType) throw new Error(`ASSET_METADATA_MISMATCH: ${ref.assetId}`);
     validateContent(ref, record.bytes);
@@ -105,18 +93,18 @@ export class LocalAssetStore implements AssetStore {
 
   async release(ref: AssetRef): Promise<void> {
     assertAssetRef(ref);
-    const transaction = await this.coordinator.transaction(ASSET_STORE_NAME, 'readwrite');
-    transaction.objectStore(ASSET_STORE_NAME).delete([this.unitId, ref.assetId]);
-    await transactionComplete(transaction);
+    await this.coordinator.transaction((transaction) => transaction.delete('assets', memoryKey(this.unitId, ref.assetId)));
   }
 
   async reconcile(references: readonly AssetRef[]): Promise<void> {
     const referenced = new Set(references.map((ref) => ref.assetId));
-    const transaction = await this.coordinator.transaction(ASSET_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(ASSET_STORE_NAME);
-    const records = await requestResult(store.getAll()) as LocalAssetRecord[];
-    for (const record of records) if (record.unitId === this.unitId && !referenced.has(record.assetId)) store.delete([record.unitId, record.assetId]);
-    await transactionComplete(transaction);
+    await this.coordinator.transaction((transaction) => {
+      for (const record of transaction.getAll<LocalAssetRecord>('assets')) {
+        if (record.unitId === this.unitId && !referenced.has(record.assetId)) {
+          transaction.delete('assets', memoryKey(record.unitId, record.assetId));
+        }
+      }
+    });
   }
 }
 

@@ -28,14 +28,27 @@ export function createWorkbookSessionFactory(defaults: Omit<WorkbookSessionOptio
 
 export function useWorkbookSession(options: WorkbookSessionOptions = {}): UseWorkbookSessionResult {
   const sessionRef = useRef<WorkbookSession | null>(null);
+  const disposeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   if (!sessionRef.current) {
     sessionRef.current = new WorkbookSession(options);
   }
   const session = sessionRef.current;
 
   useEffect(() => {
+    if (disposeTimer.current !== null) {
+      clearTimeout(disposeTimer.current);
+      disposeTimer.current = null;
+    }
     session.start();
-    return () => session.dispose();
+    return () => {
+      // React StrictMode probes effect cleanup during development. Defer the
+      // real dispose so the immediate probe remount can reuse the in-flight
+      // persistence initialization instead of opening a second Writer.
+      disposeTimer.current = setTimeout(() => {
+        disposeTimer.current = null;
+        session.dispose();
+      }, 0);
+    };
   }, [session]);
 
   const snapshot = useSyncExternalStore(session.subscribe, session.getUiSnapshot, session.getUiSnapshot);

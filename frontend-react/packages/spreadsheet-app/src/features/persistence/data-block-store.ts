@@ -1,15 +1,6 @@
 import type { DataBlockRef } from '@react-sheets/core-model';
 import { computeBinaryChecksum } from './checksum';
-import {
-  DATA_BLOCK_STORE_NAME,
-  namespaceWorkspaceSourceId,
-  requestResult,
-  resolveWorkspaceDatabaseCoordinator,
-  resolveWorkspaceUnitId,
-  transactionComplete,
-  type IndexedDbStoreOptions,
-  type WorkspaceDatabaseCoordinator,
-} from './indexed-db';
+import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
 
 export interface DataBlockRecord {
   schema: 'DataBlockRecord';
@@ -20,9 +11,7 @@ export interface DataBlockRecord {
   updatedAt: string;
 }
 
-function cloneBytes(bytes: ArrayBuffer): ArrayBuffer {
-  return bytes.slice(0);
-}
+function cloneBytes(bytes: ArrayBuffer): ArrayBuffer { return bytes.slice(0); }
 
 function cloneRecord(record: DataBlockRecord): DataBlockRecord {
   return { ...record, bytes: cloneBytes(record.bytes) };
@@ -38,68 +27,59 @@ async function assertRecord(record: DataBlockRecord): Promise<void> {
   }
 }
 
-/**
- * Persistent bytes for block-backed sources. Snapshot/presence/history retain
- * only DataBlockRef metadata so a remote operation never serializes source
- * data into a JSON changeset.
- */
+function storageSourceId(unitId: string | (() => string) | undefined, sourceId: string): string {
+  const resolved = typeof unitId === 'function' ? unitId() : unitId;
+  return resolved?.trim() ? `unit:${resolved.trim()}:source:${sourceId}` : sourceId;
+}
+
+/** Session-memory bytes for block-backed sources. */
 export class LocalDataBlockStore {
-  private readonly coordinator: WorkspaceDatabaseCoordinator;
-  private readonly unitId: string | (() => string) | undefined;
-
-  constructor(options: IndexedDbStoreOptions = {}) {
-    this.coordinator = resolveWorkspaceDatabaseCoordinator(options);
-    this.unitId = options.unitId;
-  }
-
-  private storageSourceId(sourceId: string): string {
-    return namespaceWorkspaceSourceId(resolveWorkspaceUnitId({ unitId: this.unitId }), sourceId);
-  }
+  constructor(
+    private readonly coordinator: WorkspaceMemoryCoordinator,
+    private readonly unitId?: string | (() => string),
+  ) {}
 
   async put(ref: DataBlockRef, bytes: ArrayBuffer): Promise<DataBlockRecord> {
     const checksum = await computeBinaryChecksum(bytes);
     if (checksum !== ref.checksum) throw new Error(`Data block checksum does not match manifest: ${ref.id}`);
     const record: DataBlockRecord = {
       schema: 'DataBlockRecord',
-      sourceId: this.storageSourceId(ref.dataSourceId),
+      sourceId: storageSourceId(this.unitId, ref.dataSourceId),
       blockId: ref.id,
       checksum,
       bytes: cloneBytes(bytes),
       updatedAt: new Date().toISOString(),
     };
     await assertRecord(record);
-    const transaction = await this.coordinator.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
-    transaction.objectStore(DATA_BLOCK_STORE_NAME).put(record);
-    await transactionComplete(transaction);
-    return cloneRecord(record);
+    return this.coordinator.transaction((transaction) => {
+      transaction.set('dataBlocks', memoryKey(record.sourceId, record.blockId), cloneRecord(record));
+      return cloneRecord(record);
+    });
   }
 
   async get(ref: Pick<DataBlockRef, 'dataSourceId' | 'id' | 'checksum'>): Promise<DataBlockRecord | null> {
-    const transaction = await this.coordinator.transaction(DATA_BLOCK_STORE_NAME, 'readonly');
-    const store = transaction.objectStore(DATA_BLOCK_STORE_NAME);
-    const storageSourceId = this.storageSourceId(ref.dataSourceId);
-    const record = await requestResult(store.get([storageSourceId, ref.id])) as DataBlockRecord | undefined;
-    await transactionComplete(transaction);
-    if (!record) return null;
-    await assertRecord(record);
-    if (record.checksum !== ref.checksum) throw new Error(`Data block manifest checksum mismatch: ${ref.id}`);
-    return cloneRecord(record);
+    return this.coordinator.read(async (transaction) => {
+      const sourceId = storageSourceId(this.unitId, ref.dataSourceId);
+      const record = transaction.get<DataBlockRecord>('dataBlocks', memoryKey(sourceId, ref.id));
+      if (!record) return null;
+      await assertRecord(record);
+      if (record.checksum !== ref.checksum) throw new Error(`Data block manifest checksum mismatch: ${ref.id}`);
+      return cloneRecord(record);
+    });
   }
 
   async remove(sourceId: string, blockId: string): Promise<void> {
-    const storageSourceId = this.storageSourceId(sourceId);
-    const transaction = await this.coordinator.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(DATA_BLOCK_STORE_NAME);
-    store.delete([storageSourceId, blockId]);
-    await transactionComplete(transaction);
+    await this.coordinator.transaction((transaction) => {
+      transaction.delete('dataBlocks', memoryKey(storageSourceId(this.unitId, sourceId), blockId));
+    });
   }
 
   async removeSource(sourceId: string): Promise<void> {
-    const storageSourceId = this.storageSourceId(sourceId);
-    const transaction = await this.coordinator.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
-    const index = transaction.objectStore(DATA_BLOCK_STORE_NAME).index('sourceId');
-    const rows = await requestResult(index.getAll(IDBKeyRange.only(storageSourceId))) as DataBlockRecord[];
-    for (const row of rows) transaction.objectStore(DATA_BLOCK_STORE_NAME).delete([row.sourceId, row.blockId]);
-    await transactionComplete(transaction);
+    const storageId = storageSourceId(this.unitId, sourceId);
+    await this.coordinator.transaction((transaction) => {
+      for (const row of transaction.getAll<DataBlockRecord>('dataBlocks')) {
+        if (row.sourceId === storageId) transaction.delete('dataBlocks', memoryKey(row.sourceId, row.blockId));
+      }
+    });
   }
 }

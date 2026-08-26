@@ -7,7 +7,7 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { getInitialSessionPhase, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { getInitialSessionPhase, isWorkbookResolutionError, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
@@ -36,11 +36,14 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
   if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在确认本地缓存或云端访问权限。" /></Box>;
   if (localState === "denied") {
     const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !shareToken;
-    const title = canSignIn ? "需要云端登录" : "无法打开工作簿";
-    const description = canSignIn
-      ? "未在此浏览器中找到本地工作簿；请登录后访问云端文件。"
-      : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "该工作簿不在本地缓存中，且 OIDC 配置不可用。" : "工作簿解析失败。");
-    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={canSignIn ? "登录以打开云端文件" : "返回工作簿中心"} kind="error" title={title} description={description} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
+    const memorySessionReset = isWorkbookResolutionError(resolutionError) && resolutionError.code === "memory-session-reset";
+    const title = memorySessionReset ? "内存会话已重置" : canSignIn ? "需要云端登录" : "无法打开工作簿";
+    const description = memorySessionReset
+      ? "本地工作簿只存在于当前页面的内存会话中；刷新或关闭页面后无法恢复。请返回工作簿中心重新创建或导入。"
+      : canSignIn
+        ? "当前页面内存会话中没有这个本地工作簿；请登录后打开云端文件。"
+        : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "该工作簿不在当前页面内存会话中，且云端服务未配置。" : "工作簿解析失败。");
+    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={memorySessionReset || !canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn && !memorySessionReset ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;
   return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "local"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
@@ -52,7 +55,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const auth = useAuthSession();
   const { catalog, createWorkbookSessionOptions } = useApplicationServices();
   const { session, snapshot: state } = useWorkbookSession({
-    ...createWorkbookSessionOptions(unitId, auth.getAccessToken),
+    ...createWorkbookSessionOptions(unitId, auth.getAccessToken, resolution.mode !== "remote"),
     initialPhase: getInitialSessionPhase(),
     resolution,
     onReady: () => catalog.markOpened(resolution),

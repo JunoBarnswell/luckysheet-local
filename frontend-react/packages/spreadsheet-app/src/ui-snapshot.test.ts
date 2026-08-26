@@ -5,6 +5,7 @@ import { WorkbookModel, type DataSourceManifest, type DataBlockRef } from '@reac
 import { buildCanvasSheetSnapshot } from './ui-snapshot';
 import { setCellHyperlink } from './features/review';
 import { LocalDataBlockStore } from './features/persistence/data-block-store';
+import { WorkspaceMemoryCoordinator } from './features/persistence/memory';
 import {
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
@@ -184,7 +185,7 @@ describe('canonical drawing UI projection', () => {
       blocks: [ref],
       revision: 0,
     };
-    const store = new LocalDataBlockStore();
+    const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
     await store.put(ref, payload);
     const query = new DataSourceContentQuery(manifest, store);
     workbook.addDataSource(manifest);
