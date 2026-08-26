@@ -150,9 +150,11 @@ export function validateHyperlinkTarget(target: HyperlinkTarget, workbook: Workb
   if (!hasAddress && !hasCoordinates) throw new Error('Worksheet hyperlink address is required');
   const targetSheet = workbook.getSheet(target.sheetId);
   const coordinate = hasAddress ? parseAddress(target.address ?? '') : { row: target.row, column: target.column };
-  if (!coordinate || !Number.isSafeInteger(coordinate.row) || !Number.isSafeInteger(coordinate.column)
-    || coordinate.row < 0 || coordinate.column < 0
-    || coordinate.row >= targetSheet.rowCount || coordinate.column >= targetSheet.columnCount) {
+  const row = coordinate?.row;
+  const column = coordinate?.column;
+  if (row === undefined || column === undefined || !Number.isSafeInteger(row) || !Number.isSafeInteger(column)
+    || row < 0 || column < 0
+    || row >= targetSheet.rowCount || column >= targetSheet.columnCount) {
     throw new Error(`Worksheet hyperlink address is outside ${targetSheet.name}`);
   }
 }

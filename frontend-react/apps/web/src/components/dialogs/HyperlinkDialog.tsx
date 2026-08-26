@@ -26,7 +26,8 @@ function initialKind(link?: CellHyperlink): TargetKind {
 }
 
 function initialSheet(link: CellHyperlink | undefined, sheets: readonly HyperlinkSheetOption[]): string {
-  if (link?.target.kind === 'sheet' && sheets.some((sheet) => sheet.id === link.target.sheetId)) return link.target.sheetId;
+  const target = link?.target.kind === 'sheet' ? link.target : undefined;
+  if (target && sheets.some((sheet) => sheet.id === target.sheetId)) return target.sheetId;
   return sheets[0]?.id ?? '';
 }
 
