@@ -5,6 +5,7 @@ import type { ScalarValue } from './values';
 import type { FormulaDefinedName } from './defined-names';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import type { ExcelNumericContext } from './numeric';
+import type { CalculationEntropyContext } from './random';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -16,6 +17,7 @@ export interface FormulaCalculationSnapshot {
   readonly dateSystem: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   readonly numericContext: ExcelNumericContext;
+  readonly calculationEntropy: CalculationEntropyContext;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -56,6 +58,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
     throw new Error('Calculation snapshot has an invalid canonical reference date');
   }
   if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
+  if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }
@@ -158,6 +161,16 @@ function isExcelNumericContext(value: unknown): value is ExcelNumericContext {
   return Number.isSafeInteger(value.significantDigits)
     && value.significantDigits >= 1
     && value.significantDigits <= 15;
+}
+
+function isCalculationEntropyContext(value: unknown): value is CalculationEntropyContext {
+  if (!isRecord(value)) return false;
+  return Number.isSafeInteger(value.cycleId)
+    && value.cycleId >= 0
+    && typeof value.entropySeed === 'string'
+    && value.entropySeed.trim().length > 0
+    && Number.isSafeInteger(value.passIndex)
+    && value.passIndex >= 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

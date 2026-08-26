@@ -1,5 +1,6 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
+import type { FormulaEvaluationContext } from '../evaluator';
 import { findLookupIndex, type LookupMatchMode } from './lookup-engine';
 
 const MAX_GENERATED_ARRAY_CELLS = 100_000;
@@ -59,7 +60,7 @@ function matrixWidth(matrix: FormulaValue[][]): number {
   return Math.max(0, ...matrix.map((row) => row.length));
 }
 
-export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
+export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue> = {
   FILTER: (args) => {
     if (args.length < 2) return createFormulaError('#VALUE!', 'FILTER requires array and include');
     const array = to2DArray(args[0]);
@@ -284,7 +285,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => For
     return indices.map((index) => array[index] ?? []);
   },
 
-  RANDARRAY: (args) => {
+  RANDARRAY: (args, context) => {
     const rows = coerceExcelNumber(args[0]);
     const columns = coerceExcelNumber(args[1] ?? 1);
     const min = coerceExcelNumber(args[2] ?? 0);
@@ -299,8 +300,10 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => For
     for (let row = 0; row < rows; row++) {
       const line: FormulaValue[] = [];
       for (let column = 0; column < columns; column++) {
-        const value = min + Math.random() * (max - min);
-        line.push(whole ? Math.floor(value) : value);
+        const random = context?.random?.('RANDARRAY', context?.volatileOccurrence, row * columns + column);
+        if (random === undefined || isFormulaError(random)) return random ?? createFormulaError('#BLOCKED!', 'RANDARRAY requires a calculation entropy context');
+        const value = min + random * (max - min);
+        line.push(whole ? Math.floor(value) : normalizeExcelPrecision(value));
       }
       result.push(line);
     }

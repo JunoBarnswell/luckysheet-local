@@ -17,6 +17,7 @@ import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
+import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
@@ -84,6 +85,8 @@ export interface FormulaEngineOptions {
   readonly dateSystem?: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   readonly numericContext?: Partial<ExcelNumericContext>;
+  /** Stable host/workbook seed; authoritative collaboration code may replace it. */
+  readonly calculationEntropySeed?: string;
 }
 
 export interface CalculationTaskPortOptions {
@@ -124,6 +127,9 @@ export class FormulaEngine {
   private readonly dateSystem: ExcelDateSystem;
   private readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   private readonly numericContext: ExcelNumericContext;
+  private readonly calculationEntropySeed: string;
+  private calculationCycleSequence = 0;
+  private activeCalculationEntropy?: CalculationEntropyContext;
 
   private readonly cells = new Map<string, StoredCell>();
 
@@ -133,6 +139,7 @@ export class FormulaEngine {
     this.dateSystem = options.dateSystem ?? '1900';
     this.canonicalReferenceDate = options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined;
     this.numericContext = normalizeExcelNumericContext(options.numericContext ?? DEFAULT_EXCEL_NUMERIC_CONTEXT);
+    this.calculationEntropySeed = options.calculationEntropySeed?.trim() || 'react-sheets-calculation';
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -146,7 +153,10 @@ export class FormulaEngine {
       dateSystem: snapshot.dateSystem,
       canonicalReferenceDate: snapshot.canonicalReferenceDate,
       numericContext: snapshot.numericContext,
+      calculationEntropySeed: snapshot.calculationEntropy.entropySeed,
     });
+    engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
+    engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
     engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
     engine.sheetTables = normalizeSheetTables(snapshot.sheetTables);
     for (const spillSpace of snapshot.spillSpaces) {
@@ -224,6 +234,19 @@ export class FormulaEngine {
     return { ...this.numericContext };
   }
 
+  private beginCalculationEntropy(): CalculationEntropyContext {
+    if (this.activeCalculationEntropy) return this.activeCalculationEntropy;
+    this.calculationCycleSequence += 1;
+    this.activeCalculationEntropy = createCalculationEntropyContext(this.calculationEntropySeed, this.calculationCycleSequence);
+    return this.activeCalculationEntropy;
+  }
+
+  private randomForCell(address: CellAddress, functionName: string, occurrence = '0', elementIndex = 0): number | FormulaError {
+    const entropy = this.activeCalculationEntropy;
+    if (!entropy) return createFormulaError('#BLOCKED!', 'Volatile formula requires a calculation entropy context');
+    return formulaRandom(entropy, address, functionName, occurrence, elementIndex);
+  }
+
   /** Monotonic input/calculation generation used by derived consumers. */
   getCalculationGeneration(): number {
     return this.calculationGeneration;
@@ -259,12 +282,16 @@ export class FormulaEngine {
     addressInput?: CellAddressInput,
     taskPort: CalculationTaskPort = this.defaultTaskPort ??= this.createCalculationTaskPort(),
   ): Promise<RecalculationReport> {
-    if (this.activeTaskId && this.activeTaskPort) this.activeTaskPort.cancel(this.activeTaskId);
+    if (this.activeTaskId && this.activeTaskPort) {
+      this.activeTaskPort.cancel(this.activeTaskId);
+      this.activeCalculationEntropy = undefined;
+    }
     const revision = ++this.nextTaskSequence;
     const taskId = `calculation-${revision}`;
     const generation = this.calculationGeneration;
     this.activeTaskId = taskId;
     this.activeTaskPort = taskPort;
+    const calculationEntropy = this.beginCalculationEntropy();
     const result = await taskPort.submit({
       protocol: 'react-sheets.formula-calculation',
       version: 1,
@@ -272,6 +299,8 @@ export class FormulaEngine {
       kind: 'recalculate',
       revision,
       ...(addressInput === undefined ? {} : { roots: [this.resolveAddress(addressInput)] }),
+    }).finally(() => {
+      if (this.activeCalculationEntropy === calculationEntropy) this.activeCalculationEntropy = undefined;
     });
     if (this.activeTaskId === taskId) {
       this.activeTaskId = null;
@@ -289,6 +318,7 @@ export class FormulaEngine {
     this.activeTaskPort.cancel(this.activeTaskId);
     this.activeTaskId = null;
     this.activeTaskPort = null;
+    this.activeCalculationEntropy = undefined;
   }
 
   disposeCalculationTasks(): void {
@@ -379,6 +409,7 @@ export class FormulaEngine {
       dateSystem: this.dateSystem,
       canonicalReferenceDate: this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined,
       numericContext: { ...this.numericContext },
+      calculationEntropy: this.activeCalculationEntropy ?? createCalculationEntropyContext(this.calculationEntropySeed, this.calculationCycleSequence),
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
@@ -482,6 +513,9 @@ export class FormulaEngine {
 
   /** Evaluate one formula and expose a data-only, ordered AST trace for auditing. */
   evaluateFormulaWithTrace(addressInput: CellAddressInput): FormulaEvaluationTrace | undefined {
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    try {
     const address = this.resolveAddress(addressInput);
     const cell = this.cells.get(cellAddressKey(address));
     if (!cell?.formula || !cell.ast) {
@@ -496,6 +530,7 @@ export class FormulaEngine {
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
+        random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
@@ -528,6 +563,9 @@ export class FormulaEngine {
     }
     cell.result = { value: trace.value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
     return trace;
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
+    }
   }
 
   getDependencies(addressInput: CellAddressInput): readonly FormulaDependency[] {
@@ -613,34 +651,46 @@ export class FormulaEngine {
   }
 
   recalculateCell(addressInput: CellAddressInput): RecalculationReport {
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    try {
     const address = this.resolveAddress(addressInput);
     const affected = new Map<string, CellAddress>();
     const key = cellAddressKey(address);
     const cell = this.cells.get(key);
     if (cell?.formula !== undefined) affected.set(key, { ...address });
     return this.recalculateAffected(affected);
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
+    }
   }
 
   recalculate(addressInput?: CellAddressInput): RecalculationReport {
-    if (addressInput !== undefined) {
-      const affected = this.collectAffected(this.resolveAddress(addressInput));
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    try {
+      if (addressInput !== undefined) {
+        const affected = this.collectAffected(this.resolveAddress(addressInput));
+        for (const key of this.volatileCells) {
+          const cell = this.cells.get(key);
+          if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+        }
+        return this.recalculateAffected(affected);
+      }
+
+      const affected = this.recalculationMode === 'manual' && this.pendingRecalculationRoots.size > 0
+        ? this.collectAffectedFromRoots(this.pendingRecalculationRoots)
+        : this.allFormulaAddresses();
       for (const key of this.volatileCells) {
         const cell = this.cells.get(key);
         if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
       }
-      return this.recalculateAffected(affected);
+      const report = this.recalculateAffected(affected);
+      this.pendingRecalculationRoots.clear();
+      return report;
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
     }
-
-    const affected = this.recalculationMode === 'manual' && this.pendingRecalculationRoots.size > 0
-      ? this.collectAffectedFromRoots(this.pendingRecalculationRoots)
-      : this.allFormulaAddresses();
-    for (const key of this.volatileCells) {
-      const cell = this.cells.get(key);
-      if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
-    }
-    const report = this.recalculateAffected(affected);
-    this.pendingRecalculationRoots.clear();
-    return report;
   }
 
   private scheduleRecalculation(address: CellAddress): RecalculationReport | undefined {
@@ -650,12 +700,18 @@ export class FormulaEngine {
   }
 
   private evaluateChangedCell(address: CellAddress): void {
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    try {
     const key = cellAddressKey(address);
     const cell = this.cells.get(key);
     if (!cell?.formula || !cell.ast) return;
     const cache = new Map<string, FormulaValue>();
     const visiting = new Set<string>();
     this.evaluateCell(address, cache, visiting);
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
+    }
   }
 
   private collectAffectedFromRoots(roots: ReadonlySet<string>): Map<string, CellAddress> {
@@ -762,6 +818,7 @@ export class FormulaEngine {
 
   private markCalculationStateChanged(): void {
     this.calculationGeneration += 1;
+    this.activeCalculationEntropy = undefined;
     if (this.activeTaskId && this.activeTaskPort) {
       this.activeTaskPort.cancel(this.activeTaskId);
       this.activeTaskId = null;
@@ -872,6 +929,7 @@ export class FormulaEngine {
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
+        random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),

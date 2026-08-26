@@ -33,6 +33,10 @@ export interface FormulaEvaluationContext {
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   /** Workbook numeric semantics shared by inline and Worker evaluation. */
   readonly numericContext?: ExcelNumericContext;
+  /** Stable AST identity for the current function occurrence. */
+  readonly volatileOccurrence?: string;
+  /** Host-provided order-independent random source for volatile functions. */
+  readonly random?: (functionName: string, occurrence?: string, elementIndex?: number) => number | FormulaError;
 }
 
 /** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
@@ -116,7 +120,7 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
       );
       break;
     case 'function-call':
-      result = evaluateFunction(node.name, node.arguments, context, trace);
+      result = evaluateFunction(node.name, node.arguments, context, trace, `${node.span.start}:${node.span.end}`);
       break;
     case 'name-reference': {
       const resolved = context.resolveName?.(node.name.toUpperCase());
@@ -281,6 +285,7 @@ function evaluateFunction(
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
   trace?: EvaluationTraceSink,
+  volatileOccurrence?: string,
 ): FormulaValue | EvaluationRange {
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context, trace);
@@ -308,7 +313,7 @@ function evaluateFunction(
 
   if (fn) {
     try {
-      return fn(evaluatedArgs, context);
+      return fn(evaluatedArgs, volatileOccurrence === undefined ? context : { ...context, volatileOccurrence });
     } catch (err) {
       return createFormulaError('#VALUE!', err instanceof Error ? err.message : 'Function evaluation error');
     }

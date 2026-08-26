@@ -1,5 +1,6 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { coerceExcelNumber, normalizeExcelPrecision, roundExcel, roundExcelDown, roundExcelUp, truncateExcel } from '../numeric';
+import type { FormulaEvaluationContext } from '../evaluator';
 
 export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<typeof createFormulaError> {
   const numbers: number[] = [];
@@ -28,7 +29,7 @@ export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<
   return numbers;
 }
 
-export const mathFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
+export const mathFunctions: Record<string, (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue> = {
   SUM: (args) => {
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
@@ -125,16 +126,21 @@ export const mathFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
 
   PI: () => Math.PI,
 
-  RAND: () => Math.random(),
+  RAND: (_args, context) => {
+    const value = context?.random?.('RAND', context?.volatileOccurrence);
+    return value ?? createFormulaError('#BLOCKED!', 'RAND requires a calculation entropy context');
+  },
 
-  RANDBETWEEN: (args) => {
+  RANDBETWEEN: (args, context) => {
     const minArg = coerceExcelNumber(args[0]);
     const maxArg = coerceExcelNumber(args[1]);
     if (isFormulaError(minArg) || isFormulaError(maxArg)) return isFormulaError(minArg) ? minArg : maxArg;
     const min = Math.ceil(minArg);
     const max = Math.floor(maxArg);
     if (min > max) return createFormulaError('#NUM!', 'Invalid range in RANDBETWEEN');
-    return Math.floor(Math.random() * (max - min + 1)) + min;
+    const random = context?.random?.('RANDBETWEEN', context?.volatileOccurrence);
+    if (random === undefined || isFormulaError(random)) return random ?? createFormulaError('#BLOCKED!', 'RANDBETWEEN requires a calculation entropy context');
+    return Math.floor(random * (max - min + 1)) + min;
   },
 
   EXP: (args) => {
