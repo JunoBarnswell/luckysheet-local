@@ -64,6 +64,7 @@ import {
   buildColumnOutlineGroup,
   normalizeRangeRef,
   parseTsv,
+  sparseClipboardFromDense,
   resolveActiveAutoFilter,
   resolveFilterOwner,
   getAutoFilterDomainDescriptor,
@@ -1201,14 +1202,15 @@ export class WorkbookSession {
     if (input.targetOrigin && typeof input.targetOrigin === 'object' && !Array.isArray(input.targetOrigin)) {
       const origin = input.targetOrigin as { row?: unknown; column?: unknown };
       const clipboard = input.clipboard && typeof input.clipboard === 'object' && !Array.isArray(input.clipboard)
-        ? input.clipboard as { values?: unknown[][]; range?: unknown }
+        ? input.clipboard as { sourceExtent?: { rows?: unknown; columns?: unknown }; range?: unknown }
         : undefined;
       appendRange(clipboard?.range);
       const originRow = typeof origin.row === 'number' && Number.isInteger(origin.row) ? origin.row : undefined;
       const originColumn = typeof origin.column === 'number' && Number.isInteger(origin.column) ? origin.column : undefined;
-      if (originRow !== undefined && originColumn !== undefined && Array.isArray(clipboard?.values)) {
-        const sourceRows = clipboard.values.length;
-        const sourceColumns = clipboard.values.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+      if (originRow !== undefined && originColumn !== undefined && clipboard?.sourceExtent
+        && typeof clipboard.sourceExtent.rows === 'number' && typeof clipboard.sourceExtent.columns === 'number') {
+        const sourceRows = clipboard.sourceExtent.rows;
+        const sourceColumns = clipboard.sourceExtent.columns;
         const spec = input.spec && typeof input.spec === 'object' && !Array.isArray(input.spec)
           ? input.spec as { transpose?: unknown }
           : undefined;
@@ -3961,9 +3963,9 @@ export class WorkbookSession {
           target: {
             sheetId: this.activeSheetId,
             startRow: sel.activeCell.row,
-            endRow: sel.activeCell.row + Math.max(0, (internal.values.length ?? 1) - 1),
+            endRow: sel.activeCell.row + Math.max(0, internal.sourceExtent.rows - 1),
             startColumn: sel.activeCell.column,
-            endColumn: sel.activeCell.column + Math.max(0, Math.max(1, ...(internal.values.map((row) => row.length))) - 1),
+            endColumn: sel.activeCell.column + Math.max(0, internal.sourceExtent.columns - 1),
           },
           validationDecision: { status: 'not-applicable' },
         },
@@ -3990,32 +3992,20 @@ export class WorkbookSession {
       return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard permission was denied'));
     }
     if (!text) return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard is empty'));
-    const clipboard: ClipboardPayload = {
-      range: this.getPrimaryRange(),
-      values: parseTsv(text, inputContext),
-      transfer: 'copy',
-      rangeMetadata: {
-        columnWidths: [],
-        validations: [],
-        conditionalFormats: [],
-        notes: [],
-        comments: [],
-        hyperlinks: [],
-      },
-    };
+    const clipboard = sparseClipboardFromDense(this.getPrimaryRange(), parseTsv(text, inputContext));
     const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
-      clipboard,
+      clipboard: { ...clipboard, transfer: 'copy' },
       inputContext,
       entryIntent: {
         kind: 'paste',
         target: {
           sheetId: this.activeSheetId,
           startRow: sel.activeCell.row,
-          endRow: sel.activeCell.row + Math.max(0, clipboard.values.length - 1),
+          endRow: sel.activeCell.row + Math.max(0, clipboard.sourceExtent.rows - 1),
           startColumn: sel.activeCell.column,
-          endColumn: sel.activeCell.column + Math.max(0, Math.max(1, ...clipboard.values.map((row) => row.length)) - 1),
+          endColumn: sel.activeCell.column + Math.max(0, clipboard.sourceExtent.columns - 1),
         },
         validationDecision: { status: 'not-applicable' },
       },

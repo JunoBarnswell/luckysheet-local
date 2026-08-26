@@ -10,12 +10,14 @@ import { writeSystemClipboard } from './clipboard-browser';
 
 function payload(): ClipboardPayload {
   return {
+    schema: 'SparseClipboardPayload',
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
-    values: [[{ value: 'Ada' }, { value: 42 }]],
+    sourceExtent: { rows: 1, columns: 2 },
+    occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 'Ada' } }, { rowOffset: 0, columnOffset: 1, value: { value: 42 } }],
     transfer: 'copy',
     rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     representations: [
-      { mime: CLIPBOARD_INTERNAL_MIME, data: '{"values":[[{"value":"Ada"},{"value":42}]]}' },
+      { mime: CLIPBOARD_INTERNAL_MIME, data: '{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"sourceExtent":{"rows":1,"columns":2},"occupiedCells":[{"rowOffset":0,"columnOffset":0,"value":{"value":"Ada"}},{"rowOffset":0,"columnOffset":1,"value":{"value":42}}],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}}' },
       { mime: CLIPBOARD_HTML_MIME, data: '<table><tr><td>Ada</td><td>42</td></tr></table>' },
       { mime: CLIPBOARD_TEXT_MIME, data: 'Ada\t42' },
     ],

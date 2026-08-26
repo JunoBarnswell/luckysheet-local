@@ -60,7 +60,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"move"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -81,7 +81,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"keep"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":100000,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -129,7 +129,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-1","ranges":[
@@ -153,7 +153,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-attack","ranges":[
@@ -178,7 +178,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":true,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"columnWidths":[{"column":0,"widthPx":120}]}}

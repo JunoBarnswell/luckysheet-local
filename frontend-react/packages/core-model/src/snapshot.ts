@@ -1,4 +1,4 @@
-import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel } from './index';
+import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
@@ -22,6 +22,8 @@ export interface WorkbookSnapshot {
   collationContext?: WorkbookCollationContext;
   /** Workbook-owned calculation policy; formula workers consume this exact state. */
   calculationSettings: WorkbookCalculationSettings;
+  /** Workbook-owned theme identity and resolved colors. */
+  theme?: WorkbookTheme;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   dataModel: import('./data-model').WorkbookDataModel;
@@ -181,6 +183,12 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   }
   if (!isWorkbookCalculationSettings(snapshot.calculationSettings)) {
     throw new Error('Workbook calculation settings are invalid');
+  }
+  if (snapshot.theme) {
+    if (!snapshot.theme.id.trim() || !snapshot.theme.colors || typeof snapshot.theme.colors !== 'object' || Array.isArray(snapshot.theme.colors)
+      || Object.entries(snapshot.theme.colors).some(([key, color]) => !key.trim() || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw new Error('Workbook theme is invalid');
+    }
   }
   const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {

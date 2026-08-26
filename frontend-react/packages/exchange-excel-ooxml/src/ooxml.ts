@@ -246,6 +246,10 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
     calculationSettings: structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS),
+    theme: {
+      id: `ooxml-theme-${styles.themeColors.join('').replace(/[^0-9a-f]/gi, '').slice(0, 64) || 'default'}`,
+      colors: Object.fromEntries(styles.themeColors.map((color, index) => [`color${index}`, color])),
+    },
     definedNames,
     definedNameModels,
     dataModel: { sources: [], tables: [], relationships: [], views: [] },

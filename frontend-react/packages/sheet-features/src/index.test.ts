@@ -10,6 +10,7 @@ import {
   shiftFormula,
   FormulaRelocationError,
   copyRangeToClipboardData,
+  clipboardRepresentations,
   createPasteSpecialSpec,
 } from './index';
 
@@ -466,7 +467,8 @@ test('clipboard payload carries provenance and PasteSpecialSpec preserves its co
     endColumn: 0,
   });
   assert.equal(payload.source, 'internal');
-  assert.equal(payload.mime, 'application/x-react-sheets-cells');
+  assert.equal(payload.schema, 'SparseClipboardPayload');
+  assert.equal(payload.occupiedCells.length, 1);
 
   runtime.execute('sheet.range.paste', {
     sheetId: sheet.id,
@@ -495,14 +497,18 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
   const text = formatTsv([[{ value: 'a\tb' }, { value: 'line\nnext' }, { value: '"quoted"' }]]);
   assert.deepEqual(parseTsv(text).map((row) => row.map((cell) => cell.value)), [['a\tb', 'line\nnext', '"quoted"']]);
   const payload = {
+    schema: 'SparseClipboardPayload' as const,
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-    values: [],
+    sourceExtent: { rows: 1, columns: 1 },
+    occupiedCells: [],
     transfer: 'copy' as const,
     rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
-  assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
-  assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
+  const parsed = parseClipboardPayload(payload);
+  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, 43]);
+  assert.equal(parsed.occupiedCells[1]?.value.formula, '=A1+1');
+  assert.equal(clipboardRepresentations(parsed).some((entry) => entry.mime === 'text/html'), true);
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
 });
 
@@ -736,7 +742,6 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
       clipboard: payload,
       transfer: 'copy',
       spec: createPasteSpecialSpec(),
-      values: [[{ value: null, formula: '=A1' }]],
       startRow: 1,
       startColumn: 1,
       sourceRange: structuredClone(payload.range),

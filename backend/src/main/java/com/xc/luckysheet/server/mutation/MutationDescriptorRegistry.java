@@ -354,6 +354,13 @@ public class MutationDescriptorRegistry {
         }
 
         private void applyPasteSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges) {
+            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearRanges"), allowedRanges, true);
+            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearMetadataRanges"), allowedRanges, false);
+            for (RangeRef range : allowedRanges) {
+                if (!sheetId.equals(range.sheetId())) continue;
+                sheet.put("rowCount", Math.max(sheet.path("rowCount").asInt(0), range.endRow() + 1));
+                sheet.put("columnCount", Math.max(sheet.path("columnCount").asInt(0), range.endColumn() + 1));
+            }
             JsonNode cells = snapshot.get("cells");
             if (cells == null || !cells.isArray() || cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot cells are required and bounded");
             for (JsonNode entry : cells) {
@@ -397,6 +404,25 @@ public class MutationDescriptorRegistry {
                         if (!width.isNumber() || width.asDouble() <= 0) throw ServiceException.validation("Paste snapshot width must be positive");
                         targetWidths.set(key, width.deepCopy());
                     }
+                }
+            }
+        }
+
+        private void applyPasteClearRanges(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode ranges, List<RangeRef> allowedRanges, boolean cells) {
+            if (ranges == null) return;
+            if (!ranges.isArray() || ranges.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste clear ranges are invalid or too large");
+            for (JsonNode value : ranges) {
+                RangeRef range = SnapshotMutationSupport.range(root, value);
+                if (!sheetId.equals(range.sheetId()) || allowedRanges.stream().noneMatch(allowed -> allowed.sheetId().equals(range.sheetId())
+                        && allowed.startRow() <= range.startRow() && allowed.endRow() >= range.endRow()
+                        && allowed.startColumn() <= range.startColumn() && allowed.endColumn() >= range.endColumn())) {
+                    throw ServiceException.validation("Paste clear range is outside its affected range");
+                }
+                if (cells) SnapshotMutationSupport.clearCells(sheet, range);
+                else {
+                    SnapshotMutationSupport.removeNotes(sheet, range);
+                    SnapshotMutationSupport.removeHyperlinks(sheet, range);
+                    SnapshotMutationSupport.removeThreads(sheet, range);
                 }
             }
         }
@@ -523,6 +549,23 @@ public class MutationDescriptorRegistry {
             if ("move".equals(transfer) != params.path("clearSource").asBoolean()) throw ServiceException.validation("Paste transfer and clearSource disagree");
             if ("move".equals(transfer) && !params.has("sourceRange")) throw ServiceException.validation("Move paste requires sourceRange");
             if ("copy".equals(transfer) && params.has("sourceRange")) throw ServiceException.validation("Copy paste cannot carry sourceRange");
+            ObjectNode clipboard = SnapshotMutationSupport.requiredObject(params, "clipboard");
+            if (!"SparseClipboardPayload".equals(clipboard.path("schema").asText())) throw ServiceException.validation("Paste clipboard schema is invalid");
+            ObjectNode clipboardExtent = SnapshotMutationSupport.requiredObject(clipboard, "sourceExtent");
+            ObjectNode declaredExtent = SnapshotMutationSupport.requiredObject(params, "sourceExtent");
+            int clipboardRows = boundedValue(clipboardExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
+            int clipboardColumns = boundedValue(clipboardExtent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
+            int sourceRows = boundedValue(declaredExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
+            int sourceColumns = boundedValue(declaredExtent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
+            if (clipboardRows != sourceRows || clipboardColumns != sourceColumns || sourceRows <= 0 || sourceColumns <= 0) throw ServiceException.validation("Paste source extent is inconsistent");
+            JsonNode occupied = clipboard.get("occupiedCells");
+            if (occupied == null || !occupied.isArray() || occupied.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Sparse clipboard occupied cells are required and bounded");
+            for (JsonNode cell : occupied) {
+                if (!cell.isObject()) throw ServiceException.validation("Sparse clipboard cell must be an object");
+                int rowOffset = boundedValue((ObjectNode) cell, "rowOffset", sourceRows - 1);
+                int columnOffset = boundedValue((ObjectNode) cell, "columnOffset", sourceColumns - 1);
+                if (!cell.has("value") || !cell.path("value").isObject()) throw ServiceException.validation("Sparse clipboard cell value is invalid");
+            }
             ObjectNode spec = SnapshotMutationSupport.requiredObject(params, "spec");
             String content = SnapshotMutationSupport.text(spec, "content");
             String formatting = SnapshotMutationSupport.text(spec, "formatting");
@@ -530,7 +573,8 @@ public class MutationDescriptorRegistry {
             if (!Set.of("none", "all", "values", "formulas").contains(content)) throw ServiceException.validation("Paste content is invalid");
             if (!Set.of("all", "none", "number-format", "source-formatting", "all-except-borders", "source-theme").contains(formatting)) throw ServiceException.validation("Paste formatting is invalid");
             if (!Set.of("none", "add", "subtract", "multiply", "divide").contains(operation)) throw ServiceException.validation("Paste operation is invalid");
-            if ("source-theme".equals(formatting)) throw ServiceException.unavailable("Paste source theme is not supported by the canonical workbook model");
+            if ("source-theme".equals(formatting)
+                    && !clipboard.path("rangeMetadata").path("sourceWorkbookThemeRef").isObject()) throw ServiceException.unavailable("Paste source theme reference is missing");
             ObjectNode metadata = SnapshotMutationSupport.requiredObject(spec, "metadata");
             for (String field : List.of("commentsNotes", "validation", "columnWidths", "conditionalFormats", "hyperlinks")) if (!metadata.path(field).isBoolean()) throw ServiceException.validation("Paste metadata field is invalid: " + field);
             if (!spec.path("skipBlanks").isBoolean() || !spec.path("transpose").isBoolean() || !spec.path("link").isBoolean()) throw ServiceException.validation("Paste specification flags are invalid");
@@ -542,17 +586,11 @@ public class MutationDescriptorRegistry {
             ObjectNode origin = SnapshotMutationSupport.requiredObject(params, "targetOrigin");
             int row = boundedValue(origin, "row", SnapshotMutationSupport.MAX_ROW);
             int column = boundedValue(origin, "column", SnapshotMutationSupport.MAX_COLUMN);
-            ObjectNode extent = SnapshotMutationSupport.requiredObject(params, "sourceExtent");
-            int sourceRows = boundedValue(extent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
-            int sourceColumns = boundedValue(extent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
-            if (sourceRows <= 0 || sourceColumns <= 0) throw ServiceException.validation("Paste source extent must be positive");
             boolean transpose = spec.path("transpose").asBoolean(false);
             int rows = transpose ? sourceColumns : sourceRows;
             int columns = transpose ? sourceRows : sourceColumns;
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-            int rowCount = sheet.path("rowCount").asInt(SnapshotMutationSupport.MAX_ROW + 1);
-            int columnCount = sheet.path("columnCount").asInt(SnapshotMutationSupport.MAX_COLUMN + 1);
-            if (row + rows > rowCount || column + columns > columnCount) throw ServiceException.validation("Paste exceeds worksheet bounds");
+            if (row + rows > SnapshotMutationSupport.MAX_ROW + 1 || column + columns > SnapshotMutationSupport.MAX_COLUMN + 1) throw ServiceException.validation("Paste exceeds canonical worksheet limits");
             return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null);
         }
 

@@ -7,6 +7,7 @@ import type {
   DataValidationRule,
   RangeRef,
   WorkbookModel,
+  WorkbookTheme,
 } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { parseCellText, type CellInputInterpretationContext } from './text-input';
@@ -86,10 +87,8 @@ export function createPasteSpecialSpec(overrides: Partial<PasteSpecialSpec> = {}
 }
 
 /** Canonical capability gate used by both the planner and Paste Special UI. */
-export function isPasteSpecialSpecSupported(spec: PasteSpecialSpec, _payload?: ClipboardPayload): boolean {
-  // The workbook model has no editable theme owner yet. Keep the contract
-  // visible, but reject it before planning instead of reporting fake success.
-  if (spec.formatting === 'source-theme') return false;
+export function isPasteSpecialSpecSupported(spec: PasteSpecialSpec, payload?: ClipboardPayload): boolean {
+  if (spec.formatting === 'source-theme' && !payload?.rangeMetadata.sourceWorkbookThemeRef) return false;
   if (spec.link && spec.operation !== 'none') return false;
   if (spec.content === 'none' && spec.formatting === 'none' && spec.operation === 'none' && !spec.link
     && !Object.values(spec.metadata).some(Boolean)) return false;
@@ -115,7 +114,13 @@ export interface ClipboardRangeMetadata {
   notes: Array<ClipboardCellMetadata<CellNote>>;
   comments: Array<ClipboardCellMetadata<CommentThread>>;
   hyperlinks: Array<ClipboardCellMetadata<CellHyperlink>>;
-  themeIdentity?: string;
+  sourceWorkbookThemeRef?: WorkbookTheme;
+}
+
+export interface SparseClipboardCell {
+  rowOffset: number;
+  columnOffset: number;
+  value: CellData;
 }
 
 export class FormulaRelocationError extends Error {
@@ -134,17 +139,21 @@ export class FormulaRelocationError extends Error {
 }
 
 /**
- * Host-neutral clipboard contract.  A host may expose any subset of the
- * representations, but the command layer always consumes the normalized
- * matrix.  `representations` is intentionally a data-only value so this
- * contract can be serialized for desktop and headless hosts without a DOM or
- * ClipboardItem dependency.
+ * Host-neutral clipboard contract. A host may expose any subset of the
+ * representations, but the command layer always consumes this sparse payload.
+ * `representations` is intentionally data-only so desktop and headless hosts
+ * can serialize it without a DOM or ClipboardItem dependency.
  */
-export interface ClipboardPayload {
+export interface SparseClipboardPayload {
+  schema: 'SparseClipboardPayload';
   range: RangeRef;
-  values: CellData[][];
-  transfer: ClipboardTransfer;
+  sourceExtent: { rows: number; columns: number };
+  occupiedCells: SparseClipboardCell[];
   rangeMetadata: ClipboardRangeMetadata;
+}
+
+export interface ClipboardPayload extends SparseClipboardPayload {
+  transfer: ClipboardTransfer;
   representations?: ClipboardRepresentation[];
   mime?: string;
   html?: string;
@@ -154,39 +163,23 @@ export interface ClipboardPayload {
 
 export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRef): ClipboardPayload {
   const sheet = workbook.getSheet(range.sheetId);
-  const values: CellData[][] = [];
-
-  for (let r = range.startRow; r <= range.endRow; r++) {
-    const rowList: CellData[] = [];
-    for (let c = range.startColumn; c <= range.endColumn; c++) {
-      const cell = sheet.cells.get(r, c);
-      rowList.push(cell ? structuredClone(cell) : { value: null });
-    }
-    values.push(rowList);
-  }
-
-  const rangeMetadata = captureRangeMetadata(sheet, range);
-  const internal = JSON.stringify({ range, values, rangeMetadata });
-  const text = formatTsv(values);
-  const html = formatHtml(values);
+  const occupiedCells: SparseClipboardCell[] = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    occupiedCells.push({ rowOffset: row - range.startRow, columnOffset: column - range.startColumn, value: structuredClone(cell) });
+  });
+  const rangeMetadata = captureRangeMetadata(workbook, sheet, range);
   return {
+    schema: 'SparseClipboardPayload',
     range: structuredClone(range),
-    values,
-    transfer: 'copy',
+    sourceExtent: { rows: range.endRow - range.startRow + 1, columns: range.endColumn - range.startColumn + 1 },
+    occupiedCells,
     rangeMetadata,
-    representations: [
-      { mime: CLIPBOARD_INTERNAL_MIME, data: internal },
-      { mime: CLIPBOARD_HTML_MIME, data: html },
-      { mime: CLIPBOARD_TEXT_MIME, data: text },
-    ],
-    mime: CLIPBOARD_INTERNAL_MIME,
-    html,
-    text,
+    transfer: 'copy',
     source: 'internal',
   };
 }
 
-function captureRangeMetadata(sheet: ReturnType<WorkbookModel['getSheet']>, range: RangeRef): ClipboardRangeMetadata {
+function captureRangeMetadata(workbook: WorkbookModel, sheet: ReturnType<WorkbookModel['getSheet']>, range: RangeRef): ClipboardRangeMetadata {
   const notes: Array<ClipboardCellMetadata<CellNote>> = [];
   for (const [key, note] of sheet.notes) {
     const row = Number(key.split(':')[0]);
@@ -217,11 +210,10 @@ function captureRangeMetadata(sheet: ReturnType<WorkbookModel['getSheet']>, rang
     endColumn: Math.min(candidate.endColumn, range.endColumn),
   });
   return {
-    columnWidths: Array.from({ length: range.endColumn - range.startColumn + 1 }, (_, index) => {
-      const column = range.startColumn + index;
-      const widthPx = sheet.columnWidthsPx[column];
-      return widthPx === undefined ? undefined : { offset: index, widthPx };
-    }).filter((entry): entry is ClipboardColumnWidth => entry !== undefined),
+    columnWidths: Object.entries(sheet.columnWidthsPx)
+      .map(([columnText, widthPx]) => ({ column: Number(columnText), widthPx }))
+      .filter((entry) => entry.column >= range.startColumn && entry.column <= range.endColumn)
+      .map((entry) => ({ offset: entry.column - range.startColumn, widthPx: entry.widthPx })),
     validations: sheet.dataValidations.filter((rule) => rule.ranges.some(intersects)).map((rule) => ({
       ...structuredClone(rule),
       ranges: rule.ranges.filter(intersects).map(clip),
@@ -233,6 +225,7 @@ function captureRangeMetadata(sheet: ReturnType<WorkbookModel['getSheet']>, rang
     notes,
     comments,
     hyperlinks,
+    sourceWorkbookThemeRef: structuredClone(workbook.theme),
   };
 }
 
@@ -292,24 +285,73 @@ export function parseTsv(text: string, inputContext: CellInputInterpretationCont
 }
 
 /** Parse a serialized clipboard payload supplied by a host ClipboardItem. */
-export function parseClipboardPayload(payload: ClipboardPayload, inputContext: CellInputInterpretationContext): CellData[][] {
+export function sparseClipboardFromDense(range: RangeRef, values: CellData[][]): ClipboardPayload {
+  const occupiedCells: SparseClipboardCell[] = [];
+  for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+    for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset += 1) {
+      const value = values[rowOffset]?.[columnOffset];
+      if (value !== undefined) occupiedCells.push({ rowOffset, columnOffset, value: structuredClone(value) });
+    }
+  }
+  return {
+    schema: 'SparseClipboardPayload',
+    range: structuredClone(range),
+    sourceExtent: { rows: values.length, columns: Math.max(0, ...values.map((row) => row.length)) },
+    occupiedCells,
+    rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
+    transfer: 'copy',
+    source: 'external',
+  };
+}
+
+export function clipboardRepresentations(payload: ClipboardPayload): ClipboardRepresentation[] {
+  const internal = JSON.stringify({
+    schema: payload.schema,
+    range: payload.range,
+    sourceExtent: payload.sourceExtent,
+    occupiedCells: payload.occupiedCells,
+    rangeMetadata: payload.rangeMetadata,
+  });
+  const values: CellData[][] = Array.from({ length: payload.sourceExtent.rows }, () => []);
+  for (const entry of payload.occupiedCells) {
+    values[entry.rowOffset] ??= [];
+    values[entry.rowOffset]![entry.columnOffset] = structuredClone(entry.value);
+  }
+  for (const row of values) for (let column = 0; column < payload.sourceExtent.columns; column += 1) row[column] ??= { value: null };
+  const text = formatTsv(values);
+  const html = formatHtml(values);
+  return [
+    { mime: CLIPBOARD_INTERNAL_MIME, data: internal },
+    { mime: CLIPBOARD_HTML_MIME, data: html },
+    { mime: CLIPBOARD_TEXT_MIME, data: text },
+  ];
+}
+
+export function parseClipboardPayload(payload: ClipboardPayload, inputContext: CellInputInterpretationContext): ClipboardPayload {
   parseCellText('', inputContext);
   const internal = payload.representations?.find((entry) => entry.mime === CLIPBOARD_INTERNAL_MIME)?.data;
   if (internal) {
     try {
-      const parsed = JSON.parse(internal) as { values?: CellData[][]; rangeMetadata?: ClipboardRangeMetadata };
-      if (parsed.rangeMetadata && isRangeMetadata(parsed.rangeMetadata)) payload.rangeMetadata = structuredClone(parsed.rangeMetadata);
-      if (Array.isArray(parsed.values)) return parsed.values.map((row) => row.map((cell) => structuredClone(cell)));
+      const parsed = JSON.parse(internal) as Partial<ClipboardPayload>;
+      if (parsed.schema === 'SparseClipboardPayload' && parsed.sourceExtent && Array.isArray(parsed.occupiedCells) && parsed.rangeMetadata && isRangeMetadata(parsed.rangeMetadata)) {
+        return {
+          ...structuredClone(payload),
+          schema: 'SparseClipboardPayload',
+          sourceExtent: structuredClone(parsed.sourceExtent),
+          occupiedCells: structuredClone(parsed.occupiedCells),
+          rangeMetadata: structuredClone(parsed.rangeMetadata),
+        };
+      }
     } catch {
-      // Continue to the next lossless representation rather than failing a
-      // paste because a host supplied malformed optional metadata.
+      // Continue to the next representation; malformed host data is rejected
+      // by the canonical payload validation below.
     }
   }
-  if (payload.values.length > 0) return payload.values.map((row) => row.map((cell) => structuredClone(cell)));
+  if (payload.schema === 'SparseClipboardPayload' && !payload.representations?.length && payload.html === undefined && payload.text === undefined) return structuredClone(payload);
   const html = payload.representations?.find((entry) => entry.mime === CLIPBOARD_HTML_MIME)?.data ?? payload.html;
-  if (html) return parseHtmlTable(html, inputContext);
+  if (html) return sparseClipboardFromDense(payload.range, parseHtmlTable(html, inputContext));
   const text = payload.representations?.find((entry) => entry.mime === CLIPBOARD_TEXT_MIME)?.data ?? payload.text;
-  return text ? parseTsv(text, inputContext) : [];
+  return text ? sparseClipboardFromDense(payload.range, parseTsv(text, inputContext)) : sparseClipboardFromDense(payload.range, []);
 }
 
 function isRangeMetadata(value: unknown): value is ClipboardRangeMetadata {

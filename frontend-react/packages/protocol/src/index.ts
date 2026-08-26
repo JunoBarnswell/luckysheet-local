@@ -913,6 +913,14 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     || typeof dimensionMetrics.normalFontSizePx !== 'number' || !Number.isFinite(dimensionMetrics.normalFontSizePx) || dimensionMetrics.normalFontSizePx <= 0
     || typeof dimensionMetrics.maximumDigitWidthPx !== 'number' || !Number.isFinite(dimensionMetrics.maximumDigitWidthPx) || dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('WorkbookSnapshot dimensionMetrics is invalid');
   if (!isWorkbookCalculationSettings(input.calculationSettings)) throw new Error('WorkbookSnapshot calculationSettings is invalid');
+  if (input.theme !== undefined) {
+    const theme = input.theme as Record<string, unknown>;
+    if (!theme || typeof theme !== 'object' || Array.isArray(theme) || !isNonEmptyString(theme.id)
+      || !theme.colors || typeof theme.colors !== 'object' || Array.isArray(theme.colors)
+      || Object.entries(theme.colors as Record<string, unknown>).some(([key, color]) => !key.trim() || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw new Error('WorkbookSnapshot theme is invalid');
+    }
+  }
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }

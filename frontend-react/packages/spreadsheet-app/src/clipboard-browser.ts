@@ -2,6 +2,7 @@ import {
   CLIPBOARD_HTML_MIME,
   CLIPBOARD_INTERNAL_MIME,
   CLIPBOARD_TEXT_MIME,
+  clipboardRepresentations,
   type ClipboardPayload,
 } from '@react-sheets/sheet-features';
 
@@ -23,7 +24,7 @@ function normalizeError(error: unknown, fallback: string): Error {
 
 function representations(payload: ClipboardPayload): Map<string, string> {
   const values = new Map<string, string>();
-  for (const representation of payload.representations ?? []) values.set(representation.mime, representation.data);
+  for (const representation of payload.representations ?? clipboardRepresentations(payload)) values.set(representation.mime, representation.data);
   if (!values.has(CLIPBOARD_TEXT_MIME) && payload.text !== undefined) values.set(CLIPBOARD_TEXT_MIME, payload.text);
   if (!values.has(CLIPBOARD_HTML_MIME) && payload.html !== undefined) values.set(CLIPBOARD_HTML_MIME, payload.html);
   const text = values.get(CLIPBOARD_TEXT_MIME);

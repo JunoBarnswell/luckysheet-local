@@ -100,6 +100,12 @@ export interface CellStyle {
   formulaHidden?: boolean;
 }
 
+/** Canonical workbook-owned theme reference used by cross-workbook formatting operations. */
+export interface WorkbookTheme {
+  id: string;
+  colors: Record<string, string>;
+}
+
 /** Editable cell behavior that can be expressed through the canonical workbook model. */
 export type CellEditorKind = 'text' | 'number' | 'date' | 'list' | 'checkbox';
 
@@ -1029,6 +1035,8 @@ export class WorkbookModel {
   collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
   /** Canonical authored calculation policy shared by the runtime and workers. */
   calculationSettings: WorkbookCalculationSettings = normalizeWorkbookCalculationSettings(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+  /** The sole theme owner. Clipboard and OOXML boundaries carry a reference to this state. */
+  theme: WorkbookTheme = { id: 'workbook-theme-default', colors: {} };
 
   /**
    * Formula engines still accept a workbook-scope string map. This is a
@@ -1046,6 +1054,14 @@ export class WorkbookModel {
 
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): void {
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
+  }
+
+  setTheme(theme: WorkbookTheme): void {
+    if (!theme.id.trim()) throw new Error('Workbook theme id is required');
+    for (const [key, color] of Object.entries(theme.colors)) {
+      if (!key.trim() || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('Workbook theme color is invalid');
+    }
+    this.theme = structuredClone({ id: theme.id.trim(), colors: theme.colors });
   }
 
   constructor(readonly unitId: UnitId, public name: string) {
@@ -1360,6 +1376,7 @@ export class WorkbookModel {
       dimensionMetrics: structuredClone(this.dimensionMetrics),
       collationContext: structuredClone(this.collationContext),
       calculationSettings: structuredClone(this.calculationSettings),
+      theme: structuredClone(this.theme),
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
@@ -1426,6 +1443,7 @@ export class WorkbookModel {
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
+    if (snapshot.theme) workbook.setTheme(snapshot.theme);
     workbook.collationContext = normalizeWorkbookCollation(snapshot.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
     workbook.setCalculationSettings(snapshot.calculationSettings);
     workbook.sheets.clear();
