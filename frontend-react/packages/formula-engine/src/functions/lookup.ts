@@ -1,6 +1,7 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { findLookupIndex, type LookupMatchMode } from './lookup-engine';
 import { coerceExcelNumber } from '../numeric';
+import type { FormulaEvaluationContext } from '../evaluator';
 
 function to2DArray(val: FormulaValue | undefined): FormulaValue[][] {
   if (val === undefined || val === null) return [[]];
@@ -28,8 +29,8 @@ function to1DArray(val: FormulaValue | undefined): FormulaValue[] {
   return [val];
 }
 
-export const lookupFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
-  VLOOKUP: (args) => {
+export const lookupFunctions: Record<string, (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue> = {
+  VLOOKUP: (args, context) => {
     const lookupValue = args[0];
     const table = to2DArray(args[1]);
     const colIndex = coerceExcelNumber(args[2]);
@@ -39,12 +40,12 @@ export const lookupFunctions: Record<string, (args: FormulaValue[]) => FormulaVa
       return createFormulaError('#REF!', 'Column index out of bounds in VLOOKUP');
     }
 
-    const index = findLookupIndex(lookupValue, table.map((row) => row[0] ?? null), exactMatch ? 0 : -1);
+    const index = findLookupIndex(lookupValue, table.map((row) => row[0] ?? null), exactMatch ? 0 : -1, 1, context?.collationContext);
     if (index >= 0) return table[index]?.[colIndex - 1] ?? null;
     return createFormulaError('#N/A', 'Value not found in VLOOKUP');
   },
 
-  HLOOKUP: (args) => {
+  HLOOKUP: (args, context) => {
     const lookupValue = args[0];
     const table = to2DArray(args[1]);
     const rowIndex = coerceExcelNumber(args[2]);
@@ -55,7 +56,7 @@ export const lookupFunctions: Record<string, (args: FormulaValue[]) => FormulaVa
     }
 
     const firstRow = table[0] ?? [];
-    const column = findLookupIndex(lookupValue, firstRow, exactMatch ? 0 : -1);
+    const column = findLookupIndex(lookupValue, firstRow, exactMatch ? 0 : -1, 1, context?.collationContext);
     if (column >= 0) return table[rowIndex - 1]?.[column] ?? null;
     return createFormulaError('#N/A', 'Value not found in HLOOKUP');
   },
@@ -83,18 +84,18 @@ export const lookupFunctions: Record<string, (args: FormulaValue[]) => FormulaVa
     return cell !== undefined ? cell : createFormulaError('#REF!', 'Column out of bounds in INDEX');
   },
 
-  MATCH: (args) => {
+  MATCH: (args, context) => {
     const lookupValue = args[0];
     const array = to1DArray(args[1]);
     const matchType = args[2] !== undefined ? coerceExcelNumber(args[2]) : 1;
 
     if (isFormulaError(matchType) || ![1, 0, -1].includes(matchType)) return createFormulaError('#N/A', 'Invalid match type in MATCH');
-    const index = findLookupIndex(lookupValue, array, matchType as LookupMatchMode);
+    const index = findLookupIndex(lookupValue, array, matchType as LookupMatchMode, 1, context?.collationContext);
     if (index >= 0) return index + 1;
     return createFormulaError('#N/A', 'Value not found in MATCH');
   },
 
-  XLOOKUP: (args) => {
+  XLOOKUP: (args, context) => {
     const lookupValue = args[0];
     const lookupMatrix = to2DArray(args[1]);
     const returnMatrix = to2DArray(args[2]);
@@ -105,7 +106,7 @@ export const lookupFunctions: Record<string, (args: FormulaValue[]) => FormulaVa
     if (isFormulaError(matchMode) || isFormulaError(searchMode) || ![0, -1, 1, 2].includes(matchMode) || ![1, -1, 2, -2].includes(searchMode)) return createFormulaError('#VALUE!', 'Invalid XLOOKUP mode');
     const ifNotFound = args[3] !== undefined ? args[3] : createFormulaError('#N/A', 'Value not found in XLOOKUP');
 
-    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode);
+    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode, context?.collationContext);
     if (index >= 0) {
       if (horizontal) {
         if (returnMatrix.length === 1) return returnMatrix[0]?.[index] ?? null;

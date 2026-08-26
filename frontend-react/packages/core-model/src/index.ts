@@ -34,6 +34,7 @@ import {
 } from './workbook-state';
 import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
+import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 export * from './sheet-extent';
 
@@ -990,6 +991,7 @@ export class WorkbookModel {
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
   readonly definedNameModels: DefinedNameModel[] = [];
   dimensionMetrics: WorkbookDimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
+  collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
 
   /**
    * Formula engines still accept a workbook-scope string map. This is a
@@ -1314,6 +1316,7 @@ export class WorkbookModel {
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
+      collationContext: structuredClone(this.collationContext),
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
@@ -1380,6 +1383,7 @@ export class WorkbookModel {
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
+    workbook.collationContext = normalizeWorkbookCollation(snapshot.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
     workbook.sheets.clear();
     // `definedNameModels` is canonical. The optional map is accepted only as
     // a boundary projection for older snapshots and is immediately folded

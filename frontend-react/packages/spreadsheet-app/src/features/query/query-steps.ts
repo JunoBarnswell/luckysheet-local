@@ -1,3 +1,5 @@
+import { compareWorkbookValues } from '@react-sheets/formula-engine';
+
 export type QueryStepKind =
   | 'source'
   | 'filter'
@@ -201,7 +203,7 @@ function sortTable(input: Table, config: Record<string, unknown>, stepId: string
       const a = left.row[index] ?? null;
       const b = right.row[index] ?? null;
       if (a === b) continue;
-      const comparison = a === null ? -1 : b === null ? 1 : a < b ? -1 : 1;
+      const comparison = compareWorkbookValues(a, b);
       return criterion.ascending ? comparison : -comparison;
     }
     return left.index - right.index;

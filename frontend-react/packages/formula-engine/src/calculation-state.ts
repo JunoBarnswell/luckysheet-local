@@ -6,6 +6,7 @@ import type { FormulaDefinedName } from './defined-names';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import type { ExcelNumericContext } from './numeric';
 import type { CalculationEntropyContext } from './random';
+import type { WorkbookCollationContext } from './collation';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -18,6 +19,7 @@ export interface FormulaCalculationSnapshot {
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   readonly numericContext: ExcelNumericContext;
   readonly calculationEntropy: CalculationEntropyContext;
+  readonly collationContext: WorkbookCollationContext;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -59,6 +61,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   }
   if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
   if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
+  if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation snapshot has an invalid collation context');
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }
@@ -171,6 +174,20 @@ function isCalculationEntropyContext(value: unknown): value is CalculationEntrop
     && value.entropySeed.trim().length > 0
     && Number.isSafeInteger(value.passIndex)
     && value.passIndex >= 0;
+}
+
+function isWorkbookCollationContext(value: unknown): value is WorkbookCollationContext {
+  if (!isRecord(value)) return false;
+  return typeof value.cultureId === 'string'
+    && typeof value.caseSensitive === 'boolean'
+    && typeof value.accentSensitive === 'boolean'
+    && (value.numericTextMode === 'lexical' || value.numericTextMode === 'numeric')
+    && (value.blankOrder === 'first' || value.blankOrder === 'last')
+    && Array.isArray(value.typeOrder)
+    && value.typeOrder.length === 5
+    && new Set(value.typeOrder).size === 5
+    && Array.isArray(value.customLists)
+    && value.customLists.every((list) => Array.isArray(list) && list.every((entry) => typeof entry === 'string'));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

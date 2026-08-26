@@ -8,6 +8,7 @@ import type { RangeDependency } from './range-index';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
 import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
 import type { ExcelNumericContext } from './numeric';
+import type { WorkbookCollationContext } from './collation';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 
 export interface FormulaEvaluationContext {
@@ -33,6 +34,7 @@ export interface FormulaEvaluationContext {
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   /** Workbook numeric semantics shared by inline and Worker evaluation. */
   readonly numericContext?: ExcelNumericContext;
+  readonly collationContext?: WorkbookCollationContext;
   /** Stable AST identity for the current function occurrence. */
   readonly volatileOccurrence?: string;
   /** Host-provided order-independent random source for volatile functions. */

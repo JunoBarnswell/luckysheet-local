@@ -502,10 +502,7 @@ public class QueryExecutionService {
     }
 
     private int compare(JsonNode left, JsonNode right) {
-        if (left == null || left.isNull()) return right == null || right.isNull() ? 0 : -1;
-        if (right == null || right.isNull()) return 1;
-        if (left.isNumber() && right.isNumber()) return Double.compare(left.asDouble(), right.asDouble());
-        return left.asText().compareTo(right.asText());
+        return WorkbookCollationComparator.compare(left, right);
     }
 
     private List<JsonNode> nulls(int count) {

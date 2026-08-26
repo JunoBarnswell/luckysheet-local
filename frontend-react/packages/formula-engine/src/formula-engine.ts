@@ -18,6 +18,7 @@ import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } 
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
+import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
@@ -87,6 +88,7 @@ export interface FormulaEngineOptions {
   readonly numericContext?: Partial<ExcelNumericContext>;
   /** Stable host/workbook seed; authoritative collaboration code may replace it. */
   readonly calculationEntropySeed?: string;
+  readonly collationContext?: Partial<WorkbookCollationContext>;
 }
 
 export interface CalculationTaskPortOptions {
@@ -130,6 +132,7 @@ export class FormulaEngine {
   private readonly calculationEntropySeed: string;
   private calculationCycleSequence = 0;
   private activeCalculationEntropy?: CalculationEntropyContext;
+  private readonly collationContext: WorkbookCollationContext;
 
   private readonly cells = new Map<string, StoredCell>();
 
@@ -140,6 +143,7 @@ export class FormulaEngine {
     this.canonicalReferenceDate = options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined;
     this.numericContext = normalizeExcelNumericContext(options.numericContext ?? DEFAULT_EXCEL_NUMERIC_CONTEXT);
     this.calculationEntropySeed = options.calculationEntropySeed?.trim() || 'react-sheets-calculation';
+    this.collationContext = normalizeWorkbookCollation(options.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -154,6 +158,7 @@ export class FormulaEngine {
       canonicalReferenceDate: snapshot.canonicalReferenceDate,
       numericContext: snapshot.numericContext,
       calculationEntropySeed: snapshot.calculationEntropy.entropySeed,
+      collationContext: snapshot.collationContext,
     });
     engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
     engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
@@ -232,6 +237,10 @@ export class FormulaEngine {
 
   getNumericContext(): ExcelNumericContext {
     return { ...this.numericContext };
+  }
+
+  getCollationContext(): WorkbookCollationContext {
+    return structuredClone(this.collationContext);
   }
 
   private beginCalculationEntropy(): CalculationEntropyContext {
@@ -410,6 +419,7 @@ export class FormulaEngine {
       canonicalReferenceDate: this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined,
       numericContext: { ...this.numericContext },
       calculationEntropy: this.activeCalculationEntropy ?? createCalculationEntropyContext(this.calculationEntropySeed, this.calculationCycleSequence),
+      collationContext: structuredClone(this.collationContext),
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
@@ -530,6 +540,7 @@ export class FormulaEngine {
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
+        collationContext: this.collationContext,
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
@@ -929,6 +940,7 @@ export class FormulaEngine {
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
+        collationContext: this.collationContext,
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),

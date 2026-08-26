@@ -4,6 +4,7 @@ import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
+import type { WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -17,6 +18,8 @@ export interface WorkbookSnapshot {
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
+  /** Workbook-owned deterministic ordering semantics for values and query keys. */
+  collationContext?: WorkbookCollationContext;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   dataModel: import('./data-model').WorkbookDataModel;
@@ -162,6 +165,13 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
+  if (snapshot.collationContext) {
+    const context = snapshot.collationContext;
+    if (!context.cultureId.trim() || !Array.isArray(context.typeOrder) || context.typeOrder.length !== 5 || new Set(context.typeOrder).size !== 5
+      || !Array.isArray(context.customLists) || context.customLists.some((list) => !Array.isArray(list) || list.some((entry) => typeof entry !== 'string'))) {
+      throw new Error('Workbook snapshot collationContext is invalid');
+    }
+  }
   const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');

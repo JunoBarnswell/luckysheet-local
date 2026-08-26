@@ -15,6 +15,7 @@ import type {
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
+import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
@@ -818,13 +819,7 @@ function filterScalarText(value: FilterScalar): string {
 }
 
 function compareFilterScalars(left: FilterScalar, right: FilterScalar): number {
-  const leftBlank = left == null || left === '';
-  const rightBlank = right == null || right === '';
-  if (leftBlank !== rightBlank) return leftBlank ? -1 : 1;
-  if (typeof left === 'number' && typeof right === 'number') return left - right;
-  if (typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
-  if (typeof left === typeof right) return filterScalarText(left).localeCompare(filterScalarText(right));
-  return typeof left === 'number' ? -1 : typeof right === 'number' ? 1 : filterScalarText(left).localeCompare(filterScalarText(right));
+  return compareWorkbookValues(left, right);
 }
 
 /**
@@ -1491,11 +1486,6 @@ export interface SubtotalParams {
 /** A resolved scalar only; array/range formula results are not sortable. */
 export type SortCellValue = ScalarValue | FormulaError;
 
-// Sorting has no workbook-owned locale field, so use one explicit collation
-// for local execution and avoid host/browser locale drift. Excel date serials
-// remain numbers and therefore never pass through textual formatting.
-const SORT_COLLATOR = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
-
 function normalizeSortCellValue(value: unknown): SortCellValue {
   if (Array.isArray(value)) {
     if (value.length === 1 && Array.isArray(value[0]) && value[0].length === 1) return normalizeSortCellValue(value[0][0]);
@@ -1511,24 +1501,8 @@ function normalizeSortCellValue(value: unknown): SortCellValue {
   throw new Error(`Sort key has unsupported resolved value type: ${typeof value}`);
 }
 
-function sortValueKind(value: SortCellValue): number {
-  if (value === null) return 5;
-  if (isFormulaError(value)) return 4;
-  if (typeof value === 'number') return 0;
-  if (typeof value === 'boolean') return 1;
-  return 2;
-}
-
 export function compareSortValues(left: SortCellValue, right: SortCellValue): number {
-  if (left === right) return 0;
-  const leftKind = sortValueKind(left);
-  const rightKind = sortValueKind(right);
-  if (leftKind !== rightKind) return leftKind - rightKind;
-  if (left === null || right === null) return 0;
-  if (isFormulaError(left) && isFormulaError(right)) return SORT_COLLATOR.compare(left.code, right.code);
-  if (typeof left === 'number' && typeof right === 'number') return left - right;
-  if (typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
-  return SORT_COLLATOR.compare(String(left), String(right));
+  return compareWorkbookValues(left, right);
 }
 
 export function resolveSortCellValue(

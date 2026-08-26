@@ -18,6 +18,7 @@ export * from './range-index';
 export * from './values';
 export * from './numeric';
 export * from './random';
+export * from './collation';
 export * from './excel-date';
 export { type SpillModel, spillBlocked, STANDARD_FORMULA_ERRORS } from './spill';
 export * from './sheet-table-resolver';

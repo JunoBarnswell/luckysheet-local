@@ -1,6 +1,7 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
 import type { FormulaEvaluationContext } from '../evaluator';
+import { compareWorkbookValues } from '../collation';
 import { findLookupIndex, type LookupMatchMode } from './lookup-engine';
 
 const MAX_GENERATED_ARRAY_CELLS = 100_000;
@@ -46,10 +47,8 @@ function isTruthy(value: FormulaValue): boolean {
   return true;
 }
 
-function compareValues(left: FormulaValue, right: FormulaValue): number {
-  if (isFormulaError(left) || isFormulaError(right)) return 0;
-  if (typeof left === 'number' && typeof right === 'number') return left - right;
-  return String(left ?? '').localeCompare(String(right ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+function compareValues(left: FormulaValue, right: FormulaValue, context?: FormulaEvaluationContext): number {
+  return compareWorkbookValues(left, right, context?.collationContext);
 }
 
 function matrixHeight(matrix: FormulaValue[][]): number {
@@ -138,7 +137,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     return deduped.length > 0 ? deduped : [[]];
   },
 
-  SORT: (args) => {
+  SORT: (args, context) => {
     if (args.length < 1) return createFormulaError('#VALUE!', 'SORT requires an array');
     const array = to2DArray(args[0]);
     if (array.length === 0) return [[]];
@@ -154,11 +153,11 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
       const width = matrixWidth(array);
       if (column >= width) return createFormulaError('#VALUE!', 'SORT sort_index out of bounds');
       const indices = Array.from({ length: width }, (_, index) => index);
-      indices.sort((left, right) => sortOrder * compareValues(array[0]?.[left] ?? null, array[0]?.[right] ?? null));
+      indices.sort((left, right) => sortOrder * compareValues(array[0]?.[left] ?? null, array[0]?.[right] ?? null, context));
       return array.map((row) => indices.map((index) => row[index] ?? null));
     }
 
-    const sorted = [...array].sort((left, right) => sortOrder * compareValues(left[column] ?? null, right[column] ?? null));
+    const sorted = [...array].sort((left, right) => sortOrder * compareValues(left[column] ?? null, right[column] ?? null, context));
     return sorted;
   },
 
@@ -185,7 +184,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     return result;
   },
 
-  XMATCH: (args) => {
+  XMATCH: (args, context) => {
     const lookupValue = args[0];
     const lookupArray = to1DArray(args[1]);
     const matchMode = coerceExcelNumber(args[2] ?? 0);
@@ -193,7 +192,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     if (lookupArray.length === 0) return createFormulaError('#N/A', 'XMATCH lookup array is empty');
 
     if (isFormulaError(matchMode) || isFormulaError(searchMode) || ![0, -1, 1, 2].includes(matchMode) || ![1, -1, 2, -2].includes(searchMode)) return createFormulaError('#VALUE!', 'Invalid XMATCH mode');
-    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode);
+    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode, context?.collationContext);
     if (index >= 0) return index + 1;
     return createFormulaError('#N/A', 'Value not found in XMATCH');
   },
@@ -256,7 +255,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     return rowSlice.map((row) => row.slice(0, Math.max(0, row.length + columns)));
   },
 
-  SORTBY: (args) => {
+  SORTBY: (args, context) => {
     if (args.length < 2) return createFormulaError('#VALUE!', 'SORTBY requires array and by_array');
     const array = to2DArray(args[0]);
     if (array.length === 0) return [[]];
@@ -277,7 +276,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     }
     indices.sort((left, right) => {
       for (const key of sortKeys) {
-        const delta = key.order * compareValues(key.values[left] ?? null, key.values[right] ?? null);
+        const delta = key.order * compareValues(key.values[left] ?? null, key.values[right] ?? null, context);
         if (delta !== 0) return delta;
       }
       return left - right;
