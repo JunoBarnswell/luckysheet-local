@@ -1,24 +1,62 @@
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import { RemoteAssetStore, WorkbookCatalogService, WorkspacePersistence, resolveShareToken, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
+import {
+  RemoteAssetStore,
+  WorkbookCatalogService,
+  WorkspacePersistence,
+  WorkspaceStorageError,
+  resolveShareToken,
+  type WorkbookSessionOptions,
+  type WorkspaceDatabaseState,
+} from '@react-sheets/spreadsheet-app';
 import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
+
+export interface StorageReadiness {
+  state: WorkspaceDatabaseState | 'warming';
+  error: WorkspaceStorageError | null;
+}
 
 export interface ApplicationServices {
   catalog: WorkbookCatalogService;
   persistence: WorkspacePersistence;
   ensureStorageReady: () => Promise<IDBDatabase>;
+  storageReadiness: StorageReadiness;
   workbookApi: WorkbookApiClient;
   createWorkbookSessionOptions: (unitId: string, authTokenProvider: AuthTokenProvider) => WorkbookSessionOptions;
 }
 
 const ApplicationServicesContext = createContext<ApplicationServices | null>(null);
 
+function formatStorageError(error: unknown): WorkspaceStorageError {
+  if (error instanceof WorkspaceStorageError) return error;
+  return new WorkspaceStorageError({
+    code: 'STORAGE_UNAVAILABLE',
+    databaseName: 'react-sheets-workspaces',
+    operation: 'open',
+    message: error instanceof Error ? error.message : '本地工作簿存储不可用。',
+    recovery: '请完整刷新当前页面后重试。',
+    cause: error,
+  });
+}
+
 export function ApplicationServicesProvider({ children }: { children: ReactNode }) {
   const auth = useAuthSession();
-  const services = useMemo<ApplicationServices>(() => {
+  const [storageReadiness, setStorageReadiness] = useState<StorageReadiness>({ state: 'warming', error: null });
+  const core = useMemo(() => {
     const persistence = new WorkspacePersistence();
-    const ensureStorageReady = () => persistence.coordinator.open();
+    const ensureStorageReady = async (): Promise<IDBDatabase> => {
+      setStorageReadiness({ state: 'opening', error: null });
+      try {
+        const database = await persistence.coordinator.open();
+        setStorageReadiness({ state: persistence.coordinator.state, error: null });
+        return database;
+      } catch (cause) {
+        const error = formatStorageError(cause);
+        setStorageReadiness({ state: 'failed', error });
+        throw error;
+      }
+    };
     const shareTokenProvider = () => resolveShareToken();
     const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
     const catalog = new WorkbookCatalogService({
@@ -37,9 +75,22 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     });
     return { catalog, persistence, ensureStorageReady, workbookApi, createWorkbookSessionOptions };
   }, [auth]);
+
   useEffect(() => {
-    void services.ensureStorageReady().catch(() => undefined);
-  }, [services]);
+    let cancelled = false;
+    void core.ensureStorageReady().catch((cause) => {
+      if (cancelled) return;
+      const error = formatStorageError(cause);
+      setStorageReadiness({ state: 'failed', error });
+    });
+    return () => { cancelled = true; };
+  }, [core]);
+
+  const services = useMemo<ApplicationServices>(() => ({
+    ...core,
+    storageReadiness,
+  }), [core, storageReadiness]);
+
   return <ApplicationServicesContext.Provider value={services}>{children}</ApplicationServicesContext.Provider>;
 }
 

@@ -194,15 +194,22 @@ interface IndexedDbOpenRequest {
 }
 
 const WORKSPACE_DATABASE_OPEN_TIMEOUT_MS = 15_000;
+const WORKSPACE_DATABASE_CLOSE_DRAIN_TIMEOUT_MS = 5_000;
 const WORKSPACE_DATABASE_CHANNEL_PREFIX = 'react-sheets-workspace-db';
 
 export type WorkspaceDatabaseState = 'idle' | 'opening' | 'ready' | 'closing' | 'failed';
 
-interface WorkspaceDatabaseMessage {
+export interface WorkspaceDatabaseMessage {
   type: 'close-request' | 'closed';
   databaseName: string;
   targetVersion: number;
   instanceId: string;
+}
+
+interface OpeningAttempt {
+  generation: number;
+  blocked: boolean;
+  peerClosed: boolean;
 }
 
 function storageError(
@@ -242,6 +249,7 @@ export class WorkspaceDatabaseCoordinator {
   private allowMemoryFallback: boolean;
   private readonly channel: BroadcastChannel | null;
   private readonly openTimeoutMs: number;
+  private readonly closeDrainTimeoutMs: number;
   private database: IDBDatabase | null = null;
   private opening: Promise<IDBDatabase> | null = null;
   private closing: Promise<void> | null = null;
@@ -249,14 +257,21 @@ export class WorkspaceDatabaseCoordinator {
   private stateValue: WorkspaceDatabaseState = 'idle';
   private activeTransactions = 0;
   private drainWaiters: Array<() => void> = [];
+  private openGeneration = 0;
+  private openingAttempt: OpeningAttempt | null = null;
 
-  constructor(options: Omit<IndexedDbStoreOptions, 'coordinator' | 'unitId'> & { openTimeoutMs?: number; broadcast?: boolean } = {}) {
+  constructor(options: Omit<IndexedDbStoreOptions, 'coordinator' | 'unitId'> & {
+    openTimeoutMs?: number;
+    closeDrainTimeoutMs?: number;
+    broadcast?: boolean;
+  } = {}) {
     this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
     const selection = resolveFactorySelection(options.indexedDB);
     this.factory = selection.factory;
     this.storageModeValue = selection.mode;
     this.allowMemoryFallback = selection.allowMemoryFallback;
     this.openTimeoutMs = options.openTimeoutMs ?? WORKSPACE_DATABASE_OPEN_TIMEOUT_MS;
+    this.closeDrainTimeoutMs = options.closeDrainTimeoutMs ?? WORKSPACE_DATABASE_CLOSE_DRAIN_TIMEOUT_MS;
     this.instanceId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -287,54 +302,53 @@ export class WorkspaceDatabaseCoordinator {
       ));
     }
 
+    const generation = ++this.openGeneration;
+    const attempt: OpeningAttempt = { generation, blocked: false, peerClosed: false };
+    this.openingAttempt = attempt;
     this.stateValue = 'opening';
     this.opening = new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      let blocked = false;
       let request: IndexedDbOpenRequest;
       try {
         request = (this.factory as IndexedDbFactory).open(this.databaseName, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
       } catch (error) {
-        if (this.switchToMemoryIfUnsupported(error)) {
-          this.opening = null;
+        if (this.isCurrentGeneration(generation) && this.switchToMemoryIfUnsupported(error)) {
+          this.clearOpening(generation);
           this.stateValue = 'idle';
           void this.open().then(resolve, reject);
           return;
         }
-        this.opening = null;
-        this.stateValue = 'failed';
-        reject(storageError('STORAGE_UNAVAILABLE', this.databaseName, 'open', '当前浏览器拒绝本地工作簿存储。', '请允许站点存储后重试。', error));
-        return;
-      }
-      const finishFailure = (error: WorkspaceStorageError): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        if (this.cancelOpening === finishFailure) this.cancelOpening = null;
-        this.opening = null;
-        this.stateValue = 'failed';
-        reject(error);
-      };
-      const timeoutId = setTimeout(() => finishFailure(blocked
-        ? storageError(
-          'STORAGE_UPGRADE_BLOCKED',
-          this.databaseName,
-          'upgrade',
-          '本地工作簿存储升级仍被旧页面占用。',
-          '请保存其他工作簿页面中的内容并完整刷新或关闭旧页面，然后重试；现有数据库不会被删除。',
-        )
-        : storageError(
-          'STORAGE_OPEN_TIMEOUT',
+        this.failOpening(generation, storageError(
+          'STORAGE_UNAVAILABLE',
           this.databaseName,
           'open',
-          '打开本地工作簿存储超时。',
-          '请完整刷新当前页面后重试；若问题持续，请检查浏览器站点存储权限。',
-        )), this.openTimeoutMs);
+          '当前浏览器拒绝本地工作簿存储。',
+          '请允许站点存储后重试。',
+          error,
+        ), reject);
+        return;
+      }
+
+      const finishFailure = (error: WorkspaceStorageError): void => {
+        if (settled || !this.isCurrentGeneration(generation)) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        this.failOpening(generation, error, reject);
+      };
+
+      const timeoutId = setTimeout(() => finishFailure(this.openTimeoutError(attempt)), this.openTimeoutMs);
       this.cancelOpening = finishFailure;
 
-      request.onupgradeneeded = () => ensureWorkspaceStores(request.result);
+      request.onupgradeneeded = () => {
+        if (!this.isCurrentGeneration(generation)) {
+          try { request.result.close(); } catch { /* ignore zombie upgrade handle */ }
+          return;
+        }
+        ensureWorkspaceStores(request.result);
+      };
       request.onblocked = () => {
-        blocked = true;
+        if (!this.isCurrentGeneration(generation)) return;
+        attempt.blocked = true;
         this.channel?.postMessage({
           type: 'close-request',
           databaseName: this.databaseName,
@@ -343,12 +357,12 @@ export class WorkspaceDatabaseCoordinator {
         } satisfies WorkspaceDatabaseMessage);
       };
       request.onerror = () => {
+        if (!this.isCurrentGeneration(generation)) return;
         if (this.switchToMemoryIfUnsupported(request.error)) {
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
-          if (this.cancelOpening === finishFailure) this.cancelOpening = null;
-          this.opening = null;
+          this.clearOpening(generation);
           this.stateValue = 'idle';
           void this.open().then(resolve, reject);
           return;
@@ -363,14 +377,14 @@ export class WorkspaceDatabaseCoordinator {
         ));
       };
       request.onsuccess = () => {
-        if (settled) {
-          request.result.close();
+        if (settled || !this.isCurrentGeneration(generation)) {
+          try { request.result.close(); } catch { /* ignore zombie connection */ }
           return;
         }
         try {
           assertWorkspaceSchema(request.result, this.databaseName);
         } catch (error) {
-          request.result.close();
+          try { request.result.close(); } catch { /* ignore invalid schema handle */ }
           finishFailure(error instanceof WorkspaceStorageError ? error : storageError(
             'STORAGE_SCHEMA_INVALID', this.databaseName, 'open', '本地工作簿存储结构无效。', '请联系管理员检查数据库迁移。', error,
           ));
@@ -379,9 +393,9 @@ export class WorkspaceDatabaseCoordinator {
         settled = true;
         clearTimeout(timeoutId);
         if (this.cancelOpening === finishFailure) this.cancelOpening = null;
+        this.clearOpening(generation);
         this.database = request.result;
         this.database.onversionchange = () => { void this.close('versionchange'); };
-        this.opening = null;
         this.stateValue = 'ready';
         resolve(request.result);
       };
@@ -416,6 +430,22 @@ export class WorkspaceDatabaseCoordinator {
       transaction.addEventListener('complete', release, { once: true });
       transaction.addEventListener('abort', release, { once: true });
       transaction.addEventListener('error', release, { once: true });
+    } else {
+      const previousComplete = transaction.oncomplete;
+      const previousAbort = transaction.onabort;
+      const previousError = transaction.onerror;
+      transaction.oncomplete = (event) => {
+        release();
+        if (typeof previousComplete === 'function') previousComplete.call(transaction, event);
+      };
+      transaction.onabort = (event) => {
+        release();
+        if (typeof previousAbort === 'function') previousAbort.call(transaction, event);
+      };
+      transaction.onerror = (event) => {
+        release();
+        if (typeof previousError === 'function') previousError.call(transaction, event);
+      };
     }
     return transaction;
   }
@@ -430,10 +460,25 @@ export class WorkspaceDatabaseCoordinator {
       '请重新进入工作簿页面后重试当前操作。',
     ));
     this.cancelOpening = null;
+    this.openGeneration += 1;
+    this.openingAttempt = null;
     this.stateValue = 'closing';
     const closing = Promise.resolve().then(async () => {
-      if (this.activeTransactions > 0) await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
-      this.database?.close();
+      if (this.activeTransactions > 0) {
+        await Promise.race([
+          new Promise<void>((resolve) => this.drainWaiters.push(resolve)),
+          new Promise<void>((resolve) => {
+            setTimeout(resolve, this.closeDrainTimeoutMs);
+          }),
+        ]);
+        if (this.activeTransactions > 0) {
+          this.activeTransactions = 0;
+          const waiters = this.drainWaiters;
+          this.drainWaiters = [];
+          waiters.forEach((resolve) => resolve());
+        }
+      }
+      try { this.database?.close(); } catch { /* ignore already-closed handle */ }
       this.database = null;
       this.opening = null;
       this.stateValue = 'idle';
@@ -450,10 +495,17 @@ export class WorkspaceDatabaseCoordinator {
   }
 
   dispose(): void {
-    void this.close('dispose');
-    this.channel?.close();
-    if (typeof globalThis.removeEventListener === 'function') {
-      globalThis.removeEventListener('pagehide', this.handlePageHide, { capture: true });
+    void this.disposeAsync();
+  }
+
+  async disposeAsync(): Promise<void> {
+    try {
+      await this.close('dispose');
+    } finally {
+      try { this.channel?.close(); } catch { /* ignore channel teardown */ }
+      if (typeof globalThis.removeEventListener === 'function') {
+        globalThis.removeEventListener('pagehide', this.handlePageHide, { capture: true });
+      }
     }
   }
 
@@ -463,7 +515,57 @@ export class WorkspaceDatabaseCoordinator {
     if (!message || message.databaseName !== this.databaseName || message.instanceId === this.instanceId) return;
     if (message.type === 'close-request' && message.targetVersion >= WORKSPACE_DATABASE_VERSION) {
       void this.close('upgrade-request');
+      return;
     }
+    if (message.type === 'closed') {
+      const attempt = this.openingAttempt;
+      if (!attempt || attempt.generation !== this.openGeneration) return;
+      attempt.peerClosed = true;
+      // Same-generation open continues waiting for onsuccess; peer close only records protocol progress.
+    }
+  }
+
+  private isCurrentGeneration(generation: number): boolean {
+    return generation === this.openGeneration && this.openingAttempt?.generation === generation;
+  }
+
+  private clearOpening(generation: number): void {
+    if (this.openingAttempt?.generation === generation) this.openingAttempt = null;
+    this.opening = null;
+    if (this.cancelOpening) this.cancelOpening = null;
+  }
+
+  private failOpening(generation: number, error: WorkspaceStorageError, reject: (error: WorkspaceStorageError) => void): void {
+    if (this.isCurrentGeneration(generation)) {
+      if (this.cancelOpening) this.cancelOpening = null;
+      this.clearOpening(generation);
+      this.stateValue = 'failed';
+    }
+    reject(error);
+  }
+
+  /** Test seam: deliver a peer BroadcastChannel message without a live channel. */
+  deliverPeerMessageForTest(message: WorkspaceDatabaseMessage): void {
+    this.receive(message);
+  }
+
+  private openTimeoutError(attempt: OpeningAttempt): WorkspaceStorageError {
+    if (attempt.blocked) {
+      return storageError(
+        'STORAGE_UPGRADE_BLOCKED',
+        this.databaseName,
+        'upgrade',
+        '本地工作簿存储升级仍被旧页面占用。',
+        '请保存其他工作簿页面中的内容并完整刷新或关闭旧页面，然后重试；现有数据库不会被删除。',
+      );
+    }
+    return storageError(
+      'STORAGE_OPEN_TIMEOUT',
+      this.databaseName,
+      'open',
+      '打开本地工作簿存储超时。',
+      '请关闭其它标签页中的本应用后完整刷新当前页面并重试；若问题持续，请检查浏览器站点存储权限。',
+    );
   }
 
   private switchToMemoryIfUnsupported(cause: unknown): boolean {
@@ -502,11 +604,15 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
   return coordinator;
 }
 
-const hotModule = (import.meta as ImportMeta & { hot?: { dispose(callback: () => void): void } }).hot;
-hotModule?.dispose(() => {
-  for (const coordinator of ownedCoordinators) coordinator.dispose();
+/** Used by Vite HMR dispose and tests to close every owned coordinator before a new module opens the DB. */
+export async function disposeOwnedWorkspaceCoordinators(): Promise<void> {
+  const pending = [...ownedCoordinators];
   ownedCoordinators.clear();
-});
+  await Promise.all(pending.map((coordinator) => coordinator.disposeAsync()));
+}
+
+const hotModule = (import.meta as ImportMeta & { hot?: { dispose(callback: () => void | Promise<void>): void } }).hot;
+hotModule?.dispose(() => disposeOwnedWorkspaceCoordinators());
 
 export function resolveIndexedDbFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
   return resolveFactory(explicit);
