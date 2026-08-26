@@ -23,8 +23,6 @@ export interface FeaturePanelHostProps {
     | "pivotFields"
     | "pivotSlicerControls"
     | "pivotTimelineControls"
-    | "pivotConnectionControlId"
-    | "pivotConnectionOptions"
     | "pivotPanelState"
     | "pivotCallbacks"
     | "setActivePivotId"
@@ -82,8 +80,6 @@ export function FeaturePanelHost({
           pivotFieldCatalog={commands.pivotFields}
           pivotSlicerControls={commands.pivotSlicerControls}
           pivotTimelineControls={commands.pivotTimelineControls}
-          pivotConnectionControlId={commands.pivotConnectionControlId}
-          pivotConnectionOptions={commands.pivotConnectionOptions}
           pivotPanelState={commands.pivotPanelState}
           pivotCallbacks={commands.pivotCallbacks}
           formulaAudit={state.formulaAudit}

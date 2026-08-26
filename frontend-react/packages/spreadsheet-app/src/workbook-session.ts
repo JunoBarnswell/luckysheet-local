@@ -1532,6 +1532,10 @@ export class WorkbookSession {
   }
 
   setActivePivotContext(pivotId: string | null, sheetId = this.activeSheetId): void {
+    if (pivotId !== null) {
+      const sheet = this.runtime.model.getSheet(sheetId);
+      if (!sheet.pivots.some((pivot) => pivot.id === pivotId)) throw new Error(`Unknown PivotTable context: ${pivotId}`);
+    }
     const next: ActiveContext = pivotId === null ? { kind: 'none' } : { kind: 'pivot', sheetId, pivotId };
     if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
     this.activeContext = next;

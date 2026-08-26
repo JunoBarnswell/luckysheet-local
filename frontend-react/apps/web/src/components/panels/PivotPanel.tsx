@@ -3,14 +3,13 @@ import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, S
 import { DEFAULT_PIVOT_DISPLAY_OPTIONS, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotDisplayOptions, type PivotDisplayOptions, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotPresentation, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { buildPivotGroupedFilterMembers } from '@react-sheets/spreadsheet-app';
-import { PivotActions } from '../pivot/PivotActions';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
 import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
 import { pivotText } from '../pivot/pivot-localization';
-import { defaultPivotFieldArea, PIVOT_FIELD_PANE_LAYOUTS, type PivotConnectionOption, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
+import { defaultPivotFieldArea, PIVOT_FIELD_PANE_LAYOUTS, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
 import type { PivotMessageKey } from '../pivot/pivot-localization';
 
 export interface PivotPanelProps {
@@ -21,8 +20,6 @@ export interface PivotPanelProps {
   fieldCatalog?: readonly PivotFieldDefinition[];
   slicerControls?: readonly PivotSlicerControl[];
   timelineControls?: readonly PivotTimelineControl[];
-  pivotConnectionControlId?: string;
-  pivotConnectionOptions?: readonly PivotConnectionOption[];
   state?: PivotPanelState;
   callbacks?: PivotPanelCallbacks;
   slots?: PivotPanelSlots;
@@ -30,7 +27,6 @@ export interface PivotPanelProps {
 }
 
 function cloneLayout(layout: PivotLayout): PivotLayout { return structuredClone(layout); }
-function layoutMode(layout: PivotLayout): 'compact' | 'outline' | 'tabular' { return layout.reportLayout; }
 function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
   const next = cloneLayout(layout);
   next.filters = next.filters.filter((field) => field.fieldId !== fieldId);
@@ -90,7 +86,7 @@ const fieldPaneLayoutLabels: Record<PivotFieldPaneLayout, PivotMessageKey> = {
   'areas-only': 'areasOnly',
 };
 
-export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFields, locale, onClose, pivot, pivotConnectionControlId, pivotConnectionOptions = [], pivotList = [], slicerControls = [], slots, state, timelineControls = [] }: PivotPanelProps) {
+export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFields, locale, onClose, pivot, pivotList = [], slicerControls = [], slots, state, timelineControls = [] }: PivotPanelProps) {
   const fields = suppliedFields ?? pivot?.fieldCatalog.fields ?? [];
   const [delayUpdate, setDelayUpdate] = useState(false);
   const [draft, setDraft] = useState<PivotLayout | null>(pivot ? cloneLayout(pivot.layout) : null);
@@ -264,8 +260,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">
-        <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost">{pivotText(locale, 'view')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{callbacks ? <PivotActions locale={locale} callbacks={callbacks} layout={layoutMode(layout)} showButtons={layout.expansion?.showButtons ?? true} slicerFieldIds={slicerControls.map((control) => control.fieldId)} fields={fields} disabled={disabled} connectionControlId={pivotConnectionControlId} connectionOptions={pivotConnectionOptions} /> : null}{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); const placement = placements.get(control.fieldId); const memberOptions = field && placement?.group ? buildPivotGroupedFilterMembers(field.values ?? [], placement.group) : undefined; return field ? <PivotSlicer key={control.id} locale={locale} field={field} memberOptions={memberOptions} itemProjection={control.items} settings={control.settings} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /> : null; })}{timelineControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return <PivotTimeline key={control.id} locale={locale} fieldLabel={field?.name ?? control.fieldId} values={field?.values} level={control.level} bounds={control.bounds} scrollPosition={control.scrollPosition} showHeader={control.showHeader} showSelectionLabel={control.showSelectionLabel} showTimeLevel={control.showTimeLevel} showHorizontalScrollbar={control.showHorizontalScrollbar} caption={control.caption} styleName={control.styleName} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineChange(undefined)} onLevelChange={(level) => callbacks?.onTimelineLevelChange?.(control.id, level)} onWindowChange={(scrollPosition) => callbacks?.onTimelineWindowChange?.(control.id, scrollPosition)} onDisplayChange={(display) => callbacks?.onTimelineDisplayChange?.(control.id, display)} onCaptionChange={(caption) => callbacks?.onTimelineCaptionChange?.(control.id, caption)} onStyleChange={(styleName) => callbacks?.onTimelineStyleChange?.(control.id, styleName)} />; })}</Stack></DropdownMenu>
-        <Select aria-label={pivotText(locale, 'view')} sizeVariant="sm" value={layoutMode(layout)} onChange={(event) => callbacks?.onLayoutChange(event.target.value as 'compact' | 'outline' | 'tabular')}><option value="compact">{pivotText(locale, 'compact')}</option><option value="outline">{pivotText(locale, 'outline')}</option><option value="tabular">{pivotText(locale, 'tabular')}</option></Select>
+        {slicerControls.length > 0 || timelineControls.length > 0 ? <DropdownMenu align="left" trigger={<Button aria-label={pivotText(locale, 'pivotControls')} size="sm" variant="ghost">{pivotText(locale, 'pivotControls')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); const placement = placements.get(control.fieldId); const memberOptions = field && placement?.group ? buildPivotGroupedFilterMembers(field.values ?? [], placement.group) : undefined; return field ? <PivotSlicer key={control.id} locale={locale} field={field} memberOptions={memberOptions} itemProjection={control.items} settings={control.settings} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /> : null; })}{timelineControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return <PivotTimeline key={control.id} locale={locale} fieldLabel={field?.name ?? control.fieldId} values={field?.values} level={control.level} bounds={control.bounds} scrollPosition={control.scrollPosition} showHeader={control.showHeader} showSelectionLabel={control.showSelectionLabel} showTimeLevel={control.showTimeLevel} showHorizontalScrollbar={control.showHorizontalScrollbar} caption={control.caption} styleName={control.styleName} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineRemove?.()} onLevelChange={(level) => callbacks?.onTimelineLevelChange?.(control.id, level)} onWindowChange={(scrollPosition) => callbacks?.onTimelineWindowChange?.(control.id, scrollPosition)} onDisplayChange={(display) => callbacks?.onTimelineDisplayChange?.(control.id, display)} onCaptionChange={(caption) => callbacks?.onTimelineCaptionChange?.(control.id, caption)} onStyleChange={(styleName) => callbacks?.onTimelineStyleChange?.(control.id, styleName)} />; })}</Stack></DropdownMenu> : null}
         <Select aria-label={pivotText(locale, 'subtotalLocation')} sizeVariant="sm" value={layout.subtotalLocation} disabled={disabled} onChange={(event) => { const next = event.target.value as PivotLayout['subtotalLocation']; if (callbacks?.onSubtotalLocationChange) callbacks.onSubtotalLocationChange(next); else applyLayout({ ...cloneLayout(layout), subtotalLocation: next }); }}><option value="top">{pivotText(locale, 'subtotalTop')}</option><option value="bottom">{pivotText(locale, 'subtotalBottom')}</option><option value="off">{pivotText(locale, 'subtotalOff')}</option></Select>
         <DropdownMenu align="right" trigger={<Button aria-label={pivotText(locale, 'advancedFields')} icon="plus" iconOnly size="sm" variant="ghost" className="ml-auto" />}><Box className="w-[22rem] p-3"><PivotCalculatedEditor locale={locale} fields={fields} calculatedFields={layout.calculatedFields ?? []} calculatedItems={layout.calculatedItems ?? []} disabled={disabled} onFieldsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedFields: next })} onItemsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedItems: next })} /></Box></DropdownMenu>
         {slots?.statusSummary ? <Text size="xs" tone="subtle">{slots.statusSummary}</Text> : null}

@@ -260,6 +260,12 @@ export type RibbonCommandId =
   | 'commandPalette'
   | 'pivotRefresh'
   | 'pivotFieldList'
+  | 'pivotSlicer'
+  | 'pivotTimeline'
+  | 'pivotChart'
+  | 'pivotLayoutCompact'
+  | 'pivotLayoutOutline'
+  | 'pivotLayoutTabular'
   | 'tableSheetFieldList'
   | 'tableSheetColumnSettings'
   | 'ganttFieldMapping'
@@ -452,6 +458,8 @@ export interface RibbonCommandContext {
   /** Host-owned Create PivotTable dialog entry point. */
   openCreatePivotDialog?: () => void;
   activePivot?: { sheetId: string; pivotId: string };
+  /** Object-level Pivot actions use the same canonical session command path as the field pane. */
+  pivotActions?: RibbonPivotActions;
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
   activeReportSheet?: { sheetId: string; tableId?: string };
@@ -462,6 +470,13 @@ export interface RibbonCommandContext {
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
+}
+
+export interface RibbonPivotActions {
+  onSlicer: () => void;
+  onTimeline: () => void;
+  onPivotChart: () => void;
+  onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
 }
 
 export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
@@ -735,6 +750,12 @@ export const RIBBON_TEXT = {
     pivotTable: 'commands.pivotTable',
     pivotRefresh: 'commands.pivotRefresh',
     pivotFieldList: 'commands.pivotFieldList',
+    pivotSlicer: 'commands.pivotSlicer',
+    pivotTimeline: 'commands.pivotTimeline',
+    pivotChart: 'commands.pivotChart',
+    pivotLayoutCompact: 'commands.pivotLayoutCompact',
+    pivotLayoutOutline: 'commands.pivotLayoutOutline',
+    pivotLayoutTabular: 'commands.pivotLayoutTabular',
     tableSheetFieldList: 'commands.tableSheetFieldList',
     tableSheetColumnSettings: 'commands.tableSheetColumnSettings',
     ganttFieldMapping: 'commands.ganttFieldMapping',
@@ -1323,8 +1344,39 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
       : undefined,
   },
   {
-    ...intent('pivotFieldList', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
-    enabled: (context) => Boolean(context.activePivot),
+    ...intent('pivotFieldList', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
+    enabled: (context) => Boolean(context.activePivot)
+      && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
+  },
+  {
+    ...callback('pivotSlicer', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer(), 'sliders'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.control.slicer.create', context.activePivot)),
+  },
+  {
+    ...callback('pivotTimeline', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline(), 'history'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.control.timeline.create', context.activePivot)),
+  },
+  {
+    ...callback('pivotChart', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart(), 'chart'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.chart.create', context.activePivot)),
+  },
+  {
+    ...callback('pivotLayoutCompact', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutCompact, (context) => context.pivotActions?.onLayoutChange('compact'), 'layout'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
+  },
+  {
+    ...callback('pivotLayoutOutline', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutOutline, (context) => context.pivotActions?.onLayoutChange('outline'), 'layout'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
+  },
+  {
+    ...callback('pivotLayoutTabular', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutTabular, (context) => context.pivotActions?.onLayoutChange('tabular'), 'layout'),
+    enabled: (context) => Boolean(context.activePivot && context.pivotActions)
+      && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
     ...intent('tableSheetFieldList', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetFieldList, () => ({ type: 'panel.open', panel: 'data' }), 'table'),

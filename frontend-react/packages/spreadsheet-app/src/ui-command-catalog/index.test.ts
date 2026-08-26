@@ -160,6 +160,43 @@ describe('Ribbon UI command catalog', () => {
     );
   });
 
+  it('exposes the real PivotTable Analyze and Design actions only for an active Pivot context', () => {
+    const calls: string[] = [];
+    const activePivot = { sheetId: 'sheet-pivot', pivotId: 'pivot-1' };
+    const current = context({
+      activePivot,
+      pivotActions: {
+        onSlicer: () => calls.push('slicer'),
+        onTimeline: () => calls.push('timeline'),
+        onPivotChart: () => calls.push('chart'),
+        onLayoutChange: (layout) => calls.push(`layout:${layout}`),
+      },
+    });
+    assert.equal(getRibbonCommandDefinition('pivotFieldList').tab, 'pivotAnalyze');
+    assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').tab, 'pivotDesign');
+    for (const id of ['pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
+      assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition(id), current), true, id);
+      const result = buildRibbonCommand(id, current);
+      assert.equal(result?.type, 'callback', id);
+      if (result?.type === 'callback') result.invoke();
+    }
+    assert.deepEqual(calls, ['slicer', 'timeline', 'chart', 'layout:compact', 'layout:outline', 'layout:tabular']);
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('pivotSlicer'), context()), false);
+    assert.equal(buildRibbonCommand('pivotLayoutTabular', context()), undefined);
+  });
+
+  it('keeps Pivot contextual commands disabled when the canonical permission check rejects them', () => {
+    const forbidden = context({
+      activePivot: { sheetId: 'sheet-pivot', pivotId: 'pivot-1' },
+      pivotActions: { onSlicer: () => undefined, onTimeline: () => undefined, onPivotChart: () => undefined, onLayoutChange: () => undefined },
+      canExecute: () => false,
+    });
+    for (const id of ['pivotRefresh', 'pivotFieldList', 'pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
+      assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition(id), forbidden), false, id);
+      assert.equal(buildRibbonCommand(id, forbidden), undefined, id);
+    }
+  });
+
   it('routes all merge actions through the typed high-level callback', () => {
     const operations: string[] = [];
     const current = context({ actions: { ...context().actions, onMerge: (operation) => { operations.push(operation); } } });

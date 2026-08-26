@@ -42,10 +42,6 @@ export type {
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
-export type PivotExpansionCommand =
-  | { kind: 'expand-field'; fieldId: string }
-  | { kind: 'collapse-field'; fieldId: string }
-  | { kind: 'toggle-buttons'; showButtons: boolean };
 export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
 export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
 export function defaultPivotFieldArea(field: Pick<PivotFieldDefinition, 'dataType'>): PivotFieldArea {
@@ -97,11 +93,6 @@ export interface PivotTimelineControl {
   connections?: readonly PivotControlConnection[];
 }
 
-export interface PivotConnectionOption extends PivotControlConnection {
-  label: string;
-  selected: boolean;
-}
-
 export interface PivotPanelState {
   loading?: boolean;
   disabled?: boolean;
@@ -124,24 +115,18 @@ export interface PivotPanelCallbacks {
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
   onSubtotalLocationChange?: (location: import('@react-sheets/core-model').PivotSubtotalLocation) => void;
-  onRefresh: () => void;
-  onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
   onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
   onPresentationChange?: (presentation: PivotPresentation) => void;
   onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
-  onExpansionCommand?: (command: PivotExpansionCommand) => void;
-  onSlicerChange: (fieldId: string, enabled: boolean) => void;
-  onConnectionsChange?: (controlId: string, connections: PivotControlConnection[]) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
-  onTimelineChange: (fieldId: string | undefined) => void;
+  onTimelineRemove: () => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
   onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
   onTimelineWindowChange?: (timelineId: string, scrollPosition: string) => void;
   onTimelineDisplayChange?: (timelineId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>) => void;
   onTimelineCaptionChange?: (timelineId: string, caption: string) => void;
   onTimelineStyleChange?: (timelineId: string, styleName: string) => void;
-  onPivotChartChange: (chart: { type: 'column' | 'bar' | 'line' | 'pie'; title: string } | undefined) => void;
 }
 
 export interface PivotPanelSlots {

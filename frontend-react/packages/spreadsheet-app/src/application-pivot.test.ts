@@ -48,6 +48,30 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
 }
 
 describe('WorkbookSession PivotTable integration', () => {
+  it('enters and leaves a validated PivotTable contextual Ribbon state', () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    app.runCommand('pivot.add', pivot);
+
+    app.setActivePivotContext(pivot.id, sheetId);
+    let snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.activeContext, { kind: 'pivot', sheetId, pivotId: pivot.id });
+    assert.equal(snapshot.ribbon.activeTab, 'pivotAnalyze');
+    assert.equal(snapshot.panels.active, 'pivot');
+    assert.equal(snapshot.panels.open, true);
+
+    app.setActivePivotContext(null, sheetId);
+    snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+    assert.equal(snapshot.ribbon.activeTab, 'home');
+  });
+
+  it('rejects a fabricated PivotTable context without changing the active context', () => {
+    const app = new WorkbookSession();
+    assert.throws(() => app.setActivePivotContext('missing-pivot'), /Unknown PivotTable context: missing-pivot/);
+    assert.deepEqual(app.getUiSnapshot().activeContext, { kind: 'none' });
+  });
+
   it('creates a new worksheet and PivotTable as one history entry', () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
