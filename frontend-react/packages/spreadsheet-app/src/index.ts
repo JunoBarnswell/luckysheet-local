@@ -67,6 +67,7 @@ export {
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
   WorkspaceStorageError,
+  isWorkspaceStorageError,
   type WorkspaceDatabaseState,
   type PersistenceSnapshotMeta,
   type WorkspaceRecord,

@@ -383,7 +383,7 @@ export class IndexedDbWorkspaceStore {
     if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
     const normalized = normalizeWorkspaceRecord(record);
     const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME],
+      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
       'readwrite',
     );
     const headStore = transaction.objectStore(WORKSPACE_HEAD_STORE_NAME);
@@ -411,11 +411,12 @@ export class IndexedDbWorkspaceStore {
 
   async clear(unitId: string): Promise<void> {
     const transaction = await this.coordinator.transaction(
-      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME],
+      [WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
       'readwrite',
     );
     transaction.objectStore(WORKSPACE_HEAD_STORE_NAME).delete(unitId);
     transaction.objectStore(WORKSPACE_CATALOG_STORE_NAME).delete(unitId);
+    transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).delete(unitId);
     const snapshots = await requestResult(transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).getAll()) as WorkspaceSnapshotRecord[];
     const operations = await requestResult(transaction.objectStore(WORKSPACE_OPERATION_STORE_NAME).getAll()) as WorkspaceOperationRecord[];
     for (const snapshot of snapshots) if (snapshot.unitId === unitId) transaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME).delete([unitId, snapshot.revision]);
@@ -801,7 +802,7 @@ export class WorkspacePersistence {
 
   async clear(unitId: string): Promise<void> {
     this.operationJournal.clear(unitId);
-    await Promise.all([this.store.delete(unitId), this.nativePackages.remove(unitId)]);
+    await this.store.delete(unitId);
   }
 }
 

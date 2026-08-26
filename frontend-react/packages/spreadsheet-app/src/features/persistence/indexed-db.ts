@@ -34,6 +34,9 @@ export type WorkspaceStorageErrorCode =
   | 'STORAGE_SCHEMA_INVALID'
   | 'STORAGE_REVISION_CONFLICT'
   | 'STORAGE_WRITER_UNAVAILABLE'
+  | 'STORAGE_QUOTA_EXCEEDED'
+  | 'STORAGE_UPGRADE_REQUIRED'
+  | 'STORAGE_CONNECTION_CLOSED'
   | 'STORAGE_TRANSACTION_FAILED';
 
 export class WorkspaceStorageError extends Error {
@@ -71,6 +74,9 @@ export function isWorkspaceStorageError(error: unknown): error is WorkspaceStora
     'STORAGE_SCHEMA_INVALID',
     'STORAGE_REVISION_CONFLICT',
     'STORAGE_WRITER_UNAVAILABLE',
+    'STORAGE_QUOTA_EXCEEDED',
+    'STORAGE_UPGRADE_REQUIRED',
+    'STORAGE_CONNECTION_CLOSED',
     'STORAGE_TRANSACTION_FAILED',
   ].includes(String((error as { code: unknown }).code));
 }
@@ -347,6 +353,15 @@ function storageError(
   return new WorkspaceStorageError({ code, databaseName, operation, message, recovery, cause });
 }
 
+function classifyOpenError(cause: unknown): WorkspaceStorageErrorCode {
+  const name = cause && typeof cause === 'object' && 'name' in cause ? String(cause.name) : '';
+  if (name === 'QuotaExceededError') return 'STORAGE_QUOTA_EXCEEDED';
+  if (name === 'VersionError') return 'STORAGE_UPGRADE_REQUIRED';
+  if (name === 'InvalidStateError') return 'STORAGE_CONNECTION_CLOSED';
+  if (name === 'SecurityError' || name === 'NotSupportedError') return 'STORAGE_UNAVAILABLE';
+  return 'STORAGE_TRANSACTION_FAILED';
+}
+
 function assertWorkspaceSchema(database: IDBDatabase, databaseName: string): void {
   const required = [
     DATA_BLOCK_STORE_NAME,
@@ -493,12 +508,15 @@ export class WorkspaceDatabaseCoordinator {
       };
       request.onerror = () => {
         if (!this.isCurrentGeneration(generation)) return;
+        const code = classifyOpenError(request.error);
         finishFailure(upgradeError ?? storageError(
-          'STORAGE_TRANSACTION_FAILED',
+          code,
           this.databaseName,
           'open',
-          '无法打开本地工作簿存储。',
-          '请保留浏览器数据并重试；错误详情可用于管理员诊断。',
+          code === 'STORAGE_QUOTA_EXCEEDED' ? '本地工作簿存储空间不足。' : '无法打开本地工作簿存储。',
+          code === 'STORAGE_UPGRADE_REQUIRED' ? '请刷新到最新页面后重试。'
+            : code === 'STORAGE_CONNECTION_CLOSED' ? '数据库连接已失效，请重新加载页面后重试。'
+              : '请保留浏览器数据并重试；错误详情可用于管理员诊断。',
           request.error,
         ));
       };
