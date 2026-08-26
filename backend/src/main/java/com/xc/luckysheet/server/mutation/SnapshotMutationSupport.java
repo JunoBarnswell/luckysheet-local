@@ -138,7 +138,16 @@ final class SnapshotMutationSupport {
         for (int row = range.startRow(); row <= range.endRow(); row++) {
             ObjectNode current = cellRow(cells, row, false);
             if (current == null) continue;
-            for (int column = range.startColumn(); column <= range.endColumn(); column++) current.remove(Integer.toString(column));
+            List<String> remove = new ArrayList<>();
+            current.fieldNames().forEachRemaining(key -> {
+                try {
+                    int column = Integer.parseInt(key);
+                    if (column >= range.startColumn() && column <= range.endColumn()) remove.add(key);
+                } catch (NumberFormatException ignored) {
+                    throw ServiceException.validation("Cell column key is invalid");
+                }
+            });
+            remove.forEach(current::remove);
             if (current.isEmpty()) cells.remove(Integer.toString(row));
         }
     }

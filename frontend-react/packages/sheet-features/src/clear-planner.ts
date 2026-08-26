@@ -32,8 +32,6 @@ export interface ClearRangePlan {
   snapshot: ClearRangeSnapshot;
 }
 
-const MAX_CLEAR_CELLS = 100_000;
-
 function normalizeRange(range: RangeRef): RangeRef {
   if (range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) {
     throw new Error('Clear range is invalid');
@@ -94,8 +92,6 @@ function snapshotCells(sheet: WorksheetModel, range: RangeRef): ClearRangeSnapsh
 export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangeParams): ClearRangePlan {
   const range = normalizeRange(input.range);
   if (range.sheetId !== sheet.id || input.sheetId !== sheet.id) throw new Error('Clear range targets another worksheet');
-  const area = (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1);
-  if (!Number.isSafeInteger(area) || area > MAX_CLEAR_CELLS) throw new Error('Clear range is too large');
   const notes: ClearRangeSnapshot['notes'] = [];
   const hyperlinks: ClearRangeSnapshot['hyperlinks'] = [];
   for (const [key, note] of sheet.notes) {
@@ -144,9 +140,13 @@ function clearCellFormats(cell: CellData): CellData {
 
 export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan): void {
   const { range, params } = plan;
+  const cells: Array<{ row: number; column: number; cell: CellData }> = [];
+  sheet.cells.forEach((cell, row, column) => {
+    if (contains(range, row, column)) cells.push({ row, column, cell });
+  });
   if (params.family === 'comments-and-notes') {
-    for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const current = sheet.cells.get(row, column);
+    for (const entry of cells) {
+      const { row, column, cell: current } = entry;
       if (current?.note !== undefined || current?.comment !== undefined) {
         const next = { ...current };
         delete next.note;
@@ -159,8 +159,8 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
     return;
   }
   if (params.family === 'hyperlinks') {
-    for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const current = sheet.cells.get(row, column);
+    for (const entry of cells) {
+      const { row, column, cell: current } = entry;
       if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
         const next = { ...current };
         delete next.hyperlink;
@@ -171,17 +171,20 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
     }
     return;
   }
-  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-    const current = sheet.cells.get(row, column);
-    if (!current) continue;
+  for (const entry of cells) {
+    const { row, column, cell: current } = entry;
     if (params.family === 'contents') sheet.cells.set(row, column, clearCellContents(current));
     else if (params.family === 'formats') sheet.cells.set(row, column, clearCellFormats(current));
     else sheet.cells.delete(row, column);
   }
   if (params.family === 'all') {
-    for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      sheet.notes.delete(`${row}:${column}`);
-      sheet.hyperlinks.delete(`${row}:${column}`);
+    for (const key of [...sheet.notes.keys()]) {
+      const [row, column] = key.split(':').map(Number);
+      if (contains(range, row!, column!)) sheet.notes.delete(key);
+    }
+    for (const key of [...sheet.hyperlinks.keys()]) {
+      const [row, column] = key.split(':').map(Number);
+      if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
     }
     sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
   }
@@ -191,10 +194,18 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
 }
 
 export function restoreClearRangeSnapshot(sheet: WorksheetModel, range: RangeRef, snapshot: ClearRangeSnapshot): void {
-  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-    sheet.cells.delete(row, column);
-    sheet.notes.delete(`${row}:${column}`);
-    sheet.hyperlinks.delete(`${row}:${column}`);
+  const cells: Array<{ row: number; column: number }> = [];
+  sheet.cells.forEach((_cell, row, column) => {
+    if (contains(range, row, column)) cells.push({ row, column });
+  });
+  for (const { row, column } of cells) sheet.cells.delete(row, column);
+  for (const key of [...sheet.notes.keys()]) {
+    const [row, column] = key.split(':').map(Number);
+    if (contains(range, row!, column!)) sheet.notes.delete(key);
+  }
+  for (const key of [...sheet.hyperlinks.keys()]) {
+    const [row, column] = key.split(':').map(Number);
+    if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
   }
   sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
   for (const item of snapshot.cells) if (item.value !== undefined) sheet.cells.set(item.row, item.column, structuredClone(item.value));

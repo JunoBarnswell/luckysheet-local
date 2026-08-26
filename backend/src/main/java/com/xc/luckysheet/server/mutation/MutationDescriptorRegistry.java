@@ -572,8 +572,16 @@ public class MutationDescriptorRegistry {
             for (int row = range.startRow(); row <= range.endRow(); row++) {
                 ObjectNode cellRow = SnapshotMutationSupport.cellRow(cells, row, false);
                 if (cellRow == null) continue;
-                for (int column = range.startColumn(); column <= range.endColumn(); column++) {
-                    String key = Integer.toString(column);
+                List<String> keys = new ArrayList<>();
+                cellRow.fieldNames().forEachRemaining(key -> {
+                    try {
+                        int column = Integer.parseInt(key);
+                        if (column >= range.startColumn() && column <= range.endColumn()) keys.add(key);
+                    } catch (NumberFormatException ignored) {
+                        throw ServiceException.validation("Cell column key is invalid");
+                    }
+                });
+                for (String key : keys) {
                     JsonNode existing = cellRow.get(key);
                     if (existing == null || !existing.isObject()) continue;
                     if ("all".equals(family)) cellRow.remove(key);
