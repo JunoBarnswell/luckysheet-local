@@ -87,6 +87,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'cells-insert-menu': return homeText(locale, 'insert');
     case 'cells-delete-menu': return homeText(locale, 'delete');
     case 'cells-format-menu': return homeText(locale, 'format');
+    case 'cell-styles-menu': return translateRibbonText(locale, 'groups.styles');
     case 'clear-menu': return homeText(locale, 'clear');
     case 'row-height': return homeText(locale, 'rowHeight');
     case 'auto-fit-row-height': return homeText(locale, 'autoFitRowHeight');
@@ -211,6 +212,12 @@ export function HomeRibbon({
         const icon = controlId === 'cells-insert-menu' ? 'plus' : controlId === 'cells-delete-menu' ? 'trash' : 'columns';
         return <DropdownMenu align="left" trigger={menuTrigger(icon)}><Stack gap="none" className="min-w-[13rem] p-1">{menuMembers(`control.${controlId}`).map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
       }
+      case 'cell-styles-menu':
+        return <DropdownMenu align="left" trigger={menuTrigger('star')}>
+          <Stack gap="none" className="min-w-[14rem] p-1">
+            {menuMembers('control.cell-styles-menu').map((surface) => renderSurface(surface, 'menu'))}
+          </Stack>
+        </DropdownMenu>;
       case 'clear-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('trash')}><Stack gap="none" className="min-w-[14rem] p-1">{menuMembers('control.clear-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
       case 'column-width':

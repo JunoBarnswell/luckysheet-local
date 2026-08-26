@@ -141,7 +141,7 @@ interface FormatPainterMutationParams {
   styles: FormatPainterCell[][];
 }
 
-interface HomeStylePreset {
+export interface HomeStylePreset {
   id: string;
   name: string;
   style: Partial<CellStyle>;

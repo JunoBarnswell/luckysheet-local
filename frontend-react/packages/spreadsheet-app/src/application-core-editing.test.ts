@@ -275,6 +275,34 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(3, 2)?.style?.bold, true);
   });
 
+  it('supplies active sheet and selection to a canonical cell style preset descriptor', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 3, 2);
+    app.dispatch({ commandId: 'sheet.style.preset.apply', params: { preset: 'good' } });
+    const cell = app['runtime'].model.getSheet(sheetId).cells.get(3, 2);
+    assert.equal(cell?.style?.background, '#e2f0d9');
+    assert.equal(cell?.style?.textColor, '#006100');
+    app.undo();
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(3, 2), undefined);
+    app.redo();
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(3, 2)?.style?.background, '#e2f0d9');
+  });
+
+  it('rejects an unknown cell style preset before history or model changes', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 0, 0);
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+    assert.throws(() => app.runCommand('sheet.style.preset.apply', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      preset: 'not-a-preset',
+    }), /Unknown cell style preset/);
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+    assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.get(0, 0), undefined);
+  });
+
   it('freezeAtPrimary updates worksheet freeze panes', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

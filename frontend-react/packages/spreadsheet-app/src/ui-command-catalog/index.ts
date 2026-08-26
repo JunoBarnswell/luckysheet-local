@@ -185,6 +185,14 @@ export type RibbonCommandId =
   | 'conditionalFormat'
   | 'cellTemplate'
   | 'cellEditor'
+  | 'cellStyleNormal'
+  | 'cellStyleGood'
+  | 'cellStyleBad'
+  | 'cellStyleNeutral'
+  | 'cellStyleTitle'
+  | 'cellStyleHeading1'
+  | 'cellStyleHeading2'
+  | 'cellStyleTotal'
   | 'tableSheet'
   | 'ganttSheet'
   | 'reportSheet'
@@ -526,6 +534,7 @@ export type RibbonControlId =
   | 'cells-insert-menu'
   | 'cells-delete-menu'
   | 'cells-format-menu'
+  | 'cell-styles-menu'
   | 'clear-menu'
   | 'row-height'
   | 'auto-fit-row-height'
@@ -703,6 +712,14 @@ export const RIBBON_TEXT = {
     conditionalFormat: 'commands.conditionalFormat',
     cellTemplate: 'commands.cellTemplate',
     cellEditor: 'commands.cellEditor',
+    cellStyleNormal: 'commands.cellStyleNormal',
+    cellStyleGood: 'commands.cellStyleGood',
+    cellStyleBad: 'commands.cellStyleBad',
+    cellStyleNeutral: 'commands.cellStyleNeutral',
+    cellStyleTitle: 'commands.cellStyleTitle',
+    cellStyleHeading1: 'commands.cellStyleHeading1',
+    cellStyleHeading2: 'commands.cellStyleHeading2',
+    cellStyleTotal: 'commands.cellStyleTotal',
     tableSheet: 'commands.tableSheet',
     ganttSheet: 'commands.ganttSheet',
     reportSheet: 'commands.reportSheet',
@@ -944,12 +961,21 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
+  homeControl('cell-styles-menu', 'styles', 5),
+  ribbonSurface('home', 'styles.cell-style.normal', 'styles', 11, 'menu', 'cellStyleNormal', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.good', 'styles', 12, 'menu', 'cellStyleGood', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.bad', 'styles', 13, 'menu', 'cellStyleBad', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.neutral', 'styles', 14, 'menu', 'cellStyleNeutral', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.title', 'styles', 15, 'menu', 'cellStyleTitle', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.heading1', 'styles', 16, 'menu', 'cellStyleHeading1', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.heading2', 'styles', 17, 'menu', 'cellStyleHeading2', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.cell-style.total', 'styles', 18, 'menu', 'cellStyleTotal', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat'),
-  ribbonSurface('home', 'styles.table', 'styles', 20, 'tile', 'formatAsTable'),
-  ribbonSurface('home', 'styles.format-cells', 'styles', 30, 'tile', 'formatCells'),
-  ribbonSurface('home', 'styles.validation', 'styles', 40, 'tile', 'dataValidation'),
-  ribbonSurface('home', 'styles.template', 'styles', 50, 'tile', 'cellTemplate'),
-  ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor'),
+  ribbonSurface('home', 'styles.table', 'styles', 30, 'tile', 'formatAsTable'),
+  ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'tile', 'formatCells'),
+  ribbonSurface('home', 'styles.validation', 'styles', 50, 'tile', 'dataValidation'),
+  ribbonSurface('home', 'styles.template', 'styles', 60, 'tile', 'cellTemplate'),
+  ribbonSurface('home', 'styles.editor', 'styles', 70, 'tile', 'cellEditor'),
   homeControl('cells-insert-menu', 'cells', 10),
   homeControl('cells-delete-menu', 'cells', 20),
   homeControl('cells-format-menu', 'cells', 30),
@@ -1132,6 +1158,20 @@ const precisionStyleCommand = (
   },
 });
 
+const stylePresetCommand = (
+  id: RibbonCommandId,
+  labelKey: RibbonTextKey,
+  preset: string,
+): CommandDefinition => ({
+  ...command(id, 'home', 'styles', 'sheet.style.preset.apply', labelKey, 'check-circle', { preset }),
+  build: () => ({
+    type: 'command',
+    descriptor: { commandId: 'sheet.style.preset.apply', params: { preset } },
+  }),
+  enabled: (context) => !context.disabled
+    && (!context.canExecute || context.canExecute('sheet.style.preset.apply', { preset })),
+});
+
 export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
   callback('exportXlsx', 'file', 'workbook', RIBBON_TEXT.commands.exportXlsx, (context) => context.actions.onExportXlsx()),
@@ -1242,6 +1282,14 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('conditionalFormat', 'home', 'editing', RIBBON_TEXT.commands.conditionalFormat, () => ({ type: 'panel.open', panel: 'conditionalFormat' }), 'sparkles'),
   intent('cellTemplate', 'home', 'styles', RIBBON_TEXT.commands.cellTemplate, () => ({ type: 'dialog.open', dialog: 'cell-template' }), 'star'),
   intent('cellEditor', 'home', 'styles', RIBBON_TEXT.commands.cellEditor, () => ({ type: 'dialog.open', dialog: 'cell-editor' }), 'sliders'),
+  stylePresetCommand('cellStyleNormal', RIBBON_TEXT.commands.cellStyleNormal, 'normal'),
+  stylePresetCommand('cellStyleGood', RIBBON_TEXT.commands.cellStyleGood, 'good'),
+  stylePresetCommand('cellStyleBad', RIBBON_TEXT.commands.cellStyleBad, 'bad'),
+  stylePresetCommand('cellStyleNeutral', RIBBON_TEXT.commands.cellStyleNeutral, 'neutral'),
+  stylePresetCommand('cellStyleTitle', RIBBON_TEXT.commands.cellStyleTitle, 'title'),
+  stylePresetCommand('cellStyleHeading1', RIBBON_TEXT.commands.cellStyleHeading1, 'heading1'),
+  stylePresetCommand('cellStyleHeading2', RIBBON_TEXT.commands.cellStyleHeading2, 'heading2'),
+  stylePresetCommand('cellStyleTotal', RIBBON_TEXT.commands.cellStyleTotal, 'total'),
 
   callback('tableSheet', 'insert', 'insertSheets', RIBBON_TEXT.commands.tableSheet, (context) => context.actions.onCreateAdvancedSheet('table-sheet'), 'table-sheet'),
   callback('ganttSheet', 'insert', 'insertSheets', RIBBON_TEXT.commands.ganttSheet, (context) => context.actions.onCreateAdvancedSheet('gantt-sheet'), 'gantt-sheet'),
