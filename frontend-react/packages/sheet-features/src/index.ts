@@ -18,6 +18,7 @@ import type {
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import {
+  clearFormulaProvenance,
   StructuralTransform,
   normalizeDefinedNameModel,
   normalizeFontFamily,
@@ -1025,8 +1026,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
-      assertCanonicalCheckboxCell(params.value);
-      context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, { ...params.value });
+      const value = clearFormulaProvenance(params.value);
+      assertCanonicalCheckboxCell(value);
+      context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
     },
     metadata: {
       schema: { name: 'SetCellValue', validate: isCellSetMutation },
@@ -1056,11 +1058,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous = sheet.cells.get(params.row, params.column);
       const affectedRanges = cellRange(params);
+      const value = clearFormulaProvenance(params.value);
+      const canonicalParams = { ...params, value };
       context.applyMutation({
         id: 'cell.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: canonicalParams,
         affectedRanges,
         inverse: [
           {
@@ -1071,7 +1075,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => sheet.cells.set(params.row, params.column, { ...params.value }),
+        apply: () => sheet.cells.set(params.row, params.column, value),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1147,7 +1151,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const rowValues = params.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
           const value = rowValues[columnOffset];
-          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, { ...value });
+          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, clearFormulaProvenance(value));
         }
       }
     },
@@ -1163,6 +1167,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.set',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
       const writeRange = setRangeAffectedRanges(params)[0];
       let tablePlansId = 0;
       const tablePlans = writeRange && params.values.length > 0
@@ -1170,8 +1175,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         : [];
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
       const affectedRanges: RangeRef[] = writeRange ? [structuredClone(writeRange)] : [];
-      for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
-        const rowValues = params.values[rowOffset] ?? [];
+      for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+        const rowValues = values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
           const row = params.startRow + rowOffset;
           const column = params.startColumn + columnOffset;
@@ -1210,7 +1215,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         id: 'range.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: { ...params, values },
         affectedRanges,
         inverse: previous.map((item) => ({
           id: 'cell.restore',
@@ -1228,8 +1233,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           ],
         })),
         apply: () => {
-          for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
-            const rowValues = params.values[rowOffset] ?? [];
+          for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+            const rowValues = values[rowOffset] ?? [];
             for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
               const value = rowValues[columnOffset];
               if (value)

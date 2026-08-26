@@ -201,6 +201,16 @@ export interface FormulaMetadata {
   sourceFormula?: string;
 }
 
+/**
+ * User-authored cell writes replace the formula definition; OOXML provenance
+ * belongs only to the imported definition that is being replaced.
+ */
+export function clearFormulaProvenance(cell: CellData): CellData {
+  const next = structuredClone(cell);
+  delete next.formulaMetadata;
+  return next;
+}
+
 export interface RangeRef {
   sheetId: SheetId;
   startRow: Row;

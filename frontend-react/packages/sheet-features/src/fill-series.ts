@@ -1,4 +1,4 @@
-import type { CellData, RangeRef, WorksheetModel } from '@react-sheets/core-model';
+import { clearFormulaProvenance, type CellData, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 import { canonicalExcelDateFromSerial, canonicalExcelDateFromValue, canonicalExcelDateToIso, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import { shiftFormula } from './clipboard';
 
@@ -123,7 +123,7 @@ function sourceCell(sheet: WorksheetModel, row: number, column: number): CellDat
 
 function copyCell(source: CellData | undefined, rowDelta: number, columnDelta: number): CellData | undefined {
   if (source === undefined) return undefined;
-  const copy = structuredClone(source);
+  const copy = clearFormulaProvenance(source);
   if (copy.formula !== undefined) {
     copy.formula = shiftFormula(copy.formula, rowDelta, columnDelta);
     copy.value = null;
@@ -254,6 +254,7 @@ function planSeries(sheet: WorksheetModel, source: RangeRef, target: RangeRef, d
       delete next.formula;
       delete next.formulaValue;
       delete next.displayValue;
+      delete next.formulaMetadata;
       const current = sourceCell(sheet, row, column);
       if (!cellsEqual(current, next)) writes.push({ row, column, cell: next });
     }

@@ -13,7 +13,7 @@ import type {
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
-import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue } from "@react-sheets/core-model";
+import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
@@ -131,13 +131,14 @@ function applyRangeValues(
     startColumn: params.startColumn,
     endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
   };
+  const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
   const previous = snapshotCells(sheet, range);
   const affectedRanges = [range];
   context.applyMutation({
     id: 'range.set',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
-    params,
+    params: { ...params, values },
     affectedRanges,
     inverse: previous.map((entry) => ({
       id: 'cell.restore' as const,
@@ -147,9 +148,9 @@ function applyRangeValues(
       affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
     })),
     apply: () => {
-      for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
-        for (let columnOffset = 0; columnOffset < (params.values[rowOffset]?.length ?? 0); columnOffset += 1) {
-          const value = params.values[rowOffset]?.[columnOffset];
+      for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset += 1) {
+          const value = values[rowOffset]?.[columnOffset];
           if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
         }
       }

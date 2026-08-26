@@ -1443,21 +1443,24 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   const styleAttr = style === undefined ? '' : ` s="${style}"`;
   const metadata = cell.formulaMetadata;
   if (cell.formula || metadata?.preservedOnly) {
-    const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
+    // A normal edit owns the current formula text. Only a preserved-only
+    // import may use sourceFormula, otherwise stale provenance could rewrite a
+    // newly authored formula during export.
+    const sourceFormula = metadata?.preservedOnly ? metadata.sourceFormula ?? cell.formula ?? '' : cell.formula ?? '';
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
     const cachedSerial = typeof cachedValue === 'string' && isExcelDateFormat(cell.numberFormat) ? canonicalDateToSerial(cachedValue, dateSystem) : undefined;
     const serializedCachedValue = cachedSerial ?? cachedValue;
     const cached = includeCachedValues && serializedCachedValue !== null ? `<v>${encodeXml(typeof serializedCachedValue === 'boolean' ? (serializedCachedValue ? '1' : '0') : String(serializedCachedValue))}</v>` : '';
     const cachedType = typeof serializedCachedValue === 'boolean' ? 'b' : typeof serializedCachedValue === 'string' ? 'str' : undefined;
-    const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
+    const formulaAttrs = metadata?.kind === 'shared'
       ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'array'
       ? ` t="array"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'dataTable'
         ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
         : '';
-    const formulaBody = metadata?.kind === 'shared' && metadata.preservedOnly && !metadata.sharedMaster ? '' : encodeXml(formula);
+    const formulaBody = metadata?.kind === 'shared' && !metadata.sharedMaster ? '' : encodeXml(formula);
     return `<c r="${ref}"${styleAttr}${cachedType ? ` t="${cachedType}"` : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;

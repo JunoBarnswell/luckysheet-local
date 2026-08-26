@@ -1,4 +1,4 @@
-import type { AutoFilterModel, RangeRef, SheetTableModel } from '@react-sheets/core-model';
+import { clearFormulaProvenance, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
@@ -354,7 +354,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             sheetId: params.sheetId,
             startRow: plan.totalRow,
             startColumn: plan.startColumn,
-            values: plan.values,
+            values: plan.values.map((row) => row.map((value) => clearFormulaProvenance(value))),
           },
           affectedRanges: [cellRange],
           inverse: cellSnapshots.map((entry) => ({
@@ -367,7 +367,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           apply: () => {
             const rowValues = plan.values[0] ?? [];
             rowValues.forEach((value, columnOffset) => {
-              sheet.cells.set(plan.totalRow, plan.startColumn + columnOffset, { ...value });
+              sheet.cells.set(plan.totalRow, plan.startColumn + columnOffset, clearFormulaProvenance(value));
             });
           },
         });

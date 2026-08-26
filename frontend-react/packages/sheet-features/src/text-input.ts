@@ -1,4 +1,4 @@
-import type { CellData, CellStyle } from '@react-sheets/core-model';
+import { clearFormulaProvenance, type CellData, type CellStyle } from '@react-sheets/core-model';
 import { formatFormula, parseFormula } from '@react-sheets/formula-engine';
 
 /** Parsed result of one user/host text input. */
@@ -43,7 +43,7 @@ export function buildCellFromText(
   style?: Partial<CellStyle>,
 ): CellData {
   const parsed = parseCellText(text);
-  const next: CellData = previous ? structuredClone(previous) : { value: null };
+  const next: CellData = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
   next.value = parsed.value;
   delete next.formula;
   delete next.formulaValue;

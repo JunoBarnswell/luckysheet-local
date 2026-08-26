@@ -75,6 +75,7 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
       const row = sheet.cells[rowKey] ?? {};
       for (const colKey of Object.keys(row)) {
         const formula = row[colKey]?.formula;
+        if (!formula) continue;
         const metadata = row[colKey]?.formulaMetadata;
         if (metadata?.preservedOnly) {
           const key = `${sheet.id}:${rowKey}:${colKey}:preserved-formula`;
@@ -88,7 +89,6 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
             });
           }
         }
-        if (!formula) continue;
         for (const rule of PRESERVE_FORMULA_PATTERNS) {
           if (!rule.pattern.test(formula) || seen.has(rule.feature)) continue;
           seen.add(rule.feature);

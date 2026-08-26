@@ -13,7 +13,7 @@ import type {
   BorderLine,
   BorderPlacement,
 } from '@react-sheets/core-model';
-import { columnLabel, noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
+import { clearFormulaProvenance, columnLabel, noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -502,7 +502,7 @@ function applyPasteCell(
       : spec.operation === 'subtract' ? left - right
         : spec.operation === 'multiply' ? left * right
           : left / right;
-    return { ...destination, value, formula: undefined };
+    return { ...clearFormulaProvenance(destination), value, formula: undefined };
   }
 
   if (spec.content === 'values') {
@@ -516,9 +516,10 @@ function applyPasteCell(
     return next;
   }
   if (spec.content === 'formulas') {
-    if (!sourceFormula) return { ...destination, value: source.value ?? null, formula: undefined };
+    if (!sourceFormula) return { ...clearFormulaProvenance(destination), value: source.value ?? null, formula: undefined };
+    const next = clearFormulaProvenance(destination);
     return {
-      ...destination,
+      ...next,
       value: null,
       formula: sourceFormula,
       formulaValue: undefined,
@@ -529,17 +530,17 @@ function applyPasteCell(
     };
   }
   if (spec.formatting === 'none') {
-    return { ...destination, value: source.value ?? null, formula: sourceFormula };
+    return { ...clearFormulaProvenance(destination), value: source.value ?? null, formula: sourceFormula };
   }
   if (spec.formatting === 'number-format') {
     return {
-      ...destination,
+      ...clearFormulaProvenance(destination),
       value: source.value ?? null,
       formula: sourceFormula,
       numberFormat: source.numberFormat,
     };
   }
-  const next = structuredClone(source);
+  const next = clearFormulaProvenance(source);
   if (sourceFormula) next.formula = sourceFormula;
   if (spec.formatting === 'all-except-borders' && next.style) {
     next.style = { ...next.style, borders: destination.style?.borders };
