@@ -155,7 +155,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                 if (value.isBlank()) throw ServiceException.validation("Hyperlink URL is required");
                 try {
                     URI uri = new URI(value);
-                    if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()) || "ftp".equalsIgnoreCase(uri.getScheme()))) {
+                    if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()) || "ftp".equalsIgnoreCase(uri.getScheme()))
+                            || uri.getHost() == null || uri.getHost().isBlank()) {
                         throw ServiceException.validation("Unsupported hyperlink URL scheme");
                     }
                 } catch (URISyntaxException exception) {
@@ -184,7 +185,11 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                     java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^([A-Za-z]+)([1-9][0-9]*)$").matcher(address);
                     if (!matcher.matches()) throw ServiceException.validation("Worksheet hyperlink address is invalid");
                     column = columnIndex(matcher.group(1));
-                    row = Integer.parseInt(matcher.group(2)) - 1;
+                    try {
+                        row = Math.subtractExact(Integer.parseInt(matcher.group(2)), 1);
+                    } catch (NumberFormatException | ArithmeticException exception) {
+                        throw ServiceException.validation("Worksheet hyperlink row is invalid");
+                    }
                 } else {
                     if (!target.path("row").canConvertToInt() || !target.path("column").canConvertToInt()) throw ServiceException.validation("Worksheet hyperlink coordinates are invalid");
                     row = target.path("row").intValue();
