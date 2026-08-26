@@ -76,11 +76,60 @@ export * from './cell-template-commands';
 export * from './clear-planner';
 
 
+export type CellEntryIntentKind =
+  | 'direct-entry'
+  | 'paste'
+  | 'fill'
+  | 'formula-result'
+  | 'query-load'
+  | 'script'
+  | 'external-sync'
+  | 'restore';
+
+export type CellEntryValidationStatus = 'accepted' | 'confirmed' | 'rejected' | 'not-applicable';
+
+export interface CellEntryIntent {
+  kind: CellEntryIntentKind;
+  target: {
+    sheetId: string;
+    row: number;
+    column: number;
+  } | {
+    sheetId: string;
+    startRow: number;
+    endRow: number;
+    startColumn: number;
+    endColumn: number;
+  };
+  candidate?: CellData | CellData[][];
+  validationDecision: {
+    status: CellEntryValidationStatus;
+    ruleId?: string;
+    alertStyle?: 'stop' | 'warning' | 'information';
+  };
+}
+
+export function createCellEntryIntent(
+  kind: CellEntryIntentKind,
+  target: CellEntryIntent['target'],
+  candidate?: CellData | CellData[][],
+  validationDecision: CellEntryIntent['validationDecision'] = { status: 'not-applicable' },
+): CellEntryIntent {
+  return {
+    kind,
+    target: structuredClone(target),
+    ...(candidate === undefined ? {} : { candidate: structuredClone(candidate) }),
+    validationDecision: structuredClone(validationDecision),
+  };
+}
+
+
 export interface SetCellValueParams {
   sheetId: string;
   row: number;
   column: number;
   value: CellData;
+  entryIntent: CellEntryIntent;
 }
 
 /** Host/UI text commit contract. The command owns parsing, validation and
@@ -92,6 +141,8 @@ export interface CommitTextParams {
   text: string;
   inputContext: CellInputInterpretationContext;
   style?: Partial<CellStyle>;
+  /** Required only when a warning/information validation rule is overridden. */
+  validationConfirmation?: boolean;
 }
 
 export interface AddTableParams extends WorkbookTableModel {}
@@ -116,6 +167,7 @@ export interface SetRangeValuesParams {
   startRow: number;
   startColumn: number;
   values: CellData[][];
+  entryIntent: CellEntryIntent;
 }
 
 interface ClearRangeRestoreParams {
@@ -281,12 +333,35 @@ function isCellData(value: unknown): value is CellData {
     && ('value' in value || typeof value.formula === 'string');
 }
 
+function isCellEntryIntent(value: unknown): value is CellEntryIntent {
+  if (!isRecord(value) || !['direct-entry', 'paste', 'fill', 'formula-result', 'query-load', 'script', 'external-sync', 'restore'].includes(String(value.kind))) return false;
+  if (!isRecord(value.target) || typeof value.target.sheetId !== 'string') return false;
+  const target = value.target;
+  const isCellTarget = Number.isSafeInteger(target.row) && Number(target.row) >= 0
+    && Number.isSafeInteger(target.column) && Number(target.column) >= 0;
+  const isRangeTarget = Number.isSafeInteger(target.startRow) && Number(target.startRow) >= 0
+    && Number.isSafeInteger(target.endRow) && Number(target.endRow) >= Number(target.startRow)
+    && Number.isSafeInteger(target.startColumn) && Number(target.startColumn) >= 0
+    && Number.isSafeInteger(target.endColumn) && Number(target.endColumn) >= Number(target.startColumn);
+  if (!isCellTarget && !isRangeTarget) return false;
+  if (value.candidate !== undefined && !isCellData(value.candidate)
+    && !(Array.isArray(value.candidate) && value.candidate.every((row) => Array.isArray(row) && row.every(isCellData)))) return false;
+  if (!isRecord(value.validationDecision) || !['accepted', 'confirmed', 'rejected', 'not-applicable'].includes(String(value.validationDecision.status))) return false;
+  return (value.validationDecision.ruleId === undefined || typeof value.validationDecision.ruleId === 'string')
+    && (value.validationDecision.alertStyle === undefined || ['stop', 'warning', 'information'].includes(String(value.validationDecision.alertStyle)));
+}
+
 function isCellSetMutation(value: unknown): value is SetCellValueParams {
   return isRecord(value)
     && typeof value.sheetId === 'string'
     && Number.isInteger(value.row) && Number(value.row) >= 0
     && Number.isInteger(value.column) && Number(value.column) >= 0
-    && isCellData(value.value);
+    && isCellData(value.value)
+    && isCellEntryIntent(value.entryIntent)
+    && value.entryIntent.target.sheetId === value.sheetId
+    && ('row' in value.entryIntent.target
+      ? value.entryIntent.target.row === value.row && value.entryIntent.target.column === value.column
+      : false);
 }
 
 function isCellRestoreMutation(value: unknown): value is { sheetId: string; row: number; column: number; previous?: CellData } {
@@ -348,8 +423,33 @@ function isSetRangeMutation(value: unknown): value is SetRangeValuesParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string'
     || !Number.isInteger(value.startRow) || Number(value.startRow) < 0
     || !Number.isInteger(value.startColumn) || Number(value.startColumn) < 0
-    || !Array.isArray(value.values)) return false;
+    || !Array.isArray(value.values)
+    || !isCellEntryIntent(value.entryIntent)
+    || value.entryIntent.target.sheetId !== value.sheetId
+    || ('row' in value.entryIntent.target)) return false;
   return value.values.every((row) => Array.isArray(row) && row.every(isCellData));
+}
+
+function assertCellEntryIntent(params: SetCellValueParams, sheet: WorksheetModel): void {
+  const intent = params.entryIntent;
+  if (intent.kind !== 'direct-entry') return;
+  if (!intent.candidate || Array.isArray(intent.candidate) || JSON.stringify(intent.candidate) !== JSON.stringify(params.value)) {
+    throw new Error('CELL_ENTRY_INTENT_MISMATCH: direct-entry candidate does not match cell.set value');
+  }
+  const validation = params.value.formula
+    ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
+    : validateDataInput(sheet, params.row, params.column, params.value.value);
+  if (intent.validationDecision.ruleId !== undefined && intent.validationDecision.ruleId !== validation.ruleId) {
+    throw new Error('CELL_ENTRY_VALIDATION_STALE: validation rule changed before direct entry commit');
+  }
+  if (!validation.valid) {
+    if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
+    if (intent.validationDecision.status !== 'confirmed') {
+      throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
+    }
+  } else if (!['accepted', 'confirmed'].includes(intent.validationDecision.status)) {
+    throw new Error('CELL_ENTRY_DECISION_INVALID: accepted direct entry decision is required');
+  }
 }
 
 function setRangeAffectedRanges(value: SetRangeValuesParams): RangeRef[] {
@@ -1027,6 +1127,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
+      assertCellEntryIntent(params, context.workbook.getSheet(params.sheetId));
       const value = clearFormulaProvenance(params.value);
       assertCanonicalCheckboxCell(value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
@@ -1056,7 +1157,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<SetCellValueParams>({
     id: 'sheet.cell.set',
     execute: (params, context) => {
+      if (!isCellSetMutation(params)) throw new Error('Invalid cell.set command payload');
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertCellEntryIntent(params, sheet);
       const previous = sheet.cells.get(params.row, params.column);
       const affectedRanges = cellRange(params);
       const value = clearFormulaProvenance(params.value);
@@ -1105,7 +1208,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       if (!next.formula) {
         const validation = validateDataInput(sheet, params.row, params.column, next.value);
         if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
+        if (!validation.valid && params.validationConfirmation !== true) {
+          throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
+        }
       }
+      const validation = next.formula
+        ? { valid: true, ruleId: undefined, alertStyle: undefined }
+        : validateDataInput(sheet, params.row, params.column, next.value);
+      const entryIntent = createCellEntryIntent(
+        'direct-entry',
+        { sheetId: params.sheetId, row: params.row, column: params.column },
+        next,
+        {
+          status: validation.valid ? 'accepted' : 'confirmed',
+          ...(validation.ruleId ? { ruleId: validation.ruleId } : {}),
+          ...(validation.alertStyle ? { alertStyle: validation.alertStyle } : {}),
+        },
+      );
       const affectedRanges = cellRange({
         sheetId: params.sheetId,
         row: params.row,
@@ -1121,6 +1240,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           row: params.row,
           column: params.column,
           value: structuredClone(next),
+          entryIntent,
         },
         affectedRanges,
         inverse: [{
@@ -1147,6 +1267,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSetRangeMutation(item.params)) throw new Error('Invalid range.set mutation payload');
       const params = item.params;
+      if (params.entryIntent.kind === 'direct-entry') throw new Error('RANGE_DIRECT_ENTRY_FORBIDDEN: use sheet.cell.commitText for validated direct entry');
       const sheet = context.workbook.getSheet(params.sheetId);
       for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
         const rowValues = params.values[rowOffset] ?? [];
@@ -1167,6 +1288,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<SetRangeValuesParams>({
     id: 'sheet.range.set',
     execute: (params, context) => {
+      if (!isSetRangeMutation(params)) throw new Error('Invalid range.set command payload');
+      if (params.entryIntent.kind === 'direct-entry') throw new Error('RANGE_DIRECT_ENTRY_FORBIDDEN: use sheet.cell.commitText for validated direct entry');
       const sheet = context.workbook.getSheet(params.sheetId);
       const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
       const writeRange = setRangeAffectedRanges(params)[0];
@@ -2197,6 +2320,18 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         startRow: params.row,
         startColumn: params.column,
         values,
+        entryIntent: {
+          kind: 'script',
+          target: {
+            sheetId: params.sheetId,
+            startRow: params.row,
+            endRow: params.row,
+            startColumn: params.column,
+            endColumn: params.column + Math.max(0, values[0]!.length - 1),
+          },
+          candidate: structuredClone(values),
+          validationDecision: { status: 'not-applicable' },
+        },
       });
     },
   });

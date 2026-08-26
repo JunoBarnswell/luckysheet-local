@@ -307,6 +307,7 @@ public class MutationDescriptorRegistry {
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
             JsonNode value = params.get("value");
             if (value == null || !value.isObject()) throw ServiceException.validation("cell.set value must be an object");
+            CellEntryIntentAuthority.requireCellWrite(root, sheet, sheetId, params, (ObjectNode) value);
             SnapshotMutationSupport.putCell(sheet, coordinate, value);
         }
 
@@ -321,6 +322,7 @@ public class MutationDescriptorRegistry {
         }
 
         private void writeRange(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params, boolean supportsCut) {
+            CellEntryIntentAuthority.requireRangeWrite(params, id());
             SnapshotMutationSupport.Matrix matrix = SnapshotMutationSupport.matrix(root, sheetId, params);
             if (supportsCut && params.path("clearSource").asBoolean(false)) {
                 RangeRef source = requireBoundedSourceRange(root, params);
@@ -338,6 +340,7 @@ public class MutationDescriptorRegistry {
         }
 
         private void applyPaste(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params) {
+            CellEntryIntentAuthority.requireRangeWrite(params, id());
             PasteShape shape = requirePasteShape(root, sheetId, params);
             applyPasteSnapshot(root, targetSheet, sheetId, SnapshotMutationSupport.requiredObject(params, "snapshot"), shape.allowedRanges());
             if (params.path("clearSource").asBoolean(false)) {

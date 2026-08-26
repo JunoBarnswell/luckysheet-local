@@ -28,6 +28,7 @@ import {
   isPasteSpecialSpecSupported,
 } from '../clipboard';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from '../text-input';
+import type { CellEntryIntent } from '../index';
 
 export type FreezePreset = 'none' | 'firstRow' | 'firstColumn' | 'both';
 export type GoToSpecialKind =
@@ -55,6 +56,7 @@ export interface PasteRangeParams {
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
   inputContext: CellInputInterpretationContext;
+  entryIntent: CellEntryIntent;
   transfer: ClipboardTransfer;
   spec: PasteSpecialSpec;
 }
@@ -186,6 +188,7 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string'
     && isRecord(value.targetOrigin) && Number.isInteger(value.targetOrigin.row) && Number.isInteger(value.targetOrigin.column)
     && isCellInputInterpretationContext(value.inputContext)
+    && isRecord(value.entryIntent) && value.entryIntent.kind === 'paste'
     && (value.transfer === 'copy' || value.transfer === 'move')
     && isRecord(value.clipboard) && value.clipboard.transfer === value.transfer
     && isRecord(value.clipboard.rangeMetadata)

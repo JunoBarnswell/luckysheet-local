@@ -140,7 +140,22 @@ function applyRangeValues(
     id: 'range.set',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
-    params: { ...params, values },
+    params: {
+      ...params,
+      values,
+      entryIntent: {
+        kind: 'script' as const,
+        target: {
+          sheetId: params.sheetId,
+          startRow: params.startRow,
+          endRow: params.startRow + Math.max(0, values.length - 1),
+          startColumn: params.startColumn,
+          endColumn: params.startColumn + Math.max(0, Math.max(1, ...values.map((row) => row.length)) - 1),
+        },
+        candidate: structuredClone(values),
+        validationDecision: { status: 'not-applicable' as const },
+      },
+    },
     affectedRanges,
     inverse: previous.map((entry) => ({
       id: 'cell.restore' as const,
@@ -1269,6 +1284,8 @@ export interface DataValidationResult {
   message?: string;
   blocking: boolean;
   list?: string[];
+  ruleId?: string;
+  alertStyle?: 'stop' | 'warning' | 'information';
 }
 
 export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
@@ -1369,41 +1386,46 @@ export function validateDataInput(
 ): DataValidationResult {
   const rule = findValidationRule(sheet, row, column);
   if (!rule) return { valid: true, blocking: false };
+  const withRule = (result: DataValidationResult): DataValidationResult => ({
+    ...result,
+    ruleId: rule.id,
+    alertStyle: rule.alertStyle ?? 'stop',
+  });
   if (value == null || value === "") {
     const valid = Boolean(rule.allowBlank ?? true);
-    return { valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") };
+    return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
   const list = validationList(rule, sheet);
   if (list) {
     const candidateValues = rule.multiSelect ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : [String(value)];
     const ok = candidateValues.length > 0 && candidateValues.every((candidate) =>
       list.some((item) => item.toLowerCase() === candidate.toLowerCase()));
-    return {
+    return withRule({
       valid: ok,
       blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop',
       message: ok ? undefined : validationMessage(rule, "值不在允许的列表中"),
       list,
-    };
+    });
   }
   const numeric = typeof value === "number" ? value : Number(value);
   const isNumberType = rule.type === "whole" || rule.type === "decimal";
   if (isNumberType) {
     if (!Number.isFinite(numeric)) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入数字") };
+      return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入数字") });
     }
     if (rule.type === "whole" && !Number.isInteger(numeric)) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入整数") };
+      return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入整数") });
     }
     const bound1 = Number(rule.formula1);
     const bound2 = Number(rule.formula2);
     switch (rule.operator) {
-      case "greaterThan": return judge(Number.isFinite(bound1) && numeric > bound1, rule);
-      case "lessThan": return judge(Number.isFinite(bound1) && numeric < bound1, rule);
-      case "equal": return judge(numeric === bound1, rule);
-      case "notEqual": return judge(numeric !== bound1, rule);
-      case "notBetween": return judge(Number.isFinite(bound1) && Number.isFinite(bound2) && (numeric < bound1 || numeric > bound2), rule);
+      case "greaterThan": return withRule(judge(Number.isFinite(bound1) && numeric > bound1, rule));
+      case "lessThan": return withRule(judge(Number.isFinite(bound1) && numeric < bound1, rule));
+      case "equal": return withRule(judge(numeric === bound1, rule));
+      case "notEqual": return withRule(judge(numeric !== bound1, rule));
+      case "notBetween": return withRule(judge(Number.isFinite(bound1) && Number.isFinite(bound2) && (numeric < bound1 || numeric > bound2), rule));
       case "between":
-      default: return judge(!Number.isFinite(bound1) || (!Number.isFinite(bound2) ? numeric >= bound1 : numeric >= bound1 && numeric <= bound2), rule);
+      default: return withRule(judge(!Number.isFinite(bound1) || (!Number.isFinite(bound2) ? numeric >= bound1 : numeric >= bound1 && numeric <= bound2), rule));
     }
   }
   if (rule.type === "textLength") {
@@ -1411,16 +1433,16 @@ export function validateDataInput(
     const bound1 = Number(rule.formula1);
     const bound2 = Number(rule.formula2);
     switch (rule.operator) {
-      case "greaterThan": return judge(length > bound1, rule);
-      case "lessThan": return judge(length < bound1, rule);
-      case "equal": return judge(length === bound1, rule);
-      default: return judge(!(Number.isFinite(bound1) && length < bound1) && !(Number.isFinite(bound2) && length > bound2), rule);
+      case "greaterThan": return withRule(judge(length > bound1, rule));
+      case "lessThan": return withRule(judge(length < bound1, rule));
+      case "equal": return withRule(judge(length === bound1, rule));
+      default: return withRule(judge(!(Number.isFinite(bound1) && length < bound1) && !(Number.isFinite(bound2) && length > bound2), rule));
     }
   }
   if (rule.type === "date" || rule.type === "time") {
     const validDate = rule.type === 'date' ? isValidDateValue(value) : isValidTimeValue(value);
     if (!validDate) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入有效日期/时间") };
+      return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入有效日期/时间") });
     }
     if (rule.formula1 !== undefined || rule.formula2 !== undefined || rule.operator !== undefined) {
       const actual = rule.type === 'date' ? dateComparable(value) : timeComparable(value);
@@ -1435,18 +1457,18 @@ export function validateDataInput(
               : rule.operator === 'equal' ? Number.isFinite(bound1) && actual === bound1
                 : rule.operator === 'notEqual' ? Number.isFinite(bound1) && actual !== bound1
                   : true);
-      return judge(ok, rule);
+      return withRule(judge(ok, rule));
     }
   }
   if (rule.type === "checkbox") {
     const ok = value === true || value === false || String(value).toUpperCase() === "TRUE" || String(value).toUpperCase() === "FALSE";
-    return { valid: ok, blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop', message: ok ? undefined : validationMessage(rule, "需要 TRUE/FALSE") };
+    return withRule({ valid: ok, blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop', message: ok ? undefined : validationMessage(rule, "需要 TRUE/FALSE") });
   }
   if (rule.type === "custom") {
-    if (!rule.formula1) return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") };
+    if (!rule.formula1) return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") });
     const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     const ok = evaluated === true || (typeof evaluated === 'number' && evaluated !== 0) || (typeof evaluated === 'string' && evaluated.length > 0);
-    return judge(ok, rule);
+    return withRule(judge(ok, rule));
   }
   return { valid: true, blocking: false };
 }

@@ -12,7 +12,7 @@ import type {
 } from '@react-sheets/core-model';
 import { protectionResolver } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
-import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
+import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
@@ -131,6 +131,7 @@ export interface RangeMoveParams {
   sheetId: string;
   sourceRange: RangeRef;
   targetOrigin: { row: number; column: number };
+  inputContext: CellInputInterpretationContext;
 }
 
 interface FormatPainterCell {
@@ -205,6 +206,36 @@ function rangeEquals(left: RangeRef, right: RangeRef): boolean {
 
 function cellRange(sheetId: string, row: number, column: number): RangeRef {
   return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function scriptEntryIntent(sheetId: string, row: number, column: number, candidate: CellData) {
+  return {
+    kind: 'script' as const,
+    target: { sheetId, row, column },
+    candidate: structuredClone(candidate),
+    validationDecision: { status: 'not-applicable' as const },
+  };
+}
+
+function rangeEntryIntent(
+  kind: 'script' | 'formula-result',
+  sheetId: string,
+  startRow: number,
+  startColumn: number,
+  values: CellData[][],
+) {
+  return {
+    kind,
+    target: {
+      sheetId,
+      startRow,
+      endRow: startRow + Math.max(0, values.length - 1),
+      startColumn,
+      endColumn: startColumn + Math.max(0, Math.max(1, ...values.map((row) => row.length)) - 1),
+    },
+    candidate: structuredClone(values),
+    validationDecision: { status: 'not-applicable' as const },
+  };
 }
 
 function rangeAffected(range: RangeRef): RangeRef[] {
@@ -380,7 +411,8 @@ function isValidFormatPainterParams(value: unknown): value is FormatPainterParam
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column);
+    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
+    && isCellInputInterpretationContext(value.inputContext);
 }
 
 function isCellSnapshot(value: unknown): value is { row: number; column: number; cell: CellData } {
@@ -913,6 +945,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
+        inputContext: params.inputContext,
+        entryIntent: {
+          kind: 'paste',
+          target: targetRange,
+          validationDecision: { status: 'not-applicable' },
+        },
         transfer: 'move',
         spec: createPasteSpecialSpec(),
       });
@@ -931,7 +969,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
       runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
-      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
+      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor, entryIntent: scriptEntryIntent(params.sheetId, range.startRow, range.startColumn, anchor) });
     }
     if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
     return result;
@@ -1035,6 +1073,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         startRow: minRow,
         startColumn: minColumn,
         values,
+        entryIntent: rangeEntryIntent('formula-result', params.sheetId, minRow, minColumn, values),
       });
       return result;
     },
@@ -1139,7 +1178,24 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       // Every nested range.set is part of this root command transaction, so
       // Replace All is one Undo even when matches span multiple sheets.
       for (const patch of patches) {
-        runtime.execute('sheet.cell.set', { sheetId: patch.sheetId, row: patch.row, column: patch.column, value: patch.next });
+        const targetSheet = context.workbook.getSheet(patch.sheetId);
+        const validation = patch.next.formula
+          ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
+          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
+        if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
+        if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
+        runtime.execute('sheet.cell.set', {
+          sheetId: patch.sheetId,
+          row: patch.row,
+          column: patch.column,
+          value: patch.next,
+          entryIntent: {
+            kind: 'direct-entry',
+            target: { sheetId: patch.sheetId, row: patch.row, column: patch.column },
+            candidate: structuredClone(patch.next),
+            validationDecision: { status: 'accepted', ...(validation.ruleId ? { ruleId: validation.ruleId } : {}), ...(validation.alertStyle ? { alertStyle: validation.alertStyle } : {}) },
+          },
+        });
       }
       const affectedRanges = patches.map((patch) => cellRange(patch.sheetId, patch.row, patch.column));
       return homeResult(context, affectedRanges, patches.length);

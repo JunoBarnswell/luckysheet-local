@@ -3851,6 +3851,17 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         inputContext,
+        entryIntent: {
+          kind: 'paste',
+          target: {
+            sheetId: this.activeSheetId,
+            startRow: sel.activeCell.row,
+            endRow: sel.activeCell.row + Math.max(0, (internal.values.length ?? 1) - 1),
+            startColumn: sel.activeCell.column,
+            endColumn: sel.activeCell.column + Math.max(0, Math.max(1, ...(internal.values.map((row) => row.length))) - 1),
+          },
+          validationDecision: { status: 'not-applicable' },
+        },
         transfer: internal.transfer,
         spec,
       } });
@@ -3890,9 +3901,20 @@ export class WorkbookSession {
     const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
-        clipboard,
-        inputContext,
-        transfer: 'copy',
+      clipboard,
+      inputContext,
+      entryIntent: {
+        kind: 'paste',
+        target: {
+          sheetId: this.activeSheetId,
+          startRow: sel.activeCell.row,
+          endRow: sel.activeCell.row + Math.max(0, clipboard.values.length - 1),
+          startColumn: sel.activeCell.column,
+          endColumn: sel.activeCell.column + Math.max(0, Math.max(1, ...clipboard.values.map((row) => row.length)) - 1),
+        },
+        validationDecision: { status: 'not-applicable' },
+      },
+      transfer: 'copy',
         spec,
       } });
     if (outcome.status !== 'committed') return outcome;
