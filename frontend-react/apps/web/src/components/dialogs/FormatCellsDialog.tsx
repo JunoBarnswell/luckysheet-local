@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { CellBorders, CellStyle } from '@react-sheets/core-model';
+import type { BorderLine, BorderPlacement, CellStyle } from '@react-sheets/core-model';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import { Box, Button, CheckToggle, ColorPicker, Dialog, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
@@ -11,6 +11,7 @@ export interface FormatCellsDraft {
   style: Partial<CellStyle>;
   /** UI-only mixed-state marker; it is not submitted to the workbook model. */
   mixedFontFamily?: boolean;
+  border?: { placement: BorderPlacement; line?: BorderLine };
 }
 
 export interface FormatCellsDialogProps {
@@ -44,14 +45,18 @@ const NUMBER_PRESETS: Array<{ labelKey: HomeUiTextKey; value: string }> = [
   { labelKey: 'numberPresetText', value: '@' },
 ];
 
-function borderSide(style: CellBorders['top']): CellBorders {
-  return {
-    top: style,
-    right: style,
-    bottom: style,
-    left: style,
-  };
-}
+const BORDER_ACTIONS: Array<{ placement: BorderPlacement; labelKey: HomeUiTextKey; line?: BorderLine }> = [
+  { placement: 'all', labelKey: 'allBorders', line: { style: 'thin', color: '#334155' } },
+  { placement: 'outside', labelKey: 'borderOutside', line: { style: 'thin', color: '#334155' } },
+  { placement: 'thick-outside', labelKey: 'borderThickOutside', line: { style: 'thick', color: '#334155' } },
+  { placement: 'top', labelKey: 'borderTop', line: { style: 'thin', color: '#334155' } },
+  { placement: 'bottom', labelKey: 'borderBottom', line: { style: 'thin', color: '#334155' } },
+  { placement: 'left', labelKey: 'borderLeft', line: { style: 'thin', color: '#334155' } },
+  { placement: 'right', labelKey: 'borderRight', line: { style: 'thin', color: '#334155' } },
+  { placement: 'inside-horizontal', labelKey: 'borderInsideHorizontal', line: { style: 'thin', color: '#334155' } },
+  { placement: 'inside-vertical', labelKey: 'borderInsideVertical', line: { style: 'thin', color: '#334155' } },
+  { placement: 'none', labelKey: 'noBorder' },
+];
 
 export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: FormatCellsDialogProps): React.ReactElement | null {
   const [tab, setTab] = useState<FormatTab>('number');
@@ -90,7 +95,9 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
             variant="primary"
             data-testid="format-cells-apply"
             onClick={() => {
-              onApply(draft);
+              const style = { ...draft.style };
+              delete style.borders;
+              onApply({ ...draft, style });
               onClose();
             }}
           >
@@ -224,23 +231,30 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
               {tab === 'border' ? (
                 <Stack gap="md">
                   <Inline gap="sm" className="flex-wrap">
-                    <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: borderSide({ style: 'thin', color: '#334155' }) })}>
-                      {homeText(activeLocale, 'allBorders')}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: borderSide({ style: 'medium', color: '#0f172a' }) })}>
-                      {homeText(activeLocale, 'outlineBorders')}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: undefined })}>
-                      {homeText(activeLocale, 'noBorder')}
-                    </Button>
+                    {BORDER_ACTIONS.map((action) => (
+                      <Button
+                        key={action.placement}
+                        size="sm"
+                        variant="ghost"
+                        data-testid={`format-border-${action.placement}`}
+                        onClick={() => setDraft((prev) => ({ ...prev, border: action.line ? { placement: action.placement, line: { ...action.line, color: prev.border?.line?.color ?? action.line.color } } : { placement: action.placement } }))}
+                      >
+                        {homeText(activeLocale, action.labelKey)}
+                      </Button>
+                    ))}
                   </Inline>
                   <Stack gap="xs">
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'borderColor')}</Text>
                     <ColorPicker
-                      color={style.borders?.top?.color ?? '#334155'}
+                      color={draft.border?.line?.color ?? style.borders?.top?.color ?? '#334155'}
                       onChange={(color) => {
-                        const side = { style: 'thin' as const, color };
-                        setStyle({ borders: borderSide(side) });
+                        setDraft((prev) => ({
+                          ...prev,
+                          border: {
+                            placement: prev.border?.placement ?? 'all',
+                            line: { style: prev.border?.line?.style ?? 'thin', color },
+                          },
+                        }));
                       }}
                     />
                   </Stack>

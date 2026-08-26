@@ -10,6 +10,8 @@ import type {
   RangeRef,
   WorkbookModel,
   WorksheetModel,
+  BorderLine,
+  BorderPlacement,
 } from '@react-sheets/core-model';
 import { columnLabel, noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
@@ -65,6 +67,7 @@ export interface FormatCellsParams {
   ranges: RangeRef[];
   numberFormat?: string;
   style?: Partial<CellStyle>;
+  border?: { placement: BorderPlacement; line?: BorderLine };
 }
 
 export interface GoToParams {
@@ -937,11 +940,27 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const style: Partial<CellStyle> = { ...params.style };
       if (params.numberFormat !== undefined) style.numberFormat = params.numberFormat;
-      return runtime.execute('sheet.style.setMulti', {
-        sheetId: params.sheetId,
-        ranges: params.ranges,
-        style,
-      });
+      const results = [];
+      if (Object.keys(style).length > 0) {
+        results.push(runtime.execute('sheet.style.setMulti', {
+          sheetId: params.sheetId,
+          ranges: params.ranges,
+          style,
+        }));
+      }
+      if (params.border) {
+        results.push(runtime.execute('sheet.borders.set', {
+          sheetId: params.sheetId,
+          ranges: params.ranges,
+          placement: params.border.placement,
+          line: params.border.line,
+        }));
+      }
+      return {
+        operationId: context.operationId,
+        mutationCount: results.reduce((count, result) => count + result.mutationCount, 0),
+        affectedRanges: params.ranges,
+      };
     },
   });
 

@@ -109,6 +109,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.range.clear': 'edit-cell',
   'sheet.range.paste': 'edit-cell',
   'sheet.style.set': 'format',
+  'sheet.borders.set': 'format',
   'sheet.style.setMulti': 'format',
   'sheet.style.setMultiRange': 'format',
   'sheet.format.set': 'format',

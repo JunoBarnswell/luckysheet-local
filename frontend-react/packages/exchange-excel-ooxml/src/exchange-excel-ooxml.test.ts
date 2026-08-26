@@ -135,6 +135,27 @@ describe('exchange-excel-ooxml', () => {
     assert.match(stylesXml, /name val="Segoe UI"/);
   });
 
+  it('round-trips side-aware border topology without changing non-border style', async () => {
+    const workbook = new WorkbookModel('wb-border-roundtrip', 'Borders');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const line = { style: 'thin' as const, color: '#334155' };
+    sheet.cells.set(0, 0, { value: 'keep', style: { bold: true, borders: { top: line, left: line } } });
+    sheet.cells.set(0, 1, { value: 2, style: { borders: { top: line, right: line } } });
+    sheet.cells.set(1, 0, { value: 3, style: { borders: { bottom: line, left: line } } });
+    sheet.cells.set(1, 1, { value: 4, style: { borders: { bottom: line, right: line } } });
+    const imported = await importXlsx({
+      fileName: 'borders.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'B' },
+    });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    const topLeft = importedSheet.cells['0']?.['0'];
+    const bottomRight = importedSheet.cells['1']?.['1'];
+    assert.deepEqual(topLeft?.style?.borders, { top: line, left: line });
+    assert.equal(topLeft?.style?.bold, true);
+    assert.deepEqual(bottomRight?.style?.borders, { bottom: line, right: line });
+  });
+
   it('round-trips native sheet protection allow flags and cell protection styles', async () => {
     const workbook = new WorkbookModel('wb-protection-roundtrip', 'Protection');
     const sheet = workbook.getSheet(workbook.primarySheetId);

@@ -1184,6 +1184,7 @@ export class WorkbookSession {
       || commandId === 'sheet.cells.insert'
       || commandId === 'sheet.cells.delete'
       || commandId === 'sheet.style.set'
+      || commandId === 'sheet.borders.set'
       || commandId === 'sheet.style.setMulti'
       || commandId === 'sheet.style.setMultiRange'
       || commandId === 'sheet.style.preset.apply'
@@ -1232,6 +1233,7 @@ export class WorkbookSession {
   private resolveCommandContext(commandId: string, params?: unknown): unknown {
     const selectionScoped = new Set([
       'sheet.style.set',
+      'sheet.borders.set',
       'sheet.merge.set',
       'sheet.merge.remove',
       'sheet.merge.center',
@@ -1250,6 +1252,11 @@ export class WorkbookSession {
     const input = (params ?? {}) as Record<string, unknown>;
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const sheetId = typeof input.sheetId === 'string' && input.sheetId.trim() ? input.sheetId : this.activeSheetId;
+    if (commandId === 'sheet.borders.set') {
+      return input.ranges !== undefined
+        ? { ...input, sheetId }
+        : { ...input, sheetId, range: input.range ?? range };
+    }
     if (commandId === 'sheet.style.set' || commandId === 'sheet.merge.set' || commandId === 'sheet.merge.remove'
       || commandId === 'sheet.merge.center' || commandId === 'sheet.merge.cells' || commandId === 'sheet.merge.across' || commandId === 'sheet.merge.unmerge') {
       return { ...input, sheetId, range: input.range ?? range };
@@ -2135,7 +2142,11 @@ export class WorkbookSession {
     this.selectRange({ startRow: row, startColumn: column, endRow: row, endColumn: column }, 'extend');
   }
 
-  formatCells(params: { numberFormat?: string; style?: Partial<import('@react-sheets/core-model').CellStyle> }): void {
+  formatCells(params: {
+    numberFormat?: string;
+    style?: Partial<import('@react-sheets/core-model').CellStyle>;
+    border?: { placement: import('@react-sheets/core-model').BorderPlacement; line?: import('@react-sheets/core-model').BorderLine };
+  }): void {
     const ranges = this.selectionService.getState().ranges;
     if (ranges.length === 0) return;
     this.dispatch({ commandId: 'sheet.format.set', params: {
@@ -2143,6 +2154,7 @@ export class WorkbookSession {
       ranges,
       numberFormat: params.numberFormat,
       style: params.style,
+      border: params.border,
     } });
   }
 
