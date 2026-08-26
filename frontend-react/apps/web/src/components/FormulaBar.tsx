@@ -11,6 +11,11 @@ export interface FormulaBarProps {
   onBeginEdit: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
+  composing?: boolean;
+  onCaretChange?: (start: number, end: number) => void;
+  onCompositionStart?: () => void;
+  onCompositionUpdate?: (text: string) => void;
+  onCompositionEnd?: () => void;
   onNameBoxCommit?: (value: string) => void;
   onOpenNameManager?: () => void;
   onOpenWizard?: () => void;

@@ -95,6 +95,12 @@ export interface SheetCanvasProps {
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
   onFormulaDraftChange: (value: string) => void;
+  editComposing?: boolean;
+  editCaret?: { start: number; end: number };
+  onEditCaretChange?: (start: number, end: number) => void;
+  onEditCompositionStart?: () => void;
+  onEditCompositionUpdate?: (text: string) => void;
+  onEditCompositionEnd?: () => void;
   onAppendFormulaDraft?: (fragment: string) => void;
   onInsertRef: (refText: string) => void;
   onToggleAbsolute: () => void;
@@ -428,6 +434,12 @@ export function SheetCanvas({
   onCancelEdit,
   onCommitEdit,
   onFormulaDraftChange,
+  editComposing = false,
+  editCaret,
+  onEditCaretChange,
+  onEditCompositionStart,
+  onEditCompositionUpdate,
+  onEditCompositionEnd,
   onAppendFormulaDraft,
   onInsertRef,
   onToggleAbsolute,
@@ -647,6 +659,7 @@ export function SheetCanvas({
     floatables,
     formatPainterActive,
     formulaDraft,
+    editComposing,
     getValidationList,
     isPivotValueCell,
     onAppendFormulaDraft,
@@ -1085,6 +1098,12 @@ export function SheetCanvas({
                 onChange={onFormulaDraftChange}
                 onCommit={onCommitEdit}
                 onInsertRef={onInsertRef}
+                composing={editComposing}
+                caret={editCaret}
+                onCaretChange={onEditCaretChange}
+                onCompositionStart={onEditCompositionStart}
+                onCompositionUpdate={onEditCompositionUpdate}
+                onCompositionEnd={onEditCompositionEnd}
               />
             </Box>
           ) : null}

@@ -48,7 +48,11 @@ export function EditorDialogHost({
       <FunctionWizardDialog
         open={state.dialogs.active === 'function-wizard'}
         onClose={session.closeFunctionWizard.bind(session)}
-        onInsertFormula={(formula) => { session.setFormulaDraft(formula); session.commitFormula(formula); }}
+        onInsertFormula={(formula) => {
+          if (!state.editSession) session.beginEdit(undefined, 'functionInsert');
+          session.setFormulaDraft(formula);
+          session.commitEdit('none');
+        }}
       />
       <SortDialog
         open={state.dialogs.active === 'sort-dialog'}

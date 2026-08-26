@@ -109,6 +109,7 @@ export interface CanvasInteractionOptions {
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
   onFormulaDraftChange: (value: string) => void;
+  editComposing?: boolean;
   onAppendFormulaDraft?: (fragment: string) => void;
   onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
@@ -256,6 +257,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onBeginTextBoxEdit,
     onToggleCheckbox,
     onFormulaDraftChange,
+    editComposing,
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
@@ -900,6 +902,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const key = event.key;
     const ctrl = event.ctrlKey || event.metaKey;
     const isEditing = Boolean(editingCell) || editingActiveRef.current;
+    if (event.nativeEvent.isComposing || editComposing) {
+      event.stopPropagation();
+      return;
+    }
     const activePivotContextHit = onPivotResolve(sheet, selection.activeCell.row, selection.activeCell.column);
     const editingPivotContextHit = editingCell ? onPivotResolve(sheet, editingCell.row, editingCell.column) : null;
     if (editingPivotContextHit) {
@@ -996,7 +1002,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       else if (editingCell || editingActiveRef.current) onAppendFormulaDraft?.(key);
       else { editingActiveRef.current = true; onBeginEdit(key); }
     }
-  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editComposing, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

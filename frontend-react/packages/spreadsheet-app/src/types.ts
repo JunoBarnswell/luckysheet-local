@@ -77,8 +77,11 @@ export interface EditSession {
   originalValue: unknown;
   originalFormula?: string;
   draftText: string;
+  caret: { start: number; end: number };
+  composition: { active: boolean; text: string };
+  referenceMode: boolean;
   mode: 'value' | 'formula';
-  source: 'cell' | 'formulaBar';
+  source: 'cell' | 'formulaBar' | 'functionInsert';
 }
 
 export interface PanelState {

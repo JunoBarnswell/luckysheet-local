@@ -464,7 +464,6 @@ export class WorkbookSession {
   private barcodeDraftSymbology: BarcodeSymbology = 'qr';
   private backstage: BackstageState = { open: false, panel: 'info' };
   private ribbonTab: RibbonTabId = 'home';
-  private formulaDraft = '';
   private zoom = 100;
   /** DrawingRuntime is the sole owner of transient object selection. */
   private get selectedDrawingIds(): readonly string[] {
@@ -512,6 +511,17 @@ export class WorkbookSession {
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
   private pivotOpenRefreshStarted = false;
+
+  private get formulaDraft(): string {
+    const active = this.editSession.active;
+    if (active) return active.currentDraft;
+    const selection = this.selectionService?.getState();
+    if (!selection) return '';
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
+    if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
+    return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+  }
 
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
@@ -574,7 +584,6 @@ export class WorkbookSession {
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
     this.editSession.cancel();
-    this.formulaDraft = '';
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
   }
@@ -1008,8 +1017,11 @@ export class WorkbookSession {
         originalValue: activeFormulaHidden ? null : visibleActiveEdit.originalValue?.value ?? null,
         ...(visibleActiveEdit.originalFormula !== undefined ? { originalFormula: visibleActiveEdit.originalFormula } : {}),
         draftText: visibleActiveEdit.currentDraft,
+        caret: structuredClone(visibleActiveEdit.caret),
+        composition: structuredClone(visibleActiveEdit.composition),
+        referenceMode: visibleActiveEdit.referenceMode,
         mode: visibleActiveEdit.originalFormula || visibleActiveEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
-        source: this.focus.target === 'formula-bar' ? 'formulaBar' : 'cell',
+        source: visibleActiveEdit.source === 'formulaBar' ? 'formulaBar' : visibleActiveEdit.source === 'functionInsert' ? 'functionInsert' : 'cell',
       } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
       ribbon: { activeTab: this.ribbonTab },
@@ -1503,11 +1515,15 @@ export class WorkbookSession {
   selectAddress(address: string): boolean {
     const trimmed = address.trim();
     if (!trimmed) return false;
-    if (this.editSession.editingCell) {
+    if (this.editSession.active?.referenceMode) {
       return this.selectionService.selectCell(trimmed, {
         editing: true,
-        insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
+        insertRef: (ref) => this.insertRefIntoDraft(ref),
       });
+    }
+    if (this.editSession.editingCell) {
+      this.commitEdit('none');
+      if (this.editSession.editingCell) return false;
     }
     const range = parseRangeReference(trimmed);
     if (range) {
@@ -2095,26 +2111,54 @@ export class WorkbookSession {
   };
 
   syncDraftFromPrimary(): void {
-    const sel = this.selectionService.getState();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const cell = this.readResolvedCell(sheet, sel.activeCell.row, sel.activeCell.column);
-    const hidden = protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, sel.activeCell.row, sel.activeCell.column, cell?.style);
-    this.formulaDraft = hidden ? '' : cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+    if (this.editSession.active) {
+      this.emit();
+      return;
+    }
     this.emit();
   }
 
   setFormulaDraft(value: string): void {
-    this.formulaDraft = value;
     if (this.editSession.active) this.editSession.setDraft(value);
+    this.emit();
+  }
+
+  setEditCaret(start: number, end: number = start): void {
+    this.editSession.setCaret({ start, end });
+    this.emit();
+  }
+
+  beginEditComposition(): void {
+    this.editSession.compositionStart();
+    this.emit();
+  }
+
+  updateEditComposition(text: string): void {
+    this.editSession.compositionUpdate(text);
+    this.emit();
+  }
+
+  endEditComposition(): void {
+    this.editSession.compositionEnd();
     this.emit();
   }
 
   appendFormulaDraft(fragment: string): void {
     if (!fragment) return;
-    this.setFormulaDraft(this.formulaDraft + fragment);
+    if (this.editSession.active) this.editSession.setDraft(this.formulaDraft + fragment);
+    this.emit();
   }
 
   selectCell(address: string): void {
+    if (this.editSession.active?.referenceMode) {
+      this.selectionService.selectCell(address, { editing: true, insertRef: (ref) => this.insertRefIntoDraft(ref) });
+      this.emit();
+      return;
+    }
+    if (this.editSession.editingCell) {
+      this.commitEdit('none');
+      if (this.editSession.editingCell) return;
+    }
     const parsed = parseRangeReference(address);
     const target = parsed && parsed.startRow === parsed.endRow && parsed.startColumn === parsed.endColumn ? parsed : undefined;
     if (target) {
@@ -2126,8 +2170,8 @@ export class WorkbookSession {
       }
     }
     const changed = this.selectionService.selectCell(address, {
-      editing: Boolean(this.editSession.editingCell),
-      insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
+      editing: Boolean(this.editSession.active?.referenceMode),
+      insertRef: (ref) => this.insertRefIntoDraft(ref),
     });
     if (changed) this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
@@ -2143,6 +2187,20 @@ export class WorkbookSession {
 
   /** Commit a canvas selection exactly, including its active cell and anchor. */
   applyCanvasSelection(selection: SelectionState): void {
+    if (this.editSession.active) {
+      const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+      const draft = this.editSession.active.currentDraft;
+      if (targetRange && (this.editSession.active.referenceMode || draft.startsWith('='))) {
+        this.editSession.enterReferenceMode();
+        const reference = targetRange.startRow === targetRange.endRow && targetRange.startColumn === targetRange.endColumn
+          ? cellAddress(targetRange.startRow, targetRange.startColumn)
+          : `${cellAddress(targetRange.startRow, targetRange.startColumn)}:${cellAddress(targetRange.endRow, targetRange.endColumn)}`;
+        this.insertRefIntoDraft(reference);
+        return;
+      }
+      this.commitEdit('none');
+      if (this.editSession.active) return;
+    }
     this.selectionService.applyState(selection);
     if (this.formatPainter) {
       const painter = this.formatPainter;
@@ -2439,7 +2497,7 @@ export class WorkbookSession {
     });
   }
 
-  beginEdit(initialText?: string): boolean {
+  beginEdit(initialText?: string, source: import('./edit-session').EditSource = initialText === undefined ? 'f2' : 'directTyping'): boolean {
     const sel = this.selectionService.getState();
     const canonicalTarget = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
     const canonicalSheet = this.runtime.model.getSheet(canonicalTarget.sheetId);
@@ -2467,15 +2525,18 @@ export class WorkbookSession {
       cell,
       selection: this.selectionService.getSnapshot(),
       initialText,
+      source,
+      baseRevision: this.runtime.remoteRevision,
     });
     this.setFocusState('cell-edit', 'grid');
-    this.formulaDraft = this.editSession.active?.currentDraft ?? '';
     this.emit();
     return true;
   }
 
   cancelEdit(): void {
-    this.formulaDraft = this.editSession.cancel();
+    const originalSelection = this.editSession.active?.originalSelection;
+    this.editSession.cancel();
+    if (originalSelection) this.selectionService.applyState(originalSelection);
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -2510,14 +2571,16 @@ export class WorkbookSession {
   commitEdit(moveAfter: 'down' | 'up' | 'left' | 'right' | 'none' = 'down'): void {
     if (!this.editSession.editingCell) return;
     const editing = this.editSession.editingCell;
+    const draft = this.editSession.active?.currentDraft ?? '';
     this.overrideTarget = editing;
-    const committed = this.commitFormula(this.formulaDraft);
+    const committed = this.commitFormula(draft);
     this.overrideTarget = null;
-    this.editSession.apply();
     if (!committed) {
-      this.beginEdit(this.formulaDraft);
+      this.setFocusState('cell-edit', 'grid');
+      this.emit();
       return;
     }
+    this.editSession.apply();
     const deltas = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] } as const;
     const [dr, dc] = deltas[moveAfter];
     this.movePrimary(dr, dc);
@@ -2528,13 +2591,12 @@ export class WorkbookSession {
 
   insertRefIntoDraft(refText: string): void {
     if (this.editSession.active) this.editSession.insertRef(refText);
-    else this.setFormulaDraft(this.formulaDraft + refText);
+    this.emit();
   }
 
   toggleAbsoluteReference(): void {
     if (this.editSession.active) {
       this.editSession.toggleAbsoluteReference();
-      this.formulaDraft = this.editSession.active.currentDraft;
       this.emit();
       return;
     }
@@ -2546,7 +2608,6 @@ export class WorkbookSession {
     this.activeSheetId = sheetId;
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
-    this.formulaDraft = '';
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
     if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
@@ -3697,7 +3758,7 @@ export class WorkbookSession {
 
   private focusFindMatch(match: FindMatch): void {
     if (match.sheetId !== this.activeSheetId) this.selectSheet(match.sheetId);
-    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.editingCell), insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref) });
+    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.active?.referenceMode), insertRef: (ref) => this.insertRefIntoDraft(ref) });
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
     this.emit();
