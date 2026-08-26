@@ -555,6 +555,50 @@ export interface RibbonSurfaceDefinition {
   readonly ariaLabel?: string;
 }
 
+/** Stable visual identity for the Designer ribbon. The key belongs to the
+ * surface, while the semantic command remains the only execution owner. */
+export type DesignerIconKey =
+  | 'page-setup'
+  | 'print-area'
+  | 'print-titles'
+  | 'scale-to-fit'
+  | 'gridlines'
+  | 'headings'
+  | 'calculate-now'
+  | 'goal-seek'
+  | 'calculation-mode'
+  | 'formula-audit'
+  | 'show-formulas'
+  | 'error-checking'
+  | 'defined-names'
+  | 'sort'
+  | 'filter'
+  | 'data-tools'
+  | 'outline'
+  | 'find-transform';
+
+export type RibbonLayoutNode =
+  | { readonly kind: 'column' | 'row' | 'stack'; readonly id: string; readonly children: readonly RibbonLayoutNode[] }
+  | { readonly kind: 'command'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey; readonly size: 'large' | 'small' }
+  | { readonly kind: 'split'; readonly id: string; readonly primary: RibbonCommandId; readonly primaryIcon: DesignerIconKey; readonly items: readonly { readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }[] }
+  | { readonly kind: 'dropdown'; readonly id: string; readonly trigger: RibbonCommandId; readonly triggerIcon: DesignerIconKey; readonly items: readonly { readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }[] }
+  | { readonly kind: 'checkbox'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
+  | { readonly kind: 'spinner'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
+  | { readonly kind: 'combo'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
+  | { readonly kind: 'launcher'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
+  | { readonly kind: 'separator'; readonly id: string };
+
+export interface RibbonLayoutGroupSpec {
+  readonly id: RibbonGroupId;
+  readonly children: readonly RibbonLayoutNode[];
+  readonly collapsePriority: number;
+}
+
+export interface RibbonLayoutSpec {
+  readonly tab: Extract<RibbonCatalogTabId, 'pageLayout' | 'formulas' | 'data'>;
+  readonly groups: readonly RibbonLayoutGroupSpec[];
+}
+
 /** Stateful controls use this same catalog but emit canonical commands. */
 export type RibbonControlId =
   | 'format-painter'
@@ -936,6 +980,64 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('shapeFormat', 'shapeFormat', 15),
   group('sparklineDesign', 'sparklineDesign', 10),
 ] as const;
+
+/** The renderer consumes this table as the in-repository vector asset
+ * selection. Surface specs never fall back to a tab-wide generic icon. */
+export const DESIGNER_ICON_TO_RIBBON_ICON: Readonly<Record<DesignerIconKey, RibbonIconName>> = {
+  'page-setup': 'printer',
+  'print-area': 'layout',
+  'print-titles': 'rows',
+  'scale-to-fit': 'layout',
+  gridlines: 'layout',
+  headings: 'rows',
+  'calculate-now': 'calculator',
+  'goal-seek': 'sliders',
+  'calculation-mode': 'calculator',
+  'formula-audit': 'search',
+  'show-formulas': 'function',
+  'error-checking': 'check-circle',
+  'defined-names': 'type',
+  sort: 'sort',
+  filter: 'filter',
+  'data-tools': 'table',
+  outline: 'rows',
+  'find-transform': 'sliders',
+};
+
+const commandNode = (id: string, commandId: RibbonCommandId, icon: DesignerIconKey, size: 'large' | 'small' = 'small'): RibbonLayoutNode => ({ kind: 'command', id, commandId, icon, size });
+const stackNode = (id: string, ...children: RibbonLayoutNode[]): RibbonLayoutNode => ({ kind: 'stack', id, children });
+const columnNode = (id: string, ...children: RibbonLayoutNode[]): RibbonLayoutNode => ({ kind: 'column', id, children });
+const rowNode = (id: string, ...children: RibbonLayoutNode[]): RibbonLayoutNode => ({ kind: 'row', id, children });
+const splitNode = (id: string, primary: RibbonCommandId, primaryIcon: DesignerIconKey, ...items: { commandId: RibbonCommandId; icon: DesignerIconKey }[]): RibbonLayoutNode => ({ kind: 'split', id, primary, primaryIcon, items });
+const groupSpec = (id: RibbonGroupId, collapsePriority: number, ...children: RibbonLayoutNode[]): RibbonLayoutGroupSpec => ({ id, collapsePriority, children });
+
+export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
+  pageLayout: {
+    tab: 'pageLayout',
+    groups: [
+      groupSpec('pageSetup', 10, columnNode('pageSetup.primary', commandNode('pageSetup', 'pageSetup', 'page-setup', 'large'), stackNode('pageSetup.secondary', commandNode('setPrintArea', 'setPrintArea', 'print-area'), commandNode('clearPrintArea', 'clearPrintArea', 'print-area'))), columnNode('pageSetup.titles', commandNode('printTitleRows', 'printTitleRows', 'print-titles'), commandNode('printTitleColumns', 'printTitleColumns', 'print-titles'))),
+      groupSpec('scaleToFit', 30, columnNode('scaleToFit.primary', commandNode('setScale100', 'setScale100', 'scale-to-fit', 'large'))),
+      groupSpec('sheetOptions', 50, columnNode('sheetOptions.view', stackNode('sheetOptions.gridlines', commandNode('viewGridlines', 'viewGridlines', 'gridlines'), commandNode('printGridlines', 'printGridlines', 'gridlines')), stackNode('sheetOptions.headings', commandNode('viewHeadings', 'viewHeadings', 'headings'), commandNode('printHeadings', 'printHeadings', 'headings')))),
+    ],
+  },
+  formulas: {
+    tab: 'formulas',
+    groups: [
+      groupSpec('calculation', 20, columnNode('calculation.primary', commandNode('calculateNow', 'calculateNow', 'calculate-now', 'large'), splitNode('calculation.mode', 'calculationAutomatic', 'calculation-mode', { commandId: 'calculationManual', icon: 'calculation-mode' }), commandNode('goalSeek', 'goalSeek', 'goal-seek'))),
+      groupSpec('formulaAudit', 50, columnNode('formulaAudit.audit', rowNode('formulaAudit.trace', commandNode('tracePrecedents', 'tracePrecedents', 'formula-audit'), commandNode('traceDependents', 'traceDependents', 'formula-audit')), rowNode('formulaAudit.state', commandNode('removeArrows', 'removeArrows', 'formula-audit'), commandNode('showFormulas', 'showFormulas', 'show-formulas')), rowNode('formulaAudit.validation', commandNode('errorChecking', 'errorChecking', 'error-checking'), commandNode('evaluateFormula', 'evaluateFormula', 'formula-audit')))),
+      groupSpec('definedNames', 60, columnNode('definedNames.primary', commandNode('definedNames', 'definedNames', 'defined-names', 'large'))),
+    ],
+  },
+  data: {
+    tab: 'data',
+    groups: [
+      groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort'), commandNode('sortDescending', 'sortDescending', 'sort')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'sort')))),
+      groupSpec('dataTools', 20, columnNode('dataTools.primary', commandNode('dataModel', 'dataModel', 'data-tools', 'large'), stackNode('dataTools.secondary', commandNode('createDataTable', 'createDataTable', 'data-tools'), commandNode('formatAsTable', 'formatAsTable', 'data-tools'), commandNode('totalRow', 'totalRow', 'data-tools'), commandNode('dataValidation', 'dataValidation', 'data-tools'), commandNode('filterSelection', 'filterSelection', 'filter'), commandNode('clearFilter', 'clearFilter', 'filter')))),
+      groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'outline'), commandNode('ungroupRows', 'ungroupRows', 'outline'), commandNode('showLevel1', 'showLevel1', 'outline')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'outline'), commandNode('ungroupColumns', 'ungroupColumns', 'outline'), commandNode('showLevel2', 'showLevel2', 'outline')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'outline'), commandNode('removeDuplicates', 'removeDuplicates', 'outline'), commandNode('textToColumns', 'textToColumns', 'outline'), commandNode('showLevel3', 'showLevel3', 'outline')))),
+      groupSpec('findTransform', 60, columnNode('findTransform.primary', commandNode('findReplace', 'findReplace', 'find-transform', 'large'), stackNode('findTransform.secondary', commandNode('goTo', 'goTo', 'find-transform'), commandNode('transpose', 'transpose', 'find-transform'), commandNode('flipHorizontal', 'flipHorizontal', 'find-transform'), commandNode('flipVertical', 'flipVertical', 'find-transform'), commandNode('splitByDelimiter', 'splitByDelimiter', 'find-transform')))),
+    ],
+  },
+};
 
 const ribbonSurface = (
   tab: RibbonCatalogTabId,
@@ -1688,6 +1790,49 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
 
 const commandById = new Map<RibbonCommandId, CommandDefinition>(RIBBON_COMMAND_CATALOG.map((definition) => [definition.id, definition] as const));
 const groupById = new Map<RibbonGroupId, RibbonGroupDefinition>(RIBBON_GROUP_CATALOG.map((definition) => [definition.id, definition] as const));
+
+function layoutCommands(node: RibbonLayoutNode): readonly RibbonCommandId[] {
+  switch (node.kind) {
+    case 'command': return [node.commandId];
+    case 'split': return [node.primary, ...node.items.map((item) => item.commandId)];
+    case 'dropdown': return [node.trigger, ...node.items.map((item) => item.commandId)];
+    case 'checkbox':
+    case 'spinner':
+    case 'combo':
+    case 'launcher': return [node.commandId];
+    case 'column':
+    case 'row':
+    case 'stack': return node.children.flatMap(layoutCommands);
+    case 'separator': return [];
+  }
+}
+
+/** Static catalog gate for the three Designer layout trees. */
+export function validateRibbonLayoutSpecs(): readonly string[] {
+  const errors: string[] = [];
+  for (const spec of Object.values(RIBBON_LAYOUT_SPECS)) {
+    const ids = new Set<string>();
+    const groups = new Set<RibbonGroupId>();
+    for (const group of spec.groups) {
+      if (groups.has(group.id)) errors.push(`${spec.tab}: duplicate group ${group.id}`);
+      groups.add(group.id);
+      const definition = groupById.get(group.id);
+      if (!definition || definition.tab !== spec.tab) errors.push(`${spec.tab}: group ${group.id} is not owned by the tab`);
+      const visit = (node: RibbonLayoutNode): void => {
+        if (ids.has(node.id)) errors.push(`${spec.tab}: duplicate layout node ${node.id}`);
+        ids.add(node.id);
+        for (const commandId of layoutCommands(node)) {
+          const command = commandById.get(commandId);
+          if (!command) errors.push(`${spec.tab}: layout node ${node.id} references unknown command ${commandId}`);
+          else if (command.tab !== spec.tab) errors.push(`${spec.tab}: command ${commandId} belongs to ${command.tab}`);
+        }
+        if ('children' in node) node.children.forEach(visit);
+      };
+      group.children.forEach(visit);
+    }
+  }
+  return errors;
+}
 
 export function getRibbonCommandDefinition(id: RibbonCommandId): CommandDefinition {
   const definition = commandById.get(id);

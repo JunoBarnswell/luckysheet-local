@@ -33,6 +33,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
+import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
 import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
@@ -158,6 +159,7 @@ function CatalogButton({
   className,
   testId,
   mixed = false,
+  iconOverride,
 }: {
   id: RibbonCommandId;
   context: RibbonCommandContext;
@@ -168,6 +170,7 @@ function CatalogButton({
   variant?: 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
   className?: string;
   testId?: string;
+  iconOverride?: import('@react-sheets/ui-system').IconName;
   mixed?: boolean;
 }) {
   const locale = useContext(RibbonLocaleContext);
@@ -186,7 +189,7 @@ function CatalogButton({
       data-testid={testId}
       data-mixed={mixed || undefined}
       disabled={!enabled}
-      icon={definition.icon}
+      icon={iconOverride ?? definition.icon}
       iconOnly={iconOnly || compactIcon}
       onClick={() => {
         const result = buildRibbonCommand(id, context);
@@ -409,6 +412,7 @@ export function Ribbon({
       context={catalogContext}
       onExecute={executeCatalogResult}
       iconOnly={options.iconOnly}
+      iconOverride={options.iconOverride}
       textBelow={options.tile}
       className={options.className}
       testId={options.testId}
@@ -458,7 +462,11 @@ export function Ribbon({
       >
         {(layout) => (
           <RibbonLayoutContext.Provider value={layout.mode}>
-        {activeTab !== 'home' && activeTab !== 'insert' ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} /> : null}
+        {activeTab === 'pageLayout' || activeTab === 'formulas' || activeTab === 'data'
+          ? <RibbonLayoutRenderer tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
+          : activeTab !== 'home' && activeTab !== 'insert'
+            ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
+            : null}
 
         {activeTab === 'home' ? (
           <HomeRibbon

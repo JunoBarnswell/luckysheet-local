@@ -32,6 +32,7 @@ import { FontFamilyControl } from './FontFamilyControl';
 export interface HomeRibbonCommandOptions {
   className?: string;
   iconOnly?: boolean;
+  iconOverride?: import('@react-sheets/ui-system').IconName;
   testId?: string;
   tile?: boolean;
 }
