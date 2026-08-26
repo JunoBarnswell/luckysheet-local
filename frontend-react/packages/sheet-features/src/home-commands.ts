@@ -126,10 +126,8 @@ export interface SortReapplyParams {
 
 export interface FormatPainterParams {
   sheetId: string;
-  sourceRange: RangeRef;
   targetRange: RangeRef;
-  /** Host-only state; it never changes the model. */
-  continuous?: boolean;
+  pattern: FormatPainterStylePattern;
 }
 
 export interface RangeMoveParams {
@@ -139,15 +137,15 @@ export interface RangeMoveParams {
   inputContext: CellInputInterpretationContext;
 }
 
-interface FormatPainterCell {
+export interface FormatPainterCell {
   style?: CellStyle;
   numberFormat?: string;
 }
 
-interface FormatPainterMutationParams {
-  sheetId: string;
-  targetRange: RangeRef;
-  styles: FormatPainterCell[][];
+export interface FormatPainterStylePattern {
+  rowCount: number;
+  columnCount: number;
+  cells: FormatPainterCell[][];
 }
 
 export interface HomeStylePreset {
@@ -417,8 +415,20 @@ function isValidSortReapplyParams(value: unknown): value is SortReapplyParams {
 }
 
 function isValidFormatPainterParams(value: unknown): value is FormatPainterParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange) && isRange(value.targetRange)
-    && (value.continuous === undefined || typeof value.continuous === 'boolean');
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.targetRange)
+    || value.targetRange.sheetId !== value.sheetId || !isRecord(value.pattern)) return false;
+  const pattern = value.pattern;
+  const rowCount = typeof pattern.rowCount === 'number' && Number.isSafeInteger(pattern.rowCount) && pattern.rowCount > 0
+    ? pattern.rowCount : undefined;
+  const columnCount = typeof pattern.columnCount === 'number' && Number.isSafeInteger(pattern.columnCount) && pattern.columnCount > 0
+    ? pattern.columnCount : undefined;
+  if (rowCount === undefined || columnCount === undefined
+    || !Array.isArray(pattern.cells) || pattern.cells.length !== rowCount
+    || !pattern.cells.every((row) => Array.isArray(row) && row.length === columnCount
+      && row.every((entry) => isRecord(entry)
+        && (entry.style === undefined || isRecord(entry.style))
+        && (entry.numberFormat === undefined || typeof entry.numberFormat === 'string')))) return false;
+  return true;
 }
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
@@ -478,35 +488,6 @@ function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, c
   }
   for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.dataRegions.splice(Math.min(params.regionIndex, sheet.dataRegions.length), 0, structuredClone(params.region));
-}
-
-function isValidFormatPainterMutation(value: unknown): value is FormatPainterMutationParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.targetRange)
-    && Array.isArray(value.styles) && value.styles.every((row) => Array.isArray(row) && row.every((entry) => isRecord(entry)));
-}
-
-function formatPainterAffected(params: FormatPainterMutationParams): RangeRef[] {
-  return rangeAffected(params.targetRange);
-}
-
-function applyFormatPainterMutation(params: FormatPainterMutationParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const target = normalizeRange(params.targetRange, params.sheetId);
-  for (let row = target.startRow; row <= target.endRow; row += 1) {
-    for (let column = target.startColumn; column <= target.endColumn; column += 1) {
-      const rowOffset = (row - target.startRow) % Math.max(1, params.styles.length);
-      const sourceRow = params.styles[rowOffset] ?? [];
-      const source = sourceRow[(column - target.startColumn) % Math.max(1, sourceRow.length)] ?? {};
-      const current = sheet.cells.get(row, column) ?? { value: null };
-      const next = { ...current };
-      if (source.style && Object.keys(source.style).length > 0) next.style = structuredClone(source.style);
-      else delete next.style;
-      if (source.numberFormat !== undefined) next.numberFormat = source.numberFormat;
-      else delete next.numberFormat;
-      delete next.displayValue;
-      sheet.cells.set(row, column, next);
-    }
-  }
 }
 
 function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
@@ -877,60 +858,48 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation<FormatPainterMutationParams>({
-    id: 'format.painter.applied',
-    handler: (item, context) => {
-      if (!isValidFormatPainterMutation(item.params)) throw new Error('Invalid format.painter.applied mutation payload');
-      applyFormatPainterMutation(item.params, context);
-    },
-    metadata: {
-      schema: { name: 'FormatPainterApplied', validate: isValidFormatPainterMutation },
-      permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: formatPainterAffected, mode: 'exact' },
-      inverseIds: ['cell.restore'],
-    },
-  });
   runtime.registry.registerCommand<FormatPainterParams>({
     id: 'format.painter.apply',
     execute: (params, context) => {
       if (!isValidFormatPainterParams(params)) throw new Error('Invalid format painter parameters');
-      const source = normalizeRange(params.sourceRange, params.sheetId);
       const target = normalizeRange(params.targetRange, params.sheetId);
       const sheet = context.workbook.getSheet(params.sheetId);
-      assertNoDataRegionIntersection(sheet, source, 'Format painter');
       assertNoDataRegionIntersection(sheet, target, 'Format painter');
-      const styles: FormatPainterCell[][] = [];
-      for (let row = source.startRow; row <= source.endRow; row += 1) {
-        const line: FormatPainterCell[] = [];
-        for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-          const cell = sheet.cells.get(row, column);
-          line.push({
-            style: cell?.style ? structuredClone(cell.style) : undefined,
-            numberFormat: cell?.numberFormat ?? cell?.style?.numberFormat,
+      const affectedRanges = rangeAffected(target);
+      for (let row = target.startRow; row <= target.endRow; row += 1) {
+        for (let column = target.startColumn; column <= target.endColumn; column += 1) {
+          const patternCell = params.pattern.cells[
+            (row - target.startRow) % params.pattern.rowCount
+          ]![(column - target.startColumn) % params.pattern.columnCount]!;
+          const range = cellRange(params.sheetId, row, column);
+          const previous = sheet.cells.get(row, column);
+          const styleParams = {
+            sheetId: params.sheetId,
+            range,
+            style: patternCell.style ? structuredClone(patternCell.style) : {},
+            replaceStyle: true,
+            clearNumberFormat: patternCell.numberFormat === undefined,
+            ...(patternCell.numberFormat === undefined ? {} : { numberFormat: patternCell.numberFormat }),
+          };
+          context.applyMutation({
+            id: 'style.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: styleParams,
+            affectedRanges: [range],
+            inverse: [{
+              id: 'cell.restore' as const,
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, row, column, previous: previous ? structuredClone(previous) : undefined },
+              affectedRanges: [range],
+              permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' } as const,
+            }],
+            apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: styleParams, affectedRanges: [range] }, context),
           });
         }
-        styles.push(line);
       }
-      const previous = cellsInRange(sheet, target);
-      const affectedRanges = rangeAffected(target);
-      const inverse = previous.map(({ row, column, cell }) => ({
-        id: 'cell.restore' as const,
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
-        affectedRanges: [cellRange(params.sheetId, row, column)],
-        permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
-      }));
-      context.applyMutation({
-        id: 'format.painter.applied',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, targetRange: target, styles },
-        affectedRanges,
-        inverse,
-        apply: () => applyFormatPainterMutation({ sheetId: params.sheetId, targetRange: target, styles }, context),
-      });
-      return homeResult(context, affectedRanges, 1);
+      return homeResult(context, affectedRanges, affectedRanges.length);
     },
   });
 

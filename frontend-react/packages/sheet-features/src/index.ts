@@ -260,6 +260,10 @@ export interface SetRangeStyleParams {
   sheetId: string;
   range: RangeRef;
   style: Partial<CellStyle>;
+  /** Replace the authored style instead of merging a patch. */
+  replaceStyle?: boolean;
+  /** Remove the top-level number format when the source has no format. */
+  clearNumberFormat?: boolean;
 }
 
 /** Canonical topology command shared by HOME and Format Cells. */
@@ -486,9 +490,13 @@ function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestore
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
   if (!isRecord(value) || typeof value.sheetId !== 'string') return false;
-  if (isRange(value.range)) return (value.style === undefined || isCellStylePatch(value.style)) && (value.numberFormat === undefined || typeof value.numberFormat === 'string');
+  const flagsValid = (value.replaceStyle === undefined || typeof value.replaceStyle === 'boolean')
+    && (value.clearNumberFormat === undefined || typeof value.clearNumberFormat === 'boolean');
+  if (isRange(value.range)) return flagsValid
+    && (value.style === undefined || isCellStylePatch(value.style))
+    && (value.numberFormat === undefined || typeof value.numberFormat === 'string');
   return Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange)
-    && typeof value.numberFormat === 'string' && (value.style === undefined || isCellStylePatch(value.style));
+    && flagsValid && typeof value.numberFormat === 'string' && (value.style === undefined || isCellStylePatch(value.style));
 }
 
 function isCellStylePatch(value: unknown): value is Partial<CellStyle> {
@@ -1406,8 +1414,16 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       for (let row = range.startRow; row <= range.endRow; row += 1) {
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
           const current = sheet.cells.get(row, column) ?? { value: null as CellData['value'] };
-          const next = { ...current, style: { ...(current.style ?? {}), ...style } };
+          const next = { ...current };
+          if ('replaceStyle' in params && params.replaceStyle) {
+            if (Object.keys(style).length > 0) next.style = structuredClone(style);
+            else delete next.style;
+          } else if (Object.keys(style).length > 0) {
+            next.style = { ...(current.style ?? {}), ...style };
+          }
           if (style.numberFormat !== undefined) next.numberFormat = style.numberFormat;
+          if ('clearNumberFormat' in params && params.clearNumberFormat) delete next.numberFormat;
+          if ('replaceStyle' in params && params.replaceStyle) delete next.displayValue;
           sheet.cells.set(row, column, next);
         }
       }

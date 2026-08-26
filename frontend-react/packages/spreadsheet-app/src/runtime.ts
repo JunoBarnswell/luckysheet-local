@@ -262,7 +262,6 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'fill.restored',
   'range.clear',
   'range.paste',
-  'format.painter.applied',
   'style.preset.set',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',

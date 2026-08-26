@@ -91,6 +91,7 @@ import {
   type FillMode,
   createCellInputInterpretationContext,
   type CellInputSourceKind,
+  type FormatPainterStylePattern,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
@@ -508,7 +509,13 @@ export class WorkbookSession {
   private pendingMerge: { range: RangeRef; operation: MergeOperation } | null = null;
   private inputMode: InputMode = 'grid';
   private focus: FocusState = { mode: 'grid', target: 'grid' };
-  private formatPainter: { mode: 'once' | 'locked'; sourceRange: RangeRef } | null = null;
+  private formatPainter: {
+    sessionId: string;
+    mode: 'once' | 'locked';
+    source: { sheetId: string; range: RangeRef; capturedPattern: FormatPainterStylePattern };
+    createdAtRevision: number;
+    active: true;
+  } | null = null;
   private printLayout: PrintLayout = {
     paper: 'A4',
     orientation: 'portrait',
@@ -793,6 +800,7 @@ export class WorkbookSession {
 
   dispose(): void {
     if (!this.started && this.disposed) return;
+    this.formatPainter = null;
     this.disposed = true;
     this.started = false;
     this.lifecycleGeneration += 1;
@@ -2247,13 +2255,19 @@ export class WorkbookSession {
     if (this.formatPainter) {
       const painter = this.formatPainter;
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-      if (targetRange) this.dispatch({ commandId: 'format.painter.apply', params: {
-        sheetId: this.activeSheetId,
-        sourceRange: structuredClone(painter.sourceRange),
-        targetRange: structuredClone(targetRange),
-        continuous: painter.mode === 'locked',
-      } });
-      if (painter.mode === 'once') this.formatPainter = null;
+      if (targetRange) {
+        void this.dispatch({ commandId: 'format.painter.apply', params: {
+          sheetId: this.activeSheetId,
+          targetRange: { ...structuredClone(targetRange), sheetId: this.activeSheetId },
+          pattern: structuredClone(painter.source.capturedPattern),
+        } }).then((outcome) => {
+          if (outcome.status === 'committed' && painter.mode === 'once'
+            && this.formatPainter?.sessionId === painter.sessionId) {
+            this.formatPainter = null;
+            this.emit();
+          }
+        });
+      }
     }
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
@@ -2281,8 +2295,39 @@ export class WorkbookSession {
   }
 
   beginFormatPainter(locked = false): void {
+    if (this.formatPainter) {
+      this.cancelFormatPainter();
+      return;
+    }
     const sourceRange = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
-    this.formatPainter = { mode: locked ? 'locked' : 'once', sourceRange };
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const capturedPattern: FormatPainterStylePattern = {
+      rowCount: sourceRange.endRow - sourceRange.startRow + 1,
+      columnCount: sourceRange.endColumn - sourceRange.startColumn + 1,
+      cells: [],
+    };
+    for (let row = sourceRange.startRow; row <= sourceRange.endRow; row += 1) {
+      const line: FormatPainterStylePattern['cells'][number] = [];
+      for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column += 1) {
+        const cell = this.readResolvedCell(sheet, row, column);
+        const style = cell?.style ? structuredClone(cell.style) : undefined;
+        const numberFormat = cell?.numberFormat ?? cell?.style?.numberFormat;
+        line.push({
+          ...(style ? { style } : {}),
+          ...(numberFormat === undefined ? {} : { numberFormat }),
+        });
+      }
+      capturedPattern.cells.push(line);
+    }
+    this.formatPainter = {
+      sessionId: typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `format-painter-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      mode: locked ? 'locked' : 'once',
+      source: { sheetId: this.activeSheetId, range: structuredClone(sourceRange), capturedPattern },
+      createdAtRevision: this.runtime.remoteRevision,
+      active: true,
+    };
     this.notify(locked ? 'Format Painter is locked; select target ranges and press Escape to finish' : 'Select a target range to apply copied formatting');
     this.emit();
   }

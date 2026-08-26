@@ -53,7 +53,7 @@ public class MutationDescriptorRegistry {
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "style.preset.set", "format.painter.applied", "cf.reorder", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore",
+            "style.set", "style.preset.set", "cf.reorder", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore",
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
@@ -77,7 +77,6 @@ public class MutationDescriptorRegistry {
         register(new CellDescriptor("range.clear.restore"));
         register(new PresentationDescriptor("style.set"));
         register(new PresentationDescriptor("style.preset.set"));
-        register(new PresentationDescriptor("format.painter.applied"));
         register(new CellTemplateDescriptor("cellTemplate.set"));
         register(new CellTemplateDescriptor("cellTemplate.remove"));
         for (String id : FillMutationDescriptor.IDS) register(new FillMutationDescriptor(id));
@@ -706,7 +705,6 @@ public class MutationDescriptorRegistry {
             ObjectNode params = SnapshotMutationSupport.params(mutation);
             return switch (id()) {
                 case "style.set", "style.preset.set" -> SnapshotMutationSupport.styleRanges(root, mutation.sheetId(), params);
-                case "format.painter.applied" -> List.of(SnapshotMutationSupport.range(root, params.get("targetRange")));
                 case "merge.set", "merge.remove" -> List.of(ownRange(root, mutation.sheetId(), params));
                 case "row.resize" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), params));
                 case "column.resize" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), params));
@@ -723,7 +721,6 @@ public class MutationDescriptorRegistry {
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
             switch (id()) {
                 case "style.set", "style.preset.set" -> style(root, sheet, mutation.sheetId(), params);
-                case "format.painter.applied" -> formatPainter(root, sheet, mutation.sheetId(), params);
                 case "merge.set" -> setMerge(root, sheet, mutation.sheetId(), params);
                 case "merge.remove" -> removeMerge(root, sheet, mutation.sheetId(), params);
                 case "freeze.set" -> freeze(params, sheet);
@@ -744,6 +741,11 @@ public class MutationDescriptorRegistry {
             List<RangeRef> ranges = SnapshotMutationSupport.styleRanges(root, sheetId, params);
             JsonNode style = params.get("style");
             JsonNode numberFormat = params.get("numberFormat");
+            JsonNode replaceStyle = params.get("replaceStyle");
+            JsonNode clearNumberFormat = params.get("clearNumberFormat");
+            JsonNode styleNumberFormat = style != null && style.isObject() ? style.get("numberFormat") : null;
+            if (replaceStyle != null && !replaceStyle.isBoolean()) throw ServiceException.validation("style.set replaceStyle must be boolean");
+            if (clearNumberFormat != null && !clearNumberFormat.isBoolean()) throw ServiceException.validation("style.set clearNumberFormat must be boolean");
             if ((style == null || !style.isObject()) && (numberFormat == null || !numberFormat.isTextual())) throw ServiceException.validation("style.set requires style or numberFormat");
             if (style != null && style.isObject()) validateStyle((ObjectNode) style);
             for (RangeRef range : ranges) {
@@ -751,43 +753,19 @@ public class MutationDescriptorRegistry {
                     for (int column = range.startColumn(); column <= range.endColumn(); column++) {
                         ObjectNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(row, column), true);
                         if (style != null && style.isObject()) {
-                            ObjectNode merged = cell.path("style").isObject() ? ((ObjectNode) cell.get("style")).deepCopy() : cell.objectNode();
-                            merged.setAll((ObjectNode) style.deepCopy());
-                            cell.set("style", merged);
+                            if (replaceStyle != null && replaceStyle.booleanValue()) {
+                                if (style.size() == 0) cell.remove("style");
+                                else cell.set("style", style.deepCopy());
+                                cell.remove("displayValue");
+                            } else {
+                                ObjectNode merged = cell.path("style").isObject() ? ((ObjectNode) cell.get("style")).deepCopy() : cell.objectNode();
+                                merged.setAll((ObjectNode) style.deepCopy());
+                                cell.set("style", merged);
+                            }
                         }
                         if (numberFormat != null && numberFormat.isTextual()) cell.set("numberFormat", numberFormat.deepCopy());
-                    }
-                }
-            }
-        }
-
-        private void formatPainter(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
-            RangeRef target = SnapshotMutationSupport.range(root, params.get("targetRange"));
-            SnapshotMutationSupport.requireSheet(target, sheetId);
-            JsonNode styles = params.get("styles");
-            if (styles == null || !styles.isArray()) throw ServiceException.validation("format.painter.applied requires styles");
-            int height = target.endRow() - target.startRow() + 1;
-            int width = target.endColumn() - target.startColumn() + 1;
-            if (styles.size() != height) throw ServiceException.validation("format painter row count does not match target range");
-            for (int rowOffset = 0; rowOffset < height; rowOffset++) {
-                JsonNode row = styles.get(rowOffset);
-                if (!row.isArray() || row.size() != width) throw ServiceException.validation("format painter column count does not match target range");
-                for (int columnOffset = 0; columnOffset < width; columnOffset++) {
-                    JsonNode styleEntry = row.get(columnOffset);
-                    if (!styleEntry.isObject()) throw ServiceException.validation("format painter style entry must be an object");
-                    ObjectNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(target.startRow() + rowOffset, target.startColumn() + columnOffset), true);
-                    JsonNode style = styleEntry.get("style");
-                    if (style != null && !style.isNull()) {
-                        if (!style.isObject()) throw ServiceException.validation("format painter style must be an object");
-                        validateStyle((ObjectNode) style);
-                        ObjectNode merged = cell.path("style").isObject() ? ((ObjectNode) cell.get("style")).deepCopy() : cell.objectNode();
-                        merged.setAll((ObjectNode) style.deepCopy());
-                        cell.set("style", merged);
-                    }
-                    JsonNode numberFormat = styleEntry.get("numberFormat");
-                    if (numberFormat != null && !numberFormat.isNull()) {
-                        if (!numberFormat.isTextual()) throw ServiceException.validation("format painter numberFormat must be text");
-                        cell.set("numberFormat", numberFormat.deepCopy());
+                        else if (clearNumberFormat != null && clearNumberFormat.booleanValue()) cell.remove("numberFormat");
+                        else if (styleNumberFormat != null && styleNumberFormat.isTextual()) cell.set("numberFormat", styleNumberFormat.deepCopy());
                     }
                 }
             }
