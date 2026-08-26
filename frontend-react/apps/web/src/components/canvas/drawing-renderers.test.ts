@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RangeRef } from '@react-sheets/core-model';
 import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
-import { createCanvasFloatingDrawables, resolveCameraSourceGeometry } from './drawing-renderers';
-import type { DrawingObject, DrawingPayload } from '@react-sheets/core-model';
+import { connectorEndpointHitTest, createCanvasFloatingDrawables, drawCanonicalConnectorOnCanvas, resolveCameraSourceGeometry } from './drawing-renderers';
+import type { ConnectorDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
 import type { SheetSkeleton } from '@react-sheets/render-engine';
 
 function sourceSnapshot(): CanvasSheetSnapshot {
@@ -157,4 +157,94 @@ test('Pivot controls expose semantic child hit zones instead of a generic shape 
   assert.deepEqual(child?.data, { kind: 'slicer-member', memberKey: { type: 'text', value: 'Alpha' } });
   const clear = drawables[0]?.hitTest?.({ x: 170, y: 13 });
   assert.equal(clear?.action, 'pivot.slicer.clear');
+});
+
+function mockCanvasContext(): { context: CanvasRenderingContext2D; calls: string[] } {
+  const calls: string[] = [];
+  const context = {
+    save: () => calls.push('save'),
+    restore: () => calls.push('restore'),
+    beginPath: () => calls.push('beginPath'),
+    moveTo: (x: number, y: number) => calls.push(`moveTo:${x},${y}`),
+    lineTo: (x: number, y: number) => calls.push(`lineTo:${x},${y}`),
+    quadraticCurveTo: (cx: number, cy: number, x: number, y: number) => calls.push(`quadratic:${cx},${cy},${x},${y}`),
+    stroke: () => calls.push('stroke'),
+    fill: () => calls.push('fill'),
+    closePath: () => calls.push('closePath'),
+    ellipse: () => calls.push('ellipse'),
+    strokeRect: () => calls.push('strokeRect'),
+    fillText: (text: string) => calls.push(`fillText:${text}`),
+    translate: (x: number, y: number) => calls.push(`translate:${x},${y}`),
+    rotate: (angle: number) => calls.push(`rotate:${angle}`),
+    setLineDash: (dash: number[]) => calls.push(`dash:${dash.join(',')}`),
+  } as unknown as CanvasRenderingContext2D;
+  return { context, calls };
+}
+
+function connectorPayload(): ConnectorDrawingPayload {
+  return {
+    kind: 'connector',
+    connectorType: 'curved',
+    start: { drawingId: 'shape-a', connectionPoint: 'right' },
+    end: { drawingId: 'shape-b', connectionPoint: 'left' },
+    stroke: '#2563eb',
+    strokeWidth: 2,
+    startArrowhead: 'none',
+    endArrowhead: 'triangle',
+    route: { points: [{ x: 20, y: 30 }, { x: 60, y: 80 }, { x: 140, y: 30 }] },
+  };
+}
+
+test('connector renderer follows canonical content route and draws arrowheads', () => {
+  const { context, calls } = mockCanvasContext();
+  drawCanonicalConnectorOnCanvas(context, connectorPayload(), { x: 0, y: 0, width: 160, height: 100 });
+  assert.ok(calls.includes('moveTo:20,30'));
+  assert.ok(calls.some((call) => call.startsWith('quadratic:60,80')));
+  assert.ok(calls.includes('stroke'));
+  assert.ok(calls.includes('fill'));
+});
+
+test('connector endpoint hit test returns semantic bound endpoint data in PaneMap-local coordinates', () => {
+  const payload = connectorPayload();
+  const bounds = { x: 100, y: 200, width: 80, height: 100 };
+  assert.deepEqual(connectorEndpointHitTest(payload, bounds, { x: -80, y: -170 }), {
+    action: 'drawing.connector.endpoint',
+    data: { kind: 'connector-endpoint', edge: 'start', endpoint: payload.start },
+  });
+  assert.equal(connectorEndpointHitTest(payload, bounds, { x: 0, y: 0 }), null);
+});
+
+test('malformed connector payload renders an observable failure marker instead of disappearing', () => {
+  const drawing: DrawingObject = {
+    id: 'malformed-connector',
+    sheetId: 'sheet-1',
+    kind: 'connector',
+    payloadId: 'malformed-connector-payload',
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 120, height: 60, rotation: 0 },
+    zIndex: 0,
+  };
+  const malformed = {
+    kind: 'connector',
+    connectorType: 'elbow',
+    route: { points: [{ x: 0, y: 0 }] },
+  } as unknown as DrawingPayload;
+  const source = sourceSnapshot();
+  const drawables = createCanvasFloatingDrawables({
+    drawings: [drawing],
+    drawingPayloads: new Map([[drawing.payloadId, malformed]]),
+    allSheets: [source],
+    sheet: source,
+    pivotResults: {},
+    sparklines: [],
+    skeleton: {} as SheetSkeleton,
+    imageCache: new Map(),
+    requestRender: () => undefined,
+    tables: [],
+  });
+  assert.equal(drawables.length, 1);
+  const { context, calls } = mockCanvasContext();
+  drawables[0]!.draw(context, drawing.transform);
+  assert.ok(calls.includes('strokeRect'));
+  assert.ok(calls.some((call) => call.startsWith('fillText:Unsupported connector payload')));
 });
