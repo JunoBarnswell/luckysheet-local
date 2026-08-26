@@ -41,7 +41,7 @@ describe('review feature', () => {
 
     const sheet = workbook.getSheet('sheet-1');
     assert.equal(getCellNote(sheet, 0, 0)?.text, 'Check total');
-    assert.equal(sheet.commentThreads.length, 1);
+    assert.equal(sheet.review.threadCount, 1);
     assert.equal(getCellHyperlink(sheet, 1, 0)?.target.kind, 'url');
     assert.match(manifest.ribbon?.find((entry) => entry.id === 'review-hyperlink')?.commandId ?? '', /hyperlink\.set/);
     assert.equal(serializeHyperlink({ id: 'h1', target: { kind: 'name', name: 'SalesTotal' } }), '#name:SalesTotal');
@@ -62,12 +62,12 @@ describe('review feature', () => {
 
     runtime.execute('comment.add', { sheetId: 'sheet-1', row: 0, column: 0, thread });
     runtime.undo();
-    assert.equal(workbook.getSheet('sheet-1').commentThreads.length, 0);
+    assert.equal(workbook.getSheet('sheet-1').review.threadCount, 0);
 
     runtime.execute('comment.add', { sheetId: 'sheet-1', row: 0, column: 0, thread });
     runtime.execute('comment.remove', { sheetId: 'sheet-1', threadId: thread.id });
     runtime.undo();
-    assert.equal(workbook.getSheet('sheet-1').commentThreads[0]?.id, thread.id);
+    assert.equal(workbook.getSheet('sheet-1').review.getThread(thread.id)?.id, thread.id);
 
     runtime.execute('hyperlink.set', { sheetId: 'sheet-1', row: 1, column: 0, hyperlink: { id: 'h1', target: { kind: 'url', url: 'https://example.com' } } });
     runtime.undo();
@@ -99,7 +99,7 @@ describe('review feature', () => {
     runtime.execute('comment.resolve', {
       sheetId: 'sheet-1', threadId: 'thread-1', resolved: true, resolvedAt: '2026-02-03T04:05:06.000Z',
     });
-    assert.equal(workbook.getSheet('sheet-1').commentThreads[0]?.resolvedAt, '2026-02-03T04:05:06.000Z');
+    assert.equal(workbook.getSheet('sheet-1').review.getThread('thread-1')?.resolvedAt, '2026-02-03T04:05:06.000Z');
     assert.throws(() => runtime.execute('comment.resolve', {
       sheetId: 'sheet-1', threadId: 'thread-1', resolved: true,
     }), /resolvedAt/);
@@ -117,7 +117,7 @@ describe('review feature', () => {
     });
     runtime.execute('comment.remove', { sheetId: 'sheet-1', threadId: 'thread-b' });
 
-    const threads = workbook.getSheet('sheet-1').commentThreads;
+    const threads = workbook.getSheet('sheet-1').review.threadEntries();
     assert.equal(threads.length, 1);
     assert.equal(threads[0]?.id, 'thread-a');
     assert.equal(threads[0]?.resolvedAt, '2026-01-02T00:00:00.000Z');

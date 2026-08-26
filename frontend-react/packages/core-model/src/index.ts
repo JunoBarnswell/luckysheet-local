@@ -6,7 +6,6 @@ export type Column = number;
 import type {
   CellHyperlink,
   CellNote,
-  CommentThread,
   DrawingObject,
   DrawingPayload,
   DrawingGroup,
@@ -37,9 +36,12 @@ import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { planSheetIdentityTransform } from './sheet-identity-transform';
+import { ReviewStore } from './review-store';
+import type { ReviewStoreSnapshot } from './review-store';
 
 export * from './sheet-extent';
 export * from './sheet-identity-transform';
+export * from './review-store';
 
 export * from './font-family';
 export {
@@ -151,8 +153,6 @@ export interface CellData {
   formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
   formulaValue?: import('./domain').FormulaValue;
-  note?: import('./domain').CellNote;
-  comment?: CellComment;
   /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
   hyperlinkDetail?: CellHyperlink;
@@ -844,8 +844,7 @@ export class WorksheetModel {
   snapSettings: WorksheetSnapSettings = structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
   /** Canonical persisted hyperlink metadata keyed by row:column. */
   readonly hyperlinks = new Map<string, CellHyperlink>();
-  readonly notes = new Map<string, CellNote>();
-  readonly commentThreads: CommentThread[] = [];
+  readonly review: ReviewStore;
   readonly spillRanges: SpillRange[] = [];
   readonly protectionRules: ProtectionRule[] = [];
   readonly sparklineGroups: SparklineGroup[] = [];
@@ -897,8 +896,8 @@ export class WorksheetModel {
     copy.drawingGroups.push(...structuredClone(this.drawingGroups));
     copy.snapSettings = structuredClone(this.snapSettings);
     for (const [key, hyperlink] of this.hyperlinks) copy.hyperlinks.set(key, structuredClone(hyperlink));
-    for (const [key, note] of this.notes) copy.notes.set(key, structuredClone(note));
-    copy.commentThreads.push(...structuredClone(this.commentThreads));
+    copy.review.replaceNotes(this.review.noteEntries());
+    copy.review.replaceThreads(this.review.threadEntries());
     copy.spillRanges.push(...structuredClone(this.spillRanges));
     copy.protectionRules.push(...structuredClone(this.protectionRules));
     copy.sparklineGroups.push(...structuredClone(this.sparklineGroups));
@@ -921,6 +920,7 @@ export class WorksheetModel {
     columnCount = DEFAULT_SHEET_COLUMN_COUNT,
   ) {
     this.extent = new SheetExtent(rowCount, columnCount);
+    this.review = new ReviewStore(id);
   }
 
   get rowCount(): number { return this.extent.rowCount; }
@@ -954,7 +954,7 @@ export class WorksheetModel {
   }
 }
 
-export function noteCellKey(row: Row, column: Column): string {
+export function cellKey(row: Row, column: Column): string {
   return `${row}:${column}`;
 }
 
@@ -963,7 +963,7 @@ export function getDrawingPayload(sheet: WorksheetModel, payloadId: string): Dra
 }
 
 export function getCellNote(sheet: WorksheetModel, row: Row, column: Column): CellNote | undefined {
-  return sheet.notes.get(noteCellKey(row, column));
+  return sheet.review.getNoteAt(row, column);
 }
 
 export interface SheetSnapshot {
@@ -985,8 +985,7 @@ export interface SheetSnapshot {
   drawingGroups?: DrawingGroup[];
   snapSettings?: WorksheetSnapSettings;
   hyperlinks?: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
-  notes?: Array<{ row: number; column: number; note: CellNote }>;
-  commentThreads?: CommentThread[];
+  review: ReviewStoreSnapshot;
   conditionalFormats?: ConditionalFormatRule[];
   dataValidations?: DataValidationRule[];
   defaultRowHeightPx: number;
@@ -1372,7 +1371,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 7,
+      version: 8,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -1420,11 +1419,7 @@ export class WorkbookModel {
           const [row, column] = key.split(':').map(Number);
           return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
         }),
-        notes: [...sheet.notes.entries()].map(([key, note]) => {
-          const [row, column] = key.split(':').map(Number);
-          return { row: row!, column: column!, note: structuredClone(note) };
-        }),
-        commentThreads: structuredClone(sheet.commentThreads),
+        review: sheet.review.toSnapshot(),
         spillRanges: structuredClone(sheet.spillRanges),
         protectionRules: structuredClone(sheet.protectionRules),
         showGridlines: sheet.showGridlines,
@@ -1441,7 +1436,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 7) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 8) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
@@ -1476,7 +1471,7 @@ export class WorkbookModel {
         delete normalized.hyperlink;
         delete normalized.hyperlinkDetail;
         sheet.cells.set(row, column, normalized);
-        if (legacy) sheet.hyperlinks.set(noteCellKey(row, column), legacy);
+        if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
       });
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
@@ -1491,12 +1486,11 @@ export class WorkbookModel {
       if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
       sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
       if (input.hyperlinks) {
-        for (const entry of input.hyperlinks) sheet.hyperlinks.set(noteCellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
+        for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       }
-      if (input.notes) {
-        for (const entry of input.notes) sheet.notes.set(noteCellKey(entry.row, entry.column), structuredClone(entry.note));
-      }
-      if (input.commentThreads) sheet.commentThreads.push(...structuredClone(input.commentThreads));
+      const review = ReviewStore.fromSnapshot(input.id, input.review);
+      sheet.review.replaceNotes(review.noteEntries());
+      sheet.review.replaceThreads(review.threadEntries());
       if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
       if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
       sheet.defaultRowHeightPx = input.defaultRowHeightPx;

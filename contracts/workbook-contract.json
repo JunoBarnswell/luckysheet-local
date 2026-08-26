@@ -2,7 +2,7 @@
   "apiVersion": "2026-08-24",
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
-    "snapshotVersion": 7,
+    "snapshotVersion": 8,
     "maxNameLength": 255,
     "maxDrawingSourceCells": 100000
   },

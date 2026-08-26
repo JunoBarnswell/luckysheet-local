@@ -5,6 +5,7 @@ import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
+import type { ReviewStoreSnapshot } from './review-store';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 /**
@@ -15,7 +16,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, t
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 7;
+  version: 8;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -43,7 +44,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 7 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 8 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -58,15 +59,22 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.version === 7 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version === 6 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     if (containsLegacyImageDataUrl(input)) throw new Error('ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before runtime load');
+    for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 5 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+    for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 4 && Array.isArray(input.sheets)) {
@@ -116,6 +124,84 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.freeze;
   }
   return migrateStoredWorkbookSnapshot(input);
+}
+
+function emptyReviewSnapshot(): ReviewStoreSnapshot {
+  return { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} };
+}
+
+function sameReviewValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function migrateLegacyReview(sheet: Record<string, any>): void {
+  const review = emptyReviewSnapshot();
+  const putNote = (row: number, column: number, note: Record<string, any>): void => {
+    if (!Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !note || typeof note !== 'object' || Array.isArray(note) || typeof note.id !== 'string' || !note.id.trim()) {
+      throw new Error(`REVIEW_MIGRATION_CONFLICT: invalid legacy note on ${sheet.id}`);
+    }
+    const key = `${row}:${column}`;
+    const currentId = review.notesByCell[key];
+    if (currentId !== undefined) {
+      if (currentId !== note.id || !sameReviewValue(review.notesById[currentId], note)) throw new Error(`REVIEW_MIGRATION_CONFLICT: notes disagree at ${sheet.id}!${key}`);
+      return;
+    }
+    const identityOwner = Object.entries(review.notesByCell).find(([, id]) => id === note.id)?.[0];
+    if (identityOwner !== undefined && identityOwner !== key) throw new Error(`REVIEW_MIGRATION_CONFLICT: note ${note.id} belongs to ${identityOwner}`);
+    if (review.notesById[note.id] && !sameReviewValue(review.notesById[note.id], note)) throw new Error(`REVIEW_MIGRATION_CONFLICT: note identity ${note.id} has different content`);
+    review.notesByCell[key] = note.id;
+    review.notesById[note.id] = structuredClone(note);
+  };
+  const putThread = (thread: Record<string, any>): void => {
+    if (!thread || typeof thread !== 'object' || Array.isArray(thread) || typeof thread.id !== 'string' || !thread.id.trim()
+      || thread.sheetId !== sheet.id || !Number.isSafeInteger(thread.row) || thread.row < 0 || thread.row > 1_048_575
+      || !Number.isSafeInteger(thread.column) || thread.column < 0 || thread.column > 16_383) {
+      throw new Error(`REVIEW_MIGRATION_CONFLICT: invalid legacy comment ${thread?.id ?? '<unknown>'} on ${sheet.id}`);
+    }
+    const current = review.threadsById[thread.id];
+    if (current) {
+      if (!sameReviewValue(current, thread)) throw new Error(`REVIEW_MIGRATION_CONFLICT: comment identity ${thread.id} has different content`);
+      return;
+    }
+    review.threadsById[thread.id] = structuredClone(thread);
+    const key = `${thread.row}:${thread.column}`;
+    review.threadIdsByCell[key] ??= [];
+    if (!review.threadIdsByCell[key]!.includes(thread.id)) review.threadIdsByCell[key]!.push(thread.id);
+  };
+  if (sheet.notes !== undefined && !Array.isArray(sheet.notes)) throw new Error(`REVIEW_MIGRATION_CONFLICT: notes on ${sheet.id} must be an array`);
+  if (sheet.commentThreads !== undefined && !Array.isArray(sheet.commentThreads)) throw new Error(`REVIEW_MIGRATION_CONFLICT: comments on ${sheet.id} must be an array`);
+  for (const entry of Array.isArray(sheet.notes) ? sheet.notes : []) {
+    const row = Number(entry.row);
+    const column = Number(entry.column);
+    if (!Number.isSafeInteger(row) || row < 0 || !Number.isSafeInteger(column) || column < 0 || !entry.note?.id) throw new Error(`REVIEW_MIGRATION_CONFLICT: invalid legacy note on ${sheet.id}`);
+    putNote(row, column, entry.note);
+  }
+  for (const thread of Array.isArray(sheet.commentThreads) ? sheet.commentThreads : []) putThread(thread);
+  for (const [rowKey, rowValue] of Object.entries(sheet.cells ?? {})) {
+    const row = Number(rowKey);
+    if (!Number.isSafeInteger(row) || row < 0 || !rowValue || typeof rowValue !== 'object' || Array.isArray(rowValue)) {
+      throw new Error(`REVIEW_MIGRATION_CONFLICT: invalid legacy row on ${sheet.id}`);
+    }
+    for (const [columnKey, cell] of Object.entries(rowValue as Record<string, any>)) {
+      const column = Number(columnKey);
+      if (!Number.isSafeInteger(column) || column < 0 || !cell || typeof cell !== 'object' || Array.isArray(cell)) {
+        throw new Error(`REVIEW_MIGRATION_CONFLICT: invalid legacy cell on ${sheet.id}!${rowKey}:${columnKey}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(cell, 'note')) putNote(row, column, cell.note);
+      if (Object.prototype.hasOwnProperty.call(cell, 'comment')) {
+        if (cell.comment?.sheetId !== undefined && cell.comment.sheetId !== sheet.id) {
+          throw new Error(`REVIEW_MIGRATION_CONFLICT: comment ${cell.comment?.id ?? '<unknown>'} targets ${cell.comment.sheetId}, expected ${sheet.id}`);
+        }
+        putThread({ ...cell.comment, sheetId: sheet.id, row, column, replies: Array.isArray(cell.comment?.replies) ? cell.comment.replies : [] });
+      }
+      delete cell.note;
+      delete cell.comment;
+    }
+  }
+  sheet.review = review;
+  delete sheet.notes;
+  delete sheet.commentThreads;
 }
 
 function migrateLegacyFilter(sheet: Record<string, any>): void {
@@ -203,6 +289,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
     if (sheet.kind === 'gantt-sheet' && !sheet.ganttSheet) throw new Error('GanttSheet definition is required');
     if (sheet.kind === 'report-sheet' && !sheet.reportSheet) throw new Error('ReportSheet definition is required');
+    validateReviewSnapshot(sheet.review, sheet.id);
     const pane = sheet.pane;
     if (pane.kind === 'frozen') {
       if (!Number.isInteger(pane.xSplit) || !Number.isInteger(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
@@ -244,8 +331,11 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
       if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
     }
-    for (const cell of Object.values(sheet.cells)) {
-      if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
+    for (const row of Object.values(sheet.cells)) {
+      for (const cell of Object.values(row)) {
+        if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
+        if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
+      }
     }
   }
   for (const sheet of snapshot.sheets) {
@@ -309,6 +399,48 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function validateReviewSnapshot(review: ReviewStoreSnapshot, sheetId: string): void {
+  if (!review || typeof review !== 'object' || Array.isArray(review)
+    || !review.notesByCell || !review.notesById || !review.threadIdsByCell || !review.threadsById) {
+    throw new Error(`ReviewStore snapshot is invalid for sheet ${sheetId}`);
+  }
+  const noteIds = new Set<string>();
+  for (const [id, note] of Object.entries(review.notesById)) {
+    if (!id.trim() || !note || typeof note !== 'object' || Array.isArray(note) || note.id !== id) throw new Error(`Review note identity is invalid for ${sheetId}: ${id}`);
+    noteIds.add(id);
+  }
+  const indexedNotes = new Set<string>();
+  for (const [key, id] of Object.entries(review.notesByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!/^\d+:\d+$/.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !noteIds.has(id) || indexedNotes.has(id)) throw new Error(`Review note index is invalid for ${sheetId}!${key}`);
+    indexedNotes.add(id);
+  }
+  if (indexedNotes.size !== noteIds.size) throw new Error(`Review note store contains an unindexed note on ${sheetId}`);
+  const threadIds = new Set(Object.keys(review.threadsById));
+  const indexedThreads = new Set<string>();
+  for (const [key, ids] of Object.entries(review.threadIdsByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!/^\d+:\d+$/.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(`Review thread index is invalid for ${sheetId}!${key}`);
+    for (const id of ids) {
+      const thread = review.threadsById[id];
+      if (!thread || thread.id !== id || thread.sheetId !== sheetId || thread.row !== row || thread.column !== column || indexedThreads.has(id)) {
+        throw new Error(`Review thread index is invalid for ${sheetId}!${key}`);
+      }
+      indexedThreads.add(id);
+    }
+  }
+  for (const [id, thread] of Object.entries(review.threadsById)) {
+    if (!id.trim() || !thread || typeof thread !== 'object' || Array.isArray(thread) || thread.id !== id || thread.sheetId !== sheetId
+      || !Number.isSafeInteger(thread.row) || thread.row < 0 || thread.row > 1_048_575
+      || !Number.isSafeInteger(thread.column) || thread.column < 0 || thread.column > 16_383) {
+      throw new Error(`Review thread identity is invalid for ${sheetId}: ${id}`);
+    }
+  }
+  if (indexedThreads.size !== threadIds.size) throw new Error(`Review store contains an unindexed thread on ${sheetId}`);
 }
 
 function containsLegacyImageDataUrl(value: unknown): boolean {

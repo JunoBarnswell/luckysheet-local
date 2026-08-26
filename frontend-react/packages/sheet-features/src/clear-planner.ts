@@ -65,11 +65,8 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
   if (range.sheetId !== sheet.id || input.sheetId !== sheet.id) throw new Error('Clear range targets another worksheet');
   const notes: ClearRangeSnapshot['notes'] = [];
   const hyperlinks: ClearRangeSnapshot['hyperlinks'] = [];
-  for (const [key, note] of sheet.notes) {
-    const parts = key.split(':');
-    const row = Number(parts[0]);
-    const column = Number(parts[1]);
-    if (Number.isInteger(row) && Number.isInteger(column) && contains(range, row, column)) notes.push({ row, column, note: structuredClone(note) });
+  for (const { row, column, note } of sheet.review.noteEntries()) {
+    if (contains(range, row, column)) notes.push({ row, column, note });
   }
   for (const [key, hyperlink] of sheet.hyperlinks) {
     const parts = key.split(':');
@@ -77,9 +74,7 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
     const column = Number(parts[1]);
     if (Number.isInteger(row) && Number.isInteger(column) && contains(range, row, column)) hyperlinks.push({ row, column, hyperlink: structuredClone(hyperlink) });
   }
-  const comments = sheet.commentThreads
-    .filter((thread) => contains(range, thread.row, thread.column))
-    .map((thread) => structuredClone(thread));
+  const comments = sheet.review.threadEntries().filter((thread) => contains(range, thread.row, thread.column));
   return {
     params: { ...input, range },
     range,
@@ -119,15 +114,10 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
   if (params.family === 'comments-and-notes') {
     for (const entry of cells) {
       const { row, column, cell: current } = entry;
-      if (current?.note !== undefined || current?.comment !== undefined) {
-        const next = { ...current };
-        delete next.note;
-        delete next.comment;
-        sheet.cells.set(row, column, next);
-      }
-      sheet.notes.delete(`${row}:${column}`);
+      sheet.review.removeNote(row, column);
+      for (const thread of sheet.review.getThreadsAt(row, column)) sheet.review.removeThread(thread.id);
     }
-    sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
+    for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
     return;
   }
   if (params.family === 'hyperlinks') {
@@ -150,15 +140,12 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
     else sheet.cells.delete(row, column);
   }
   if (params.family === 'all') {
-    for (const key of [...sheet.notes.keys()]) {
-      const [row, column] = key.split(':').map(Number);
-      if (contains(range, row!, column!)) sheet.notes.delete(key);
-    }
+    for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
     for (const key of [...sheet.hyperlinks.keys()]) {
       const [row, column] = key.split(':').map(Number);
       if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
     }
-    sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
+    for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
   }
   if (params.family === 'formats' || params.family === 'all') {
     sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...sheetRuleRegistry.cropRules(sheet.conditionalFormats, range));
@@ -172,19 +159,16 @@ export function restoreClearRangeSnapshot(sheet: WorksheetModel, range: RangeRef
     if (contains(range, row, column)) cells.push({ row, column });
   });
   for (const { row, column } of cells) sheet.cells.delete(row, column);
-  for (const key of [...sheet.notes.keys()]) {
-    const [row, column] = key.split(':').map(Number);
-    if (contains(range, row!, column!)) sheet.notes.delete(key);
-  }
+  for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
   for (const key of [...sheet.hyperlinks.keys()]) {
     const [row, column] = key.split(':').map(Number);
     if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
   }
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
+  for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
   for (const item of snapshot.cells) if (item.value !== undefined) sheet.cells.set(item.row, item.column, structuredClone(item.value));
-  for (const item of snapshot.notes) sheet.notes.set(`${item.row}:${item.column}`, structuredClone(item.note));
+  for (const item of snapshot.notes) sheet.review.setNote(item.row, item.column, item.note);
   for (const item of snapshot.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));
-  sheet.commentThreads.push(...structuredClone(snapshot.comments));
+  for (const thread of snapshot.comments) sheet.review.addThread(thread);
   if (snapshot.conditionalFormats !== undefined) sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...structuredClone(snapshot.conditionalFormats));
   if (snapshot.dataValidations !== undefined) sheet.dataValidations.splice(0, sheet.dataValidations.length, ...structuredClone(snapshot.dataValidations));
 }

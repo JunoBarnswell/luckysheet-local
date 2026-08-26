@@ -54,8 +54,8 @@ test('find.replace replaces one/all typed cell values in one undoable transactio
 test('find.replace updates canonical notes and comment threads atomically', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.notes.set('2:1', { id: 'note-1', author: 'u', text: 'old note', createdAt: 'now', visible: true });
-  sheet.commentThreads.push({ id: 'thread-1', sheetId: sheet.id, row: 3, column: 1, author: 'u', text: 'old comment', createdAt: 'now', replies: [] });
+  sheet.review.setNote(2, 1, { id: 'note-1', author: 'u', text: 'old note', createdAt: 'now', visible: true });
+  sheet.review.addThread({ id: 'thread-1', sheetId: sheet.id, row: 3, column: 1, author: 'u', text: 'old comment', createdAt: 'now', replies: [] });
   const result = runtime.execute('find.replace', {
     sheetId: sheet.id,
     query: 'old',
@@ -67,12 +67,12 @@ test('find.replace updates canonical notes and comment threads atomically', () =
   });
   assert.equal(result.mutationCount, 1);
   assert.equal(result.event?.payload.count, 2);
-  assert.equal(sheet.notes.get('2:1')?.text, 'new note');
-  assert.equal(sheet.commentThreads[0]?.text, 'new comment');
+  assert.equal(sheet.review.getNoteAt(2, 1)?.text, 'new note');
+  assert.equal(sheet.review.getThread('thread-1')?.text, 'new comment');
   assert.equal(runtime.getHistoryDepth().undo, 1);
   assert.equal(runtime.undo(), true);
-  assert.equal(sheet.notes.get('2:1')?.text, 'old note');
-  assert.equal(sheet.commentThreads[0]?.text, 'old comment');
+  assert.equal(sheet.review.getNoteAt(2, 1)?.text, 'old note');
+  assert.equal(sheet.review.getThread('thread-1')?.text, 'old comment');
 });
 
 test('find.replace fails closed before applying any patch for a stale or invalid match', () => {

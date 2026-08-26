@@ -324,7 +324,7 @@ class MutationDescriptorRegistryTest {
     void commenterMayCommitReviewMutationButCannotWriteCells() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","cells":{},"notes":[],"commentThreads":[]}]}
+                {"sheets":[{"id":"sheet-1","cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
                 """);
         var note = new OperationMutation("note.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","row":2,"column":3,"note":{"id":"n-1","author":"guest","text":"Review","createdAt":"2026-08-23T00:00:00Z","visible":true}}
@@ -333,7 +333,7 @@ class MutationDescriptorRegistryTest {
         var prepared = registry.prepare(snapshot, note, WorkbookAclRole.COMMENTER);
         assertEquals(2, prepared.affectedRanges().get(0).startRow());
         var next = prepared.descriptor().apply(snapshot, note);
-        assertEquals("n-1", next.path("sheets").get(0).path("notes").get(0).path("note").path("id").asText());
+        assertEquals("n-1", next.path("sheets").get(0).path("review").path("notesById").path("n-1").path("id").asText());
 
         var cell = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
                 {"row":0,"column":0,"value":{"value":"no"}}
@@ -439,7 +439,7 @@ class MutationDescriptorRegistryTest {
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"cells":{},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
                   {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
@@ -933,7 +933,7 @@ class MutationDescriptorRegistryTest {
     void structuralTransformsUpdateCanonicalPivotSourceAndTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet 1","rowCount":10,"columnCount":10,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"notes":[],"commentThreads":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
+                {"sheets":[{"id":"sheet-1","name":"Sheet 1","rowCount":10,"columnCount":10,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
                   {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 ]}]}
                 """);
@@ -977,8 +977,8 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
                 {"definedNames":{"Sales":"=Sheet1!A2"},"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
-                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"notes":[],"commentThreads":[],"spillRanges":[],"protectionRules":[]},
-                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64}
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
                 ]}
                 """);
         OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
@@ -998,14 +998,14 @@ class MutationDescriptorRegistryTest {
     void cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"notes":[{"row":0,"column":0,"note":{"id":"n1"}}],"commentThreads":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
                 """);
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
         JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
-        assertEquals(1, current.path("sheets").get(0).path("notes").get(0).path("row").asInt());
+        assertEquals("n1", current.path("sheets").get(0).path("review").path("notesByCell").path("1:0").asText());
 
         OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
                 {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
@@ -1063,7 +1063,7 @@ class MutationDescriptorRegistryTest {
     void rowPermutationMovesOnlyExactCellOwnersAndSplitsRangeMetadata() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"0":{"0":{"value":"a"}},"1":{"0":{"value":"b"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"notes":[],"commentThreads":[{"id":"outside-comment","sheetId":"sheet-1","row":0,"column":5}],"hyperlinks":[{"row":0,"column":1,"hyperlink":{"id":"inside-link"}},{"row":0,"column":5,"hyperlink":{"id":"outside-link"}}],"merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}],"type":"highlight"}],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[{"id":"inside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":1}},{"id":"outside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":5}}],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"0":{"0":{"value":"a"}},"1":{"0":{"value":"b"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{"0:5":["outside-comment"]},"threadsById":{"outside-comment":{"id":"outside-comment","sheetId":"sheet-1","row":0,"column":5,"replies":[]}}},"hyperlinks":[{"row":0,"column":1,"hyperlink":{"id":"inside-link"}},{"row":0,"column":5,"hyperlink":{"id":"outside-link"}}],"merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}],"type":"highlight"}],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[{"id":"inside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":1}},{"id":"outside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":5}}],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
                 """);
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,0,3,1]}
@@ -1074,7 +1074,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("b", sheet.path("cells").path("0").path("0").path("value").asText());
         assertEquals(1, sheet.path("hyperlinks").get(0).path("row").asInt());
         assertEquals(0, sheet.path("hyperlinks").get(1).path("row").asInt());
-        assertEquals(0, sheet.path("commentThreads").get(0).path("row").asInt());
+        assertEquals(0, sheet.path("review").path("threadsById").path("outside-comment").path("row").asInt());
         assertEquals(1, sheet.path("drawings").get(0).path("anchor").path("row").asInt());
         assertEquals(0, sheet.path("drawings").get(1).path("anchor").path("row").asInt());
         assertEquals(2, sheet.path("conditionalFormats").get(0).path("ranges").size());
@@ -1100,7 +1100,7 @@ class MutationDescriptorRegistryTest {
     private JsonNode applyFragmentedMetadataPermutation(int segmentCount) throws Exception {
         int rowCount = segmentCount * 2;
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","columnCount":1,"cells":{},"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[],"type":"highlight"}],"dataValidations":[],"sheetTables":[]}]}
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","columnCount":1,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[],"type":"highlight"}],"dataValidations":[],"sheetTables":[]}]}
                 """);
         ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
         sheet.put("rowCount", rowCount);
@@ -1132,7 +1132,7 @@ class MutationDescriptorRegistryTest {
                   "cells":{"0":{"0":{"value":"Calculated"},"1":{"value":"Row"}},"1":{"0":{"value":20},"1":{"value":"twenty"}},"2":{"0":{"value":5},"1":{"value":"five"}},"3":{"0":{"value":10},"1":{"value":"ten"}}},
                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                   "autoFilter":null,"sheetTables":[{"id":"table-1","sheetId":"sheet-1","name":"SortTable","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":false,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"columns":{}},"columns":[{"id":"calculated","name":"Calculated"},{"id":"row","name":"Row"}]}],
-                  "notes":[],"commentThreads":[],"hyperlinks":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"protectionRules":[]} ]}
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"hyperlinks":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"protectionRules":[]} ]}
                 """);
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,3,1]}

@@ -252,6 +252,49 @@ function validateExactKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+function validateReviewSnapshot(value: unknown, sheetId: string): void {
+  const review = requireRecord(value, 'WorkbookSnapshot review');
+  const notesByCell = requireRecord(review.notesByCell, 'WorkbookSnapshot review notesByCell');
+  const notesById = requireRecord(review.notesById, 'WorkbookSnapshot review notesById');
+  const threadIdsByCell = requireRecord(review.threadIdsByCell, 'WorkbookSnapshot review threadIdsByCell');
+  const threadsById = requireRecord(review.threadsById, 'WorkbookSnapshot review threadsById');
+  const keyPattern = /^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/;
+  const noteIds = new Set(Object.keys(notesById));
+  for (const [id, note] of Object.entries(notesById)) {
+    const entry = requireRecord(note, `WorkbookSnapshot review note ${id}`);
+    if (!isNonEmptyString(id) || !isNonEmptyString(entry.id) || entry.id !== id) throw new Error(`WorkbookSnapshot review note identity is invalid: ${id}`);
+  }
+  const indexedNotes = new Set<string>();
+  for (const [key, id] of Object.entries(notesByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !isNonEmptyString(id) || !noteIds.has(id) || indexedNotes.has(id)) throw new Error(`WorkbookSnapshot review note index is invalid: ${key}`);
+    indexedNotes.add(id);
+  }
+  if (indexedNotes.size !== noteIds.size) throw new Error(`WorkbookSnapshot review contains an unindexed note on ${sheetId}`);
+  const indexedThreads = new Set<string>();
+  for (const [key, ids] of Object.entries(threadIdsByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(`WorkbookSnapshot review thread index is invalid: ${key}`);
+    for (const id of ids) {
+      if (!isNonEmptyString(id) || !threadsById[id]) throw new Error(`WorkbookSnapshot review thread index references missing id: ${id}`);
+      const thread = requireRecord(threadsById[id], `WorkbookSnapshot review thread ${id}`);
+      if (thread.id !== id || thread.sheetId !== sheetId || thread.row !== row || thread.column !== column || indexedThreads.has(id)) {
+        throw new Error(`WorkbookSnapshot review thread index is incompatible: ${id}`);
+      }
+      indexedThreads.add(id);
+    }
+  }
+  for (const [id, value] of Object.entries(threadsById)) {
+    const thread = requireRecord(value, `WorkbookSnapshot review thread ${id}`);
+    if (!isNonEmptyString(id) || thread.id !== id || thread.sheetId !== sheetId || !Number.isSafeInteger(thread.row) || Number(thread.row) < 0 || Number(thread.row) > 1_048_575
+      || !Number.isSafeInteger(thread.column) || Number(thread.column) < 0 || Number(thread.column) > 16_383 || !indexedThreads.has(id)) {
+      throw new Error(`WorkbookSnapshot review thread identity is invalid: ${id}`);
+    }
+  }
+}
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
@@ -987,6 +1030,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       || !Array.isArray(sheet.sparklines)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] has invalid grid data`);
     }
+    validateReviewSnapshot(sheet.review, String(sheet.id));
     if (typeof sheet.defaultRowHeightPx !== 'number' || !Number.isFinite(sheet.defaultRowHeightPx) || sheet.defaultRowHeightPx <= 0
       || typeof sheet.defaultColumnWidthPx !== 'number' || !Number.isFinite(sheet.defaultColumnWidthPx) || sheet.defaultColumnWidthPx <= 0
       || !sheet.pane || typeof sheet.pane !== 'object' || Array.isArray(sheet.pane)

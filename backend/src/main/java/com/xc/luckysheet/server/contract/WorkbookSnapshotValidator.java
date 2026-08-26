@@ -77,6 +77,7 @@ public final class WorkbookSnapshotValidator {
                     || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
                 throw ServiceException.validation("Workbook snapshot sheet grid is invalid");
             }
+            validateReviewSnapshot(sheet.get("review"), sheetId);
             for (JsonNode pivot : sheet.path("pivots")) {
                 if (!pivot.isObject() || pivot.path("id").asText().isBlank() || !pivotIds.add(pivot.path("id").asText())) {
                     throw ServiceException.validation("Workbook snapshot Pivot identity is duplicated or empty");
@@ -270,9 +271,21 @@ public final class WorkbookSnapshotValidator {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
+        if (snapshot.path("version").asInt(-1) == 7 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+                migrateLegacyReview((ObjectNode) raw);
+            }
+            return requireCanonical(snapshot, expectedUnitId);
+        }
         if (snapshot.path("version").asInt(-1) == 6 && snapshot.path("sheets").isArray()) {
             if (containsLegacyImageData(snapshot)) throw ServiceException.validation("ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before server persistence");
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+                migrateLegacyReview((ObjectNode) raw);
+            }
             return requireCanonical(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 5 && snapshot.path("sheets").isArray()) {
@@ -287,7 +300,11 @@ public final class WorkbookSnapshotValidator {
             dataModel.set("relationships", snapshot.arrayNode());
             dataModel.set("views", snapshot.arrayNode());
             snapshot.remove(java.util.List.of("dataSources", "tables"));
-            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) if (raw.isObject() && !raw.has("kind")) ((ObjectNode) raw).put("kind", "worksheet");
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) if (raw.isObject()) {
+                ObjectNode sheet = (ObjectNode) raw;
+                if (!sheet.has("kind")) sheet.put("kind", "worksheet");
+                migrateLegacyReview(sheet);
+            }
             return requireCanonical(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
@@ -359,6 +376,157 @@ public final class WorkbookSnapshotValidator {
             sheet.remove(java.util.List.of("defaultRowHeight", "defaultColumnWidth", "rowHeights", "columnWidths", "freeze"));
         }
         return migrateStored(snapshot, expectedUnitId);
+    }
+
+    private static void validateReviewSnapshot(JsonNode value, String sheetId) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Workbook snapshot review is required");
+        ObjectNode review = (ObjectNode) value;
+        JsonNode notesByCell = review.get("notesByCell");
+        JsonNode notesById = review.get("notesById");
+        JsonNode threadIdsByCell = review.get("threadIdsByCell");
+        JsonNode threadsById = review.get("threadsById");
+        if (notesByCell == null || !notesByCell.isObject() || notesById == null || !notesById.isObject()
+                || threadIdsByCell == null || !threadIdsByCell.isObject() || threadsById == null || !threadsById.isObject()) {
+            throw ServiceException.validation("Workbook snapshot review indexes are required");
+        }
+        notesById.fields().forEachRemaining(entry -> {
+            if (entry.getKey().isBlank() || !entry.getValue().isObject() || !entry.getValue().path("id").isTextual()
+                    || entry.getValue().path("id").asText().isBlank() || !entry.getKey().equals(entry.getValue().path("id").asText())) {
+                throw ServiceException.validation("Workbook snapshot review note identity is invalid: " + entry.getKey());
+            }
+        });
+        java.util.Set<String> indexedNotes = new java.util.HashSet<>();
+        notesByCell.fields().forEachRemaining(entry -> {
+            reviewCoordinateKey(entry.getKey());
+            if (!entry.getValue().isTextual() || entry.getValue().asText().isBlank() || !notesById.has(entry.getValue().asText()) || !indexedNotes.add(entry.getValue().asText())) {
+                throw ServiceException.validation("Workbook snapshot review note index is invalid: " + entry.getKey());
+            }
+        });
+        if (indexedNotes.size() != notesById.size()) throw ServiceException.validation("Workbook snapshot review contains an unindexed note");
+        java.util.Set<String> indexedThreads = new java.util.HashSet<>();
+        threadIdsByCell.fields().forEachRemaining(entry -> {
+            int[] coordinate = reviewCoordinateKey(entry.getKey());
+            if (!entry.getValue().isArray()) throw ServiceException.validation("Workbook snapshot review thread index is invalid: " + entry.getKey());
+            java.util.Set<String> local = new java.util.HashSet<>();
+            for (JsonNode id : entry.getValue()) {
+                if (!id.isTextual() || id.asText().isBlank() || !local.add(id.asText()) || !indexedThreads.add(id.asText())) {
+                    throw ServiceException.validation("Workbook snapshot review thread index is invalid: " + entry.getKey());
+                }
+                JsonNode thread = threadsById.get(id.asText());
+                if (thread == null || !thread.isObject() || !id.asText().equals(thread.path("id").asText())
+                        || !sheetId.equals(thread.path("sheetId").asText()) || thread.path("row").asInt(-1) != coordinate[0]
+                        || thread.path("column").asInt(-1) != coordinate[1]) {
+                    throw ServiceException.validation("Workbook snapshot review thread index is incompatible: " + id.asText());
+                }
+            }
+        });
+        threadsById.fields().forEachRemaining(entry -> {
+            JsonNode thread = entry.getValue();
+            if (entry.getKey().isBlank() || !thread.isObject() || !entry.getKey().equals(thread.path("id").asText()) || !sheetId.equals(thread.path("sheetId").asText())
+                    || !thread.path("row").canConvertToInt() || thread.path("row").asInt(-1) < 0 || thread.path("row").asInt(-1) > 1_048_575
+                    || !thread.path("column").canConvertToInt() || thread.path("column").asInt(-1) < 0 || thread.path("column").asInt(-1) > 16_383 || !indexedThreads.contains(entry.getKey())) {
+                throw ServiceException.validation("Workbook snapshot review thread identity is invalid: " + entry.getKey());
+            }
+        });
+    }
+
+    private static int[] reviewCoordinateKey(String key) {
+        if (key == null || !key.matches("(0|[1-9][0-9]*):(0|[1-9][0-9]*)")) throw ServiceException.validation("Workbook snapshot review cell key is invalid: " + key);
+        String[] parts = key.split(":", -1);
+        try {
+            int row = Integer.parseInt(parts[0]);
+            int column = Integer.parseInt(parts[1]);
+            if (row < 0 || row > 1_048_575 || column < 0 || column > 16_383) throw ServiceException.validation("Workbook snapshot review cell key is out of bounds: " + key);
+            return new int[]{row, column};
+        } catch (NumberFormatException exception) {
+            throw ServiceException.validation("Workbook snapshot review cell key is invalid: " + key);
+        }
+    }
+
+    private static void migrateLegacyReview(ObjectNode sheet) {
+        ObjectNode review = sheet.objectNode();
+        ObjectNode notesByCell = review.putObject("notesByCell");
+        ObjectNode notesById = review.putObject("notesById");
+        ObjectNode threadIdsByCell = review.putObject("threadIdsByCell");
+        ObjectNode threadsById = review.putObject("threadsById");
+        JsonNode legacyNotes = sheet.get("notes");
+        if (legacyNotes != null && !legacyNotes.isNull() && !legacyNotes.isArray()) throw ServiceException.validation("Legacy worksheet notes must be an array");
+        if (legacyNotes != null && legacyNotes.isArray()) for (JsonNode raw : legacyNotes) {
+            if (!raw.isObject() || !raw.path("note").isObject()) throw ServiceException.validation("Legacy worksheet note is invalid");
+            int row = raw.path("row").asInt(-1);
+            int column = raw.path("column").asInt(-1);
+            putMigratedNote(notesByCell, notesById, row, column, raw.get("note"));
+        }
+        JsonNode legacyThreads = sheet.get("commentThreads");
+        if (legacyThreads != null && !legacyThreads.isNull() && !legacyThreads.isArray()) throw ServiceException.validation("Legacy worksheet comments must be an array");
+        if (legacyThreads != null && legacyThreads.isArray()) for (JsonNode raw : legacyThreads) putMigratedThread(sheet.path("id").asText(), threadsById, threadIdsByCell, raw, -1, -1);
+        JsonNode cells = sheet.get("cells");
+        if (cells != null && cells.isObject()) cells.fields().forEachRemaining(rowEntry -> {
+            int row = parseLegacyCoordinate(rowEntry.getKey(), "row");
+            if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Legacy cell row is invalid");
+            rowEntry.getValue().fields().forEachRemaining(columnEntry -> {
+                int column = parseLegacyCoordinate(columnEntry.getKey(), "column");
+                if (!columnEntry.getValue().isObject()) throw ServiceException.validation("Legacy cell is invalid");
+                ObjectNode cell = (ObjectNode) columnEntry.getValue();
+                if (cell.has("note")) putMigratedNote(notesByCell, notesById, row, column, cell.get("note"));
+                if (cell.has("comment")) putMigratedThread(sheet.path("id").asText(), threadsById, threadIdsByCell, cell.get("comment"), row, column);
+                cell.remove(java.util.List.of("note", "comment"));
+            });
+        });
+        sheet.set("review", review);
+        sheet.remove(java.util.List.of("notes", "commentThreads"));
+    }
+
+    private static int parseLegacyCoordinate(String value, String label) {
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < 0) throw ServiceException.validation("Legacy " + label + " is invalid");
+            return parsed;
+        } catch (NumberFormatException exception) {
+            throw ServiceException.validation("Legacy " + label + " is invalid");
+        }
+    }
+
+    private static void putMigratedNote(ObjectNode notesByCell, ObjectNode notesById, int row, int column, JsonNode value) {
+        if (row < 0 || row > 1_048_575 || column < 0 || column > 16_383 || value == null || !value.isObject() || !value.path("id").isTextual() || value.path("id").asText().isBlank()) {
+            throw ServiceException.validation("Legacy worksheet note is invalid");
+        }
+        String key = row + ":" + column;
+        String id = value.path("id").asText();
+        if (notesByCell.has(key) && (!id.equals(notesByCell.path(key).asText()) || !canonicalJson(notesById.get(id)).equals(canonicalJson(value)))) {
+            throw ServiceException.validation("REVIEW_MIGRATION_CONFLICT: note at " + key);
+        }
+        notesByCell.fields().forEachRemaining(entry -> {
+            if (id.equals(entry.getValue().asText()) && !key.equals(entry.getKey())) throw ServiceException.validation("REVIEW_MIGRATION_CONFLICT: note identity " + id);
+        });
+        if (notesById.has(id) && !canonicalJson(notesById.get(id)).equals(canonicalJson(value))) throw ServiceException.validation("REVIEW_MIGRATION_CONFLICT: note identity " + id);
+        notesByCell.put(key, id);
+        notesById.set(id, value.deepCopy());
+    }
+
+    private static void putMigratedThread(String sheetId, ObjectNode threadsById, ObjectNode threadIdsByCell, JsonNode value, int row, int column) {
+        if (value == null || !value.isObject() || !value.path("id").isTextual() || value.path("id").asText().isBlank()) throw ServiceException.validation("Legacy worksheet comment is invalid");
+        ObjectNode thread = (ObjectNode) value.deepCopy();
+        if (thread.has("sheetId") && !sheetId.equals(thread.path("sheetId").asText())) throw ServiceException.validation("REVIEW_MIGRATION_CONFLICT: comment targets another sheet");
+        thread.put("sheetId", sheetId);
+        if (row >= 0) thread.put("row", row);
+        if (column >= 0) thread.put("column", column);
+        if (!thread.path("row").canConvertToInt() || !thread.path("column").canConvertToInt() || thread.path("row").asInt(-1) < 0 || thread.path("column").asInt(-1) < 0) throw ServiceException.validation("Legacy worksheet comment location is invalid");
+        if (!thread.has("replies")) thread.putArray("replies");
+        String id = thread.path("id").asText();
+        if (threadsById.has(id)) {
+            if (!canonicalJson(threadsById.get(id)).equals(canonicalJson(thread))) throw ServiceException.validation("REVIEW_MIGRATION_CONFLICT: comment identity " + id);
+            return;
+        }
+        threadsById.set(id, thread);
+        String key = thread.path("row").asInt() + ":" + thread.path("column").asInt();
+        ArrayNode ids = threadIdsByCell.withArray(key);
+        for (JsonNode indexedId : ids) if (id.equals(indexedId.asText())) return;
+        ids.add(id);
+    }
+
+    private static String canonicalJson(JsonNode value) {
+        return value == null ? "null" : value.toString();
     }
 
     private static boolean containsLegacyImageData(JsonNode value) {

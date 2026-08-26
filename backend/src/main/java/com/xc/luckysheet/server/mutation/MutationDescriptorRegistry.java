@@ -441,20 +441,13 @@ public class MutationDescriptorRegistry {
         private void applyPasteNotes(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode entries, List<RangeRef> allowedRanges) {
             if (entries == null) return;
             if (!entries.isArray()) throw ServiceException.validation("Paste snapshot notes must be an array");
-            ArrayNode notes = SnapshotMutationSupport.array(sheet, "notes");
             for (JsonNode entry : entries) {
                 if (!entry.isObject()) throw ServiceException.validation("Paste snapshot note must be an object");
                 SnapshotMutationSupport.CellCoordinate coordinate = keyCoordinate(root, sheetId, entry.path("key").asText(null));
                 if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot note is outside its affected range");
-                SnapshotMutationSupport.removeNote(notes, coordinate);
                 JsonNode value = entry.get("value");
-                if (value != null && !value.isNull()) {
-                    ObjectNode next = notes.objectNode();
-                    next.put("row", coordinate.row());
-                    next.put("column", coordinate.column());
-                    next.set("note", value.deepCopy());
-                    notes.add(next);
-                }
+                if (value == null || value.isNull()) SnapshotMutationSupport.removeNote(sheet, coordinate);
+                else SnapshotMutationSupport.putNote(sheet, coordinate, value);
             }
         }
 
@@ -484,14 +477,10 @@ public class MutationDescriptorRegistry {
         private void applyPasteComments(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode keys, JsonNode comments, List<RangeRef> allowedRanges) {
             if (keys == null && comments == null) return;
             if (keys != null && !keys.isArray()) throw ServiceException.validation("Paste snapshot commentCells must be an array");
-            ArrayNode threads = SnapshotMutationSupport.array(sheet, "commentThreads");
             if (keys != null) for (JsonNode key : keys) {
                 SnapshotMutationSupport.CellCoordinate coordinate = keyCoordinate(root, sheetId, key.asText(null));
                 if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot comment is outside its affected range");
-                for (int index = threads.size() - 1; index >= 0; index--) {
-                    JsonNode current = threads.get(index);
-                    if (current.path("row").asInt(-1) == coordinate.row() && current.path("column").asInt(-1) == coordinate.column()) threads.remove(index);
-                }
+                SnapshotMutationSupport.removeThreads(sheet, new RangeRef(sheetId, coordinate.row(), coordinate.row(), coordinate.column(), coordinate.column()));
             }
             if (comments != null) {
                 if (!comments.isArray()) throw ServiceException.validation("Paste snapshot comments must be an array");
@@ -500,7 +489,8 @@ public class MutationDescriptorRegistry {
                     int row = boundedValue((ObjectNode) comment, "row", SnapshotMutationSupport.MAX_ROW);
                     int column = boundedValue((ObjectNode) comment, "column", SnapshotMutationSupport.MAX_COLUMN);
                     if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, new SnapshotMutationSupport.CellCoordinate(row, column)))) throw ServiceException.validation("Paste snapshot comment is outside its affected range");
-                    threads.add(comment.deepCopy());
+                    SnapshotMutationSupport.removeThread(sheet, comment.path("id").asText());
+                    SnapshotMutationSupport.addThread(sheet, comment);
                 }
             }
         }
@@ -1032,27 +1022,21 @@ public class MutationDescriptorRegistry {
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
             JsonNode note = params.get("note");
             if (note == null || !note.isObject() || note.path("id").asText().isBlank()) throw ServiceException.validation("note.set requires a note with id");
-            ArrayNode notes = SnapshotMutationSupport.array(sheet, "notes");
-            SnapshotMutationSupport.removeNote(notes, coordinate);
-            ObjectNode entry = notes.objectNode();
-            entry.put("row", coordinate.row());
-            entry.put("column", coordinate.column());
-            entry.set("note", note.deepCopy());
-            notes.add(entry);
+            SnapshotMutationSupport.putNote(sheet, coordinate, note);
         }
 
         private void removeNote(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
-            if (!SnapshotMutationSupport.removeNote(SnapshotMutationSupport.array(sheet, "notes"), coordinate)) throw ServiceException.notFound("Note not found");
+            if (!SnapshotMutationSupport.removeNote(sheet, coordinate)) throw ServiceException.notFound("Note not found");
         }
 
         private void noteVisibility(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
             JsonNode visible = params.get("visible");
             if (visible == null || !visible.isBoolean()) throw ServiceException.validation("note.visibility requires visible");
-            ObjectNode entry = SnapshotMutationSupport.findNote(SnapshotMutationSupport.array(sheet, "notes"), coordinate);
-            if (entry == null || !entry.path("note").isObject()) throw ServiceException.notFound("Note not found");
-            ((ObjectNode) entry.get("note")).set("visible", visible.deepCopy());
+            ObjectNode note = SnapshotMutationSupport.findNote(sheet, coordinate);
+            if (note == null) throw ServiceException.notFound("Note not found");
+            note.set("visible", visible.deepCopy());
         }
 
         private void addThread(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
@@ -1062,9 +1046,7 @@ public class MutationDescriptorRegistry {
             if (!sheetId.equals(thread.path("sheetId").asText()) || thread.path("row").asInt(-1) != coordinate.row() || thread.path("column").asInt(-1) != coordinate.column()) {
                 throw ServiceException.validation("Comment thread location does not match mutation");
             }
-            ArrayNode threads = SnapshotMutationSupport.array(sheet, "commentThreads");
-            if (SnapshotMutationSupport.findThread(threads, thread.path("id").asText()) != null) throw ServiceException.conflict("Comment thread already exists");
-            threads.add(thread.deepCopy());
+            SnapshotMutationSupport.addThread(sheet, thread);
         }
 
         private void addReply(ObjectNode sheet, ObjectNode params) {
@@ -1101,14 +1083,7 @@ public class MutationDescriptorRegistry {
 
         private void removeThread(ObjectNode sheet, ObjectNode params) {
             String threadId = SnapshotMutationSupport.text(params, "threadId");
-            ArrayNode threads = SnapshotMutationSupport.array(sheet, "commentThreads");
-            for (int index = 0; index < threads.size(); index++) {
-                if (threadId.equals(threads.get(index).path("id").asText())) {
-                    threads.remove(index);
-                    return;
-                }
-            }
-            throw ServiceException.notFound("Comment thread not found");
+            if (!SnapshotMutationSupport.removeThread(sheet, threadId)) throw ServiceException.notFound("Comment thread not found");
         }
     }
 

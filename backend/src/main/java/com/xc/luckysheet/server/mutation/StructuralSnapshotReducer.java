@@ -82,26 +82,13 @@ final class StructuralSnapshotReducer {
     }
 
     private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "notes")) {
-            ObjectNode note = requireObject(raw, "Note");
-            int row = note.path("row").asInt(-1);
-            int column = note.path("column").asInt(-1);
-            if (!contains(band, row, column)) continue;
-            int nextRow = "row".equals(axis) ? mapCellIndex(row, selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : row;
-            int nextColumn = "column".equals(axis) ? mapCellIndex(column, selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : column;
-            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove a note");
-            note.put("row", nextRow).put("column", nextColumn);
-        }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "commentThreads")) {
-            ObjectNode comment = requireObject(raw, "Comment thread");
-            int row = comment.path("row").asInt(-1);
-            int column = comment.path("column").asInt(-1);
-            if (!contains(band, row, column)) continue;
-            int nextRow = "row".equals(axis) ? mapCellIndex(row, selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : row;
-            int nextColumn = "column".equals(axis) ? mapCellIndex(column, selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : column;
-            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove a comment thread");
-            comment.put("row", nextRow).put("column", nextColumn);
-        }
+        SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> {
+            if (!contains(band, coordinate.row(), coordinate.column())) return coordinate;
+            int nextRow = "row".equals(axis) ? mapCellIndex(coordinate.row(), selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : coordinate.row();
+            int nextColumn = "column".equals(axis) ? mapCellIndex(coordinate.column(), selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : coordinate.column();
+            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove review metadata");
+            return new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn);
+        });
     }
 
     static void restoreShiftedCells(ObjectNode root, String sheetId, JsonNode spec, JsonNode cells) {
@@ -269,12 +256,13 @@ final class StructuralSnapshotReducer {
                 throw ServiceException.validation("Structural delete would lose a drawing anchor");
             }
         }
-        for (JsonNode note : SnapshotMutationSupport.array(target, "notes")) {
-            if (insideDeleted(note.path(axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column").asInt(-1), at, end)) {
+        SnapshotMutationSupport.reviewMap(target, "notesByCell").fieldNames().forEachRemaining(key -> {
+            SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.reviewCoordinate(key);
+            if (insideDeleted(axis == FormulaReferenceTransformer.Axis.ROW ? coordinate.row() : coordinate.column(), at, end)) {
                 throw ServiceException.validation("Structural delete would lose a note");
             }
-        }
-        for (JsonNode comment : SnapshotMutationSupport.array(target, "commentThreads")) {
+        });
+        for (JsonNode comment : SnapshotMutationSupport.reviewThreads(target)) {
             if (insideDeleted(comment.path(axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column").asInt(-1), at, end)) {
                 throw ServiceException.validation("Structural delete would lose a comment thread");
             }
@@ -314,8 +302,7 @@ final class StructuralSnapshotReducer {
         shiftMerges(root, target, targetSheetId, axis, at, count, direction);
         shiftFreeze(target, axis, at, count, direction);
         shiftHiddenAndSizes(target, axis, at, count, direction);
-        shiftTargetNotes(target, axis, at, count, direction);
-        shiftTargetComments(target, axis, at, count, direction);
+        shiftTargetReview(target, axis, at, count, direction);
         shiftTargetDrawings(target, axis, at, count, direction);
         shiftTargetSpills(root, target, targetSheetId, axis, at, count, direction);
         shiftTargetSheetTables(root, target, targetSheetId, axis, at, count, direction);
@@ -514,24 +501,14 @@ final class StructuralSnapshotReducer {
         else anchor.put(property, shifted);
     }
 
-    private static void shiftTargetNotes(ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        for (JsonNode raw : SnapshotMutationSupport.array(target, "notes")) {
-            ObjectNode note = requireObject(raw, "Note");
-            String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
-            int shifted = shiftIndex(note.path(key).asInt(-1), at, count, direction);
-            if (shifted < 0) throw ServiceException.validation("Structural delete would lose a note");
-            note.put(key, shifted);
-        }
-    }
-
-    private static void shiftTargetComments(ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        for (JsonNode raw : SnapshotMutationSupport.array(target, "commentThreads")) {
-            ObjectNode comment = requireObject(raw, "Comment thread");
-            String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
-            int shifted = shiftIndex(comment.path(key).asInt(-1), at, count, direction);
-            if (shifted < 0) throw ServiceException.validation("Structural delete would lose a comment thread");
-            comment.put(key, shifted);
-        }
+    private static void shiftTargetReview(ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
+        SnapshotMutationSupport.remapReviewCoordinates(target, coordinate -> {
+            int shifted = shiftIndex(axis == FormulaReferenceTransformer.Axis.ROW ? coordinate.row() : coordinate.column(), at, count, direction);
+            if (shifted < 0) throw ServiceException.validation("Structural delete would lose review metadata");
+            return axis == FormulaReferenceTransformer.Axis.ROW
+                    ? new SnapshotMutationSupport.CellCoordinate(shifted, coordinate.column())
+                    : new SnapshotMutationSupport.CellCoordinate(coordinate.row(), shifted);
+        });
     }
 
     private static void shiftTargetSpills(ObjectNode root, ObjectNode target, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
@@ -753,8 +730,9 @@ final class StructuralSnapshotReducer {
     private static void remapPermutationMetadata(ObjectNode sheet, RangeRef range, int[] sourceRows) {
         int[] rowMap = new int[sourceRows.length];
         for (int targetOffset = 0; targetOffset < sourceRows.length; targetOffset++) rowMap[sourceRows[targetOffset] - range.startRow()] = range.startRow() + targetOffset;
-        remapPermutationNotes(sheet, range, rowMap);
-        remapPermutationComments(sheet, range, rowMap);
+        SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> contains(range, coordinate.row(), coordinate.column())
+                ? new SnapshotMutationSupport.CellCoordinate(remapRow(coordinate.row(), range, rowMap), coordinate.column())
+                : coordinate);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "hyperlinks")) remapCellOwner(requireObject(raw, "Hyperlink"), range, rowMap);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) remapDrawingRows(requireObject(raw, "Drawing"), range, rowMap);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) {
@@ -813,24 +791,6 @@ final class StructuralSnapshotReducer {
             }
         }
         for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), range, rowMap, "protection rule");
-    }
-
-    private static void remapPermutationNotes(ObjectNode sheet, RangeRef range, int[] rowMap) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "notes")) {
-            ObjectNode note = requireObject(raw, "Note");
-            int row = note.path("row").asInt();
-            int column = note.path("column").asInt();
-            if (contains(range, row, column)) note.put("row", remapRow(row, range, rowMap));
-        }
-    }
-
-    private static void remapPermutationComments(ObjectNode sheet, RangeRef range, int[] rowMap) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "commentThreads")) {
-            ObjectNode comment = requireObject(raw, "Comment thread");
-            int row = comment.path("row").asInt();
-            int column = comment.path("column").asInt(-1);
-            if (contains(range, row, column)) comment.put("row", remapRow(row, range, rowMap));
-        }
     }
 
     private static void remapCellOwner(ObjectNode owner, RangeRef range, int[] rowMap) {

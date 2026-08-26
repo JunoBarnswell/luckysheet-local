@@ -23,7 +23,7 @@ describe('review helpers', () => {
   it('finds comment threads by cell coordinates', () => {
     const workbook = new WorkbookModel('wb', 'Review');
     const sheet = workbook.getSheet('sheet-1');
-    sheet.commentThreads.push(buildCommentThread('sheet-1', 1, 1, 'Alice', 'Note', 'thread-1'));
+    sheet.review.addThread(buildCommentThread('sheet-1', 1, 1, 'Alice', 'Note', 'thread-1'));
     assert.equal(findCommentThreadAt(sheet, 1, 1)?.id, 'thread-1');
     assert.equal(findCommentThreadAt(sheet, 0, 0), undefined);
   });

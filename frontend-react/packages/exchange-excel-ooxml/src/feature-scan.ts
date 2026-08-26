@@ -50,8 +50,7 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     if ((sheet.sheetTables?.length ?? 0) > 0) features.add('tables');
     if (sheet.autoFilter) features.add('filters');
     if (sheet.protectionRules?.length) features.add('protection');
-    if ((sheet.commentThreads?.length ?? 0) > 0) features.add('comments');
-    if (sheet.notes?.length) features.add('comments');
+    if (Object.keys(sheet.review.threadsById).length > 0 || Object.keys(sheet.review.notesById).length > 0) features.add('comments');
     if (sheet.kind === 'table-sheet') features.add('table-sheet');
     if (sheet.kind === 'gantt-sheet') features.add('gantt-sheet');
     if (sheet.kind === 'report-sheet') features.add('report-sheet');

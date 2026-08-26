@@ -7,7 +7,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { createFormulaError, getCellNote, noteCellKey } from '@react-sheets/core-model';
+import { createFormulaError, cellKey } from '@react-sheets/core-model';
 import { isFormulaError } from '@react-sheets/formula-engine';
 import { parseCellText, type CellInputInterpretationContext, type NumberFormatIntent } from './text-input';
 import type { DataRegionContext } from './data-region-context';
@@ -229,17 +229,10 @@ function buildFindMetadataIndex(sheet: WorksheetModel): Map<string, FindMetadata
     index.set(key, created);
     return created;
   };
-  for (const [key, note] of sheet.notes) bucketFor(key).note = structuredClone(note);
-  sheet.commentThreads.forEach((thread) => {
+  for (const entry of sheet.review.noteEntries()) bucketFor(entry.key).note = entry.note;
+  for (const thread of sheet.review.threadEntries()) {
     bucketFor(`${thread.row}:${thread.column}`).comments.push({ id: thread.id, text: thread.text });
-  });
-  sheet.cells.forEach((cell, row, column) => {
-    const bucket = bucketFor(`${row}:${column}`);
-    if (!bucket.note && cell.note) bucket.note = structuredClone(cell.note);
-    if (cell.comment && !bucket.comments.some((comment) => comment.id === cell.comment!.id)) {
-      bucket.comments.push({ id: cell.comment.id, text: cell.comment.text });
-    }
-  });
+  }
   return index;
 }
 
@@ -347,9 +340,9 @@ export function findCursorFor(match: FindMatch): FindCursor {
 }
 
 export function noteAt(sheet: WorksheetModel, row: number, column: number): CellNote | undefined {
-  return getCellNote(sheet, row, column) ?? sheet.cells.get(row, column)?.note;
+  return sheet.review.getNoteAt(row, column);
 }
 
 export function noteKey(row: number, column: number): string {
-  return noteCellKey(row, column);
+  return cellKey(row, column);
 }

@@ -83,8 +83,11 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         sheet.putArray("drawings");
         sheet.putObject("drawingPayloads");
         sheet.putArray("hyperlinks");
-        sheet.putArray("notes");
-        sheet.putArray("commentThreads");
+        ObjectNode review = sheet.putObject("review");
+        review.putObject("notesByCell");
+        review.putObject("notesById");
+        review.putObject("threadIdsByCell");
+        review.putObject("threadsById");
         sheets.add(sheet);
     }
 
@@ -439,7 +442,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         remapDrawingPayloads(copy, sourceSheetId, targetSheetId, drawingIds, pivotIds, tableIds);
         remapDrawingGroups(copy, sourceSheetId, targetSheetId, drawingGroupIds, drawingIds);
         remapHyperlinks(copy, sourceSheetId, targetSheetId);
-        remapSheetOwnedObjects(copy, sourceSheetId, targetSheetId);
+        remapReview(root, copy, targetSheetId);
         remapReportSheet(copy, sourceSheetId, targetSheetId, tableIds);
         remapCopiedFormulas(copy, sourceName, targetName);
     }
@@ -659,11 +662,61 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         }
     }
 
-    private void remapSheetOwnedObjects(ObjectNode copy, String sourceSheetId, String targetSheetId) {
-        for (String field : List.of("commentThreads", "protectionRules")) {
-            JsonNode values = copy.get(field);
-            if (values != null && values.isArray()) for (JsonNode raw : values) if (raw.isObject() && raw.has("sheetId")) ((ObjectNode) raw).put("sheetId", targetSheetId);
+    private void remapReview(ObjectNode root, ObjectNode copy, String targetSheetId) {
+        ObjectNode review = SnapshotMutationSupport.review(copy);
+        Set<String> existing = new HashSet<>();
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            if (!rawSheet.isObject() || !rawSheet.path("review").isObject()) continue;
+            ObjectNode current = (ObjectNode) rawSheet.get("review");
+            current.path("notesById").fieldNames().forEachRemaining(existing::add);
+            current.path("threadsById").fields().forEachRemaining(entry -> {
+                existing.add(entry.getKey());
+                for (JsonNode reply : entry.getValue().path("replies")) if (reply.path("id").isTextual()) existing.add(reply.path("id").asText());
+            });
         }
+        Map<String, String> ids = new HashMap<>();
+        ObjectNode notesById = SnapshotMutationSupport.requiredObject(review, "notesById");
+        ObjectNode remappedNotes = notesById.objectNode();
+        notesById.fields().forEachRemaining(entry -> {
+            String nextId = allocateId(existing, entry.getKey(), targetSheetId);
+            existing.add(nextId);
+            ids.put(entry.getKey(), nextId);
+            ObjectNode note = (ObjectNode) entry.getValue().deepCopy();
+            note.put("id", nextId);
+            remappedNotes.set(nextId, note);
+        });
+        review.set("notesById", remappedNotes);
+        ObjectNode threadsById = SnapshotMutationSupport.requiredObject(review, "threadsById");
+        ObjectNode remappedThreads = threadsById.objectNode();
+        threadsById.fields().forEachRemaining(entry -> {
+            String nextId = allocateId(existing, entry.getKey(), targetSheetId);
+            existing.add(nextId);
+            ids.put(entry.getKey(), nextId);
+            ObjectNode thread = (ObjectNode) entry.getValue().deepCopy();
+            thread.put("id", nextId);
+            thread.put("sheetId", targetSheetId);
+            ArrayNode replies = (ArrayNode) thread.path("replies").deepCopy();
+            for (JsonNode reply : replies) if (reply.isObject()) {
+                String replyId = reply.path("id").asText(null);
+                if (replyId != null && !replyId.isBlank()) {
+                    String nextReplyId = allocateId(existing, replyId, targetSheetId);
+                    existing.add(nextReplyId);
+                    ids.put(replyId, nextReplyId);
+                    ((ObjectNode) reply).put("id", nextReplyId);
+                }
+            }
+            thread.set("replies", replies);
+            remappedThreads.set(nextId, thread);
+        });
+        review.set("threadsById", remappedThreads);
+        ObjectNode notesByCell = SnapshotMutationSupport.requiredObject(review, "notesByCell");
+        notesByCell.fields().forEachRemaining(entry -> entry.setValue(JsonNodeFactory.instance.textNode(ids.getOrDefault(entry.getValue().asText(), entry.getValue().asText()))));
+        ObjectNode threadIdsByCell = SnapshotMutationSupport.requiredObject(review, "threadIdsByCell");
+        threadIdsByCell.fields().forEachRemaining(entry -> {
+            if (!entry.getValue().isArray()) throw ServiceException.validation("Review thread cell index is invalid");
+            ArrayNode values = (ArrayNode) entry.getValue();
+            for (int index = 0; index < values.size(); index++) values.set(index, JsonNodeFactory.instance.textNode(ids.getOrDefault(values.get(index).asText(), values.get(index).asText())));
+        });
     }
 
     private void remapReportSheet(ObjectNode copy, String sourceSheetId, String targetSheetId, Map<String, String> tableIds) {

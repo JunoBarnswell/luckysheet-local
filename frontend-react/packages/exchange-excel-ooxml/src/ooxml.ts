@@ -241,7 +241,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 7,
+    version: 8,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -426,7 +426,7 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
       if (sheet.dataValidations?.length) features.add('validation');
       if (sheet.sheetTables?.length) features.add('tables');
       if (sheet.autoFilter) features.add('filters');
-      if (sheet.notes?.length || sheet.commentThreads?.length) features.add('comments');
+      if (Object.keys(sheet.review.notesById).length || Object.keys(sheet.review.threadsById).length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
         else if (payload.kind === 'slicer') features.add('slicer');
@@ -594,7 +594,7 @@ function parseSheet(
   validateNonOverlappingMerges(merges, descriptor);
   const hiddenColumns = parseHiddenColumns(root);
   const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
-  const notes = parseNotes(root, descriptor, files, pkg);
+  const review = parseNotes(root, descriptor, files, pkg);
   const sheetTables = parseSheetTables(root, descriptor, files, pkg, styles);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
@@ -645,7 +645,7 @@ function parseSheet(
     hiddenColumns,
     tabColor,
     ...(hyperlinks.length ? { hyperlinks } : {}),
-    notes,
+    review,
     ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
     protectionRules,
@@ -2021,19 +2021,23 @@ function excelSheetName(name: string): string {
   return /[\s!'"(),]/.test(name) ? `'${name.replace(/'/g, "''")}'` : name;
 }
 
-function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['notes'] {
+function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['review'] {
+  const review: SheetSnapshot['review'] = { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} };
   const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
-  if (!relation) return [];
+  if (!relation) return review;
   const part = resolveTarget(descriptor.part, relation.target);
   const bytes = files[part];
-  if (!bytes) return [];
+  if (!bytes) return review;
   const commentsRoot = firstElement(parseXml(strFromU8(bytes)), 'comments');
   const authors = children(child(commentsRoot, 'authors'), 'author').map(textContent);
-  return children(child(commentsRoot, 'commentList'), 'comment').flatMap((comment) => {
+  for (const comment of children(child(commentsRoot, 'commentList'), 'comment')) {
     const ref = parseA1(comment.attrs.ref ?? '');
-    if (!ref) return [];
-    return [{ row: ref.row, column: ref.column, note: { id: `note-${descriptor.id}-${ref.row}-${ref.column}`, author: authors[Number(comment.attrs.author) || 0] ?? 'Unknown', text: descendants(comment, 't').map(textContent).join(''), createdAt: new Date(0).toISOString(), visible: false } }];
-  });
+    if (!ref) continue;
+    const id = `note-${descriptor.id}-${ref.row}-${ref.column}`;
+    review.notesByCell[`${ref.row}:${ref.column}`] = id;
+    review.notesById[id] = { id, author: authors[Number(comment.attrs.author) || 0] ?? 'Unknown', text: descendants(comment, 't').map(textContent).join(''), createdAt: new Date(0).toISOString(), visible: false };
+  }
+  return review;
 }
 
 function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescriptor[]): DefinedNameModel[] {

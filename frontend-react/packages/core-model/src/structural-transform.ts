@@ -1,6 +1,6 @@
 import type { CellData, RangeRef, Row, Column, WorksheetModel } from './index';
-import type { CellHyperlink, CellNote, DrawingObject, StructuralTransformParams, CommentThread, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
-import { WorkbookModel, noteCellKey } from './index';
+import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
+import { WorkbookModel, cellKey } from './index';
 import {
   formatFormula,
   mapAstReferences,
@@ -118,8 +118,7 @@ function validateAxisMetadataPreservation(
       throw new Error(`Cannot delete ${axis} ${at}: drawing ${drawing.id} would lose its anchor`);
     }
   }
-  for (const [key] of sheet.notes) {
-    const [row, column] = key.split(':').map(Number);
+  for (const { key, row, column } of sheet.review.noteEntries()) {
     if (deleted(axis === 'row' ? row! : column!)) {
       throw new Error(`Cannot delete ${axis} ${at}: note at ${key} would be lost`);
     }
@@ -130,7 +129,7 @@ function validateAxisMetadataPreservation(
       throw new Error(`Cannot delete ${axis} ${at}: hyperlink at ${key} would be lost`);
     }
   }
-  for (const thread of sheet.commentThreads) {
+  for (const thread of sheet.review.threadEntries()) {
     if (deleted(axis === 'row' ? thread.row : thread.column)) {
       throw new Error(`Cannot delete ${axis} ${at}: comment thread ${thread.id} would be lost`);
     }
@@ -254,9 +253,8 @@ function applyAxis(
   shiftDrawings(sheet, axis, at, count, direction);
   shiftSheetTables(sheet, axis, at, count, direction);
   shiftWorkbookTables(workbook, sheet.id, axis, at, count, direction);
-  shiftNotes(sheet, axis, at, count, direction);
+  shiftReview(sheet, axis, at, count, direction);
   shiftHyperlinks(sheet, axis, at, count, direction);
-  shiftComments(sheet, axis, at, count, direction);
   shiftSpills(sheet, axis, at, count, direction);
   shiftProtection(sheet, axis, at, count, direction);
   shiftBanded(sheet, axis, at, count, direction);
@@ -461,24 +459,27 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
       const row = Number(parts[0]);
       const column = Number(parts[1]);
       const anchor = mapAnchor(row, column);
-      if (anchor) next.set(noteCellKey(anchor.row, anchor.column), value);
+      if (anchor) next.set(cellKey(anchor.row, anchor.column), value);
       else if (!insideCell(plan.band, row, column)) next.set(key, value);
       else throw new Error('Cell shift would remove anchored metadata');
     }
     return next;
   };
-  const nextNotes = remapMap(sheet.notes);
-  sheet.notes.clear();
-  for (const [key, value] of nextNotes) sheet.notes.set(key, value);
+  sheet.review.validateRemapCoordinates((row, column) => {
+    const anchor = mapAnchor(row, column);
+    if (anchor) return anchor;
+    if (!insideCell(plan.band, row, column)) return { row, column };
+    return undefined;
+  });
+  sheet.review.remapCoordinates((row, column) => {
+    const anchor = mapAnchor(row, column);
+    if (anchor) return anchor;
+    if (!insideCell(plan.band, row, column)) return { row, column };
+    throw new Error('Cell shift would remove anchored review metadata');
+  });
   const nextHyperlinks = remapMap(sheet.hyperlinks);
   sheet.hyperlinks.clear();
   for (const [key, value] of nextHyperlinks) sheet.hyperlinks.set(key, value);
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.map((thread) => {
-    const anchor = mapAnchor(thread.row, thread.column);
-    if (anchor) return { ...thread, row: anchor.row, column: anchor.column };
-    if (insideCell(plan.band, thread.row, thread.column)) throw new Error(`Cell shift would remove comment thread ${thread.id}`);
-    return thread;
-  }));
 }
 
 function remapBoundedSet(set: Set<number>, start: number, end: number, delta: number): void {
@@ -806,21 +807,19 @@ function shiftWorkbookTables(
   }
 }
 
-function shiftNotes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
-  const next = new Map<string, CellNote>();
-  for (const [key, note] of sheet.notes) {
-    const [rowText, columnText] = key.split(':');
-    const row = Number(rowText);
-    const column = Number(columnText);
+function shiftReview(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  sheet.review.validateRemapCoordinates((row, column) => {
     const position = axis === 'row' ? row : column;
     const shifted = shiftIndex(position, at, count, direction);
-    if (shifted == null) continue;
-    const nextRow = axis === 'row' ? shifted : row;
-    const nextColumn = axis === 'column' ? shifted : column;
-    next.set(noteCellKey(nextRow, nextColumn), note);
-  }
-  sheet.notes.clear();
-  for (const [key, note] of next) sheet.notes.set(key, note);
+    if (shifted == null) return undefined;
+    return { row: axis === 'row' ? shifted : row, column: axis === 'column' ? shifted : column };
+  });
+  sheet.review.remapCoordinates((row, column) => {
+    const position = axis === 'row' ? row : column;
+    const shifted = shiftIndex(position, at, count, direction);
+    if (shifted == null) return undefined;
+    return { row: axis === 'row' ? shifted : row, column: axis === 'column' ? shifted : column };
+  });
 }
 
 function shiftHyperlinks(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
@@ -834,21 +833,10 @@ function shiftHyperlinks(sheet: WorksheetModel, axis: 'row' | 'column', at: numb
     if (shifted == null) continue;
     const nextRow = axis === 'row' ? shifted : row;
     const nextColumn = axis === 'column' ? shifted : column;
-    next.set(noteCellKey(nextRow, nextColumn), hyperlink);
+    next.set(cellKey(nextRow, nextColumn), hyperlink);
   }
   sheet.hyperlinks.clear();
   for (const [key, hyperlink] of next) sheet.hyperlinks.set(key, hyperlink);
-}
-
-function shiftComments(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
-  const next: CommentThread[] = [];
-  for (const thread of sheet.commentThreads) {
-    const position = axis === 'row' ? thread.row : thread.column;
-    const shifted = shiftIndex(position, at, count, direction);
-    if (shifted == null) continue;
-    next.push(axis === 'row' ? { ...thread, row: shifted } : { ...thread, column: shifted });
-  }
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...next);
 }
 
 function shiftSpills(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
@@ -1062,30 +1050,19 @@ function applyMoveRange(
     if (drawing.anchor.endRow !== undefined) drawing.anchor.endRow += rowDelta;
     if (drawing.anchor.endColumn !== undefined) drawing.anchor.endColumn += colDelta;
   }
-  const nextNotes = new Map<string, CellNote>();
-  for (const [key, note] of sheet.notes) {
-    const [row, column] = key.split(':').map(Number);
-    if (insideCell(normalizedSource, row!, column!)) nextNotes.set(noteCellKey(row! + rowDelta, column! + colDelta), note);
-    else nextNotes.set(key, note);
-  }
-  sheet.notes.clear();
-  for (const [key, note] of nextNotes) sheet.notes.set(key, note);
+  sheet.review.remapCoordinates((row, column) => insideCell(normalizedSource, row, column)
+    ? { row: row + rowDelta, column: column + colDelta }
+    : { row, column });
   const nextHyperlinks = new Map<string, CellHyperlink>();
   for (const [key, hyperlink] of sheet.hyperlinks) {
     const [rowText, columnText] = key.split(':');
     const row = Number(rowText);
     const column = Number(columnText);
-    if (insideCell(normalizedSource, row, column)) nextHyperlinks.set(noteCellKey(row + rowDelta, column + colDelta), hyperlink);
+    if (insideCell(normalizedSource, row, column)) nextHyperlinks.set(cellKey(row + rowDelta, column + colDelta), hyperlink);
     else nextHyperlinks.set(key, hyperlink);
   }
   sheet.hyperlinks.clear();
   for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
-  for (const thread of sheet.commentThreads) {
-    if (insideCell(normalizedSource, thread.row, thread.column)) {
-      thread.row += rowDelta;
-      thread.column += colDelta;
-    }
-  }
   rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta);
   return { removedCells: extracted };
 }
@@ -1207,11 +1184,10 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     };
     validateRange(anchor, `drawing ${drawing.id} anchor`);
   }
-  for (const [key] of sheet.notes) {
-    const [row, column] = key.split(':').map(Number);
+  for (const { key, row, column } of sheet.review.noteEntries()) {
     if (insideCell(target, row!, column!) && !insideCell(source, row!, column!)) throw new Error(`Cannot move range: note ${key} would be overwritten`);
   }
-  for (const thread of sheet.commentThreads) {
+  for (const thread of sheet.review.threadEntries()) {
     if (insideCell(target, thread.row, thread.column) && !insideCell(source, thread.row, thread.column)) {
       throw new Error(`Cannot move range: comment ${thread.id} would be overwritten`);
     }

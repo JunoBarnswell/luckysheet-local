@@ -41,7 +41,7 @@ function contains(range: RangeRef, row: number, column: number): boolean {
 
 function cellHasContent(sheet: WorksheetModel, row: number, column: number): boolean {
   const cell = sheet.cells.get(row, column);
-  return Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula !== undefined || cell.formulaValue !== undefined || cell.note || cell.comment));
+  return Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula !== undefined || cell.formulaValue !== undefined));
 }
 
 function usedRange(sheet: WorksheetModel): RangeRef {
@@ -57,16 +57,14 @@ function usedRange(sheet: WorksheetModel): RangeRef {
     startColumn = Math.min(startColumn, column);
     endColumn = Math.max(endColumn, column);
   });
-  for (const [key] of sheet.notes) {
-    const [row, column] = key.split(':').map(Number);
-    if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column)) continue;
+  for (const { row, column } of sheet.review.noteEntries()) {
     occupied = true;
     startRow = Math.min(startRow, row);
     endRow = Math.max(endRow, row);
     startColumn = Math.min(startColumn, column);
     endColumn = Math.max(endColumn, column);
   }
-  for (const thread of sheet.commentThreads) {
+  for (const thread of sheet.review.threadEntries()) {
     occupied = true;
     startRow = Math.min(startRow, thread.row);
     endRow = Math.max(endRow, thread.row);

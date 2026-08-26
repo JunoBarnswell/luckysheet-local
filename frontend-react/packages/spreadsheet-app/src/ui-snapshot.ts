@@ -72,7 +72,6 @@ import {
   type PivotProjectionSourceState,
 } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
-import { getCellNote } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from './features/data-source';
 import { createWorkbookCellResolver } from './features/data-source';
 import {
@@ -314,9 +313,9 @@ export function buildCanvasSheetSnapshot(
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
     const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
-    const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
-    const note = getCellNote(sheet, row, column) ?? modelCell?.note;
-    const comment = thread ? threadToCellComment(thread) : modelCell?.comment;
+    const thread = findCommentThreadAt(sheet, row, column);
+    const note = sheet.review.getNoteAt(row, column);
+    const comment = thread ? threadToCellComment(thread) : undefined;
     const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
     const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
     return {

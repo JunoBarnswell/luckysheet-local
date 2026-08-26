@@ -1,6 +1,6 @@
 import type { CellData, RangeRef, Row, WorksheetModel } from './index';
-import { noteCellKey } from './index';
-import type { CellNote, CommentThread, DrawingObject, SpillRange } from './domain';
+import { cellKey } from './index';
+import type { DrawingObject, SpillRange } from './domain';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
@@ -158,7 +158,7 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
   for (const [key, value] of source) {
     const [rowText, columnText] = key.split(':');
     const row = Number(rowText); const column = Number(columnText);
-    const nextKey = noteCellKey(inRange(plan.range, row, column) ? remapRow(row, plan) : row, column);
+    const nextKey = cellKey(inRange(plan.range, row, column) ? remapRow(row, plan) : row, column);
     if (next.has(nextKey)) throw new Error(`Sort produced duplicate cell metadata at ${nextKey}`);
     next.set(nextKey, value);
   }
@@ -171,7 +171,7 @@ export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPerm
   if (range.sheetId !== sheet.id || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
   // Detect cell-owner collisions before any cell record is cleared. Notes and
   // hyperlinks are single-owner maps, so a collision is an atomic rejection.
-  remapCellMap(sheet.notes, plan);
+  sheet.review.validateRemapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   remapCellMap(sheet.hyperlinks, plan);
   for (const merge of sheet.merges) {
     if (!rangesIntersect(merge.range, range)) continue;
@@ -213,9 +213,8 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
   sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
-  const notes = remapCellMap(sheet.notes, plan); sheet.notes.clear(); for (const [key, value] of notes) sheet.notes.set(key, value as CellNote);
+  sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.map((thread: CommentThread) => inRange(range, thread.row, thread.column) ? { ...thread, row: remapRow(thread.row, plan) } : thread));
   for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
   for (const sparkline of sheet.sparklines) { sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan); if (inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan); }
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));

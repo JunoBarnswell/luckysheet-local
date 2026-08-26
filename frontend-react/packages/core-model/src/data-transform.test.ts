@@ -14,11 +14,11 @@ describe('canonical row permutation metadata plan', () => {
     sheet.columnCount = 30;
     sheet.cells.set(0, 0, { value: 'first' });
     sheet.cells.set(1, 0, { value: 'second' });
-    sheet.notes.set('0:1', { id: 'inside-note', author: 'u', text: 'inside', createdAt: 'now', visible: true });
-    sheet.notes.set('0:25', { id: 'outside-note', author: 'u', text: 'outside', createdAt: 'now', visible: true });
+    sheet.review.setNote(0, 1, { id: 'inside-note', author: 'u', text: 'inside', createdAt: 'now', visible: true });
+    sheet.review.setNote(0, 25, { id: 'outside-note', author: 'u', text: 'outside', createdAt: 'now', visible: true });
     sheet.hyperlinks.set('0:1', { id: 'inside-link', target: { kind: 'url', url: 'https://inside.invalid' } });
     sheet.hyperlinks.set('0:25', { id: 'outside-link', target: { kind: 'url', url: 'https://outside.invalid' } });
-    sheet.commentThreads.push({ id: 'outside-comment', sheetId: sheet.id, row: 0, column: 25, author: 'u', text: 'outside', createdAt: 'now', replies: [] });
+    sheet.review.addThread({ id: 'outside-comment', sheetId: sheet.id, row: 0, column: 25, author: 'u', text: 'outside', createdAt: 'now', replies: [] });
     sheet.drawings.push(
       { id: 'inside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'inside' },
       { id: 'outside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 25 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'outside' },
@@ -27,12 +27,12 @@ describe('canonical row permutation metadata plan', () => {
     applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 1), [1, 0]));
 
     assert.equal(sheet.cells.get(0, 0)?.value, 'second');
-    assert.equal(sheet.notes.get('1:1')?.id, 'inside-note');
-    assert.equal(sheet.notes.get('0:25')?.id, 'outside-note');
+    assert.equal(sheet.review.getNoteAt(1, 1)?.id, 'inside-note');
+    assert.equal(sheet.review.getNoteAt(0, 25)?.id, 'outside-note');
     assert.equal(sheet.hyperlinks.get('1:1')?.id, 'inside-link');
     assert.equal(sheet.hyperlinks.get('0:25')?.id, 'outside-link');
-    assert.equal(sheet.commentThreads[0]?.row, 0);
-    assert.equal(sheet.commentThreads[0]?.column, 25);
+    assert.equal(sheet.review.getThreadsAt(0, 25)[0]?.row, 0);
+    assert.equal(sheet.review.getThreadsAt(0, 25)[0]?.column, 25);
     assert.equal(sheet.drawings.find((item) => item.id === 'inside-drawing')?.anchor.row, 1);
     assert.equal(sheet.drawings.find((item) => item.id === 'outside-drawing')?.anchor.row, 0);
   });

@@ -278,61 +278,173 @@ final class SnapshotMutationSupport {
                 && coordinate.column() >= range.startColumn() && coordinate.column() <= range.endColumn();
     }
 
+    static List<ObjectNode> reviewThreads(ObjectNode sheet) {
+        List<ObjectNode> threads = new ArrayList<>();
+        ObjectNode threadsById = reviewMap(sheet, "threadsById");
+        threadsById.fields().forEachRemaining(entry -> {
+            if (!entry.getValue().isObject()) throw ServiceException.validation("Review thread is invalid: " + entry.getKey());
+            ObjectNode thread = (ObjectNode) entry.getValue();
+            if (entry.getKey().isBlank() || !entry.getKey().equals(thread.path("id").asText())) throw ServiceException.validation("Review thread identity is invalid: " + entry.getKey());
+            threadCoordinate(sheet, thread);
+            threads.add(thread);
+        });
+        return threads;
+    }
+
+    @FunctionalInterface
+    interface ReviewCoordinateMapper {
+        CellCoordinate map(CellCoordinate coordinate);
+    }
+
+    static void remapReviewCoordinates(ObjectNode sheet, ReviewCoordinateMapper mapper) {
+        ObjectNode notesByCell = reviewMap(sheet, "notesByCell");
+        ObjectNode notesById = reviewMap(sheet, "notesById");
+        ObjectNode nextNotesByCell = notesByCell.objectNode();
+        notesByCell.fields().forEachRemaining(entry -> {
+            if (!entry.getValue().isTextual()) throw ServiceException.validation("Review note cell index is invalid: " + entry.getKey());
+            JsonNode note = notesById.get(entry.getValue().asText());
+            if (note == null || !note.isObject()) throw ServiceException.validation("Review note index is dangling: " + entry.getValue().asText());
+            CellCoordinate mapped = mapper.map(reviewCoordinate(entry.getKey()));
+            if (mapped == null) throw ServiceException.validation("Review transform would remove a note");
+            String nextKey = reviewKey(mapped);
+            if (nextNotesByCell.has(nextKey)) throw ServiceException.validation("Review transform produced duplicate note cell: " + nextKey);
+            nextNotesByCell.put(nextKey, entry.getValue().asText());
+        });
+
+        ObjectNode threadsById = reviewMap(sheet, "threadsById");
+        ObjectNode nextThreadsById = threadsById.objectNode();
+        ObjectNode nextThreadIdsByCell = reviewMap(sheet, "threadIdsByCell").objectNode();
+        threadsById.fields().forEachRemaining(entry -> {
+            if (!entry.getValue().isObject()) throw ServiceException.validation("Review thread is invalid: " + entry.getKey());
+            ObjectNode thread = (ObjectNode) entry.getValue();
+            if (!entry.getKey().equals(thread.path("id").asText())) throw ServiceException.validation("Review thread identity is invalid: " + entry.getKey());
+            CellCoordinate mapped = mapper.map(new CellCoordinate(thread.path("row").asInt(-1), thread.path("column").asInt(-1)));
+            if (mapped == null) throw ServiceException.validation("Review transform would remove a comment thread");
+            String nextKey = reviewKey(mapped);
+            ObjectNode nextThread = thread.deepCopy();
+            nextThread.put("row", mapped.row()).put("column", mapped.column());
+            nextThreadsById.set(entry.getKey(), nextThread);
+            JsonNode indexed = nextThreadIdsByCell.get(nextKey);
+            ArrayNode ids;
+            if (indexed == null) ids = JsonNodeFactory.instance.arrayNode();
+            else if (indexed.isArray()) ids = (ArrayNode) indexed;
+            else throw ServiceException.validation("Review thread cell index is invalid: " + nextKey);
+            ids.add(entry.getKey());
+            nextThreadIdsByCell.set(nextKey, ids);
+        });
+        ObjectNode review = review(sheet);
+        review.set("notesByCell", nextNotesByCell);
+        review.set("threadsById", nextThreadsById);
+        review.set("threadIdsByCell", nextThreadIdsByCell);
+    }
+
     static long cellCount(RangeRef range) {
         return (long) (range.endRow() - range.startRow() + 1) * (range.endColumn() - range.startColumn() + 1);
     }
 
+    static ObjectNode review(ObjectNode sheet) {
+        ObjectNode review = requiredObject(sheet, "review");
+        requiredObject(review, "notesByCell");
+        requiredObject(review, "notesById");
+        requiredObject(review, "threadIdsByCell");
+        requiredObject(review, "threadsById");
+        return review;
+    }
+
+    static ObjectNode reviewMap(ObjectNode sheet, String property) {
+        return requiredObject(review(sheet), property);
+    }
+
+    static String reviewKey(CellCoordinate coordinate) {
+        if (coordinate.row() < 0 || coordinate.row() > MAX_ROW || coordinate.column() < 0 || coordinate.column() > MAX_COLUMN) {
+            throw ServiceException.validation("Review coordinate is out of bounds");
+        }
+        return coordinate.row() + ":" + coordinate.column();
+    }
+
+    static CellCoordinate reviewCoordinate(String key) {
+        if (key == null || key.isBlank()) throw ServiceException.validation("Review cell key is required");
+        String[] parts = key.split(":", -1);
+        if (parts.length != 2) throw ServiceException.validation("Review cell key is invalid: " + key);
+        try {
+            int row = Integer.parseInt(parts[0]);
+            int column = Integer.parseInt(parts[1]);
+            CellCoordinate coordinate = new CellCoordinate(row, column);
+            if (!reviewKey(coordinate).equals(key)) throw ServiceException.validation("Review cell key is invalid: " + key);
+            return coordinate;
+        } catch (NumberFormatException exception) {
+            throw ServiceException.validation("Review cell key is invalid: " + key);
+        }
+    }
+
     static void removeNotes(ObjectNode sheet, RangeRef range) {
-        ArrayNode notes = array(sheet, "notes");
-        for (int index = notes.size() - 1; index >= 0; index--) {
-            JsonNode entry = notes.get(index);
-            if (entry.isObject() && contains(range, new CellCoordinate(entry.path("row").asInt(-1), entry.path("column").asInt(-1)))) notes.remove(index);
-        }
+        ObjectNode notesByCell = reviewMap(sheet, "notesByCell");
+        List<CellCoordinate> coordinates = new ArrayList<>();
+        notesByCell.fieldNames().forEachRemaining(key -> {
+            CellCoordinate coordinate = reviewCoordinate(key);
+            if (contains(range, coordinate)) coordinates.add(coordinate);
+        });
+        coordinates.forEach(coordinate -> removeNote(sheet, coordinate));
     }
 
-    static boolean removeNote(ArrayNode notes, CellCoordinate coordinate) {
-        for (int index = notes.size() - 1; index >= 0; index--) {
-            JsonNode entry = notes.get(index);
-            if (entry.path("row").asInt(-1) == coordinate.row() && entry.path("column").asInt(-1) == coordinate.column()) {
-                notes.remove(index);
-                return true;
+    static boolean removeNote(ObjectNode sheet, CellCoordinate coordinate) {
+        ObjectNode notesByCell = reviewMap(sheet, "notesByCell");
+        String key = reviewKey(coordinate);
+        JsonNode id = notesByCell.get(key);
+        if (id == null) return false;
+        if (!id.isTextual() || id.asText().isBlank()) throw ServiceException.validation("Review note cell index is invalid: " + key);
+        if (!reviewMap(sheet, "notesById").has(id.asText())) throw ServiceException.validation("Review note index is dangling: " + id.asText());
+        notesByCell.remove(key);
+        reviewMap(sheet, "notesById").remove(id.asText());
+        return true;
+    }
+
+    static ObjectNode findNote(ObjectNode sheet, CellCoordinate coordinate) {
+        String key = reviewKey(coordinate);
+        JsonNode id = reviewMap(sheet, "notesByCell").get(key);
+        if (id == null) return null;
+        if (!id.isTextual() || id.asText().isBlank()) throw ServiceException.validation("Review note cell index is invalid: " + key);
+        JsonNode note = reviewMap(sheet, "notesById").get(id.asText());
+        if (note == null || !note.isObject()) throw ServiceException.validation("Review note index is dangling: " + id.asText());
+        return (ObjectNode) note;
+    }
+
+    static void putNote(ObjectNode sheet, CellCoordinate coordinate, JsonNode value) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Review note payload is invalid");
+        String id = text((ObjectNode) value, "id");
+        ObjectNode notesByCell = reviewMap(sheet, "notesByCell");
+        String key = reviewKey(coordinate);
+        notesByCell.fields().forEachRemaining(entry -> {
+            if (id.equals(entry.getValue().asText()) && !key.equals(entry.getKey())) {
+                throw ServiceException.conflict("Review note identity already belongs to another cell: " + id);
             }
-        }
-        return false;
-    }
-
-    static ObjectNode findNote(ArrayNode notes, CellCoordinate coordinate) {
-        for (JsonNode entry : notes) {
-            if (entry.isObject() && entry.path("row").asInt(-1) == coordinate.row() && entry.path("column").asInt(-1) == coordinate.column()) return (ObjectNode) entry;
-        }
-        return null;
+        });
+        removeNote(sheet, coordinate);
+        notesByCell.put(key, id);
+        reviewMap(sheet, "notesById").set(id, value.deepCopy());
     }
 
     static void removeThreads(ObjectNode sheet, RangeRef range) {
-        ArrayNode threads = array(sheet, "commentThreads");
-        for (int index = threads.size() - 1; index >= 0; index--) {
-            JsonNode thread = threads.get(index);
-            if (thread.isObject() && contains(range, new CellCoordinate(thread.path("row").asInt(-1), thread.path("column").asInt(-1)))) threads.remove(index);
+        List<String> ids = new ArrayList<>();
+        for (ObjectNode thread : reviewThreads(sheet)) {
+            String id = thread.path("id").asText();
+            CellCoordinate coordinate = threadCoordinate(sheet, thread);
+            if (contains(range, coordinate)) ids.add(id);
         }
+        ids.forEach(id -> removeThread(sheet, id));
     }
 
     static void restoreNotes(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef range, JsonNode value) {
         if (value == null || value.isNull()) return;
         if (!value.isArray()) throw ServiceException.validation("Range restore notes must be an array");
         if (value.size() > MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore notes are too large");
-        ArrayNode notes = array(sheet, "notes");
         for (JsonNode entry : value) {
             if (!entry.isObject()) throw ServiceException.validation("Range restore note must be an object");
             CellCoordinate coordinate = coordinate(root, sheetId, (ObjectNode) entry);
             if (!contains(range, coordinate)) throw ServiceException.validation("Range restore note is outside its range");
             JsonNode note = entry.get("note");
             if (note == null || !note.isObject()) throw ServiceException.validation("Range restore note payload is invalid");
-            removeNote(notes, coordinate);
-            ObjectNode next = notes.objectNode();
-            next.put("row", coordinate.row());
-            next.put("column", coordinate.column());
-            next.set("note", note.deepCopy());
-            notes.add(next);
+            putNote(sheet, coordinate, note);
         }
     }
 
@@ -340,18 +452,14 @@ final class SnapshotMutationSupport {
         if (value == null || value.isNull()) return;
         if (!value.isArray()) throw ServiceException.validation("Range restore comments must be an array");
         if (value.size() > MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore comments are too large");
-        ArrayNode threads = array(sheet, "commentThreads");
         for (JsonNode thread : value) {
             if (!thread.isObject()) throw ServiceException.validation("Range restore comment must be an object");
             if (!sheetId.equals(thread.path("sheetId").asText())) throw ServiceException.validation("Range restore comment targets another sheet");
             CellCoordinate coordinate = coordinate(root, sheetId, (ObjectNode) thread);
             if (!contains(range, coordinate)) throw ServiceException.validation("Range restore comment is outside its range");
             String id = text((ObjectNode) thread, "id");
-            ArrayNode next = JsonNodeFactory.instance.arrayNode();
-            for (JsonNode existing : threads) if (!id.equals(existing.path("id").asText())) next.add(existing);
-            threads.removeAll();
-            threads.addAll(next);
-            threads.add(thread.deepCopy());
+            removeThread(sheet, id);
+            addThread(sheet, thread);
         }
     }
 
@@ -360,9 +468,72 @@ final class SnapshotMutationSupport {
         return null;
     }
 
+    static ObjectNode findThread(ObjectNode sheet, String id) {
+        JsonNode thread = reviewMap(sheet, "threadsById").get(id);
+        if (thread == null) return null;
+        if (!thread.isObject()) throw ServiceException.validation("Review thread is invalid: " + id);
+        return (ObjectNode) thread;
+    }
+
+    static void addThread(ObjectNode sheet, JsonNode value) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Review thread payload is invalid");
+        ObjectNode thread = (ObjectNode) value;
+        String id = text(thread, "id");
+        ObjectNode threadsById = reviewMap(sheet, "threadsById");
+        if (threadsById.has(id)) throw ServiceException.conflict("Comment thread already exists: " + id);
+        CellCoordinate coordinate = threadCoordinate(sheet, thread);
+        String key = reviewKey(coordinate);
+        ObjectNode threadIdsByCell = reviewMap(sheet, "threadIdsByCell");
+        JsonNode indexed = threadIdsByCell.get(key);
+        ArrayNode ids;
+        if (indexed == null) ids = JsonNodeFactory.instance.arrayNode();
+        else if (indexed.isArray()) ids = (ArrayNode) indexed;
+        else throw ServiceException.validation("Review thread cell index is invalid: " + key);
+        for (JsonNode indexedId : ids) if (id.equals(indexedId.asText())) throw ServiceException.conflict("Comment thread is already indexed: " + id);
+        threadsById.set(id, value.deepCopy());
+        ids.add(id);
+        threadIdsByCell.set(key, ids);
+    }
+
+    static boolean removeThread(ObjectNode sheet, String id) {
+        ObjectNode threadsById = reviewMap(sheet, "threadsById");
+        JsonNode value = threadsById.get(id);
+        if (value == null) return false;
+        if (!value.isObject()) throw ServiceException.validation("Review thread is invalid: " + id);
+        ObjectNode thread = (ObjectNode) value;
+        CellCoordinate coordinate = threadCoordinate(sheet, thread);
+        String key = reviewKey(coordinate);
+        ObjectNode threadIdsByCell = reviewMap(sheet, "threadIdsByCell");
+        JsonNode indexed = threadIdsByCell.get(key);
+        if (indexed == null || !indexed.isArray()) throw ServiceException.validation("Review thread index is dangling: " + id);
+        ArrayNode ids = (ArrayNode) indexed;
+        boolean removed = false;
+        for (int index = ids.size() - 1; index >= 0; index--) {
+            if (id.equals(ids.get(index).asText())) {
+                ids.remove(index);
+                removed = true;
+            }
+        }
+        if (!removed) throw ServiceException.validation("Review thread index is dangling: " + id);
+        if (ids.isEmpty()) threadIdsByCell.remove(key);
+        threadsById.remove(id);
+        return true;
+    }
+
+    private static CellCoordinate threadCoordinate(ObjectNode sheet, ObjectNode thread) {
+        if (!sheet.path("id").asText().equals(thread.path("sheetId").asText())
+                || !thread.path("row").isIntegralNumber() || !thread.path("row").canConvertToInt()
+                || !thread.path("column").isIntegralNumber() || !thread.path("column").canConvertToInt()) {
+            throw ServiceException.validation("Review thread identity or location is invalid");
+        }
+        CellCoordinate coordinate = new CellCoordinate(thread.path("row").intValue(), thread.path("column").intValue());
+        reviewKey(coordinate);
+        return coordinate;
+    }
+
     static ObjectNode requireThread(ObjectNode sheet, ObjectNode params) {
         String id = text(params, "threadId");
-        ObjectNode thread = findThread(array(sheet, "commentThreads"), id);
+        ObjectNode thread = findThread(sheet, id);
         if (thread == null) throw ServiceException.notFound("Comment thread not found");
         return thread;
     }

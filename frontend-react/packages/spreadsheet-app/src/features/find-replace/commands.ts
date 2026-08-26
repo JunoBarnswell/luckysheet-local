@@ -160,11 +160,11 @@ function applyFindReplacementMutation(params: FindReplacementMutationParams, con
       const expected = forward ? patch.previous : patch.next;
       if (!equalValue(current, expected)) throw new Error(`Find replacement source changed at ${patch.match.key}`);
     } else if (patch.kind === 'note') {
-      const current = sheet.notes.get(`${patch.match.row}:${patch.match.column}`);
+      const current = sheet.review.getNoteAt(patch.match.row, patch.match.column);
       const expected = forward ? patch.previous : patch.next;
       if (!equalValue(current, expected)) throw new Error(`Find note source changed at ${patch.match.key}`);
     } else {
-      const thread = sheet.commentThreads.find((entry) => entry.id === patch.match.sourceId);
+      const thread = patch.match.sourceId ? sheet.review.getThread(patch.match.sourceId) : undefined;
       const expected = forward ? patch.previousText : patch.nextText;
       if (!thread || thread.row !== patch.match.row || thread.column !== patch.match.column || thread.text !== expected) throw new Error(`Find comment source changed at ${patch.match.key}`);
     }
@@ -177,13 +177,13 @@ function applyFindReplacementMutation(params: FindReplacementMutationParams, con
       else sheet.cells.set(patch.match.row, patch.match.column, structuredClone(next));
     } else if (patch.kind === 'note') {
       const next = forward ? patch.next : patch.previous;
-      const key = `${patch.match.row}:${patch.match.column}`;
-      if (next === undefined) sheet.notes.delete(key);
-      else sheet.notes.set(key, structuredClone(next));
+      if (next === undefined) sheet.review.removeNote(patch.match.row, patch.match.column);
+      else sheet.review.setNote(patch.match.row, patch.match.column, next);
     } else {
-      const thread = sheet.commentThreads.find((entry) => entry.id === patch.match.sourceId);
+      const thread = patch.match.sourceId ? sheet.review.getThread(patch.match.sourceId) : undefined;
       if (!thread) throw new Error(`Find comment ${patch.match.sourceId} disappeared during commit`);
-      thread.text = forward ? patch.nextText : patch.previousText;
+      const text = forward ? patch.nextText : patch.previousText;
+      sheet.review.updateThread(thread.id, (current) => { current.text = text; });
     }
   }
 }
@@ -200,7 +200,7 @@ function assertCurrentMatch(match: FindMatch, params: FindReplaceParams, context
     else text = value == null ? '' : undefined;
   } else if (match.target === 'formulas') text = cell?.formula;
   else if (match.target === 'notes') text = noteAt(sheet, match.row, match.column)?.text;
-  else text = sheet.commentThreads.find((thread) => thread.id === match.sourceId)?.text ?? cell?.comment?.text;
+  else text = match.sourceId ? sheet.review.getThread(match.sourceId)?.text : undefined;
   if (text === undefined || !matchesFindText(text, params)) throw new Error(`Find match ${match.key} changed before replacement`);
 }
 
@@ -243,13 +243,13 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
       patches.push({ kind: 'cell', match, previous: structuredClone(cell), next: replacementCell(cell, replacement) });
       touchedCells.add(key);
     } else if (match.target === 'notes') {
-      const note = context.workbook.getSheet(match.sheetId).notes.get(`${match.row}:${match.column}`);
+      const note = context.workbook.getSheet(match.sheetId).review.getNoteAt(match.row, match.column);
       if (!note || note.id !== match.sourceId) throw new Error(`Note ${match.sourceId} changed before replacement`);
       const replaced = replaceFindText(note.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Note ${match.sourceId} no longer matches`);
       patches.push({ kind: 'note', match, previous: structuredClone(note), next: { ...structuredClone(note), text: replaced }, text: replaced });
     } else {
-      const thread = context.workbook.getSheet(match.sheetId).commentThreads.find((entry) => entry.id === match.sourceId);
+      const thread = match.sourceId ? context.workbook.getSheet(match.sheetId).review.getThread(match.sourceId) : undefined;
       if (!thread) throw new Error(`Comment ${match.sourceId} changed before replacement`);
       const replaced = replaceFindText(thread.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Comment ${match.sourceId} no longer matches`);

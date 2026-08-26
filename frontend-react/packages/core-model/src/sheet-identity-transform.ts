@@ -221,6 +221,15 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
   for (const sparkline of copy.sparklines) sparklineIds.set(sparkline.id, allocateId(ids((sheet) => sheet.sparklines.map((entry) => entry.id)), sparkline.id, targetSheetId));
   const sparklineGroupIds = new Map<string, string>();
   for (const group of copy.sparklineGroups) sparklineGroupIds.set(group.id, allocateId(ids((sheet) => sheet.sparklineGroups.map((entry) => entry.id)), group.id, targetSheetId));
+  const reviewIds = ids((sheet) => [
+    ...sheet.review.noteEntries().map((entry) => entry.note.id),
+    ...sheet.review.threadEntries().flatMap((thread) => [thread.id, ...thread.replies.map((reply) => reply.id)]),
+  ]);
+  const allocateReviewId = (sourceId: string): string => {
+    const allocated = allocateId(reviewIds, sourceId, targetSheetId);
+    reviewIds.add(allocated);
+    return allocated;
+  };
 
   copy.dataRegions.splice(0, copy.dataRegions.length, ...copy.dataRegions.map((region) => ({ ...region, range: mapRange(region.range, source.id, targetSheetId) })));
   copy.merges.splice(0, copy.merges.length, ...copy.merges.map((merge) => ({ ...merge, range: mapRange(merge.range, source.id, targetSheetId) })));
@@ -236,7 +245,7 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
   for (const [id, payload] of payloads) copy.drawingPayloads.set(id, payload);
   copy.drawingGroups.splice(0, copy.drawingGroups.length, ...copy.drawingGroups.map((group) => ({ ...group, id: groupIds.get(group.id)!, sheetId: targetSheetId, memberDrawingIds: group.memberDrawingIds.map((id) => drawingIds.get(id) ?? id) })));
   copy.hyperlinks.forEach((hyperlink, key) => copy.hyperlinks.set(key, { ...hyperlink, target: remapHyperlinkTarget(hyperlink.target, source.id, targetSheetId) }));
-  copy.commentThreads.splice(0, copy.commentThreads.length, ...copy.commentThreads.map((thread) => ({ ...thread, sheetId: targetSheetId })));
+  copy.review.reallocateIdentities(targetSheetId, allocateReviewId);
   copy.spillRanges.splice(0, copy.spillRanges.length, ...copy.spillRanges.map((spill) => ({ ...spill, sheetId: targetSheetId, range: mapRange(spill.range, source.id, targetSheetId) })));
   copy.protectionRules.splice(0, copy.protectionRules.length, ...copy.protectionRules.map((rule) => ({ ...rule, sheetId: rule.sheetId ? targetSheetId : undefined, range: rule.range ? mapRange(rule.range, source.id, targetSheetId) : undefined })));
   if (copy.autoFilter) copy.autoFilter = { ...copy.autoFilter, sheetId: targetSheetId, range: mapRange(copy.autoFilter.range, source.id, targetSheetId) } as AutoFilterModel;

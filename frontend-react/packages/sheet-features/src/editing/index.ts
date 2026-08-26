@@ -13,7 +13,7 @@ import type {
   BorderLine,
   BorderPlacement,
 } from '@react-sheets/core-model';
-import { clearFormulaProvenance, columnLabel, noteCellKey, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
+import { cellKey, clearFormulaProvenance, columnLabel, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -420,9 +420,7 @@ export function resolveGoToSpecial(
           break;
         case 'comments':
         case 'comments-notes':
-          match = Boolean(cell?.comment)
-            || sheet.commentThreads.some((thread) => thread.row === row && thread.column === column)
-            || sheet.notes.has(noteCellKey(row, column));
+          match = sheet.review.getThreadsAt(row, column).length > 0 || sheet.review.hasNoteAt(row, column);
           break;
         case 'errors':
           match = Boolean(typeof cell?.value === 'string' && cell.value.startsWith('#'));
@@ -605,16 +603,13 @@ function snapshotCells(sheet: WorksheetModel, ranges: RangeRef[]): CellSnapshot[
 
 function snapshotMetadata(sheet: WorksheetModel, ranges: RangeRef[], include: PasteSpecialSpec['metadata']): Pick<PasteSnapshot, 'notes' | 'hyperlinks' | 'commentCells' | 'comments'> {
   const contains = (row: number, column: number) => ranges.some((range) => rangeContains(range, row, column));
-  const notes = include.commentsNotes ? [...sheet.notes.entries()].filter(([key]) => {
-    const [row, column] = key.split(':').map(Number);
-    return Number.isInteger(row) && Number.isInteger(column) && contains(row, column);
-  }).map(([key, value]) => ({ key, value: structuredClone(value) })) : undefined;
+  const notes = include.commentsNotes ? sheet.review.noteEntries().filter((entry) => contains(entry.row, entry.column)).map((entry) => ({ key: entry.key, value: entry.note })) : undefined;
   const hyperlinks = include.hyperlinks ? [...sheet.hyperlinks.entries()].filter(([key]) => {
     const [row, column] = key.split(':').map(Number);
     return Number.isInteger(row) && Number.isInteger(column) && contains(row, column);
   }).map(([key, value]) => ({ key, value: structuredClone(value) })) : undefined;
-  const commentCells = include.commentsNotes ? sheet.commentThreads.filter((thread) => contains(thread.row, thread.column)).map((thread) => keyFor(thread.row, thread.column)) : undefined;
-  const comments = include.commentsNotes ? sheet.commentThreads.filter((thread) => contains(thread.row, thread.column)).map((thread) => structuredClone(thread)) : undefined;
+  const commentCells = include.commentsNotes ? sheet.review.threadEntries().filter((thread) => contains(thread.row, thread.column)).map((thread) => keyFor(thread.row, thread.column)) : undefined;
+  const comments = include.commentsNotes ? sheet.review.threadEntries().filter((thread) => contains(thread.row, thread.column)) : undefined;
   return { notes, hyperlinks, commentCells, comments };
 }
 
@@ -630,17 +625,12 @@ function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): voi
   }
   for (const range of snapshot.clearMetadataRanges ?? []) {
     if (range.sheetId !== sheet.id) continue;
-    for (const key of [...sheet.notes.keys()]) {
-      const [row, column] = key.split(':').map(Number);
-      if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.notes.delete(key);
-    }
+    for (const entry of sheet.review.noteEntries()) if (rangeContains(range, entry.row, entry.column)) sheet.review.removeNote(entry.row, entry.column);
     for (const key of [...sheet.hyperlinks.keys()]) {
       const [row, column] = key.split(':').map(Number);
       if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.hyperlinks.delete(key);
     }
-    const retainedThreads = sheet.commentThreads.filter((entry) => !rangeContains(range, entry.row, entry.column));
-    sheet.commentThreads.length = 0;
-    sheet.commentThreads.push(...retainedThreads);
+    for (const thread of sheet.review.threadEntries()) if (rangeContains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
   }
   for (const cell of snapshot.cells) {
     if (cell.value) sheet.cells.set(cell.row, cell.column, structuredClone(cell.value));
@@ -648,8 +638,9 @@ function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): voi
   }
   if (snapshot.notes) {
     for (const entry of snapshot.notes) {
-      if (entry.value) sheet.notes.set(entry.key, structuredClone(entry.value));
-      else sheet.notes.delete(entry.key);
+      const [row, column] = entry.key.split(':').map(Number);
+      if (entry.value) sheet.review.setNote(row!, column!, entry.value);
+      else sheet.review.removeNote(row!, column!);
     }
   }
   if (snapshot.hyperlinks) {
@@ -660,9 +651,8 @@ function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): voi
   }
   if (snapshot.comments || snapshot.commentCells) {
     const covered = new Set(snapshot.commentCells ?? snapshot.comments?.map((entry) => keyFor(entry.row, entry.column)) ?? []);
-    const retained = sheet.commentThreads.filter((entry) => !covered.has(keyFor(entry.row, entry.column)));
-    sheet.commentThreads.length = 0;
-    sheet.commentThreads.push(...retained, ...structuredClone(snapshot.comments ?? []));
+    for (const thread of sheet.review.threadEntries()) if (covered.has(keyFor(thread.row, thread.column))) sheet.review.removeThread(thread.id);
+    for (const thread of snapshot.comments ?? []) sheet.review.addThread(thread);
   }
   if (snapshot.validations) {
     sheet.dataValidations.length = 0;
@@ -892,11 +882,6 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             column - sourceColumn,
             sourceAddress,
           );
-          if (params.spec.metadata.commentsNotes && (source.note || source.comment)) {
-            next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
-            if (source.note) next.note = structuredClone(source.note);
-            if (source.comment) next.comment = structuredClone(source.comment);
-          }
           if (params.spec.metadata.hyperlinks && (source.hyperlink || source.hyperlinkDetail)) {
             next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
             if (source.hyperlink) next.hyperlink = source.hyperlink;

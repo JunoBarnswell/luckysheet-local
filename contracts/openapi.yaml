@@ -209,7 +209,7 @@ components:
       required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 7 }
+        version: { const: 8 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
         dimensionMetrics:
@@ -256,7 +256,7 @@ components:
         additionalProperties: false
     WorksheetSnapshot:
       type: object
-      required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, defaultRowHeightPx, defaultColumnWidthPx]
+      required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, review, defaultRowHeightPx, defaultColumnWidthPx]
       properties:
         id: { type: string, minLength: 1 }
         name: { type: string, minLength: 1 }
@@ -270,6 +270,15 @@ components:
         sparklines: { type: array, items: { type: object } }
         drawings: { type: array, items: { type: object } }
         drawingPayloads: { type: object, additionalProperties: { type: object } }
+        review:
+          type: object
+          required: [notesByCell, notesById, threadIdsByCell, threadsById]
+          properties:
+            notesByCell: { type: object, additionalProperties: { type: string, minLength: 1 } }
+            notesById: { type: object, additionalProperties: { type: object } }
+            threadIdsByCell: { type: object, additionalProperties: { type: array, items: { type: string, minLength: 1 } } }
+            threadsById: { type: object, additionalProperties: { type: object } }
+          additionalProperties: false
         defaultRowHeightPx: { type: number, exclusiveMinimum: 0 }
         defaultColumnWidthPx: { type: number, exclusiveMinimum: 0 }
         rowHeightsPx: { type: object, additionalProperties: { type: number, exclusiveMinimum: 0 } }

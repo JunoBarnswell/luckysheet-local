@@ -19,8 +19,8 @@ test('Find planner orders cells and target families deterministically and keeps 
   sheet.cells.set(1, 0, { value: 'needle' });
   sheet.cells.set(0, 1, { value: 'needle' });
   sheet.cells.set(2, 0, { formula: '=needle', value: null });
-  sheet.notes.set('3:0', { id: 'note-1', author: 'u', text: 'needle note', createdAt: 'now', visible: true });
-  sheet.commentThreads.push({ id: 'comment-1', sheetId: sheet.id, row: 4, column: 0, author: 'u', text: 'needle comment', createdAt: 'now', replies: [] });
+  sheet.review.setNote(3, 0, { id: 'note-1', author: 'u', text: 'needle note', createdAt: 'now', visible: true });
+  sheet.review.addThread({ id: 'comment-1', sheetId: sheet.id, row: 4, column: 0, author: 'u', text: 'needle comment', createdAt: 'now', replies: [] });
   const before = workbook.snapshot();
 
   const result = planFind(workbook, { sheetId: sheet.id, query: 'needle', searchOrder: 'rows', scope: 'sheet', targets: ['values', 'formulas', 'notes', 'comments'], matchCase: true });

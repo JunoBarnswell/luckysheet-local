@@ -1619,7 +1619,7 @@ function assertMatrixTransformSupported(sheet: WorksheetModel, range: RangeRef):
     && drawing.anchor.row !== undefined && drawing.anchor.row >= range.startRow && drawing.anchor.row <= range.endRow)) {
     throw new Error('Matrix transform cannot rewrite drawing anchors');
   }
-  if (sheet.notes.size > 0 || sheet.commentThreads.some((thread) => thread.row >= range.startRow && thread.row <= range.endRow)) {
+  if (sheet.review.noteCount > 0 || sheet.review.threadEntries().some((thread) => thread.row >= range.startRow && thread.row <= range.endRow)) {
     throw new Error('Matrix transform cannot rewrite review objects');
   }
   if (sheet.sparklines.some((sparkline) => sparkline.anchor.row >= range.startRow && sparkline.anchor.row <= range.endRow)) {

@@ -181,14 +181,11 @@ export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRe
 
 function captureRangeMetadata(workbook: WorkbookModel, sheet: ReturnType<WorkbookModel['getSheet']>, range: RangeRef): ClipboardRangeMetadata {
   const notes: Array<ClipboardCellMetadata<CellNote>> = [];
-  for (const [key, note] of sheet.notes) {
-    const row = Number(key.split(':')[0]);
-    const column = Number(key.split(':')[1]);
-    if (!Number.isInteger(row) || !Number.isInteger(column)) continue;
+  for (const { row, column, note } of sheet.review.noteEntries()) {
     if (row < range.startRow || row > range.endRow || column < range.startColumn || column > range.endColumn) continue;
-    notes.push({ rowOffset: row - range.startRow, columnOffset: column - range.startColumn, value: structuredClone(note) });
+    notes.push({ rowOffset: row - range.startRow, columnOffset: column - range.startColumn, value: note });
   }
-  const comments = sheet.commentThreads
+  const comments = sheet.review.threadEntries()
     .filter((thread) => thread.row >= range.startRow && thread.row <= range.endRow && thread.column >= range.startColumn && thread.column <= range.endColumn)
     .map((thread) => ({ rowOffset: thread.row - range.startRow, columnOffset: thread.column - range.startColumn, value: structuredClone(thread) }));
   const hyperlinks: Array<ClipboardCellMetadata<CellHyperlink>> = [];
