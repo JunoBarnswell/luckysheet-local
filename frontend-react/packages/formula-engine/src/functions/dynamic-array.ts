@@ -1,4 +1,5 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
+import { findLookupIndex, type LookupMatchMode } from './lookup-engine';
 
 const MAX_GENERATED_ARRAY_CELLS = 100_000;
 
@@ -185,29 +186,9 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => For
     const searchMode = Number(args[3] ?? 1);
     if (lookupArray.length === 0) return createFormulaError('#N/A', 'XMATCH lookup array is empty');
 
-    const lookupNumber = typeof lookupValue === 'number' ? lookupValue : Number(lookupValue);
-    const compare = (candidate: FormulaValue): number => {
-      if (matchMode === 0) {
-        return String(candidate ?? '').toLowerCase() === String(lookupValue ?? '').toLowerCase() ? 0 : 1;
-      }
-      const candidateNumber = typeof candidate === 'number' ? candidate : Number(candidate);
-      if (!Number.isFinite(lookupNumber) || !Number.isFinite(candidateNumber)) return 1;
-      return candidateNumber - lookupNumber;
-    };
-
-    if (searchMode === -1) {
-      for (let index = lookupArray.length - 1; index >= 0; index--) {
-        if (compare(lookupArray[index]!) === 0) return index + 1;
-        if (matchMode === -1 && compare(lookupArray[index]!) <= 0) return index + 1;
-        if (matchMode === 1 && compare(lookupArray[index]!) >= 0) return index + 1;
-      }
-    } else {
-      for (let index = 0; index < lookupArray.length; index++) {
-        if (compare(lookupArray[index]!) === 0) return index + 1;
-        if (matchMode === -1 && compare(lookupArray[index]!) <= 0) return index + 1;
-        if (matchMode === 1 && compare(lookupArray[index]!) >= 0) return index + 1;
-      }
-    }
+    if (![0, -1, 1, 2].includes(matchMode) || ![1, -1, 2, -2].includes(searchMode)) return createFormulaError('#VALUE!', 'Invalid XMATCH mode');
+    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode);
+    if (index >= 0) return index + 1;
     return createFormulaError('#N/A', 'Value not found in XMATCH');
   },
 
