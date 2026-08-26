@@ -22,7 +22,7 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
     );
 
     SparklineMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "edit-objects");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported sparkline mutation: " + id);
     }
 

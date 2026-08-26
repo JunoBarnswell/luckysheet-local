@@ -8,6 +8,12 @@ export interface CellEditorProps {
   onChange: (value: string) => void;
   onCommit: (moveAfter?: 'down' | 'up' | 'left' | 'right' | 'none') => void;
   onCancel: () => void;
+  caret?: { start: number; end: number };
+  composing?: boolean;
+  onCaretChange?: (start: number, end: number) => void;
+  onCompositionStart?: () => void;
+  onCompositionUpdate?: (text: string) => void;
+  onCompositionEnd?: () => void;
   /** 向草稿插入引用文本(编辑中点击单元格/F4 由画布侧转发) */
   onInsertRef?: (refText: string) => void;
 }
@@ -16,9 +22,9 @@ export interface CellEditorProps {
  * 行内浮动编辑器。多行受控输入,回车提交(Shift+Enter 反向),
  * Tab 横向提交,Escape 取消。
  */
-export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCancel }: CellEditorProps): React.ReactElement {
+export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCancel, caret, composing = false, onCaretChange, onCompositionStart, onCompositionUpdate, onCompositionEnd }: CellEditorProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const composingRef = useRef(false);
+  const focusedRef = useRef(false);
   const editorStyle = useMemo<CSSProperties>(() => ({
     color: cellStyle?.textColor,
     fontFamily: cellStyle?.fontFamily,
@@ -31,14 +37,19 @@ export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCance
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    textarea.focus({ preventScroll: true });
+    if (!focusedRef.current) {
+      textarea.focus({ preventScroll: true });
+      focusedRef.current = true;
+    }
     // Direct typing opens the editor with its first character as the initial
     // draft. Explicitly place the caret after it; browsers otherwise retain a
     // start-of-text selection during this focus transition and produce
     // `ello-h` / `1+2=` style reordered input.
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
-  }, []);
+    const start = Math.max(0, Math.min(textarea.value.length, caret?.start ?? textarea.value.length));
+    const end = Math.max(start, Math.min(textarea.value.length, caret?.end ?? start));
+    textarea.setSelectionRange(start, end);
+    if (!caret) onCaretChange?.(start, end);
+  }, [initialText, caret?.start, caret?.end]);
 
   return (
     <Stack gap="none" className="h-full w-full">
@@ -48,13 +59,16 @@ export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCance
         aria-label="Cell editor"
         className="h-full min-h-0 w-full resize-none overflow-hidden rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0"
         value={initialText}
-        onCompositionStart={() => { composingRef.current = true; }}
-        onCompositionEnd={() => { composingRef.current = false; }}
+        onCompositionStart={() => onCompositionStart?.()}
+        onCompositionUpdate={(event) => onCompositionUpdate?.(event.currentTarget.value)}
+        onCompositionEnd={() => onCompositionEnd?.()}
         onChange={(event) => {
           onChange(event.target.value);
+          onCaretChange?.(event.target.selectionStart, event.target.selectionEnd);
         }}
+        onSelect={(event) => onCaretChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
         onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || composingRef.current) {
+          if (event.nativeEvent.isComposing || composing) {
             event.stopPropagation();
             return;
           }

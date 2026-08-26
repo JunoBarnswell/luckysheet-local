@@ -6,6 +6,8 @@ import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.CheckpointResponse;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.DataBlockMetadata;
+import com.xc.luckysheet.server.contract.AssetMetadata;
+import com.xc.luckysheet.server.contract.AssetReconcileRequest;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
@@ -27,6 +29,7 @@ import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.WorkbookOperationService;
 import com.xc.luckysheet.server.service.WorkbookDataBlockService;
+import com.xc.luckysheet.server.service.WorkbookAssetService;
 import com.xc.luckysheet.server.service.WorkbookCatalogService;
 import com.xc.luckysheet.server.service.QueryExecutionService;
 import com.xc.luckysheet.server.service.GuestShareService;
@@ -52,6 +55,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
 import java.util.List;
+import java.util.HashSet;
 
 @RestController
 @RequestMapping("/api/workbooks")
@@ -61,6 +65,7 @@ public class WorkbookController {
     private final QueryExecutionService queries;
     private final GuestShareService guestShares;
     private final WorkbookDataBlockService dataBlocks;
+    private final WorkbookAssetService assets;
     private final WorkbookCatalogService catalog;
 
     public WorkbookController(
@@ -69,6 +74,7 @@ public class WorkbookController {
             QueryExecutionService queries,
             GuestShareService guestShares,
             WorkbookDataBlockService dataBlocks,
+            WorkbookAssetService assets,
             WorkbookCatalogService catalog
     ) {
         this.operations = operations;
@@ -76,6 +82,7 @@ public class WorkbookController {
         this.queries = queries;
         this.guestShares = guestShares;
         this.dataBlocks = dataBlocks;
+        this.assets = assets;
         this.catalog = catalog;
     }
 
@@ -306,6 +313,45 @@ public class WorkbookController {
             Authentication authentication
     ) {
         dataBlocks.delete(unitId, sourceId, blockId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping(value = "/{unitId}/assets/{assetId}", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public AssetMetadata putAsset(
+            @PathVariable String unitId,
+            @PathVariable String assetId,
+            @RequestHeader("X-Content-SHA256") String checksum,
+            @RequestHeader("X-Asset-MimeType") String mimeType,
+            @RequestHeader(value = "X-Asset-Width", required = false) Integer width,
+            @RequestHeader(value = "X-Asset-Height", required = false) Integer height,
+            HttpServletRequest request,
+            Authentication authentication
+    ) {
+        return assets.put(unitId, assetId, checksum, mimeType, width, height, request.getContentLengthLong(), request::getInputStream,
+                ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping(value = "/{unitId}/assets/{assetId}", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> getAsset(@PathVariable String unitId, @PathVariable String assetId, Authentication authentication) {
+        var asset = assets.get(unitId, assetId, ActorIdentity.subject(authentication));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(asset.getMimeType()))
+                .contentLength(asset.getByteLength())
+                .header("X-Content-SHA256", asset.getContentHash())
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=0")
+                .body(asset.getContent());
+    }
+
+    @DeleteMapping("/{unitId}/assets/{assetId}")
+    public ResponseEntity<Void> deleteAsset(@PathVariable String unitId, @PathVariable String assetId, Authentication authentication) {
+        assets.release(unitId, assetId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{unitId}/assets/reconcile")
+    public ResponseEntity<Void> reconcileAssets(@PathVariable String unitId, @Valid @RequestBody AssetReconcileRequest request,
+                                                Authentication authentication) {
+        assets.reconcile(unitId, new HashSet<>(request.assetIds()), ActorIdentity.subject(authentication));
         return ResponseEntity.noContent().build();
     }
 }

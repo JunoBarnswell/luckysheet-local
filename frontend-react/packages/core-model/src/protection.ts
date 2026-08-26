@@ -1,23 +1,13 @@
 import type { CellStyle, RangeRef } from './index';
 import type { ProtectionRule } from './domain';
+import { PROTECTION_ACTION_ALLOW_FIELD, type ProtectionAction as GeneratedProtectionAction } from './generated-protection';
 
 /**
  * Canonical worksheet-protection actions.  These names are deliberately
  * independent of command ids so every frontend command and server reducer
  * can map to the same native worksheet allow flag.
  */
-export type ProtectionAction =
-  | 'edit-cell'
-  | 'format'
-  | 'insert-rows'
-  | 'insert-columns'
-  | 'delete-rows'
-  | 'delete-columns'
-  | 'sort'
-  | 'auto-filter'
-  | 'edit-objects'
-  | 'select-locked'
-  | 'select-unlocked';
+export type ProtectionAction = GeneratedProtectionAction;
 
 export interface ProtectionCellResolution {
   locked: boolean;
@@ -42,20 +32,11 @@ export interface ProtectionResolveRequest {
   rowCount: number;
   columnCount: number;
   readCellStyle?: (row: number, column: number) => Pick<CellStyle, 'locked' | 'formulaHidden'> | undefined;
+  /** Count explicit unlocked cells from the worksheet's sparse cell index. */
+  countUnlockedCells?: (range: RangeRef) => number;
 }
 
-const ACTION_ALLOW_FIELD: Readonly<Partial<Record<ProtectionAction, keyof ProtectionRule['allow']>>> = {
-  format: 'formatCells',
-  'insert-rows': 'insertRows',
-  'insert-columns': 'insertColumns',
-  'delete-rows': 'deleteRows',
-  'delete-columns': 'deleteColumns',
-  sort: 'sort',
-  'auto-filter': 'autoFilter',
-  'edit-objects': 'editObjects',
-  'select-locked': 'selectLocked',
-  'select-unlocked': 'selectUnlocked',
-};
+const ACTION_ALLOW_FIELD: Readonly<Partial<Record<ProtectionAction, keyof ProtectionRule['allow']>>> = PROTECTION_ACTION_ALLOW_FIELD;
 
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
@@ -89,13 +70,20 @@ function activeSheetRule(rules: readonly ProtectionRule[], sheetId: string): Pro
   return rules.find((rule) => rule.locked && (rule.scope === 'workbook' || (rule.scope === 'sheet' && rule.sheetId === sheetId)));
 }
 
-function boundedRange(range: RangeRef, rowCount: number, columnCount: number): RangeRef | undefined {
-  const startRow = Math.max(0, range.startRow);
-  const startColumn = Math.max(0, range.startColumn);
-  const endRow = Math.min(rowCount - 1, range.endRow);
-  const endColumn = Math.min(columnCount - 1, range.endColumn);
-  if (endRow < startRow || endColumn < startColumn) return undefined;
-  return { ...range, startRow, endRow, startColumn, endColumn };
+function validateRange(range: RangeRef, sheetId: string, rowCount: number, columnCount: number): boolean {
+  return range.sheetId === sheetId
+    && Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.endRow)
+    && Number.isSafeInteger(range.startColumn) && Number.isSafeInteger(range.endColumn)
+    && range.startRow >= 0 && range.startColumn >= 0
+    && range.endRow >= range.startRow && range.endColumn >= range.startColumn
+    && range.endRow < rowCount && range.endColumn < columnCount;
+}
+
+function rangeCellCount(range: RangeRef): number | undefined {
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+  const count = rows * columns;
+  return Number.isSafeInteger(count) ? count : undefined;
 }
 
 /**
@@ -135,7 +123,10 @@ export class ProtectionResolver {
       || !Number.isSafeInteger(request.columnCount) || request.columnCount <= 0) {
       return { allowed: false, reason: 'Protection resolution requires canonical worksheet bounds', lockedCells: 0, unlockedCells: 0 };
     }
-    const ranges = request.ranges.map((range) => boundedRange(range, request.rowCount, request.columnCount)).filter((range): range is RangeRef => Boolean(range));
+    if (request.ranges.some((range) => !validateRange(range, request.sheetId, request.rowCount, request.columnCount))) {
+      return { allowed: false, reason: 'Protection resolution received a range outside canonical worksheet bounds', lockedCells: 0, unlockedCells: 0 };
+    }
+    const ranges = [...request.ranges];
     if (ranges.length === 0) return { allowed: true, lockedCells: 0, unlockedCells: 0 };
 
     const allowField = ACTION_ALLOW_FIELD[request.action];
@@ -161,21 +152,39 @@ export class ProtectionResolver {
       let lockedCells = 0;
       let unlockedCells = 0;
       for (const range of ranges) {
-        for (let row = range.startRow; row <= range.endRow; row += 1) {
-          for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-            const style = request.readCellStyle?.(row, column);
-            const resolution = this.resolveCell(request.rules, request.sheetId, row, column, style);
-            if (resolution.locked) {
-              lockedCells += 1;
-              return {
-                allowed: false,
-                reason: `Protected worksheet: protected cell ${request.sheetId}!${row}:${column} is locked`,
-                blockedBy: resolution.rules.find((rule) => rule.scope === 'range') ?? resolution.rules[0],
-                lockedCells,
-                unlockedCells,
-              };
-            }
-            unlockedCells += 1;
+        const count = rangeCellCount(range);
+        if (count === undefined) {
+          return { allowed: false, reason: 'Protection resolution cannot safely represent the requested cell extent', lockedCells, unlockedCells };
+        }
+        const rangeRule = request.rules.find((rule) => ruleCoversRange(rule, range));
+        if (rangeRule) {
+          lockedCells += 1;
+          return {
+            allowed: false,
+            reason: `Protected worksheet: protected range ${rangeRule.id} blocks cell editing`,
+            blockedBy: rangeRule,
+            lockedCells,
+            unlockedCells,
+          };
+        }
+        if (activeSheetRule(request.rules, request.sheetId)) {
+          if (!request.countUnlockedCells) {
+            return { allowed: false, reason: 'Protection resolution requires the canonical sparse cell index', lockedCells, unlockedCells };
+          }
+          const explicitUnlocked = request.countUnlockedCells(range);
+          if (!Number.isSafeInteger(explicitUnlocked) || explicitUnlocked < 0 || explicitUnlocked > count) {
+            return { allowed: false, reason: 'Protection resolution received an invalid sparse cell exception count', lockedCells, unlockedCells };
+          }
+          unlockedCells += explicitUnlocked;
+          lockedCells += count - explicitUnlocked;
+          if (explicitUnlocked !== count) {
+            return {
+              allowed: false,
+              reason: `Protected worksheet: ${count - explicitUnlocked} cells in ${request.sheetId}!${range.startRow}:${range.startColumn}-${range.endRow}:${range.endColumn} remain locked`,
+              blockedBy: activeSheetRule(request.rules, request.sheetId),
+              lockedCells,
+              unlockedCells,
+            };
           }
         }
       }

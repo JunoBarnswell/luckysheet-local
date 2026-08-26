@@ -12,6 +12,7 @@ export interface SparklinePanelProps {
   sparklineGroups: readonly SparklineGroup[];
   defaultRange?: string;
   onAddSparkline: (sparkline: SparklineModel) => void;
+  onCreateSparklineGroup: (sparklineIds: string[]) => void;
   onRemoveSparkline: (id: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
@@ -67,6 +68,7 @@ export function SparklinePanel({
   sparklineGroups,
   defaultRange,
   onAddSparkline,
+  onCreateSparklineGroup,
   onRemoveSparkline,
   onCommand,
   onClose,
@@ -170,7 +172,7 @@ export function SparklinePanel({
     if (selectedIds.length < 2) return;
     const first = sparklines.find((entry) => entry.id === selectedIds[0]);
     if (!first) return;
-    onCommand({ commandId: 'sparkline.group.create', params: { sheetId, group: { id: `sparkline-group-${Date.now().toString(36)}`, sheetId, type: first.type, sparklineIds: [...selectedIds], showAxis: first.showAxis, showMarkers: first.showMarkers } } });
+    onCreateSparklineGroup([...selectedIds]);
   };
 
   const updateGroup = (patch: Partial<SparklineGroup>): void => {

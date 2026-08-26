@@ -6,7 +6,7 @@
   "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 5 },
+    "version": { "const": 8 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -76,7 +76,7 @@
     },
     "worksheet": {
       "type": "object",
-      "required": ["kind", "id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "defaultRowHeightPx", "defaultColumnWidthPx"],
+      "required": ["kind", "id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "review", "defaultRowHeightPx", "defaultColumnWidthPx"],
       "properties": {
         "kind": { "enum": ["worksheet", "table-sheet", "gantt-sheet", "report-sheet"] },
         "id": { "type": "string", "minLength": 1 },
@@ -91,6 +91,17 @@
         "sparklines": { "type": "array" },
         "drawings": { "type": "array" },
         "drawingPayloads": { "type": "object" },
+        "review": {
+          "type": "object",
+          "required": ["notesByCell", "notesById", "threadIdsByCell", "threadsById"],
+          "properties": {
+            "notesByCell": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+            "notesById": { "type": "object", "additionalProperties": { "type": "object" } },
+            "threadIdsByCell": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } } },
+            "threadsById": { "type": "object", "additionalProperties": { "type": "object" } }
+          },
+          "additionalProperties": false
+        },
         "defaultRowHeightPx": { "type": "number", "exclusiveMinimum": 0 },
         "defaultColumnWidthPx": { "type": "number", "exclusiveMinimum": 0 },
         "rowHeightsPx": { "$ref": "#/$defs/positiveSizeMap" },

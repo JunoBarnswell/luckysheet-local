@@ -93,22 +93,26 @@ export function normalizeDataSourceManifest(input: DataSourceManifest): DataSour
   const blocks = input.blocks.map((block) => {
     if (block.dataSourceId !== input.id) throw new Error(`Data block ${block.id} belongs to another data source`);
     if (!block.id.trim() || blockIds.has(block.id)) throw new Error(`Duplicate data block: ${block.id}`);
-    if (!Number.isSafeInteger(block.startRow) || block.startRow < 0 || !Number.isSafeInteger(block.rowCount) || block.rowCount <= 0) {
+    if (!Number.isSafeInteger(block.startRow) || block.startRow < 0 || !Number.isSafeInteger(block.rowCount) || block.rowCount <= 0
+      || block.startRow > input.rowCount || block.rowCount > input.rowCount - block.startRow) {
       throw new Error(`Invalid data block range: ${block.id}`);
     }
-    if (!block.storageKey.trim() || !block.checksum.trim() || !Number.isSafeInteger(block.byteLength) || block.byteLength < 0) {
+    if (!block.storageKey.trim() || !/^[A-Fa-f0-9]{64}$/.test(block.checksum) || !Number.isSafeInteger(block.byteLength) || block.byteLength < 1 || block.encoding !== 'columnar-v1') {
       throw new Error(`Invalid data block storage descriptor: ${block.id}`);
     }
     if (!Number.isSafeInteger(block.revision) || block.revision < 0) throw new Error(`Invalid data block revision: ${block.id}`);
+    if (block.revision !== input.revision) throw new Error(`Data block revision does not match source revision: ${block.id}`);
     blockIds.add(block.id);
     return { ...block };
   }).sort((left, right) => left.startRow - right.startRow);
 
-  for (let index = 1; index < blocks.length; index += 1) {
-    const previous = blocks[index - 1]!;
-    const current = blocks[index]!;
-    if (previous.startRow + previous.rowCount > current.startRow) throw new Error('Data blocks must not overlap');
+  let coveredUntil = 0;
+  for (const block of blocks) {
+    if (block.startRow < coveredUntil) throw new Error('Data blocks must not overlap');
+    if (block.startRow !== coveredUntil) throw new Error('Data blocks must provide contiguous source coverage');
+    coveredUntil = block.startRow + block.rowCount;
   }
+  if (coveredUntil !== input.rowCount) throw new Error('Data blocks must cover the complete source rowCount');
 
   return {
     ...input,

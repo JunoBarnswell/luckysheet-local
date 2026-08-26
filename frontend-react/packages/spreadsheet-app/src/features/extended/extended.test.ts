@@ -29,23 +29,6 @@ describe('M18 deterministic what-if commands', () => {
     assert.equal(workbook.getSheet(sheetId).cells.get(0, 1), undefined);
   });
 
-  it('does not partially write an invalid data table', () => {
-    const workbook = new WorkbookModel('what-if-invalid', 'What-if');
-    const runtime = new CommandRuntime(workbook);
-    registerSheetCommands(runtime);
-    registerExtendedCommands(runtime.registry);
-    const sheetId = workbook.primarySheetId;
-    workbook.getSheet(sheetId).cells.set(0, 1, { value: 10 });
-    workbook.getSheet(sheetId).cells.set(0, 2, { value: null });
-    const result = runtime.execute('extended.whatIf.dataTable', {
-      sheetId,
-      columnInputCell: { row: 0, column: 1 },
-      tableRange: { startRow: 0, startColumn: 0, endRow: 1, endColumn: 2 },
-    });
-    assert.equal(result.mutationCount, 0);
-    assert.equal(workbook.getSheet(sheetId).cells.get(1, 1), undefined);
-    assert.equal(workbook.getSheet(sheetId).cells.get(1, 2), undefined);
-  });
 
   it('does not mutate on a non-monotonic goal function', () => {
     const workbook = new WorkbookModel('what-if-non-monotonic', 'What-if');

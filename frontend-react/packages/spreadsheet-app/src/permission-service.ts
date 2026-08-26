@@ -1,9 +1,10 @@
 import { protectionResolver, type ProtectionAction, type ProtectionRule, type RangeRef, type WorkbookModel } from '@react-sheets/core-model';
+import { mutationPermission, type PermissionPolicy } from '@react-sheets/protocol';
 import {
   buildPermissionCapabilities,
   inferAffectedRanges,
   isPermissionExempt,
-  resolveCommandAction,
+  resolveCommandPermission,
   type PermissionAction,
   type PermissionCapabilities,
 } from './features/permission';
@@ -58,32 +59,33 @@ const UNKNOWN_REMOTE_CAPABILITIES: PermissionCapabilities = Object.freeze({
   script: false,
 });
 
-function protectionActionForCommand(commandId: string, action: PermissionAction): ProtectionAction {
-  if (commandId === 'sheet.rows.insert') return 'insert-rows';
-  if (commandId === 'sheet.rows.delete') return 'delete-rows';
-  if (commandId === 'sheet.columns.insert') return 'insert-columns';
-  if (commandId === 'sheet.columns.delete') return 'delete-columns';
-  if (action === 'format') return 'format';
-  if (commandId.startsWith('sheetTable.style') || commandId.startsWith('pivot.')) return 'format';
-  if (action === 'drawing') return 'edit-objects';
-  if (commandId.startsWith('sheet.autoFilter') || commandId.startsWith('sheetTable.autoFilter')) return 'auto-filter';
-  if (commandId.startsWith('data.sort') || commandId.startsWith('sheet.sort')) return 'sort';
-  return 'edit-cell';
+function capabilityAllowed(capabilities: PermissionCapabilities, action: PermissionAction): boolean {
+  return action === 'navigate' ? capabilities.navigate
+    : action === 'edit-cell' ? capabilities.editCell
+      : action === 'format' ? capabilities.format
+        : action === 'structure' ? capabilities.structure
+          : action === 'drawing' ? capabilities.drawing
+            : action === 'protect' ? capabilities.protect
+              : action === 'share' ? capabilities.share
+                : action === 'comment' ? capabilities.comment
+                  : action === 'restore' ? capabilities.restore
+                    : action === 'query' ? capabilities.query
+                      : capabilities.script;
 }
 
-function protectionActionForMutation(mutationId: string): ProtectionAction | undefined {
-  if (mutationId === 'style.set') return 'format';
-  if (mutationId === 'rows.inserted') return 'insert-rows';
-  if (mutationId === 'rows.deleted') return 'delete-rows';
-  if (mutationId === 'columns.inserted') return 'insert-columns';
-  if (mutationId === 'columns.deleted') return 'delete-columns';
-  if (mutationId === 'rows.permuted') return 'sort';
-  if (mutationId === 'autoFilter.set' || mutationId === 'autoFilter.remove' || mutationId === 'sheetTable.autoFilter.set') return 'auto-filter';
-  if (mutationId.startsWith('drawing.') || mutationId.startsWith('chart.') || mutationId.startsWith('picture.')) return 'edit-objects';
-  if (mutationId.startsWith('merge.')) return 'format';
-  if (mutationId.startsWith('sheetTable.style.') || mutationId.startsWith('pivot.')) return 'format';
-  if (mutationId.startsWith('sheet.protect.')) return undefined;
-  return 'edit-cell';
+const PERMISSION_ACTIONS: ReadonlySet<string> = new Set([
+  'navigate', 'edit-cell', 'format', 'structure', 'drawing', 'protect', 'share', 'comment', 'restore', 'query', 'script',
+]);
+
+function mutationPolicyOverride(value: { capability: string; protectionAction: ProtectionAction | 'none'; checksProtection: boolean; affectedRangeMode: 'none' | 'declared' | 'exact'; objectScope: 'cell' | 'range' | 'row' | 'column' | 'drawing' | 'worksheet' | 'workbook' }): PermissionPolicy | undefined {
+  if (!PERMISSION_ACTIONS.has(value.capability)) return undefined;
+  return {
+    capability: value.capability as PermissionAction,
+    protectionAction: value.protectionAction,
+    checksProtection: value.checksProtection,
+    affectedRangeMode: value.affectedRangeMode,
+    objectScope: value.objectScope,
+  };
 }
 
 /** Workbook/Sheet/Range 权限 — 命令 dispatch 前拦截 */
@@ -116,34 +118,25 @@ export class PermissionService {
 
   canCheck(input: PermissionCheckInput): PermissionResult {
     if (isPermissionExempt(input.commandId)) return { allowed: true };
-    const action = resolveCommandAction(input.commandId);
+    const policy = resolveCommandPermission(input.commandId);
+    if (!policy) return { allowed: false, reason: `Unknown command permission contract: ${input.commandId}`, blockedBy: 'share-role' };
+    const action = policy.capability;
     const role = this.serverRole;
     const capabilities = this.getCapabilities();
-    const capabilityAllowed = action === 'navigate' ? capabilities.navigate
-      : action === 'edit-cell' ? capabilities.editCell
-        : action === 'format' ? capabilities.format
-          : action === 'structure' ? capabilities.structure
-            : action === 'drawing' ? capabilities.drawing
-              : action === 'protect' ? capabilities.protect
-                : action === 'share' ? capabilities.share
-                  : action === 'comment' ? capabilities.comment
-                    : action === 'restore' ? capabilities.restore
-                      : action === 'query' ? capabilities.query
-                        : capabilities.script;
 
-    if (!capabilityAllowed) {
+    if (!capabilityAllowed(capabilities, action)) {
       return { allowed: false, reason: `Server role "${role ?? 'unknown'}" cannot perform "${action}"`, blockedBy: 'share-role' };
     }
 
-    // A protection rule controls workbook content, not its owner-managed
-    // lifecycle. Otherwise a rule that does not explicitly allow "protect"
-    // could never be removed by the owner who created it.
-    if (action === 'protect' || action === 'share' || action === 'restore') {
+    if (!policy.checksProtection) {
       return { allowed: true };
     }
 
     const allowsPendingSheet = input.commandId === 'pivot.create' || input.commandId === 'pivot.add' || input.commandId === 'pivot.drillDown';
-    return this.checkProtection(protectionActionForCommand(input.commandId, action), input.affectedRanges, allowsPendingSheet);
+    if (policy.protectionAction === 'none') {
+      return { allowed: false, reason: `Command permission contract requires a protection action: ${input.commandId}`, blockedBy: 'share-role' };
+    }
+    return this.checkProtection(policy.protectionAction, input.affectedRanges, allowsPendingSheet);
   }
 
   assertAllowed(input: PermissionCheckInput): void {
@@ -164,12 +157,18 @@ export class PermissionService {
     this.workbook = workbook;
   }
 
-  checkMutation(mutation: { id: string; affectedRanges: readonly RangeRef[]; params?: unknown }): PermissionResult {
-    const action = mutation.id === 'cell.restore' && this.isFormatOnlyRestore(mutation.params)
-      ? 'format'
-      : protectionActionForMutation(mutation.id);
+  checkMutation(mutation: { id: string; affectedRanges: readonly RangeRef[]; params?: unknown; permission?: { capability: string; protectionAction: ProtectionAction | 'none'; checksProtection: boolean; affectedRangeMode: 'none' | 'declared' | 'exact'; objectScope: 'cell' | 'range' | 'row' | 'column' | 'drawing' | 'worksheet' | 'workbook' } }): PermissionResult {
+    const policy = mutation.permission ? mutationPolicyOverride(mutation.permission) : mutationPermission(mutation.id);
+    if (!policy) return { allowed: false, reason: `Unknown mutation permission contract: ${mutation.id}`, blockedBy: 'share-role' };
+    if (!capabilityAllowed(this.getCapabilities(), policy.capability)) {
+      return { allowed: false, reason: `Server role "${this.serverRole ?? 'unknown'}" cannot perform "${policy.capability}"`, blockedBy: 'share-role' };
+    }
+    if (!policy.checksProtection) return { allowed: true };
+    if (policy.protectionAction === 'none') {
+      return { allowed: false, reason: `Mutation permission contract requires a protection action: ${mutation.id}`, blockedBy: 'share-role' };
+    }
     const allowsPendingSheet = mutation.id === 'pivot.add' || mutation.id === 'pivot.drilldown.add';
-    return action ? this.checkProtection(action, mutation.affectedRanges, allowsPendingSheet) : { allowed: true };
+    return this.checkProtection(policy.protectionAction, mutation.affectedRanges, allowsPendingSheet);
   }
 
   canSelectCell(sheetId: string, row: number, column: number): PermissionResult {
@@ -184,27 +183,7 @@ export class PermissionService {
     return this.checkProtection(action, [range]);
   }
 
-  /** A style command's inverse is a cell.restore payload, but it must retain
-   * the original format permission rather than becoming a value edit during
-   * undo/redo. Content changes are deliberately not classified this way. */
-  isFormatOnlyRestore(params: unknown): boolean {
-    if (!this.workbook || !params || typeof params !== 'object' || Array.isArray(params)) return false;
-    const candidate = params as Record<string, unknown>;
-    if (typeof candidate.sheetId !== 'string' || !Number.isInteger(candidate.row) || !Number.isInteger(candidate.column)) return false;
-    const sheet = this.workbook.getSheet(candidate.sheetId);
-    const current = sheet.cells.get(Number(candidate.row), Number(candidate.column));
-    const previous = candidate.previous;
-    if (previous !== undefined && (!previous || typeof previous !== 'object' || Array.isArray(previous))) return false;
-    const currentContent = current ? { value: current.value, formula: current.formula, formulaValue: current.formulaValue } : undefined;
-    const previousRecord = previous as Record<string, unknown> | undefined;
-    const previousContent = previousRecord ? { value: previousRecord.value, formula: previousRecord.formula, formulaValue: previousRecord.formulaValue } : undefined;
-    if (previous === undefined) {
-      return Boolean(current && current.value === null && current.formula === undefined && current.formulaValue === undefined && current.style);
-    }
-    return JSON.stringify(currentContent) === JSON.stringify(previousContent);
-  }
-
-  private checkProtection(action: ProtectionAction, affectedRanges: readonly RangeRef[], allowPendingSheet = false): PermissionResult {
+  private checkProtection(action: Exclude<ProtectionAction, 'none'>, affectedRanges: readonly RangeRef[], allowPendingSheet = false): PermissionResult {
     if (!this.workbook) return { allowed: true };
     const rangesBySheet = new Map<string, RangeRef[]>();
     for (const range of affectedRanges) {
@@ -227,6 +206,13 @@ export class PermissionService {
         rowCount: sheet.rowCount,
         columnCount: sheet.columnCount,
         readCellStyle: (row, column) => sheet.cells.get(row, column)?.style,
+        countUnlockedCells: (range) => {
+          let count = 0;
+          sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell) => {
+            if (cell.style?.locked === false) count += 1;
+          });
+          return count;
+        },
       });
       if (!decision.allowed) return { allowed: false, reason: decision.reason, blockedBy: decision.blockedBy };
     }

@@ -1,4 +1,4 @@
-import { drawCellLayer, drawExtensionsLayer, drawGridLayer } from "./cell-renderer";
+import { drawCellLayer, drawExtensionsLayer, drawGridLayer, type AssetUrlResolver } from "./cell-renderer";
 import { DirtyRangeSet } from "./dirty-ranges";
 import { calculateRenderPlan, computePaneMap, defaultHeaderOffset, type RenderPlan } from "./render-plan";
 import { Scene } from "./scene";
@@ -37,6 +37,10 @@ export interface CanvasRenderEngineOptions {
   cells?: ReadonlyMap<string, CellRenderData>;
   theme?: Partial<RenderTheme>;
   layers?: readonly LayerDefinition[];
+  resolveAssetUrl?: AssetUrlResolver;
+  assetUrlCache?: Map<string, string>;
+  assetUrlPending?: Set<string>;
+  assetUrlErrors?: Map<string, string>;
 }
 
 function cellMapKey(row: number, column: number): string {
@@ -75,6 +79,10 @@ export class CanvasRenderEngine {
   private chrome: ChromeState = createEmptyChromeState();
   private floatables: readonly FloatingDrawable[] = [];
   private readonly viewportListeners = new Set<() => void>();
+  private readonly resolveAssetUrl?: AssetUrlResolver;
+  private readonly assetUrlCache: Map<string, string>;
+  private readonly assetUrlPending: Set<string>;
+  private readonly assetUrlErrors: Map<string, string>;
 
   constructor(options: CanvasRenderEngineOptions = {}) {
     this.skeletonModel = options.skeleton ?? new SheetSkeleton({ rowCount: 1000, columnCount: 26 });
@@ -82,6 +90,10 @@ export class CanvasRenderEngine {
     this.theme = mergeTheme(options.theme);
     this.layerDefinitions = (options.layers ?? DEFAULT_LAYERS_SOURCE).map((definition) => ({ ...definition }));
     this.scene = new Scene(this.layerDefinitions);
+    this.resolveAssetUrl = options.resolveAssetUrl;
+    this.assetUrlCache = options.assetUrlCache ?? new Map<string, string>();
+    this.assetUrlPending = options.assetUrlPending ?? new Set<string>();
+    this.assetUrlErrors = options.assetUrlErrors ?? new Map<string, string>();
     this.cellProvider = options.cellProvider
       ?? (options.cells ? createMapProvider(options.cells) : () => undefined);
     this.viewport.clampTo(this.skeletonModel.contentSize);
@@ -555,6 +567,11 @@ export class CanvasRenderEngine {
           cellProvider: this.cellProvider,
           theme: this.theme,
           drawRects: convertDrawRectsForPane(drawRects, pane),
+          resolveAssetUrl: this.resolveAssetUrl,
+          assetUrlCache: this.assetUrlCache,
+          assetUrlPending: this.assetUrlPending,
+          assetUrlErrors: this.assetUrlErrors,
+          requestRender: () => this.requestRender(),
         };
         if (layerId === "grid") drawGridLayer(options);
         else if (layerId === "content") drawCellLayer(options);

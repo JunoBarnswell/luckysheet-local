@@ -65,6 +65,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RevisionPage'
+  /api/workbooks/{unitId}/assets/{assetId}:
+    put:
+      operationId: putWorkbookAsset
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: X-Content-SHA256
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+        - name: X-Asset-MimeType
+          in: header
+          required: true
+          schema: { type: string, pattern: '^image/' }
+        - name: X-Asset-Width
+          in: header
+          required: false
+          schema: { type: integer, minimum: 1 }
+        - name: X-Asset-Height
+          in: header
+          required: false
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+      responses:
+        '200':
+          description: Content-addressed image metadata
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AssetMetadata' } }
+    get:
+      operationId: getWorkbookAsset
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200':
+          description: Image bytes
+          headers:
+            X-Content-SHA256: { schema: { type: string } }
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+    delete:
+      operationId: deleteWorkbookAsset
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '204': { description: Asset released }
+  /api/workbooks/{unitId}/assets/reconcile:
+    post:
+      operationId: reconcileWorkbookAssets
+      parameters: [{ $ref: '#/components/parameters/UnitId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetIds]
+              properties:
+                assetIds: { type: array, items: { type: string }, uniqueItems: true }
+      responses:
+        '204': { description: Unreferenced assets released }
   /api/user-preferences:
     get:
       operationId: getUserPreferences
@@ -117,12 +191,25 @@ components:
           enum: [UNAUTHENTICATED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, WORKBOOK_TRASHED, TIMEOUT, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         message: { type: string }
         details: { type: object, additionalProperties: true }
+    AssetMetadata:
+      type: object
+      required: [schema, unitId, assetId, contentHash, mimeType, byteLength, updatedAt]
+      properties:
+        schema: { const: AssetRef }
+        unitId: { type: string }
+        assetId: { type: string }
+        contentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        mimeType: { type: string, pattern: '^image/' }
+        byteLength: { type: integer, minimum: 1 }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
     WorkbookSnapshot:
       type: object
       required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 5 }
+        version: { const: 8 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
         dimensionMetrics:
@@ -169,7 +256,7 @@ components:
         additionalProperties: false
     WorksheetSnapshot:
       type: object
-      required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, defaultRowHeightPx, defaultColumnWidthPx]
+      required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, review, defaultRowHeightPx, defaultColumnWidthPx]
       properties:
         id: { type: string, minLength: 1 }
         name: { type: string, minLength: 1 }
@@ -183,6 +270,15 @@ components:
         sparklines: { type: array, items: { type: object } }
         drawings: { type: array, items: { type: object } }
         drawingPayloads: { type: object, additionalProperties: { type: object } }
+        review:
+          type: object
+          required: [notesByCell, notesById, threadIdsByCell, threadsById]
+          properties:
+            notesByCell: { type: object, additionalProperties: { type: string, minLength: 1 } }
+            notesById: { type: object, additionalProperties: { type: object } }
+            threadIdsByCell: { type: object, additionalProperties: { type: array, items: { type: string, minLength: 1 } } }
+            threadsById: { type: object, additionalProperties: { type: object } }
+          additionalProperties: false
         defaultRowHeightPx: { type: number, exclusiveMinimum: 0 }
         defaultColumnWidthPx: { type: number, exclusiveMinimum: 0 }
         rowHeightsPx: { type: object, additionalProperties: { type: number, exclusiveMinimum: 0 } }

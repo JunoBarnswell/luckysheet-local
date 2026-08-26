@@ -85,13 +85,18 @@ export function EditorShell({
             cellName={state.activeCell}
             disabled={isBusy}
             formula={state.editSession?.draftText ?? state.formulaDraft}
+            composing={state.editSession?.composition.active ?? false}
             locale={locale}
             onBeginEdit={() => {
-              const started = state.editSession ? true : session.beginEdit();
+              const started = state.editSession ? true : session.beginEdit(undefined, 'formulaBar');
               if (started) session.setFocusState('formula-edit', 'formula-bar');
             }}
             onCancel={session.cancelEdit.bind(session)}
             onChange={session.setFormulaDraft.bind(session)}
+            onCaretChange={session.setEditCaret.bind(session)}
+            onCompositionStart={session.beginEditComposition.bind(session)}
+            onCompositionUpdate={session.updateEditComposition.bind(session)}
+            onCompositionEnd={session.endEditComposition.bind(session)}
             onCommit={() => { if (state.editSession) session.commitEdit("down"); else session.commitFormula(); }}
             onNameBoxCommit={(value) => session.selectAddress(value)}
             onOpenNameManager={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
@@ -167,6 +172,8 @@ export function EditorShell({
                 activeCell={state.activeCell}
                 formulaDraft={state.editSession?.draftText ?? state.formulaDraft}
                 editingCell={state.editSession?.cell ?? null}
+                editComposing={state.editSession?.composition.active ?? false}
+                editCaret={state.editSession?.caret}
                 phase={state.phase}
                 zoom={state.zoom}
                 peers={state.peers}
@@ -264,6 +271,10 @@ export function EditorShell({
                 onCancelEdit={session.cancelEdit.bind(session)}
                 onCommitEdit={(moveAfter) => session.commitEdit(moveAfter ?? "down")}
                 onFormulaDraftChange={session.setFormulaDraft.bind(session)}
+                onEditCaretChange={session.setEditCaret.bind(session)}
+                onEditCompositionStart={session.beginEditComposition.bind(session)}
+                onEditCompositionUpdate={session.updateEditComposition.bind(session)}
+                onEditCompositionEnd={session.endEditComposition.bind(session)}
                 onAppendFormulaDraft={session.appendFormulaDraft.bind(session)}
                 onInsertRef={session.insertRefIntoDraft.bind(session)}
                 onToggleAbsolute={session.toggleAbsoluteReference.bind(session)}
@@ -320,6 +331,7 @@ export function EditorShell({
                 getValidationList={session.getValidationAt.bind(session)}
                 onRetry={session.retry.bind(session)}
                 onCreateSheet={session.addSheet.bind(session)}
+                resolveAssetUrl={session.resolveAssetUrl.bind(session)}
               />
             </Suspense>
           </Box>

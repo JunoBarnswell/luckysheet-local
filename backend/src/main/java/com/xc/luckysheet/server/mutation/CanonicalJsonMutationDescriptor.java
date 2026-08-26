@@ -1,6 +1,7 @@
 package com.xc.luckysheet.server.mutation;
 
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 
 /** Common server-owned policy metadata for JSON workbook reducers. */
 abstract class CanonicalJsonMutationDescriptor implements MutationDescriptor {
@@ -9,16 +10,13 @@ abstract class CanonicalJsonMutationDescriptor implements MutationDescriptor {
     private final boolean checksProtection;
     private final String protectionAction;
 
-    CanonicalJsonMutationDescriptor(
-            String id,
-            WorkbookAclRole requiredRole,
-            boolean checksProtection,
-            String protectionAction
-    ) {
+    CanonicalJsonMutationDescriptor(String id, WorkbookAclRole requiredRole) {
+        GeneratedWorkbookContract.PermissionPolicy permission = GeneratedWorkbookContract.mutationPermission(id);
+        if (permission == null) throw new IllegalStateException("Mutation is missing a generated permission policy: " + id);
         this.id = id;
         this.requiredRole = requiredRole;
-        this.checksProtection = checksProtection;
-        this.protectionAction = protectionAction;
+        this.checksProtection = permission.checksProtection();
+        this.protectionAction = permission.protectionAction();
     }
 
     @Override

@@ -6,7 +6,6 @@ export type Column = number;
 import type {
   CellHyperlink,
   CellNote,
-  CommentThread,
   DrawingObject,
   DrawingPayload,
   DrawingGroup,
@@ -25,6 +24,7 @@ import type {
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
+export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, type AssetRef } from './asset';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,
@@ -33,6 +33,15 @@ import {
   type QueryLoadTargetSnapshot,
 } from './workbook-state';
 import { normalizeFontFamily } from './font-family';
+import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
+import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { planSheetIdentityTransform } from './sheet-identity-transform';
+import { ReviewStore } from './review-store';
+import type { ReviewStoreSnapshot } from './review-store';
+
+export * from './sheet-extent';
+export * from './sheet-identity-transform';
+export * from './review-store';
 
 export * from './font-family';
 export {
@@ -94,6 +103,12 @@ export interface CellStyle {
   formulaHidden?: boolean;
 }
 
+/** Canonical workbook-owned theme reference used by cross-workbook formatting operations. */
+export interface WorkbookTheme {
+  id: string;
+  colors: Record<string, string>;
+}
+
 /** Editable cell behavior that can be expressed through the canonical workbook model. */
 export type CellEditorKind = 'text' | 'number' | 'date' | 'list' | 'checkbox';
 
@@ -138,8 +153,6 @@ export interface CellData {
   formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
   formulaValue?: import('./domain').FormulaValue;
-  note?: import('./domain').CellNote;
-  comment?: CellComment;
   /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
   hyperlinkDetail?: CellHyperlink;
@@ -171,7 +184,7 @@ export interface BarcodeCellPresentation {
 
 export interface ImageCellPresentation {
   kind: 'image';
-  src: string;
+  asset: import('./asset').AssetRef;
   altText?: string;
   fit: 'contain' | 'cover' | 'stretch';
   crop?: ImageCrop;
@@ -195,6 +208,16 @@ export interface FormulaMetadata {
   preservedOnly?: boolean;
   reason?: string;
   sourceFormula?: string;
+}
+
+/**
+ * User-authored cell writes replace the formula definition; OOXML provenance
+ * belongs only to the imported definition that is being replaced.
+ */
+export function clearFormulaProvenance(cell: CellData): CellData {
+  const next = structuredClone(cell);
+  delete next.formulaMetadata;
+  return next;
 }
 
 export interface RangeRef {
@@ -366,6 +389,7 @@ export {
   type DrawingGraphSheet,
 } from './drawing-planner';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';
 export {
   planBorderChange,
   isBorderPlacement,
@@ -474,6 +498,8 @@ export interface ConditionalFormatRule {
   id: string;
   sheetId: SheetId;
   ranges: RangeRef[];
+  /** Canonical origin used to project relative rule references. */
+  formulaAnchor?: CellAddress;
   type: ConditionalFormatType;
   /** Lower values are evaluated first. Excel defaults to the insertion order. */
   priority?: number;
@@ -499,6 +525,8 @@ export interface DataValidationRule {
   id: string;
   sheetId: SheetId;
   ranges: RangeRef[];
+  /** Canonical origin used to project relative custom/list formulas. */
+  formulaAnchor?: CellAddress;
   type: DataValidationType;
   operator?: DataValidationOperator;
   formula1?: string;
@@ -704,6 +732,22 @@ export class CellMatrix {
     }
   }
 
+  /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
+  forEachInRange(
+    startRow: Row,
+    endRow: Row,
+    startColumn: Column,
+    endColumn: Column,
+    callback: (cell: CellData, row: Row, column: Column) => void,
+  ): void {
+    for (const [row, columns] of this.rows) {
+      if (row < startRow || row > endRow) continue;
+      for (const [column, cell] of columns) {
+        if (column >= startColumn && column <= endColumn) callback(cell, row, column);
+      }
+    }
+  }
+
   clone(): CellMatrix {
     const copy = new CellMatrix();
     this.forEach((cell, row, column) => copy.set(row, column, { ...cell }));
@@ -800,8 +844,7 @@ export class WorksheetModel {
   snapSettings: WorksheetSnapSettings = structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
   /** Canonical persisted hyperlink metadata keyed by row:column. */
   readonly hyperlinks = new Map<string, CellHyperlink>();
-  readonly notes = new Map<string, CellNote>();
-  readonly commentThreads: CommentThread[] = [];
+  readonly review: ReviewStore;
   readonly spillRanges: SpillRange[] = [];
   readonly protectionRules: ProtectionRule[] = [];
   readonly sparklineGroups: SparklineGroup[] = [];
@@ -853,8 +896,8 @@ export class WorksheetModel {
     copy.drawingGroups.push(...structuredClone(this.drawingGroups));
     copy.snapSettings = structuredClone(this.snapSettings);
     for (const [key, hyperlink] of this.hyperlinks) copy.hyperlinks.set(key, structuredClone(hyperlink));
-    for (const [key, note] of this.notes) copy.notes.set(key, structuredClone(note));
-    copy.commentThreads.push(...structuredClone(this.commentThreads));
+    copy.review.replaceNotes(this.review.noteEntries());
+    copy.review.replaceThreads(this.review.threadEntries());
     copy.spillRanges.push(...structuredClone(this.spillRanges));
     copy.protectionRules.push(...structuredClone(this.protectionRules));
     copy.sparklineGroups.push(...structuredClone(this.sparklineGroups));
@@ -868,12 +911,32 @@ export class WorksheetModel {
     return copy;
   }
 
+  private readonly extent: SheetExtent;
+
   constructor(
     readonly id: SheetId,
     public name: string,
-    public rowCount = 1000,
-    public columnCount = 26,
-  ) {}
+    rowCount = DEFAULT_SHEET_ROW_COUNT,
+    columnCount = DEFAULT_SHEET_COLUMN_COUNT,
+  ) {
+    this.extent = new SheetExtent(rowCount, columnCount);
+    this.review = new ReviewStore(id);
+  }
+
+  get rowCount(): number { return this.extent.rowCount; }
+  set rowCount(value: number) { this.extent.rowCount = value; }
+  get columnCount(): number { return this.extent.columnCount; }
+  set columnCount(value: number) { this.extent.columnCount = value; }
+
+  get sheetExtent(): SheetExtent { return this.extent; }
+
+  ensureCellExtent(row: number, column: number): void {
+    this.extent.ensureCell(row, column);
+  }
+
+  ensureRangeExtent(startRow: number, endRow: number, startColumn: number, endColumn: number): void {
+    this.extent.ensureRange(startRow, endRow, startColumn, endColumn);
+  }
 
   isMerged(row: Row, column: Column): MergeSpan | undefined {
     return this.merges.find(
@@ -891,7 +954,7 @@ export class WorksheetModel {
   }
 }
 
-export function noteCellKey(row: Row, column: Column): string {
+export function cellKey(row: Row, column: Column): string {
   return `${row}:${column}`;
 }
 
@@ -900,7 +963,7 @@ export function getDrawingPayload(sheet: WorksheetModel, payloadId: string): Dra
 }
 
 export function getCellNote(sheet: WorksheetModel, row: Row, column: Column): CellNote | undefined {
-  return sheet.notes.get(noteCellKey(row, column));
+  return sheet.review.getNoteAt(row, column);
 }
 
 export interface SheetSnapshot {
@@ -922,8 +985,7 @@ export interface SheetSnapshot {
   drawingGroups?: DrawingGroup[];
   snapSettings?: WorksheetSnapSettings;
   hyperlinks?: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
-  notes?: Array<{ row: number; column: number; note: CellNote }>;
-  commentThreads?: CommentThread[];
+  review: ReviewStoreSnapshot;
   conditionalFormats?: ConditionalFormatRule[];
   dataValidations?: DataValidationRule[];
   defaultRowHeightPx: number;
@@ -946,6 +1008,9 @@ export interface SheetSnapshot {
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
+  /** Lifecycle inverse payload; owned workbook documents travel with the sheet. */
+  lifecycleDefinedNames?: DefinedNameModel[];
+  lifecyclePrintDocument?: PrintDocumentSnapshot;
 }
 
 export class WorkbookModel {
@@ -968,6 +1033,11 @@ export class WorkbookModel {
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
   readonly definedNameModels: DefinedNameModel[] = [];
   dimensionMetrics: WorkbookDimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
+  collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
+  /** Canonical authored calculation policy shared by the runtime and workers. */
+  calculationSettings: WorkbookCalculationSettings = normalizeWorkbookCalculationSettings(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+  /** The sole theme owner. Clipboard and OOXML boundaries carry a reference to this state. */
+  theme: WorkbookTheme = { id: 'workbook-theme-default', colors: {} };
 
   /**
    * Formula engines still accept a workbook-scope string map. This is a
@@ -981,6 +1051,18 @@ export class WorkbookModel {
       if (entry.scope === 'workbook') result[entry.name] = entry.formula;
     }
     return result;
+  }
+
+  setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): void {
+    this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
+  }
+
+  setTheme(theme: WorkbookTheme): void {
+    if (!theme.id.trim()) throw new Error('Workbook theme id is required');
+    for (const [key, color] of Object.entries(theme.colors)) {
+      if (!key.trim() || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('Workbook theme color is invalid');
+    }
+    this.theme = structuredClone({ id: theme.id.trim(), colors: theme.colors });
   }
 
   constructor(readonly unitId: UnitId, public name: string) {
@@ -1119,23 +1201,23 @@ export class WorkbookModel {
   }
 
   getDefinedName(name: string, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     if (sheetId) {
       const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
         && entry.sheetId === sheetId
-        && entry.name.toLocaleLowerCase() === normalized);
+        && entry.name.toUpperCase() === normalized);
       if (local) return structuredClone(local);
     }
     const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     return global ? structuredClone(global) : undefined;
   }
 
   getDefinedNameExact(name: string, scope: DefinedNameScope, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     const exact = this.definedNameModels.find((entry) => entry.scope === scope
       && entry.sheetId === sheetId
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     return exact ? structuredClone(exact) : undefined;
   }
 
@@ -1149,17 +1231,17 @@ export class WorkbookModel {
     const model = normalizeDefinedNameModel(input);
     const index = this.definedNameModels.findIndex((entry) => entry.scope === model.scope
       && entry.sheetId === model.sheetId
-      && entry.name.toLocaleLowerCase() === model.name.toLocaleLowerCase());
+      && entry.name.toUpperCase() === model.name.toUpperCase());
     if (index >= 0) this.definedNameModels[index] = structuredClone(model);
     else this.definedNameModels.push(structuredClone(model));
     return structuredClone(model);
   }
 
   removeDefinedName(name: string, scope: DefinedNameScope = 'workbook', sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toLocaleLowerCase();
+    const normalized = name.trim().toUpperCase();
     const index = this.definedNameModels.findIndex((entry) => entry.scope === scope
       && entry.sheetId === sheetId
-      && entry.name.toLocaleLowerCase() === normalized);
+      && entry.name.toUpperCase() === normalized);
     const previous = index >= 0 ? this.definedNameModels[index] : undefined;
     if (index >= 0) this.definedNameModels.splice(index, 1);
     return previous ? structuredClone(previous) : undefined;
@@ -1197,7 +1279,7 @@ export class WorkbookModel {
     return table;
   }
 
-  addSheet(id: SheetId, name: string, rowCount = 1000, columnCount = 26): WorksheetModel {
+  addSheet(id: SheetId, name: string, rowCount = DEFAULT_SHEET_ROW_COUNT, columnCount = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
@@ -1225,26 +1307,15 @@ export class WorkbookModel {
 
   duplicateSheet(sourceSheetId: SheetId, newId: SheetId, newName: string): WorksheetModel {
     const source = this.getSheet(sourceSheetId);
-    const copy = source.cloneWithIdentity(newId, newName);
-    this.sheets.set(newId, copy);
-    const scopedNames = this.definedNameModels
-      .filter((entry) => entry.scope === 'sheet' && entry.sheetId === sourceSheetId)
-      .map((entry) => ({ ...entry, sheetId: newId }));
-    this.definedNameModels.push(...structuredClone(scopedNames));
-    const printDocument = this.printDocuments.get(sourceSheetId);
-    if (printDocument) {
-      this.printDocuments.set(newId, structuredClone({
-        ...printDocument,
-        sheetId: newId,
-        printAreas: printDocument.printAreas.map((area) => ({ sheetId: newId, range: { ...area.range, sheetId: newId } })),
-        pageBreaks: printDocument.pageBreaks.map((pageBreak) => pageBreak.row !== undefined
-          ? { sheetId: newId, row: pageBreak.row }
-          : { sheetId: newId, column: pageBreak.column }),
-      }));
-    }
-    const sourceIndex = this.sheetOrder.indexOf(sourceSheetId);
-    this.sheetOrder.splice(sourceIndex + 1, 0, newId);
-    return copy;
+    const plan = planSheetIdentityTransform(this, {
+      kind: 'duplicate',
+      sourceSheetId,
+      sourceName: source.name,
+      targetSheetId: newId,
+      targetName: newName,
+    });
+    plan.apply();
+    return this.getSheet(newId);
   }
 
   reorderSheet(sheetId: SheetId, toIndex: number): void {
@@ -1256,22 +1327,32 @@ export class WorkbookModel {
   }
 
   removeSheet(sheetId: SheetId): WorksheetModel {
-    if (this.sheets.size <= 1) throw new Error('A workbook must keep at least one worksheet');
     const sheet = this.getSheet(sheetId);
-    this.sheets.delete(sheetId);
-    this.printDocuments.delete(sheetId);
-    for (let index = this.definedNameModels.length - 1; index >= 0; index -= 1) {
-      if (this.definedNameModels[index]?.scope === 'sheet' && this.definedNameModels[index]?.sheetId === sheetId) {
-        this.definedNameModels.splice(index, 1);
-      }
-    }
-    this.sheetOrder = this.sheetOrder.filter((id) => id !== sheetId);
+    const plan = planSheetIdentityTransform(this, {
+      kind: 'delete',
+      sourceSheetId: sheetId,
+      sourceName: sheet.name,
+    });
+    plan.apply();
     return sheet;
+  }
+
+  renameSheet(sheetId: SheetId, name: string): void {
+    const source = this.getSheet(sheetId);
+    planSheetIdentityTransform(this, {
+      kind: 'rename',
+      sourceSheetId: sheetId,
+      sourceName: source.name,
+      targetName: name,
+    }).apply();
   }
 
   getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
     const sheet = this.snapshot().sheets.find((entry) => entry.id === sheetId);
     if (!sheet) throw new Error(`Unknown sheet: ${sheetId}`);
+    sheet.lifecycleDefinedNames = structuredClone(this.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sheetId));
+    const printDocument = this.printDocuments.get(sheetId);
+    if (printDocument) sheet.lifecyclePrintDocument = structuredClone(printDocument);
     return structuredClone(sheet);
   }
 
@@ -1281,6 +1362,8 @@ export class WorkbookModel {
     const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
     const sheet = hydrated.getSheet(snapshot.id);
     this.sheets.set(sheet.id, sheet);
+    if (snapshot.lifecycleDefinedNames) this.definedNameModels.push(...structuredClone(snapshot.lifecycleDefinedNames));
+    if (snapshot.lifecyclePrintDocument) this.printDocuments.set(snapshot.id, structuredClone(snapshot.lifecyclePrintDocument));
     const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
     this.sheetOrder.splice(bounded, 0, sheet.id);
   }
@@ -1288,10 +1371,13 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 5,
+      version: 8,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
+      collationContext: structuredClone(this.collationContext),
+      calculationSettings: structuredClone(this.calculationSettings),
+      theme: structuredClone(this.theme),
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
@@ -1333,11 +1419,7 @@ export class WorkbookModel {
           const [row, column] = key.split(':').map(Number);
           return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
         }),
-        notes: [...sheet.notes.entries()].map(([key, note]) => {
-          const [row, column] = key.split(':').map(Number);
-          return { row: row!, column: column!, note: structuredClone(note) };
-        }),
-        commentThreads: structuredClone(sheet.commentThreads),
+        review: sheet.review.toSnapshot(),
         spillRanges: structuredClone(sheet.spillRanges),
         protectionRules: structuredClone(sheet.protectionRules),
         showGridlines: sheet.showGridlines,
@@ -1354,10 +1436,13 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 5) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 8) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
+    if (snapshot.theme) workbook.setTheme(snapshot.theme);
+    workbook.collationContext = normalizeWorkbookCollation(snapshot.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
+    workbook.setCalculationSettings(snapshot.calculationSettings);
     workbook.sheets.clear();
     // `definedNameModels` is canonical. The optional map is accepted only as
     // a boundary projection for older snapshots and is immediately folded
@@ -1386,7 +1471,7 @@ export class WorkbookModel {
         delete normalized.hyperlink;
         delete normalized.hyperlinkDetail;
         sheet.cells.set(row, column, normalized);
-        if (legacy) sheet.hyperlinks.set(noteCellKey(row, column), legacy);
+        if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
       });
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
@@ -1401,12 +1486,11 @@ export class WorkbookModel {
       if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
       sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
       if (input.hyperlinks) {
-        for (const entry of input.hyperlinks) sheet.hyperlinks.set(noteCellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
+        for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       }
-      if (input.notes) {
-        for (const entry of input.notes) sheet.notes.set(noteCellKey(entry.row, entry.column), structuredClone(entry.note));
-      }
-      if (input.commentThreads) sheet.commentThreads.push(...structuredClone(input.commentThreads));
+      const review = ReviewStore.fromSnapshot(input.id, input.review);
+      sheet.review.replaceNotes(review.noteEntries());
+      sheet.review.replaceThreads(review.threadEntries());
       if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
       if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
       sheet.defaultRowHeightPx = input.defaultRowHeightPx;

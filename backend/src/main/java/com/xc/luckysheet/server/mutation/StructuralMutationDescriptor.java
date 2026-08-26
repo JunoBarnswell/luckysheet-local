@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -18,19 +19,8 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
     );
 
     StructuralMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, protectionAction(id));
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported structural mutation: " + id);
-    }
-
-    private static String protectionAction(String id) {
-        return switch (id) {
-            case "rows.inserted", "cells.inserted", "rows.inserted.restore" -> "insert-rows";
-            case "rows.deleted", "cells.deleted", "rows.deleted.restore" -> "delete-rows";
-            case "columns.inserted", "columns.inserted.restore" -> "insert-columns";
-            case "columns.deleted", "columns.deleted.restore" -> "delete-columns";
-            case "rows.permuted" -> "sort";
-            default -> "edit-cell";
-        };
     }
 
     @Override
@@ -42,11 +32,12 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "cells.inserted", "cells.deleted" -> List.of(cellAffectedBand(root, mutation.sheetId(), params));
             case "cells.inserted.restore", "cells.deleted.restore" -> List.of(restoreAffectedBand(root, mutation.sheetId(), params));
             case "rows.permuted" -> {
+                DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
-                // Row permutation remaps row-addressed metadata such as
-                // protection rules across the full Excel coordinate domain,
-                // not merely the materialized worksheet width.
-                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, SnapshotMutationSupport.MAX_COLUMN));
+                int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
+                if (declaredEndColumn != canonicalEndColumn) throw ServiceException.validation("Rows permutation affected column extent is stale");
+                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, canonicalEndColumn));
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };
@@ -63,7 +54,10 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "columns.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
             case "cells.inserted", "cells.deleted" -> applyCellShift(root, mutation.sheetId(), params);
             case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), params);
-            case "rows.permuted" -> StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), ownRange(root, mutation.sheetId(), params), params.get("sourceRows"));
+            case "rows.permuted" -> {
+                DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
+                StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), ownRange(root, mutation.sheetId(), params), params.get("sourceRows"));
+            }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }
         return root;

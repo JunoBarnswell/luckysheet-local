@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import { WorkbookCatalogService, WorkspacePersistence, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
+import { RemoteAssetStore, WorkbookCatalogService, WorkspacePersistence, resolveShareToken, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
 import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
 
@@ -17,16 +17,21 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
   const auth = useAuthSession();
   const services = useMemo<ApplicationServices>(() => {
     const persistence = new WorkspacePersistence();
-    const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken });
+    const shareTokenProvider = () => resolveShareToken();
+    const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
     const catalog = new WorkbookCatalogService({
       persistence,
       remote: workbookApi,
-      remoteAvailable: () => auth.getSnapshot().phase === 'authenticated',
+      remoteAvailable: () => auth.getSnapshot().phase === 'authenticated' || Boolean(shareTokenProvider()),
+      shareTokenProvider,
     });
     const createWorkbookSessionOptions = (unitId: string, authTokenProvider: AuthTokenProvider): WorkbookSessionOptions => ({
       unitId,
+      api: workbookApi,
       workspacePersistence: persistence,
       authTokenProvider,
+      shareTokenProvider,
+      assetStore: new RemoteAssetStore(unitId, workbookApi),
     });
     return { catalog, persistence, workbookApi, createWorkbookSessionOptions };
   }, [auth]);

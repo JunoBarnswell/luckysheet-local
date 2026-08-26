@@ -7,12 +7,13 @@
  * WorkbookSnapshot or an operation envelope.
  */
 export const WORKSPACE_DATABASE_NAME = 'react-sheets-workspaces';
-export const WORKSPACE_DATABASE_VERSION = 6;
+export const WORKSPACE_DATABASE_VERSION = 7;
 
 export const WORKSPACE_STORE_NAME = 'workspaces';
 export const DATA_BLOCK_STORE_NAME = 'dataBlocks';
 export const NATIVE_PACKAGE_STORE_NAME = 'nativePackages';
 export const OVERLAY_STORE_NAME = 'sparseOverlays';
+export const ASSET_STORE_NAME = 'assets';
 
 /** Structural factory shape also accepts the lightweight test doubles used by callers. */
 export interface IndexedDbFactory {
@@ -88,6 +89,12 @@ function createOverlayStore(database: IDBDatabase): void {
   store?.createIndex('sourceId', 'sourceId', { unique: false });
 }
 
+function createAssetStore(database: IDBDatabase): void {
+  if (database.objectStoreNames.contains(ASSET_STORE_NAME)) return;
+  const store = database.createObjectStore(ASSET_STORE_NAME, { keyPath: ['unitId', 'assetId'] }) as IDBObjectStore | undefined;
+  store?.createIndex('contentHash', ['unitId', 'contentHash'], { unique: false });
+}
+
 /** Creates every store and index in one upgrade callback. */
 export function ensureWorkspaceStores(database: IDBDatabase): void {
   if (!database.objectStoreNames.contains(WORKSPACE_STORE_NAME)) {
@@ -98,6 +105,7 @@ export function ensureWorkspaceStores(database: IDBDatabase): void {
     database.createObjectStore(NATIVE_PACKAGE_STORE_NAME, { keyPath: 'unitId' });
   }
   createOverlayStore(database);
+  createAssetStore(database);
 }
 
 type DatabasePromiseMap = Map<string, Promise<IDBDatabase>>;

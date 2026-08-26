@@ -34,9 +34,9 @@ describe('print document commands', () => {
     const sheetId = workbook.primarySheetId;
     const range = { sheetId, startRow: 2, endRow: 20, startColumn: 1, endColumn: 7 };
 
-    commands.execute('print.pageSetup', { sheetId, pageSetup });
-    commands.execute('print.area.set', { sheetId, range });
-    commands.execute('print.pageBreak.set', { sheetId, pageBreak: { sheetId, row: 10 } });
+    commands.execute('pageLayout.pageSetup.set', { sheetId, pageSetup });
+    commands.execute('pageLayout.printArea.set', { sheetId, range });
+    commands.execute('pageLayout.pageBreak.insert', { sheetId, pageBreak: { sheetId, row: 10 } });
 
     const document = getPrintDocument(workbook, sheetId);
     assert.deepEqual(document.pageSetup, pageSetup);
@@ -51,7 +51,7 @@ describe('print document commands', () => {
     const sheetId = workbook.primarySheetId;
     const range = { sheetId, startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 };
 
-    commands.execute('print.area.set', { sheetId, range });
+    commands.execute('pageLayout.printArea.set', { sheetId, range });
     assert.equal(getPrintDocument(workbook, sheetId).printAreas.length, 1);
     assert.equal(commands.undo(), true);
     assert.equal(getPrintDocument(workbook, sheetId).printAreas.length, 0);
@@ -65,7 +65,7 @@ describe('print document commands', () => {
     const sourceRuntime = runtime(source);
     const targetRuntime = runtime(target);
     const sheetId = source.primarySheetId;
-    sourceRuntime.execute('print.pageBreak.set', { sheetId, pageBreak: { sheetId, column: 4 } });
+    sourceRuntime.execute('pageLayout.pageBreak.insert', { sheetId, pageBreak: { sheetId, column: 4 } });
     const mutation = sourceRuntime.getUndoEntries().at(-1)?.redo[0];
     assert.ok(mutation);
     targetRuntime.applyRemoteMutations([mutation]);
@@ -77,14 +77,14 @@ describe('print document commands', () => {
     const commands = runtime(workbook);
     const sheetId = workbook.primarySheetId;
 
-    commands.execute('print.titles.set', {
+    commands.execute('pageLayout.printTitles.set', {
       sheetId,
       repeatRows: { start: 0, end: 1 },
       repeatColumns: { start: 0, end: 0 },
     });
-    commands.execute('print.scale.set', { sheetId, scale: 80, fitToWidth: 1 });
-    commands.execute('print.gridlines.set', { sheetId, enabled: true });
-    commands.execute('print.headings.set', { sheetId, enabled: true });
+    commands.execute('pageLayout.scaleToFit.set', { sheetId, scale: 80, fitToWidth: 1 });
+    commands.execute('pageLayout.printGridlines.set', { sheetId, enabled: true });
+    commands.execute('pageLayout.printHeadings.set', { sheetId, enabled: true });
 
     const document = getPrintDocument(workbook, sheetId);
     assert.deepEqual(document.repeatRows, { start: 0, end: 1 });
@@ -98,7 +98,7 @@ describe('print document commands', () => {
     assert.equal(getPrintDocument(workbook, sheetId).pageSetup.printHeadings, false);
     assert.equal(commands.redo(), true);
     assert.equal(getPrintDocument(workbook, sheetId).pageSetup.printHeadings, true);
-    commands.execute('print.titles.clear', { sheetId });
+    commands.execute('pageLayout.printTitles.clear', { sheetId });
     assert.equal(getPrintDocument(workbook, sheetId).repeatRows, undefined);
     assert.equal(getPrintDocument(workbook, sheetId).repeatColumns, undefined);
   });
@@ -109,8 +109,8 @@ describe('print document commands', () => {
     const sheetId = workbook.primarySheetId;
     const sheet = workbook.getSheet(sheetId);
 
-    commands.execute('pageLayout.gridlines.view.set', { sheetId, enabled: false });
-    commands.execute('pageLayout.headings.view.set', { sheetId, enabled: false });
+    commands.execute('pageLayout.viewGridlines.set', { sheetId, enabled: false });
+    commands.execute('pageLayout.viewHeadings.set', { sheetId, enabled: false });
     assert.equal(sheet.showGridlines, false);
     assert.equal(sheet.showHeaders, false);
     assert.equal(commands.undo(), true);

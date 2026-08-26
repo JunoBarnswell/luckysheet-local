@@ -2225,7 +2225,7 @@ function columnFromLetter(value: string): number { let result = 0; for (const ch
 function columnToLetter(index: number): string { let value = index + 1; let result = ''; while (value > 0) { const remainder = (value - 1) % 26; result = String.fromCharCode(65 + remainder) + result; value = Math.floor((value - 1) / 26); } return result; }
 function isScalar(value: unknown): value is PivotScalar { return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value); }
 function nativePivotError(code: string | undefined): PivotErrorValue {
-  const allowed = new Set(['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!']);
+  const allowed = new Set(['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!']);
   if (!code || !allowed.has(code)) throw new Error(`Unsupported native Pivot error value: ${code ?? '<missing>'}`);
   return { kind: 'error', code: code as PivotErrorValue['code'] };
 }

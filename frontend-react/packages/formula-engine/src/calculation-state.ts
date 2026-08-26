@@ -1,8 +1,13 @@
 import type { CellAddress } from './ast';
-import type { RecalculationMode } from './formula-engine';
+import { isWorkbookCalculationSettings, type WorkbookCalculationSettings } from './calculation-settings';
 import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
 import type { FormulaDefinedName } from './defined-names';
+import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import type { ExcelNumericContext } from './numeric';
+import type { CalculationEntropyContext } from './random';
+import type { WorkbookCollationContext } from './collation';
+import { assertFormulaVisibilitySnapshot, type FormulaVisibilitySnapshot } from './reference-cursor';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -10,7 +15,13 @@ import type { FormulaDefinedName } from './defined-names';
  */
 export interface FormulaCalculationSnapshot {
   readonly defaultSheetId: string;
-  readonly recalculationMode: RecalculationMode;
+  readonly calculationSettings: WorkbookCalculationSettings;
+  readonly dateSystem: ExcelDateSystem;
+  readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  readonly numericContext: ExcelNumericContext;
+  readonly calculationEntropy: CalculationEntropyContext;
+  readonly collationContext: WorkbookCollationContext;
+  readonly visibility?: FormulaVisibilitySnapshot;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -43,9 +54,15 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (typeof value.defaultSheetId !== 'string' || value.defaultSheetId.length === 0) {
     throw new Error('Calculation snapshot requires a default worksheet id');
   }
-  if (value.recalculationMode !== 'automatic' && value.recalculationMode !== 'manual') {
-    throw new Error('Calculation snapshot has an invalid recalculation mode');
+  if (!isWorkbookCalculationSettings(value.calculationSettings)) throw new Error('Calculation snapshot has invalid calculation settings');
+  if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation snapshot has an invalid date system');
+  if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
+    throw new Error('Calculation snapshot has an invalid canonical reference date');
   }
+  if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
+  if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
+  if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation snapshot has an invalid collation context');
+  if (value.visibility !== undefined) assertFormulaVisibilitySnapshot(value.visibility);
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }
@@ -125,11 +142,54 @@ function isFormulaDefinedName(value: unknown): value is FormulaDefinedName {
     && (value.scope === 'workbook' || value.scope === 'sheet')
     && (value.scope === 'workbook'
       ? value.sheetId === undefined
-      : typeof value.sheetId === 'string' && value.sheetId.trim().length > 0);
+      : typeof value.sheetId === 'string' && value.sheetId.trim().length > 0)
+    && (value.anchor === undefined || isCellAddress(value.anchor));
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCanonicalDateParts(value: unknown): value is CanonicalExcelDateParts {
+  if (!isRecord(value)) return false;
+  return Number.isInteger(value.year) && value.year >= 1 && value.year <= 9999
+    && Number.isInteger(value.month) && value.month >= 1 && value.month <= 12
+    && Number.isInteger(value.day) && value.day >= 1 && value.day <= 31
+    && Number.isInteger(value.hour) && value.hour >= 0 && value.hour <= 23
+    && Number.isInteger(value.minute) && value.minute >= 0 && value.minute <= 59
+    && Number.isInteger(value.second) && value.second >= 0 && value.second <= 59
+    && Number.isInteger(value.millisecond) && value.millisecond >= 0 && value.millisecond <= 999;
+}
+
+function isExcelNumericContext(value: unknown): value is ExcelNumericContext {
+  if (!isRecord(value)) return false;
+  return Number.isSafeInteger(value.significantDigits)
+    && value.significantDigits >= 1
+    && value.significantDigits <= 15;
+}
+
+function isCalculationEntropyContext(value: unknown): value is CalculationEntropyContext {
+  if (!isRecord(value)) return false;
+  return Number.isSafeInteger(value.cycleId)
+    && value.cycleId >= 0
+    && typeof value.entropySeed === 'string'
+    && value.entropySeed.trim().length > 0
+    && Number.isSafeInteger(value.passIndex)
+    && value.passIndex >= 0;
+}
+
+function isWorkbookCollationContext(value: unknown): value is WorkbookCollationContext {
+  if (!isRecord(value)) return false;
+  return typeof value.cultureId === 'string'
+    && typeof value.caseSensitive === 'boolean'
+    && typeof value.accentSensitive === 'boolean'
+    && (value.numericTextMode === 'lexical' || value.numericTextMode === 'numeric')
+    && (value.blankOrder === 'first' || value.blankOrder === 'last')
+    && Array.isArray(value.typeOrder)
+    && value.typeOrder.length === 5
+    && new Set(value.typeOrder).size === 5
+    && Array.isArray(value.customLists)
+    && value.customLists.every((list) => Array.isArray(list) && list.every((entry) => typeof entry === 'string'));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

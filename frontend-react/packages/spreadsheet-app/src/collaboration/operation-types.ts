@@ -1,5 +1,6 @@
 import type { RangeRef } from '@react-sheets/core-model';
 import type { CommittedOperationEnvelope, OperationEnvelope, OperationMutation } from '@react-sheets/protocol';
+import { mutationCapability } from '@react-sheets/protocol';
 
 /** 协同 OT 操作分类 — 按类型做 transform/rebase */
 export type CollaborationOperationKind =
@@ -54,8 +55,6 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'cells.inserted.restore': 'move-range',
   'cells.deleted.restore': 'move-range',
   'style.set': 'cell-style',
-  'style.preset.set': 'cell-style',
-  'format.painter.applied': 'cell-style',
   'row.insert': 'insert-rows',
   'row.delete': 'delete-rows',
   'column.insert': 'insert-columns',
@@ -71,8 +70,6 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'merge.set': 'merge',
   'table.resize': 'table-resize',
   'drawing.update': 'drawing',
-  'drawing.visibility.set': 'drawing',
-  'drawing.rename': 'drawing',
   'comment.add': 'comment',
   'comment.update': 'comment',
   'find.replaced': 'cell-value',
@@ -82,7 +79,7 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
 export function classifyMutation(mutationId: string, params: unknown, sheetId: string, affectedRanges: RangeRef[]): ClassifiedMutation {
   return {
     mutationId,
-    kind: MUTATION_KIND_MAP[mutationId] ?? 'unknown',
+    kind: mutationCapability(mutationId)?.collaborationKind ?? MUTATION_KIND_MAP[mutationId] ?? 'unknown',
     sheetId,
     affectedRanges,
     params,

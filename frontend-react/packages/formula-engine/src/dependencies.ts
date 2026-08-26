@@ -1,7 +1,7 @@
-import type { CellAddress, CellReferenceNode, FormulaAst, RangeReferenceNode, ParsedCellReference } from './ast';
+import type { CellAddress, CellReferenceNode, FormulaAst, FormulaReferenceNode, RangeReferenceNode, ParsedCellReference } from './ast';
 import { assertCellAddress, cellAddressKey } from './address';
 import { FormulaReferenceError } from './errors';
-import { normalizeRange, type CellDependency, type FormulaDependency, type RangeDependency } from './range-index';
+import { normalizeRange, type CellDependency, type FormulaDependency, type NameDependency, type RangeDependency } from './range-index';
 import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { isFormulaError } from './values';
 
@@ -53,6 +53,15 @@ function visit(
       addDependency(resolveRangeReference(node, owner), dependencies, seen);
       return;
     }
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+    case 'reference-union':
+    case 'reference-intersection':
+    case 'sheet-range-reference':
+    case 'external-reference': {
+      addDependency({ kind: 'reference', reference: node }, dependencies, seen);
+      return;
+    }
     case 'unary-expression':
       visit(node.operand, owner, dependencies, seen, sheetTables);
       return;
@@ -66,8 +75,11 @@ function visit(
     case 'function-call':
       for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables);
       return;
-    case 'name-reference':
+    case 'name-reference': {
+      const dependency: NameDependency = { kind: 'name', name: node.name.trim().toUpperCase() };
+      addDependency(dependency, dependencies, seen);
       return;
+    }
     case 'invalid-reference':
       // An invalidated reference has no dependency target.  Keeping it out
       // of the index prevents a later write to the deleted coordinate from
@@ -80,6 +92,7 @@ function visit(
         {
           specifier: node.specifier,
           columnName: node.columnName,
+          columnEndName: node.columnEndName,
           thisRow: node.thisRow,
         },
         owner,
@@ -104,7 +117,11 @@ function visit(
 function addDependency(dependency: FormulaDependency, dependencies: FormulaDependency[], seen: Set<string>): void {
   const key = dependency.kind === 'cell'
     ? `cell:${cellAddressKey(dependency.address)}`
-    : `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+    : dependency.kind === 'range'
+      ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
+      : dependency.kind === 'reference'
+        ? `reference:${JSON.stringify(dependency.reference)}`
+        : `name:${dependency.name}`;
   if (seen.has(key)) return;
   seen.add(key);
   dependencies.push(dependency);

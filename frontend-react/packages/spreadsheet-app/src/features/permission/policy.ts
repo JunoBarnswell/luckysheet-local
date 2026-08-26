@@ -1,18 +1,8 @@
 import type { ProtectionRule, RangeRef, WorkbookModel } from '@react-sheets/core-model';
+import { commandPermission, type PermissionCapability, type PermissionPolicy } from '@react-sheets/protocol';
 import type { PermissionService, ShareRole } from '../../permission-service';
 
-export type PermissionAction =
-  | 'navigate'
-  | 'edit-cell'
-  | 'format'
-  | 'structure'
-  | 'drawing'
-  | 'protect'
-  | 'share'
-  | 'comment'
-  | 'restore'
-  | 'query'
-  | 'script';
+export type PermissionAction = PermissionCapability;
 
 export interface PermissionCapabilities {
   navigate: boolean;
@@ -98,90 +88,6 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
 }
 
-const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
-  'sheet.cell.set': 'edit-cell',
-  'find.replace': 'edit-cell',
-  'find.replaced': 'edit-cell',
-  'sheet.range.set': 'edit-cell',
-  'sheet.range.fill': 'edit-cell',
-  'fill.applied': 'edit-cell',
-  'fill.restored': 'edit-cell',
-  'sheet.range.clear': 'edit-cell',
-  'sheet.range.paste': 'edit-cell',
-  'sheet.style.set': 'format',
-  'sheet.borders.set': 'format',
-  'sheet.style.setMulti': 'format',
-  'sheet.style.setMultiRange': 'format',
-  'sheet.format.set': 'format',
-  'sheet.numberFormat.apply': 'format',
-  'sheet.style.toggle': 'format',
-  'sheet.cellTemplate.apply': 'format',
-  'sheet.cellEditor.set': 'format',
-  'checkbox.toggle': 'edit-cell',
-  'workbook.cellTemplate.set': 'format',
-  'workbook.cellTemplate.remove': 'format',
-  'sheet.merge.set': 'format',
-  'sheet.merge.remove': 'format',
-  'sheet.cf.add': 'format',
-  'sheet.cf.remove': 'format',
-  'sheet.rows.insert': 'structure',
-  'sheet.rows.delete': 'structure',
-  'sheet.columns.insert': 'structure',
-  'sheet.columns.delete': 'structure',
-  'sheet.sort.multi': 'structure',
-  'data.sort.quick': 'structure',
-  'data.sort.rows': 'structure',
-  'data.sort.reapply': 'structure',
-  'sheet.autoFilter.toggle': 'structure',
-  'sheet.autoFilter.set': 'structure',
-  'sheet.autoFilter.sort': 'structure',
-  'sheet.autoFilter.clearCriteria': 'structure',
-  'sheet.autoFilter.reapply': 'structure',
-  'sheetTable.autoFilter.set': 'structure',
-  'sheet.row.hide': 'structure',
-  'sheet.rows.visibility.set': 'structure',
-  'sheet.column.hide': 'structure',
-  'sheet.protect.set': 'protect',
-  'sheet.protect.remove': 'protect',
-  'workbook.share.set': 'share',
-  'comment.add': 'comment',
-  'comment.reply': 'comment',
-  'comment.resolve': 'comment',
-  'comment.remove': 'comment',
-  'comment.update': 'comment',
-  'note.set': 'comment',
-  'note.remove': 'comment',
-  'note.visibility': 'comment',
-  'hyperlink.set': 'edit-cell',
-  'hyperlink.remove': 'edit-cell',
-  'history.restore': 'restore',
-  'xlsx.import': 'edit-cell',
-  'xlsx.export': 'navigate',
-  'print.preview': 'navigate',
-  'print.export': 'navigate',
-  'print.area.set': 'navigate',
-  'print.pageSetup': 'navigate',
-  'query.load': 'query',
-  'query.refresh': 'query',
-  'automation.run': 'script',
-  'automation.record.start': 'script',
-  'automation.record.stop': 'script',
-  'extended.whatIf.goalSeek': 'script',
-  'extended.whatIf.scenario': 'script',
-  'extended.whatIf.dataTable': 'script',
-  'sheet.create.advanced': 'structure',
-  'tableSheet.update': 'structure',
-  'ganttSheet.update': 'structure',
-  'reportSheet.update': 'structure',
-  'cell.barcode.apply': 'format',
-  'cell.image.apply': 'format',
-  'picture.convertToCell': 'drawing',
-  'picture.convertToFloating': 'drawing',
-  'dataChart.create': 'drawing',
-  'formControl.update': 'drawing',
-  'formControl.activate': 'drawing',
-};
-
 const ROLE_CAPABILITIES: Readonly<Record<ShareRole, ReadonlySet<PermissionAction>>> = {
   owner: new Set(['navigate', 'edit-cell', 'format', 'structure', 'drawing', 'protect', 'share', 'comment', 'restore', 'query', 'script']),
   editor: new Set(['navigate', 'edit-cell', 'format', 'structure', 'drawing', 'comment', 'query', 'script']),
@@ -193,30 +99,17 @@ export function isPermissionExempt(commandId: string): boolean {
   return PERMISSION_EXEMPT_COMMAND_PREFIXES.some((prefix) => commandId.startsWith(prefix));
 }
 
-export function resolveCommandAction(commandId: string): PermissionAction {
-  if (isPermissionExempt(commandId)) return 'navigate';
-  if (COMMAND_ACTION_MAP[commandId]) return COMMAND_ACTION_MAP[commandId]!;
-  if (commandId.startsWith('comment.') || commandId.startsWith('note.')) return 'comment';
-  if (commandId.startsWith('hyperlink.')) return 'edit-cell';
-  if (commandId.startsWith('drawing.') || commandId.startsWith('chart.') || commandId.startsWith('dataChart.') || commandId.startsWith('shape.')) return 'drawing';
-  if (commandId.startsWith('sparkline.')) return 'drawing';
-  if (commandId.startsWith('picture.')) return 'drawing';
-  if (commandId.startsWith('pivot.')) return 'structure';
-  if (commandId.startsWith('sheet.style') || commandId.startsWith('sheet.merge') || commandId.startsWith('sheet.cf')) return 'format';
-  if (commandId.startsWith('sheet.row') || commandId.startsWith('sheet.column') || commandId.startsWith('sheet.rows') || commandId.startsWith('sheet.columns') || commandId.startsWith('outline.') || commandId.startsWith('data.')) {
-    return 'structure';
-  }
-  if (commandId.startsWith('history.')) return 'restore';
-  if (commandId.startsWith('persistence.')) return 'edit-cell';
-  if (commandId.startsWith('xlsx.')) return commandId === 'xlsx.export' ? 'navigate' : 'edit-cell';
-  if (commandId.startsWith('print.')) return 'navigate';
-  if (commandId.startsWith('query.')) return 'query';
-  if (commandId.startsWith('automation.')) return 'script';
-  if (commandId.startsWith('extended.whatIf')) return 'script';
-  if (commandId.startsWith('sheet.protect')) return 'protect';
-  if (commandId.startsWith('ui.clipboard.copy')) return 'navigate';
-  if (commandId.startsWith('ui.history.')) return 'edit-cell';
-  return 'edit-cell';
+export function resolveCommandPermission(commandId: string): PermissionPolicy | undefined {
+  if (isPermissionExempt(commandId)) return {
+    capability: 'navigate',
+    protectionAction: 'none',
+    checksProtection: false,
+  };
+  return commandPermission(commandId);
+}
+
+export function resolveCommandAction(commandId: string): PermissionAction | undefined {
+  return resolveCommandPermission(commandId)?.capability;
 }
 
 export function buildPermissionCapabilities(role: ShareRole): PermissionCapabilities {

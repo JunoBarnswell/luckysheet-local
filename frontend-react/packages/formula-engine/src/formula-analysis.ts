@@ -23,6 +23,17 @@ export function collectNameReferences(ast: FormulaAst): string[] {
       case 'spill-reference':
         visit(node.operand);
         return;
+      case 'reference-union':
+        for (const reference of node.references) visit(reference);
+        return;
+      case 'reference-intersection':
+        visit(node.left);
+        visit(node.right);
+        return;
+      case 'sheet-range-reference':
+      case 'external-reference':
+        visit(node.reference);
+        return;
       case 'binary-expression':
         visit(node.left);
         visit(node.right);
@@ -55,6 +66,17 @@ export function formulaUsesVolatile(ast: FormulaAst): boolean {
         return;
       case 'spill-reference':
         visit(node.operand);
+        return;
+      case 'reference-union':
+        for (const reference of node.references) visit(reference);
+        return;
+      case 'reference-intersection':
+        visit(node.left);
+        visit(node.right);
+        return;
+      case 'sheet-range-reference':
+      case 'external-reference':
+        visit(node.reference);
         return;
       case 'binary-expression':
         visit(node.left);

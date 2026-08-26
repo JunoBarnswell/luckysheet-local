@@ -8,6 +8,7 @@ import type {
   XlsxWorkerPort,
 } from '@react-sheets/exchange-excel-ooxml';
 import { excelCodecRegistry } from '@react-sheets/exchange-excel-ooxml';
+import type { AssetStore } from '../persistence/asset-store';
 
 export type { CompatibilityReport, CompatibilityLevel, XlsxExportOptions, XlsxImportOptions };
 
@@ -20,6 +21,7 @@ export interface XlsxImportParams {
   workerPort?: XlsxWorkerPort;
   execution?: 'worker' | 'inline-test';
   revision?: number;
+  assetStore?: AssetStore;
 }
 
 export interface XlsxExportParams {
@@ -29,6 +31,7 @@ export interface XlsxExportParams {
   workerPort?: XlsxWorkerPort;
   execution?: 'worker' | 'inline-test';
   revision?: number;
+  assetStore?: AssetStore;
 }
 
 export interface XlsxExchangeResult {
@@ -66,6 +69,10 @@ export async function exchangeImportXlsx(params: XlsxImportParams): Promise<Xlsx
     revision: params.revision,
   };
   const result = await excelCodecRegistry.import(request);
+  if (result.snapshot && params.assetStore) await materializeImportedAssets(result.snapshot, result.nativePackage?.packageGraph.parts ?? {}, params.assetStore);
+  else if (result.snapshot && result.report.issues.some((issue) => issue.feature === 'images') && collectAssetRefs(result.snapshot).length === 0) {
+    throw new Error('ASSET_IMPORT_UNSUPPORTED: XLSX image drawing has no canonical AssetRef metadata');
+  }
   return {
     report: result.report,
     snapshot: result.snapshot,
@@ -73,15 +80,31 @@ export async function exchangeImportXlsx(params: XlsxImportParams): Promise<Xlsx
   };
 }
 
+async function materializeImportedAssets(snapshot: WorkbookSnapshot, parts: Record<string, Uint8Array>, assetStore: AssetStore): Promise<void> {
+  const refs = collectAssetRefs(snapshot);
+  for (const ref of refs) {
+    const media = Object.entries(parts).find(([name]) => name.startsWith(`xl/media/${ref.assetId}.`))?.[1];
+    if (!media) throw new Error(`ASSET_IMPORT_MISSING: ${ref.assetId}`);
+    const stored = await assetStore.put({ content: new Blob([media], { type: ref.mimeType }), mimeType: ref.mimeType, width: ref.width, height: ref.height });
+    if (stored.assetId !== ref.assetId || stored.contentHash !== ref.contentHash) throw new Error(`ASSET_IMPORT_MISMATCH: ${ref.assetId}`);
+  }
+}
+
 export async function exchangeExportXlsx(
   snapshot: WorkbookSnapshot,
   params: XlsxExportParams = {},
 ): Promise<XlsxExchangeResult> {
   const fileName = params.fileName ?? `${snapshot.name || 'workbook'}.xlsx`;
+  const assetRefs = collectAssetRefs(snapshot);
+  const assetBytes: Record<string, Uint8Array> = {};
+  if (assetRefs.length) {
+    if (!params.assetStore) throw new Error('ASSET_EXPORT_REQUIRED: AssetStore is required for workbook images');
+    for (const ref of assetRefs) assetBytes[ref.assetId] = new Uint8Array(await (await params.assetStore.get(ref)).arrayBuffer());
+  }
   const request = {
     snapshot,
     fileName,
-    options: buildXlsxExportOptions(params.options),
+    options: { ...buildXlsxExportOptions(params.options), ...(assetRefs.length ? { assetBytes } : {}) },
     ...(params.nativePackage ? { nativePackage: params.nativePackage } : {}),
     workerPort: params.workerPort,
     execution: params.execution,
@@ -94,6 +117,21 @@ export async function exchangeExportXlsx(
     fileName: result.fileName,
     nativePackage: result.nativePackage,
   };
+}
+
+function collectAssetRefs(value: unknown): import('@react-sheets/core-model').AssetRef[] {
+  const refs: import('@react-sheets/core-model').AssetRef[] = [];
+  const visit = (entry: unknown): void => {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)
+      && (entry as { schema?: unknown }).schema === 'AssetRef') {
+      refs.push(structuredClone(entry) as import('@react-sheets/core-model').AssetRef);
+      return;
+    }
+    if (Array.isArray(entry)) for (const child of entry) visit(child);
+    else if (entry && typeof entry === 'object') for (const child of Object.values(entry)) visit(child);
+  };
+  visit(value);
+  return [...new Map(refs.map((ref) => [ref.assetId, ref])).values()];
 }
 
 export function summarizeCompatibilityReport(report: CompatibilityReport): string {

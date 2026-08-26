@@ -75,7 +75,13 @@ function applyPlannedCellOperation(operation: FacadeCellOperation, context: Comm
     id: 'cell.set',
     unitId: context.workbook.unitId,
     sheetId: operation.sheetId,
-    params: { sheetId: operation.sheetId, row: operation.row, column: operation.column, value },
+    params: {
+      sheetId: operation.sheetId,
+      row: operation.row,
+      column: operation.column,
+      value,
+      entryIntent: { kind: 'script', target: { sheetId: operation.sheetId, row: operation.row, column: operation.column }, candidate: structuredClone(value), validationDecision: { status: 'not-applicable' } },
+    },
     affectedRanges,
     inverse: [{
       id: 'cell.restore',

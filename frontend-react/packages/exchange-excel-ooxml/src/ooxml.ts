@@ -25,6 +25,7 @@ import {
   canonicalExcelDateFromValue,
   canonicalExcelDateFromUtcDate,
   canonicalExcelDateToUtcDate,
+  DEFAULT_WORKBOOK_CALCULATION_SETTINGS,
   shiftCanonicalExcelDate,
   type CanonicalExcelDate,
   type CanonicalExcelDateParts,
@@ -84,6 +85,8 @@ const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
 const REACT_SHEETS_METADATA_PART = 'customXml/react-sheets-workbook.xml';
+const OOXML_MAX_ROW_INDEX = 1_048_575;
+const OOXML_MAX_COLUMN_INDEX = 16_383;
 
 export interface LoadedOpcPackageGraph {
   packageGraph: OpcPackageGraph;
@@ -238,10 +241,15 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 5,
+    version: 8,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
+    calculationSettings: structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS),
+    theme: {
+      id: `ooxml-theme-${styles.themeColors.join('').replace(/[^0-9a-f]/gi, '').slice(0, 64) || 'default'}`,
+      colors: Object.fromEntries(styles.themeColors.map((color, index) => [`color${index}`, color])),
+    },
     definedNames,
     definedNameModels,
     dataModel: { sources: [], tables: [], relationships: [], views: [] },
@@ -272,7 +280,7 @@ function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: stri
 
 export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
-  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
+  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> },
   preserved?: OpcPackageGraph,
 ): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
@@ -309,6 +317,7 @@ export function exportSnapshotToOpcPackageGraph(
   });
   nativeUpdate.files = chartUpdate.files;
   nativeUpdate.relationships = chartUpdate.relationships;
+  synchronizeImageAssets(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes);
   files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
@@ -417,7 +426,7 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
       if (sheet.dataValidations?.length) features.add('validation');
       if (sheet.sheetTables?.length) features.add('tables');
       if (sheet.autoFilter) features.add('filters');
-      if (sheet.notes?.length || sheet.commentThreads?.length) features.add('comments');
+      if (Object.keys(sheet.review.notesById).length || Object.keys(sheet.review.threadsById).length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
         else if (payload.kind === 'slicer') features.add('slicer');
@@ -428,6 +437,79 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
     if (snapshot.definedNameModels?.length || Object.keys(snapshot.definedNames ?? {}).length) features.add('defined-names');
   }
   return [...features];
+}
+
+/** Emits canonical image assets into native DrawingML. Bytes are supplied by
+ * AssetStore at the application boundary; no binary data enters snapshots. */
+function synchronizeImageAssets(
+  files: Record<string, Uint8Array>,
+  relationships: Record<string, XlsxRelationship[]>,
+  snapshot: WorkbookSnapshot,
+  sheetPartById: Record<string, string>,
+  assetBytes: Record<string, Uint8Array> | undefined,
+): void {
+  const imageEntries = snapshot.sheets.flatMap((sheet) => {
+    const entries: Array<{ sheet: SheetSnapshot; id: string; row: number; column: number; endRow: number; endColumn: number; asset: import('@react-sheets/core-model').AssetRef; name?: string }> = [];
+    for (const drawing of sheet.drawings) {
+      const payload = sheet.drawingPayloads[drawing.payloadId];
+      if (payload?.kind !== 'image') continue;
+      const row = drawing.anchor.row ?? 0;
+      const column = drawing.anchor.column ?? 0;
+      entries.push({ sheet, id: drawing.id, row, column, endRow: Math.max(row + 1, drawing.anchor.endRow ?? row + Math.max(1, Math.round(drawing.transform.height / 24))), endColumn: Math.max(column + 1, drawing.anchor.endColumn ?? column + Math.max(1, Math.round(drawing.transform.width / 96))), asset: payload.asset, name: payload.name ?? payload.altText });
+    }
+    for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) {
+      if (cell.presentation?.kind !== 'image') continue;
+      const row = Number(rowKey);
+      const column = Number(columnKey);
+      entries.push({ sheet, id: `cell-image-${row}-${column}`, row, column, endRow: row + 1, endColumn: column + 1, asset: cell.presentation.asset, name: cell.presentation.altText });
+    }
+    return entries;
+  });
+  if (!imageEntries.length) return;
+  if (!assetBytes) throw new Error('ASSET_EXPORT_REQUIRED: image bytes must be resolved from AssetStore before XLSX export');
+
+  const mediaPartFor = (asset: import('@react-sheets/core-model').AssetRef): string => {
+    const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType.split('/')[1]?.toLowerCase();
+    if (!extension || !['png', 'jpg', 'gif', 'webp', 'bmp'].includes(extension)) throw new Error(`UNSUPPORTED_FEATURE: XLSX image MIME type ${asset.mimeType}`);
+    const bytes = assetBytes[asset.assetId];
+    if (!bytes || bytes.byteLength !== asset.byteLength) throw new Error(`ASSET_EXPORT_MISSING: ${asset.assetId}`);
+    const part = `xl/media/${asset.assetId}.${extension}`;
+    files[part] = bytes.slice();
+    return part;
+  };
+  const grouped = new Map<string, typeof imageEntries>();
+  for (const entry of imageEntries) grouped.set(sheetPartById[entry.sheet.id]!, [...(grouped.get(sheetPartById[entry.sheet.id]!) ?? []), entry]);
+  for (const [sheetPart, entries] of grouped) {
+    let sheetRelations = relationships[sheetPart] ?? [];
+    let drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
+    let drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : undefined;
+    if (!drawingPart) {
+      let index = 1;
+      while (files[`xl/drawings/drawing${index}.xml`]) index += 1;
+      drawingPart = `xl/drawings/drawing${index}.xml`;
+      sheetRelations = mergeRelationships(sheetRelations, [{ type: REL_DRAWING, target: relativeTarget(sheetPart, drawingPart) }]);
+      drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
+      relationships[sheetPart] = sheetRelations;
+    }
+    const original = files[drawingPart] ? strFromU8(files[drawingPart]!) : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${NS_DOC_REL}"/>`;
+    const closing = '</xdr:wsDr>';
+    const position = original.lastIndexOf(closing);
+    if (position < 0) throw new Error(`ASSET_EXPORT_INVALID_DRAWING: ${drawingPart}`);
+    let drawingXml = original.slice(0, position);
+    let drawingRelations = relationships[drawingPart] ?? [];
+    const existingIds = descendants(parseXml(original), 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isSafeInteger);
+    let objectId = Math.max(0, ...existingIds, 0) + 1;
+    for (const entry of entries) {
+      const mediaPart = mediaPartFor(entry.asset);
+      drawingRelations = mergeRelationships(drawingRelations, [{ type: `${NS_DOC_REL}/image`, target: relativeTarget(drawingPart, mediaPart) }]);
+      const imageRelation = drawingRelations.find((relation) => isRelationshipKind(relation.type, 'image') && resolveTarget(drawingPart!, relation.target) === mediaPart);
+      if (!imageRelation) throw new Error(`ASSET_EXPORT_RELATIONSHIP_MISSING: ${entry.asset.assetId}`);
+      drawingXml += `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${entry.column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${entry.endColumn}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.endRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${objectId++}" name="${encodeXml(entry.name ?? entry.id)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="${NS_DOC_REL}" r:embed="${encodeXml(imageRelation.id)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+    }
+    files[drawingPart] = strToU8(`${drawingXml}${closing}`);
+    relationships[drawingPart] = drawingRelations;
+    files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(drawingRelations));
+  }
 }
 
 function parseSheet(
@@ -445,6 +527,12 @@ function parseSheet(
   const hyperlinks: NonNullable<SheetSnapshot['hyperlinks']> = [];
   const hiddenRows: number[] = [];
   const dimensions = parseRange(child(root, 'dimension')?.attrs.ref);
+  if (dimensions) {
+    if (dimensions.startRow < 0 || dimensions.startColumn < 0 || dimensions.endRow < dimensions.startRow || dimensions.endColumn < dimensions.startColumn
+      || dimensions.endRow > OOXML_MAX_ROW_INDEX || dimensions.endColumn > OOXML_MAX_COLUMN_INDEX) {
+      throw new Error(`UNSUPPORTED_FEATURE: Worksheet ${descriptor.name} dimension exceeds the OOXML worksheet boundary`);
+    }
+  }
   const sheetData = child(root, 'sheetData');
   const sheetFormat = child(root, 'sheetFormatPr');
   const defaultRowHeightPt = finitePositive(sheetFormat?.attrs.defaultRowHeight, 15);
@@ -454,16 +542,18 @@ function parseSheet(
   const rowHeightsPx = parseRowHeights(root);
   const columnWidthsPx = parseColumnWidths(root, styles.maximumDigitWidthPx);
   const pane = parsePane(root);
-  let maxRow = dimensions?.endRow ?? 999;
-  let maxColumn = dimensions?.endColumn ?? 25;
+  let maxRow = dimensions?.endRow ?? -1;
+  let maxColumn = dimensions?.endColumn ?? -1;
   const cellEntries: Array<{ node: XmlNode; row: number; column: number }> = [];
   for (const rowNode of children(sheetData, 'row')) {
     const rowNumber = parsePositiveInt(rowNode.attrs.r, 1) - 1;
+    assertOoxmlAddress(rowNumber, 0, `${descriptor.name}!row ${rowNode.attrs.r ?? ''}`);
     maxRow = Math.max(maxRow, rowNumber);
     if (rowNode.attrs.hidden === '1' || rowNode.attrs.hidden === 'true') hiddenRows.push(rowNumber);
     for (const cellNode of children(rowNode, 'c')) {
       const address = parseA1(cellNode.attrs.r ?? 'A1');
       if (!address) throw new Error(`Worksheet ${descriptor.name} contains an invalid cell reference: ${cellNode.attrs.r ?? ''}`);
+      assertOoxmlAddress(address.row, address.column, `${descriptor.name}!${cellNode.attrs.r ?? ''}`);
       maxColumn = Math.max(maxColumn, address.column);
       maxRow = Math.max(maxRow, address.row);
       cellEntries.push({ node: cellNode, row: address.row, column: address.column });
@@ -504,7 +594,7 @@ function parseSheet(
   validateNonOverlappingMerges(merges, descriptor);
   const hiddenColumns = parseHiddenColumns(root);
   const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
-  const notes = parseNotes(root, descriptor, files, pkg);
+  const review = parseNotes(root, descriptor, files, pkg);
   const sheetTables = parseSheetTables(root, descriptor, files, pkg, styles);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
@@ -530,8 +620,8 @@ function parseSheet(
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
-  const rowCount = Math.max(1000, maxRow + 1);
-  const columnCount = Math.max(26, maxColumn + 1);
+  const rowCount = Math.max(1, maxRow + 1);
+  const columnCount = Math.max(1, maxColumn + 1);
   return {
     kind: 'worksheet',
     id: descriptor.id,
@@ -555,7 +645,7 @@ function parseSheet(
     hiddenColumns,
     tabColor,
     ...(hyperlinks.length ? { hyperlinks } : {}),
-    notes,
+    review,
     ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
     protectionRules,
@@ -1322,6 +1412,7 @@ function buildWorksheetXml(
   printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
   sheetNames: ReadonlyMap<string, string> = new Map(),
 ): string {
+  validateOoxmlExchangeBoundary(sheet);
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
   if (sheet.tabColor || sheet.outline?.groups.length) xml += `<sheetPr>${sheet.tabColor ? `<tabColor rgb="${ooxmlRgb(sheet.tabColor)}"/>` : ''}${sheet.outline?.groups.length ? '<outlinePr summaryBelow="1" summaryRight="1"/>' : ''}</sheetPr>`;
   const dimension = inferDimension(sheet);
@@ -1432,21 +1523,24 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   const styleAttr = style === undefined ? '' : ` s="${style}"`;
   const metadata = cell.formulaMetadata;
   if (cell.formula || metadata?.preservedOnly) {
-    const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
+    // A normal edit owns the current formula text. Only a preserved-only
+    // import may use sourceFormula, otherwise stale provenance could rewrite a
+    // newly authored formula during export.
+    const sourceFormula = metadata?.preservedOnly ? metadata.sourceFormula ?? cell.formula ?? '' : cell.formula ?? '';
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
     const cachedSerial = typeof cachedValue === 'string' && isExcelDateFormat(cell.numberFormat) ? canonicalDateToSerial(cachedValue, dateSystem) : undefined;
     const serializedCachedValue = cachedSerial ?? cachedValue;
     const cached = includeCachedValues && serializedCachedValue !== null ? `<v>${encodeXml(typeof serializedCachedValue === 'boolean' ? (serializedCachedValue ? '1' : '0') : String(serializedCachedValue))}</v>` : '';
     const cachedType = typeof serializedCachedValue === 'boolean' ? 'b' : typeof serializedCachedValue === 'string' ? 'str' : undefined;
-    const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
+    const formulaAttrs = metadata?.kind === 'shared'
       ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'array'
       ? ` t="array"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'dataTable'
         ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
         : '';
-    const formulaBody = metadata?.kind === 'shared' && metadata.preservedOnly && !metadata.sharedMaster ? '' : encodeXml(formula);
+    const formulaBody = metadata?.kind === 'shared' && !metadata.sharedMaster ? '' : encodeXml(formula);
     return `<c r="${ref}"${styleAttr}${cachedType ? ` t="${cachedType}"` : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
@@ -1733,6 +1827,12 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   for (const node of children(original, 'Default')) if (node.attrs.Extension && node.attrs.ContentType) defaults.set(node.attrs.Extension, node.attrs.ContentType);
   for (const node of children(original, 'Override')) if (node.attrs.PartName && node.attrs.ContentType) overrides.set(node.attrs.PartName, node.attrs.ContentType);
   for (const name of files.keys()) {
+    if (!name.startsWith('xl/media/')) continue;
+    const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    const mediaTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    if (mediaTypes[extension]) defaults.set(extension, mediaTypes[extension]);
+  }
+  for (const name of files.keys()) {
     if (!name.startsWith('xl/worksheets/') || !name.endsWith('.xml')) continue;
     overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
   }
@@ -1921,19 +2021,23 @@ function excelSheetName(name: string): string {
   return /[\s!'"(),]/.test(name) ? `'${name.replace(/'/g, "''")}'` : name;
 }
 
-function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['notes'] {
+function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['review'] {
+  const review: SheetSnapshot['review'] = { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} };
   const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
-  if (!relation) return [];
+  if (!relation) return review;
   const part = resolveTarget(descriptor.part, relation.target);
   const bytes = files[part];
-  if (!bytes) return [];
+  if (!bytes) return review;
   const commentsRoot = firstElement(parseXml(strFromU8(bytes)), 'comments');
   const authors = children(child(commentsRoot, 'authors'), 'author').map(textContent);
-  return children(child(commentsRoot, 'commentList'), 'comment').flatMap((comment) => {
+  for (const comment of children(child(commentsRoot, 'commentList'), 'comment')) {
     const ref = parseA1(comment.attrs.ref ?? '');
-    if (!ref) return [];
-    return [{ row: ref.row, column: ref.column, note: { id: `note-${descriptor.id}-${ref.row}-${ref.column}`, author: authors[Number(comment.attrs.author) || 0] ?? 'Unknown', text: descendants(comment, 't').map(textContent).join(''), createdAt: new Date(0).toISOString(), visible: false } }];
-  });
+    if (!ref) continue;
+    const id = `note-${descriptor.id}-${ref.row}-${ref.column}`;
+    review.notesByCell[`${ref.row}:${ref.column}`] = id;
+    review.notesById[id] = { id, author: authors[Number(comment.attrs.author) || 0] ?? 'Unknown', text: descendants(comment, 't').map(textContent).join(''), createdAt: new Date(0).toISOString(), visible: false };
+  }
+  return review;
 }
 
 function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescriptor[]): DefinedNameModel[] {
@@ -2578,7 +2682,7 @@ function resolveWorkbookRelatedPart(workbookPart: string, relationships: XlsxRel
 function requireSheetRange(value: string | undefined, descriptor: SheetDescriptor, feature: string): RangeRef {
   const range = parseRange(value);
   if (!range || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
-    || range.endRow > 1_048_575 || range.endColumn > 16_383) {
+    || range.endRow > OOXML_MAX_ROW_INDEX || range.endColumn > OOXML_MAX_COLUMN_INDEX) {
     throw new Error(`Worksheet ${descriptor.name} has an invalid ${feature} range: ${value ?? ''}`);
   }
   return { ...range, sheetId: descriptor.id };
@@ -2665,6 +2769,40 @@ function inferDimension(sheet: SheetSnapshot): string {
   }
   if (!hasCell) return 'A1';
   return `A1:${columnToLetter(maxColumn)}${maxRow + 1}`;
+}
+
+function assertOoxmlAddress(row: number, column: number, subject: string): void {
+  if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0
+    || row > OOXML_MAX_ROW_INDEX || column > OOXML_MAX_COLUMN_INDEX) {
+    throw new Error(`UNSUPPORTED_FEATURE: ${subject} exceeds the OOXML worksheet boundary`);
+  }
+}
+
+function validateOoxmlExchangeBoundary(sheet: SheetSnapshot): void {
+  for (const [row, columns] of Object.entries(sheet.cells)) {
+    const rowIndex = Number(row);
+    for (const column of Object.keys(columns)) assertOoxmlAddress(rowIndex, Number(column), `${sheet.name}!cell`);
+  }
+  for (const row of Object.keys(sheet.rowHeightsPx ?? {})) assertOoxmlAddress(Number(row), 0, `${sheet.name}!row dimension`);
+  for (const row of sheet.hiddenRows ?? []) assertOoxmlAddress(row, 0, `${sheet.name}!hidden row`);
+  for (const column of Object.keys(sheet.columnWidthsPx ?? {})) assertOoxmlAddress(0, Number(column), `${sheet.name}!column dimension`);
+  for (const column of sheet.hiddenColumns ?? []) assertOoxmlAddress(0, column, `${sheet.name}!hidden column`);
+  for (const merge of sheet.merges) validateOoxmlRange(merge.range, `${sheet.name}!merge`);
+  for (const range of [sheet.autoFilter?.range, ...(sheet.sheetTables ?? []).map((table) => table.range)].filter((range): range is RangeRef => Boolean(range))) {
+    validateOoxmlRange(range, `${sheet.name}!filter`);
+  }
+  for (const rule of sheet.conditionalFormats ?? []) for (const range of rule.ranges) validateOoxmlRange(range, `${sheet.name}!conditional format`);
+  for (const rule of sheet.dataValidations ?? []) for (const range of rule.ranges) validateOoxmlRange(range, `${sheet.name}!data validation`);
+  for (const rule of sheet.dataValidations ?? []) {
+    if (rule.listSource?.kind === 'range') validateOoxmlRange(rule.listSource.range, `${sheet.name}!validation source`);
+  }
+  for (const hyperlink of sheet.hyperlinks ?? []) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
+}
+
+function validateOoxmlRange(range: RangeRef, subject: string): void {
+  assertOoxmlAddress(range.startRow, range.startColumn, subject);
+  assertOoxmlAddress(range.endRow, range.endColumn, subject);
+  if (range.endRow < range.startRow || range.endColumn < range.startColumn) throw new Error(`UNSUPPORTED_FEATURE: ${subject} is inverted`);
 }
 
 function columnToLetter(index: number): string {

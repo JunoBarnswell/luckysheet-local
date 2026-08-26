@@ -20,7 +20,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
     static final Set<String> IDS = Set.of("pivot.drilldown.add", "pivot.drilldown.remove");
 
     PivotDrillDownMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "structure");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported pivot drill-down mutation: " + id);
     }
 
@@ -181,7 +181,12 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         sheet.putObject("pane").put("kind", "none");
         sheet.put("defaultRowHeightPx", 20);
         sheet.put("defaultColumnWidthPx", 64);
-        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "notes", "commentThreads", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
+        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
+        ObjectNode review = sheet.putObject("review");
+        review.putObject("notesByCell");
+        review.putObject("notesById");
+        review.putObject("threadIdsByCell");
+        review.putObject("threadsById");
         sheet.set("drawingPayloads", JsonNodeFactory.instance.objectNode());
         sheet.set("rowHeightsPx", JsonNodeFactory.instance.objectNode());
         sheet.set("columnWidthsPx", JsonNodeFactory.instance.objectNode());

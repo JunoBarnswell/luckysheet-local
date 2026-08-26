@@ -55,13 +55,11 @@ export function serializeHyperlink(link: CellHyperlink): string {
 }
 
 export function findCommentThreadAt(sheet: WorksheetModel, row: number, column: number): CommentThread | undefined {
-  return sheet.commentThreads.find((thread) => thread.row === row && thread.column === column);
+  return sheet.review.getThreadsAt(row, column)[0];
 }
 
 export function findCommentThreadsAt(sheet: WorksheetModel, row: number, column: number): CommentThread[] {
-  return sheet.commentThreads
-    .filter((thread) => thread.row === row && thread.column === column)
-    .map((thread) => structuredClone(thread));
+  return sheet.review.getThreadsAt(row, column);
 }
 
 export function threadToCellComment(thread: CommentThread): CellComment {

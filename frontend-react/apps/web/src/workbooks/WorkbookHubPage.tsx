@@ -108,13 +108,27 @@ export function WorkbookHubPage({
     });
   }, [activeSection, filters, items, query, tab]);
 
-  const selectedItems = useMemo(() => items.filter((item) => selectedKeys.includes(item.unitId)), [items, selectedKeys]);
+  const visibleItemIds = useMemo(() => new Set(visibleItems.map((item) => item.unitId)), [visibleItems]);
+  useEffect(() => {
+    setSelectedKeys((current) => {
+      const next = current.filter((unitId) => visibleItemIds.has(unitId));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleItemIds]);
+
+  const selectedItems = useMemo(() => {
+    const selected = new Set(selectedKeys);
+    return visibleItems.filter((item) => selected.has(item.unitId));
+  }, [selectedKeys, visibleItems]);
+  const exportableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed'), [selectedItems]);
+  const syncableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed' && item.storageLocation !== 'remote'), [selectedItems]);
+  const movableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed' && (item.role === 'owner' || item.role === 'editor')), [selectedItems]);
   const showTemplates = activeSection === 'start' || activeSection === 'new';
   const showCatalog = !infoSections.has(activeSection);
   const handleTabChange = (next: WorkbookCategoryTab) => { setTab(next); onSelectTab?.(next); };
   const openCreate = () => onCreateTemplate('blank');
-  const exportSelected = () => { selectedItems.forEach((item) => onExportWorkbook(item.unitId)); };
-  const syncSelected = () => { selectedItems.filter((item) => item.storageLocation !== 'remote').forEach((item) => onSyncWorkbook(item.unitId)); };
+  const exportSelected = () => { exportableItems.forEach((item) => onExportWorkbook(item.unitId)); };
+  const syncSelected = () => { syncableItems.forEach((item) => onSyncWorkbook(item.unitId)); };
   const navigate = (section: WorkbookHubSection) => { setMobileNavigationOpen(false); onNavigate(section); };
   const openFilters = () => { setDraftFilters(filters); setFilterOpen(true); };
   const applyFilters = () => { setFilters(draftFilters); setFilterOpen(false); };
@@ -160,7 +174,7 @@ export function WorkbookHubPage({
               {activeSection === 'start' ? <StorageInfoBanner onLearnMore={() => navigate('info')} /> : null}
               {showCatalog ? (
                 <Stack gap="md">
-                  <WorkbookActionBar canExport={selectedItems.length > 0} canSync={selectedItems.some((item) => item.storageLocation !== 'remote')} onCreate={openCreate} onExportSelected={exportSelected} onImport={onImportWorkbook} onMoveSelected={() => selectedItems[0] && onMoveWorkbook(selectedItems[0].unitId)} onSyncSelected={syncSelected} selectedCount={selectedKeys.length} />
+                  <WorkbookActionBar canExport={exportableItems.length > 0} canMove={movableItems.length > 0} canSync={syncableItems.length > 0} onCreate={openCreate} onExportSelected={exportSelected} onImport={onImportWorkbook} onMoveSelected={() => movableItems[0] && onMoveWorkbook(movableItems[0].unitId)} onSyncSelected={syncSelected} selectedCount={selectedItems.length} />
                   <Inline gap="lg" className="items-end justify-between">
                     <WorkbookCategoryTabs activeTab={activeSection === 'shared' ? 'shared' : tab} onChange={handleTabChange} />
                     <Box className="hidden min-w-0 flex-1 justify-end min-[860px]:flex"><WorkbookSearch onChange={setQuery} onFilter={openFilters} onToggleView={() => setViewMode((current) => current === 'list' ? 'grid' : 'list')} value={query} viewMode={viewMode} /></Box>

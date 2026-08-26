@@ -5,6 +5,7 @@ import type {
   DataValidationRule,
   RangeRef,
 } from '@react-sheets/core-model';
+import { clearFormulaProvenance } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface SetCellStyleTemplateParams {
@@ -271,6 +272,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
           params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.cell },
+          permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
           affectedRanges: [{ sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column }],
         })),
         apply: () => applyEditorMutation({ ...params, ranges }, context),
@@ -302,9 +304,10 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
       const affectedRanges = entries.map((entry) => ({ sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column }));
       for (const entry of entries) {
         const cellRange = { sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column };
-        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, value: structuredClone(entry.next) }, affectedRanges: [cellRange],
+        const next = clearFormulaProvenance(entry.next);
+        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, value: next, entryIntent: { kind: 'script', target: { sheetId: params.sheetId, row: entry.row, column: entry.column }, candidate: structuredClone(next), validationDecision: { status: 'not-applicable' } } }, affectedRanges: [cellRange],
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous }, affectedRanges: [cellRange] }],
-          apply: () => sheet.cells.set(entry.row, entry.column, structuredClone(entry.next)),
+          apply: () => sheet.cells.set(entry.row, entry.column, next),
         });
       }
       return { operationId: context.operationId, mutationCount: entries.length, affectedRanges };

@@ -1,4 +1,4 @@
-import type { CellAddress } from './ast';
+import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
 
@@ -13,17 +13,37 @@ export interface RangeDependency {
   readonly end: CellAddress;
 }
 
-export type FormulaDependency = CellDependency | RangeDependency;
+export interface StructuralReferenceDependency {
+  readonly kind: 'reference';
+  readonly reference: FormulaReferenceNode;
+}
+
+export interface NameDependency {
+  readonly kind: 'name';
+  /** Display-independent name token; scope binding happens in FormulaEngine. */
+  readonly name: string;
+}
+
+export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency | NameDependency;
 
 interface IndexEntry {
   readonly owner: CellAddress;
   readonly dependencies: readonly FormulaDependency[];
 }
 
+interface RangeEntry { readonly ownerKey: string; readonly range: RangeDependency; }
+interface RangeTreeNode {
+  readonly center: number;
+  readonly crossing: readonly RangeEntry[];
+  readonly left?: RangeTreeNode;
+  readonly right?: RangeTreeNode;
+}
+
 export class RangeIndex {
   private readonly entries = new Map<string, IndexEntry>();
   private readonly cellDependents = new Map<string, Set<string>>();
   private readonly rangeDependencies = new Map<string, readonly RangeDependency[]>();
+  private readonly rangeTrees = new Map<string, RangeTreeNode | undefined>();
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
     assertCellAddress(owner);
@@ -43,11 +63,12 @@ export class RangeIndex {
           this.cellDependents.set(dependencyKey, dependents);
         }
         dependents.add(ownerKey);
-      } else {
+      } else if (dependency.kind === 'range') {
         ranges.push(dependency);
       }
     }
     if (ranges.length > 0) this.rangeDependencies.set(ownerKey, ranges);
+    this.rebuildRangeTrees();
   }
 
   add(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
@@ -68,6 +89,7 @@ export class RangeIndex {
     }
     this.entries.delete(ownerKey);
     this.rangeDependencies.delete(ownerKey);
+    this.rebuildRangeTrees();
     return true;
   }
 
@@ -80,8 +102,12 @@ export class RangeIndex {
     const addressKey = cellAddressKey(address);
     const dependentKeys = new Set<string>(this.cellDependents.get(addressKey) ?? []);
 
-    for (const [ownerKey, ranges] of this.rangeDependencies) {
-      if (ranges.some((range) => containsAddress(range, address))) dependentKeys.add(ownerKey);
+    const tree = this.rangeTrees.get(address.sheetId);
+    for (const ownerKey of queryRangeTree(tree, address)) dependentKeys.add(ownerKey);
+    for (const entry of this.entries.values()) {
+      if (entry.dependencies.some((dependency) => dependency.kind === 'reference' && referenceContainsAddress(dependency.reference, address))) {
+        dependentKeys.add(cellAddressKey(entry.owner));
+      }
     }
 
     const dependents: CellAddress[] = [];
@@ -97,10 +123,24 @@ export class RangeIndex {
     this.entries.clear();
     this.cellDependents.clear();
     this.rangeDependencies.clear();
+    this.rangeTrees.clear();
   }
 
   get size(): number {
     return this.entries.size;
+  }
+
+  private rebuildRangeTrees(): void {
+    const bySheet = new Map<string, RangeEntry[]>();
+    for (const [ownerKey, ranges] of this.rangeDependencies) {
+      for (const range of ranges) {
+        const entries = bySheet.get(range.start.sheetId) ?? [];
+        entries.push({ ownerKey, range });
+        bySheet.set(range.start.sheetId, entries);
+      }
+    }
+    this.rangeTrees.clear();
+    for (const [sheetId, entries] of bySheet) this.rangeTrees.set(sheetId, buildRangeTree(entries));
   }
 }
 
@@ -135,13 +175,60 @@ function containsAddress(range: RangeDependency, address: CellAddress): boolean 
   );
 }
 
+function buildRangeTree(entries: readonly RangeEntry[]): RangeTreeNode | undefined {
+  if (entries.length === 0) return undefined;
+  const coordinates = entries.flatMap((entry) => [entry.range.start.row, entry.range.end.row]).sort((left, right) => left - right);
+  const center = coordinates[Math.floor(coordinates.length / 2)]!;
+  const left: RangeEntry[] = [];
+  const right: RangeEntry[] = [];
+  const crossing: RangeEntry[] = [];
+  for (const entry of entries) {
+    if (entry.range.end.row < center) left.push(entry);
+    else if (entry.range.start.row > center) right.push(entry);
+    else crossing.push(entry);
+  }
+  return {
+    center,
+    crossing: crossing.sort((a, b) => a.range.start.row - b.range.start.row),
+    left: buildRangeTree(left),
+    right: buildRangeTree(right),
+  };
+}
+
+function queryRangeTree(node: RangeTreeNode | undefined, address: CellAddress): Set<string> {
+  const result = new Set<string>();
+  if (!node) return result;
+  if (address.row < node.center) {
+    for (const entry of node.crossing) {
+      if (entry.range.start.row > address.row) break;
+      if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
+    }
+    for (const ownerKey of queryRangeTree(node.left, address)) result.add(ownerKey);
+    return result;
+  }
+  if (address.row > node.center) {
+    for (const entry of node.crossing) {
+      if (entry.range.end.row < address.row) continue;
+      if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
+    }
+    for (const ownerKey of queryRangeTree(node.right, address)) result.add(ownerKey);
+    return result;
+  }
+  for (const entry of node.crossing) if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
+  return result;
+}
+
 function deduplicateDependencies(dependencies: readonly FormulaDependency[]): readonly FormulaDependency[] {
   const seen = new Set<string>();
   const result: FormulaDependency[] = [];
   for (const dependency of dependencies) {
     const normalized = dependency.kind === 'cell'
       ? { kind: 'cell' as const, address: copyAddress(assertAndReturn(dependency.address)) }
-      : normalizeRange(dependency.start, dependency.end);
+      : dependency.kind === 'range'
+        ? normalizeRange(dependency.start, dependency.end)
+        : dependency.kind === 'reference'
+          ? { kind: 'reference' as const, reference: dependency.reference }
+          : { kind: 'name' as const, name: dependency.name };
     const key = dependencyKey(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -153,7 +240,11 @@ function deduplicateDependencies(dependencies: readonly FormulaDependency[]): re
 function dependencyKey(dependency: FormulaDependency): string {
   return dependency.kind === 'cell'
     ? `cell:${cellAddressKey(dependency.address)}`
-    : `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+    : dependency.kind === 'range'
+      ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
+      : dependency.kind === 'reference'
+        ? `reference:${JSON.stringify(dependency.reference)}`
+        : `name:${dependency.name}`;
 }
 
 function assertAndReturn(address: CellAddress): CellAddress {
@@ -168,5 +259,49 @@ function copyAddress(address: CellAddress): CellAddress {
 function copyDependency(dependency: FormulaDependency): FormulaDependency {
   return dependency.kind === 'cell'
     ? { kind: 'cell', address: copyAddress(dependency.address) }
-    : { kind: 'range', start: copyAddress(dependency.start), end: copyAddress(dependency.end) };
+    : dependency.kind === 'range'
+      ? { kind: 'range', start: copyAddress(dependency.start), end: copyAddress(dependency.end) }
+      : dependency.kind === 'reference'
+        ? { kind: 'reference', reference: structuredClone(dependency.reference) }
+        : { kind: 'name', name: dependency.name };
+}
+
+function referenceContainsAddress(reference: FormulaReferenceNode, address: CellAddress): boolean {
+  switch (reference.type) {
+    case 'cell-reference':
+      return (reference.reference.sheetId ?? address.sheetId) === address.sheetId
+        && reference.reference.row === address.row
+        && reference.reference.column === address.column;
+    case 'range-reference':
+      return referenceContainsAddress(reference.start, address) || referenceContainsAddress(reference.end, address)
+        || (reference.start.reference.sheetId ?? address.sheetId) === address.sheetId
+          && address.row >= Math.min(reference.start.reference.row, reference.end.reference.row)
+          && address.row <= Math.max(reference.start.reference.row, reference.end.reference.row)
+          && address.column >= Math.min(reference.start.reference.column, reference.end.reference.column)
+          && address.column <= Math.max(reference.start.reference.column, reference.end.reference.column);
+    case 'whole-column-reference':
+      return (reference.sheetId ?? address.sheetId) === address.sheetId
+        && address.column >= reference.startColumn
+        && address.column <= reference.endColumn;
+    case 'whole-row-reference':
+      return (reference.sheetId ?? address.sheetId) === address.sheetId
+        && address.row >= reference.startRow
+        && address.row <= reference.endRow;
+    case 'reference-union':
+      return reference.references.some((entry) => referenceContainsAddress(entry, address));
+    case 'reference-intersection':
+      return referenceContainsAddress(reference.left, address) && referenceContainsAddress(reference.right, address);
+    case 'sheet-range-reference':
+      return reference.qualifier.startSheetId === address.sheetId || reference.qualifier.endSheetId === address.sheetId
+        ? referenceContainsAddress(reference.reference, address)
+        : false;
+    case 'external-reference':
+      return false;
+    case 'spill-reference':
+      return referenceContainsAddress(reference.operand as FormulaReferenceNode, address);
+    case 'table-reference':
+      return false;
+    case 'invalid-reference':
+      return false;
+  }
 }

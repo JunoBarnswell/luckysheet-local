@@ -23,6 +23,11 @@ export interface FormulaBarProps {
   onFocusFormula?: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
+  composing?: boolean;
+  onCaretChange?: (start: number, end: number) => void;
+  onCompositionStart?: () => void;
+  onCompositionUpdate?: (text: string) => void;
+  onCompositionEnd?: () => void;
   onNameBoxCommit?: (value: string) => void;
   onOpenNameManager?: () => void;
   onOpenWizard?: () => void;
@@ -36,6 +41,11 @@ export function FormulaBar({
   onCancel,
   onChange,
   onCommit,
+  composing = false,
+  onCaretChange,
+  onCompositionStart,
+  onCompositionUpdate,
+  onCompositionEnd,
   onFocusFormula,
   onNameBoxCommit,
   onOpenNameManager,
@@ -60,6 +70,7 @@ export function FormulaBar({
   };
 
   const handleFormulaKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || composing) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       onCancel();
@@ -138,8 +149,15 @@ export function FormulaBar({
           className="!h-[30px] !min-h-0 !w-full rounded-[3px] border-[#d9d9d9] px-2 font-sans text-[13px]"
           data-testid="formula-input"
           disabled={disabled}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            onChange(event.target.value);
+            onCaretChange?.(event.target.selectionStart ?? event.target.value.length, event.target.selectionEnd ?? event.target.value.length);
+          }}
           onFocus={onFocusFormula}
+          onSelect={(event) => onCaretChange?.(event.currentTarget.selectionStart ?? 0, event.currentTarget.selectionEnd ?? 0)}
+          onCompositionStart={onCompositionStart}
+          onCompositionUpdate={(event) => onCompositionUpdate?.(event.currentTarget.value)}
+          onCompositionEnd={onCompositionEnd}
           onKeyDown={handleFormulaKeyDown}
           placeholder=""
           value={formula}

@@ -40,10 +40,14 @@ export function FontFamilyControl({
   const displayedValue = mixed ? '' : value ?? fallbackValue ?? '';
   const [draft, setDraft] = useState(displayedValue);
   const [invalid, setInvalid] = useState(false);
+  const lastCommitRef = React.useRef<string | undefined>(undefined);
+  const cancelOnBlurRef = React.useRef(false);
 
   useEffect(() => {
     setDraft(displayedValue);
     setInvalid(false);
+    lastCommitRef.current = undefined;
+    cancelOnBlurRef.current = false;
   }, [displayedValue]);
 
   const commit = () => {
@@ -52,8 +56,10 @@ export function FontFamilyControl({
       setInvalid(true);
       return;
     }
+    if (lastCommitRef.current === canonical) return;
     setInvalid(false);
     setDraft(canonical);
+    lastCommitRef.current = canonical;
     onCommit(canonical);
   };
 
@@ -70,14 +76,30 @@ export function FontFamilyControl({
         placeholder={mixed ? mixedPlaceholder : undefined}
         value={draft}
         onChange={(event) => {
+          lastCommitRef.current = undefined;
+          cancelOnBlurRef.current = false;
           setDraft(event.target.value);
           if (invalid) setInvalid(false);
         }}
-        onBlur={commit}
+        onBlur={() => {
+          if (cancelOnBlurRef.current) {
+            cancelOnBlurRef.current = false;
+            return;
+          }
+          commit();
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault();
             commit();
+            event.currentTarget.blur();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            cancelOnBlurRef.current = true;
+            lastCommitRef.current = undefined;
+            setDraft(displayedValue);
+            setInvalid(false);
+            event.currentTarget.blur();
           }
         }}
       />

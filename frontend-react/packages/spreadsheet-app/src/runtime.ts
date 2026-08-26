@@ -1,6 +1,6 @@
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
+import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   WorkbookApiClient,
@@ -18,6 +18,7 @@ import { createDefaultConnectorRegistry, type ConnectorRegistry } from './featur
 import { FormulaAuditController, registerFormulaAuditCommands } from './features/formula-audit';
 import { DataSourceContentQuery, migrateDataRegionCellPatches } from './features/data-source';
 import { CollaborationSession } from './collaboration/collaboration-session';
+import { createWorkbookRowVisibilityResolver, type WorkbookRowVisibilityResolver } from './formula-visibility';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
   configureFormulaSpillEnvironment,
@@ -29,9 +30,14 @@ import {
   OperationJournalStore,
   WorkspacePersistence,
   DataBlockSynchronizer,
+  LocalAssetStore,
+  type AssetStore,
   type IndexedDbWorkspaceStoreOptions,
   type WorkspaceRecord,
 } from './features/persistence';
+import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
+import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
+import type { WorkbookResolution } from './features/workbook-catalog';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -50,6 +56,7 @@ export interface RuntimeHandlers {
 export interface SpreadsheetRuntime {
   api: WorkbookApiClient;
   formula: FormulaEngine;
+  rowVisibilityResolver: WorkbookRowVisibilityResolver;
   formulaAudit: FormulaAuditController;
   dateSystem: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
@@ -75,6 +82,7 @@ export interface SpreadsheetRuntime {
   operationJournal: OperationJournalStore;
   workspacePersistence: WorkspacePersistence;
   dataBlocks: DataBlockSynchronizer;
+  assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
   dataContentDetachers: Array<() => void>;
   workspaceRecord: WorkspaceRecord | null;
@@ -88,6 +96,7 @@ export interface SpreadsheetRuntime {
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
+  resolution?: WorkbookResolution;
   /** Runtime lifecycle is explicit so late Worker/IndexedDB callbacks cannot
    * publish into a disposed session. */
   disposed: boolean;
@@ -119,14 +128,27 @@ export function createSpreadsheetRuntime(options: {
   localOnly?: boolean;
   persistence?: IndexedDbWorkspaceStoreOptions;
   workspacePersistence?: WorkspacePersistence;
+  assetStore?: AssetStore;
+  resolution?: WorkbookResolution;
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
 } = {}): SpreadsheetRuntime {
-  const model = new WorkbookModel(options.unitId ?? resolveUnitId(), 'Untitled workbook');
+  const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
+  if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
+  const model = new WorkbookModel(unitId, 'Untitled workbook');
+  const dateSystem = options.dateSystem ?? '1900';
+  const canonicalReferenceDate = options.canonicalReferenceDate
+    ? structuredClone(options.canonicalReferenceDate)
+    : canonicalExcelDateFromUtcDate(new Date(), dateSystem);
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
-  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem: options.dateSystem, canonicalReferenceDate: options.canonicalReferenceDate });
+  let formula: FormulaEngine | undefined;
+  const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return formula?.getCellResult(address)?.value;
+  });
+  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext, calculationSettings: model.calculationSettings, rowVisibilityResolver });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -141,12 +163,14 @@ export function createSpreadsheetRuntime(options: {
     unitId: () => runtime.model.unitId,
     isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
   });
+  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, options.persistence);
   runtime = {
     api,
-    formula,
+    formula: formula as FormulaEngine,
+    rowVisibilityResolver,
     formulaAudit,
-    dateSystem: options.dateSystem ?? '1900',
-    canonicalReferenceDate: options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined,
+    dateSystem,
+    canonicalReferenceDate,
     model,
     commands,
     drawing,
@@ -172,6 +196,7 @@ export function createSpreadsheetRuntime(options: {
     operationJournal,
     workspacePersistence,
     dataBlocks,
+    assetStore,
     dataContent: new Map(),
     dataContentDetachers: [],
     workspaceRecord: null,
@@ -185,8 +210,10 @@ export function createSpreadsheetRuntime(options: {
     connectors,
     authTokenProvider: options.authTokenProvider,
     shareTokenProvider: options.shareTokenProvider,
+    resolution: options.resolution,
     disposed: false,
   };
+  runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   // The offline journal records operation intent and its client sequence.
   // The same IndexedDB transaction also checkpoints the canonical local
   // workbook snapshot, so a closed browser can resume without any service.
@@ -235,10 +262,13 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'fill.restored',
   'range.clear',
   'range.paste',
-  'format.painter.applied',
   'style.preset.set',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',
+  'query.load.range',
+  'query.load.sheet-table',
+  'query.load.pivot-source',
+  'query.load.workbook-table',
   'cells.inserted',
   'cells.deleted',
   'cells.inserted.restore',
@@ -260,6 +290,26 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'table.remove',
   'name.set',
   'name.remove',
+  'workbook.calculation.mode.set',
+  'row.hidden',
+  'row.unhidden',
+  'rows.unhidden.all',
+  'rows.hidden.restore',
+  'sheet.rows.visibility.set',
+  'sheet.rows.unhide.all',
+  'autoFilter.set',
+  'autoFilter.remove',
+  'sheet.autoFilter.set',
+  'sheet.autoFilter.remove',
+  'outline.group.toggle',
+  'outline.showLevel',
+]);
+
+const VISIBILITY_MUTATIONS = new Set([
+  'row.hidden', 'row.unhidden', 'rows.unhidden.all', 'rows.hidden.restore',
+  'sheet.rows.visibility.set', 'sheet.rows.unhide.all',
+  'autoFilter.set', 'autoFilter.remove', 'sheet.autoFilter.set', 'sheet.autoFilter.remove',
+  'outline.group.toggle', 'outline.showLevel',
 ]);
 
 const DIRECT_CELL_WRITE_MUTATIONS = new Set([
@@ -362,7 +412,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       const engine = runtime.formula;
       const workbook = runtime.model;
       loadFormulaInputs(engine, workbook);
-      if (engine.getRecalculationMode() === 'manual' && !forceCalculation) {
+      if (engine.getRecalculationMode() !== 'automatic' && !forceCalculation) {
         if (!runtime.disposed && epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
           runtime.handlers.onMutationsApplied?.();
         }
@@ -423,7 +473,14 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   const snapshot = runtime.model.snapshot();
   const localRevision = runtime.localRevision;
   const serverRevision = runtime.remoteRevision;
-  const syncMode = runtime.localOnly ? 'local-only' as const : 'remote' as const;
+  const resolution = runtime.resolution;
+  const syncMode = resolution?.binding.syncMode ?? (runtime.localOnly ? 'local-only' as const : 'remote' as const);
+  const metadata = resolution ? {
+    location: resolution.binding.location,
+    lifecycle: resolution.lifecycle,
+    source: runtime.workspaceRecord?.metadata.source ?? 'native' as const,
+    role: resolution.access?.role ?? runtime.workspaceRecord?.metadata.role ?? 'viewer' as const,
+  } : undefined;
   const pendingJournal = runtime.operationJournal.read(runtime.model.unitId);
   const previous = checkpointChains.get(runtime) ?? Promise.resolve();
   const next = previous
@@ -436,13 +493,38 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
         serverRevision,
         syncMode,
         pendingJournal,
+        metadata,
       );
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
+      await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
+        ...(pendingJournal?.operations ?? []),
+        ...runtime.commands.getUndoEntries(),
+        ...runtime.commands.getRedoEntries(),
+      ]));
+      if (runtime.disposed) return;
       runtime.handlers.onWorkspacePersisted?.();
     });
   checkpointChains.set(runtime, next);
   return next;
+}
+
+function collectAssetReferences(snapshot: unknown, pending: readonly unknown[]): AssetRef[] {
+  const references: AssetRef[] = [];
+  const visit = (value: unknown): void => {
+    if (isAssetRef(value)) {
+      references.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (value && typeof value === 'object') for (const entry of Object.values(value)) visit(entry);
+  };
+  visit(snapshot);
+  visit(pending);
+  return references;
 }
 
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
@@ -451,6 +533,13 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
+      runtime.rowVisibilityResolver.invalidate();
+      runtime.formula.notifyVisibilityChanged();
+      if (mutation.id === 'workbook.calculation.mode.set') {
+        const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
+        if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
+        runtime.formula.setCalculationSettings({ mode });
+      }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
       // direct write into a dynamic-array child cannot leave partial model or
@@ -463,14 +552,16 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       runtime.pendingPivotMutations.push(structuredClone(mutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
-        || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore') {
+        || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'
+        || mutation.id === 'query.load.range' || mutation.id === 'query.load.sheet-table'
+        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table') {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
-        if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+        if (runtime.formula.getRecalculationMode() !== 'automatic' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
           synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
         } else {
-          void scheduleFormulaRecalculation(runtime);
+          void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
         }
       }
     }),
@@ -503,7 +594,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (history) {
         runtime.collaboration?.recordLocalUndo({
           operationId: result.operationId,
-          undoMutations: history.undo,
+          undoMutations: history.inversePlan,
         });
       }
       if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
@@ -519,15 +610,17 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       // replayed mutation facts through the same session coordinator boundary
       // used by local and remote command application.
       runtime.handlers.onMutationsApplied?.();
-      if (!runtime.collaboration || entry.undo.length === 0) return;
+      if (!runtime.collaboration || entry.inversePlan.length === 0) return;
       const operation = source === 'undo'
         ? runtime.collaboration.enqueueCompensatingMutations(
-          runtime.collaboration.undoOwnLast() ?? entry.undo,
+          runtime.collaboration.undoOwnLast() ?? entry.inversePlan,
           runtime.model.unitId,
+          entry.operationId,
+          entry.baseRevision,
         )
-        : runtime.collaboration.enqueueLocalMutations(entry.redo, runtime.model.unitId);
+        : runtime.collaboration.enqueueLocalMutations(entry.forwardMutations, runtime.model.unitId);
       if (source === 'redo') {
-        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.undo });
+        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.inversePlan });
       }
       scheduleOperation(runtime, operation);
       void runtime.checkpointWorkspace();
@@ -614,8 +707,22 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
   void scheduleFormulaRecalculation(runtime);
 }
 
-function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate });
+export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: ExcelDateSystem, canonicalReferenceDate?: CanonicalExcelDateParts): void {
+  runtime.dateSystem = dateSystem;
+  runtime.canonicalReferenceDate = canonicalReferenceDate ? structuredClone(canonicalReferenceDate) : runtime.canonicalReferenceDate;
+  runtime.formula.disposeCalculationTasks();
+  runtime.rowVisibilityResolver = createWorkbookRowVisibilityResolver(runtime.model, runtime.dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return runtime.formula?.getCellResult(address)?.value;
+  });
+  runtime.formula = rebuildFormulaEngine(runtime.model, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
+  runtime.formulaAudit.setFormula(runtime.formula);
+  runtime.formulaAudit.refresh();
+  void scheduleFormulaRecalculation(runtime);
+}
+
+function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts, rowVisibilityResolver?: WorkbookRowVisibilityResolver): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, calculationSettings: workbook.calculationSettings, rowVisibilityResolver });
   loadFormulaInputs(engine, workbook);
   return engine;
 }
@@ -629,9 +736,14 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   detachCoreListeners(runtime);
   runtime.formula.disposeCalculationTasks();
   runtime.model = workbook;
+  runtime.rowVisibilityResolver = createWorkbookRowVisibilityResolver(workbook, runtime.dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return runtime.formula?.getCellResult(address)?.value;
+  });
   runtime.commands = new CommandRuntime(workbook);
+  runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
-  runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate);
+  runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
   installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
@@ -864,20 +976,37 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
 }
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
+  const resolution = runtime.resolution;
   const localPendingBeforeLoad = runtime.collaboration?.getPendingOperations() ?? [];
-  if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
   let localRecord: WorkspaceRecord | null = null;
-  try {
-    localRecord = await runtime.workspacePersistence.load(runtime.model.unitId);
-    const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
-      && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
-    if (!localRecord && canDiscoverLocalDefault) {
-      const summaries = await runtime.workspacePersistence.list();
-      const first = summaries[0];
-      if (first) localRecord = await runtime.workspacePersistence.load(first.unitId);
+  let resolvedRemote: SnapshotResponse | null = null;
+  if (resolution) {
+    if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
+    localRecord = resolution.localRecord ? structuredClone(resolution.localRecord) : null;
+    if (localRecord) runtime.operationJournal.hydrate(localRecord);
+    if (resolution.mode === 'remote') {
+      runtime.localOnly = false;
+      runtime.remoteSyncRequested = true;
+      resolvedRemote = { snapshot: structuredClone(resolution.snapshot), revision: resolution.revision };
+    } else {
+      if (!localRecord) throw new Error('Local workbook resolution is missing its WorkspaceRecord');
+      runtime.localOnly = true;
+      runtime.remoteSyncRequested = resolution.mode === 'offline';
     }
-  } catch {
-    runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+  } else {
+    if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
+    try {
+      localRecord = await runtime.workspacePersistence.load(runtime.model.unitId, runtime.assetStore);
+      const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
+        && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
+      if (!localRecord && canDiscoverLocalDefault) {
+        const summaries = await runtime.workspacePersistence.list();
+        const first = summaries[0];
+        if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
+      }
+    } catch {
+      runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+    }
   }
 
   if (!isActive()) return;
@@ -885,17 +1014,19 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (localRecord) {
     runtime.workspaceRecord = localRecord;
     runtime.localRevision = localRecord.localRevision;
-    runtime.remoteRevision = localRecord.serverRevision;
+    runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
-    if (!isActive()) return;
-    hydrateRuntime(runtime, {
-      snapshot: localRecord.snapshot,
-      revision: localRecord.serverRevision,
-    });
-    replaceCollaborationSession(runtime, localRecord);
-    if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
-    runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+    if (resolution?.mode !== 'remote') {
+      if (!isActive()) return;
+      hydrateRuntime(runtime, {
+        snapshot: resolution?.snapshot ?? localRecord.snapshot,
+        revision: resolution?.revision ?? localRecord.serverRevision,
+      });
+      replaceCollaborationSession(runtime, localRecord);
+      if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
+      runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+    }
   }
 
   if (runtime.localOnly) {
@@ -916,17 +1047,30 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   }
 
   try {
-    const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-    const access = await runtime.api.getAccess(runtime.model.unitId);
+    const snapshotResponse = resolvedRemote ?? await runtime.api.getSnapshot(runtime.model.unitId);
+    const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
+    if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
-    hydrateRuntime(runtime, snapshotResponse);
+    hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
     runtime.remoteSyncRequested = true;
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
     if (!isActive()) return;
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+      runtime.model.snapshot(),
+      runtime.localRevision,
+      runtime.remoteRevision,
+      'remote',
+      undefined,
+      resolution ? {
+        location: resolution.binding.location,
+        lifecycle: resolution.lifecycle,
+        source: localRecord?.metadata.source ?? 'native',
+        role: resolution.access?.role ?? localRecord?.metadata.role ?? 'viewer',
+      } : undefined,
+    );
     runtime.remoteConnected = true;
     runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
@@ -974,11 +1118,19 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
  */
 async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<boolean> {
   try {
+    const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
     runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
       runtime.model.snapshot(),
       runtime.localRevision,
       runtime.remoteRevision,
-      'local-only',
+      offlineResolution?.binding.syncMode ?? 'local-only',
+      undefined,
+      offlineResolution ? {
+        location: offlineResolution.binding.location,
+        lifecycle: offlineResolution.lifecycle,
+        source: runtime.workspaceRecord?.metadata.source ?? 'native',
+        role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
+      } : undefined,
     );
     return true;
   } catch (error) {

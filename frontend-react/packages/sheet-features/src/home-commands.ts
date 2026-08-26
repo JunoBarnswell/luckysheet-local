@@ -12,13 +12,16 @@ import type {
 } from '@react-sheets/core-model';
 import { protectionResolver } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
-import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
+import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
+import { assertDataRegionContextMatches, filterOwnerFromDataRegionContext, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
-import { parseReplacementValue, replacementCell, replaceFindText, type ReplacementValue } from './find-replace';
+import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
+import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
 import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
+import { AUTO_SUM_FUNCTIONS, type AutoSumDescriptor, type AutoSumFunctionName } from './auto-sum-contract';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -38,6 +41,7 @@ export interface HomeFillParams {
   targetRange: RangeRef;
   direction: FillDirection;
   mode: FillMode;
+  dateSystem?: '1900' | '1904';
 }
 
 interface FillMutationWrite {
@@ -55,7 +59,7 @@ export interface AutoSumParams {
   sheetId: string;
   range: RangeRef;
   target?: { row: number; column: number };
-  functionName?: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN';
+  functionName?: AutoSumFunctionName;
   /** Generate one formula for each selected column when target is omitted. */
   byColumn?: boolean;
 }
@@ -81,6 +85,7 @@ export interface ReplaceRangeParams {
   sheetId: string;
   find: string;
   replace: string;
+  inputContext: CellInputInterpretationContext;
   range?: RangeRef;
   matchCase?: boolean;
   entireCell?: boolean;
@@ -99,17 +104,20 @@ export interface FilterToggleParams {
   sheetId: string;
   range?: RangeRef;
   autoFilter?: AutoFilterModel;
+  dataRegionContext?: DataRegionContext;
 }
 
 export interface FilterCriteriaParams {
   sheetId: string;
   range?: RangeRef;
+  dataRegionContext?: DataRegionContext;
 }
 
 export interface FilterSortParams {
   sheetId: string;
   column: number;
   ascending: boolean;
+  dataRegionContext?: DataRegionContext;
 }
 
 export interface SortReapplyParams {
@@ -118,27 +126,26 @@ export interface SortReapplyParams {
 
 export interface FormatPainterParams {
   sheetId: string;
-  sourceRange: RangeRef;
   targetRange: RangeRef;
-  /** Host-only state; it never changes the model. */
-  continuous?: boolean;
+  pattern: FormatPainterStylePattern;
 }
 
 export interface RangeMoveParams {
   sheetId: string;
   sourceRange: RangeRef;
   targetOrigin: { row: number; column: number };
+  inputContext: CellInputInterpretationContext;
 }
 
-interface FormatPainterCell {
+export interface FormatPainterCell {
   style?: CellStyle;
   numberFormat?: string;
 }
 
-interface FormatPainterMutationParams {
-  sheetId: string;
-  targetRange: RangeRef;
-  styles: FormatPainterCell[][];
+export interface FormatPainterStylePattern {
+  rowCount: number;
+  columnCount: number;
+  cells: FormatPainterCell[][];
 }
 
 export interface HomeStylePreset {
@@ -202,6 +209,38 @@ function rangeEquals(left: RangeRef, right: RangeRef): boolean {
 
 function cellRange(sheetId: string, row: number, column: number): RangeRef {
   return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function scriptEntryIntent(sheetId: string, row: number, column: number, candidate: CellData) {
+  return {
+    kind: 'script' as const,
+    target: { sheetId, row, column },
+    candidate: structuredClone(candidate),
+    validationDecision: { status: 'not-applicable' as const },
+  };
+}
+
+function rangeEntryIntent(
+  kind: 'script' | 'formula-result',
+  sheetId: string,
+  startRow: number,
+  startColumn: number,
+  values: CellData[][],
+  autoSum?: AutoSumDescriptor,
+) {
+  return {
+    kind,
+    target: {
+      sheetId,
+      startRow,
+      endRow: startRow + Math.max(0, values.length - 1),
+      startColumn,
+      endColumn: startColumn + Math.max(0, Math.max(1, ...values.map((row) => row.length)) - 1),
+    },
+    candidate: structuredClone(values),
+    validationDecision: { status: 'not-applicable' as const },
+    ...(autoSum ? { autoSum: structuredClone(autoSum) } : {}),
+  };
 }
 
 function rangeAffected(range: RangeRef): RangeRef[] {
@@ -290,18 +329,22 @@ function hasNumericResolvedValue(sheet: WorksheetModel, range: RangeRef, context
   return false;
 }
 
-function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumParams['functionName'], selectedRange: RangeRef, context: CommandContext): string {
-  const name = functionName ?? 'SUM';
+function autoSumSourceRange(sheet: WorksheetModel, targetRow: number, targetColumn: number, selectedRange: RangeRef, context: CommandContext): RangeRef {
   const above = contiguousNumericAbove(sheet, targetRow, targetColumn, context);
-  if (above) return `=${name}(${columnLabel(targetColumn)}${above.startRow + 1}:${columnLabel(targetColumn)}${above.endRow + 1})`;
+  if (above) return { sheetId: sheet.id, startRow: above.startRow, endRow: above.endRow, startColumn: targetColumn, endColumn: targetColumn };
   const left = contiguousNumericLeft(sheet, targetRow, targetColumn, context);
-  if (left) return `=${name}(${columnLabel(left.startColumn)}${targetRow + 1}:${columnLabel(left.endColumn)}${targetRow + 1})`;
+  if (left) return { sheetId: sheet.id, startRow: targetRow, endRow: targetRow, startColumn: left.startColumn, endColumn: left.endColumn };
   if (!hasNumericResolvedValue(sheet, selectedRange, context)) throw new Error('AutoSum source contains no numeric result');
   if (targetRow >= selectedRange.startRow && targetRow <= selectedRange.endRow
     && targetColumn >= selectedRange.startColumn && targetColumn <= selectedRange.endColumn) {
     throw new Error('AutoSum source range would include its target');
   }
-  return `=${name}(${columnLabel(selectedRange.startColumn)}${selectedRange.startRow + 1}:${columnLabel(selectedRange.endColumn)}${selectedRange.endRow + 1})`;
+  return structuredClone(selectedRange);
+}
+
+function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumFunctionName, selectedRange: RangeRef, context: CommandContext): string {
+  const source = autoSumSourceRange(sheet, targetRow, targetColumn, selectedRange, context);
+  return `=${functionName}(${columnLabel(source.startColumn)}${source.startRow + 1}:${columnLabel(source.endColumn)}${source.endRow + 1})`;
 }
 
 function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; column: number }): void {
@@ -332,17 +375,20 @@ function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; c
 function isValidAutoSumParams(value: unknown): value is AutoSumParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.range)) return false;
   if (value.target !== undefined && (!isRecord(value.target) || !isFiniteInt(value.target.row) || !isFiniteInt(value.target.column))) return false;
-  return value.functionName === undefined || ['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'].includes(String(value.functionName));
+  return (value.functionName === undefined || AUTO_SUM_FUNCTIONS.includes(String(value.functionName) as AutoSumFunctionName))
+    && (value.byColumn === undefined || typeof value.byColumn === 'boolean');
 }
 
 function isValidFillParams(value: unknown): value is HomeFillParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange) || !isRange(value.targetRange)) return false;
   return ['down', 'up', 'right', 'left'].includes(String(value.direction))
-    && (value.mode === 'copy' || value.mode === 'series');
+    && (value.mode === 'copy' || value.mode === 'series')
+    && (value.dateSystem === undefined || value.dateSystem === '1900' || value.dateSystem === '1904');
 }
 
 function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || typeof value.find !== 'string' || typeof value.replace !== 'string') return false;
+  if (!isCellInputInterpretationContext(value.inputContext)) return false;
   return (value.range === undefined || isRange(value.range))
     && (value.matchCase === undefined || typeof value.matchCase === 'boolean')
     && (value.entireCell === undefined || typeof value.entireCell === 'boolean')
@@ -369,13 +415,26 @@ function isValidSortReapplyParams(value: unknown): value is SortReapplyParams {
 }
 
 function isValidFormatPainterParams(value: unknown): value is FormatPainterParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange) && isRange(value.targetRange)
-    && (value.continuous === undefined || typeof value.continuous === 'boolean');
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.targetRange)
+    || value.targetRange.sheetId !== value.sheetId || !isRecord(value.pattern)) return false;
+  const pattern = value.pattern;
+  const rowCount = typeof pattern.rowCount === 'number' && Number.isSafeInteger(pattern.rowCount) && pattern.rowCount > 0
+    ? pattern.rowCount : undefined;
+  const columnCount = typeof pattern.columnCount === 'number' && Number.isSafeInteger(pattern.columnCount) && pattern.columnCount > 0
+    ? pattern.columnCount : undefined;
+  if (rowCount === undefined || columnCount === undefined
+    || !Array.isArray(pattern.cells) || pattern.cells.length !== rowCount
+    || !pattern.cells.every((row) => Array.isArray(row) && row.length === columnCount
+      && row.every((entry) => isRecord(entry)
+        && (entry.style === undefined || isRecord(entry.style))
+        && (entry.numberFormat === undefined || typeof entry.numberFormat === 'string')))) return false;
+  return true;
 }
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column);
+    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
+    && isCellInputInterpretationContext(value.inputContext);
 }
 
 function isCellSnapshot(value: unknown): value is { row: number; column: number; cell: CellData } {
@@ -429,35 +488,6 @@ function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, c
   }
   for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.dataRegions.splice(Math.min(params.regionIndex, sheet.dataRegions.length), 0, structuredClone(params.region));
-}
-
-function isValidFormatPainterMutation(value: unknown): value is FormatPainterMutationParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.targetRange)
-    && Array.isArray(value.styles) && value.styles.every((row) => Array.isArray(row) && row.every((entry) => isRecord(entry)));
-}
-
-function formatPainterAffected(params: FormatPainterMutationParams): RangeRef[] {
-  return rangeAffected(params.targetRange);
-}
-
-function applyFormatPainterMutation(params: FormatPainterMutationParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const target = normalizeRange(params.targetRange, params.sheetId);
-  for (let row = target.startRow; row <= target.endRow; row += 1) {
-    for (let column = target.startColumn; column <= target.endColumn; column += 1) {
-      const rowOffset = (row - target.startRow) % Math.max(1, params.styles.length);
-      const sourceRow = params.styles[rowOffset] ?? [];
-      const source = sourceRow[(column - target.startColumn) % Math.max(1, sourceRow.length)] ?? {};
-      const current = sheet.cells.get(row, column) ?? { value: null };
-      const next = { ...current };
-      if (source.style && Object.keys(source.style).length > 0) next.style = structuredClone(source.style);
-      else delete next.style;
-      if (source.numberFormat !== undefined) next.numberFormat = source.numberFormat;
-      else delete next.numberFormat;
-      delete next.displayValue;
-      sheet.cells.set(row, column, next);
-    }
-  }
 }
 
 function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
@@ -563,6 +593,7 @@ function applyFillMutation(params: FillMutationParams, context: CommandContext, 
     targetRange: params.targetRange,
     direction: params.direction,
     mode: params.mode,
+    dateSystem: params.dateSystem,
   };
   const validated = validateFillPlan(sheet, planParams);
   if (canonical) {
@@ -827,59 +858,48 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation<FormatPainterMutationParams>({
-    id: 'format.painter.applied',
-    handler: (item, context) => {
-      if (!isValidFormatPainterMutation(item.params)) throw new Error('Invalid format.painter.applied mutation payload');
-      applyFormatPainterMutation(item.params, context);
-    },
-    metadata: {
-      schema: { name: 'FormatPainterApplied', validate: isValidFormatPainterMutation },
-      permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: formatPainterAffected, mode: 'exact' },
-      inverseIds: ['cell.restore'],
-    },
-  });
   runtime.registry.registerCommand<FormatPainterParams>({
     id: 'format.painter.apply',
     execute: (params, context) => {
       if (!isValidFormatPainterParams(params)) throw new Error('Invalid format painter parameters');
-      const source = normalizeRange(params.sourceRange, params.sheetId);
       const target = normalizeRange(params.targetRange, params.sheetId);
       const sheet = context.workbook.getSheet(params.sheetId);
-      assertNoDataRegionIntersection(sheet, source, 'Format painter');
       assertNoDataRegionIntersection(sheet, target, 'Format painter');
-      const styles: FormatPainterCell[][] = [];
-      for (let row = source.startRow; row <= source.endRow; row += 1) {
-        const line: FormatPainterCell[] = [];
-        for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-          const cell = sheet.cells.get(row, column);
-          line.push({
-            style: cell?.style ? structuredClone(cell.style) : undefined,
-            numberFormat: cell?.numberFormat ?? cell?.style?.numberFormat,
+      const affectedRanges = rangeAffected(target);
+      for (let row = target.startRow; row <= target.endRow; row += 1) {
+        for (let column = target.startColumn; column <= target.endColumn; column += 1) {
+          const patternCell = params.pattern.cells[
+            (row - target.startRow) % params.pattern.rowCount
+          ]![(column - target.startColumn) % params.pattern.columnCount]!;
+          const range = cellRange(params.sheetId, row, column);
+          const previous = sheet.cells.get(row, column);
+          const styleParams = {
+            sheetId: params.sheetId,
+            range,
+            style: patternCell.style ? structuredClone(patternCell.style) : {},
+            replaceStyle: true,
+            clearNumberFormat: patternCell.numberFormat === undefined,
+            ...(patternCell.numberFormat === undefined ? {} : { numberFormat: patternCell.numberFormat }),
+          };
+          context.applyMutation({
+            id: 'style.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: styleParams,
+            affectedRanges: [range],
+            inverse: [{
+              id: 'cell.restore' as const,
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, row, column, previous: previous ? structuredClone(previous) : undefined },
+              affectedRanges: [range],
+              permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' } as const,
+            }],
+            apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: styleParams, affectedRanges: [range] }, context),
           });
         }
-        styles.push(line);
       }
-      const previous = cellsInRange(sheet, target);
-      const affectedRanges = rangeAffected(target);
-      const inverse = previous.map(({ row, column, cell }) => ({
-        id: 'cell.restore' as const,
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
-        affectedRanges: [cellRange(params.sheetId, row, column)],
-      }));
-      context.applyMutation({
-        id: 'format.painter.applied',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, targetRange: target, styles },
-        affectedRanges,
-        inverse,
-        apply: () => applyFormatPainterMutation({ sheetId: params.sheetId, targetRange: target, styles }, context),
-      });
-      return homeResult(context, affectedRanges, 1);
+      return homeResult(context, affectedRanges, affectedRanges.length);
     },
   });
 
@@ -907,6 +927,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
+        inputContext: params.inputContext,
+        entryIntent: {
+          kind: 'paste',
+          target: targetRange,
+          validationDecision: { status: 'not-applicable' },
+        },
         transfer: 'move',
         spec: createPasteSpecialSpec(),
       });
@@ -925,7 +951,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
       runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
-      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
+      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor, entryIntent: scriptEntryIntent(params.sheetId, range.startRow, range.startColumn, anchor) });
     }
     if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
     return result;
@@ -983,6 +1009,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       assertNoDataRegionIntersection(sheet, range, 'AutoSum');
       const targets: Array<{ row: number; column: number }> = [];
+      const functionName = params.functionName ?? 'SUM';
       if (params.target) {
         targets.push({ row: params.target.row, column: params.target.column });
       } else if (params.byColumn || range.startColumn !== range.endColumn) {
@@ -1019,16 +1046,23 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             ...(previous?.style ? { style: structuredClone(previous.style) } : {}),
             ...(previous?.numberFormat ? { numberFormat: previous.numberFormat } : {}),
             value: null,
-            formula: formulaForAutoSum(sheet, row, column, params.functionName, range, context),
+            formula: formulaForAutoSum(sheet, row, column, functionName, range, context),
           });
         }
         values.push(line);
       }
+      const autoSum: AutoSumDescriptor = {
+        functionName,
+        sourceRange: structuredClone(range),
+        targets: targets.map((target) => ({ ...target })),
+        inferenceMode: 'adjacent',
+      };
       const result = runtime.execute('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: minRow,
         startColumn: minColumn,
         values,
+        entryIntent: rangeEntryIntent('formula-result', params.sheetId, minRow, minColumn, values, autoSum),
       });
       return result;
     },
@@ -1051,6 +1085,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetRange: target,
         direction: params.direction,
         mode: params.mode,
+        dateSystem: params.dateSystem,
       });
       if (plan.writes.length === 0) return homeResult(context, rangeAffected(target));
       const writes: FillMutationWrite[] = plan.writes.map((write) => ({
@@ -1071,6 +1106,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetRange: target,
         direction: params.direction,
         mode: params.mode,
+        dateSystem: params.dateSystem,
         writes,
       };
       const inverseParams: FillMutationParams = { ...mutationParams, writes: inverseWrites };
@@ -1099,8 +1135,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidReplaceParams(params)) throw new Error('Invalid replace parameters');
       if (!params.find) return homeResult(context, []);
-      const requestedReplacement = parseReplacementValue(params.replace);
-      if (requestedReplacement.kind === 'empty') throw new Error('Replacement text must not be empty');
       const sheets = params.scope === 'workbook' ? context.workbook.getSheets() : [context.workbook.getSheet(params.sheetId)];
       const defaultRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
       const patches: Array<{ sheetId: string; row: number; column: number; next: CellData; previous?: CellData }> = [];
@@ -1116,7 +1150,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           if (!candidate) continue;
           const replaced = replaceText(candidate.text, params);
           if (replaced === undefined) continue;
-          const replacement = parseReplacementValue(replaced);
+          const replacement = parseReplacementValue(replaced, {
+            ...params.inputContext,
+            currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
+            currentCellType: cell.editor?.kind,
+          });
+          if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
           if (candidate.formula && replacement.kind !== 'formula') {
             throw new Error(`Formula replacement at ${sheet.id}!${row}:${column} must produce a formula`);
           }
@@ -1128,7 +1167,24 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       // Every nested range.set is part of this root command transaction, so
       // Replace All is one Undo even when matches span multiple sheets.
       for (const patch of patches) {
-        runtime.execute('sheet.cell.set', { sheetId: patch.sheetId, row: patch.row, column: patch.column, value: patch.next });
+        const targetSheet = context.workbook.getSheet(patch.sheetId);
+        const validation = patch.next.formula
+          ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
+          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
+        if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
+        if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
+        runtime.execute('sheet.cell.set', {
+          sheetId: patch.sheetId,
+          row: patch.row,
+          column: patch.column,
+          value: patch.next,
+          entryIntent: {
+            kind: 'direct-entry',
+            target: { sheetId: patch.sheetId, row: patch.row, column: patch.column },
+            candidate: structuredClone(patch.next),
+            validationDecision: { status: 'accepted', ...(validation.ruleId ? { ruleId: validation.ruleId } : {}), ...(validation.alertStyle ? { alertStyle: validation.alertStyle } : {}) },
+          },
+        });
       }
       const affectedRanges = patches.map((patch) => cellRange(patch.sheetId, patch.row, patch.column));
       return homeResult(context, affectedRanges, patches.length);
@@ -1140,26 +1196,42 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterToggleParams(params)) throw new Error('Invalid filter toggle parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
-      if (params.range) assertNoDataRegionIntersection(sheet, normalizeRange(params.range, params.sheetId), 'Filter');
-      const owner = resolveFilterOwner(sheet);
+      const requestedRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
+      const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
+        selection: requestedRange ?? { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        activeRow: requestedRange?.startRow ?? 0,
+        activeColumn: requestedRange?.startColumn ?? 0,
+      });
+      if (params.dataRegionContext) {
+        const actual = resolveDataRegionContext(context.workbook, {
+          selection: requestedRange ?? regionContext.selection,
+          activeRow: regionContext.selection.startRow,
+          activeColumn: regionContext.activeColumn,
+        });
+        assertDataRegionContextMatches(params.dataRegionContext, actual);
+      }
+      const effectiveRange = requestedRange ?? regionContext.range;
+      assertNoDataRegionIntersection(sheet, effectiveRange, 'Filter');
+      const owner = filterOwnerFromDataRegionContext(regionContext);
       if (owner?.kind === 'table') {
         const active = resolveActiveAutoFilter(sheet);
-        if (active && (!params.range || rangeEquals(active.range, normalizeRange(params.range, params.sheetId)))) {
-          return runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId });
+        if (active && (!requestedRange || rangeEquals(active.range, requestedRange))) {
+          return runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, dataRegionContext: regionContext });
         }
         throw new Error('Use the Table AutoFilter owner for this range');
       }
       const current = sheet.autoFilter ? normalizeAutoFilterModel(sheet.autoFilter) : undefined;
       if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (!current) {
-        const next = buildFilterFromParams(params, sheet);
-        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
+        const next = buildFilterFromParams({ ...params, range: effectiveRange }, sheet);
+        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       }
-      const requestedRange = params.range ? normalizeRange(params.range, params.sheetId) : current.range;
-      if (rangeEquals(current.range, requestedRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId });
-      const next = params.autoFilter ? buildFilterFromParams(params, sheet) : { ...current, range: requestedRange };
+      const nextRange = requestedRange ?? current.range;
+      if (rangeEquals(current.range, nextRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId, dataRegionContext: regionContext });
+      const next = params.autoFilter ? buildFilterFromParams({ ...params, range: nextRange }, sheet) : { ...current, range: nextRange };
       validateFilterOwnership(sheet, next, { kind: 'worksheet' });
-      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
+      const nextContext = { ...regionContext, range: structuredClone(nextRange), currentRegion: structuredClone(nextRange) };
+      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: nextContext });
     },
   });
 
@@ -1168,17 +1240,31 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter clearCriteria parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
+      const requestedRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
+      const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
+        selection: requestedRange ?? { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        activeRow: requestedRange?.startRow ?? 0,
+        activeColumn: requestedRange?.startColumn ?? 0,
+      });
+      if (params.dataRegionContext) {
+        const actual = resolveDataRegionContext(context.workbook, {
+          selection: requestedRange ?? regionContext.selection,
+          activeRow: regionContext.selection.startRow,
+          activeColumn: regionContext.activeColumn,
+        });
+        assertDataRegionContextMatches(params.dataRegionContext, actual);
+      }
       const currentSource = resolveActiveAutoFilter(sheet);
-      const owner = resolveFilterOwner(sheet);
+      const owner = filterOwnerFromDataRegionContext(regionContext);
       if (!currentSource) return homeResult(context, []);
       const current = normalizeAutoFilterModel(currentSource);
       assertNoDataRegionIntersection(sheet, current.range, 'Filter');
-      if (params.range && !rangesIntersect(current.range, normalizeRange(params.range, params.sheetId))) return homeResult(context, []);
+      if (requestedRange && !rangesIntersect(current.range, requestedRange)) return homeResult(context, []);
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
       const cleared = { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) };
       return owner?.kind === 'table'
-        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared })
-        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared });
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared, dataRegionContext: regionContext })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared, dataRegionContext: regionContext });
     },
   });
 
@@ -1197,18 +1283,33 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterSortParams(params)) throw new Error('Invalid AutoFilter sort parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
+      const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
+        selection: { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: params.column, endColumn: params.column },
+        activeRow: 0,
+        activeColumn: params.column,
+      });
+      if (params.dataRegionContext) {
+        const actual = resolveDataRegionContext(context.workbook, {
+          selection: regionContext.selection,
+          activeRow: regionContext.selection.startRow,
+          activeColumn: params.column,
+        });
+        assertDataRegionContextMatches(params.dataRegionContext, actual);
+      }
       const filter = resolveActiveAutoFilter(sheet, params.column);
-      const owner = resolveFilterOwner(sheet, params.column);
+      const owner = filterOwnerFromDataRegionContext(regionContext);
       if (!filter || !owner) throw new Error('No active AutoFilter in the current worksheet');
       if (params.column < filter.range.startColumn || params.column > filter.range.endColumn) throw new Error('Filter sort column is outside the filter range');
       const table = owner.kind === 'table' ? sheet.sheetTables.find((entry) => entry.id === owner.tableId) : undefined;
       const sortRange = table?.hasTotalRow ? { ...filter.range, endRow: filter.range.endRow - 1 } : filter.range;
       assertNoDataRegionIntersection(sheet, sortRange, 'Sort');
+      const sortContext = { ...regionContext, range: structuredClone(sortRange), currentRegion: structuredClone(sortRange) };
       const sortResult = runtime.execute('data.sort.rows', {
         sheetId: params.sheetId,
         range: sortRange,
         criteria: [{ column: params.column, ascending: params.ascending }],
-        hasHeader: true,
+        hasHeader: regionContext.header.kind === 'present',
+        dataRegionContext: sortContext,
       });
       const sortState = {
         ref: structuredClone(filter.range),
@@ -1219,8 +1320,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
       const next = { ...filter, sortState };
       const filterResult = owner.kind === 'table'
-        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next })
-        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next, dataRegionContext: regionContext })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       return {
         ...filterResult,
         mutationCount: sortResult.mutationCount + filterResult.mutationCount,
@@ -1312,6 +1413,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
         affectedRanges: [cellRange(params.sheetId, row, column)],
+        permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
       }));
       const mutationParams = { sheetId: params.sheetId, ranges, styleId: preset.id, style: structuredClone(preset.style) };
       context.applyMutation({

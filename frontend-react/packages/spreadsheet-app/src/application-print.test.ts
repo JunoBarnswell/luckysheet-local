@@ -38,7 +38,7 @@ describe('WorkbookSession print integration', () => {
     assert.equal(printSnapshot?.layout.orientation, 'landscape');
   });
 
-  it('updates print area through print.area.set', () => {
+  it('updates print area through pageLayout.printArea.set', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.setPrintArea({

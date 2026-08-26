@@ -12,6 +12,9 @@ import {
   type FindSearchOrder,
   type FindScope,
   type FindSearchTarget,
+  type CellInputInterpretationContext,
+  isCellInputInterpretationContext,
+  type DataRegionContext,
 } from '@react-sheets/sheet-features';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 
@@ -28,6 +31,8 @@ export interface FindReplaceParams {
   matchCase?: boolean;
   entireCell?: boolean;
   wildcard?: boolean;
+  dataRegionContext?: DataRegionContext;
+  inputContext: CellInputInterpretationContext;
 }
 
 export interface FindCellReplacementMutationPatch {
@@ -57,6 +62,7 @@ export interface FindReplacementMutationParams {
   direction: 'forward' | 'reverse';
   patches: readonly FindReplacementMutationPatch[];
   affectedRanges: readonly RangeRef[];
+  dataRegionContext?: DataRegionContext;
 }
 
 interface CellPatch {
@@ -101,6 +107,7 @@ function isValidFindReplace(value: unknown): value is FindReplaceParams {
     || typeof value.query !== 'string' || value.query.length === 0 || typeof value.replace !== 'string'
     || (value.mode !== 'one' && value.mode !== 'all')
     || (value.searchOrder !== 'rows' && value.searchOrder !== 'columns')) return false;
+  if (!isCellInputInterpretationContext(value.inputContext)) return false;
   if (value.mode === 'one' && (typeof value.matchKey !== 'string' || value.matchKey.length === 0)) return false;
   if (value.scope !== undefined && value.scope !== 'sheet' && value.scope !== 'workbook' && value.scope !== 'selection') return false;
   if (value.scope === 'selection' && value.range === undefined) return false;
@@ -153,11 +160,11 @@ function applyFindReplacementMutation(params: FindReplacementMutationParams, con
       const expected = forward ? patch.previous : patch.next;
       if (!equalValue(current, expected)) throw new Error(`Find replacement source changed at ${patch.match.key}`);
     } else if (patch.kind === 'note') {
-      const current = sheet.notes.get(`${patch.match.row}:${patch.match.column}`);
+      const current = sheet.review.getNoteAt(patch.match.row, patch.match.column);
       const expected = forward ? patch.previous : patch.next;
       if (!equalValue(current, expected)) throw new Error(`Find note source changed at ${patch.match.key}`);
     } else {
-      const thread = sheet.commentThreads.find((entry) => entry.id === patch.match.sourceId);
+      const thread = patch.match.sourceId ? sheet.review.getThread(patch.match.sourceId) : undefined;
       const expected = forward ? patch.previousText : patch.nextText;
       if (!thread || thread.row !== patch.match.row || thread.column !== patch.match.column || thread.text !== expected) throw new Error(`Find comment source changed at ${patch.match.key}`);
     }
@@ -170,13 +177,13 @@ function applyFindReplacementMutation(params: FindReplacementMutationParams, con
       else sheet.cells.set(patch.match.row, patch.match.column, structuredClone(next));
     } else if (patch.kind === 'note') {
       const next = forward ? patch.next : patch.previous;
-      const key = `${patch.match.row}:${patch.match.column}`;
-      if (next === undefined) sheet.notes.delete(key);
-      else sheet.notes.set(key, structuredClone(next));
+      if (next === undefined) sheet.review.removeNote(patch.match.row, patch.match.column);
+      else sheet.review.setNote(patch.match.row, patch.match.column, next);
     } else {
-      const thread = sheet.commentThreads.find((entry) => entry.id === patch.match.sourceId);
+      const thread = patch.match.sourceId ? sheet.review.getThread(patch.match.sourceId) : undefined;
       if (!thread) throw new Error(`Find comment ${patch.match.sourceId} disappeared during commit`);
-      thread.text = forward ? patch.nextText : patch.previousText;
+      const text = forward ? patch.nextText : patch.previousText;
+      sheet.review.updateThread(thread.id, (current) => { current.text = text; });
     }
   }
 }
@@ -193,13 +200,11 @@ function assertCurrentMatch(match: FindMatch, params: FindReplaceParams, context
     else text = value == null ? '' : undefined;
   } else if (match.target === 'formulas') text = cell?.formula;
   else if (match.target === 'notes') text = noteAt(sheet, match.row, match.column)?.text;
-  else text = sheet.commentThreads.find((thread) => thread.id === match.sourceId)?.text ?? cell?.comment?.text;
+  else text = match.sourceId ? sheet.review.getThread(match.sourceId)?.text : undefined;
   if (text === undefined || !matchesFindText(text, params)) throw new Error(`Find match ${match.key} changed before replacement`);
 }
 
 function buildPatches(params: FindReplaceParams, context: CommandContext): ReplacementPatch[] {
-  const replacementInput = parseReplacementValue(params.replace);
-  if (replacementInput.kind === 'empty') throw new Error('Replacement text must not be empty');
   const result = planFind(context.workbook, {
     sheetId: params.sheetId,
     query: params.query,
@@ -210,6 +215,7 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
     matchCase: params.matchCase,
     entireCell: params.entireCell,
     wildcard: params.wildcard,
+    dataRegionContext: params.dataRegionContext,
   }, context.resolveCellValue as FindResolveCellValue | undefined);
   const matches = params.mode === 'one'
     ? [result.matches.find((match) => match.key === params.matchKey)].filter((match): match is FindMatch => match !== undefined)
@@ -227,18 +233,23 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
       if (!cell) throw new Error(`Find result cell disappeared at ${match.key}`);
       const replaced = replaceFindText(match.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Find result no longer matches at ${match.key}`);
-      const replacement = parseReplacementValue(replaced);
+      const replacement = parseReplacementValue(replaced, {
+        ...params.inputContext,
+        currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
+        currentCellType: cell.editor?.kind,
+      });
+      if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
       if (match.target === 'formulas' && replacement.kind !== 'formula') throw new Error(`Formula replacement at ${match.key} must produce a formula`);
       patches.push({ kind: 'cell', match, previous: structuredClone(cell), next: replacementCell(cell, replacement) });
       touchedCells.add(key);
     } else if (match.target === 'notes') {
-      const note = context.workbook.getSheet(match.sheetId).notes.get(`${match.row}:${match.column}`);
+      const note = context.workbook.getSheet(match.sheetId).review.getNoteAt(match.row, match.column);
       if (!note || note.id !== match.sourceId) throw new Error(`Note ${match.sourceId} changed before replacement`);
       const replaced = replaceFindText(note.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Note ${match.sourceId} no longer matches`);
       patches.push({ kind: 'note', match, previous: structuredClone(note), next: { ...structuredClone(note), text: replaced }, text: replaced });
     } else {
-      const thread = context.workbook.getSheet(match.sheetId).commentThreads.find((entry) => entry.id === match.sourceId);
+      const thread = match.sourceId ? context.workbook.getSheet(match.sheetId).review.getThread(match.sourceId) : undefined;
       if (!thread) throw new Error(`Comment ${match.sourceId} changed before replacement`);
       const replaced = replaceFindText(thread.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Comment ${match.sourceId} no longer matches`);
@@ -265,8 +276,8 @@ export function registerFindReplaceCommands(runtime: CommandRuntime): string[] {
       if (!isValidFindReplace(params)) throw new Error('Invalid find.replace parameters');
       const patches = buildPatches(params, context);
       const affectedRanges = patches.map((patch) => patch.match.range);
-      const forward: FindReplacementMutationParams = { direction: 'forward', patches, affectedRanges };
-      const inverse: FindReplacementMutationParams = { direction: 'reverse', patches, affectedRanges };
+      const forward: FindReplacementMutationParams = { direction: 'forward', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
+      const inverse: FindReplacementMutationParams = { direction: 'reverse', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
       context.applyMutation({ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: forward, affectedRanges: [...affectedRanges], inverse: [{ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: [...affectedRanges] }], apply: () => applyFindReplacementMutation(forward, context) });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges, event: { type: 'find.replaced', payload: { count: patches.length } } };
     },

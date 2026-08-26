@@ -29,6 +29,8 @@ export interface XlsxExportOptions {
   dateSystem?: DateSystem;
   includeCachedValues?: boolean;
   preserveMacros?: boolean;
+  /** Authoritative asset bytes resolved before the synchronous OOXML writer runs. */
+  assetBytes?: Record<string, Uint8Array>;
 }
 
 /** Limits are deliberately finite so an XLSX cannot be used as a zip bomb. */

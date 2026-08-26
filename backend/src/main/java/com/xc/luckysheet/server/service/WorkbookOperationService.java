@@ -10,6 +10,7 @@ import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
+import com.xc.luckysheet.server.contract.OperationIntent;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.RestoreRequest;
@@ -104,6 +105,7 @@ public class WorkbookOperationService {
         if (sequenceExisting != null && !sequenceExisting.operationId().equals(operation.operationId())) {
             throw ServiceException.conflict("clientSequence was already committed");
         }
+        validateIntent(routeUnitId, operation, actor, row);
         if (registry.requiresExactBase(operation.mutations()) && row.revision() != operation.baseRevision()) {
             throw ServiceException.conflict("Revision conflict; rebase against revision " + row.revision());
         }
@@ -132,6 +134,31 @@ public class WorkbookOperationService {
         }
         audit(operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", "ACCEPTED", null, mapper.createObjectNode().put("revision", nextRevision));
         return new CommitResult(committed, true);
+    }
+
+    private void validateIntent(String unitId, OperationEnvelope operation, String actor, WorkbookRow row) {
+        OperationIntent intent = operation.intent();
+        if (intent == null) return;
+        if (!OperationIntent.UNDO.equals(intent.type())) {
+            throw ServiceException.validation("Unsupported operation intent");
+        }
+        if (intent.targetOperationId().equals(operation.operationId())) {
+            throw ServiceException.conflict("Undo operation cannot target itself");
+        }
+        OperationRow target = store.findOperation(intent.targetOperationId()).orElseThrow(
+                () -> ServiceException.conflict("Undo target operation is not committed"));
+        if (!unitId.equals(target.unitId())) {
+            throw ServiceException.forbidden("Undo target belongs to another workbook");
+        }
+        if (!actor.equals(target.actorSubject())) {
+            throw ServiceException.forbidden("Undo target belongs to another subject");
+        }
+        if (intent.targetBaseRevision() != target.baseRevision()) {
+            throw ServiceException.conflict("Undo target base revision does not match the committed operation");
+        }
+        if (operation.baseRevision() != row.revision()) {
+            throw ServiceException.conflict("Undo requires the current workbook revision " + row.revision());
+        }
     }
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor) {

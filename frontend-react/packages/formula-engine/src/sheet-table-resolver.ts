@@ -28,6 +28,7 @@ export interface SheetTableRef {
 export interface SheetTableReferenceRequest {
   readonly specifier?: TableReferenceSpecifier;
   readonly columnName?: string;
+  readonly columnEndName?: string;
   readonly thisRow: boolean;
 }
 
@@ -73,10 +74,13 @@ function resolveSpecifierRange(
   table: SheetTableRef,
   specifier: TableReferenceSpecifier,
   columnIndex?: number,
+  endColumnIndex?: number,
 ): RangeDependency | CellAddress | FormulaError {
   const { range, bodyStartRow, bodyEndRow, headerRow, totalRow } = tableBounds(table);
   const startColumn = columnIndex === undefined ? range.startColumn : range.startColumn + columnIndex;
-  const endColumn = columnIndex === undefined ? range.endColumn : range.startColumn + columnIndex;
+  const endColumn = endColumnIndex === undefined
+    ? (columnIndex === undefined ? range.endColumn : range.startColumn + columnIndex)
+    : range.startColumn + endColumnIndex;
 
   switch (specifier) {
     case 'all':
@@ -110,9 +114,16 @@ export function resolveSheetTableReference(
     ? undefined
     : columnIndexOf(table, request.columnName);
   if (isFormulaError(columnIndex)) return columnIndex;
+  const endColumnIndex = request.columnEndName === undefined
+    ? columnIndex
+    : columnIndexOf(table, request.columnEndName);
+  if (isFormulaError(endColumnIndex)) return endColumnIndex;
+  if (columnIndex !== undefined && endColumnIndex !== undefined && endColumnIndex < columnIndex) {
+    return createFormulaError('#REF!', 'Structured table column range is reversed');
+  }
 
   if (request.specifier) {
-    return resolveSpecifierRange(table, request.specifier, columnIndex);
+    return resolveSpecifierRange(table, request.specifier, columnIndex, endColumnIndex);
   }
 
   if (columnIndex === undefined) {
@@ -120,6 +131,7 @@ export function resolveSheetTableReference(
   }
 
   const column = table.range.startColumn + columnIndex;
+  const endColumn = table.range.startColumn + (endColumnIndex ?? columnIndex);
   const { bodyStartRow, bodyEndRow } = tableBounds(table);
 
   if (request.thisRow) {
@@ -129,7 +141,9 @@ export function resolveSheetTableReference(
     if (currentCell.row < bodyStartRow || currentCell.row > bodyEndRow) {
       return createFormulaError('#REF!', 'Current row is outside the table data body');
     }
-    return { sheetId: table.sheetId, row: currentCell.row, column };
+    return endColumn === column
+      ? { sheetId: table.sheetId, row: currentCell.row, column }
+      : rangeForRows(table, currentCell.row, currentCell.row, column, endColumn);
   }
 
   if (bodyEndRow < bodyStartRow) {
@@ -138,7 +152,7 @@ export function resolveSheetTableReference(
 
   return normalizeRange(
     { sheetId: table.sheetId, row: bodyStartRow, column },
-    { sheetId: table.sheetId, row: bodyEndRow, column },
+    { sheetId: table.sheetId, row: bodyEndRow, column: endColumn },
   );
 }
 

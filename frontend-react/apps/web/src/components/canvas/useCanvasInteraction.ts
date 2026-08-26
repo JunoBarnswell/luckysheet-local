@@ -17,10 +17,16 @@ import type {
 } from "@react-sheets/core-model";
 import {
   createSpreadsheetShortcutRegistry,
+  expandSelectionRangeForMerges,
   resolveContextHit,
+  resolveSelectionTarget,
+  selectionFromGesture,
+  intersectsRange,
+  containsRange,
   type AppPhase,
   type CanvasSheetSnapshot,
   type ResolvedContextHit,
+  type SelectionGesture,
   type SelectionState,
 } from "@react-sheets/spreadsheet-app";
 import type { PivotControlAction } from "./drawing-renderers";
@@ -52,6 +58,7 @@ export interface CanvasContextMenuState {
 
 interface DragState {
   kind: "select" | "fill" | "col-resize" | "row-resize" | "floating-move" | "floating-resize" | "textbox-placement";
+  pointerId: number;
   startRow: number;
   startColumn: number;
   anchorRow: number;
@@ -109,6 +116,7 @@ export interface CanvasInteractionOptions {
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
   onFormulaDraftChange: (value: string) => void;
+  editComposing?: boolean;
   onAppendFormulaDraft?: (fragment: string) => void;
   onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
@@ -141,54 +149,6 @@ export interface CanvasInteractionOptions {
   setContextHit: React.Dispatch<React.SetStateAction<ResolvedContextHit | null>>;
 }
 
-function mergeAtCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }) {
-  return sheet.merges.find((merge) =>
-    cell.row >= merge.range.startRow && cell.row <= merge.range.endRow
-    && cell.column >= merge.range.startColumn && cell.column <= merge.range.endColumn);
-}
-
-function resolveMergedCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }): { row: number; column: number } {
-  const merge = mergeAtCell(sheet, cell);
-  return merge ? { ...merge.anchor } : { ...cell };
-}
-
-function intersectsRange(
-  first: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-  second: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-): boolean {
-  return first.startRow <= second.endRow && second.startRow <= first.endRow
-    && first.startColumn <= second.endColumn && second.startColumn <= first.endColumn;
-}
-
-function containsRange(
-  outer: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-  inner: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-): boolean {
-  return outer.startRow <= inner.startRow && outer.endRow >= inner.endRow
-    && outer.startColumn <= inner.startColumn && outer.endColumn >= inner.endColumn;
-}
-
-function expandRangeForMerges(sheet: CanvasSheetSnapshot, range: RangeRef): RangeRef {
-  let expanded = { ...range };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const merge of sheet.merges) {
-      if (!intersectsRange(expanded, merge.range)) continue;
-      const next = {
-        startRow: Math.min(expanded.startRow, merge.range.startRow),
-        endRow: Math.max(expanded.endRow, merge.range.endRow),
-        startColumn: Math.min(expanded.startColumn, merge.range.startColumn),
-        endColumn: Math.max(expanded.endColumn, merge.range.endColumn),
-      };
-      changed = next.startRow !== expanded.startRow || next.endRow !== expanded.endRow
-        || next.startColumn !== expanded.startColumn || next.endColumn !== expanded.endColumn;
-      expanded = { ...expanded, ...next };
-    }
-  }
-  return expanded;
-}
-
 function resolveDragCell(
   engine: CanvasRenderEngine,
   sheet: CanvasSheetSnapshot,
@@ -207,7 +167,7 @@ function resolveDragCell(
     if (headerHit?.kind === "col") return { row: 0, column: headerHit.index };
     return hitCell ? { row: 0, column: hitCell.column } : null;
   }
-  return hitCell ? resolveMergedCell(sheet, hitCell) : null;
+  return hitCell ? resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell : null;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState["selection"] {
@@ -256,6 +216,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onBeginTextBoxEdit,
     onToggleCheckbox,
     onFormulaDraftChange,
+    editComposing,
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
@@ -292,7 +253,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
   const editingActiveRef = useRef(false);
   const autoScrollFrameRef = useRef<number | null>(null);
   const autoScrollPointRef = useRef<{ x: number; y: number } | null>(null);
-  const transientSelectionRef = useRef<SelectionState | null>(null);
+  const transientSelectionRef = useRef<{ gesture: SelectionGesture; sheetId: string } | null>(null);
   const transientSelectionFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -325,14 +286,15 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     autoScrollFrameRef.current = null;
   }, []);
 
-  const queueTransientSelection = useCallback((nextSelection: SelectionState) => {
-    transientSelectionRef.current = nextSelection;
+  const queueTransientSelection = useCallback((gesture: SelectionGesture, gestureSheetId: string) => {
+    transientSelectionRef.current = { gesture, sheetId: gestureSheetId };
     if (transientSelectionFrameRef.current !== null) return;
     const draw = () => {
       transientSelectionFrameRef.current = null;
-      const preview = transientSelectionRef.current;
+      const transient = transientSelectionRef.current;
       const engine = engineRef.current;
-      if (!preview || !engine) return;
+      if (!transient || !engine) return;
+      const preview = selectionFromGesture(selection, transient.gesture, transient.sheetId);
       engine.setChrome({ ...chromeState, selection: toChromeSelection(preview) });
     };
     if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
@@ -340,7 +302,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     } else {
       transientSelectionFrameRef.current = setTimeout(draw, 0) as unknown as number;
     }
-  }, [chromeState, engineRef]);
+  }, [chromeState, engineRef, selection]);
 
   const clearTransientSelection = useCallback(() => {
     transientSelectionRef.current = null;
@@ -412,16 +374,15 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           startColumn: isColDrag ? Math.min(currentDrag.startColumn, currentDrag.currentColumn) : Math.min(currentDrag.anchorColumn, currentDrag.currentColumn),
           endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : isColDrag ? Math.max(currentDrag.startColumn, currentDrag.currentColumn) : Math.max(currentDrag.anchorColumn, currentDrag.currentColumn),
         };
-        const range = expandRangeForMerges(sheet, baseRange);
-        const nextSelection: SelectionState = {
-          ranges: [range],
-          primaryRangeIndex: 0,
-          activeCell: { row: currentDrag.currentRow, column: currentDrag.currentColumn },
-          anchorCell: { row: currentDrag.anchorRow, column: currentDrag.anchorColumn },
-        };
-        queueTransientSelection(currentDrag.additive
-          ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, activeCell: nextSelection.activeCell, anchorCell: nextSelection.anchorCell }
-          : nextSelection);
+        const range = expandSelectionRangeForMerges(sheet, baseRange);
+        queueTransientSelection({
+          origin: { row: currentDrag.anchorRow, column: currentDrag.anchorColumn },
+          target: { row: currentDrag.currentRow, column: currentDrag.currentColumn },
+          pointerId: currentDrag.pointerId,
+          kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
+          additive: currentDrag.additive,
+          expandedRange: range,
+        }, sheetId);
       }
       if (autoScrollPointRef.current && typeof window !== "undefined") autoScrollFrameRef.current = window.requestAnimationFrame(tick);
     };
@@ -459,6 +420,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const content = engine.localToContent(local);
       dragRef.current = {
         kind: "textbox-placement",
+        pointerId: event.pointerId,
         startRow: 0,
         startColumn: 0,
         anchorRow: 0,
@@ -492,6 +454,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (drawableBounds) {
         dragRef.current = {
           kind: floatingHit.handle ? "floating-resize" : "floating-move",
+          pointerId: event.pointerId,
           startRow: 0,
           startColumn: 0,
           anchorRow: 0,
@@ -528,6 +491,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (headerHit.resizeBoundaryPx !== undefined) {
         dragRef.current = {
           kind: headerHit.kind === "col" ? "col-resize" : "row-resize",
+          pointerId: event.pointerId,
           startRow: 0,
           startColumn: 0,
           anchorRow: 0,
@@ -569,6 +533,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       }
       dragRef.current = {
         kind: "select",
+        pointerId: event.pointerId,
         startRow: headerHit.kind === "row" ? headerHit.index : 0,
         startColumn: headerHit.kind === "col" ? headerHit.index : 0,
         anchorRow: headerHit.kind === "row" ? headerHit.index : 0,
@@ -594,6 +559,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         if (Math.abs(local.x - screen.x) <= 5 && Math.abs(local.y - screen.y) <= 5) {
           dragRef.current = {
             kind: "fill",
+            pointerId: event.pointerId,
             startRow: primaryRange.startRow,
             startColumn: primaryRange.startColumn,
             anchorRow: primaryRange.endRow,
@@ -622,7 +588,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         return;
       }
     }
-    const cell = resolveMergedCell(sheet, hitCell);
+    const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
     const checkboxRect = skeleton.getCellRect(cell.row, cell.column);
     const contentPoint = engine.localToContent(local);
     const checkboxSize = checkboxRect ? Math.min(14, Math.max(10, checkboxRect.height - 8)) : 0;
@@ -636,7 +602,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const additive = event.ctrlKey || event.metaKey;
       const extend = event.shiftKey && !additive;
       if (additive) {
-        onSelectionChange({ ...selection, ranges: [...selection.ranges, checkboxRange], primaryRangeIndex: selection.ranges.length, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
+        onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, additive: true, expandedRange: checkboxRange }, sheetId));
       } else if (extend) {
         const range = {
           ...checkboxRange,
@@ -645,9 +611,9 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           startColumn: Math.min(selection.anchorCell.column, cell.column),
           endColumn: Math.max(selection.anchorCell.column, cell.column),
         };
-        onSelectionChange({ ...selection, ranges: [range], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column } });
+        onSelectionChange(selectionFromGesture(selection, { origin: selection.anchorCell, target: { row: cell.row, column: cell.column }, expandedRange: range }, sheetId));
       } else {
-        onSelectionChange({ ranges: [checkboxRange], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
+        onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: checkboxRange }, sheetId));
       }
       onToggleCheckbox([checkboxRange]);
       return;
@@ -668,6 +634,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const extend = event.shiftKey && !additive;
     dragRef.current = {
       kind: "select",
+      pointerId: event.pointerId,
       startRow: cell.row,
       startColumn: cell.column,
       anchorRow: extend ? selection.anchorCell.row : cell.row,
@@ -680,7 +647,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       resizeIndex: 0,
     };
     if (!additive && !extend) {
-      onSelectionChange({ ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
+      onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
   }, [containerRef, drawingSelectionMode, drawings, drawingPayloads, editingCell, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
@@ -750,7 +717,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       ? headerHit?.kind === "row" ? { row: headerHit.index, column: 0 } : hitCell ? { row: hitCell.row, column: 0 } : null
       : isColDrag
         ? headerHit?.kind === "col" ? { row: 0, column: headerHit.index } : hitCell ? { row: 0, column: hitCell.column } : null
-        : hitCell ? resolveMergedCell(sheet, hitCell) : null;
+        : hitCell ? resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell : null;
     if (!cell) return;
     if (drag.kind === "fill") {
       drag.currentRow = cell.row;
@@ -767,9 +734,15 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       startColumn: isColDrag ? Math.min(drag.startColumn, drag.currentColumn) : Math.min(drag.anchorColumn, drag.currentColumn),
       endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : isColDrag ? Math.max(drag.startColumn, drag.currentColumn) : Math.max(drag.anchorColumn, drag.currentColumn),
     };
-    const range = expandRangeForMerges(sheet, baseRange);
-    const nextSelection: SelectionState = { ranges: [range], activeCell: { row: cell.row, column: cell.column }, primaryRangeIndex: 0, anchorCell: { row: drag.anchorRow, column: drag.anchorColumn } };
-    queueTransientSelection(drag.additive ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, activeCell: nextSelection.activeCell, anchorCell: nextSelection.anchorCell } : nextSelection);
+    const range = expandSelectionRangeForMerges(sheet, baseRange);
+    queueTransientSelection({
+      origin: { row: drag.anchorRow, column: drag.anchorColumn },
+      target: { row: cell.row, column: cell.column },
+      pointerId: drag.pointerId,
+      kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
+      additive: drag.additive,
+      expandedRange: range,
+    }, sheetId);
   }, [chromeState, containerRef, engineRef, formatColumnWidthPreview, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent) => {
@@ -811,7 +784,11 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const partialMerge = sheet.merges.some((merge) => intersectsRange(target, merge.range) && !containsRange(target, merge.range));
       if (!partialMerge && (target.endRow !== drag.anchorRow || target.endColumn !== drag.anchorColumn)) {
         onFillRange(target);
-        onSelectionChange({ ranges: [target], primaryRangeIndex: 0, activeCell: { row: drag.currentRow, column: drag.currentColumn }, anchorCell: { row: drag.startRow, column: drag.startColumn } });
+        onSelectionChange(selectionFromGesture(selection, {
+          origin: { row: drag.startRow, column: drag.startColumn },
+          target: { row: drag.currentRow, column: drag.currentColumn },
+          expandedRange: target,
+        }, sheetId));
       }
       return;
     }
@@ -831,10 +808,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         startColumn: isColDrag ? Math.min(drag.startColumn, drag.currentColumn) : Math.min(drag.anchorColumn, drag.currentColumn),
         endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : isColDrag ? Math.max(drag.startColumn, drag.currentColumn) : Math.max(drag.anchorColumn, drag.currentColumn),
       };
-      const range = expandRangeForMerges(sheet, baseRange);
-      const nextSelection: SelectionState = drag.additive
-        ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, activeCell: { row: drag.currentRow, column: drag.currentColumn }, anchorCell: { row: drag.anchorRow, column: drag.anchorColumn } }
-        : { ranges: [range], primaryRangeIndex: 0, activeCell: { row: drag.currentRow, column: drag.currentColumn }, anchorCell: { row: drag.anchorRow, column: drag.anchorColumn } };
+      const range = expandSelectionRangeForMerges(sheet, baseRange);
+      const nextSelection = selectionFromGesture(selection, {
+        origin: { row: drag.anchorRow, column: drag.anchorColumn },
+        target: { row: drag.currentRow, column: drag.currentColumn },
+        kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
+        additive: drag.additive,
+        expandedRange: range,
+      }, sheetId);
       clearTransientSelection();
       onSelectionChange(nextSelection);
     }
@@ -873,7 +854,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       }
       return;
     }
-    const cell = resolveMergedCell(sheet, hitCell);
+    const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
     const editor = sheet.getCell(cell.row, cell.column)?.editor;
     if (editor?.kind === 'checkbox') {
       // Checkbox activation is owned by the glyph pointer and Spacebar. A
@@ -900,6 +881,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const key = event.key;
     const ctrl = event.ctrlKey || event.metaKey;
     const isEditing = Boolean(editingCell) || editingActiveRef.current;
+    if (event.nativeEvent.isComposing || editComposing) {
+      event.stopPropagation();
+      return;
+    }
     const activePivotContextHit = onPivotResolve(sheet, selection.activeCell.row, selection.activeCell.column);
     const editingPivotContextHit = editingCell ? onPivotResolve(sheet, editingCell.row, editingCell.column) : null;
     if (editingPivotContextHit) {
@@ -996,7 +981,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       else if (editingCell || editingActiveRef.current) onAppendFormulaDraft?.(key);
       else { editingActiveRef.current = true; onBeginEdit(key); }
     }
-  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editComposing, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

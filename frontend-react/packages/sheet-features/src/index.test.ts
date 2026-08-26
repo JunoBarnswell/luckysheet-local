@@ -10,6 +10,7 @@ import {
   shiftFormula,
   FormulaRelocationError,
   copyRangeToClipboardData,
+  clipboardRepresentations,
   createPasteSpecialSpec,
 } from './index';
 
@@ -466,7 +467,8 @@ test('clipboard payload carries provenance and PasteSpecialSpec preserves its co
     endColumn: 0,
   });
   assert.equal(payload.source, 'internal');
-  assert.equal(payload.mime, 'application/x-react-sheets-cells');
+  assert.equal(payload.schema, 'SparseClipboardPayload');
+  assert.equal(payload.occupiedCells.length, 1);
 
   runtime.execute('sheet.range.paste', {
     sheetId: sheet.id,
@@ -495,14 +497,18 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
   const text = formatTsv([[{ value: 'a\tb' }, { value: 'line\nnext' }, { value: '"quoted"' }]]);
   assert.deepEqual(parseTsv(text).map((row) => row.map((cell) => cell.value)), [['a\tb', 'line\nnext', '"quoted"']]);
   const payload = {
+    schema: 'SparseClipboardPayload' as const,
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-    values: [],
+    sourceExtent: { rows: 1, columns: 1 },
+    occupiedCells: [],
     transfer: 'copy' as const,
     rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
-  assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
-  assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
+  const parsed = parseClipboardPayload(payload);
+  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, 43]);
+  assert.equal(parsed.occupiedCells[1]?.value.formula, '=A1+1');
+  assert.equal(clipboardRepresentations(parsed).some((entry) => entry.mime === 'text/html'), true);
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
 });
 
@@ -513,9 +519,9 @@ test('paste special copies range-owned metadata atomically and restores it once'
   const source = workbook.getSheet('sheet-1');
   source.cells.set(0, 0, { value: 'source', style: { bold: true } });
   source.columnWidthsPx[0] = 144;
-  source.notes.set('0:0', { id: 'n1', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
+  source.review.setNote(0, 0, { id: 'n1', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
   source.hyperlinks.set('0:0', { id: 'h1', target: { kind: 'url', url: 'https://example.com' } });
-  source.commentThreads.push({ id: 'c1', sheetId: source.id, row: 0, column: 0, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
+  source.review.addThread({ id: 'c1', sheetId: source.id, row: 0, column: 0, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
   source.dataValidations.push({ id: 'dv1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', formula1: '1' });
   source.conditionalFormats.push({ id: 'cf1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'highlight', operator: 'equal', value1: 'source' });
   const payload = copyRangeToClipboardData(workbook, { sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
@@ -529,17 +535,17 @@ test('paste special copies range-owned metadata atomically and restores it once'
   });
   assert.equal(result.mutationCount, 1);
   assert.equal(source.cells.get(2, 2)?.value, 'source');
-  assert.equal(source.notes.get('2:2')?.text, 'note');
+  assert.equal(source.review.getNoteAt(2, 2)?.text, 'note');
   assert.equal(source.hyperlinks.get('2:2')?.target.kind, 'url');
-  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), true);
+  assert.equal(source.review.getThreadsAt(2, 2).length, 1);
   assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
   assert.equal(source.conditionalFormats.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
   assert.equal(source.columnWidthsPx[2], 144);
   runtime.undo();
   assert.equal(source.cells.get(2, 2), undefined);
-  assert.equal(source.notes.has('2:2'), false);
+  assert.equal(source.review.hasNoteAt(2, 2), false);
   assert.equal(source.hyperlinks.has('2:2'), false);
-  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), false);
+  assert.equal(source.review.getThreadsAt(2, 2).length, 0);
   assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), false);
   assert.equal(source.columnWidthsPx[2], undefined);
   runtime.redo();
@@ -736,7 +742,6 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
       clipboard: payload,
       transfer: 'copy',
       spec: createPasteSpecialSpec(),
-      values: [[{ value: null, formula: '=A1' }]],
       startRow: 1,
       startColumn: 1,
       sourceRange: structuredClone(payload.range),
@@ -783,9 +788,8 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
     formula: '=A1',
     style: { bold: true },
     hyperlink: 'https://example.com',
-    note: { id: 'cell-note', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true },
   });
-  sheet.notes.set('0:0', { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
+  sheet.review.setNote(0, 0, { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
   const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'formats' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
@@ -793,8 +797,7 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
   assert.equal(sheet.cells.get(0, 0)?.style, undefined);
   assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'comments-and-notes' });
-  assert.equal(sheet.cells.get(0, 0)?.note, undefined);
-  assert.equal(sheet.notes.has('0:0'), false);
+  assert.equal(sheet.review.hasNoteAt(0, 0), false);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);

@@ -10,11 +10,13 @@ test('ProtectionResolver uses cell locked style under active sheet protection', 
   const unlocked = protectionResolver.resolve({
     sheetId, rules, ranges: [cell(0, 0)], action: 'edit-cell', rowCount: 10, columnCount: 10,
     readCellStyle: () => ({ locked: false }),
+    countUnlockedCells: () => 1,
   });
   assert.equal(unlocked.allowed, true);
 
   const defaultLocked = protectionResolver.resolve({
     sheetId, rules, ranges: [cell(0, 1)], action: 'edit-cell', rowCount: 10, columnCount: 10,
+    countUnlockedCells: () => 0,
   });
   assert.equal(defaultLocked.allowed, false);
   assert.match(defaultLocked.reason ?? '', /locked/);
@@ -35,6 +37,7 @@ test('ProtectionResolver rejects a mixed locked range before any write', () => {
   const result = protectionResolver.resolve({
     sheetId, rules, ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }], action: 'edit-cell', rowCount: 10, columnCount: 10,
     readCellStyle: (row, column) => ({ locked: column === 1 }),
+    countUnlockedCells: () => 1,
   });
   assert.equal(result.allowed, false);
   assert.equal(result.lockedCells, 1);

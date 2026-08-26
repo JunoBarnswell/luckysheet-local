@@ -25,6 +25,7 @@ import type {
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
+  AssetRef,
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
@@ -1154,11 +1155,15 @@ export interface CanvasFloatingRendererInput {
   imageCache: Map<string, HTMLImageElement>;
   requestRender: () => void;
   tables: readonly WorkbookTableModel[];
+  resolveAssetUrl?: (asset: AssetRef) => Promise<string>;
+  assetUrlCache?: Map<string, string>;
+  assetUrlPending?: Set<string>;
+  assetUrlErrors?: Map<string, string>;
 }
 
 /** Build the render-engine floating scene without coupling it to SheetCanvas state. */
 export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput): FloatingDrawable[] {
-  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables } = input;
+  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
   const drawables: FloatingDrawable[] = [];
   const sheets = allSheets.length > 0 ? allSheets : [sheet];
   const getSheet = (sheetId: string): CanvasSheetSnapshot | undefined =>
@@ -1252,11 +1257,30 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         id: drawing.id,
         bounds,
         draw: (context, rect) => {
-          let img = imageCache.get(payload.src);
+          const assetId = payload.asset.assetId;
+          const assetUrl = assetUrlCache?.get(assetId);
+          if (!assetUrl) {
+            if (resolveAssetUrl && assetUrlPending && !assetUrlPending.has(assetId) && !assetUrlErrors?.has(assetId)) {
+              assetUrlPending.add(assetId);
+              void resolveAssetUrl(payload.asset)
+                .then((url) => assetUrlCache?.set(assetId, url))
+                .catch((error) => assetUrlErrors?.set(assetId, error instanceof Error ? error.message : `ASSET_RESOLVE_FAILED: ${assetId}`))
+                .finally(() => {
+                  assetUrlPending.delete(assetId);
+                  requestRender();
+                });
+            }
+            context.fillStyle = assetUrlErrors?.has(assetId) ? "#fee2e2" : "#f1f5f9";
+            context.fillRect(rect.x, rect.y, rect.width, rect.height);
+            context.strokeStyle = assetUrlErrors?.has(assetId) ? "#dc2626" : "#94a3b8";
+            context.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+            return;
+          }
+          let img = imageCache.get(assetId);
           if (!img) {
             img = new Image();
-            img.src = payload.src;
-            imageCache.set(payload.src, img);
+            img.src = assetUrl;
+            imageCache.set(assetId, img);
             img.onload = requestRender;
           }
           if (img.complete && img.naturalWidth > 0) {

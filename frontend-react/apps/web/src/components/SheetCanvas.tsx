@@ -43,7 +43,7 @@ import type {
 import { DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -95,6 +95,12 @@ export interface SheetCanvasProps {
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
   onFormulaDraftChange: (value: string) => void;
+  editComposing?: boolean;
+  editCaret?: { start: number; end: number };
+  onEditCaretChange?: (start: number, end: number) => void;
+  onEditCompositionStart?: () => void;
+  onEditCompositionUpdate?: (text: string) => void;
+  onEditCompositionEnd?: () => void;
   onAppendFormulaDraft?: (fragment: string) => void;
   onInsertRef: (refText: string) => void;
   onToggleAbsolute: () => void;
@@ -140,46 +146,7 @@ export interface SheetCanvasProps {
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
-}
-
-function mergeAtCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }) {
-  return sheet.merges.find((merge) =>
-    cell.row >= merge.range.startRow && cell.row <= merge.range.endRow
-    && cell.column >= merge.range.startColumn && cell.column <= merge.range.endColumn);
-}
-
-function resolveMergedCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }): { row: number; column: number } {
-  const merge = mergeAtCell(sheet, cell);
-  return merge ? { ...merge.anchor } : { ...cell };
-}
-
-function intersectsRange(
-  first: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-  second: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-): boolean {
-  return first.startRow <= second.endRow && second.startRow <= first.endRow
-    && first.startColumn <= second.endColumn && second.startColumn <= first.endColumn;
-}
-
-function expandRangeForMerges(sheet: CanvasSheetSnapshot, range: RangeRef): RangeRef {
-  let expanded = { ...range };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const merge of sheet.merges) {
-      if (!intersectsRange(expanded, merge.range)) continue;
-      const next = {
-        startRow: Math.min(expanded.startRow, merge.range.startRow),
-        endRow: Math.max(expanded.endRow, merge.range.endRow),
-        startColumn: Math.min(expanded.startColumn, merge.range.startColumn),
-        endColumn: Math.max(expanded.endColumn, merge.range.endColumn),
-      };
-      changed = next.startRow !== expanded.startRow || next.endRow !== expanded.endRow
-        || next.startColumn !== expanded.startColumn || next.endColumn !== expanded.endColumn;
-      expanded = { ...expanded, ...next };
-    }
-  }
-  return expanded;
+  resolveAssetUrl?: (asset: import('@react-sheets/core-model').AssetRef) => Promise<string>;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
@@ -428,6 +395,12 @@ export function SheetCanvas({
   onCancelEdit,
   onCommitEdit,
   onFormulaDraftChange,
+  editComposing = false,
+  editCaret,
+  onEditCaretChange,
+  onEditCompositionStart,
+  onEditCompositionUpdate,
+  onEditCompositionEnd,
   onAppendFormulaDraft,
   onInsertRef,
   onToggleAbsolute,
@@ -473,9 +446,13 @@ export function SheetCanvas({
   getValidationList,
   onRetry,
   onCreateSheet,
+  resolveAssetUrl,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
+  const assetUrlCacheRef = useRef(new Map<string, string>());
+  const assetUrlPendingRef = useRef(new Set<string>());
+  const assetUrlErrorsRef = useRef(new Map<string, string>());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
@@ -601,11 +578,15 @@ export function SheetCanvas({
     imageCache: imageCacheRef.current,
     pivotResults,
     requestRender: () => engineRef.current?.requestRender(),
+    resolveAssetUrl,
+    assetUrlCache: assetUrlCacheRef.current,
+    assetUrlPending: assetUrlPendingRef.current,
+    assetUrlErrors: assetUrlErrorsRef.current,
     sheet,
     skeleton,
     sparklines,
     tables,
-  }), [allSheets, drawingPayloads, drawings, pivotResults, sparklines, skeleton, sheet, tables]);
+  }), [allSheets, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
 
   // ---------- 引擎生命周期与 chrome 同步 ----------
 
@@ -647,6 +628,7 @@ export function SheetCanvas({
     floatables,
     formatPainterActive,
     formulaDraft,
+    editComposing,
     getValidationList,
     isPivotValueCell,
     onAppendFormulaDraft,
@@ -852,24 +834,26 @@ export function SheetCanvas({
       onSelectAll();
     } else if (headerHit?.kind === "row") {
       const row = headerHit.index;
-      contextRangeRef.current = { sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) };
-      onSelectionChange({
-        ranges: [{ sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) }],
-        primaryRangeIndex: 0,
-        activeCell: { row, column: 0 },
-        anchorCell: { row, column: 0 },
-      });
+      const target = resolveSelectionTarget(sheet, { row, column: 0 }, 'rows', sheetId);
+      contextRangeRef.current = target.range;
+      onSelectionChange(selectionFromGesture(selection, {
+        origin: target.cell,
+        target: target.cell,
+        kind: 'rows',
+        expandedRange: target.range,
+      }, sheetId));
     } else if (headerHit?.kind === "col") {
       const column = headerHit.index;
       const alreadySelected = selection.ranges.some((range) => range.startRow === 0 && range.endRow >= sheet.rowCount - 1 && column >= range.startColumn && column <= range.endColumn);
       if (!alreadySelected) {
-        contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: column, endColumn: column };
-        onSelectionChange({
-          ranges: [contextRangeRef.current],
-          primaryRangeIndex: 0,
-          activeCell: { row: 0, column },
-          anchorCell: { row: 0, column },
-        });
+        const target = resolveSelectionTarget(sheet, { row: 0, column }, 'columns', sheetId);
+        contextRangeRef.current = target.range;
+        onSelectionChange(selectionFromGesture(selection, {
+          origin: target.cell,
+          target: target.cell,
+          kind: 'columns',
+          expandedRange: target.range,
+        }, sheetId));
       }
     } else {
       const hitCell = engine.cellAtLocalPoint(local);
@@ -888,35 +872,29 @@ export function SheetCanvas({
           const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
           if (!alreadySelected) {
             contextRangeRef.current = targetRange;
-            onSelectionChange({
-              ranges: [targetRange],
-              primaryRangeIndex: 0,
-              activeCell: { row: hitCell.row, column: hitCell.column },
-              anchorCell: { row: hitCell.row, column: hitCell.column },
-            });
+            onSelectionChange(selectionFromGesture(selection, {
+              origin: { row: hitCell.row, column: hitCell.column },
+              target: { row: hitCell.row, column: hitCell.column },
+              kind: 'cells',
+              expandedRange: targetRange,
+            }, sheetId));
           } else {
             contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
           }
         } else {
           setContextHit(null);
-          const cell = resolveMergedCell(sheet, hitCell);
-          const merge = mergeAtCell(sheet, hitCell);
-          const targetRange: RangeRef = merge?.range ?? {
-            sheetId,
-            startRow: cell.row,
-            endRow: cell.row,
-            startColumn: cell.column,
-            endColumn: cell.column,
-          };
+          const target = resolveSelectionTarget(sheet, hitCell, 'cells', sheetId);
+          const cell = target.cell;
+          const targetRange = expandSelectionRangeForMerges(sheet, target.range);
           const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
           if (!alreadySelected) {
-            contextRangeRef.current = expandRangeForMerges(sheet, targetRange);
-            onSelectionChange({
-              ranges: [contextRangeRef.current],
-              primaryRangeIndex: 0,
-              activeCell: cell,
-              anchorCell: cell,
-            });
+            contextRangeRef.current = targetRange;
+            onSelectionChange(selectionFromGesture(selection, {
+              origin: cell,
+              target: cell,
+              kind: 'cells',
+              expandedRange: targetRange,
+            }, sheetId));
           } else {
             contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
           }
@@ -1015,6 +993,7 @@ export function SheetCanvas({
             onContextMenu={handleContextMenu}
           >
             <CanvasRenderSurface
+              options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
               onReady={(engine) => {
                 engineRef.current = engine;
                 setEngineReady(true);
@@ -1085,6 +1064,12 @@ export function SheetCanvas({
                 onChange={onFormulaDraftChange}
                 onCommit={onCommitEdit}
                 onInsertRef={onInsertRef}
+                composing={editComposing}
+                caret={editCaret}
+                onCaretChange={onEditCaretChange}
+                onCompositionStart={onEditCompositionStart}
+                onCompositionUpdate={onEditCompositionUpdate}
+                onCompositionEnd={onEditCompositionEnd}
               />
             </Box>
           ) : null}

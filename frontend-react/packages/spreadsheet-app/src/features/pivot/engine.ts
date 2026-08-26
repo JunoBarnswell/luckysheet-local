@@ -2499,7 +2499,7 @@ export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel,
       addConflict('drawing', candidate, drawing.id);
     }
   }
-  for (const [key] of sheet.notes) {
+  for (const { key } of sheet.review.noteEntries()) {
     const candidate = cellMetadataRange(sheet.id, key);
     if (candidate && rangesIntersect(range, candidate)) addConflict('note', candidate, key);
   }
@@ -2507,7 +2507,7 @@ export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel,
     const candidate = cellMetadataRange(sheet.id, key);
     if (candidate && rangesIntersect(range, candidate)) addConflict('hyperlink', candidate, key);
   }
-  for (const comment of sheet.commentThreads) {
+  for (const comment of sheet.review.threadEntries()) {
     const candidate = { sheetId: sheet.id, startRow: comment.row, endRow: comment.row, startColumn: comment.column, endColumn: comment.column };
     if (rangesIntersect(range, candidate)) addConflict('comment', candidate, comment.id);
   }

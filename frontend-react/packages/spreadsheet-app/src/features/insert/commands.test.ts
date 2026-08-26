@@ -7,7 +7,7 @@ import { registerDrawingFeature } from '../drawing';
 import { registerInsertCommands } from './commands';
 
 function blankTableSheet(): SheetSnapshot {
-  return { kind: 'table-sheet', id: 'table-sheet-1', name: '集算表', rowCount: 100, columnCount: 10, cells: {}, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, defaultRowHeightPx: 20, defaultColumnWidthPx: 80, tableSheet: { viewId: 'table-1', columns: [{ fieldId: 'name', caption: 'Name' }], grouping: [] } };
+  return { kind: 'table-sheet', id: 'table-sheet-1', name: '集算表', rowCount: 100, columnCount: 10, cells: {}, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} }, defaultRowHeightPx: 20, defaultColumnWidthPx: 80, tableSheet: { viewId: 'table-1', columns: [{ fieldId: 'name', caption: 'Name' }], grouping: [] } };
 }
 
 describe('insert feature', () => {

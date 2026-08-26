@@ -5,6 +5,8 @@ import {
   canonicalExcelDateFromUtcDate,
   canonicalExcelDateFromValue,
   canonicalExcelDateToSerial,
+  canonicalExcelDateDayOfWeek,
+  shiftCanonicalExcelDate,
   type CanonicalExcelDate,
   type ExcelDateEvaluationContext,
 } from '../excel-date';
@@ -46,8 +48,46 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[], context?: 
     try { const system = context.dateSystem ?? '1900'; return canonicalExcelDateToSerial(canonicalExcelDateFromParts(context.canonicalReferenceDate, system), system); }
     catch (cause) { return error(cause, 'Invalid canonical workbook reference date'); }
   },
-  WEEKDAY: (args, context) => { try { const date = parseDateInput(args[0], context); if (!date) return createFormulaError('#VALUE!', 'Invalid date in WEEKDAY'); const day = new Date(Date.UTC(2000, date.month - 1, date.day)).getUTCDay(); const returnType = args[1] === undefined ? 1 : Number(args[1]); if (returnType === 1) return day + 1; if (returnType === 2) return day === 0 ? 7 : day; if (returnType === 3) return day === 0 ? 6 : day - 1; return day + 1; } catch (cause) { return error(cause, 'Invalid date in WEEKDAY'); } },
-  EDATE: (args, context) => { try { const date = parseDateInput(args[0], context); const months = Number(args[1]); if (!date || !Number.isFinite(months) || !Number.isInteger(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EDATE'); const utc = new Date(Date.UTC(2000, date.month - 1 + months, date.day, date.hour, date.minute, date.second, date.millisecond)); utc.setUTCFullYear(date.year); return Math.round(canonicalExcelDateFromUtcDate(utc, date.system).serial); } catch (cause) { return error(cause, 'Invalid arguments in EDATE'); } },
-  EOMONTH: (args, context) => { try { const date = parseDateInput(args[0], context); const months = Number(args[1]); if (!date || !Number.isFinite(months) || !Number.isInteger(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EOMONTH'); const utc = new Date(Date.UTC(2000, date.month + months, 0)); utc.setUTCFullYear(date.year); return Math.round(canonicalExcelDateFromUtcDate(utc, date.system).serial); } catch (cause) { return error(cause, 'Invalid arguments in EOMONTH'); } },
+  WEEKDAY: (args, context) => {
+    try {
+      const date = parseDateInput(args[0], context);
+      if (!date) return createFormulaError('#VALUE!', 'Invalid date in WEEKDAY');
+      const returnType = args[1] === undefined ? 1 : Number(args[1]);
+      if (!Number.isInteger(returnType) || ![1, 2, 3, 11, 12, 13, 14, 15, 16, 17].includes(returnType)) return createFormulaError('#NUM!', 'Invalid WEEKDAY return_type');
+      const sundayIndex = canonicalExcelDateDayOfWeek(date);
+      if (returnType === 1) return sundayIndex + 1;
+      const mondayIndex = (sundayIndex + 6) % 7;
+      if (returnType === 2 || returnType === 11) return mondayIndex + 1;
+      if (returnType === 3) return mondayIndex;
+      return ((mondayIndex - (returnType - 11)) + 7) % 7 + 1;
+    } catch (cause) { return error(cause, 'Invalid date in WEEKDAY'); }
+  },
+  EDATE: (args, context) => {
+    try {
+      const date = parseDateInput(args[0], context);
+      const months = Number(args[1]);
+      if (!date || !Number.isFinite(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EDATE');
+      const offset = Math.trunc(months);
+      const absoluteMonth = date.year * 12 + (date.month - 1) + offset;
+      const year = Math.floor(absoluteMonth / 12);
+      const month = absoluteMonth - year * 12 + 1;
+      const firstOfNext = canonicalExcelDateFromParts({ year: month === 12 ? year + 1 : year, month: month === 12 ? 1 : month + 1, day: 1, hour: 0, minute: 0, second: 0, millisecond: 0 }, date.system);
+      const lastDay = shiftCanonicalExcelDate(firstOfNext, -1, date.system).day;
+      return Math.round(canonicalExcelDateToSerial(canonicalExcelDateFromParts({ ...date, year, month, day: Math.min(date.day, lastDay) }, date.system), date.system));
+    } catch (cause) { return error(cause, 'Invalid arguments in EDATE'); }
+  },
+  EOMONTH: (args, context) => {
+    try {
+      const date = parseDateInput(args[0], context);
+      const months = Number(args[1]);
+      if (!date || !Number.isFinite(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EOMONTH');
+      const offset = Math.trunc(months);
+      const absoluteMonth = date.year * 12 + (date.month - 1) + offset;
+      const year = Math.floor(absoluteMonth / 12);
+      const month = absoluteMonth - year * 12 + 1;
+      const firstOfNext = canonicalExcelDateFromParts({ year: month === 12 ? year + 1 : year, month: month === 12 ? 1 : month + 1, day: 1, hour: 0, minute: 0, second: 0, millisecond: 0 }, date.system);
+      return Math.round(canonicalExcelDateToSerial(shiftCanonicalExcelDate(firstOfNext, -1, date.system), date.system));
+    } catch (cause) { return error(cause, 'Invalid arguments in EOMONTH'); }
+  },
   DAYS: (args, context) => { try { const end = parseDateInput(args[0], context); const start = parseDateInput(args[1], context); if (!end || !start || end.system !== start.system) return createFormulaError('#VALUE!', 'Invalid dates in DAYS'); return Math.round(end.serial - start.serial); } catch (cause) { return error(cause, 'Invalid dates in DAYS'); } },
 };

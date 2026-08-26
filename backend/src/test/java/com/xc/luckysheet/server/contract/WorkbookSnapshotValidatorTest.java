@@ -62,6 +62,8 @@ class WorkbookSnapshotValidatorTest {
                 .put("defaultRowHeightPx", 20).put("defaultColumnWidthPx", 64);
         sheet.putObject("cells"); sheet.putArray("merges"); sheet.putObject("pane").put("kind", "none");
         sheet.putArray("pivots"); sheet.putArray("sparklines"); sheet.putArray("drawings"); sheet.putObject("drawingPayloads");
+        ObjectNode review = sheet.putObject("review");
+        review.putObject("notesByCell"); review.putObject("notesById"); review.putObject("threadIdsByCell"); review.putObject("threadsById");
         return snapshot;
     }
 

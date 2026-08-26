@@ -1,4 +1,4 @@
-import { BARCODE_SYMBOLOGIES, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
@@ -189,7 +189,7 @@ function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext
         const cellRange: RangeRef[] = [{ sheetId: params.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
         context.applyMutation({
           id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, row, column, value: next }, affectedRanges: cellRange,
+          params: { sheetId: params.sheetId, row, column, value: next, entryIntent: { kind: 'script', target: { sheetId: params.sheetId, row, column }, candidate: structuredClone(next), validationDecision: { status: 'not-applicable' } } }, affectedRanges: cellRange,
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row, column, previous }, affectedRanges: cellRange }],
           apply: () => sheet.cells.set(row, column, structuredClone(next)),
         });
@@ -237,7 +237,7 @@ function validateBarcodeValue(presentation: BarcodeCellPresentation, rawValue: C
 }
 
 function validateImagePresentation(presentation: ImageCellPresentation): void {
-  if (!presentation || presentation.kind !== 'image' || typeof presentation.src !== 'string' || presentation.src.length === 0) throw new Error('Image presentation source is required');
+  if (!presentation || presentation.kind !== 'image' || !isAssetRef(presentation.asset)) throw new Error('Image presentation asset reference is required');
   if (!['contain', 'cover', 'stretch'].includes(presentation.fit)) throw new Error('Image fit mode is invalid');
   const crop = presentation.crop;
   if (crop && (![crop.left, crop.top, crop.right, crop.bottom].every((value) => Number.isFinite(value) && value >= 0) || crop.left + crop.right >= 1 || crop.top + crop.bottom >= 1)) throw new Error('Image crop is invalid');
@@ -271,7 +271,7 @@ function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDr
   validateImagePresentation(presentation);
   return {
     kind: 'image',
-    src: presentation.src,
+    asset: structuredClone(presentation.asset),
     altText: presentation.altText,
     crop: presentation.crop ? structuredClone(presentation.crop) : undefined,
     effects: presentation.effects ? structuredClone(presentation.effects) : undefined,
@@ -281,7 +281,7 @@ function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDr
 function convertDrawingImageToPresentation(payload: ImageDrawingPayload): ImageCellPresentation {
   return {
     kind: 'image',
-    src: payload.src,
+    asset: structuredClone(payload.asset),
     altText: payload.altText,
     fit: 'contain',
     crop: payload.crop ? structuredClone(payload.crop) : undefined,
@@ -309,7 +309,7 @@ function executePictureConvertToCell(params: PictureConvertToCellParams, context
   });
   context.applyMutation({
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
-    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, affectedRanges,
+    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell, entryIntent: { kind: 'script', target: { sheetId: params.sheetId, row: params.row, column: params.column }, candidate: structuredClone(nextCell), validationDecision: { status: 'not-applicable' } } }, affectedRanges,
     inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
     apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
   });
@@ -338,7 +338,7 @@ function executePictureConvertToFloating(params: PictureConvertToFloatingParams,
   const affectedRanges = imageRange(params.sheetId, params.row, params.column);
   context.applyMutation({
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
-    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, affectedRanges,
+    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell, entryIntent: { kind: 'script', target: { sheetId: params.sheetId, row: params.row, column: params.column }, candidate: structuredClone(nextCell), validationDecision: { status: 'not-applicable' } } }, affectedRanges,
     inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
     apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
   });
@@ -369,7 +369,7 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       const next: CellData = structuredClone(previous ?? { value: null });
       next.presentation = structuredClone(params.presentation);
       const affectedRanges = [{ sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column }];
-      context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, value: next }, affectedRanges,
+      context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, value: next, entryIntent: { kind: 'script', target: { sheetId: params.sheetId, row: params.row, column: params.column }, candidate: structuredClone(next), validationDecision: { status: 'not-applicable' } } }, affectedRanges,
         inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous }, affectedRanges }],
         apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
       });
@@ -454,7 +454,7 @@ function linkValueMutations(
     const next: CellData = { ...(previous ?? { value: null }), value: linked.value };
     const cellRange = formControlCellRange(linked.sheetId, linked.row, linked.column);
     affectedRanges.push(cellRange);
-    context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, value: next }, affectedRanges: [cellRange],
+    context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, value: next, entryIntent: { kind: 'external-sync', target: { sheetId: linked.sheetId, row: linked.row, column: linked.column }, candidate: structuredClone(next), validationDecision: { status: 'not-applicable' } } }, affectedRanges: [cellRange],
       inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, previous }, affectedRanges: [cellRange] }],
       apply: () => linkedSheet.cells.set(linked.row, linked.column, structuredClone(next)),
     });

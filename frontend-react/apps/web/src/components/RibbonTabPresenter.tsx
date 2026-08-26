@@ -18,7 +18,7 @@ export function RibbonTabPresenter({ tab, locale, layout, renderCommand }: Ribbo
   return (
     <Inline gap="none" className="h-[102px] min-w-0 flex-nowrap items-start overflow-hidden" data-testid={`ribbon-groups-${tab}`}>
       {groups.map((group, groupIndex) => {
-        const commands = RIBBON_COMMAND_CATALOG.filter((command) => command.tab === tab && command.group === group.id).sort((left, right) => left.priority - right.priority);
+        const commands = RIBBON_COMMAND_CATALOG.filter((command) => command.placements.some((placement) => placement.tab === tab && placement.group === group.id)).sort((left, right) => left.priority - right.priority);
         const collapsed = layout.mode === 'narrow' || (layout.mode === 'compact' && group.priority >= 50);
         return (
           <React.Fragment key={group.id}>

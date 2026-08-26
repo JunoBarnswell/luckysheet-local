@@ -75,8 +75,8 @@ describe('structural operations', () => {
     const workbook = new WorkbookModel('unit-shift-cells', 'Shift Cells');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(1, 1, { value: null, formula: '=A1+B1' });
-    sheet.notes.set('1:1', { id: 'n1', author: 'u', text: 'note', createdAt: 'now', visible: true });
-    sheet.commentThreads.push({ id: 'c1', sheetId: sheet.id, row: 1, column: 1, author: 'u', text: 'comment', createdAt: 'now', replies: [] });
+    sheet.review.setNote(1, 1, { id: 'n1', author: 'u', text: 'note', createdAt: 'now', visible: true });
+    sheet.review.addThread({ id: 'c1', sheetId: sheet.id, row: 1, column: 1, author: 'u', text: 'comment', createdAt: 'now', replies: [] });
 
     StructuralTransform.apply(workbook, {
       kind: 'cell-shift',
@@ -88,8 +88,8 @@ describe('structural operations', () => {
 
     assert.equal(sheet.cells.get(2, 1)?.formula, '=A2+B2');
     assert.equal(sheet.cells.get(1, 1), undefined);
-    assert.ok(sheet.notes.has('2:1'));
-    assert.equal(sheet.commentThreads[0]?.row, 2);
+    assert.ok(sheet.review.hasNoteAt(2, 1));
+    assert.equal(sheet.review.getThreadsAt(2, 1)[0]?.row, 2);
   });
 
   it('cell-shift uses the selected height and width for insert and delete', () => {

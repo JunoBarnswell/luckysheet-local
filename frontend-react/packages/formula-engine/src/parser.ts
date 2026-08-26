@@ -8,6 +8,13 @@ import type {
   NumberLiteralNode,
   ParsedCellReference,
   RangeReferenceNode,
+  FormulaReferenceNode,
+  ReferenceIntersectionNode,
+  ReferenceUnionNode,
+  SheetRangeReferenceNode,
+  ExternalReferenceNode,
+  WholeColumnReferenceNode,
+  WholeRowReferenceNode,
   SpillReferenceNode,
   SourceSpan,
   StringLiteralNode,
@@ -15,7 +22,7 @@ import type {
   TableReferenceSpecifier,
   UnaryExpressionNode,
 } from './ast';
-import { tryParseCellReferenceText } from './address';
+import { columnNameToIndex, tryParseCellReferenceText } from './address';
 import { FormulaSyntaxError } from './errors';
 import { lexFormula, type Token, type TokenKind } from './lexer';
 
@@ -227,8 +234,25 @@ class Parser {
       return this.parseReference();
     }
 
+    if (token.kind === 'left-bracket') {
+      return this.parseExternalReference();
+    }
+
     if (this.match('left-paren')) {
       const expression = this.parseComparison();
+      if (this.match('comma')) {
+        const references: FormulaReferenceNode[] = [this.expectReference(expression)];
+        do {
+          references.push(this.expectReference(this.parseComparison()));
+        } while (this.match('comma'));
+        const closingToken = this.expect('right-paren', 'Expected closing parenthesis');
+        const node: ReferenceUnionNode = {
+          type: 'reference-union',
+          references,
+          span: { start: expression.span.start, end: closingToken.span.end },
+        };
+        return node;
+      }
       this.expect('right-paren', 'Expected closing parenthesis');
       // Keep explicit grouping in the AST.  A formatter cannot otherwise
       // distinguish `=(A1+B1)*C1` from `=A1+B1*C1` after parsing.
@@ -261,18 +285,44 @@ class Parser {
     this.expect('left-bracket', 'Expected [ after table name');
 
     if (this.match('left-bracket')) {
+      if (!this.check('table-specifier')) {
+        const columnName = this.parseTableColumnName();
+        this.expect('right-bracket', 'Expected ] after structured table column');
+        this.expect('colon', 'Expected : between structured table columns');
+        this.expect('left-bracket', 'Expected [ before ending table column');
+        const columnEndName = this.parseTableColumnName();
+        const innerClose = this.expect('right-bracket', 'Expected ] after ending table column');
+        const outerClose = this.expect('right-bracket', 'Expected ] after structured table reference');
+        return {
+          type: 'table-reference',
+          tableName: nameToken.lexeme,
+          columnName,
+          columnEndName,
+          thisRow: false,
+          span: { start: nameToken.span.start, end: outerClose.span.end },
+        };
+      }
       const specifier = this.parseTableSpecifierToken();
       this.expect('right-bracket', 'Expected ] after table specifier');
       this.expect('comma', 'Expected , between structured table references');
       this.expect('left-bracket', 'Expected [ before table column');
       const columnName = this.parseTableColumnName();
-      const innerClose = this.expect('right-bracket', 'Expected ] after table column');
+      let columnEndName: string | undefined;
+      if (this.match('right-bracket') && this.match('colon')) {
+        this.expect('left-bracket', 'Expected [ before ending table column');
+        columnEndName = this.parseTableColumnName();
+      } else {
+        // The common single-column form has not consumed its inner close yet.
+        if (this.tokens[this.index - 1]?.kind !== 'right-bracket') this.expect('right-bracket', 'Expected ] after table column');
+      }
+      const innerClose = this.tokens[this.index - 1]!.kind === 'right-bracket' ? this.tokens[this.index - 1]! : this.expect('right-bracket', 'Expected ] after table column');
       const outerClose = this.expect('right-bracket', 'Expected ] after structured table reference');
       return {
         type: 'table-reference',
         tableName: nameToken.lexeme,
         specifier,
         columnName,
+        columnEndName,
         thisRow: false,
         span: { start: nameToken.span.start, end: outerClose.span.end },
       };
@@ -328,8 +378,12 @@ class Parser {
     }
   }
 
-  private parseReference(): CellReferenceNode | RangeReferenceNode {
+  private parseReference(): FormulaReferenceNode {
     const firstToken = this.advance();
+    if (firstToken.kind === 'left-bracket') {
+      this.index -= 1;
+      return this.parseExternalReference();
+    }
     let sheetId: string | undefined;
     let cellToken = firstToken;
     if (this.match('bang')) {
@@ -337,8 +391,28 @@ class Parser {
       cellToken = this.expect('identifier', 'Expected cell reference after sheet name');
     }
 
-    const start = this.createCellReference(cellToken, sheetId);
-    if (!this.match('colon')) return start;
+    if (this.check('colon') && this.isSheetRangeQualifier(firstToken)) {
+      this.advance();
+      const endSheetToken = this.expectAny(['identifier', 'string'], 'Expected ending worksheet name');
+      this.expect('bang', 'Expected separator after worksheet range');
+      const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.check('colon'));
+      const reference = this.match('colon')
+        ? this.combineReferenceEndpoints(startReference, this.parseReferenceEndpoint(this.peek(), undefined))
+        : startReference;
+      const node: SheetRangeReferenceNode = {
+        type: 'sheet-range-reference',
+        qualifier: {
+          startSheetId: firstToken.kind === 'string' ? firstToken.value ?? '' : firstToken.lexeme,
+          endSheetId: endSheetToken.kind === 'string' ? endSheetToken.value ?? '' : endSheetToken.lexeme,
+        },
+        reference: reference as SheetRangeReferenceNode['reference'],
+        span: { start: firstToken.span.start, end: reference.span.end },
+      };
+      return this.parseReferenceOperators(node);
+    }
+
+    const start = this.parseReferenceEndpoint(cellToken, sheetId, this.check('colon'));
+    if (!this.match('colon')) return this.parseReferenceOperators(start);
 
     let endSheetId: string | undefined;
     let endToken = this.peek();
@@ -348,22 +422,124 @@ class Parser {
       this.expect('bang', 'Expected separator after sheet name');
       endToken = this.peek();
     }
-    endToken = this.expect('identifier', 'Expected ending cell reference');
-    const end = this.createCellReference(endToken, endSheetId);
+    endToken = this.peek();
+    const end = this.parseReferenceEndpoint(endToken, endSheetId);
+    const reference = this.combineReferenceEndpoints(start, end);
+    return this.parseReferenceOperators(reference);
+  }
+
+  private parseReferenceOperators(initial: FormulaReferenceNode): FormulaReferenceNode {
+    let expression = initial;
+    while (this.match('reference-intersection')) {
+      const right = this.parseReferenceOperand();
+      const node: ReferenceIntersectionNode = {
+        type: 'reference-intersection',
+        left: expression,
+        right,
+        span: { start: expression.span.start, end: right.span.end },
+      };
+      expression = node;
+    }
+    return expression;
+  }
+
+  private parseReferenceOperand(): FormulaReferenceNode {
+    const token = this.peek();
+    if (token.kind !== 'identifier' && token.kind !== 'string' && token.kind !== 'number') {
+      throw new FormulaSyntaxError('Expected reference after intersection operator', token.span.start);
+    }
+    return this.parseReference();
+  }
+
+  private parseReferenceEndpoint(token: Token, sheetId: string | undefined, allowWhole = true): CellReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode {
+    if (token.kind === 'identifier') {
+      const cell = tryParseCellReferenceText(token.lexeme);
+      if (cell) {
+        this.advance();
+        return { type: 'cell-reference', reference: sheetId === undefined ? cell : { ...cell, sheetId }, span: token.span };
+      }
+      const column = allowWhole ? columnNameToIndex(token.lexeme.replace(/^\$/, '')) : undefined;
+      if (column !== undefined) {
+        this.advance();
+        return { type: 'whole-column-reference', sheetId, startColumn: column, endColumn: column, span: token.span };
+      }
+    }
+    if (allowWhole && token.kind === 'number' && /^\d+$/.test(token.lexeme)) {
+      const row = Number(token.lexeme);
+      if (row > 0 && Number.isSafeInteger(row)) {
+        this.advance();
+        return { type: 'whole-row-reference', sheetId, startRow: row - 1, endRow: row - 1, span: token.span };
+      }
+    }
+    throw new FormulaSyntaxError(`Invalid reference endpoint: ${token.lexeme}`, token.span.start);
+  }
+
+  private combineReferenceEndpoints(
+    start: CellReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode,
+    end: CellReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode,
+  ): FormulaReferenceNode {
+    if (start.type === 'cell-reference' && end.type === 'cell-reference') {
+      return { type: 'range-reference', start, end, span: { start: start.span.start, end: end.span.end } };
+    }
+    if (start.type === 'whole-column-reference' && end.type === 'whole-column-reference') {
+      return {
+        type: 'whole-column-reference',
+        sheetId: start.sheetId ?? end.sheetId,
+        startColumn: Math.min(start.startColumn, end.startColumn),
+        endColumn: Math.max(start.endColumn, end.endColumn),
+        span: { start: start.span.start, end: end.span.end },
+      };
+    }
+    if (start.type === 'whole-row-reference' && end.type === 'whole-row-reference') {
+      return {
+        type: 'whole-row-reference',
+        sheetId: start.sheetId ?? end.sheetId,
+        startRow: Math.min(start.startRow, end.startRow),
+        endRow: Math.max(start.endRow, end.endRow),
+        span: { start: start.span.start, end: end.span.end },
+      };
+    }
+    throw new FormulaSyntaxError('Reference range endpoints must use the same reference domain', end.span.start);
+  }
+
+  private parseExternalReference(): ExternalReferenceNode {
+    this.expect('left-bracket', 'Expected [ before external workbook');
+    const workbook = this.expect('identifier', 'Expected external workbook identity');
+    this.expect('right-bracket', 'Expected ] after external workbook identity');
+    const sheet = this.expectAny(['identifier', 'string'], 'Expected worksheet after external workbook');
+    this.expect('bang', 'Expected separator after external worksheet');
+    const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.check('colon'));
+    const reference = this.match('colon')
+      ? this.combineReferenceEndpoints(startReference, this.parseReferenceEndpoint(this.peek(), undefined))
+      : startReference;
     return {
-      type: 'range-reference',
-      start,
-      end,
-      span: { start: start.span.start, end: end.span.end },
+      type: 'external-reference',
+      qualifier: {
+        workbookId: workbook.lexeme,
+        sheetId: sheet.kind === 'string' ? sheet.value ?? '' : sheet.lexeme,
+      },
+      reference: reference as ExternalReferenceNode['reference'],
+      span: { start: workbook.span.start - 1, end: reference.span.end },
     };
   }
 
-  private createCellReference(token: Token, sheetId: string | undefined): CellReferenceNode {
-    const reference = token.kind === 'identifier' ? tryParseCellReferenceText(token.lexeme) : undefined;
-    if (!reference) throw new FormulaSyntaxError(`Invalid cell reference: ${token.lexeme}`, token.span.start);
-    const parsedReference: ParsedCellReference = sheetId === undefined ? reference : { ...reference, sheetId };
-    return { type: 'cell-reference', reference: parsedReference, span: token.span };
+  private isSheetRangeQualifier(token: Token): boolean {
+    return (token.kind === 'identifier' || token.kind === 'string')
+      && this.tokens[this.index]?.kind === 'colon'
+      && (this.tokens[this.index + 1]?.kind === 'identifier' || this.tokens[this.index + 1]?.kind === 'string')
+      && this.tokens[this.index + 2]?.kind === 'bang';
   }
+
+  private expectAny(kinds: readonly TokenKind[], message: string): Token {
+    if (kinds.includes(this.peek().kind)) return this.advance();
+    throw new FormulaSyntaxError(message, this.peek().span.start);
+  }
+
+  private expectReference(node: FormulaAst): FormulaReferenceNode {
+    if (node.type === 'cell-reference' || node.type === 'range-reference' || node.type === 'whole-column-reference' || node.type === 'whole-row-reference' || node.type === 'spill-reference' || node.type === 'table-reference' || node.type === 'reference-union' || node.type === 'reference-intersection' || node.type === 'sheet-range-reference' || node.type === 'external-reference' || node.type === 'invalid-reference') return node;
+    throw new FormulaSyntaxError('Reference union requires reference operands', node.span.start);
+  }
+
 
   private expect(kind: TokenKind, message: string): Token {
     if (this.check(kind)) return this.advance();

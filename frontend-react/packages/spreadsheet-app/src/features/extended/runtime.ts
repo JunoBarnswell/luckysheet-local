@@ -1,15 +1,12 @@
 import type { WorkbookModel } from '@react-sheets/core-model';
 import type { FormulaEngine } from '@react-sheets/formula-engine';
 import {
-  planDataTable,
   planGoalSeek,
   planScenario,
   type GoalSeekParams,
   type GoalSeekResult,
   type ScenarioDefinition,
   type ScenarioResult,
-  type DataTableParams,
-  type DataTableResult,
 } from './what-if';
 
 /**
@@ -36,15 +33,6 @@ export function runScenario(
   return planScenario(workbook, sheetId, scenario).result;
 }
 
-export function runDataTable(
-  workbook: WorkbookModel,
-  _formula: FormulaEngine,
-  sheetId: string,
-  params: DataTableParams,
-): DataTableResult {
-  return planDataTable(workbook, sheetId, params).result;
-}
-
 export function summarizeGoalSeekResult(result: GoalSeekResult): string {
   if (result.status === 'converged') {
     return `Goal Seek converged in ${result.iterations} iteration(s): target ${result.finalValue}`;
@@ -56,9 +44,5 @@ export function summarizeScenarioResult(result: ScenarioResult): string {
   if (result.status === 'completed') {
     return `${result.message}; ${result.outputs.length} output cell(s) evaluated`;
   }
-  return result.message;
-}
-
-export function summarizeDataTableResult(result: DataTableResult): string {
   return result.message;
 }

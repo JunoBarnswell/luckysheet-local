@@ -160,7 +160,7 @@ describe('WorkbookSession formula integration', () => {
     app.runCommand('sheet.range.paste', {
       sheetId,
       targetOrigin: { row: 1, column: 0 },
-      clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]], transfer: 'copy', rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] } },
+      clipboard: { schema: 'SparseClipboardPayload', range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, sourceExtent: { rows: 1, columns: 1 }, occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 4 } }], transfer: 'copy', rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] } },
       transfer: 'copy',
       spec: createPasteSpecialSpec(),
     });

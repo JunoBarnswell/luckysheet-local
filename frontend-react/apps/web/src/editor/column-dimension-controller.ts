@@ -20,7 +20,8 @@ export class ColumnDimensionController {
 
   previewPixels(widthPx: number): ColumnWidthPreview {
     const maximumDigitWidthPx = this.getSheet().maximumDigitWidthPx;
-    const bounded = Math.max(0, Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, maximumDigitWidthPx), widthPx));
+    if (!Number.isFinite(widthPx) || widthPx < 0) throw new Error('Column width must be a finite non-negative pixel value');
+    const bounded = Math.max(0, widthPx);
     return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, maximumDigitWidthPx) };
   }
 
@@ -75,8 +76,8 @@ export class ColumnDimensionController {
   }
 
   setPixels(columns: readonly number[], widthPx: number): void {
-    const maxPx = excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, this.getSheet().maximumDigitWidthPx);
-    this.session.resizeColumns(columns, Math.max(1, Math.min(maxPx, Math.round(widthPx))));
+    if (!Number.isFinite(widthPx) || widthPx <= 0) throw new Error('Column width must be positive pixels');
+    this.session.resizeColumns(columns, Math.max(1, Math.round(widthPx)));
   }
 
   setHidden(columns: readonly number[], hidden: boolean): void {
@@ -170,7 +171,7 @@ export class ColumnDimensionController {
       }
       if ((row - sheet.usedRange.startRow) % 1_000 === 0) await yieldToBrowser();
     }
-    return [...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, sheet.maximumDigitWidthPx), Math.max(8, widthPx)) }));
+    return [...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.max(8, widthPx) }));
   }
 
   private async measureInWorker(sheet: CanvasSheetSnapshot, columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
@@ -199,7 +200,7 @@ export class ColumnDimensionController {
         await yieldToBrowser();
       }
       worker.postMessage({ kind: 'finish', taskId });
-      return (await result).map((entry) => ({ ...entry, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, sheet.maximumDigitWidthPx), Math.max(8, entry.widthPx)) }));
+      return (await result).map((entry) => ({ ...entry, widthPx: Math.max(8, entry.widthPx) }));
     } finally {
       worker.terminate();
     }

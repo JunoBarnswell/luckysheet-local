@@ -161,14 +161,67 @@ test('format painter changes only presentation and supports undo/redo', () => {
   sheet.cells.set(0, 0, { value: 'source', style: { bold: true, background: '#ff0' }, numberFormat: '0.00' });
   sheet.cells.set(0, 1, { value: 'target', style: { italic: true } });
   const range = (column: number) => ({ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: column, endColumn: column });
-  runtime.execute('format.painter.apply', { sheetId: sheet.id, sourceRange: range(0), targetRange: range(1) });
+  const pattern = {
+    rowCount: 1,
+    columnCount: 1,
+    cells: [[{ style: { bold: true, background: '#ff0' }, numberFormat: '0.00' }]],
+  };
+  sheet.cells.set(0, 0, { value: 'source', style: { underline: true }, numberFormat: '@' });
+  runtime.execute('format.painter.apply', { sheetId: sheet.id, targetRange: range(1), pattern });
   assert.equal(sheet.cells.get(0, 1)?.value, 'target');
   assert.equal(sheet.cells.get(0, 1)?.style?.bold, true);
+  assert.equal(sheet.cells.get(0, 1)?.style?.italic, undefined);
   assert.equal(sheet.cells.get(0, 1)?.numberFormat, '0.00');
   runtime.undo();
   assert.equal(sheet.cells.get(0, 1)?.style?.italic, true);
   runtime.redo();
   assert.equal(sheet.cells.get(0, 1)?.style?.bold, true);
+});
+
+test('format painter applies a frozen multi-cell pattern across sheets and replays only style.set mutations', () => {
+  const { workbook, runtime } = setup();
+  const source = workbook.getSheet(workbook.primarySheetId);
+  const target = workbook.addSheet('target', 'Target');
+  source.cells.set(0, 0, { value: 'A', style: { bold: true }, numberFormat: '0.00' });
+  source.cells.set(0, 1, { value: 'B', style: { italic: true }, numberFormat: '@' });
+  const before = workbook.snapshot();
+  const result = runtime.execute('format.painter.apply', {
+    sheetId: target.id,
+    targetRange: { sheetId: target.id, startRow: 2, endRow: 3, startColumn: 2, endColumn: 5 },
+    pattern: {
+      rowCount: 1,
+      columnCount: 2,
+      cells: [[
+        { style: { bold: true }, numberFormat: '0.00' },
+        { style: { italic: true }, numberFormat: '@' },
+      ]],
+    },
+  });
+  assert.equal(result.mutationCount, 8);
+  assert.equal(target.cells.get(2, 2)?.style?.bold, true);
+  assert.equal(target.cells.get(2, 3)?.style?.italic, true);
+  assert.equal(target.cells.get(2, 4)?.numberFormat, '0.00');
+  assert.equal(runtime.getUndoEntries().at(-1)?.redo.every((mutation) => mutation.id === 'style.set'), true);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(runtime.getUndoEntries().at(-1)!.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets, workbook.snapshot().sheets);
+});
+
+test('format painter removes target presentation that is absent from the captured pattern', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'target', style: { italic: true }, numberFormat: '0.00' });
+  runtime.execute('format.painter.apply', {
+    sheetId: sheet.id,
+    targetRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    pattern: { rowCount: 1, columnCount: 1, cells: [[{}]] },
+  });
+  assert.equal(sheet.cells.get(0, 0)?.value, 'target');
+  assert.equal(sheet.cells.get(0, 0)?.style, undefined);
+  assert.equal(sheet.cells.get(0, 0)?.numberFormat, undefined);
 });
 
 test('filter toggle, clearCriteria and reapply preserve the filter contract', () => {

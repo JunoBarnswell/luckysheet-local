@@ -13,7 +13,12 @@ export function DefinedNamesPanel({ names, onRemove, onSave, sheetId }: DefinedN
   const [name, setName] = useState('');
   const [formula, setFormula] = useState('');
   const [scope, setScope] = useState<DefinedNameModel['scope']>('workbook');
-  const visible = useMemo(() => [...names].sort((left, right) => left.name.localeCompare(right.name)), [names]);
+  const [filter, setFilter] = useState('');
+  const [scopeFilter, setScopeFilter] = useState<'all' | DefinedNameModel['scope']>('all');
+  const visible = useMemo(() => [...names]
+    .filter((entry) => (scopeFilter === 'all' || entry.scope === scopeFilter)
+      && entry.name.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
+    .sort((left, right) => left.name.localeCompare(right.name)), [filter, names, scopeFilter]);
   const submit = () => {
     const normalizedName = name.trim();
     const normalizedFormula = formula.trim();
@@ -41,6 +46,14 @@ export function DefinedNamesPanel({ names, onRemove, onSave, sheetId }: DefinedN
               <Button size="sm" variant="primary" disabled={!name.trim() || !formula.trim()} onClick={submit}>Save name</Button>
             </Inline>
           </Stack>
+          <Inline gap="xs" className="items-center">
+            <TextInput aria-label="Filter defined names" placeholder="Filter names" value={filter} onChange={(event) => setFilter(event.target.value)} />
+            <Select aria-label="Filter defined name scope" sizeVariant="sm" value={scopeFilter} onChange={(event) => setScopeFilter(event.target.value as 'all' | DefinedNameModel['scope'])}>
+              <option value="all">All scopes</option>
+              <option value="workbook">Workbook</option>
+              <option value="sheet">Worksheet</option>
+            </Select>
+          </Inline>
           <Stack gap="xs">
             {visible.length === 0 ? <Text size="xs" tone="subtle">No defined names in this workbook.</Text> : null}
             {visible.map((entry) => (

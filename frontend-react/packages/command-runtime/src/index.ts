@@ -1,4 +1,4 @@
-import { WorkbookModel, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -6,6 +6,14 @@ export interface MutationInfo<P = unknown> {
   sheetId: string;
   params: P;
   affectedRanges: RangeRef[];
+  /** Explicit semantic override used by inverses whose storage mutation id is shared. */
+  permission?: {
+    capability: string;
+    protectionAction: ProtectionAction | 'none';
+    checksProtection: boolean;
+    affectedRangeMode: 'none' | 'declared' | 'exact';
+    objectScope: 'cell' | 'range' | 'row' | 'column' | 'drawing' | 'worksheet' | 'workbook';
+  };
 }
 
 /**
@@ -489,10 +497,208 @@ export class CommandRegistry {
 
 export interface HistoryEntry {
   operationId: string;
+  baseRevision: number;
+  committedRevision?: number;
+  semanticCommandDescriptor: {
+    id: string;
+    params: unknown;
+  };
+  forwardMutations: MutationInfo[];
+  inversePlan: MutationInfo[];
+  affectedRanges: RangeRef[];
+  status: 'active' | 'invalid';
+  invalidReason?: string;
+  /** Existing consumers read these exact same arrays; they are not a second state. */
   undo: MutationInfo[];
   redo: MutationInfo[];
   description?: string;
   timestamp: number;
+}
+
+export interface CommandRuntimeOptions {
+  readonly getRevision?: () => number;
+}
+
+export interface RemoteMutationContext {
+  readonly operationId?: string;
+  readonly baseRevision?: number;
+  readonly revision?: number;
+}
+
+interface StructuralDelta {
+  readonly axis: 'row' | 'column';
+  readonly at: number;
+  readonly count: number;
+  readonly direction: 1 | -1;
+  readonly sheetId: string;
+}
+
+interface TransformValueResult {
+  readonly value: unknown;
+  readonly safe: boolean;
+}
+
+interface TransformedHistoryEntry {
+  readonly ok: true;
+  readonly inversePlan: MutationInfo[];
+  readonly forwardMutations: MutationInfo[];
+  readonly affectedRanges: RangeRef[];
+}
+
+interface InvalidHistoryTransform {
+  readonly ok: false;
+  readonly reason: string;
+}
+
+type HistoryTransformResult = TransformedHistoryEntry | InvalidHistoryTransform;
+
+function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
+  const axis = mutation.id.includes('column') ? 'column' : mutation.id.includes('row') ? 'row' : undefined;
+  if (!axis) return undefined;
+  const direction = mutation.id.includes('insert') ? 1 : mutation.id.includes('delete') ? -1 : undefined;
+  if (!direction || !isRecord(mutation.params)) return undefined;
+  const at = mutation.params.at;
+  const count = mutation.params.count;
+  if (!Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
+  return { axis, at, count, direction, sheetId: mutation.sheetId };
+}
+
+function transformIndex(index: number, delta: StructuralDelta): number | undefined {
+  if (!Number.isSafeInteger(index) || index < 0) return undefined;
+  if (delta.direction === 1) return index >= delta.at ? index + delta.count : index;
+  const deletedEnd = delta.at + delta.count - 1;
+  if (index >= delta.at && index <= deletedEnd) return undefined;
+  return index > deletedEnd ? index - delta.count : index;
+}
+
+function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | undefined {
+  if (range.sheetId !== delta.sheetId) return structuredClone(range);
+  const start = delta.axis === 'row' ? range.startRow : range.startColumn;
+  const end = delta.axis === 'row' ? range.endRow : range.endColumn;
+  if (delta.direction === -1) {
+    const deletedEnd = delta.at + delta.count - 1;
+    if (start <= deletedEnd && end >= delta.at) return undefined;
+  }
+  const nextStart = transformIndex(start, delta);
+  const nextEnd = transformIndex(end, delta);
+  if (nextStart === undefined || nextEnd === undefined) return undefined;
+  let mappedStart = nextStart;
+  let mappedEnd = nextEnd;
+  if (delta.direction === 1 && start < delta.at && delta.at <= end) mappedEnd += delta.count;
+  return delta.axis === 'row'
+    ? { ...range, startRow: mappedStart, endRow: mappedEnd }
+    : { ...range, startColumn: mappedStart, endColumn: mappedEnd };
+}
+
+function mutationAxis(id: string): 'row' | 'column' | undefined {
+  if (id.includes('column')) return 'column';
+  if (id.includes('row')) return 'row';
+  return undefined;
+}
+
+function isCoordinateKey(key: string, axis: 'row' | 'column'): boolean {
+  const normalized = key.toLowerCase();
+  if (axis === 'row') {
+    return normalized === 'row'
+      || normalized === 'rowindex'
+      || /^(start|end|top|bottom|anchor|target|source)row$/.test(normalized);
+  }
+  return normalized === 'column'
+    || normalized === 'columnindex'
+    || /^(start|end|top|bottom|anchor|target|source)column$/.test(normalized);
+}
+
+function isCoordinateListKey(key: string, axis: 'row' | 'column'): boolean {
+  const normalized = key.toLowerCase();
+  return axis === 'row'
+    ? normalized === 'rows' || normalized === 'sourcerows' || normalized === 'rowindices' || normalized === 'rowindexes'
+    : normalized === 'columns' || normalized === 'sourcecolumns' || normalized === 'columnindices' || normalized === 'columnindexes';
+}
+
+function transformPayload(value: unknown, delta: StructuralDelta, id: string, keyHint = ''): TransformValueResult {
+  if (Array.isArray(value)) {
+    const values: unknown[] = [];
+    for (const item of value) {
+      if (typeof item === 'number' && isCoordinateListKey(keyHint, delta.axis)) {
+        const mapped = transformIndex(item, delta);
+        if (mapped === undefined) return { value, safe: false };
+        values.push(mapped);
+        continue;
+      }
+      const transformed = transformPayload(item, delta, id, keyHint);
+      if (!transformed.safe) return transformed;
+      values.push(transformed.value);
+    }
+    return { value: values, safe: true };
+  }
+  if (!isRecord(value)) return { value, safe: true };
+  if (isValidRangeRef(value)) {
+    const mapped = transformRange(value, delta);
+    return mapped ? { value: mapped, safe: true } : { value, safe: false };
+  }
+
+  const result: Record<string, unknown> = {};
+  const structuralAxis = mutationAxis(id);
+  for (const [key, child] of Object.entries(value)) {
+    if (isCoordinateKey(key, delta.axis) && typeof child === 'number') {
+      const mapped = transformIndex(child, delta);
+      if (mapped === undefined) return { value, safe: false };
+      result[key] = mapped;
+      continue;
+    }
+    if (key === 'at' && typeof child === 'number' && (structuralAxis === delta.axis || 'count' in value)) {
+      const mapped = transformIndex(child, delta);
+      if (mapped === undefined) return { value, safe: false };
+      result[key] = mapped;
+      continue;
+    }
+    const transformed = transformPayload(child, delta, id, key);
+    if (!transformed.safe) return transformed;
+    result[key] = transformed.value;
+  }
+  return { value: result, safe: true };
+}
+
+function transformMutation(item: MutationInfo, delta: StructuralDelta): MutationInfo | undefined {
+  const affectedRanges: RangeRef[] = [];
+  for (const range of item.affectedRanges) {
+    const mapped = transformRange(range, delta);
+    if (!mapped) return undefined;
+    affectedRanges.push(mapped);
+  }
+  if (item.sheetId !== delta.sheetId) return { ...item, affectedRanges };
+  const params = transformPayload(item.params, delta, item.id);
+  if (!params.safe) return undefined;
+  return { ...item, params: params.value, affectedRanges };
+}
+
+function transformHistoryEntry(entry: HistoryEntry, remote: MutationInfo): HistoryTransformResult {
+  const delta = structuralDelta(remote);
+  if (!delta) return {
+    ok: true,
+    inversePlan: [...entry.inversePlan],
+    forwardMutations: [...entry.forwardMutations],
+    affectedRanges: [...entry.affectedRanges],
+  };
+  const inversePlan: MutationInfo[] = [];
+  const forwardMutations: MutationInfo[] = [];
+  for (const mutation of entry.inversePlan) {
+    const transformed = transformMutation(mutation, delta);
+    if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
+    inversePlan.push(transformed);
+  }
+  for (const mutation of entry.forwardMutations) {
+    const transformed = transformMutation(mutation, delta);
+    if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
+    forwardMutations.push(transformed);
+  }
+  const affectedRanges: RangeRef[] = [];
+  for (const range of entry.affectedRanges) {
+    const transformed = transformRange(range, delta);
+    if (!transformed) return { ok: false, reason: `History ${entry.operationId} affected range intersects ${remote.id}` };
+    affectedRanges.push(transformed);
+  }
+  return { ok: true, inversePlan, forwardMutations, affectedRanges };
 }
 
 /** 变更来源:正向命令、本地撤销、本地重做、远端协同重放 */
@@ -513,11 +719,17 @@ export class CommandRuntime {
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
   private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   private mutationGuard?: MutationGuard;
+  private revisionProvider?: () => number;
+  private currentRevision = 0;
+  private readonly invalidHistory: HistoryEntry[] = [];
 
   constructor(
     readonly workbook: WorkbookModel,
     readonly registry = new CommandRegistry(),
-  ) {}
+    options: CommandRuntimeOptions = {},
+  ) {
+    this.revisionProvider = options.getRevision;
+  }
 
   setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
     this.cellValueResolver = resolver;
@@ -526,6 +738,15 @@ export class CommandRuntime {
   /** Guard every local, undo/redo, and remote mutation at one boundary. */
   setMutationGuard(guard: MutationGuard | undefined): void {
     this.mutationGuard = guard;
+  }
+
+  setRevisionProvider(provider: (() => number) | undefined): void {
+    this.revisionProvider = provider;
+  }
+
+  setRevision(revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Revision must be a non-negative safe integer');
+    this.currentRevision = revision;
   }
 
   onMutation(listener: MutationListener): () => void {
@@ -563,10 +784,19 @@ export class CommandRuntime {
     const isRootTransaction = this.transactionDepth === 0;
 
     if (isRootTransaction) {
+      const inversePlan: MutationInfo[] = [];
+      const forwardMutations: MutationInfo[] = [];
       this.activeEntry = {
         operationId,
-        undo: [],
-        redo: [],
+        baseRevision: this.readRevision(),
+        semanticCommandDescriptor: { id, params: structuredClone(params) },
+        forwardMutations,
+        inversePlan,
+        affectedRanges: [],
+        status: 'active',
+        // Keep old public field names as references to the canonical arrays.
+        undo: inversePlan,
+        redo: forwardMutations,
         description: id,
         timestamp: Date.now(),
       };
@@ -593,10 +823,14 @@ export class CommandRuntime {
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
+          ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
         mutations.push(info);
-        this.activeEntry?.undo.unshift(...mutation.inverse);
-        this.activeEntry?.redo.push(info);
+        this.activeEntry?.inversePlan.unshift(...mutation.inverse);
+        this.activeEntry?.forwardMutations.push(info);
+        if (this.activeEntry) {
+          this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
+        }
 
         for (const listener of this.mutationListeners) {
           listener(info, 'command');
@@ -613,7 +847,7 @@ export class CommandRuntime {
       this.transactionDepth -= 1;
 
       if (isRootTransaction) {
-        if (this.activeEntry && (this.activeEntry.undo.length > 0 || this.activeEntry.redo.length > 0)) {
+        if (this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
           this.undoStack.push(this.activeEntry);
           if (this.undoStack.length > 200) this.undoStack.shift();
           this.redoStack.length = 0;
@@ -636,8 +870,8 @@ export class CommandRuntime {
       this.transactionDepth -= 1;
       if (isRootTransaction) {
         // Rollback applied mutations in this transaction if failed
-        if (this.activeEntry && this.activeEntry.undo.length > 0) {
-          this.applyHistory(this.activeEntry.undo, 'undo');
+        if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
+          this.applyHistory(this.activeEntry.inversePlan, 'undo');
         }
         this.activeEntry = null;
       }
@@ -649,7 +883,8 @@ export class CommandRuntime {
     this.registry.assertComplete();
     const entry = this.undoStack.pop();
     if (!entry) return false;
-    this.applyHistory(entry.undo, 'undo');
+    if (entry.status !== 'active') return false;
+    this.applyHistory(entry.inversePlan, 'undo');
     this.redoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('undo', entry);
     return true;
@@ -659,7 +894,8 @@ export class CommandRuntime {
     this.registry.assertComplete();
     const entry = this.redoStack.pop();
     if (!entry) return false;
-    this.applyHistory(entry.redo, 'redo');
+    if (entry.status !== 'active') return false;
+    this.applyHistory(entry.forwardMutations, 'redo');
     this.undoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('redo', entry);
     return true;
@@ -669,7 +905,7 @@ export class CommandRuntime {
    * 应用来自远端协同的变更序列:执行已注册的 mutation 处理器,
    * 以 'remote' 来源通知监听器(用于引擎同步/视图刷新),但不进入本地撤销栈。
    */
-  applyRemoteMutations(items: readonly MutationInfo[]): void {
+  applyRemoteMutations(items: readonly MutationInfo[], remoteContext: RemoteMutationContext = {}): void {
     this.registry.assertComplete();
     // A committed operation may contain several dependent mutations. Replay
     // them against an isolated snapshot first so a later rejection cannot
@@ -677,6 +913,23 @@ export class CommandRuntime {
     const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
     preview.applyHistory(items, 'remote');
     this.applyHistory(items, 'remote');
+    for (const item of items) this.transformHistoryAgainstRemote(item);
+    if (remoteContext.revision !== undefined) {
+      if (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1) throw new Error('Remote revision is invalid');
+      this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
+    }
+  }
+
+  markOperationCommitted(operationId: string, revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
+    for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) {
+      if (entry.operationId === operationId) entry.committedRevision = revision;
+    }
+    this.currentRevision = Math.max(this.currentRevision, revision);
+  }
+
+  getInvalidHistoryEntries(): readonly HistoryEntry[] {
+    return [...this.invalidHistory];
   }
 
   /** 当前事务嵌套深度(workspace 用以判断根事务冲刷协同队列) */
@@ -700,6 +953,34 @@ export class CommandRuntime {
   clearHistory(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    this.invalidHistory.length = 0;
+  }
+
+  private readRevision(): number {
+    const revision = this.revisionProvider?.() ?? this.currentRevision;
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('History base revision is invalid');
+    this.currentRevision = Math.max(this.currentRevision, revision);
+    return revision;
+  }
+
+  private transformHistoryAgainstRemote(remote: MutationInfo): void {
+    const stacks = [this.undoStack, this.redoStack];
+    for (const stack of stacks) {
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        const entry = stack[index]!;
+        const transformed = transformHistoryEntry(entry, remote);
+        if (!transformed.ok) {
+          stack.splice(index, 1);
+          entry.status = 'invalid';
+          entry.invalidReason = transformed.reason;
+          this.invalidHistory.push(entry);
+          continue;
+        }
+        entry.inversePlan.splice(0, entry.inversePlan.length, ...transformed.inversePlan);
+        entry.forwardMutations.splice(0, entry.forwardMutations.length, ...transformed.forwardMutations);
+        entry.affectedRanges = transformed.affectedRanges;
+      }
+    }
   }
 
   private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {

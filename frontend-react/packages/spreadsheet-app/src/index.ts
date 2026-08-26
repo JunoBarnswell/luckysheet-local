@@ -13,6 +13,7 @@ export {
   type DefinedNameCommandInput,
   type UiSnapshot,
 } from './workbook-session';
+export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
 export { useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
@@ -29,7 +30,10 @@ export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParam
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode } from './types';
+export type { SelectionArea, SelectionKind, SelectionMode } from './selection-service';
+export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';
+export { containsRange, expandSelectionRangeForMerges, intersectsRange, nextVisibleCell, resolveSelectionTarget, type ResolvedSelectionTarget, type SelectionTargetSurface } from './selection-target-resolver';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,
@@ -56,6 +60,9 @@ export {
   LocalDataBlockStore,
   DataBlockSynchronizer,
   LocalNativePackageStore,
+  LocalAssetStore,
+  RemoteAssetStore,
+  migrateLegacyImageAssets,
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
@@ -68,6 +75,8 @@ export {
   type DataBlockRecord,
   type DataBlockSyncOptions,
   type NativePackageRecord,
+  type AssetStore,
+  type AssetPutInput,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
@@ -122,7 +131,7 @@ export {
   executeQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
-  queryResultToRangeValues,
+  prepareQueryLoadPayload,
   type QueryResultSnapshot,
   type QuerySessionEntry,
   type QueryLoadCommandPayload,

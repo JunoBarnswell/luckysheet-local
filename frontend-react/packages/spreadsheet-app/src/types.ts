@@ -77,8 +77,11 @@ export interface EditSession {
   originalValue: unknown;
   originalFormula?: string;
   draftText: string;
+  caret: { start: number; end: number };
+  composition: { active: boolean; text: string };
+  referenceMode: boolean;
   mode: 'value' | 'formula';
-  source: 'cell' | 'formulaBar';
+  source: 'cell' | 'formulaBar' | 'functionInsert';
 }
 
 export interface PanelState {
@@ -211,6 +214,14 @@ export type HomeStyleKey = keyof Pick<
   | 'formulaHidden'
 >;
 
+export type HomeStyleFieldState =
+  | { status: 'uniform'; value: unknown }
+  | { status: 'mixed' }
+  | { status: 'unset' }
+  | { status: 'unsupported'; reason: string };
+
+export type HomeStyleAggregate = { [K in HomeStyleKey]: HomeStyleFieldState };
+
 /**
  * Read-only selection-derived state consumed by every Home entry point.
  * The WorkbookSession recalculates it from the canonical model on snapshot
@@ -220,8 +231,10 @@ export interface HomeRibbonState {
   sheetId: string;
   ranges: readonly RangeRef[];
   activeCell: { row: number; column: number };
+  styleAggregate: HomeStyleAggregate;
   style: Partial<CellStyle>;
   mixedStyleKeys: readonly HomeStyleKey[];
+  unsupportedStyleKeys: readonly HomeStyleKey[];
   merge: 'none' | 'full' | 'mixed';
   canFormat: boolean;
   canEdit: boolean;

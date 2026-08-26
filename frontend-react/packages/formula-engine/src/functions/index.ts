@@ -9,6 +9,7 @@ import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
+import { ADVANCED_FUNCTIONS } from './advanced';
 
 export type BuiltinFunction = (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue;
 
@@ -31,19 +32,45 @@ export interface FunctionDescriptor {
   volatile: boolean;
 }
 
-const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'SUMPRODUCT']);
+export type FunctionLibraryCategory = 'logical' | 'text' | 'date-time' | 'lookup-reference' | 'math-trig' | 'more-functions';
+
+export interface FunctionLibraryEntry extends FunctionDescriptor {
+  category: FunctionLibraryCategory;
+}
+
+const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'AGGREGATE', 'SUMPRODUCT']);
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
 const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY', 'FILTER', 'UNIQUE', 'SORT', 'SORTBY', 'SEQUENCE', 'RANDARRAY', 'HSTACK', 'VSTACK', 'TAKE', 'DROP']);
+const NATIVE_FUNCTIONS = new Set(['SJS.TABLE']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
-  Object.keys(BUILTIN_FUNCTIONS).map((name) => {
+  [...new Set([...Object.keys(BUILTIN_FUNCTIONS), ...Object.keys(ADVANCED_FUNCTIONS), ...NATIVE_FUNCTIONS])].map((name) => {
     const id = name.toUpperCase();
     const volatile = VOLATILE_FUNCTIONS.has(id);
-    const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
+    const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) || NATIVE_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
     return [id, { id, cost, streaming: cost === 'range', volatile }];
   }),
 );
+
+const categoryForFunction = (name: string): FunctionLibraryCategory => {
+  if (Object.prototype.hasOwnProperty.call(logicalFunctions, name)) return 'logical';
+  if (Object.prototype.hasOwnProperty.call(textFunctions, name)) return 'text';
+  if (Object.prototype.hasOwnProperty.call(datetimeFunctions, name)) return 'date-time';
+  if (Object.prototype.hasOwnProperty.call(lookupFunctions, name)) return 'lookup-reference';
+  if (Object.prototype.hasOwnProperty.call(mathFunctions, name)) return 'math-trig';
+  return 'more-functions';
+};
+
+/** The only UI-facing function list; it is derived from the executable registry. */
+export const FUNCTION_LIBRARY: readonly FunctionLibraryEntry[] = [...FUNCTION_DESCRIPTORS.values()]
+  .filter((descriptor) => Object.prototype.hasOwnProperty.call(BUILTIN_FUNCTIONS, descriptor.id) || NATIVE_FUNCTIONS.has(descriptor.id))
+  .map((descriptor) => ({ ...descriptor, category: categoryForFunction(descriptor.id) }))
+  .sort((left, right) => left.id.localeCompare(right.id));
+
+export function listFunctionLibrary(category?: FunctionLibraryCategory): readonly FunctionLibraryEntry[] {
+  return category ? FUNCTION_LIBRARY.filter((entry) => entry.category === category) : FUNCTION_LIBRARY;
+}
 
 export function getBuiltinFunction(name: string): BuiltinFunction | undefined {
   return BUILTIN_FUNCTIONS[name.trim().toUpperCase()];

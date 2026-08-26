@@ -47,6 +47,7 @@ import type {
   WorksheetModel,
   CellHyperlink,
   HyperlinkTarget,
+  AssetRef,
 } from '@react-sheets/core-model';
 import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
@@ -64,6 +65,7 @@ import {
   buildColumnOutlineGroup,
   normalizeRangeRef,
   parseTsv,
+  sparseClipboardFromDense,
   resolveActiveAutoFilter,
   resolveFilterOwner,
   getAutoFilterDomainDescriptor,
@@ -83,10 +85,15 @@ import {
   type FindSearchParams,
   type FindSearchTarget,
   type FindScope,
+  resolveDataRegionContext,
+  type DataRegionContext,
   type FillDirection,
   type FillMode,
+  createCellInputInterpretationContext,
+  type CellInputSourceKind,
+  type FormatPainterStylePattern,
 } from '@react-sheets/sheet-features';
-import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
+import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
 import {
   buildCollaborationSnapshot,
@@ -106,6 +113,7 @@ import {
   resolveShareToken,
   resolveUnitId,
   scheduleFormulaRecalculation,
+  setRuntimeDateContext,
   startCollaborationSession,
   startPersistenceSession,
   type SpreadsheetRuntime,
@@ -116,12 +124,8 @@ import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipbo
 import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
 import { pivotIdsToRefresh, type PivotRefreshTrigger } from './features/pivot/refresh-coordinator';
 import {
-  buildDrawingAdd,
   findDrawingByPayloadId,
   resolveDrawingMoveTransform,
-} from './features/drawing';
-import {
-  buildChartInsertParams,
 } from './features/drawing';
 import {
   buildPivotModel,
@@ -137,6 +141,7 @@ import {
 import {
   prepareDataRegionMaterialization,
   createWorkbookCellResolver,
+  encodeSheetDataRegion,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -179,6 +184,7 @@ import {
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
   executeQueryDefinition,
+  prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
   type QueryResultSnapshot,
@@ -195,8 +201,6 @@ import type { AutomationWorkerFactory } from './features/automation';
 import { CommandRecorder } from './features/automation/command-recorder';
 import type { ScriptRunResult } from './features/automation';
 import type {
-  DataTableParams,
-  DataTableResult,
   GoalSeekParams,
   GoalSeekResult,
   ScenarioDefinition,
@@ -208,7 +212,8 @@ import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
 } from './features/history';
-import { currentRegionOfSheet, inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
+import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
+import { InsertCoordinator, type DrawingInsertRequest, type InsertMutationRequest, type InsertResult } from './insert-coordinator';
 import type {
   ActiveContext,
   AppPhase,
@@ -220,6 +225,7 @@ import type {
   EditSession as DesignerEditSession,
   FocusState,
   HomeRibbonState,
+  HomeStyleAggregate,
   HomeStyleKey,
   InputMode,
   PanelState,
@@ -235,15 +241,25 @@ import type {
   UndoRedoState,
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
+import type { AssetStore } from './features/persistence';
+import type { WorkbookResolution } from './features/workbook-catalog';
 
 export interface WorkbookSessionOptions {
   unitId?: string;
   api?: WorkbookApiClient;
   workspacePersistence?: WorkspacePersistence;
+  assetStore?: AssetStore;
+  /** The route-level resolver owns identity/access reads; the session consumes the result. */
+  resolution?: WorkbookResolution;
+  /** Called once after the persistence/runtime phase reaches a usable ready state. */
+  onReady?: () => void | Promise<unknown>;
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   automationWorkerFactory?: AutomationWorkerFactory;
+  /** Workbook calendar and one fixed calculation-cycle clock basis. */
+  dateSystem?: ExcelDateSystem;
+  canonicalReferenceDate?: CanonicalExcelDateParts;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   xlsxExecution?: 'worker' | 'inline-test';
 }
@@ -336,7 +352,7 @@ export interface UiSnapshot extends DesignerState {
   automationRecording: boolean;
   recordedScript: string;
   lastScriptResult: ScriptRunResult | null;
-  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
   formulaAudit: FormulaAuditProjection;
   version: number;
   /** Canonical DesignerState fields; render-specific projections remain read-only views of the same session. */
@@ -368,8 +384,6 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'locked',
   'formulaHidden',
 ];
-const HOME_STYLE_SCAN_LIMIT = 10_000;
-
 function sameRange(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
     && left.startRow === right.startRow
@@ -386,12 +400,18 @@ function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
     && left.endColumn >= right.startColumn;
 }
 
-function compareStyleValue(value: unknown): string {
-  return value === undefined ? '__unset__' : JSON.stringify(value);
+function styleValueSignature(value: unknown): { signature: string } | { reason: string } {
+  if (value === undefined) return { signature: '__unset__' };
+  try {
+    const signature = JSON.stringify(value);
+    return typeof signature === 'string' ? { signature } : { reason: 'Style value cannot be represented in the Home aggregate' };
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : 'Style value cannot be represented in the Home aggregate' };
+  }
 }
 
 export interface ExtendedSnapshot {
-  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
 }
 
 export interface CreatePivotTableParams {
@@ -448,6 +468,8 @@ export class WorkbookSession {
   private readonly actorId: string;
   private readonly automationWorkerFactory?: AutomationWorkerFactory;
   private readonly xlsxExecution: 'worker' | 'inline-test';
+  private readonly onReady?: () => void | Promise<unknown>;
+  private readyCallback: Promise<void> | null = null;
 
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
@@ -458,7 +480,6 @@ export class WorkbookSession {
   private barcodeDraftSymbology: BarcodeSymbology = 'qr';
   private backstage: BackstageState = { open: false, panel: 'info' };
   private ribbonTab: RibbonTabId = 'home';
-  private formulaDraft = '';
   private zoom = 100;
   /** DrawingRuntime is the sole owner of transient object selection. */
   private get selectedDrawingIds(): readonly string[] {
@@ -488,7 +509,13 @@ export class WorkbookSession {
   private pendingMerge: { range: RangeRef; operation: MergeOperation } | null = null;
   private inputMode: InputMode = 'grid';
   private focus: FocusState = { mode: 'grid', target: 'grid' };
-  private formatPainter: { mode: 'once' | 'locked'; sourceRange: RangeRef } | null = null;
+  private formatPainter: {
+    sessionId: string;
+    mode: 'once' | 'locked';
+    source: { sheetId: string; range: RangeRef; capturedPattern: FormatPainterStylePattern };
+    createdAtRevision: number;
+    active: true;
+  } | null = null;
   private printLayout: PrintLayout = {
     paper: 'A4',
     orientation: 'portrait',
@@ -502,10 +529,23 @@ export class WorkbookSession {
   private automationRecording = false;
   private recordedScript = '';
   private lastScriptResult: ScriptRunResult | null = null;
-  private lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null = null;
+  private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
   private pivotOpenRefreshStarted = false;
+  private readonly insertCoordinator = new InsertCoordinator(nextId);
+  private readonly assetUrls = new Map<string, string>();
+
+  private get formulaDraft(): string {
+    const active = this.editSession.active;
+    if (active) return active.currentDraft;
+    const selection = this.selectionService?.getState();
+    if (!selection) return '';
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
+    if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
+    return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+  }
 
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
@@ -526,14 +566,20 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+    const sessionUnitId = resolution?.unitId ?? unitId;
+    if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
-      unitId,
+      unitId: sessionUnitId,
       api,
       workspacePersistence,
+      assetStore,
+      resolution,
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
+      dateSystem,
+      canonicalReferenceDate,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
@@ -544,6 +590,7 @@ export class WorkbookSession {
     });
     this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
+    this.onReady = onReady;
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
@@ -553,7 +600,12 @@ export class WorkbookSession {
       () => this.activeSheetId,
       () => {
         const sheet = this.runtime.model.getSheet(this.activeSheetId);
-        return { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+        return {
+          rowCount: sheet.rowCount,
+          columnCount: sheet.columnCount,
+          hiddenRows: [...sheet.hiddenRows],
+          hiddenColumns: [...sheet.hiddenColumns],
+        };
       },
       createInitialSelection(this.activeSheetId),
     );
@@ -566,7 +618,6 @@ export class WorkbookSession {
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
     this.editSession.cancel();
-    this.formulaDraft = '';
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
   }
@@ -673,6 +724,7 @@ export class WorkbookSession {
     this.runtime.handlers.onPhaseChange = (phase) => {
       this.phase = phase;
       this.emit();
+      if (phase === 'ready' && this.saveState !== 'error') this.runReadyCallback();
     };
     this.runtime.handlers.onActiveSheetChange = (sheetId) => {
       this.activeSheetId = sheetId;
@@ -725,6 +777,7 @@ export class WorkbookSession {
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
+        if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
         this.projectionGeneration += 1;
         this.emit();
       }
@@ -747,6 +800,7 @@ export class WorkbookSession {
 
   dispose(): void {
     if (!this.started && this.disposed) return;
+    this.formatPainter = null;
     this.disposed = true;
     this.started = false;
     this.lifecycleGeneration += 1;
@@ -756,6 +810,8 @@ export class WorkbookSession {
     this.persistenceDispose?.();
     this.collabDispose = null;
     this.persistenceDispose = null;
+    for (const url of this.assetUrls.values()) URL.revokeObjectURL(url);
+    this.assetUrls.clear();
     disposeSpreadsheetRuntime(this.runtime);
     this.sheetProjectionCache.clear();
     this.cachedUiSnapshot = null;
@@ -837,45 +893,70 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primary = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0]
       ?? normalizeRangeRef({ sheetId: this.activeSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
-    const seen = new Map<HomeStyleKey, { value: unknown; signature: string; mixed: boolean }>();
-    let scanned = 0;
-    let truncated = false;
+    const styleAggregate = Object.fromEntries(HOME_STYLE_KEYS.map((key) => [key, { status: 'unset' as const }])) as HomeStyleAggregate;
+    const signatures = new Map<HomeStyleKey, string>();
+    const observed = new Set<HomeStyleKey>();
+    let selectedCellCount = 0;
+    let occupiedCellCount = 0;
 
-    outer: for (const selectedRange of selection.ranges) {
+    for (const selectedRange of selection.ranges) {
       const range = normalizeRangeRef({ ...selectedRange, sheetId: this.activeSheetId });
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const cell = this.readResolvedCell(sheet, row, column);
-          const style: Partial<CellStyle> = {
-            ...(cell?.style ?? {}),
-            ...(cell?.numberFormat === undefined ? {} : { numberFormat: cell.numberFormat }),
-          };
-          for (const key of HOME_STYLE_KEYS) {
-            const value = style[key];
-            const signature = compareStyleValue(value);
-            const prior = seen.get(key);
-            if (!prior) {
-              seen.set(key, { value, signature, mixed: false });
-            } else if (prior.signature !== signature) {
-              prior.mixed = true;
-            }
+      selectedCellCount += (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1);
+      sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell) => {
+        occupiedCellCount += 1;
+        const style: Partial<CellStyle> = {
+          ...(cell.style ?? {}),
+          ...(cell.numberFormat === undefined ? {} : { numberFormat: cell.numberFormat }),
+        };
+        for (const key of HOME_STYLE_KEYS) {
+          const value = style[key];
+          const encoded = styleValueSignature(value);
+          const current = styleAggregate[key];
+          if ('reason' in encoded) {
+            styleAggregate[key] = { status: 'unsupported', reason: encoded.reason };
+            continue;
           }
-          scanned += 1;
-          if (scanned >= HOME_STYLE_SCAN_LIMIT) {
-            truncated = true;
-            break outer;
+          if (current.status === 'unsupported' || current.status === 'mixed') continue;
+          if (current.status === 'unset') {
+            if (value !== undefined) {
+              if (observed.has(key)) {
+                styleAggregate[key] = { status: 'mixed' };
+              } else {
+                styleAggregate[key] = { status: 'uniform', value };
+                signatures.set(key, encoded.signature);
+              }
+            }
+            observed.add(key);
+            continue;
+          }
+          observed.add(key);
+          if (current.status === 'uniform' && signatures.get(key) !== encoded.signature) {
+            styleAggregate[key] = { status: 'mixed' };
+            signatures.delete(key);
           }
         }
-      }
+      });
     }
 
     const style: Partial<CellStyle> = {};
     const mixedStyleKeys: HomeStyleKey[] = [];
+    const unsupportedStyleKeys: HomeStyleKey[] = [];
+    if (occupiedCellCount < selectedCellCount) {
+      for (const key of HOME_STYLE_KEYS) {
+        const current = styleAggregate[key];
+        if (current.status === 'uniform') {
+          styleAggregate[key] = { status: 'mixed' };
+          signatures.delete(key);
+        }
+      }
+    }
     for (const key of HOME_STYLE_KEYS) {
-      const summary = seen.get(key);
-      if (truncated || summary?.mixed) {
+      const summary = styleAggregate[key];
+      if (summary.status === 'mixed') {
         mixedStyleKeys.push(key);
-      } else if (summary?.value !== undefined) {
+      } else if (summary.status === 'unsupported') {
+        unsupportedStyleKeys.push(key);
+      } else if (summary.status === 'uniform') {
         style[key] = summary.value as never;
       }
     }
@@ -887,10 +968,12 @@ export class WorkbookSession {
       sheetId: this.activeSheetId,
       ranges: selection.ranges.map((range) => structuredClone(range)),
       activeCell: { ...selection.activeCell },
+      styleAggregate,
       style,
       mixedStyleKeys,
+      unsupportedStyleKeys,
       merge: exactMerge ? 'full' : intersectsMerge ? 'mixed' : 'none',
-      canFormat: this.canExecute('sheet.style.set', { style: {} }),
+      canFormat: unsupportedStyleKeys.length === 0 && this.canExecute('sheet.style.set', { style: {} }),
       canEdit: this.canExecute('sheet.range.clear', { family: 'contents' }),
       canStructure: this.canExecute('sheet.rows.insert', { count: 1 }),
       hasFilter: Boolean(activeAutoFilter),
@@ -999,8 +1082,11 @@ export class WorkbookSession {
         originalValue: activeFormulaHidden ? null : visibleActiveEdit.originalValue?.value ?? null,
         ...(visibleActiveEdit.originalFormula !== undefined ? { originalFormula: visibleActiveEdit.originalFormula } : {}),
         draftText: visibleActiveEdit.currentDraft,
+        caret: structuredClone(visibleActiveEdit.caret),
+        composition: structuredClone(visibleActiveEdit.composition),
+        referenceMode: visibleActiveEdit.referenceMode,
         mode: visibleActiveEdit.originalFormula || visibleActiveEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
-        source: this.focus.target === 'formula-bar' ? 'formulaBar' : 'cell',
+        source: visibleActiveEdit.source === 'formulaBar' ? 'formulaBar' : visibleActiveEdit.source === 'functionInsert' ? 'functionInsert' : 'cell',
       } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
       ribbon: { activeTab: this.ribbonTab },
@@ -1144,14 +1230,15 @@ export class WorkbookSession {
     if (input.targetOrigin && typeof input.targetOrigin === 'object' && !Array.isArray(input.targetOrigin)) {
       const origin = input.targetOrigin as { row?: unknown; column?: unknown };
       const clipboard = input.clipboard && typeof input.clipboard === 'object' && !Array.isArray(input.clipboard)
-        ? input.clipboard as { values?: unknown[][]; range?: unknown }
+        ? input.clipboard as { sourceExtent?: { rows?: unknown; columns?: unknown }; range?: unknown }
         : undefined;
       appendRange(clipboard?.range);
       const originRow = typeof origin.row === 'number' && Number.isInteger(origin.row) ? origin.row : undefined;
       const originColumn = typeof origin.column === 'number' && Number.isInteger(origin.column) ? origin.column : undefined;
-      if (originRow !== undefined && originColumn !== undefined && Array.isArray(clipboard?.values)) {
-        const sourceRows = clipboard.values.length;
-        const sourceColumns = clipboard.values.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+      if (originRow !== undefined && originColumn !== undefined && clipboard?.sourceExtent
+        && typeof clipboard.sourceExtent.rows === 'number' && typeof clipboard.sourceExtent.columns === 'number') {
+        const sourceRows = clipboard.sourceExtent.rows;
+        const sourceColumns = clipboard.sourceExtent.columns;
         const spec = input.spec && typeof input.spec === 'object' && !Array.isArray(input.spec)
           ? input.spec as { transpose?: unknown }
           : undefined;
@@ -1494,11 +1581,15 @@ export class WorkbookSession {
   selectAddress(address: string): boolean {
     const trimmed = address.trim();
     if (!trimmed) return false;
-    if (this.editSession.editingCell) {
+    if (this.editSession.active?.referenceMode) {
       return this.selectionService.selectCell(trimmed, {
         editing: true,
-        insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
+        insertRef: (ref) => this.insertRefIntoDraft(ref),
       });
+    }
+    if (this.editSession.editingCell) {
+      this.commitEdit('none');
+      if (this.editSession.editingCell) return false;
     }
     const range = parseRangeReference(trimmed);
     if (range) {
@@ -1633,23 +1724,18 @@ export class WorkbookSession {
   }
 
   getCurrentRegion(): RangeRef {
-    const selection = this.selectionService.getState();
-    const primary = this.getPrimaryRange();
-    if (primary.startRow !== primary.endRow || primary.startColumn !== primary.endColumn) return primary;
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const table = findSheetTableAt(sheet, selection.activeCell.row, selection.activeCell.column);
-    if (table) return structuredClone(table.range);
-    const blockRegion = sheet.dataRegions.find((region) => selection.activeCell.row >= region.range.startRow
-      && selection.activeCell.row <= region.range.endRow
-      && selection.activeCell.column >= region.range.startColumn
-      && selection.activeCell.column <= region.range.endColumn);
-    if (blockRegion) return structuredClone(blockRegion.range);
-    return currentRegionOfSheet(
-      sheet,
-      selection.activeCell.row,
-      selection.activeCell.column,
-      (row, column) => this.isCanonicalCellOccupied(sheet, row, column),
-    );
+    return this.getDataRegionContext().range;
+  }
+
+  getDataRegionContext(searchScope: DataRegionContext['searchScope'] = 'current-region'): DataRegionContext {
+    const selection = this.getPrimaryRange();
+    const activeCell = this.selectionService.getState().activeCell;
+    return resolveDataRegionContext(this.runtime.model, {
+      selection: normalizeRangeRef({ ...selection, sheetId: this.activeSheetId }),
+      activeRow: activeCell.row,
+      activeColumn: activeCell.column,
+      searchScope,
+    });
   }
 
   async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
@@ -1764,7 +1850,7 @@ export class WorkbookSession {
     const undoCount = entries.length - 1 - index;
     for (let step = 0; step < undoCount; step += 1) {
       const entry = this.runtime.commands.getUndoEntries().at(-1);
-      if (entry && !this.canReplayHistory(entry.undo)) {
+      if (entry && !this.canReplayHistory(entry.inversePlan)) {
         this.notify('Undo is no longer allowed for the protected selection');
         break;
       }
@@ -1881,6 +1967,16 @@ export class WorkbookSession {
     }
   }
 
+  private runReadyCallback(): void {
+    if (!this.onReady || this.readyCallback) return;
+    this.readyCallback = Promise.resolve()
+      .then(() => this.onReady?.())
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        if (!this.disposed) this.notify(error instanceof Error ? error.message : 'Workbook ready callback failed');
+      });
+  }
+
   notify(message: string): void {
     this.notice = message;
     this.emit();
@@ -1888,34 +1984,12 @@ export class WorkbookSession {
 
   /** Permission is evaluated again before replaying a historical mutation. */
   private canReplayHistory(mutations: readonly MutationInfo[]): boolean {
-    return mutations.every((mutation) => {
-      const base = mutation.params && typeof mutation.params === 'object' && !Array.isArray(mutation.params)
-        ? mutation.params as Record<string, unknown>
-        : {};
-      if (mutation.id === 'cell.restore' && this.permission.isFormatOnlyRestore(mutation.params)) {
-        return canExecuteCommand(
-          this.permission,
-          this.runtime.model,
-          'sheet.style.set',
-          { ...base, style: (base.previous && typeof base.previous === 'object' && !Array.isArray(base.previous)) ? (base.previous as Record<string, unknown>).style : undefined },
-          this.actorId,
-          mutation.sheetId,
-        ).allowed;
-      }
-      return canExecuteCommand(
-        this.permission,
-        this.runtime.model,
-        mutation.id,
-        { ...base, ranges: mutation.affectedRanges },
-        this.actorId,
-        mutation.sheetId,
-      ).allowed;
-    });
+    return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
   }
 
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.undo)) {
+    if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
     }
@@ -1931,7 +2005,7 @@ export class WorkbookSession {
 
   redo(): void {
     const entry = this.runtime.commands.getRedoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.redo)) {
+    if (entry && !this.canReplayHistory(entry.forwardMutations)) {
       this.notify('Redo is no longer allowed for the protected selection');
       return;
     }
@@ -2086,26 +2160,54 @@ export class WorkbookSession {
   };
 
   syncDraftFromPrimary(): void {
-    const sel = this.selectionService.getState();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const cell = this.readResolvedCell(sheet, sel.activeCell.row, sel.activeCell.column);
-    const hidden = protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, sel.activeCell.row, sel.activeCell.column, cell?.style);
-    this.formulaDraft = hidden ? '' : cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+    if (this.editSession.active) {
+      this.emit();
+      return;
+    }
     this.emit();
   }
 
   setFormulaDraft(value: string): void {
-    this.formulaDraft = value;
     if (this.editSession.active) this.editSession.setDraft(value);
+    this.emit();
+  }
+
+  setEditCaret(start: number, end: number = start): void {
+    this.editSession.setCaret({ start, end });
+    this.emit();
+  }
+
+  beginEditComposition(): void {
+    this.editSession.compositionStart();
+    this.emit();
+  }
+
+  updateEditComposition(text: string): void {
+    this.editSession.compositionUpdate(text);
+    this.emit();
+  }
+
+  endEditComposition(): void {
+    this.editSession.compositionEnd();
     this.emit();
   }
 
   appendFormulaDraft(fragment: string): void {
     if (!fragment) return;
-    this.setFormulaDraft(this.formulaDraft + fragment);
+    if (this.editSession.active) this.editSession.setDraft(this.formulaDraft + fragment);
+    this.emit();
   }
 
   selectCell(address: string): void {
+    if (this.editSession.active?.referenceMode) {
+      this.selectionService.selectCell(address, { editing: true, insertRef: (ref) => this.insertRefIntoDraft(ref) });
+      this.emit();
+      return;
+    }
+    if (this.editSession.editingCell) {
+      this.commitEdit('none');
+      if (this.editSession.editingCell) return;
+    }
     const parsed = parseRangeReference(address);
     const target = parsed && parsed.startRow === parsed.endRow && parsed.startColumn === parsed.endColumn ? parsed : undefined;
     if (target) {
@@ -2117,8 +2219,8 @@ export class WorkbookSession {
       }
     }
     const changed = this.selectionService.selectCell(address, {
-      editing: Boolean(this.editSession.editingCell),
-      insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
+      editing: Boolean(this.editSession.active?.referenceMode),
+      insertRef: (ref) => this.insertRefIntoDraft(ref),
     });
     if (changed) this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
@@ -2134,17 +2236,38 @@ export class WorkbookSession {
 
   /** Commit a canvas selection exactly, including its active cell and anchor. */
   applyCanvasSelection(selection: SelectionState): void {
+    if (this.editSession.active) {
+      const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+      const draft = this.editSession.active.currentDraft;
+      if (targetRange && (this.editSession.active.referenceMode || draft.startsWith('='))) {
+        this.editSession.enterReferenceMode();
+        this.selectionService.setInteractionMode('formulaReference');
+        const reference = targetRange.startRow === targetRange.endRow && targetRange.startColumn === targetRange.endColumn
+          ? cellAddress(targetRange.startRow, targetRange.startColumn)
+          : `${cellAddress(targetRange.startRow, targetRange.startColumn)}:${cellAddress(targetRange.endRow, targetRange.endColumn)}`;
+        this.insertRefIntoDraft(reference);
+        return;
+      }
+      this.commitEdit('none');
+      if (this.editSession.active) return;
+    }
     this.selectionService.applyState(selection);
     if (this.formatPainter) {
       const painter = this.formatPainter;
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-      if (targetRange) this.dispatch({ commandId: 'format.painter.apply', params: {
-        sheetId: this.activeSheetId,
-        sourceRange: structuredClone(painter.sourceRange),
-        targetRange: structuredClone(targetRange),
-        continuous: painter.mode === 'locked',
-      } });
-      if (painter.mode === 'once') this.formatPainter = null;
+      if (targetRange) {
+        void this.dispatch({ commandId: 'format.painter.apply', params: {
+          sheetId: this.activeSheetId,
+          targetRange: { ...structuredClone(targetRange), sheetId: this.activeSheetId },
+          pattern: structuredClone(painter.source.capturedPattern),
+        } }).then((outcome) => {
+          if (outcome.status === 'committed' && painter.mode === 'once'
+            && this.formatPainter?.sessionId === painter.sessionId) {
+            this.formatPainter = null;
+            this.emit();
+          }
+        });
+      }
     }
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
@@ -2172,8 +2295,39 @@ export class WorkbookSession {
   }
 
   beginFormatPainter(locked = false): void {
+    if (this.formatPainter) {
+      this.cancelFormatPainter();
+      return;
+    }
     const sourceRange = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
-    this.formatPainter = { mode: locked ? 'locked' : 'once', sourceRange };
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const capturedPattern: FormatPainterStylePattern = {
+      rowCount: sourceRange.endRow - sourceRange.startRow + 1,
+      columnCount: sourceRange.endColumn - sourceRange.startColumn + 1,
+      cells: [],
+    };
+    for (let row = sourceRange.startRow; row <= sourceRange.endRow; row += 1) {
+      const line: FormatPainterStylePattern['cells'][number] = [];
+      for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column += 1) {
+        const cell = this.readResolvedCell(sheet, row, column);
+        const style = cell?.style ? structuredClone(cell.style) : undefined;
+        const numberFormat = cell?.numberFormat ?? cell?.style?.numberFormat;
+        line.push({
+          ...(style ? { style } : {}),
+          ...(numberFormat === undefined ? {} : { numberFormat }),
+        });
+      }
+      capturedPattern.cells.push(line);
+    }
+    this.formatPainter = {
+      sessionId: typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `format-painter-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      mode: locked ? 'locked' : 'once',
+      source: { sheetId: this.activeSheetId, range: structuredClone(sourceRange), capturedPattern },
+      createdAtRevision: this.runtime.remoteRevision,
+      active: true,
+    };
     this.notify(locked ? 'Format Painter is locked; select target ranges and press Escape to finish' : 'Select a target range to apply copied formatting');
     this.emit();
   }
@@ -2320,15 +2474,17 @@ export class WorkbookSession {
     if (next) this.selectSheet(next.id);
   }
 
-  autoSum(): void {
+  autoSum(functionName: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN' = 'SUM'): void {
     const selection = this.selectionService.getState();
     const range = this.getCurrentRegion();
+    const primary = this.getPrimaryRange();
     this.dispatch({
       commandId: 'formula.autosum',
       params: {
         sheetId: this.activeSheetId,
         range,
-        target: { ...selection.activeCell },
+        ...(primary.startRow === primary.endRow && primary.startColumn === primary.endColumn ? { target: { ...selection.activeCell } } : {}),
+        functionName,
       },
     });
   }
@@ -2419,7 +2575,18 @@ export class WorkbookSession {
     return { sheetId: table.sourceRange.sheetId, row: sourceRow, column: table.sourceRange.startColumn + field.ordinal };
   }
 
-  beginEdit(initialText?: string): boolean {
+  private createInputContext(sourceKind: CellInputSourceKind, cell?: CellData) {
+    const referenceDate = this.runtime.canonicalReferenceDate;
+    if (!referenceDate) throw new Error('Workbook input interpretation requires a canonical reference date');
+    return createCellInputInterpretationContext(this.runtime.model, {
+      sourceKind,
+      dateSystem: this.runtime.dateSystem,
+      referenceDate,
+      cell,
+    });
+  }
+
+  beginEdit(initialText?: string, source: import('./edit-session').EditSource = initialText === undefined ? 'f2' : 'directTyping'): boolean {
     const sel = this.selectionService.getState();
     const canonicalTarget = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
     const canonicalSheet = this.runtime.model.getSheet(canonicalTarget.sheetId);
@@ -2440,6 +2607,7 @@ export class WorkbookSession {
       this.notify('This formula is hidden while the worksheet is protected');
       return false;
     }
+    this.selectionService.setInteractionMode('normal');
     this.editSession.begin({
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
@@ -2447,15 +2615,19 @@ export class WorkbookSession {
       cell,
       selection: this.selectionService.getSnapshot(),
       initialText,
+      source,
+      baseRevision: this.runtime.remoteRevision,
     });
     this.setFocusState('cell-edit', 'grid');
-    this.formulaDraft = this.editSession.active?.currentDraft ?? '';
     this.emit();
     return true;
   }
 
   cancelEdit(): void {
-    this.formulaDraft = this.editSession.cancel();
+    const originalSelection = this.editSession.active?.originalSelection;
+    this.editSession.cancel();
+    if (originalSelection) this.selectionService.applyState(originalSelection);
+    else this.selectionService.setInteractionMode('normal');
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -2469,13 +2641,15 @@ export class WorkbookSession {
     const row = target.row;
     const column = target.column;
     const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
-    const style = this.runtime.model.getSheet(target.sheetId).cells.get(row, column)?.style;
+    const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
+    const style = cell?.style;
     try {
       this.runCommand('sheet.cell.commitText', {
         sheetId: target.sheetId,
         row,
         column,
         text,
+        inputContext: this.createInputContext('direct-entry', cell),
         style,
       });
       return true;
@@ -2488,14 +2662,17 @@ export class WorkbookSession {
   commitEdit(moveAfter: 'down' | 'up' | 'left' | 'right' | 'none' = 'down'): void {
     if (!this.editSession.editingCell) return;
     const editing = this.editSession.editingCell;
+    const draft = this.editSession.active?.currentDraft ?? '';
     this.overrideTarget = editing;
-    const committed = this.commitFormula(this.formulaDraft);
+    const committed = this.commitFormula(draft);
     this.overrideTarget = null;
-    this.editSession.apply();
     if (!committed) {
-      this.beginEdit(this.formulaDraft);
+      this.setFocusState('cell-edit', 'grid');
+      this.emit();
       return;
     }
+    this.editSession.apply();
+    this.selectionService.setInteractionMode('normal');
     const deltas = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] } as const;
     const [dr, dc] = deltas[moveAfter];
     this.movePrimary(dr, dc);
@@ -2505,14 +2682,16 @@ export class WorkbookSession {
   }
 
   insertRefIntoDraft(refText: string): void {
-    if (this.editSession.active) this.editSession.insertRef(refText);
-    else this.setFormulaDraft(this.formulaDraft + refText);
+    if (this.editSession.active) {
+      this.selectionService.setInteractionMode('formulaReference');
+      this.editSession.insertRef(refText);
+    }
+    this.emit();
   }
 
   toggleAbsoluteReference(): void {
     if (this.editSession.active) {
       this.editSession.toggleAbsoluteReference();
-      this.formulaDraft = this.editSession.active.currentDraft;
       this.emit();
       return;
     }
@@ -2524,7 +2703,6 @@ export class WorkbookSession {
     this.activeSheetId = sheetId;
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
-    this.formulaDraft = '';
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
     if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
@@ -2575,7 +2753,7 @@ export class WorkbookSession {
       fields.push({ id: `${prefix}-field-${offset + 1}`, name, ordinal: offset, type: inferTableFieldType(values) });
     }
     return {
-      id: nextId(`${prefix}-table`), name: `${sheet.name} ${prefix} data`, sourceSheetId: sourceRange ? this.activeSheetId : undefined,
+      id: this.insertCoordinator.allocateObjectId(`${prefix}-table`), name: `${sheet.name} ${prefix} data`, sourceSheetId: sourceRange ? this.activeSheetId : undefined,
       sourceRange, rowCount: sourceRange ? Math.max(0, sourceRange.endRow - sourceRange.startRow) : 0,
       fields, blockSize: 4096, blocks: [], revision: 0,
     };
@@ -2583,7 +2761,7 @@ export class WorkbookSession {
 
   createAdvancedSheet(kind: Exclude<SheetKind, 'worksheet'>): void {
     const table = this.buildSelectionWorkbookTable(kind === 'gantt-sheet' ? 'gantt' : kind === 'report-sheet' ? 'report' : 'table');
-    const id = nextId('sheet');
+    const id = this.insertCoordinator.allocateObjectId('sheet');
     const name = kind === 'table-sheet' ? '集算表' : kind === 'gantt-sheet' ? '甘特表' : '报表';
     const cells: SheetSnapshot['cells'] = {};
     const setCell = (row: number, column: number, value: CellData['value'], style?: CellStyle) => {
@@ -2593,15 +2771,22 @@ export class WorkbookSession {
     table.fields.forEach((field, column) => setCell(0, column, field.name, { bold: true, background: '#eaf2f8', verticalAlignment: 'middle' }));
     if (kind === 'report-sheet') setCell(0, 0, '报表', { bold: true, fontSizePx: 24, textColor: '#1f2937' });
     const sheet: SheetSnapshot = {
-      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
       defaultRowHeightPx: 20, defaultColumnWidthPx: 80,
       ...(kind === 'table-sheet' ? { tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } } : {}),
       ...(kind === 'gantt-sheet' ? { ganttSheet: { viewId: table.id, fieldMap: { id: table.fields[0]!.id, title: table.fields[1]!.id, start: table.fields[2]!.id, end: table.fields[3]!.id, progress: table.fields[4]!.id, parentId: table.fields[5]?.id, dependencies: table.fields[6]?.id }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' }, dependencyStyle: { color: '#64748b', width: 1 } } } : {}),
       ...(kind === 'report-sheet' ? { reportSheet: { templateSheetId: this.activeSheetId, tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50, repeatHeaderRows: [0] }, renderMode: 'design' as const, layout: { orientation: 'portrait' as const, marginTopPx: 24, marginRightPx: 24, marginBottomPx: 24, marginLeftPx: 24 }, dataEntry: [] } } : {}),
     };
-    this.runCommand('sheet.create.advanced', { sheet, table, index: this.runtime.model.sheetOrder.length });
-    this.selectSheet(id);
-    this.notify(`${name}已创建`);
+    this.commitInsertMutation({
+      kind,
+      commandId: 'sheet.create.advanced',
+      sheetId: id,
+      params: { sheet, table, index: this.runtime.model.sheetOrder.length },
+      createdObjectIds: [id, table.id],
+    }, () => {
+      this.selectSheet(id);
+      this.notify(`${name}已创建`);
+    });
   }
 
   updateTableSheetDefinition(definition: TableSheetDefinition): void {
@@ -2622,13 +2807,62 @@ export class WorkbookSession {
     this.runCommand('reportSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
+  private createInsertDrawing(
+    kind: DrawingObject['kind'],
+    sheetId: string,
+    anchor: DrawingObject['anchor'],
+    options: { objectPrefix?: string; payloadPrefix?: string; transform?: DrawingTransform; zIndex?: number } = {},
+  ): DrawingObject {
+    const identity = this.insertCoordinator.allocateIdentity(options.objectPrefix ?? 'drawing', options.payloadPrefix ?? kind);
+    const placement = this.insertCoordinator.defaultPlacement(anchor);
+    return {
+      id: identity.objectId,
+      sheetId,
+      kind,
+      anchor: placement.anchor,
+      transform: options.transform ? structuredClone(options.transform) : placement.transform,
+      zIndex: options.zIndex ?? placement.zIndex,
+      payloadId: identity.payloadId,
+    };
+  }
+
+  private commitInsertDrawing(request: DrawingInsertRequest, activate: (result: InsertResult) => void = (result) => {
+    this.setDrawingSelection([...result.createdObjectIds]);
+  }): InsertResult {
+    return this.insertCoordinator.commitDrawing(
+      request,
+      (commandId, params) => this.runCommand(commandId, params),
+      activate,
+    );
+  }
+
+  private commitInsertMutation(request: InsertMutationRequest, activate: (result: InsertResult) => void = () => {}): InsertResult {
+    return this.insertCoordinator.commitMutation(
+      request,
+      (commandId, params) => this.runCommand(commandId, params),
+      activate,
+    );
+  }
+
   applyBarcode(symbology: BarcodeSymbology = 'qr'): void {
     this.barcodeDraftSymbology = symbology;
     const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
-    this.runCommand('cell.barcode.apply', { sheetId: this.activeSheetId, ranges, presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, parameters: { symbology }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', labelPosition: symbology === 'qr' || symbology === 'data-matrix' ? 'none' : 'below', quietZone: 2 } } });
-    this.panels = { ...this.panels, active: 'barcode', open: true };
-    this.notify('条形码已应用');
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'barcode',
+      commandId: 'cell.barcode.apply',
+      sheetId: this.activeSheetId,
+      params: {
+        sheetId: this.activeSheetId,
+        ranges,
+        presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, parameters: { symbology }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', labelPosition: symbology === 'qr' || symbology === 'data-matrix' ? 'none' : 'below', quietZone: 2 },
+      },
+    },
+    createdObjectIds: [],
+    }, () => {
+      this.panels = { ...this.panels, active: 'barcode', open: true };
+      this.notify('条形码已应用');
+      this.refresh();
+    });
   }
 
   openBarcodePanel(symbology: BarcodeSymbology = 'qr'): void {
@@ -2648,38 +2882,35 @@ export class WorkbookSession {
     if (numericFields.length === 0) throw new Error('Data Chart requires at least one numeric value field');
     const category = table.fields.find((field) => field.type !== 'number') ?? table.fields[0];
     const bindings: DataChartDrawingPayload['bindings'] = { values: numericFields.map((field) => ({ area: 'values', fieldId: field.id, aggregate: 'sum' })), category: category ? [{ area: 'category', fieldId: category.id, aggregate: 'none' }] : [], details: [], color: [], size: [], tooltip: [], filter: [] };
-    const payloadId = nextId('data-chart');
-    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'data-chart', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 }, zIndex: 0, payloadId };
+    const drawing = this.createInsertDrawing('data-chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'data-chart' });
     const payload: DataChartDrawingPayload = { kind: 'data-chart', source: { kind: 'table', tableId: table.id }, plotType: type, bindings, inspector: { title: '数据图表', legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 }, plotArea: { fill: '#ffffff' }, axis: { showGridlines: true } } };
-    this.runCommand('dataChart.create', { sheetId: this.activeSheetId, drawing, payload, table });
-    this.setDrawingSelection([drawing.id]);
-    this.panels = { ...this.panels, active: 'dataChart', open: true };
+    this.commitInsertDrawing({ commandId: 'dataChart.create', sheetId: this.activeSheetId, drawing, payload, extraParams: { table } }, () => {
+      this.setDrawingSelection([drawing.id]);
+      this.panels = { ...this.panels, active: 'dataChart', open: true };
+    });
     this.notify('数据图表已插入');
     this.refresh();
   }
 
   insertCamera(): void {
     const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
-    const payloadId = nextId('camera');
-    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'camera', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 360, height: 220, rotation: 0 }, zIndex: 0, payloadId };
+    const drawing = this.createInsertDrawing('camera', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'camera', transform: { x: 96, y: 96, width: 360, height: 220, rotation: 0 } });
     const payload: CameraDrawingPayload = { kind: 'camera', sourceRange: range, refreshPolicy: 'live' };
-    this.runCommand('drawing.add.camera', { sheetId: this.activeSheetId, drawing, payload });
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'drawing.add.camera', sheetId: this.activeSheetId, drawing, payload });
     this.notify('区域快照已插入');
     this.refresh();
   }
 
   insertFormControl(controlType: FormControlType = 'button'): void {
     const active = this.selectionService.getState().activeCell;
-    const payloadId = nextId('form-control');
-    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'form-control', anchor: { kind: 'one-cell', row: active.row, column: active.column }, transform: { x: 96, y: 96, width: 140, height: 32, rotation: 0 }, zIndex: 0, payloadId };
+    const drawing = this.createInsertDrawing('form-control', this.activeSheetId, { kind: 'one-cell', row: active.row, column: active.column }, { payloadPrefix: 'form-control', transform: { x: 96, y: 96, width: 140, height: 32, rotation: 0 } });
     const style = { fill: '#ffffff', border: '#7b8794', textColor: '#1f2937', fontSize: 12 };
     const cellLink = { sheetId: this.activeSheetId, row: active.row, column: active.column };
     const inputRange = { sheetId: this.activeSheetId, startRow: active.row, endRow: Math.min(this.runtime.model.getSheet(this.activeSheetId).rowCount - 1, active.row + 4), startColumn: active.column, endColumn: active.column };
     const payload: FormControlDrawingPayload = controlType === 'button'
       ? { kind: 'form-control', controlType, text: '按钮', value: null, action: { kind: 'event', eventId: nextId('button-click') }, enabled: true, style }
       : controlType === 'group-box'
-        ? { kind: 'form-control', controlType, text: '组合框', value: null, groupId: payloadId, enabled: true, style }
+        ? { kind: 'form-control', controlType, text: '组合框', value: null, groupId: drawing.payloadId, enabled: true, style }
         : controlType === 'label'
           ? { kind: 'form-control', controlType, text: '标签', value: null, enabled: true, style }
           : controlType === 'spin-button'
@@ -2693,8 +2924,7 @@ export class WorkbookSession {
                   : controlType === 'checkbox'
                     ? { kind: 'form-control', controlType, text: '复选框', value: false, cellLink, enabled: true, style }
                     : { kind: 'form-control', controlType, text: '选项按钮', value: false, cellLink, enabled: true, style };
-    this.runCommand('drawing.add.form-control', { sheetId: this.activeSheetId, drawing, payload });
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'drawing.add.form-control', sheetId: this.activeSheetId, drawing, payload });
     this.notify('控件已插入');
     this.refresh();
   }
@@ -2719,13 +2949,13 @@ export class WorkbookSession {
     if (!Number.isFinite(transform.x) || !Number.isFinite(transform.y) || transform.width < 40 || transform.height < 30) {
       throw new Error('Text box placement bounds are invalid');
     }
-    const payloadId = nextId('textbox');
-    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'textbox', anchor: { kind: 'absolute' }, transform: { ...transform, rotation: transform.rotation ?? 0 }, zIndex: 0, payloadId };
+    const drawing = this.createInsertDrawing('textbox', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'textbox', transform: { ...transform, rotation: transform.rotation ?? 0 } });
     const payload: TextBoxDrawingPayload = { kind: 'textbox', text: '', textFrame: createDefaultTextBoxTextFrame() };
-    this.runCommand('drawing.add.textbox', { sheetId: this.activeSheetId, drawing, payload });
-    this.textBoxPlacement = false;
-    this.setDrawingSelection([drawing.id]);
-    this.beginTextBoxEdit(drawing.id);
+    this.commitInsertDrawing({ commandId: 'drawing.add.textbox', sheetId: this.activeSheetId, drawing, payload }, () => {
+      this.textBoxPlacement = false;
+      this.setDrawingSelection([drawing.id]);
+      this.beginTextBoxEdit(drawing.id);
+    });
     this.notify('文本框已插入');
     this.refresh();
   }
@@ -2780,26 +3010,43 @@ export class WorkbookSession {
     if (drawing.kind !== 'chart' || payload.kind !== 'chart' || drawing.payloadId !== payload.chartId) {
       throw new Error(`Chart drawing and payload identity mismatch: ${drawing.id}`);
     }
-    this.runCommand('chart.insert', buildChartInsertParams(drawing, payload));
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'chart.insert', sheetId: drawing.sheetId, drawing, payload });
     this.notify(payload.elements.title ? `Added chart "${payload.elements.title}"` : `Added ${payload.chartType} chart`);
     this.refresh();
   }
-  insertChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    const payloadId = nextId('chart');
-    const drawing: DrawingObject = {
-      id: nextId('draw'),
-      sheetId: this.activeSheetId,
-      kind: 'chart',
-      anchor: { kind: 'absolute' },
-      transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 },
-      zIndex: 0,
-      payloadId,
-    };
+  createPivotChart(pivotId: string, title: string): void {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
+    const sourceRanges = pivot.source.kind === 'worksheet-range' ? [structuredClone(pivot.source.range)] : [];
+    const drawing = this.createInsertDrawing('chart', sheet.id, { kind: 'absolute' }, { objectPrefix: 'pivot-drawing', payloadPrefix: 'pivot-chart', transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 } });
     const payload: ChartDrawingPayload = {
       kind: 'chart',
-      chartId: payloadId,
+      chartId: drawing.payloadId,
+      pivotId,
+      chartType: 'column',
+      sourceRanges,
+      elements: {
+        title,
+        legend: { visible: true, position: 'bottom' },
+        dataLabels: { visible: false },
+        hiddenData: 'show',
+      },
+    };
+    this.commitInsertDrawing({ commandId: 'pivot.chart.create', sheetId: sheet.id, drawing, payload }, () => {
+      this.activeSheetId = sheet.id;
+      this.setActivePivotContext(pivotId, sheet.id);
+      this.setDrawingSelection([drawing.id]);
+      this.notify(`Pivot chart "${title}" inserted`);
+      this.refresh();
+    });
+  }
+  insertChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart' });
+    const payload: ChartDrawingPayload = {
+      kind: 'chart',
+      chartId: drawing.payloadId,
       chartType: type,
       sourceRanges: [{ ...range, sheetId: this.activeSheetId }],
       series: type === 'combo' ? [{ name: 'Series 1', range: { ...range, sheetId: this.activeSheetId }, chartType: 'column', axis: 'primary' }] : undefined,
@@ -2812,6 +3059,29 @@ export class WorkbookSession {
         valueAxis: { id: 'value', position: 'left', visible: true, majorGridlines: { visible: true, color: '#e2e8f0', width: 1, dash: 'solid' } },
         chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 },
         plotArea: { fill: '#ffffff' },
+      },
+    };
+    this.addChart(drawing, payload);
+  }
+  insertChartFromPanel(
+    type: ChartDrawingPayload['chartType'],
+    sourceRange: RangeRef,
+    title: string,
+    stacked: NonNullable<ChartDrawingPayload['stacked']> = 'none',
+  ): void {
+    const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart', transform: { x: 100, y: 100, width: 480, height: 280, rotation: 0 } });
+    const payload: ChartDrawingPayload = {
+      kind: 'chart',
+      chartId: drawing.payloadId,
+      chartType: type,
+      sourceRanges: [structuredClone(sourceRange)],
+      series: type === 'combo' ? [{ name: 'Series 1', range: structuredClone(sourceRange), chartType: 'column', axis: 'primary' }] : undefined,
+      stacked: stacked === 'none' ? undefined : stacked,
+      elements: {
+        title,
+        legend: { visible: true, position: 'bottom' },
+        dataLabels: { visible: false },
+        hiddenData: 'show',
       },
     };
     this.addChart(drawing, payload);
@@ -2867,9 +3137,17 @@ export class WorkbookSession {
     this.refresh();
   }
   addPivot(pivot: PivotModel): void {
-    this.runCommand('pivot.add', pivot);
-    this.notify(`Pivot ${pivot.id} added`);
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'pivot',
+      commandId: 'pivot.add',
+      sheetId: pivot.target.sheetId,
+      params: { ...pivot },
+      createdObjectIds: [pivot.id],
+    }, () => {
+      this.setActivePivotContext(pivot.id, pivot.target.sheetId);
+      this.notify(`Pivot ${pivot.id} added`);
+      this.refresh();
+    });
   }
   insertPivotFromSelection(): string | undefined {
     const descriptor = this.buildPivotFromSelectionDescriptor();
@@ -2884,7 +3162,7 @@ export class WorkbookSession {
 
   buildPivotFromSelectionDescriptor(): CommandDescriptor | undefined {
     const range = normalizeRangeRef(this.getCurrentRegion());
-    const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, nextId('pivot'), range);
+    const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, this.insertCoordinator.allocateObjectId('pivot'), range);
     return pivot ? { commandId: 'pivot.add', params: pivot } : undefined;
   }
 
@@ -2896,7 +3174,7 @@ export class WorkbookSession {
       this.notify('Select a tabular source range with a header row before creating a PivotTable');
       return undefined;
     }
-    const pivotId = nextId('pivot');
+    const pivotId = this.insertCoordinator.allocateObjectId('pivot');
     let targetSheetId: string;
     let targetPosition: { row: number; column: number };
     let destination: {
@@ -2908,7 +3186,7 @@ export class WorkbookSession {
       sheetId: string;
     };
     if (params.destination.kind === 'new-sheet') {
-      targetSheetId = nextId('sheet');
+      targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
       targetPosition = { row: 0, column: 0 };
       const names = new Set(this.runtime.model.getSheets().map((sheet) => sheet.name.toLocaleLowerCase()));
       let suffix = 1;
@@ -2952,11 +3230,18 @@ export class WorkbookSession {
         },
       };
       const pivot: PivotModel = { ...pivotDraft, fieldCatalog: buildPivotFieldCatalog(this.runtime.model, pivotDraft) };
-      this.runCommand('pivot.create', { pivot, destination });
-      this.activeSheetId = targetSheetId;
-      this.selectionService.resetForSheet(targetSheetId);
-      this.setActivePivotContext(pivotId, targetSheetId);
-      this.refresh();
+      this.commitInsertMutation({
+        kind: 'pivot',
+        commandId: 'pivot.create',
+        sheetId: targetSheetId,
+        params: { pivot, destination },
+        createdObjectIds: [pivotId, ...(destination.kind === 'new-sheet' ? [targetSheetId] : [])],
+      }, () => {
+        this.activeSheetId = targetSheetId;
+        this.selectionService.resetForSheet(targetSheetId);
+        this.setActivePivotContext(pivotId, targetSheetId);
+        this.refresh();
+      });
       return pivotId;
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Could not create PivotTable');
@@ -3003,8 +3288,8 @@ export class WorkbookSession {
     if (existing) return;
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotSlicerDrawing({
-      drawingId: nextId('pivot-slicer'),
-      payloadId: nextId('pivot-slicer-payload'),
+      drawingId: this.insertCoordinator.allocateObjectId('pivot-slicer'),
+      payloadId: this.insertCoordinator.allocateObjectId('pivot-slicer-payload'),
       sheetId: sheet.id,
       pivotId,
       fieldId,
@@ -3012,7 +3297,7 @@ export class WorkbookSession {
       transform: { x: 96, y: 96 + offset * 144, width: 188, height: 128 },
       zIndex: sheet.drawings.length,
     });
-    this.runCommand('pivot.control.slicer.create', { sheetId: sheet.id, ...control });
+    this.commitInsertDrawing({ commandId: 'pivot.control.slicer.create', sheetId: sheet.id, drawing: control.drawing, payload: control.payload });
     this.refresh();
   }
 
@@ -3024,15 +3309,15 @@ export class WorkbookSession {
     if (existing) return;
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotTimelineDrawing({
-      drawingId: nextId('pivot-timeline'),
-      payloadId: nextId('pivot-timeline-payload'),
+      drawingId: this.insertCoordinator.allocateObjectId('pivot-timeline'),
+      payloadId: this.insertCoordinator.allocateObjectId('pivot-timeline-payload'),
       sheetId: sheet.id,
       pivotId,
       fieldId,
       transform: { x: 312, y: 96 + offset * 96, width: 356, height: 72 },
       zIndex: sheet.drawings.length,
     });
-    this.runCommand('pivot.control.timeline.create', { sheetId: sheet.id, ...control });
+    this.commitInsertDrawing({ commandId: 'pivot.control.timeline.create', sheetId: sheet.id, drawing: control.drawing, payload: control.payload });
     this.refresh();
   }
 
@@ -3113,7 +3398,7 @@ export class WorkbookSession {
   }
   drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
     if (paths.length === 0) return;
-    const targetSheetId = nextId('sheet');
+    const targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
     this.runCommand('pivot.drillDown', {
       sheetId: this.activeSheetId,
       pivotId,
@@ -3206,22 +3491,12 @@ export class WorkbookSession {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {
       throw new Error(`Shape drawing and payload kind mismatch: ${drawing.id}`);
     }
-    this.runCommand('drawing.add.shape', buildDrawingAdd(drawing, payload));
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'drawing.add.shape', sheetId: drawing.sheetId, drawing, payload });
     this.notify(`Added ${payload.type} shape`);
     this.refresh();
   }
   insertShape(type: ShapeDrawingPayload['type'] = 'rounded-rectangle'): void {
-    const payloadId = nextId('shape');
-    const drawing: DrawingObject = {
-      id: nextId('draw'),
-      sheetId: this.activeSheetId,
-      kind: 'shape',
-      anchor: { kind: 'absolute' },
-      transform: { x: 96, y: 96, width: 160, height: 60, rotation: 0 },
-      zIndex: 0,
-      payloadId,
-    };
+    const drawing = this.createInsertDrawing('shape', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'shape', transform: { x: 96, y: 96, width: 160, height: 60, rotation: 0 } });
     const payload: ShapeDrawingPayload = {
       kind: 'shape',
       type,
@@ -3245,16 +3520,7 @@ export class WorkbookSession {
     const start = selected[0];
     const end = selected[1];
     if (!start || !end) throw new Error('Connector insertion requires exactly two selected shapes');
-    const payloadId = nextId('connector');
-    const drawing: DrawingObject = {
-      id: nextId('draw'),
-      sheetId: this.activeSheetId,
-      kind: 'connector',
-      anchor: { kind: 'absolute' },
-      transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 },
-      zIndex: Math.max(...sheet.drawings.map((entry) => entry.zIndex), -1) + 1,
-      payloadId,
-    };
+    const drawing = this.createInsertDrawing('connector', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'connector', transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 }, zIndex: Math.max(...sheet.drawings.map((entry) => entry.zIndex), -1) + 1 });
     const payload: ConnectorDrawingPayload = {
       kind: 'connector',
       connectorType: type,
@@ -3266,8 +3532,7 @@ export class WorkbookSession {
       endArrowhead: 'triangle',
       route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
     };
-    this.runCommand('drawing.connector.add', { sheetId: this.activeSheetId, drawing, payload });
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'drawing.connector.add', sheetId: this.activeSheetId, drawing, payload });
     this.notify('Connector inserted');
     this.refresh();
   }
@@ -3296,28 +3561,43 @@ export class WorkbookSession {
     if (drawing.kind !== 'image' || payload.kind !== 'image') {
       throw new Error(`Image drawing and payload kind mismatch: ${drawing.id}`);
     }
-    this.runCommand('drawing.add.image', buildDrawingAdd(drawing, payload));
-    this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'drawing.add.image', sheetId: drawing.sheetId, drawing, payload });
     this.notify('Image placed on canvas');
     this.refresh();
   }
+  async resolveAssetUrl(asset: AssetRef): Promise<string> {
+    const existing = this.assetUrls.get(asset.assetId);
+    if (existing) return existing;
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
+    const blob = await this.runtime.assetStore.get(asset);
+    const url = URL.createObjectURL(blob);
+    this.assetUrls.set(asset.assetId, url);
+    return url;
+  }
   async insertImageFile(file: File, placement: 'cell' | 'floating' = 'floating'): Promise<void> {
     if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
-    const src = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
-      reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片读取失败'));
-      reader.readAsDataURL(file);
-    });
-    if (placement === 'cell') {
-      const active = this.selectionService.getState().activeCell;
-      this.runCommand('cell.image.apply', { sheetId: this.activeSheetId, row: active.row, column: active.column, presentation: { kind: 'image', src, altText: file.name, fit: 'contain' } });
-      this.notify('图片已嵌入单元格');
-      this.refresh();
-      return;
+    const asset = await this.runtime.assetStore.put({ content: file, mimeType: file.type });
+    try {
+      if (placement === 'cell') {
+        const active = this.selectionService.getState().activeCell;
+        this.commitInsertMutation({
+          kind: 'image-cell',
+          commandId: 'cell.image.apply',
+          sheetId: this.activeSheetId,
+          params: { sheetId: this.activeSheetId, row: active.row, column: active.column, presentation: { kind: 'image', asset, altText: file.name, fit: 'contain' } },
+          createdObjectIds: [asset.assetId],
+        }, () => {
+          this.notify('图片已嵌入单元格');
+          this.refresh();
+        });
+        return;
+      }
+      const drawing = this.createInsertDrawing('image', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'image', transform: { x: 96, y: 96, width: 320, height: 200, rotation: 0 } });
+      this.addImage(drawing, { kind: 'image', asset, name: file.name, altText: file.name });
+    } catch (error) {
+      await this.runtime.assetStore.release(asset);
+      throw error;
     }
-    const payloadId = nextId('image');
-    this.addImage({ id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'image', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 320, height: 200, rotation: 0 }, zIndex: 0, payloadId }, { kind: 'image', src, name: file.name, altText: file.name });
   }
   updateImageBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -3422,9 +3702,18 @@ export class WorkbookSession {
     return single ? [single] : [];
   }
   addSparkline(sparkline: SparklineModel): void {
-    this.runCommand('sparkline.insert', buildSparklineInsertParams(sparkline));
-    this.notify(`Sparkline inserted at row ${sparkline.anchor.row + 1}`);
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'sparkline',
+      commandId: 'sparkline.insert',
+      sheetId: sparkline.sheetId,
+      params: { ...buildSparklineInsertParams(sparkline) },
+      createdObjectIds: [sparkline.id],
+    }, () => {
+      this.selectionService.selectCell(cellAddress(sparkline.anchor.row, sparkline.anchor.column));
+      this.syncTableContextFromSelection();
+      this.notify(`Sparkline inserted at row ${sparkline.anchor.row + 1}`);
+      this.refresh();
+    });
   }
   insertSparklineDataLocation(
     params: {
@@ -3435,19 +3724,18 @@ export class WorkbookSession {
     } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId' | 'showAxis' | 'showMarkers'>>,
   ): string {
     const sparklineId = params.sparklineId;
-    this.runCommand(
-      'sparkline.insertDataLocation',
-      buildSparklineDataLocationParams(
-        this.activeSheetId,
-        sparklineId,
-        params.dataRange,
-        params.location,
-        params.type ?? 'line',
-        params,
-      ),
-    );
-    this.notify(`Sparkline inserted at row ${params.location.row + 1}`);
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'sparkline',
+      commandId: 'sparkline.insertDataLocation',
+      sheetId: this.activeSheetId,
+      params: { ...buildSparklineDataLocationParams(this.activeSheetId, sparklineId, params.dataRange, params.location, params.type ?? 'line', params) },
+      createdObjectIds: [sparklineId],
+    }, () => {
+      this.selectionService.selectCell(cellAddress(params.location.row, params.location.column));
+      this.syncTableContextFromSelection();
+      this.notify(`Sparkline inserted at row ${params.location.row + 1}`);
+      this.refresh();
+    });
     return sparklineId;
   }
   insertSparkline(type: SparklineModel['type'] = 'line'): string | undefined {
@@ -3457,7 +3745,7 @@ export class WorkbookSession {
       return undefined;
     }
     const placement = resolveQuickSparklinePlacement({ ...range, sheetId: this.activeSheetId });
-    const sparklineId = nextId('spark');
+    const sparklineId = this.insertCoordinator.allocateObjectId('spark');
     this.insertSparklineDataLocation({
       sparklineId,
       dataRange: placement.dataRange,
@@ -3473,11 +3761,18 @@ export class WorkbookSession {
     this.refresh();
   }
   createSparklineGroup(sparklineIds: string[], patch?: Partial<Pick<SparklineGroup, 'showAxis' | 'showMarkers'>>, type: SparklineModel['type'] = 'line'): string {
-    const groupId = nextId('sparkline-group');
+    const groupId = this.insertCoordinator.allocateObjectId('sparkline-group');
     const group = buildSparklineGroup(this.activeSheetId, groupId, sparklineIds, type, patch);
-    this.runCommand('sparkline.group.create', { sheetId: this.activeSheetId, group });
-    this.notify(`Sparkline group created (${sparklineIds.length})`);
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'sparkline-group',
+      commandId: 'sparkline.group.create',
+      sheetId: this.activeSheetId,
+      params: { sheetId: this.activeSheetId, group },
+      createdObjectIds: [groupId],
+    }, () => {
+      this.notify(`Sparkline group created (${sparklineIds.length})`);
+      this.refresh();
+    });
     return groupId;
   }
   updateSparklineGroup(groupId: string, patch: Partial<SparklineGroup>): void {
@@ -3573,10 +3868,11 @@ export class WorkbookSession {
       criterion: patch.criterion ? structuredClone(patch.criterion) : undefined,
     };
     const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
+    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(baseRange), currentRegion: structuredClone(baseRange) };
     if (owner?.kind === 'table' && tableOwner) {
-      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter } });
+      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter, dataRegionContext } });
     } else {
-      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter } });
+      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter, dataRegionContext } });
     }
   }
 
@@ -3587,7 +3883,7 @@ export class WorkbookSession {
       this.notify('No active filter is available for this column');
       return;
     }
-    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending } });
+    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext: this.getDataRegionContext() } });
   }
 
   applyFilterSelection(): void {
@@ -3599,7 +3895,7 @@ export class WorkbookSession {
         const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
         if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
       }
-      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
+      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
       return;
     }
     const range = this.getCurrentRegion();
@@ -3610,6 +3906,7 @@ export class WorkbookSession {
     this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
       sheetId: this.activeSheetId,
       range,
+      dataRegionContext: this.getDataRegionContext(),
     } });
   }
 
@@ -3626,8 +3923,9 @@ export class WorkbookSession {
       return;
     }
     const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns } } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
+    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(autoFilter.range), currentRegion: structuredClone(autoFilter.range) };
+    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
   }
 
   closeFilter(): void {
@@ -3639,17 +3937,19 @@ export class WorkbookSession {
       const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
       if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
     }
-    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext: this.getDataRegionContext() } });
   }
 
   private findParams(params: FindDialogParams): FindSearchParams {
     if (!params.query) throw new Error('Find query must not be empty');
+    const dataRegionContext = this.getDataRegionContext(params.scope === 'selection' ? 'selection' : params.scope === 'workbook' ? 'workbook' : 'sheet');
     return {
       sheetId: this.activeSheetId,
       query: params.query,
       searchOrder: params.searchOrder,
       scope: params.scope,
-      ...(params.scope === 'selection' ? { range: normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId }) } : {}),
+      ...(params.scope === 'selection' ? { range: normalizeRangeRef(dataRegionContext.range) } : {}),
+      dataRegionContext,
       targets: params.targets,
       matchCase: params.matchCase,
       entireCell: params.entireCell,
@@ -3675,7 +3975,7 @@ export class WorkbookSession {
 
   private focusFindMatch(match: FindMatch): void {
     if (match.sheetId !== this.activeSheetId) this.selectSheet(match.sheetId);
-    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.editingCell), insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref) });
+    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.active?.referenceMode), insertRef: (ref) => this.insertRefIntoDraft(ref) });
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
     this.emit();
@@ -3712,7 +4012,7 @@ export class WorkbookSession {
     const { result } = this.planFindDialog(params);
     const match = findAtCursor(result.matches, this.findCursor, 'next');
     if (!match) { this.notify('No matches found'); return 0; }
-    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'one', matchKey: match.key };
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'one', matchKey: match.key, inputContext: this.createInputContext('find-replace') };
     const committed = await this.executeCommandAfterMaterialization('find.replace', command);
     const remaining = result.matches.filter((entry) => entry.key !== match.key);
     const next = findAtCursor(remaining, null, 'next');
@@ -3724,7 +4024,7 @@ export class WorkbookSession {
 
   async replaceAll(params: FindDialogParams): Promise<number> {
     if (!params.replace) throw new Error('Replacement text must not be empty');
-    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all' };
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all', inputContext: this.createInputContext('find-replace') };
     const committed = await this.executeCommandAfterMaterialization('find.replace', command);
     this.resetFindCursor();
     const count = typeof committed.event?.payload.count === 'number' ? committed.event.payload.count : committed.mutationCount;
@@ -3821,12 +4121,25 @@ export class WorkbookSession {
   }
   async paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): Promise<DispatchOutcome> {
     const sel = this.selectionService.getState();
+    const inputContext = this.createInputContext('clipboard-text', this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.activeCell.row, sel.activeCell.column));
     const internal = this.clipboardData;
     if (internal) {
       const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
+        inputContext,
+        entryIntent: {
+          kind: 'paste',
+          target: {
+            sheetId: this.activeSheetId,
+            startRow: sel.activeCell.row,
+            endRow: sel.activeCell.row + Math.max(0, internal.sourceExtent.rows - 1),
+            startColumn: sel.activeCell.column,
+            endColumn: sel.activeCell.column + Math.max(0, internal.sourceExtent.columns - 1),
+          },
+          validationDecision: { status: 'not-applicable' },
+        },
         transfer: internal.transfer,
         spec,
       } });
@@ -3850,24 +4163,24 @@ export class WorkbookSession {
       return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard permission was denied'));
     }
     if (!text) return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard is empty'));
-    const clipboard: ClipboardPayload = {
-      range: this.getPrimaryRange(),
-      values: parseTsv(text),
-      transfer: 'copy',
-      rangeMetadata: {
-        columnWidths: [],
-        validations: [],
-        conditionalFormats: [],
-        notes: [],
-        comments: [],
-        hyperlinks: [],
-      },
-    };
+    const clipboard = sparseClipboardFromDense(this.getPrimaryRange(), parseTsv(text, inputContext));
     const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
-        clipboard,
-        transfer: 'copy',
+      clipboard: { ...clipboard, transfer: 'copy' },
+      inputContext,
+      entryIntent: {
+        kind: 'paste',
+        target: {
+          sheetId: this.activeSheetId,
+          startRow: sel.activeCell.row,
+          endRow: sel.activeCell.row + Math.max(0, clipboard.sourceExtent.rows - 1),
+          startColumn: sel.activeCell.column,
+          endColumn: sel.activeCell.column + Math.max(0, clipboard.sourceExtent.columns - 1),
+        },
+        validationDecision: { status: 'not-applicable' },
+      },
+      transfer: 'copy',
         spec,
       } });
     if (outcome.status !== 'committed') return outcome;
@@ -4138,6 +4451,17 @@ export class WorkbookSession {
 
   readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
     const table = this.runtime.model.dataModel.tables.get(tableId);
+    if (table?.sourceId) {
+      const query = this.runtime.dataContent.get(table.sourceId);
+      if (!query) return Promise.reject(new Error(`Data source ${table.sourceId} is unavailable`));
+      const start = Math.max(0, offset);
+      const count = Math.max(1, limit);
+      return query.getRows(start, Math.min(count, Math.max(0, table.rowCount - start))).then((result) => {
+        if (!result.value || result.state.availability !== 'ready') throw new Error(result.state.error ?? `Data source ${table.sourceId} could not be loaded`);
+        const end = start + result.value.length;
+        return { table: structuredClone(table), rows: result.value.map((row) => [...row]), ...(end < table.rowCount ? { nextOffset: end } : {}) };
+      });
+    }
     if (!table || !table.sourceSheetId || !table.sourceRange) return Promise.reject(new Error('Data table not found'));
     const sheet = this.runtime.model.getSheet(table.sourceSheetId);
     const start = Math.max(0, offset);
@@ -4213,22 +4537,22 @@ export class WorkbookSession {
   }
 
   setPrintArea(range: RangeRef): void {
-    if (!this.canExecute('print.area.set')) {
+    if (!this.canExecute('pageLayout.printArea.set')) {
       this.notify('You do not have permission to set print area');
       return;
     }
-    this.runCommand('print.area.set', { sheetId: range.sheetId, range });
+    this.runCommand('pageLayout.printArea.set', { sheetId: range.sheetId, range });
     this.rebuildPrintSnapshot(this.printLayout, range);
     this.notify('Print area updated');
     this.emit();
   }
 
   updatePrintPageSetup(layout: PrintLayout): void {
-    if (!this.canExecute('print.pageSetup')) {
+    if (!this.canExecute('pageLayout.pageSetup.set')) {
       this.notify('You do not have permission to change print setup');
       return;
     }
-    this.runCommand('print.pageSetup', { layout, sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot(layout);
     this.emit();
   }
@@ -4243,7 +4567,7 @@ export class WorkbookSession {
   }
 
   clearPrintArea(): void {
-    this.runCommand('print.area.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.printArea.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print area cleared');
     this.emit();
@@ -4254,14 +4578,14 @@ export class WorkbookSession {
     const params = axis === 'rows'
       ? { sheetId: this.activeSheetId, repeatRows: { start: range.startRow, end: range.endRow } }
       : { sheetId: this.activeSheetId, repeatColumns: { start: range.startColumn, end: range.endColumn } };
-    this.runCommand('print.titles.set', params);
+    this.runCommand('pageLayout.printTitles.set', params);
     this.rebuildStoredPrintSnapshot();
     this.notify(axis === 'rows' ? 'Rows to repeat at top updated' : 'Columns to repeat at left updated');
     this.emit();
   }
 
   clearPrintTitles(): void {
-    this.runCommand('print.titles.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.printTitles.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print titles cleared');
     this.emit();
@@ -4269,27 +4593,27 @@ export class WorkbookSession {
 
   setPrintPageBreak(pageBreak: { row?: number; column?: number }): void {
     const next: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('print.pageBreak.set', { sheetId: this.activeSheetId, pageBreak: next });
+    this.runCommand('pageLayout.pageBreak.insert', { sheetId: this.activeSheetId, pageBreak: next });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
   removePrintPageBreak(pageBreak: { row?: number; column?: number }): void {
     const target: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('print.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
+    this.runCommand('pageLayout.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
   clearPrintPageBreaks(): void {
-    this.runCommand('print.pageBreaks.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.pageBreak.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Manual page breaks cleared');
     this.emit();
   }
 
   setPrintScale(scale: number, fitToWidth?: number | null, fitToHeight?: number | null): void {
-    this.runCommand('print.scale.set', {
+    this.runCommand('pageLayout.scaleToFit.set', {
       sheetId: this.activeSheetId,
       scale,
       ...(fitToWidth === undefined ? {} : { fitToWidth }),
@@ -4313,26 +4637,26 @@ export class WorkbookSession {
   }
 
   setPrintGridlines(enabled: boolean): void {
-    this.runCommand('print.gridlines.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.printGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printGridlines: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
   setPrintHeadings(enabled: boolean): void {
-    this.runCommand('print.headings.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.printHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printHeadings: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
   setViewGridlines(enabled: boolean): void {
-    this.runCommand('pageLayout.gridlines.view.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.viewGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 
   setViewHeadings(enabled: boolean): void {
-    this.runCommand('pageLayout.headings.view.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.viewHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 
@@ -4413,7 +4737,15 @@ export class WorkbookSession {
       );
       const result = await this.executeQuery(query);
       const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
-      this.runCommand('query.load', { query: persistedQuery, target: resolvedTarget, result });
+      const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
+      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      try {
+        this.runCommand('query.load', prepared.payload);
+      } catch (error) {
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        throw error;
+      }
+      persistedQuery.sourceRevision = prepared.payload.source.revision;
       const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
       this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
       this.lastQueryResult = snapshot;
@@ -4446,12 +4778,15 @@ export class WorkbookSession {
       );
       const result = await this.executeQuery(session.definition);
       session.definition.lastTarget = structuredClone(target);
-      this.runCommand('query.refresh', {
-        queryId,
-        query: session.definition,
-        target,
-        result,
-      });
+      const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
+      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      try {
+        this.runCommand('query.refresh', prepared.payload);
+      } catch (error) {
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        throw error;
+      }
+      session.definition.sourceRevision = prepared.payload.source.revision;
       const snapshot = buildQueryResultSnapshot(session.definition, result, target);
       session.lastResult = snapshot;
       this.lastQueryResult = snapshot;
@@ -4629,21 +4964,6 @@ export class WorkbookSession {
     return result;
   }
 
-  runDataTableAnalysis(params: DataTableParams): DataTableResult {
-    if (!this.canExecute('extended.whatIf.dataTable')) {
-      this.notify('You do not have permission to run data tables');
-      return { kind: 'data-table', status: 'failed', message: 'Permission denied', filledCells: 0, writes: [] };
-    }
-    const command = this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
-    const result = command.plan?.result as DataTableResult | undefined;
-    if (!result) throw new Error('Data Table command did not return a plan');
-    this.lastWhatIfResult = result;
-    this.panels = { ...this.panels, active: 'extended', open: true };
-    this.notify(result.message);
-    this.refresh();
-    return result;
-  }
-
   getExtendedSnapshot(): ExtendedSnapshot {
     return {
       lastWhatIfResult: this.lastWhatIfResult,
@@ -4661,6 +4981,7 @@ export class WorkbookSession {
         nativePackage: this.nativePackage,
         execution: this.xlsxExecution,
         revision: this.version,
+        assetStore: this.runtime.assetStore,
       });
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
@@ -4768,13 +5089,20 @@ export class WorkbookSession {
       hasHeaderRow: request.hasHeaderRow,
       ...(request.styleName ? { styleName: request.styleName } : {}),
       existingNames: usedNames,
-      nextId,
+      nextId: this.insertCoordinator.allocateObjectId.bind(this.insertCoordinator),
       readCell: (row, column) => this.readResolvedCell(sheet, row, column)?.value,
     }, sheet);
-    this.runCommand('sheetTable.add', plan.table);
-    this.closeCreateTableDialog();
-    this.notify(`Sheet table ${plan.table.name} created`);
-    this.refresh();
+    this.commitInsertMutation({
+      kind: 'table',
+      commandId: 'sheetTable.add',
+      sheetId: this.activeSheetId,
+      params: { ...plan.table },
+      createdObjectIds: [plan.table.id],
+    }, () => {
+      this.closeCreateTableDialog();
+      this.notify(`Sheet table ${plan.table.name} created`);
+      this.refresh();
+    });
   }
 
   /** Build the canonical table descriptor for APIs that already own confirmation. */
@@ -4789,7 +5117,7 @@ export class WorkbookSession {
       hasHeaderRow: request.hasHeaderRow,
       ...(request.styleName ? { styleName: request.styleName } : {}),
       existingNames: usedNames,
-      nextId,
+      nextId: this.insertCoordinator.allocateObjectId.bind(this.insertCoordinator),
       readCell: (row, column) => this.readResolvedCell(sheet, row, column)?.value,
     }, sheet).table;
   }
@@ -5022,26 +5350,25 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  async createDataTableFromSelection(): Promise<void> {
+  async createDataSourceFromSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primaryRange = this.getPrimaryRange();
     const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
-    const fieldNames = new Set<string>();
-    const fields: WorkbookTableModel['fields'] = [];
-    for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column++) {
-      const rawName = String(this.readResolvedCell(sheet, sourceRange.startRow, column)?.value ?? '').trim() || `Column ${column - sourceRange.startColumn + 1}`;
-      let name = rawName;
-      let suffix = 2;
-      while (fieldNames.has(name)) name = `${rawName} ${suffix++}`;
-      fieldNames.add(name);
-      const sample: CellData['value'][] = [];
-      for (let row = sourceRange.startRow + 1; row <= Math.min(sourceRange.endRow, sourceRange.startRow + 1000); row++) sample.push(this.readResolvedCell(sheet, row, column)?.value ?? null);
-      fields.push({ id: name, name, ordinal: fields.length, type: inferTableFieldType(sample) });
-    }
-    const table: WorkbookTableModel = { id: nextId('table'), name: `${sheet.name} table`, sourceSheetId: this.activeSheetId, sourceRange: { ...sourceRange }, rowCount: Math.max(0, sourceRange.endRow - sourceRange.startRow), fields, blockSize: 4096, blocks: [], revision: 0 };
-    this.runCommand('table.add', table);
-    this.notify(`Data table ${table.name} created`);
+    const sourceId = nextId('data-source');
+    const encoded = await encodeSheetDataRegion({
+      sheet,
+      range: sourceRange,
+      sourceId,
+      sourceName: `${sheet.name} data source`,
+      regionId: `${sourceId}:region`,
+      revision: 0,
+    });
+    if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
+    for (const block of encoded.blocks) await this.storeDataBlock(block.ref, block.payload);
+    this.addDataSource(encoded.manifest);
+    this.addDataRegion(encoded.region);
+    this.notify(`Data Source ${encoded.manifest.name} created`);
     this.refresh();
   }
 

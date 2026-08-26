@@ -1,10 +1,8 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
-  planDataTable,
   planGoalSeek,
   planScenario,
-  type DataTableParams,
   type GoalSeekParams,
   type ScenarioDefinition,
   type WhatIfCellWrite,
@@ -21,10 +19,6 @@ export interface ExtendedScenarioCommandParams {
   scenario: ScenarioDefinition;
 }
 
-export interface ExtendedDataTableCommandParams extends DataTableParams {
-  sheetId?: string;
-}
-
 function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
   return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
 }
@@ -37,7 +31,13 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
     id: 'cell.set',
     unitId: context.workbook.unitId,
     sheetId: write.sheetId,
-    params: { sheetId: write.sheetId, row: write.row, column: write.column, value: structuredClone(write.value) },
+    params: {
+      sheetId: write.sheetId,
+      row: write.row,
+      column: write.column,
+      value: structuredClone(write.value),
+      entryIntent: { kind: 'formula-result', target: { sheetId: write.sheetId, row: write.row, column: write.column }, candidate: structuredClone(write.value), validationDecision: { status: 'not-applicable' } },
+    },
     affectedRanges,
     inverse: [{
       id: 'cell.restore',
@@ -98,13 +98,6 @@ export function registerExtendedCommands(registry: CommandRegistry): void {
     },
   });
 
-  registry.registerCommand<ExtendedDataTableCommandParams>({
-    id: 'extended.whatIf.dataTable',
-    execute(params, context): CommandResult & { plan: WhatIfPlan } {
-      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
-      return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, context);
-    },
-  });
 }
 
 function hashValue(value: unknown): string {

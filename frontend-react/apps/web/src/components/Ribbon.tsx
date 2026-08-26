@@ -33,6 +33,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
+import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
 import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
@@ -68,7 +69,7 @@ export interface RibbonProps {
   onTogglePrintGridlines: () => void;
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
-  onAutoSum: () => void;
+  onAutoSum: (functionName?: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN') => void;
   onFill: (direction: 'down' | 'up' | 'right' | 'left', mode?: 'copy' | 'series') => void;
   onFreezeAtPrimary: () => void;
   onOpenColumnWidth: () => void;
@@ -88,7 +89,7 @@ export interface RibbonProps {
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
   onConvertActiveTableToRange: () => void;
-  onCreateDataTable: () => void;
+  onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
   onClearFilter: () => CommandDescriptor | undefined;
@@ -107,7 +108,7 @@ export interface RibbonProps {
   onFlipSelection: (axis: 'h' | 'v') => void;
   onSplitByDelimiter: () => void;
   onToggleBandedRows: () => void;
-  onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
+  onSetRecalculationMode: (mode: 'automatic' | 'manual' | 'partial') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
@@ -157,7 +158,10 @@ function CatalogButton({
   variant = 'ghost',
   className,
   testId,
+  ribbonLayoutNodeId,
+  ribbonSurfaceId,
   mixed = false,
+  iconOverride,
 }: {
   id: RibbonCommandId;
   context: RibbonCommandContext;
@@ -168,6 +172,9 @@ function CatalogButton({
   variant?: 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
   className?: string;
   testId?: string;
+  ribbonLayoutNodeId?: string;
+  ribbonSurfaceId?: string;
+  iconOverride?: import('@react-sheets/ui-system').IconName;
   mixed?: boolean;
 }) {
   const locale = useContext(RibbonLocaleContext);
@@ -184,9 +191,12 @@ function CatalogButton({
       aria-pressed={definition.active ? active : undefined}
       title={mixedLabel}
       data-testid={testId}
+      data-ribbon-command={id}
+      data-ribbon-layout-node={ribbonLayoutNodeId}
+      data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
       disabled={!enabled}
-      icon={definition.icon}
+      icon={iconOverride ?? definition.icon}
       iconOnly={iconOnly || compactIcon}
       onClick={() => {
         const result = buildRibbonCommand(id, context);
@@ -256,7 +266,7 @@ export function Ribbon({
   onOpenTableSettings,
   onToggleTableOption,
   onConvertActiveTableToRange,
-  onCreateDataTable,
+  onCreateDataSource,
   onToggleSheetTableTotalRow,
   onApplyFilterSelection,
   onClearFilter,
@@ -347,7 +357,7 @@ export function Ribbon({
     onOpenTableSettings,
     onToggleTableOption,
     onConvertActiveTableToRange,
-    onCreateDataTable,
+    onCreateDataSource,
     onToggleSheetTableTotalRow,
     onApplyFilterSelection,
     onClearFilter,
@@ -409,19 +419,22 @@ export function Ribbon({
       context={catalogContext}
       onExecute={executeCatalogResult}
       iconOnly={options.iconOnly}
+      iconOverride={options.iconOverride}
+      ribbonLayoutNodeId={options.ribbonLayoutNodeId}
       textBelow={options.tile}
       className={options.className}
+      ribbonSurfaceId={options.ribbonSurfaceId}
       testId={options.testId}
     />
   );
 
   const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.map((definition) => {
     const result = isRibbonCommandEnabled(definition, catalogContext) ? buildRibbonCommand(definition.id, catalogContext) : undefined;
-    const group = getRibbonGroupDefinition(definition.group);
+    const groups = [...new Set(definition.placements.map((placement) => translateRibbonText(locale, getRibbonGroupDefinition(placement.group).labelKey)))];
     return {
       id: definition.id,
       label: translateRibbonText(locale, definition.labelKey),
-      group: translateRibbonText(locale, group.labelKey),
+      group: groups.join(' / '),
       keywords: [definition.id, definition.commandId ?? ''],
       tip: definition.tooltipKey ? translateRibbonText(locale, definition.tooltipKey) : undefined,
       commandId: definition.commandId,
@@ -458,7 +471,11 @@ export function Ribbon({
       >
         {(layout) => (
           <RibbonLayoutContext.Provider value={layout.mode}>
-        {activeTab !== 'home' && activeTab !== 'insert' ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} /> : null}
+        {activeTab === 'pageLayout' || activeTab === 'formulas' || activeTab === 'data'
+          ? <RibbonLayoutRenderer tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
+          : activeTab !== 'home' && activeTab !== 'insert'
+            ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
+            : null}
 
         {activeTab === 'home' ? (
           <HomeRibbon

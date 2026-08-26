@@ -2,12 +2,12 @@ package com.xc.luckysheet.server.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 /**
  * The single server-side protection authority.  The snapshot is the source
@@ -15,27 +15,19 @@ import java.util.Set;
  * native {@code allow} contract with an older action list.
  */
 final class ProtectionResolver {
-    private static final Set<String> OPERATION_ACTIONS = Set.of(
-            "format", "insert-rows", "insert-columns", "delete-rows", "delete-columns",
-            "sort", "auto-filter", "edit-objects", "select-locked", "select-unlocked"
-    );
-
     private ProtectionResolver() {
     }
 
     static void assertAllowed(JsonNode snapshot, List<RangeRef> ranges, String action) {
         if (ranges == null || ranges.isEmpty()) return;
         if (action == null || action.isBlank()) throw ServiceException.validation("Protection action is required");
-        if ("structure".equals(action)) action = "format";
-        if ("drawing".equals(action)) action = "edit-objects";
-        if ("comment".equals(action)) action = "edit-cell";
-        if ("print".equals(action)) return;
-        if (!"edit-cell".equals(action) && !OPERATION_ACTIONS.contains(action)) {
+        if (!"edit-cell".equals(action) && GeneratedWorkbookContract.protectionAllowField(action) == null) {
             throw ServiceException.validation("Unknown protection action: " + action);
         }
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         for (RangeRef target : ranges) {
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, target.sheetId());
+            assertCanonicalRange(sheet, target);
             if ("edit-cell".equals(action)) {
                 assertEditableCells(root, sheet, target);
             } else {
@@ -45,7 +37,8 @@ final class ProtectionResolver {
     }
 
     private static void assertOperationAllowed(ObjectNode root, ObjectNode sheet, RangeRef target, String action) {
-        String allowField = allowField(action);
+        String allowField = GeneratedWorkbookContract.protectionAllowField(action);
+        if (allowField == null) throw ServiceException.validation("Protection action has no allow field: " + action);
         for (JsonNode rule : matchingRules(root, sheet, target)) {
             if (!rule.path("locked").isBoolean() || !rule.path("locked").asBoolean()) continue;
             JsonNode allow = rule.get("allow");
@@ -56,35 +49,67 @@ final class ProtectionResolver {
     }
 
     private static void assertEditableCells(ObjectNode root, ObjectNode sheet, RangeRef target) {
-        int rowCount = boundedDimension(sheet, "rowCount", SnapshotMutationSupport.MAX_ROW + 1);
-        int columnCount = boundedDimension(sheet, "columnCount", SnapshotMutationSupport.MAX_COLUMN + 1);
-        if (target.startRow() >= rowCount || target.startColumn() >= columnCount) return;
-        int endRow = Math.min(target.endRow(), rowCount - 1);
-        int endColumn = Math.min(target.endColumn(), columnCount - 1);
-        for (int row = target.startRow(); row <= endRow; row++) {
-            for (int column = target.startColumn(); column <= endColumn; column++) {
-                if (isLocked(root, sheet, target.sheetId(), row, column)) {
-                    throw ServiceException.forbidden("Protected cell blocks mutation " + target.sheetId() + "!" + row + "," + column);
-                }
+        List<JsonNode> matches = matchingRules(root, sheet, target);
+        for (JsonNode rule : matches) {
+            if (rule.path("locked").asBoolean(false) && "range".equals(rule.path("scope").asText())) {
+                throw ServiceException.forbidden("Protected range blocks mutation " + target.sheetId());
             }
+        }
+        boolean active = matches.stream().anyMatch(rule -> rule.path("locked").asBoolean(false)
+                && ("workbook".equals(rule.path("scope").asText()) || "sheet".equals(rule.path("scope").asText())));
+        if (!active) return;
+        long requestedCells = SnapshotMutationSupport.cellCount(target);
+        long explicitUnlocked = countExplicitUnlockedCells(sheet, target);
+        if (explicitUnlocked != requestedCells) {
+            throw ServiceException.forbidden("Protected cell blocks mutation " + target.sheetId() + "!" + target.startRow() + "," + target.startColumn());
         }
     }
 
-    private static boolean isLocked(ObjectNode root, ObjectNode sheet, String sheetId, int row, int column) {
-        RangeRef cell = new RangeRef(sheetId, row, row, column, column);
-        List<JsonNode> matches = matchingRules(root, sheet, cell);
-        boolean active = matches.stream().anyMatch(rule -> rule.path("locked").asBoolean(false)
-                && ("workbook".equals(rule.path("scope").asText()) || "sheet".equals(rule.path("scope").asText())));
-        boolean rangeLocked = matches.stream().anyMatch(rule -> "range".equals(rule.path("scope").asText()) && rule.path("locked").asBoolean(false));
-        if (rangeLocked) return true;
-        if (!active) return false;
+    private static void assertCanonicalRange(ObjectNode sheet, RangeRef target) {
+        int rowCount = canonicalDimension(sheet, "rowCount");
+        int columnCount = canonicalDimension(sheet, "columnCount");
+        if (target.endRow() >= rowCount || target.endColumn() >= columnCount) {
+            throw ServiceException.validation("Protection range exceeds canonical worksheet bounds");
+        }
+    }
+
+    private static int canonicalDimension(ObjectNode sheet, String field) {
+        JsonNode value = sheet.get(field);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1) {
+            throw ServiceException.validation("Protection requires canonical worksheet " + field);
+        }
+        return value.intValue();
+    }
+
+    private static long countExplicitUnlockedCells(ObjectNode sheet, RangeRef target) {
         JsonNode cells = sheet.get("cells");
-        JsonNode cellNode = cells != null && cells.isObject()
-                ? cells.path(Integer.toString(row)).path(Integer.toString(column))
-                : null;
-        if (cellNode != null && cellNode.isMissingNode()) cellNode = null;
-        JsonNode style = cellNode == null ? null : cellNode.get("style");
-        return style == null || !style.isObject() || !style.path("locked").isBoolean() || style.path("locked").asBoolean();
+        if (cells == null || !cells.isObject()) return 0;
+        long count = 0;
+        var rows = cells.fields();
+        while (rows.hasNext()) {
+            var rowEntry = rows.next();
+            int row;
+            try {
+                row = Integer.parseInt(rowEntry.getKey());
+            } catch (NumberFormatException ignored) {
+                throw ServiceException.validation("Protection cell index contains an invalid row");
+            }
+            if (row < target.startRow() || row > target.endRow() || !rowEntry.getValue().isObject()) continue;
+            var columns = rowEntry.getValue().fields();
+            while (columns.hasNext()) {
+                var columnEntry = columns.next();
+                int column;
+                try {
+                    column = Integer.parseInt(columnEntry.getKey());
+                } catch (NumberFormatException ignored) {
+                    throw ServiceException.validation("Protection cell index contains an invalid column");
+                }
+                if (column < target.startColumn() || column > target.endColumn()) continue;
+                JsonNode style = columnEntry.getValue().get("style");
+                if (style != null && style.isObject() && style.path("locked").isBoolean() && !style.path("locked").asBoolean()) count += 1;
+            }
+        }
+        return count;
     }
 
     private static List<JsonNode> matchingRules(ObjectNode root, ObjectNode sheet, RangeRef target) {
@@ -117,25 +142,4 @@ final class ProtectionResolver {
                 && target.endColumn() >= raw.path("startColumn").asInt(Integer.MAX_VALUE);
     }
 
-    private static String allowField(String action) {
-        return switch (action) {
-            case "format" -> "formatCells";
-            case "insert-rows" -> "insertRows";
-            case "insert-columns" -> "insertColumns";
-            case "delete-rows" -> "deleteRows";
-            case "delete-columns" -> "deleteColumns";
-            case "sort" -> "sort";
-            case "auto-filter" -> "autoFilter";
-            case "edit-objects" -> "editObjects";
-            case "select-locked" -> "selectLocked";
-            case "select-unlocked" -> "selectUnlocked";
-            default -> throw ServiceException.validation("Protection action has no allow field: " + action);
-        };
-    }
-
-    private static int boundedDimension(ObjectNode sheet, String field, int fallback) {
-        JsonNode value = sheet.get(field);
-        if (value == null || !value.isIntegralNumber() || value.intValue() < 1) return fallback;
-        return Math.min(value.intValue(), fallback);
-    }
 }

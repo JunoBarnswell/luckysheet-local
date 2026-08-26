@@ -1,12 +1,16 @@
-import type { BinaryOperator, CellAddress, FormulaAst, SpillReferenceNode } from './ast';
+import type { BinaryOperator, CellAddress, FormulaAst, FormulaReferenceNode, SpillReferenceNode } from './ast';
 import { formatFormula } from './ast-format';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
-import { createFormulaError, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import { createFormulaError, isArrayValue, isFormulaError, isReferenceValue, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
+import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
+import type { ExcelNumericContext } from './numeric';
+import type { WorkbookCollationContext } from './collation';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import { createReferenceCursor, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
@@ -23,12 +27,33 @@ export interface FormulaEvaluationContext {
   resolveTableReference?(tableName: string, request: {
     specifier?: import('./ast').TableReferenceSpecifier;
     columnName?: string;
+    columnEndName?: string;
     thisRow: boolean;
   }): FormulaValue | EvaluationRange | undefined;
+  /** Resolve a structured reference without converting it to an opaque string. */
+  resolveReference?(reference: FormulaReferenceNode): FormulaEvaluationReference | FormulaError | undefined;
   /** Workbook calendar used by serial/date functions. */
   readonly dateSystem?: ExcelDateSystem;
   /** Host-owned deterministic clock; missing means TODAY/NOW fail-close. */
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  /** Workbook numeric semantics shared by inline and Worker evaluation. */
+  readonly numericContext?: ExcelNumericContext;
+  readonly collationContext?: WorkbookCollationContext;
+  /** Canonical worksheet row visibility used by provenance-aware references. */
+  readonly rowVisibility?: RowVisibilityResolver;
+  /** Formula identity for a source cell, used to suppress nested aggregates. */
+  readonly readFormulaKind?: (address: CellAddress) => ReferenceFormulaKind;
+  /** Stable AST identity for the current function occurrence. */
+  readonly volatileOccurrence?: string;
+  /** Host-provided order-independent random source for volatile functions. */
+  readonly random?: (functionName: string, occurrence?: string, elementIndex?: number) => number | FormulaError;
+  /** Evaluate a formula AST while overriding one or more input cells. */
+  readonly evaluateWithCellOverrides?: (ast: FormulaAst, overrides: readonly FormulaCellOverride[]) => FormulaValue;
+}
+
+export interface FormulaCellOverride {
+  readonly address: CellAddress;
+  readonly value: ScalarValue;
 }
 
 /** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
@@ -48,7 +73,12 @@ interface EvaluationRange {
   readonly range: RangeDependency;
 }
 
-type EvaluationValue = FormulaValue | EvaluationRange;
+export interface FormulaEvaluationReference {
+  readonly kind: 'reference';
+  readonly ranges: readonly RangeDependency[];
+}
+
+type EvaluationValue = FormulaValue | EvaluationRange | FormulaEvaluationReference;
 
 export function evaluateFormula(ast: FormulaAst, context: FormulaEvaluationContext): FormulaValue {
   const result = evaluateNode(ast, context);
@@ -71,8 +101,11 @@ export function evaluateFormulaWithTrace(ast: FormulaAst, context: FormulaEvalua
 type EvaluationTraceSink = (node: FormulaAst, value: EvaluationValue) => void;
 
 function materializeEvaluationValue(value: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
-  if (!isEvaluationRange(value)) return value;
-  const matrix = readRangeAsMatrix(value.range, context);
+  if (isReferenceValue(value)) return createFormulaError('#REF!', 'Reference value requires a workbook resolver');
+  if (!isEvaluationRange(value) && !isEvaluationReference(value)) return value;
+  const matrix = isEvaluationRange(value)
+    ? readRangeAsMatrix(value.range, context)
+    : readReferenceAsMatrix(value.ranges, context);
   return matrix.length === 1 && matrix[0]?.length === 1 ? matrix[0][0]! : matrix;
 }
 
@@ -97,6 +130,16 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
     case 'range-reference':
       result = { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
       break;
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+    case 'reference-union':
+    case 'reference-intersection':
+    case 'sheet-range-reference':
+    case 'external-reference': {
+      const resolved = context.resolveReference?.(node);
+      result = resolved ?? createFormulaError('#REF!', 'Reference requires a workbook resolver');
+      break;
+    }
     case 'spill-reference':
       result = evaluateSpillReference(node, context);
       break;
@@ -108,10 +151,11 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
         node.operator,
         evaluateNode(node.left, context, trace),
         evaluateNode(node.right, context, trace),
+        context,
       );
       break;
     case 'function-call':
-      result = evaluateFunction(node.name, node.arguments, context, trace);
+      result = evaluateFunction(node.name, node.arguments, context, trace, `${node.span.start}:${node.span.end}`);
       break;
     case 'name-reference': {
       const resolved = context.resolveName?.(node.name.toUpperCase());
@@ -122,6 +166,7 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
       const resolved = context.resolveTableReference?.(node.tableName, {
         specifier: node.specifier,
         columnName: node.columnName,
+        columnEndName: node.columnEndName,
         thisRow: node.thisRow,
       });
       if (resolved === undefined) {
@@ -141,19 +186,25 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
 
 function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
   if (isFormulaError(operand)) return operand;
-  if (operator === '@' && isEvaluationRange(operand)) {
-    const { start, end } = operand.range;
+  if (operator === '@' && (isEvaluationRange(operand) || isEvaluationReference(operand))) {
+    const range = isEvaluationRange(operand) ? operand.range : operand.ranges[0];
+    if (!range) return createFormulaError('#REF!', 'Implicit intersection has no range');
+    const { start, end } = range;
     const row = context.currentCell.row >= start.row && context.currentCell.row <= end.row ? context.currentCell.row : start.row;
     const column = context.currentCell.column >= start.column && context.currentCell.column <= end.column ? context.currentCell.column : start.column;
     const address = { sheetId: start.sheetId, row, column };
     return context.readSpillValue?.(address) ?? context.readCell(address);
   }
-  if (isEvaluationRange(operand)) return createFormulaError('#VALUE!', 'A range cannot be used with a unary operator');
+  if (isEvaluationRange(operand) || isEvaluationReference(operand)) {
+    const matrix = isEvaluationRange(operand) ? readRangeAsMatrix(operand.range, context) : readReferenceAsMatrix(operand.ranges, context);
+    return matrix.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
+  }
+  if (isArrayValue(operand)) return operand.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   const number = toNumber(operand);
   if (isFormulaError(number)) return number;
-  if (operator === '-') return -number;
-  if (operator === '%') return number / 100;
-  return number;
+  if (operator === '-') return normalizeExcelPrecision(-number, context.numericContext);
+  if (operator === '%') return normalizeExcelPrecision(number / 100, context.numericContext);
+  return normalizeExcelPrecision(number, context.numericContext);
 }
 
 function evaluateSpillReference(node: SpillReferenceNode, context: FormulaEvaluationContext): EvaluationValue {
@@ -173,12 +224,15 @@ function evaluateBinary(
   operator: BinaryOperator,
   left: EvaluationValue,
   right: EvaluationValue,
+  context: FormulaEvaluationContext,
 ): FormulaValue {
   if (isFormulaError(left)) return left;
   if (isFormulaError(right)) return right;
-  if (isEvaluationRange(left) || isEvaluationRange(right)) {
-    return createFormulaError('#VALUE!', 'A range cannot be used in binary operator');
-  }
+  const leftValue = isEvaluationRange(left) || isEvaluationReference(left) ? materializeEvaluationValue(left, context) : left;
+  const rightValue = isEvaluationRange(right) || isEvaluationReference(right) ? materializeEvaluationValue(right, context) : right;
+  if (isArrayValue(leftValue) || isArrayValue(rightValue)) return liftBinary(operator, leftValue, rightValue, context);
+  left = leftValue;
+  right = rightValue;
 
   // String concatenation
   if (operator === '&') {
@@ -207,16 +261,34 @@ function evaluateBinary(
 
   switch (operator) {
     case '+':
-      return leftNumber + rightNumber;
+      return normalizeExcelPrecision(leftNumber + rightNumber, context.numericContext);
     case '-':
-      return leftNumber - rightNumber;
+      return normalizeExcelPrecision(leftNumber - rightNumber, context.numericContext);
     case '*':
-      return leftNumber * rightNumber;
+      return normalizeExcelPrecision(leftNumber * rightNumber, context.numericContext);
     case '/':
-      return rightNumber === 0 ? createFormulaError('#DIV/0!', 'Division by zero') : leftNumber / rightNumber;
+      return rightNumber === 0 ? createFormulaError('#DIV/0!', 'Division by zero') : normalizeExcelPrecision(leftNumber / rightNumber, context.numericContext);
     case '^':
-      return Math.pow(leftNumber, rightNumber);
+      return normalizeExcelPrecision(Math.pow(leftNumber, rightNumber), context.numericContext);
   }
+}
+
+function liftBinary(operator: BinaryOperator, left: FormulaValue, right: FormulaValue, context: FormulaEvaluationContext): FormulaValue {
+  const leftMatrix = isArrayValue(left) ? left : [[left]];
+  const rightMatrix = isArrayValue(right) ? right : [[right]];
+  const rows = Math.max(leftMatrix.length, rightMatrix.length);
+  const columns = Math.max(leftMatrix[0]?.length ?? 1, rightMatrix[0]?.length ?? 1);
+  const compatible = (matrix: ArrayValue): boolean =>
+    (matrix.length === 1 || matrix.length === rows)
+    && ((matrix[0]?.length ?? 1) === 1 || (matrix[0]?.length ?? 1) === columns);
+  if (!compatible(leftMatrix) || !compatible(rightMatrix)) return createFormulaError('#VALUE!', 'Array shapes are not compatible');
+  const valueAt = (matrix: ArrayValue, row: number, column: number): FormulaValue => {
+    const sourceRow = matrix.length === 1 ? 0 : row;
+    const sourceColumns = matrix[sourceRow]?.length ?? 1;
+    return matrix[sourceRow]?.[sourceColumns === 1 ? 0 : column] ?? null;
+  };
+  return Array.from({ length: rows }, (_, row) => Array.from({ length: columns }, (_, column) =>
+    evaluateBinary(operator, valueAt(leftMatrix, row, column), valueAt(rightMatrix, row, column), context)));
 }
 
 function compareValues(left: FormulaValue, right: FormulaValue, operator: BinaryOperator): boolean {
@@ -252,7 +324,8 @@ function evaluateFunction(
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
   trace?: EvaluationTraceSink,
-): FormulaValue | EvaluationRange {
+  volatileOccurrence?: string,
+): FormulaValue | EvaluationRange | FormulaEvaluationReference {
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context, trace);
   if (native !== undefined) return native;
@@ -270,8 +343,8 @@ function evaluateFunction(
     }
     const value = evaluateNode(argument, context, trace);
     rawRanges.push(value);
-    if (isEvaluationRange(value)) {
-      evaluatedArgs.push(readRangeAsMatrix(value.range, context));
+    if (isEvaluationRange(value) || isEvaluationReference(value)) {
+      evaluatedArgs.push(materializeEvaluationValue(value, context));
     } else {
       evaluatedArgs.push(value);
     }
@@ -279,7 +352,7 @@ function evaluateFunction(
 
   if (fn) {
     try {
-      return fn(evaluatedArgs, context);
+      return fn(evaluatedArgs, volatileOccurrence === undefined ? context : { ...context, volatileOccurrence });
     } catch (err) {
       return createFormulaError('#VALUE!', err instanceof Error ? err.message : 'Function evaluation error');
     }
@@ -287,9 +360,12 @@ function evaluateFunction(
 
   // 上下文感知函数(SUMIFS 家族 / SUMPRODUCT / SUBTOTAL 等)
   const advanced = evaluateAdvancedFunction(name, { values: evaluatedArgs, ranges: rawRanges } as AdvancedFunctionArgs, {
-    currentCell: context.currentCell,
-    readMatrix: (range: RangeDependency) => readRangeAsMatrix(range, context),
-    toRange: (value: EvaluationValue) => (isEvaluationRange(value) ? value.range : undefined),
+    toRanges: (value: EvaluationValue) => isEvaluationRange(value)
+      ? [value.range]
+      : isEvaluationReference(value)
+        ? value.ranges
+        : undefined,
+    readCursor: (range: RangeDependency) => createReferenceCursor(range, context),
   });
   if (advanced !== undefined) return advanced;
 
@@ -322,6 +398,8 @@ function evaluateReferenceFunction(
   trace?: EvaluationTraceSink,
 ): FormulaValue | EvaluationRange | undefined {
   switch (name.toUpperCase()) {
+    case 'SJS.TABLE':
+      return evaluateSjsTable(args, context, trace);
     case 'ROW': {
       if (args.length === 0) return context.currentCell.row + 1;
       const target = args[0]!;
@@ -348,7 +426,7 @@ function evaluateReferenceFunction(
       const values: FormulaValue[] = [];
       for (const argument of args) {
         const value = evaluateNode(argument, context, trace);
-        values.push(isEvaluationRange(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
+        values.push(isEvaluationRange(value) || isEvaluationReference(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
       }
       const row = toNumber(values[0] ?? 1);
       const column = toNumber(values[1] ?? 1);
@@ -374,7 +452,7 @@ function evaluateReferenceFunction(
       const scalar = (node: FormulaAst | undefined, fallback: number): number | FormulaError => {
         if (!node) return fallback;
         const value = evaluateNode(node, context, trace);
-        if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
+        if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
         const numeric = toNumber(value);
         return numeric;
       };
@@ -405,7 +483,7 @@ function evaluateReferenceFunction(
       const first = args[0];
       if (!first) return createFormulaError('#REF!', 'INDIRECT expects a text reference');
       const value = evaluateNode(first, context, trace);
-      if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
+      if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
       if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
       try {
         const parsed = parseFormula('=' + value);
@@ -418,6 +496,71 @@ function evaluateReferenceFunction(
     default:
       return undefined;
   }
+}
+
+/**
+ * SJS.TABLE is the canonical dynamic-array data-table function.  The first
+ * argument is the result expression/reference, followed by one or more
+ * `(inputs, inputCell)` pairs.  Each input range is sampled in row-major
+ * order and the result expression is evaluated with the corresponding input
+ * cells overridden for that row.
+ */
+function evaluateSjsTable(
+  args: readonly FormulaAst[],
+  context: FormulaEvaluationContext,
+  trace?: EvaluationTraceSink,
+): FormulaValue {
+  if (!context.evaluateWithCellOverrides) return createFormulaError('#BLOCKED!', 'SJS.TABLE requires an override-capable workbook evaluator');
+  if (args.length < 3 || (args.length - 1) % 2 !== 0) {
+    return createFormulaError('#VALUE!', 'SJS.TABLE expects resultReference and one or more input pairs');
+  }
+
+  const inputPairs: Array<{ values: FormulaValue[]; address: CellAddress }> = [];
+  for (let index = 1; index < args.length; index += 2) {
+    const inputNode = args[index]!;
+    const cellNode = args[index + 1]!;
+    const address = referenceCellAddress(cellNode, context);
+    if (!address) return createFormulaError('#VALUE!', 'SJS.TABLE inputCell must be a cell reference');
+    const values = referenceValues(inputNode, context, trace);
+    if (isFormulaError(values)) return values;
+    inputPairs.push({ values, address });
+  }
+  const rowCount = inputPairs[0]?.values.length ?? 0;
+  if (rowCount === 0 || inputPairs.some((pair) => pair.values.length !== rowCount)) {
+    return createFormulaError('#VALUE!', 'SJS.TABLE input ranges must have the same number of values');
+  }
+
+  const result: ArrayValue = [];
+  for (let row = 0; row < rowCount; row += 1) {
+    const overrides = inputPairs.map((pair) => ({ address: pair.address, value: scalarForTable(pair.values[row]!) }));
+    const value = context.evaluateWithCellOverrides(args[0]!, overrides);
+    trace?.(args[0]!, value as EvaluationValue);
+    if (isFormulaError(value)) return value;
+    if (isArrayValue(value) || isReferenceValue(value)) return createFormulaError('#CALC!', 'SJS.TABLE resultReference must resolve to a scalar');
+    result.push([value]);
+  }
+  return result;
+}
+
+function referenceCellAddress(node: FormulaAst, context: FormulaEvaluationContext): CellAddress | undefined {
+  if (node.type !== 'cell-reference') return undefined;
+  return resolveCellReference(node.reference, context.currentCell);
+}
+
+function referenceValues(node: FormulaAst, context: FormulaEvaluationContext, trace?: EvaluationTraceSink): FormulaValue[] | FormulaError {
+  const value = evaluateNode(node, context, trace);
+  if (isFormulaError(value)) return value;
+  if (isEvaluationRange(value)) return [...context.readRange(value.range)];
+  if (isEvaluationReference(value)) return value.ranges.flatMap((range) => [...context.readRange(range)]);
+  if (isArrayValue(value)) return value.flat();
+  if (isReferenceValue(value)) return createFormulaError('#VALUE!', 'SJS.TABLE inputs must be cell or range references');
+  return [value];
+}
+
+function scalarForTable(value: FormulaValue): ScalarValue {
+  if (isFormulaError(value)) return null;
+  if (isArrayValue(value) || isReferenceValue(value)) return null;
+  return value;
 }
 
 function readRangeAsMatrix(range: RangeDependency, context: FormulaEvaluationContext): ArrayValue {
@@ -436,17 +579,23 @@ function readRangeAsMatrix(range: RangeDependency, context: FormulaEvaluationCon
 }
 
 function toNumber(value: FormulaValue): number | ReturnType<typeof createFormulaError> {
-  if (isFormulaError(value)) return value;
-  if (value === null) return 0;
-  if (typeof value === 'boolean') return value ? 1 : 0;
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string') {
-    const n = Number(value);
-    if (!Number.isNaN(n)) return n;
-  }
-  return createFormulaError('#VALUE!', 'Expected a number');
+  return coerceExcelNumber(value);
 }
 
 function isEvaluationRange(value: EvaluationValue): value is EvaluationRange {
   return typeof value === 'object' && value !== null && 'kind' in value && (value as { kind: string }).kind === 'range';
+}
+
+function isEvaluationReference(value: EvaluationValue): value is FormulaEvaluationReference {
+  return typeof value === 'object'
+    && value !== null
+    && 'kind' in value
+    && (value as { kind: string }).kind === 'reference'
+    && 'ranges' in value;
+}
+
+function readReferenceAsMatrix(ranges: readonly RangeDependency[], context: FormulaEvaluationContext): ArrayValue {
+  const matrix: ArrayValue = [];
+  for (const range of ranges) matrix.push(...readRangeAsMatrix(range, context));
+  return matrix;
 }

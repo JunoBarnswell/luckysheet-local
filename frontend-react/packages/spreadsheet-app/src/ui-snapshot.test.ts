@@ -226,7 +226,7 @@ describe('canonical drawing UI projection', () => {
       comment: { id: 'legacy-comment', author: 'old', text: 'old', createdAt: '2020-01-01' },
     });
     setCellHyperlink(sheet, 0, 0, { id: 'canonical', target: { kind: 'url', url: 'https://canonical.invalid' } });
-    sheet.commentThreads.push({
+    sheet.review.addThread({
       id: 'thread-1', sheetId: sheet.id, row: 0, column: 0, author: 'Alice', text: 'Review',
       createdAt: '2026-01-01', replies: [],
     });

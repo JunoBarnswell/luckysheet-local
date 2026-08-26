@@ -114,7 +114,7 @@ export function HistoryPanel({
                       {entry.description || 'Workbook Mutation'}
                     </Text>
                     <Text size="xs" tone="subtle">
-                      {new Date(entry.timestamp).toLocaleTimeString()} · {entry.undo.length} inverse ops
+                      {new Date(entry.timestamp).toLocaleTimeString()} · {entry.inversePlan.length} inverse ops · {entry.status}
                     </Text>
                   </Stack>
                   <Inline gap="sm" className="items-center">

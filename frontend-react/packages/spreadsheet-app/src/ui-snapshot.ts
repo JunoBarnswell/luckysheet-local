@@ -31,7 +31,7 @@ import type {
 } from '@react-sheets/core-model';
 import {
   computeBandedCellStyle,
-  computeConditionalOverlays,
+  createConditionalFormatRuntime,
   computeFilterHiddenRows,
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
@@ -72,7 +72,6 @@ import {
   type PivotProjectionSourceState,
 } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
-import { getCellNote } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from './features/data-source';
 import { createWorkbookCellResolver } from './features/data-source';
 import {
@@ -133,6 +132,7 @@ export interface CanvasSheetSnapshot {
   sparklineGroups?: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
+  dataRegions: import('@react-sheets/core-model').SheetDataRegion[];
   merges: MergeSpan[];
   pane: WorksheetPane;
   autoFilter?: AutoFilterModel;
@@ -255,7 +255,7 @@ export function buildCanvasSheetSnapshot(
   pivotErrors: Readonly<Record<string, string>> = {},
   dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
-  const overlays = computeConditionalOverlays(sheet);
+  const conditionalRuntime = createConditionalFormatRuntime(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
   const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
     const cell = cellResolver.resolve(owner, row, column)?.cell;
@@ -272,7 +272,7 @@ export function buildCanvasSheetSnapshot(
     return resolveFilterCellValue(cell, undefined, dateSystem);
   };
   const readFilterCell = (row: number, column: number) => resolveFilterCell(sheet, row, column);
-  const filterVisual = createEffectiveFilterVisualResolver(overlays);
+  const filterVisual = createEffectiveFilterVisualResolver((row, column) => conditionalRuntime.resolveCell(row, column));
   const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
@@ -304,8 +304,7 @@ export function buildCanvasSheetSnapshot(
     const modelCell = resolved.cell;
     const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
-    const key = `${row}:${column}`;
-    const overlay = overlays.get(key);
+    const overlay = conditionalRuntime.resolveCell(row, column);
     const table = findSheetTableAt(sheet, row, column);
     const presentation = mergePresentationStyles(
       computeBandedCellStyle(sheet, row, column),
@@ -314,9 +313,9 @@ export function buildCanvasSheetSnapshot(
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
     const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
-    const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
-    const note = getCellNote(sheet, row, column) ?? modelCell?.note;
-    const comment = thread ? threadToCellComment(thread) : modelCell?.comment;
+    const thread = findCommentThreadAt(sheet, row, column);
+    const note = sheet.review.getNoteAt(row, column);
+    const comment = thread ? threadToCellComment(thread) : undefined;
     const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
     const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
     return {
@@ -400,6 +399,7 @@ export function buildCanvasSheetSnapshot(
     sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
+    dataRegions: structuredClone(sheet.dataRegions),
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
     autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,

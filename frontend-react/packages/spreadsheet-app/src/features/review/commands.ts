@@ -1,6 +1,5 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import type { CellHyperlink, CellNote, CommentReply, CommentThread, RangeRef } from '@react-sheets/core-model';
-import { noteCellKey } from '@react-sheets/core-model';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 import {
   getCellHyperlink,
@@ -11,12 +10,6 @@ import {
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
-}
-
-function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
-  const index = items.findIndex((item) => item.id === id);
-  if (index < 0) return undefined;
-  return items.splice(index, 1)[0];
 }
 
 export interface NoteSetParams {
@@ -172,65 +165,61 @@ function applyReviewMutation(mutationId: string, params: unknown, context: impor
   switch (mutationId) {
     case 'note.set': {
       if (!isNoteSet(params)) throw new Error('Invalid note.set parameters');
-      context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
+      context.workbook.getSheet(params.sheetId).review.setNote(params.row, params.column, params.note);
       return;
     }
     case 'note.remove': {
       if (!isNoteRemove(params)) throw new Error('Invalid note.remove parameters');
-      if (!context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column))) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
+      if (!context.workbook.getSheet(params.sheetId).review.removeNote(params.row, params.column)) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
       return;
     }
     case 'note.visibility': {
       if (!isNoteVisibility(params)) throw new Error('Invalid note.visibility parameters');
-      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
-      if (!note) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
-      note.visible = params.visible;
+      context.workbook.getSheet(params.sheetId).review.updateNote(params.row, params.column, (note) => { note.visible = params.visible; });
       return;
     }
     case 'comment.add': {
       if (!isCommentAdd(params)) throw new Error('Invalid comment.add parameters');
-      const threads = context.workbook.getSheet(params.sheetId).commentThreads;
-      if (threads.some((entry) => entry.id === params.thread.id)) throw new Error(`Comment thread already exists: ${params.thread.id}`);
-      threads.push(structuredClone(params.thread));
+      context.workbook.getSheet(params.sheetId).review.addThread(params.thread);
       return;
     }
     case 'comment.reply': {
       if (!isCommentReplyParams(params)) throw new Error('Invalid comment.reply parameters');
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-      if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
-      thread.replies.push(structuredClone(params.reply));
+      context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+        if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
+        thread.replies.push(structuredClone(params.reply));
+      });
       return;
     }
     case 'comment.reply.remove': {
       if (!isCommentReplyRemove(params)) throw new Error('Invalid comment.reply.remove parameters');
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-      const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
-      if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
-      thread.replies.splice(index, 1);
+      context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+        const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
+        if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
+        thread.replies.splice(index, 1);
+      });
       return;
     }
     case 'comment.resolve': {
       if (!isCommentResolve(params)) throw new Error('Invalid comment.resolve parameters');
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
       if (params.resolved && !params.resolvedAt) throw new Error('Resolving a comment requires resolvedAt from the operation payload');
-      thread.resolved = params.resolved;
-      thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+      context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+        thread.resolved = params.resolved;
+        thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+      });
       return;
     }
     case 'comment.remove': {
       if (!isCommentRemove(params)) throw new Error('Invalid comment.remove parameters');
-      if (!removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId)) throw new Error(`Comment thread not found: ${params.threadId}`);
+      if (!context.workbook.getSheet(params.sheetId).review.removeThread(params.threadId)) throw new Error(`Comment thread not found: ${params.threadId}`);
       return;
     }
     case 'comment.update': {
       if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-      if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
-      thread.text = params.text;
+      context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+        if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+        thread.text = params.text;
+      });
       return;
     }
     case 'hyperlink.set': {
@@ -256,7 +245,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'note.set',
       handler: (item, context) => {
     const params = item.params;
-    context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
+    context.workbook.getSheet(params.sheetId).review.setNote(params.row, params.column, params.note);
   },
       metadata: {
     schema: { name: 'NoteSetParams', validate: isNoteSet },
@@ -269,7 +258,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'note.remove',
       handler: (item, context) => {
     const params = item.params;
-    const removed = context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column));
+    const removed = context.workbook.getSheet(params.sheetId).review.removeNote(params.row, params.column);
     if (!removed) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
   },
       metadata: {
@@ -283,9 +272,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'note.visibility',
       handler: (item, context) => {
     const params = item.params;
-    const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
-    if (!note) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
-    note.visible = params.visible;
+    context.workbook.getSheet(params.sheetId).review.updateNote(params.row, params.column, (note) => { note.visible = params.visible; });
   },
       metadata: {
     schema: { name: 'NoteVisibilityParams', validate: isNoteVisibility },
@@ -299,9 +286,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.add',
       handler: (item, context) => {
     const params = item.params;
-    const threads = context.workbook.getSheet(params.sheetId).commentThreads;
-    if (threads.some((entry) => entry.id === params.thread.id)) throw new Error(`Comment thread already exists: ${params.thread.id}`);
-    threads.push(structuredClone(params.thread));
+    context.workbook.getSheet(params.sheetId).review.addThread(params.thread);
   },
       metadata: {
     schema: { name: 'CommentAddParams', validate: isCommentAdd },
@@ -314,10 +299,10 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.reply',
       handler: (item, context) => {
     const params = item.params;
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-    if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
-    thread.replies.push(structuredClone(params.reply));
+    context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+      if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
+      thread.replies.push(structuredClone(params.reply));
+    });
   },
       metadata: {
     schema: { name: 'CommentReplyParams', validate: isCommentReplyParams },
@@ -330,11 +315,11 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.reply.remove',
       handler: (item, context) => {
     const params = item.params;
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-    const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
-    if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
-    thread.replies.splice(index, 1);
+    context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+      const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
+      if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
+      thread.replies.splice(index, 1);
+    });
   },
       metadata: {
     schema: { name: 'CommentReplyRemoveParams', validate: isCommentReplyRemove },
@@ -347,11 +332,11 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.resolve',
       handler: (item, context) => {
     const params = item.params;
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     if (params.resolved && !params.resolvedAt) throw new Error('Resolving a comment requires resolvedAt from the operation payload');
-    thread.resolved = params.resolved;
-    thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+    context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+      thread.resolved = params.resolved;
+      thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+    });
   },
       metadata: {
     schema: { name: 'CommentResolveParams', validate: isCommentResolve },
@@ -364,7 +349,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.remove',
       handler: (item, context) => {
     const params = item.params;
-    const removed = removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId);
+    const removed = context.workbook.getSheet(params.sheetId).review.removeThread(params.threadId);
     if (!removed) throw new Error(`Comment thread not found: ${params.threadId}`);
   },
       metadata: {
@@ -379,10 +364,10 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
       id: 'comment.update',
       handler: (item, context) => {
     const params = item.params;
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
-    if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
-    thread.text = params.text;
+    context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
+      if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+      thread.text = params.text;
+    });
   },
       metadata: {
     schema: { name: 'CommentUpdateParams', validate: isCommentUpdate },
@@ -426,7 +411,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<NoteSetParams>({
     id: 'note.set',
     execute: (params, context) => {
-      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      const note = context.workbook.getSheet(params.sheetId).review.getNoteAt(params.row, params.column);
       const affectedRanges = cellRange(params.sheetId, params.row, params.column);
       if (note) {
         context.applyMutation({ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) }, affectedRanges }], apply: () => applyReviewMutation('note.set', params, context) });
@@ -441,7 +426,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<NoteRemoveParams>({
     id: 'note.remove',
     execute: (params, context) => {
-      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      const note = context.workbook.getSheet(params.sheetId).review.getNoteAt(params.row, params.column);
       if (!note) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, params.row, params.column);
       context.applyMutation({ id: 'note.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) }, affectedRanges }], apply: () => applyReviewMutation('note.remove', params, context) });
@@ -453,7 +438,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<NoteVisibilityParams>({
     id: 'note.visibility',
     execute: (params, context) => {
-      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      const note = context.workbook.getSheet(params.sheetId).review.getNoteAt(params.row, params.column);
       if (!note) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, params.row, params.column);
       context.applyMutation({ id: 'note.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, visible: note.visible }, affectedRanges }], apply: () => applyReviewMutation('note.visibility', params, context) });
@@ -475,7 +460,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<CommentReplyParams>({
     id: 'comment.reply',
     execute: (params, context) => {
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
       if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
       context.applyMutation({ id: 'comment.reply', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.reply.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, threadId: params.threadId, replyId: params.reply.id }, affectedRanges }], apply: () => applyReviewMutation('comment.reply', params, context) });
@@ -487,7 +472,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<CommentResolveParams>({
     id: 'comment.resolve',
     execute: (params, context) => {
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
       if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
       const previous: CommentResolveParams = { sheetId: params.sheetId, threadId: params.threadId, resolved: thread.resolved ?? false, ...(thread.resolvedAt ? { resolvedAt: thread.resolvedAt } : {}) };
@@ -500,7 +485,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<CommentRemoveParams>({
     id: 'comment.remove',
     execute: (params, context) => {
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
       if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
       context.applyMutation({ id: 'comment.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: thread.row, column: thread.column, thread: structuredClone(thread) }, affectedRanges }], apply: () => applyReviewMutation('comment.remove', params, context) });
@@ -513,7 +498,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     id: 'comment.update',
     execute: (params, context) => {
       if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
       if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
       if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
@@ -527,7 +512,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<CommentReplyRemoveParams>({
     id: 'comment.reply.remove',
     execute: (params, context) => {
-      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
       const reply = thread?.replies.find((entry) => entry.id === params.replyId);
       if (!thread || !reply) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);

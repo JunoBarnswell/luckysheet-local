@@ -5,6 +5,7 @@ import {
 } from './layout';
 import type { PrintAreaSetCommandParams, PrintPreviewCommandParams } from './layout';
 import {
+  DEFAULT_PAGE_SETUP,
   getPrintDocument,
   normalizePrintDocument,
   replacePrintDocument,
@@ -53,17 +54,62 @@ export interface PrintPageBreakRemoveCommandParams {
   pageBreak: PrintPageBreak;
 }
 
-export interface PrintDocumentReplaceCommandParams {
-  document: PrintDocument;
-}
-
-interface PrintDocumentMutationParams {
+export interface PageLayoutMarginsSetParams {
   sheetId: string;
-  document: PrintDocument;
+  margins: PageSetup['margins'];
 }
 
-function sheetRange(sheetId: string): RangeRef[] {
-  return [{ sheetId, startRow: 0, endRow: Number.MAX_SAFE_INTEGER, startColumn: 0, endColumn: Number.MAX_SAFE_INTEGER }];
+export interface PageLayoutOrientationSetParams {
+  sheetId: string;
+  orientation: PageSetup['orientation'];
+}
+
+export interface PageLayoutPaperSizeSetParams {
+  sheetId: string;
+  paperSize: PageSetup['paperSize'];
+}
+
+export interface PageLayoutScaleToFitSetParams {
+  sheetId: string;
+  scale: number;
+  fitToWidth?: number | null;
+  fitToHeight?: number | null;
+}
+
+export interface PageLayoutToggleSetParams {
+  sheetId: string;
+  enabled: boolean;
+}
+
+export interface PageLayoutTitlesSetParams {
+  sheetId: string;
+  repeatRows?: PrintTitleSpan | null;
+  repeatColumns?: PrintTitleSpan | null;
+}
+
+export interface PageLayoutAreaSetParams {
+  sheetId: string;
+  range: RangeRef;
+}
+
+interface PageLayoutAreaClearParams {
+  sheetId: string;
+  printAreas?: PrintDocument['printAreas'];
+}
+
+export interface PageLayoutBreakParams {
+  sheetId: string;
+  pageBreak: PrintPageBreak;
+}
+
+interface PageLayoutBreakClearParams {
+  sheetId: string;
+  pageBreaks?: PrintDocument['pageBreaks'];
+}
+
+interface PageLayoutSetupDetailSetParams {
+  sheetId: string;
+  pageSetup: PageSetup;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -122,6 +168,51 @@ function isPrintToggle(value: unknown): value is PrintToggleCommandParams {
   return isRecord(value) && typeof value.sheetId === 'string' && typeof value.enabled === 'boolean';
 }
 
+function isPageLayoutMarginsSet(value: unknown): value is PageLayoutMarginsSetParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isPageSetup({ ...DEFAULT_PAGE_SETUP, margins: value.margins } as PageSetup);
+}
+
+function isPageLayoutOrientationSet(value: unknown): value is PageLayoutOrientationSetParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && (value.orientation === 'portrait' || value.orientation === 'landscape');
+}
+
+function isPageLayoutPaperSizeSet(value: unknown): value is PageLayoutPaperSizeSetParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && ['letter', 'a4', 'a3', 'legal', 'custom'].includes(String(value.paperSize));
+}
+
+function isPageLayoutSetupDetailSet(value: unknown): value is PageLayoutSetupDetailSetParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isPageSetup(value.pageSetup);
+}
+
+function isPageLayoutAreaSet(value: unknown): value is PageLayoutAreaSetParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range) && value.range.sheetId === value.sheetId;
+}
+
+function isPageLayoutBreak(value: unknown): value is PageLayoutBreakParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.pageBreak) && value.pageBreak.sheetId === value.sheetId
+    && (Number.isInteger(value.pageBreak.row) !== Number.isInteger(value.pageBreak.column));
+}
+
+function isPrintAreaList(value: unknown, sheetId: string): value is PrintDocument['printAreas'] {
+  return Array.isArray(value) && value.every((entry) => isRecord(entry)
+    && entry.sheetId === sheetId && isRange(entry.range) && entry.range.sheetId === sheetId);
+}
+
+function isPageBreakList(value: unknown, sheetId: string): value is PrintDocument['pageBreaks'] {
+  return Array.isArray(value) && value.every((entry) => isRecord(entry)
+    && entry.sheetId === sheetId && (Number.isInteger(entry.row) !== Number.isInteger(entry.column)));
+}
+
+function isPageLayoutAreaClear(value: unknown): value is PageLayoutAreaClearParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && (value.printAreas === undefined || isPrintAreaList(value.printAreas, value.sheetId));
+}
+
+function isPageLayoutBreakClear(value: unknown): value is PageLayoutBreakClearParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && (value.pageBreaks === undefined || isPageBreakList(value.pageBreaks, value.sheetId));
+}
+
 function isPrintDocument(value: unknown): value is PrintDocument {
   if (!isRecord(value) || value.schema !== 'PrintDocument' || typeof value.unitId !== 'string' || typeof value.sheetId !== 'string') return false;
   if (!isPageSetup(value.pageSetup) || !Array.isArray(value.printAreas) || !Array.isArray(value.pageBreaks)) return false;
@@ -129,80 +220,24 @@ function isPrintDocument(value: unknown): value is PrintDocument {
     && value.pageBreaks.every((entry) => isRecord(entry) && typeof entry.sheetId === 'string' && (Number.isInteger(entry.row) !== Number.isInteger(entry.column)));
 }
 
-function isDocumentMutation(value: unknown): value is PrintDocumentMutationParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isPrintDocument(value.document) && value.document.sheetId === value.sheetId;
-}
-
-function applyPrintPageSetup(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.pageSetup.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageSetup.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintAreaSet(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.area.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.area.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintAreaClear(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.area.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.area.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintPageBreakSet(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.pageBreak.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreak.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintPageBreakRemove(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.pageBreak.remove', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreak.remove', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintPageBreaksClear(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.pageBreaks.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreaks.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyPrintDocumentReplace(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
-  const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
-}
-
-function applyGridlineViewToggle(context: CommandContext, params: PrintToggleCommandParams, previous: boolean): void {
-  const affectedRanges = sheetRange(params.sheetId);
+function applyPageLayoutMutation<T extends object, I extends object>(
+  context: CommandContext,
+  id: string,
+  sheetId: string,
+  params: T,
+  inverse: I,
+  affectedRanges: RangeRef[] = [],
+  apply: () => void,
+  inverseId = id,
+): void {
   context.applyMutation({
-    id: 'pageLayout.gridlines.view.set',
+    id,
     unitId: context.workbook.unitId,
-    sheetId: params.sheetId,
+    sheetId,
     params,
     affectedRanges,
-    inverse: [{
-      id: 'pageLayout.gridlines.view.set',
-      unitId: context.workbook.unitId,
-      sheetId: params.sheetId,
-      params: { sheetId: params.sheetId, enabled: previous },
-      affectedRanges,
-    }],
-    apply: () => { context.workbook.getSheet(params.sheetId).showGridlines = params.enabled; },
-  });
-}
-
-function applyHeadingsViewToggle(context: CommandContext, params: PrintToggleCommandParams, previous: boolean): void {
-  const affectedRanges = sheetRange(params.sheetId);
-  context.applyMutation({
-    id: 'pageLayout.headings.view.set',
-    unitId: context.workbook.unitId,
-    sheetId: params.sheetId,
-    params,
-    affectedRanges,
-    inverse: [{
-      id: 'pageLayout.headings.view.set',
-      unitId: context.workbook.unitId,
-      sheetId: params.sheetId,
-      params: { sheetId: params.sheetId, enabled: previous },
-      affectedRanges,
-    }],
-    apply: () => { context.workbook.getSheet(params.sheetId).showHeaders = params.enabled; },
+    inverse: [{ id: inverseId, unitId: context.workbook.unitId, sheetId, params: inverse, affectedRanges }],
+    apply,
   });
 }
 
@@ -226,7 +261,7 @@ function pageSetupFromParams(params: PrintPageSetupCommandParams): PageSetup {
       footerText: params.layout.footerText,
     };
   }
-  throw new Error('print.pageSetup requires pageSetup');
+  throw new Error('pageLayout.pageSetup.set requires pageSetup');
 }
 
 function nextPrintTitles(
@@ -261,15 +296,21 @@ function samePageBreak(left: PrintPageBreak, right: PrintPageBreak): boolean {
 }
 
 export function registerPrintCommands(registry: CommandRegistry): void {
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.pageSetup.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageSetupMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageSetup.set'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.area.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintAreaSetMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.area.set'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.area.clear', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintAreaClearMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.area.clear'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.pageBreak.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreakSetMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreak.set'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.pageBreak.remove', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreakRemoveMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreak.remove'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.pageBreaks.clear', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreaksClearMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreaks.clear'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintDocumentMutationParams>({ id: 'print.document.replace', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintDocumentReplaceMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.document.replace'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.gridlines.view.set', handler: (item, context) => { context.workbook.getSheet(item.params.sheetId).showGridlines = item.params.enabled; }, metadata: { schema: { name: 'PageLayoutGridlinesViewMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.gridlines.view.set'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.headings.view.set', handler: (item, context) => { context.workbook.getSheet(item.params.sheetId).showHeaders = item.params.enabled; }, metadata: { schema: { name: 'PageLayoutHeadingsViewMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.headings.view.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutSetupDetailSetParams>({ id: 'pageLayout.pageSetupDetail.set', handler: (item, context) => { if (!isPageLayoutSetupDetailSet(item.params)) throw new Error('pageLayout.pageSetupDetail.set requires pageSetup'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: structuredClone(item.params.pageSetup) }); }, metadata: { schema: { name: 'PageLayoutSetupDetailSetMutation', validate: isPageLayoutSetupDetailSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.pageSetupDetail.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutMarginsSetParams>({ id: 'pageLayout.margins.set', handler: (item, context) => { if (!isPageLayoutMarginsSet(item.params)) throw new Error('pageLayout.margins.set requires margins'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, margins: structuredClone(item.params.margins) } }); }, metadata: { schema: { name: 'PageLayoutMarginsSetMutation', validate: isPageLayoutMarginsSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.margins.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutOrientationSetParams>({ id: 'pageLayout.orientation.set', handler: (item, context) => { if (!isPageLayoutOrientationSet(item.params)) throw new Error('pageLayout.orientation.set requires orientation'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, orientation: item.params.orientation } }); }, metadata: { schema: { name: 'PageLayoutOrientationSetMutation', validate: isPageLayoutOrientationSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.orientation.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutPaperSizeSetParams>({ id: 'pageLayout.paperSize.set', handler: (item, context) => { if (!isPageLayoutPaperSizeSet(item.params)) throw new Error('pageLayout.paperSize.set requires paperSize'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, paperSize: item.params.paperSize } }); }, metadata: { schema: { name: 'PageLayoutPaperSizeSetMutation', validate: isPageLayoutPaperSizeSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.paperSize.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintScaleSetCommandParams>({ id: 'pageLayout.scaleToFit.set', handler: (item, context) => { if (!isPrintScaleSet(item.params)) throw new Error('pageLayout.scaleToFit.set requires scale'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, scale: item.params.scale, fitToWidth: item.params.fitToWidth ?? undefined, fitToHeight: item.params.fitToHeight ?? undefined } }); }, metadata: { schema: { name: 'PageLayoutScaleToFitSetMutation', validate: isPrintScaleSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.scaleToFit.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintTitlesSetCommandParams>({ id: 'pageLayout.printTitles.set', handler: (item, context) => { if (!isPrintTitlesSet(item.params)) throw new Error('pageLayout.printTitles.set requires title spans'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, ...(Object.prototype.hasOwnProperty.call(item.params, 'repeatRows') ? { repeatRows: item.params.repeatRows ?? undefined } : {}), ...(Object.prototype.hasOwnProperty.call(item.params, 'repeatColumns') ? { repeatColumns: item.params.repeatColumns ?? undefined } : {}) }); }, metadata: { schema: { name: 'PageLayoutPrintTitlesSetMutation', validate: isPrintTitlesSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.printTitles.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutAreaSetParams>({ id: 'pageLayout.printArea.set', handler: (item, context) => { if (!isPageLayoutAreaSet(item.params)) throw new Error('pageLayout.printArea.set requires a same-sheet range'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, printAreas: [{ sheetId: item.params.sheetId, range: structuredClone(item.params.range) }] }); }, metadata: { schema: { name: 'PageLayoutPrintAreaSetMutation', validate: isPageLayoutAreaSet }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [params.range], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.printArea.clear'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutAreaClearParams>({ id: 'pageLayout.printArea.clear', handler: (item, context) => { if (!isPageLayoutAreaClear(item.params)) throw new Error('pageLayout.printArea.clear requires a sheetId and valid print areas'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, printAreas: item.params.printAreas === undefined ? [] : structuredClone(item.params.printAreas) }); }, metadata: { schema: { name: 'PageLayoutPrintAreaClearMutation', validate: isPageLayoutAreaClear }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.printArea.clear'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutBreakParams>({ id: 'pageLayout.pageBreak.insert', handler: (item, context) => { if (!isPageLayoutBreak(item.params)) throw new Error('pageLayout.pageBreak.insert requires a page break'); const document = getPrintDocument(context.workbook, item.params.sheetId); const pageBreaks = document.pageBreaks.filter((entry) => !samePageBreak(entry, item.params.pageBreak)); pageBreaks.push(structuredClone(item.params.pageBreak)); replacePrintDocument(context.workbook, { ...document, pageBreaks }); }, metadata: { schema: { name: 'PageLayoutPageBreakInsertMutation', validate: isPageLayoutBreak }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.pageBreak.remove'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutBreakParams>({ id: 'pageLayout.pageBreak.remove', handler: (item, context) => { if (!isPageLayoutBreak(item.params)) throw new Error('pageLayout.pageBreak.remove requires a page break'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageBreaks: document.pageBreaks.filter((entry) => !samePageBreak(entry, item.params.pageBreak)) }); }, metadata: { schema: { name: 'PageLayoutPageBreakRemoveMutation', validate: isPageLayoutBreak }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.pageBreak.insert'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PageLayoutBreakClearParams>({ id: 'pageLayout.pageBreak.clear', handler: (item, context) => { if (!isPageLayoutBreakClear(item.params)) throw new Error('pageLayout.pageBreak.clear requires a sheetId and valid page breaks'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageBreaks: item.params.pageBreaks === undefined ? [] : structuredClone(item.params.pageBreaks) }); }, metadata: { schema: { name: 'PageLayoutPageBreakClearMutation', validate: isPageLayoutBreakClear }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.pageBreak.clear'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.printGridlines.set', handler: (item, context) => { if (!isPrintToggle(item.params)) throw new Error('pageLayout.printGridlines.set requires enabled'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, printGridlines: item.params.enabled } }); }, metadata: { schema: { name: 'PageLayoutPrintGridlinesSetMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.printGridlines.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.printHeadings.set', handler: (item, context) => { if (!isPrintToggle(item.params)) throw new Error('pageLayout.printHeadings.set requires enabled'); const document = getPrintDocument(context.workbook, item.params.sheetId); replacePrintDocument(context.workbook, { ...document, pageSetup: { ...document.pageSetup, printHeadings: item.params.enabled } }); }, metadata: { schema: { name: 'PageLayoutPrintHeadingsSetMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.printHeadings.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.viewGridlines.set', handler: (item, context) => { context.workbook.getSheet(item.params.sheetId).showGridlines = item.params.enabled; }, metadata: { schema: { name: 'PageLayoutViewGridlinesMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.viewGridlines.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<PrintToggleCommandParams>({ id: 'pageLayout.viewHeadings.set', handler: (item, context) => { context.workbook.getSheet(item.params.sheetId).showHeaders = item.params.enabled; }, metadata: { schema: { name: 'PageLayoutViewHeadingsMutation', validate: isPrintToggle }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, inversePolicy: { allowedMutationIds: ['pageLayout.viewHeadings.set'], minCount: 1, maxCount: 1 } } });
 
   registry.registerCommand<PrintPreviewCommandParams>({
     id: 'print.preview',
@@ -290,19 +331,19 @@ export function registerPrintCommands(registry: CommandRegistry): void {
   });
 
   registry.registerCommand<PrintPageSetupCommandParams>({
-    id: 'print.pageSetup',
+    id: 'pageLayout.pageSetup.set',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = pageSetupWithTitles(previous, params);
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.pageSetupDetail.set', params.sheetId, { sheetId: params.sheetId, pageSetup: normalizePrintDocument(next).pageSetup }, { sheetId: params.sheetId, pageSetup: normalizePrintDocument(previous).pageSetup }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintTitlesSetCommandParams>({
-    id: 'print.titles.set',
+    id: 'pageLayout.printTitles.set',
     execute(params, context): CommandResult {
-      if (!isPrintTitlesSet(params)) throw new Error('print.titles.set requires repeatRows and/or repeatColumns');
+      if (!isPrintTitlesSet(params)) throw new Error('pageLayout.printTitles.set requires repeatRows and/or repeatColumns');
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next: PrintDocument = {
         ...previous,
@@ -313,25 +354,25 @@ export function registerPrintCommands(registry: CommandRegistry): void {
           ? { repeatColumns: params.repeatColumns ?? undefined }
           : {}),
       };
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.printTitles.set', params.sheetId, { sheetId: params.sheetId, repeatRows: params.repeatRows ?? null, repeatColumns: params.repeatColumns ?? null }, { sheetId: params.sheetId, repeatRows: previous.repeatRows ?? null, repeatColumns: previous.repeatColumns ?? null }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<{ sheetId: string }>({
-    id: 'print.titles.clear',
+    id: 'pageLayout.printTitles.clear',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next: PrintDocument = { ...previous, repeatRows: undefined, repeatColumns: undefined };
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.printTitles.set', params.sheetId, { sheetId: params.sheetId, repeatRows: null, repeatColumns: null }, { sheetId: params.sheetId, repeatRows: previous.repeatRows ?? null, repeatColumns: previous.repeatColumns ?? null }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintScaleSetCommandParams>({
-    id: 'print.scale.set',
+    id: 'pageLayout.scaleToFit.set',
     execute(params, context): CommandResult {
-      if (!isPrintScaleSet(params)) throw new Error('print.scale.set requires a scale between 1 and 400');
+      if (!isPrintScaleSet(params)) throw new Error('pageLayout.scaleToFit.set requires a scale between 1 and 400');
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next: PrintDocument = {
         ...previous,
@@ -342,113 +383,106 @@ export function registerPrintCommands(registry: CommandRegistry): void {
           ...(params.fitToHeight === undefined ? {} : { fitToHeight: params.fitToHeight ?? undefined }),
         },
       };
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.scaleToFit.set', params.sheetId, { sheetId: params.sheetId, scale: params.scale, fitToWidth: params.fitToWidth ?? null, fitToHeight: params.fitToHeight ?? null }, { sheetId: params.sheetId, scale: previous.pageSetup.scale, fitToWidth: previous.pageSetup.fitToWidth ?? null, fitToHeight: previous.pageSetup.fitToHeight ?? null }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintToggleCommandParams>({
-    id: 'print.gridlines.set',
+    id: 'pageLayout.printGridlines.set',
     execute(params, context): CommandResult {
-      if (!isPrintToggle(params)) throw new Error('print.gridlines.set requires enabled');
+      if (!isPrintToggle(params)) throw new Error('pageLayout.printGridlines.set requires enabled');
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next: PrintDocument = { ...previous, pageSetup: { ...previous.pageSetup, printGridlines: params.enabled } };
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.printGridlines.set', params.sheetId, { sheetId: params.sheetId, enabled: params.enabled }, { sheetId: params.sheetId, enabled: previous.pageSetup.printGridlines }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintToggleCommandParams>({
-    id: 'print.headings.set',
+    id: 'pageLayout.printHeadings.set',
     execute(params, context): CommandResult {
-      if (!isPrintToggle(params)) throw new Error('print.headings.set requires enabled');
+      if (!isPrintToggle(params)) throw new Error('pageLayout.printHeadings.set requires enabled');
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next: PrintDocument = { ...previous, pageSetup: { ...previous.pageSetup, printHeadings: params.enabled } };
-      applyPrintPageSetup(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.printHeadings.set', params.sheetId, { sheetId: params.sheetId, enabled: params.enabled }, { sheetId: params.sheetId, enabled: previous.pageSetup.printHeadings }, [], () => replacePrintDocument(context.workbook, next));
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintToggleCommandParams>({
-    id: 'pageLayout.gridlines.view.set',
+    id: 'pageLayout.viewGridlines.set',
     execute(params, context): CommandResult {
-      if (!isPrintToggle(params)) throw new Error('pageLayout.gridlines.view.set requires enabled');
+      if (!isPrintToggle(params)) throw new Error('pageLayout.viewGridlines.set requires enabled');
       const previous = context.workbook.getSheet(params.sheetId).showGridlines;
-      applyGridlineViewToggle(context, params, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.viewGridlines.set', params.sheetId, params, { sheetId: params.sheetId, enabled: previous }, [], () => { context.workbook.getSheet(params.sheetId).showGridlines = params.enabled; });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintToggleCommandParams>({
-    id: 'pageLayout.headings.view.set',
+    id: 'pageLayout.viewHeadings.set',
     execute(params, context): CommandResult {
-      if (!isPrintToggle(params)) throw new Error('pageLayout.headings.view.set requires enabled');
+      if (!isPrintToggle(params)) throw new Error('pageLayout.viewHeadings.set requires enabled');
       const previous = context.workbook.getSheet(params.sheetId).showHeaders;
-      applyHeadingsViewToggle(context, params, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.viewHeadings.set', params.sheetId, params, { sheetId: params.sheetId, enabled: previous }, [], () => { context.workbook.getSheet(params.sheetId).showHeaders = params.enabled; });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintAreaSetCommandParams>({
-    id: 'print.area.set',
+    id: 'pageLayout.printArea.set',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, printAreas: [{ sheetId: params.sheetId, range: structuredClone(params.range) }] };
-      applyPrintAreaSet(context, params.sheetId, next, previous);
+      applyPageLayoutMutation(context, 'pageLayout.printArea.set', params.sheetId, { sheetId: params.sheetId, range: structuredClone(params.range) }, { sheetId: params.sheetId, printAreas: structuredClone(previous.printAreas) }, [params.range], () => replacePrintDocument(context.workbook, next), 'pageLayout.printArea.clear');
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [params.range] };
     },
   });
 
   registry.registerCommand<{ sheetId: string }>({
-    id: 'print.area.clear',
+    id: 'pageLayout.printArea.clear',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, printAreas: [] };
-      applyPrintAreaClear(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.printArea.clear', params.sheetId, { sheetId: params.sheetId }, { sheetId: params.sheetId, printAreas: structuredClone(previous.printAreas) }, [], () => replacePrintDocument(context.workbook, next), 'pageLayout.printArea.clear');
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintPageBreakSetCommandParams>({
-    id: 'print.pageBreak.set',
+    id: 'pageLayout.pageBreak.insert',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const nextBreak = structuredClone(params.pageBreak);
       const pageBreaks = previous.pageBreaks.filter((item) => !(item.sheetId === nextBreak.sheetId && ((nextBreak.row !== undefined && item.row === nextBreak.row) || (nextBreak.column !== undefined && item.column === nextBreak.column))));
       pageBreaks.push(nextBreak);
       const next = { ...previous, pageBreaks };
-      applyPrintPageBreakSet(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.pageBreak.insert', params.sheetId, { sheetId: params.sheetId, pageBreak: nextBreak }, { sheetId: params.sheetId, pageBreak: nextBreak }, [], () => replacePrintDocument(context.workbook, next), 'pageLayout.pageBreak.remove');
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<PrintPageBreakRemoveCommandParams>({
-    id: 'print.pageBreak.remove',
+    id: 'pageLayout.pageBreak.remove',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, pageBreaks: previous.pageBreaks.filter((item) => !samePageBreak(item, params.pageBreak)) };
-      applyPrintPageBreakRemove(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      const previousBreak = previous.pageBreaks.find((entry) => samePageBreak(entry, params.pageBreak));
+      if (!previousBreak) throw new Error('pageLayout.pageBreak.remove requires an existing page break');
+      applyPageLayoutMutation(context, 'pageLayout.pageBreak.remove', params.sheetId, { sheetId: params.sheetId, pageBreak: structuredClone(params.pageBreak) }, { sheetId: params.sheetId, pageBreak: structuredClone(previousBreak) }, [], () => replacePrintDocument(context.workbook, next), 'pageLayout.pageBreak.insert');
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
   registry.registerCommand<{ sheetId: string }>({
-    id: 'print.pageBreaks.clear',
+    id: 'pageLayout.pageBreak.clear',
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, pageBreaks: [] };
-      applyPrintPageBreaksClear(context, params.sheetId, next, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
+      applyPageLayoutMutation(context, 'pageLayout.pageBreak.clear', params.sheetId, { sheetId: params.sheetId }, { sheetId: params.sheetId, pageBreaks: structuredClone(previous.pageBreaks) }, [], () => replacePrintDocument(context.workbook, next), 'pageLayout.pageBreak.clear');
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
 
-  registry.registerCommand<PrintDocumentReplaceCommandParams>({
-    id: 'print.document.replace',
-    execute(params, context): CommandResult {
-      const document = normalizePrintDocument(params.document);
-      const previous = getPrintDocument(context.workbook, document.sheetId);
-      applyPrintDocumentReplace(context, document.sheetId, document, previous);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(document.sheetId) };
-    },
-  });
 }

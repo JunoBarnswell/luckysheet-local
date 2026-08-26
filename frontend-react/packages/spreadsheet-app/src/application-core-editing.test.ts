@@ -168,8 +168,10 @@ describe('WorkbookSession core editing integration', () => {
     });
     selectCell(app, 0, 0);
     app.setClipboard({
+      schema: 'SparseClipboardPayload',
       range: { sheetId, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
-      values: [[{ value: 'materialize-me' }]],
+      sourceExtent: { rows: 1, columns: 1 },
+      occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 'materialize-me' } }],
       transfer: 'copy',
       rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     });
@@ -184,7 +186,7 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app.getUiSnapshot().pendingCommandCount, 0);
     assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0), undefined);
-    assert.equal(app.getClipboard()?.values[0]?.[0]?.value, 'materialize-me');
+    assert.equal(app.getClipboard()?.occupiedCells[0]?.value.value, 'materialize-me');
   });
 
   it('keeps the private clipboard usable when external clipboard publication is unavailable', async () => {
@@ -198,7 +200,7 @@ describe('WorkbookSession core editing integration', () => {
 
     assert.equal(outcome.status, 'failed');
     assert.equal(outcome.privatePayloadStored, true);
-    assert.equal(app.getClipboard()?.values[0]?.[0]?.value, 'private-copy');
+    assert.equal(app.getClipboard()?.occupiedCells[0]?.value.value, 'private-copy');
     assert.equal(app.getUiSnapshot().clipboard.systemStatus, 'failed');
     assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
     assert.match(app.getUiSnapshot().notice, /external clipboard|unavailable|failed/i);
@@ -430,6 +432,7 @@ describe('WorkbookSession core editing integration', () => {
 
     const home = app.getUiSnapshot().homeRibbon;
     assert.ok(home.mixedStyleKeys.includes('bold'));
+    assert.equal(home.styleAggregate.bold.status, 'mixed');
     assert.equal(home.style.bold, undefined);
     assert.equal(home.canFormat, true);
   });

@@ -70,10 +70,11 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 5,
+          version: 8,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
+          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1',
@@ -89,6 +90,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
             sparklines: [],
             drawings: [],
             drawingPayloads: {},
+            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
         revision: 0,
@@ -112,15 +114,17 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 5,
+          version: 8,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
+          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
             pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
         revision: 0,
@@ -218,7 +222,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 5,
+    version: 8,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -238,6 +242,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
       charts: [],
       drawings: [],
       drawingPayloads: {},
+      review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
     }],
   }), /legacy drawing collections/);
 });

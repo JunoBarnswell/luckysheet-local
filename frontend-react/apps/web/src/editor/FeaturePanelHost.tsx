@@ -123,11 +123,14 @@ export function FeaturePanelHost({
           onResizeTable={(range) => session.resizeActiveSheetTable(range)}
           onTableStyleChange={(styleName) => session.setActiveSheetTableStyle(styleName)}
           onConvertTableToRange={() => session.convertActiveSheetTableToRange()}
-          onReadDataRows={session.readDataTable.bind(session)}
-          onRemoveDataTable={session.removeDataTable.bind(session)}
+          dataSources={state.dataSources}
+          onRemoveDataSource={session.removeDataSource.bind(session)}
+          onRemoveDataRegion={session.removeDataRegion.bind(session)}
           onCommand={dispatchCommand}
           onAddSparkline={session.addSparkline.bind(session)}
+          onCreateSparklineGroup={(sparklineIds) => session.createSparklineGroup(sparklineIds)}
           onRemoveSparkline={session.removeSparkline.bind(session)}
+          onInsertChart={(type, sourceRange, title, stacked) => session.insertChartFromPanel(type, sourceRange, title, stacked)}
           onAddConditionalFormat={session.addConditionalFormat.bind(session)}
           onRemoveConditionalFormat={session.removeConditionalFormat.bind(session)}
           onAddDataValidation={session.addDataValidation.bind(session)}
@@ -156,7 +159,6 @@ export function FeaturePanelHost({
               : null}
           canRunExtended={state.permissions.script}
           onGoalSeek={(params) => session.runGoalSeek({ setCell: { row: params.setRow, column: params.setColumn }, toValue: params.targetValue, byChangingCell: { row: params.changingRow, column: params.changingColumn } })}
-          onRunDataTable={(params) => session.runDataTableAnalysis({ tableRange: params.tableRange, ...(params.inputMode === "column" ? { columnInputCell: params.inputCell } : { rowInputCell: params.inputCell }) })}
           onRunScenario={(params) => session.runScenarioAnalysis({
             id: `scenario-${Date.now()}`,
             name: params.name,

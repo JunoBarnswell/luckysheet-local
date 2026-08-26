@@ -1,7 +1,7 @@
 import type { CellData, CellValue, WorkbookModel } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 
-export type WhatIfKind = 'goal-seek' | 'data-table' | 'scenario';
+export type WhatIfKind = 'goal-seek' | 'scenario';
 
 export interface WhatIfPlanMetadata {
   schema: 'WhatIfPlan';
@@ -30,26 +30,6 @@ export interface GoalSeekResult {
   changingCellValue?: number;
   iterations: number;
   message?: string;
-}
-
-export interface DataTableParams {
-  rowInputCell?: { row: number; column: number };
-  columnInputCell?: { row: number; column: number };
-  tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
-}
-
-export interface DataTableCellWrite {
-  row: number;
-  column: number;
-  value: number | string | boolean | null;
-}
-
-export interface DataTableResult {
-  kind: 'data-table';
-  status: 'completed' | 'failed';
-  message: string;
-  filledCells: number;
-  writes: DataTableCellWrite[];
 }
 
 export interface ScenarioDefinition {
@@ -95,14 +75,7 @@ export interface ScenarioPlan {
   metadata?: WhatIfPlanMetadata;
 }
 
-export interface DataTablePlan {
-  kind: 'data-table';
-  result: DataTableResult;
-  writes: WhatIfCellWrite[];
-  metadata?: WhatIfPlanMetadata;
-}
-
-export type WhatIfPlan = GoalSeekPlan | ScenarioPlan | DataTablePlan;
+export type WhatIfPlan = GoalSeekPlan | ScenarioPlan;
 
 type FormulaScalar = CellValue | string;
 
@@ -354,73 +327,5 @@ export function planScenario(workbook: WorkbookModel, sheetId: string, scenario:
       outputs,
     },
     writes: sortedChanges.map((cell) => cellWrite(sheetId, cell.row, cell.column, cell.value)),
-  };
-}
-
-export function planDataTable(workbook: WorkbookModel, sheetId: string, params: DataTableParams): DataTablePlan {
-  const hasRowInput = Boolean(params.rowInputCell);
-  const hasColumnInput = Boolean(params.columnInputCell);
-  const range = params.tableRange;
-  const validRange = validCell(sheetId, range.startRow, range.startColumn, workbook)
-    && validCell(sheetId, range.endRow, range.endColumn, workbook)
-    && range.endRow >= range.startRow && range.endColumn >= range.startColumn;
-  if (hasRowInput === hasColumnInput || !validRange) {
-    return {
-      kind: 'data-table',
-      result: { kind: 'data-table', status: 'failed', message: 'Invalid data table parameters', filledCells: 0, writes: [] },
-      writes: [],
-    };
-  }
-  const input = params.rowInputCell ?? params.columnInputCell!;
-  if (!validCell(sheetId, input.row, input.column, workbook) || isSpillCell(workbook, sheetId, input.row, input.column)) {
-    return {
-      kind: 'data-table',
-      result: { kind: 'data-table', status: 'failed', message: 'Invalid or spill data table input cell', filledCells: 0, writes: [] },
-      writes: [],
-    };
-  }
-
-  const engine = createPlanningFormulaEngine(workbook);
-  const writes: DataTableCellWrite[] = [];
-  const writePlan: WhatIfCellWrite[] = [];
-  const addResult = (row: number, column: number, value: FormulaScalar): void => {
-    writes.push({ row, column, value });
-    writePlan.push(cellWrite(sheetId, row, column, value));
-  };
-  const fail = (message: string): DataTablePlan => ({
-    kind: 'data-table',
-    result: { kind: 'data-table', status: 'failed', message, filledCells: 0, writes: [] },
-    writes: [],
-  });
-
-  if (params.rowInputCell) {
-    const formulaAddress = { sheetId, row: range.startRow, column: range.startColumn };
-    for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-      const targetRow = row;
-      const targetColumn = range.startColumn + 1;
-      if (isSpillCell(workbook, sheetId, targetRow, targetColumn)) return fail('Data table output intersects a spill range');
-      const rawInput = readWorkbookScalar(workbook, sheetId, row, range.startColumn);
-      if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${row + 1}, column ${range.startColumn + 1}`);
-      engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
-      engine.recalculate(formulaAddress);
-      if (hasArrayResult(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column)) return fail('Data table formula produces a spill result');
-      addResult(targetRow, targetColumn, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
-    }
-  } else {
-    const formulaAddress = { sheetId, row: range.startRow + 1, column: range.startColumn };
-    for (let column = range.startColumn + 1; column <= range.endColumn; column += 1) {
-      if (isSpillCell(workbook, sheetId, formulaAddress.row, column)) return fail('Data table output intersects a spill range');
-      const rawInput = readWorkbookScalar(workbook, sheetId, range.startRow, column);
-      if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${range.startRow + 1}, column ${column + 1}`);
-      engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
-      engine.recalculate(formulaAddress);
-      if (hasArrayResult(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column)) return fail('Data table formula produces a spill result');
-      addResult(formulaAddress.row, column, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
-    }
-  }
-  return {
-    kind: 'data-table',
-    result: { kind: 'data-table', status: 'completed', message: `Data table filled ${writes.length} result cell(s)`, filledCells: writes.length, writes },
-    writes: writePlan,
   };
 }

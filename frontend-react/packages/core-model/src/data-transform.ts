@@ -1,6 +1,7 @@
 import type { CellData, RangeRef, Row, WorksheetModel } from './index';
-import { noteCellKey } from './index';
-import type { CellNote, CommentThread, DrawingObject, SpillRange } from './domain';
+import { cellKey } from './index';
+import type { DrawingObject, SpillRange } from './domain';
+import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
 export interface RowPermutationPlan {
@@ -117,7 +118,15 @@ function remapRangeExact(range: RangeRef, plan: RowPermutationPlan): RangeRef[] 
   return mergeExactSegments(result);
 }
 
-function remapRangeList(ranges: readonly RangeRef[], plan: RowPermutationPlan): RangeRef[] { return ranges.flatMap((range) => remapRangeExact(range, plan)); }
+function ruleTransformForPlan(plan: RowPermutationPlan): RuleTransform {
+  return {
+    mapRange: (range) => remapRangeExact(range, plan),
+    mapAddress: (address) => ({
+      ...address,
+      row: inRange(plan.range, address.row, address.column) ? remapRow(address.row, plan) : address.row,
+    }),
+  };
+}
 
 function remapSingleRange(owner: string, range: RangeRef, plan: RowPermutationPlan): RangeRef {
   const segments = remapRangeExact(range, plan);
@@ -149,7 +158,7 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
   for (const [key, value] of source) {
     const [rowText, columnText] = key.split(':');
     const row = Number(rowText); const column = Number(columnText);
-    const nextKey = noteCellKey(inRange(plan.range, row, column) ? remapRow(row, plan) : row, column);
+    const nextKey = cellKey(inRange(plan.range, row, column) ? remapRow(row, plan) : row, column);
     if (next.has(nextKey)) throw new Error(`Sort produced duplicate cell metadata at ${nextKey}`);
     next.set(nextKey, value);
   }
@@ -162,7 +171,7 @@ export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPerm
   if (range.sheetId !== sheet.id || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
   // Detect cell-owner collisions before any cell record is cleared. Notes and
   // hyperlinks are single-owner maps, so a collision is an atomic rejection.
-  remapCellMap(sheet.notes, plan);
+  sheet.review.validateRemapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   remapCellMap(sheet.hyperlinks, plan);
   for (const merge of sheet.merges) {
     if (!rangesIntersect(merge.range, range)) continue;
@@ -181,10 +190,8 @@ export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPerm
   for (const drawing of sheet.drawings) remapDrawingAnchor(drawing, plan);
   for (const sparkline of sheet.sparklines) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
   for (const spill of sheet.spillRanges) remapSpill(spill, plan);
-  for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
-    for (const ruleRange of rule.ranges) remapRangeExact(ruleRange, plan);
-  }
-  for (const rule of sheet.dataValidations) if (rule.listSource?.kind === 'range') remapSingleRange(`validation ${rule.id} source`, rule.listSource.range, plan);
+  const ruleTransform = ruleTransformForPlan(plan);
+  for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) sheetRuleRegistry.transform(rule, ruleTransform);
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
@@ -206,14 +213,14 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
   sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
-  const notes = remapCellMap(sheet.notes, plan); sheet.notes.clear(); for (const [key, value] of notes) sheet.notes.set(key, value as CellNote);
+  sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.map((thread: CommentThread) => inRange(range, thread.row, thread.column) ? { ...thread, row: remapRow(thread.row, plan) } : thread));
   for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
   for (const sparkline of sheet.sparklines) { sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan); if (inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan); }
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
-  for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) rule.ranges = remapRangeList(rule.ranges, plan);
-  for (const rule of sheet.dataValidations) if (rule.listSource?.kind === 'range') rule.listSource.range = remapSingleRange(`validation ${rule.id} source`, rule.listSource.range, plan);
+  const ruleTransform = ruleTransformForPlan(plan);
+  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...sheet.conditionalFormats.map((rule) => sheetRuleRegistry.transform(rule, ruleTransform)));
+  sheet.dataValidations.splice(0, sheet.dataValidations.length, ...sheet.dataValidations.map((rule) => sheetRuleRegistry.transform(rule, ruleTransform)));
   if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
   for (const table of sheet.sheetTables) {
     const bodyPermutation = isTableBodyPermutation(table, range);

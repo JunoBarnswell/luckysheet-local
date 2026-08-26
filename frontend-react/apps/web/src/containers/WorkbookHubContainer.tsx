@@ -290,11 +290,8 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   }, [catalog, execute, onOpenWorkbook, preferences?.importCompatibility, requireCloudSignIn]);
 
   const openWorkbook = useCallback((unitId: string) => {
-    void execute(async () => {
-      await catalog.open(unitId);
-      onOpenWorkbook(unitId);
-    });
-  }, [catalog, execute, onOpenWorkbook]);
+    onOpenWorkbook(unitId);
+  }, [onOpenWorkbook]);
 
   const exportWorkbook = useCallback((unitId: string) => {
     void execute(async () => {

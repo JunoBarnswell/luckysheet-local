@@ -20,8 +20,8 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
     'history.restore',
     'print.preview',
     'print.export',
-    'print.area.set',
-    'print.pageSetup',
+    'pageLayout.printArea.set',
+    'pageLayout.pageSetup.set',
     'xlsx.import',
     'xlsx.export',
     'query.load',
@@ -31,7 +31,6 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
     'automation.record.stop',
     'extended.whatIf.goalSeek',
     'extended.whatIf.scenario',
-    'extended.whatIf.dataTable',
     'sheet.protect.set',
     'sheet.protect.remove',
   ];

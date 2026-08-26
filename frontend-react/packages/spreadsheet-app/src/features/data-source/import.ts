@@ -134,14 +134,30 @@ function cloneComment(comment: CellComment): CellComment {
   return structuredClone(comment);
 }
 
-function overlayCell(row: number, column: number, cell: CellData): SparseCellOverlayMetadataCell | undefined {
-  if (cell.formula === undefined && cell.style === undefined && cell.comment === undefined) return undefined;
+function reviewCommentAt(sheet: SheetSnapshot, row: number, column: number): CellComment | undefined {
+  const threadId = sheet.review.threadIdsByCell[`${row}:${column}`]?.[0];
+  const thread = threadId ? sheet.review.threadsById[threadId] : undefined;
+  if (!thread) return undefined;
+  return {
+    id: thread.id,
+    author: thread.author,
+    text: thread.text,
+    createdAt: thread.createdAt,
+    mentions: thread.mentions,
+    replies: thread.replies,
+    resolved: thread.resolved,
+    resolvedAt: thread.resolvedAt,
+  };
+}
+
+function overlayCell(row: number, column: number, cell: CellData, comment?: CellComment): SparseCellOverlayMetadataCell | undefined {
+  if (cell.formula === undefined && cell.style === undefined && comment === undefined) return undefined;
   return {
     row,
     column,
     ...(cell.formula === undefined ? {} : { formula: cell.formula }),
     ...(cell.style === undefined ? {} : { style: cloneStyle(cell.style) }),
-    ...(cell.comment === undefined ? {} : { comment: cloneComment(cell.comment) }),
+    ...(comment === undefined ? {} : { comment: cloneComment(comment) }),
   };
 }
 
@@ -224,7 +240,7 @@ function buildHeader(
     const absoluteColumn = input.range.startColumn + column;
     const cell = cellAt(input.sheet, input.range.startRow, absoluteColumn);
     values.push(scalarOf(cell));
-    const entry = cell ? overlayCell(0, column, cell) : undefined;
+    const entry = cell ? overlayCell(0, column, cell, reviewCommentAt(input.sheet, input.range.startRow, absoluteColumn)) : undefined;
     if (entry) metadata.cells.push(entry);
   }
   return { values, metadata };
@@ -296,7 +312,7 @@ export async function encodeSheetDataRegion(
         const absoluteColumn = input.range.startColumn + relativeColumn;
         const cell = cellAt(input.sheet, absoluteRow, absoluteColumn);
         row.push(scalarOf(cell));
-        const entry = cell ? overlayCell(relativeRow, relativeColumn, cell) : undefined;
+        const entry = cell ? overlayCell(relativeRow, relativeColumn, cell, reviewCommentAt(input.sheet, absoluteRow, absoluteColumn)) : undefined;
         if (entry) metadata.cells.push(entry);
       }
       rows.push(row);

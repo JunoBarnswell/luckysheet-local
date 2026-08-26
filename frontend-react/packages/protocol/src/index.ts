@@ -9,11 +9,18 @@ import type {
   WorkbookSnapshot,
   WorkbookTableBlock,
 } from '@react-sheets/core-model';
+import type { AssetRef } from '@react-sheets/core-model';
+import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 import {
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
   WORKBOOK_SNAPSHOT_VERSION,
+  mutationPermission,
+  commandPermission,
+  type PermissionCapability,
+  type PermissionPolicy,
+  type ProtectionAction,
   mutationCapability,
   type ContractErrorCode,
 } from './generated-contract';
@@ -23,8 +30,12 @@ export {
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
   WORKBOOK_SNAPSHOT_VERSION,
+  mutationPermission,
+  commandPermission,
   mutationCapability,
 } from './generated-contract';
+
+export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';
 
 export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 
@@ -58,6 +69,12 @@ export interface OperationMutation {
   params: unknown;
 }
 
+export interface OperationIntent {
+  type: 'undo';
+  targetOperationId: string;
+  targetBaseRevision: number;
+}
+
 export interface OperationEnvelope {
   schema: typeof OPERATION_ENVELOPE_SCHEMA;
   operationId: string;
@@ -66,6 +83,7 @@ export interface OperationEnvelope {
   baseRevision: number;
   mutations: OperationMutation[];
   createdAt: string;
+  intent?: OperationIntent;
 }
 
 /**
@@ -234,6 +252,49 @@ function validateExactKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+function validateReviewSnapshot(value: unknown, sheetId: string): void {
+  const review = requireRecord(value, 'WorkbookSnapshot review');
+  const notesByCell = requireRecord(review.notesByCell, 'WorkbookSnapshot review notesByCell');
+  const notesById = requireRecord(review.notesById, 'WorkbookSnapshot review notesById');
+  const threadIdsByCell = requireRecord(review.threadIdsByCell, 'WorkbookSnapshot review threadIdsByCell');
+  const threadsById = requireRecord(review.threadsById, 'WorkbookSnapshot review threadsById');
+  const keyPattern = /^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/;
+  const noteIds = new Set(Object.keys(notesById));
+  for (const [id, note] of Object.entries(notesById)) {
+    const entry = requireRecord(note, `WorkbookSnapshot review note ${id}`);
+    if (!isNonEmptyString(id) || !isNonEmptyString(entry.id) || entry.id !== id) throw new Error(`WorkbookSnapshot review note identity is invalid: ${id}`);
+  }
+  const indexedNotes = new Set<string>();
+  for (const [key, id] of Object.entries(notesByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !isNonEmptyString(id) || !noteIds.has(id) || indexedNotes.has(id)) throw new Error(`WorkbookSnapshot review note index is invalid: ${key}`);
+    indexedNotes.add(id);
+  }
+  if (indexedNotes.size !== noteIds.size) throw new Error(`WorkbookSnapshot review contains an unindexed note on ${sheetId}`);
+  const indexedThreads = new Set<string>();
+  for (const [key, ids] of Object.entries(threadIdsByCell)) {
+    const [row, column] = key.split(':').map(Number);
+    if (!keyPattern.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
+      || !Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(`WorkbookSnapshot review thread index is invalid: ${key}`);
+    for (const id of ids) {
+      if (!isNonEmptyString(id) || !threadsById[id]) throw new Error(`WorkbookSnapshot review thread index references missing id: ${id}`);
+      const thread = requireRecord(threadsById[id], `WorkbookSnapshot review thread ${id}`);
+      if (thread.id !== id || thread.sheetId !== sheetId || thread.row !== row || thread.column !== column || indexedThreads.has(id)) {
+        throw new Error(`WorkbookSnapshot review thread index is incompatible: ${id}`);
+      }
+      indexedThreads.add(id);
+    }
+  }
+  for (const [id, value] of Object.entries(threadsById)) {
+    const thread = requireRecord(value, `WorkbookSnapshot review thread ${id}`);
+    if (!isNonEmptyString(id) || thread.id !== id || thread.sheetId !== sheetId || !Number.isSafeInteger(thread.row) || Number(thread.row) < 0 || Number(thread.row) > 1_048_575
+      || !Number.isSafeInteger(thread.column) || Number(thread.column) < 0 || Number(thread.column) > 16_383 || !indexedThreads.has(id)) {
+      throw new Error(`WorkbookSnapshot review thread identity is invalid: ${id}`);
+    }
+  }
+}
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
@@ -241,7 +302,7 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
 
 const PIVOT_FORMULA_ERROR_CODES = new Set([
   '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
-  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
+  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!',
 ]);
 
 function validatePivotScalar(value: unknown, label: string): void {
@@ -911,6 +972,15 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   if (!dimensionMetrics || !isNonEmptyString(dimensionMetrics.normalFontFamily)
     || typeof dimensionMetrics.normalFontSizePx !== 'number' || !Number.isFinite(dimensionMetrics.normalFontSizePx) || dimensionMetrics.normalFontSizePx <= 0
     || typeof dimensionMetrics.maximumDigitWidthPx !== 'number' || !Number.isFinite(dimensionMetrics.maximumDigitWidthPx) || dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('WorkbookSnapshot dimensionMetrics is invalid');
+  if (!isWorkbookCalculationSettings(input.calculationSettings)) throw new Error('WorkbookSnapshot calculationSettings is invalid');
+  if (input.theme !== undefined) {
+    const theme = input.theme as Record<string, unknown>;
+    if (!theme || typeof theme !== 'object' || Array.isArray(theme) || !isNonEmptyString(theme.id)
+      || !theme.colors || typeof theme.colors !== 'object' || Array.isArray(theme.colors)
+      || Object.entries(theme.colors as Record<string, unknown>).some(([key, color]) => !key.trim() || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw new Error('WorkbookSnapshot theme is invalid');
+    }
+  }
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
@@ -960,6 +1030,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       || !Array.isArray(sheet.sparklines)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] has invalid grid data`);
     }
+    validateReviewSnapshot(sheet.review, String(sheet.id));
     if (typeof sheet.defaultRowHeightPx !== 'number' || !Number.isFinite(sheet.defaultRowHeightPx) || sheet.defaultRowHeightPx <= 0
       || typeof sheet.defaultColumnWidthPx !== 'number' || !Number.isFinite(sheet.defaultColumnWidthPx) || sheet.defaultColumnWidthPx <= 0
       || !sheet.pane || typeof sheet.pane !== 'object' || Array.isArray(sheet.pane)
@@ -1178,6 +1249,26 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   if ('actorId' in input || 'affectedRanges' in input) {
     throw new Error('actorId and affectedRanges are server-owned fields');
   }
+  let intent: OperationIntent | undefined;
+  if (input.intent !== undefined) {
+    if (!input.intent || typeof input.intent !== 'object' || Array.isArray(input.intent)) {
+      throw new Error('operation intent must be an object');
+    }
+    const rawIntent = input.intent as Record<string, unknown>;
+    const unknownIntentKeys = Object.keys(rawIntent).filter((key) => !['type', 'targetOperationId', 'targetBaseRevision'].includes(key));
+    if (unknownIntentKeys.length > 0) throw new Error(`operation intent contains unsupported fields: ${unknownIntentKeys.join(', ')}`);
+    if (rawIntent.type !== 'undo' || !isNonEmptyString(rawIntent.targetOperationId)) {
+      throw new Error('operation intent must identify an undo target');
+    }
+    if (!Number.isSafeInteger(rawIntent.targetBaseRevision) || Number(rawIntent.targetBaseRevision) < 0) {
+      throw new Error('operation intent targetBaseRevision must be a non-negative safe integer');
+    }
+    intent = {
+      type: 'undo',
+      targetOperationId: rawIntent.targetOperationId,
+      targetBaseRevision: Number(rawIntent.targetBaseRevision),
+    };
+  }
 
   const mutations = input.mutations.map((raw, index) => {
     if (!raw || typeof raw !== 'object') throw new Error(`mutation[${index}] must be an object`);
@@ -1208,6 +1299,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     baseRevision: Number(input.baseRevision),
     mutations,
     createdAt: input.createdAt,
+    ...(intent ? { intent } : {}),
   };
 }
 
@@ -1492,6 +1584,12 @@ export interface RemoteDataBlockMetadata {
   blockId: string;
   checksum: string;
   byteLength: number;
+  updatedAt: string;
+}
+
+/** Metadata-only remote representation of a workbook-owned image asset. */
+export interface RemoteAssetMetadata extends AssetRef {
+  unitId: string;
   updatedAt: string;
 }
 
@@ -1916,6 +2014,52 @@ export class WorkbookApiClient {
     );
   }
 
+  async putAsset(unitId: string, asset: AssetRef, bytes: ArrayBuffer): Promise<RemoteAssetMetadata> {
+    return this.json<RemoteAssetMetadata>(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(asset.assetId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': asset.mimeType,
+          'x-content-sha256': asset.contentHash,
+          'x-asset-mime-type': asset.mimeType,
+          ...(asset.width === undefined ? {} : { 'x-asset-width': String(asset.width) }),
+          ...(asset.height === undefined ? {} : { 'x-asset-height': String(asset.height) }),
+        },
+        body: bytes,
+      },
+    );
+  }
+
+  async getAsset(unitId: string, assetId: string): Promise<{ bytes: ArrayBuffer; contentHash: string; mimeType: string; byteLength: number }> {
+    const response = await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(assetId)}`,
+    );
+    const contentHash = response.headers.get('x-content-sha256');
+    const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim();
+    const contentLength = response.headers.get('content-length');
+    if (!contentHash || !mimeType || !contentLength) throw new ApiRequestError('Asset response omitted canonical metadata', response.status, 'INTERNAL_ERROR');
+    const bytes = await response.arrayBuffer();
+    const byteLength = Number(contentLength);
+    if (!Number.isSafeInteger(byteLength) || byteLength !== bytes.byteLength) throw new ApiRequestError('Asset response byte length is invalid', response.status, 'INTERNAL_ERROR');
+    return { bytes, contentHash, mimeType, byteLength };
+  }
+
+  async deleteAsset(unitId: string, assetId: string): Promise<void> {
+    await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/assets/${encodeURIComponent(assetId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async reconcileAssets(unitId: string, assetIds: readonly string[]): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/assets/reconcile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetIds }),
+    });
+  }
+
 }
 
 /**
@@ -1965,6 +2109,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     clientSequence: input.clientSequence,
     baseRevision: input.baseRevision,
     createdAt: input.createdAt,
+    ...(input.intent === undefined ? {} : { intent: input.intent }),
     mutations: Array.isArray(input.mutations)
       ? input.mutations.map((mutation) => {
         if (!mutation || typeof mutation !== 'object') return mutation;

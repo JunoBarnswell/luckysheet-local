@@ -32,6 +32,21 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
       return node;
     case 'spill-reference':
       return { ...node, operand: mapAstReferences(node.operand, mapper) };
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+      return node;
+    case 'reference-union':
+      return { ...node, references: node.references.map((reference) => mapAstReferences(reference, mapper) as typeof reference) };
+    case 'reference-intersection':
+      return {
+        ...node,
+        left: mapAstReferences(node.left, mapper) as typeof node.left,
+        right: mapAstReferences(node.right, mapper) as typeof node.right,
+      };
+    case 'sheet-range-reference':
+      return { ...node, reference: mapAstReferences(node.reference, mapper) as typeof node.reference };
+    case 'external-reference':
+      return { ...node, reference: mapAstReferences(node.reference, mapper) as typeof node.reference };
     case 'cell-reference': {
       const mapped = mapper(node.reference);
       return mapped === undefined
@@ -130,8 +145,45 @@ export function renameAstSheetReferences(
   newName: string,
 ): FormulaAst {
   const normalizedOld = oldName.trim().toLocaleLowerCase();
-  return mapAstReferences(node, (reference) => {
+  const mapped = mapAstReferences(node, (reference) => {
     if (reference.sheetId?.trim().toLocaleLowerCase() !== normalizedOld) return reference;
     return { ...reference, sheetId: newName };
   });
+  return renameQualifiedSheets(mapped, normalizedOld, newName);
+}
+
+function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName: string): FormulaAst {
+  switch (node.type) {
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+      return node.sheetId?.trim().toLocaleLowerCase() === normalizedOld ? { ...node, sheetId: newName } : node;
+    case 'sheet-range-reference':
+      return {
+        ...node,
+        qualifier: {
+          startSheetId: node.qualifier.startSheetId.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.startSheetId,
+          endSheetId: node.qualifier.endSheetId.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.endSheetId,
+        },
+        reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
+      };
+    case 'external-reference':
+      return {
+        ...node,
+        qualifier: {
+          ...node.qualifier,
+          sheetId: node.qualifier.sheetId?.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.sheetId,
+        },
+        reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
+      };
+    case 'reference-union':
+      return { ...node, references: node.references.map((reference) => renameQualifiedSheets(reference, normalizedOld, newName) as typeof reference) };
+    case 'reference-intersection':
+      return { ...node, left: renameQualifiedSheets(node.left, normalizedOld, newName) as typeof node.left, right: renameQualifiedSheets(node.right, normalizedOld, newName) as typeof node.right };
+    case 'spill-reference':
+      return { ...node, operand: renameQualifiedSheets(node.operand, normalizedOld, newName) };
+    case 'range-reference':
+      return { ...node, start: renameQualifiedSheets(node.start, normalizedOld, newName) as typeof node.start, end: renameQualifiedSheets(node.end, normalizedOld, newName) as typeof node.end };
+    default:
+      return node;
+  }
 }

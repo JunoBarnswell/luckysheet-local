@@ -141,11 +141,6 @@ export class FormulaAuditController {
     return this.getProjection();
   }
 
-  setRecalculationMode(mode: RecalculationMode): RecalculationMode {
-    this.formula.setRecalculationMode(mode);
-    return this.formula.getRecalculationMode();
-  }
-
   scanErrors(options: FormulaErrorScanOptions = {}): readonly FormulaAuditError[] {
     this.errors = scanFormulaErrors(this.formula, options);
     return this.errors.map(cloneError);
@@ -242,6 +237,20 @@ export function registerFormulaAuditCommands(
     'formula.calculation.mode.set',
   ] as const;
 
+  registry.registerMutation<FormulaCalculationModeParams>({
+    id: 'workbook.calculation.mode.set',
+    handler: (item, context) => {
+      if (!isFormulaCalculationModeParams(item.params)) throw new Error('workbook.calculation.mode.set requires a valid calculation mode');
+      context.workbook.setCalculationSettings({ mode: item.params.mode });
+    },
+    metadata: {
+      schema: { name: 'WorkbookCalculationModeMutation', validate: isFormulaCalculationModeParams },
+      permission: { capability: 'formula.calculation.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['workbook.calculation.mode.set'], minCount: 1, maxCount: 1 },
+    },
+  });
+
   registry.registerCommand<FormulaAuditAddressParams>({
     id: 'formula.audit.precedents.show',
     execute: (params, context) => {
@@ -297,11 +306,26 @@ export function registerFormulaAuditCommands(
   registry.registerCommand<FormulaCalculationModeParams>({
     id: 'formula.calculation.mode.set',
     execute: (params, context) => {
-      if (params.mode !== 'automatic' && params.mode !== 'manual') {
-        throw new Error('Formula calculation mode must be automatic or manual');
+      if (params.mode !== 'automatic' && params.mode !== 'manual' && params.mode !== 'partial') {
+        throw new Error('Formula calculation mode must be automatic, manual, or partial');
       }
-      controller.setRecalculationMode(params.mode);
-      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = context.workbook.calculationSettings.mode;
+      context.applyMutation({
+        id: 'workbook.calculation.mode.set',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.primarySheetId,
+        params: { mode: params.mode },
+        affectedRanges: [],
+        inverse: [{
+          id: 'workbook.calculation.mode.set',
+          unitId: context.workbook.unitId,
+          sheetId: context.workbook.primarySheetId,
+          params: { mode: previous },
+          affectedRanges: [],
+        }],
+        apply: () => context.workbook.setCalculationSettings({ mode: params.mode }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
   return commandIds;
@@ -319,6 +343,11 @@ export interface FormulaAuditErrorScanParams extends FormulaErrorScanOptions {}
 
 export interface FormulaCalculationModeParams {
   readonly mode: RecalculationMode;
+}
+
+function isFormulaCalculationModeParams(value: unknown): value is FormulaCalculationModeParams {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && ['automatic', 'manual', 'partial'].includes(String((value as { mode?: unknown }).mode));
 }
 
 export type FormulaAuditEmptyParams = Record<string, never>;
