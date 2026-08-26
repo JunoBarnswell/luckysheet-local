@@ -30,6 +30,9 @@ import {
   type QueryDefinitionSnapshot,
   type QueryLoadTargetSnapshot,
 } from './workbook-state';
+import { normalizeFontFamily } from './font-family';
+
+export * from './font-family';
 
 export type CellValue = string | number | boolean | null;
 
@@ -598,7 +601,11 @@ export class CellMatrix {
       rowMap = new Map<Column, CellData>();
       this.rows.set(row, rowMap);
     }
-    rowMap.set(column, cell);
+    const fontFamily = cell.style?.fontFamily;
+    const normalizedCell = fontFamily === undefined
+      ? cell
+      : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
+    rowMap.set(column, normalizedCell);
     this.revisionCounter += 1;
   }
 

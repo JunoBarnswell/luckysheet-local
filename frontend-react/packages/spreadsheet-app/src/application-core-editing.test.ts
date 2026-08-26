@@ -193,6 +193,53 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(cell?.style?.numberFormat, '#,##0.00');
   });
 
+  it('font family formatting canonicalizes listed and imported names through history', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 1, 1);
+    app.runCommand('sheet.style.set', {
+      sheetId,
+      range: { sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      style: { fontFamily: '  aRiAl  ' },
+    });
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    assert.equal(sheet.cells.get(1, 1)?.style?.fontFamily, 'Arial');
+
+    app.undo();
+    assert.equal(sheet.cells.get(1, 1)?.style?.fontFamily, undefined);
+    app.redo();
+    assert.equal(sheet.cells.get(1, 1)?.style?.fontFamily, 'Arial');
+
+    app.runCommand('sheet.style.set', {
+      sheetId,
+      range: { sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      style: { fontFamily: '  Imported Local Font  ' },
+    });
+    assert.equal(sheet.cells.get(1, 1)?.style?.fontFamily, 'Imported Local Font');
+
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+    assert.throws(() => app.runCommand('sheet.style.set', {
+      sheetId,
+      range: { sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      style: { fontFamily: '   ' },
+    }), /must not be empty/);
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+    assert.equal(sheet.cells.get(1, 1)?.style?.fontFamily, 'Imported Local Font');
+  });
+
+  it('font family selection exposes a mixed state without inventing a value', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    sheet.cells.set(0, 0, { value: 'left', style: { fontFamily: 'Arial' } });
+    sheet.cells.set(0, 1, { value: 'right', style: { fontFamily: 'Calibri' } });
+    selectRange(app, 0, 0, 0, 1);
+
+    const home = app.getUiSnapshot().homeRibbon;
+    assert.equal(home.style.fontFamily, undefined);
+    assert.equal(home.mixedStyleKeys.includes('fontFamily'), true);
+  });
+
   it('supplies active sheet and selection to a catalog-style sheet.style.set descriptor', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
