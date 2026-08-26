@@ -84,6 +84,8 @@ const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
 const REACT_SHEETS_METADATA_PART = 'customXml/react-sheets-workbook.xml';
+const OOXML_MAX_ROW_INDEX = 1_048_575;
+const OOXML_MAX_COLUMN_INDEX = 16_383;
 
 export interface LoadedOpcPackageGraph {
   packageGraph: OpcPackageGraph;
@@ -445,6 +447,12 @@ function parseSheet(
   const hyperlinks: NonNullable<SheetSnapshot['hyperlinks']> = [];
   const hiddenRows: number[] = [];
   const dimensions = parseRange(child(root, 'dimension')?.attrs.ref);
+  if (dimensions) {
+    if (dimensions.startRow < 0 || dimensions.startColumn < 0 || dimensions.endRow < dimensions.startRow || dimensions.endColumn < dimensions.startColumn
+      || dimensions.endRow > OOXML_MAX_ROW_INDEX || dimensions.endColumn > OOXML_MAX_COLUMN_INDEX) {
+      throw new Error(`UNSUPPORTED_FEATURE: Worksheet ${descriptor.name} dimension exceeds the OOXML worksheet boundary`);
+    }
+  }
   const sheetData = child(root, 'sheetData');
   const sheetFormat = child(root, 'sheetFormatPr');
   const defaultRowHeightPt = finitePositive(sheetFormat?.attrs.defaultRowHeight, 15);
@@ -454,16 +462,18 @@ function parseSheet(
   const rowHeightsPx = parseRowHeights(root);
   const columnWidthsPx = parseColumnWidths(root, styles.maximumDigitWidthPx);
   const pane = parsePane(root);
-  let maxRow = dimensions?.endRow ?? 999;
-  let maxColumn = dimensions?.endColumn ?? 25;
+  let maxRow = dimensions?.endRow ?? -1;
+  let maxColumn = dimensions?.endColumn ?? -1;
   const cellEntries: Array<{ node: XmlNode; row: number; column: number }> = [];
   for (const rowNode of children(sheetData, 'row')) {
     const rowNumber = parsePositiveInt(rowNode.attrs.r, 1) - 1;
+    assertOoxmlAddress(rowNumber, 0, `${descriptor.name}!row ${rowNode.attrs.r ?? ''}`);
     maxRow = Math.max(maxRow, rowNumber);
     if (rowNode.attrs.hidden === '1' || rowNode.attrs.hidden === 'true') hiddenRows.push(rowNumber);
     for (const cellNode of children(rowNode, 'c')) {
       const address = parseA1(cellNode.attrs.r ?? 'A1');
       if (!address) throw new Error(`Worksheet ${descriptor.name} contains an invalid cell reference: ${cellNode.attrs.r ?? ''}`);
+      assertOoxmlAddress(address.row, address.column, `${descriptor.name}!${cellNode.attrs.r ?? ''}`);
       maxColumn = Math.max(maxColumn, address.column);
       maxRow = Math.max(maxRow, address.row);
       cellEntries.push({ node: cellNode, row: address.row, column: address.column });
@@ -530,8 +540,8 @@ function parseSheet(
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
-  const rowCount = Math.max(1000, maxRow + 1);
-  const columnCount = Math.max(26, maxColumn + 1);
+  const rowCount = Math.max(1, maxRow + 1);
+  const columnCount = Math.max(1, maxColumn + 1);
   return {
     kind: 'worksheet',
     id: descriptor.id,
@@ -1322,6 +1332,7 @@ function buildWorksheetXml(
   printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
   sheetNames: ReadonlyMap<string, string> = new Map(),
 ): string {
+  validateOoxmlExchangeBoundary(sheet);
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
   if (sheet.tabColor || sheet.outline?.groups.length) xml += `<sheetPr>${sheet.tabColor ? `<tabColor rgb="${ooxmlRgb(sheet.tabColor)}"/>` : ''}${sheet.outline?.groups.length ? '<outlinePr summaryBelow="1" summaryRight="1"/>' : ''}</sheetPr>`;
   const dimension = inferDimension(sheet);
@@ -2578,7 +2589,7 @@ function resolveWorkbookRelatedPart(workbookPart: string, relationships: XlsxRel
 function requireSheetRange(value: string | undefined, descriptor: SheetDescriptor, feature: string): RangeRef {
   const range = parseRange(value);
   if (!range || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
-    || range.endRow > 1_048_575 || range.endColumn > 16_383) {
+    || range.endRow > OOXML_MAX_ROW_INDEX || range.endColumn > OOXML_MAX_COLUMN_INDEX) {
     throw new Error(`Worksheet ${descriptor.name} has an invalid ${feature} range: ${value ?? ''}`);
   }
   return { ...range, sheetId: descriptor.id };
@@ -2665,6 +2676,40 @@ function inferDimension(sheet: SheetSnapshot): string {
   }
   if (!hasCell) return 'A1';
   return `A1:${columnToLetter(maxColumn)}${maxRow + 1}`;
+}
+
+function assertOoxmlAddress(row: number, column: number, subject: string): void {
+  if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0
+    || row > OOXML_MAX_ROW_INDEX || column > OOXML_MAX_COLUMN_INDEX) {
+    throw new Error(`UNSUPPORTED_FEATURE: ${subject} exceeds the OOXML worksheet boundary`);
+  }
+}
+
+function validateOoxmlExchangeBoundary(sheet: SheetSnapshot): void {
+  for (const [row, columns] of Object.entries(sheet.cells)) {
+    const rowIndex = Number(row);
+    for (const column of Object.keys(columns)) assertOoxmlAddress(rowIndex, Number(column), `${sheet.name}!cell`);
+  }
+  for (const row of Object.keys(sheet.rowHeightsPx ?? {})) assertOoxmlAddress(Number(row), 0, `${sheet.name}!row dimension`);
+  for (const row of sheet.hiddenRows ?? []) assertOoxmlAddress(row, 0, `${sheet.name}!hidden row`);
+  for (const column of Object.keys(sheet.columnWidthsPx ?? {})) assertOoxmlAddress(0, Number(column), `${sheet.name}!column dimension`);
+  for (const column of sheet.hiddenColumns ?? []) assertOoxmlAddress(0, column, `${sheet.name}!hidden column`);
+  for (const merge of sheet.merges) validateOoxmlRange(merge.range, `${sheet.name}!merge`);
+  for (const range of [sheet.autoFilter?.range, ...(sheet.sheetTables ?? []).map((table) => table.range)].filter((range): range is RangeRef => Boolean(range))) {
+    validateOoxmlRange(range, `${sheet.name}!filter`);
+  }
+  for (const rule of sheet.conditionalFormats ?? []) for (const range of rule.ranges) validateOoxmlRange(range, `${sheet.name}!conditional format`);
+  for (const rule of sheet.dataValidations ?? []) for (const range of rule.ranges) validateOoxmlRange(range, `${sheet.name}!data validation`);
+  for (const rule of sheet.dataValidations ?? []) {
+    if (rule.listSource?.kind === 'range') validateOoxmlRange(rule.listSource.range, `${sheet.name}!validation source`);
+  }
+  for (const hyperlink of sheet.hyperlinks ?? []) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
+}
+
+function validateOoxmlRange(range: RangeRef, subject: string): void {
+  assertOoxmlAddress(range.startRow, range.startColumn, subject);
+  assertOoxmlAddress(range.endRow, range.endColumn, subject);
+  if (range.endRow < range.startRow || range.endColumn < range.startColumn) throw new Error(`UNSUPPORTED_FEATURE: ${subject} is inverted`);
 }
 
 function columnToLetter(index: number): string {
