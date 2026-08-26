@@ -4,9 +4,11 @@ import type {
   CellNote,
   CommentReply,
   CommentThread,
+  HyperlinkTarget,
+  WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { getCellNote } from '@react-sheets/core-model';
+import { getCellNote, parseAddress } from '@react-sheets/core-model';
 
 function hyperlinkKey(row: number, column: number): string {
   return `${row}:${column}`;
@@ -117,55 +119,42 @@ export function buildCellNote(author: string, text: string, noteId: string): Cel
   };
 }
 
-export function parseUrlHyperlink(url: string, hyperlinkId: string): CellHyperlink {
-  const trimmed = url.trim();
-  if (trimmed.startsWith('mailto:')) {
-    const body = trimmed.slice(7);
-    const [address, query = ''] = body.split('?');
-    const subjectMatch = query.match(/(?:^|&)subject=([^&]+)/);
-    return {
-      id: hyperlinkId,
-      target: {
-        kind: 'email',
-        address: address ?? '',
-        subject: subjectMatch?.[1] ? decodeURIComponent(subjectMatch[1]) : undefined,
-      },
-    };
+/** Validate the canonical target before it enters a command or mutation. */
+export function validateHyperlinkTarget(target: HyperlinkTarget, workbook: WorkbookModel, sourceSheetId: string): void {
+  if (target.kind === 'url') {
+    const url = target.url.trim();
+    if (!url) throw new Error('Hyperlink URL is required');
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new Error(`Invalid hyperlink URL: ${target.url}`); }
+    if (!['http:', 'https:', 'ftp:'].includes(parsed.protocol)) throw new Error(`Unsupported hyperlink URL scheme: ${parsed.protocol}`);
+    return;
   }
-  if (trimmed.startsWith('#sheet:')) {
-    const rest = trimmed.slice(7);
-    const [sheetId, anchor] = rest.split('!');
-    if (anchor?.includes(':')) {
-      const [rowText, columnText] = anchor.split(':');
-      return {
-        id: hyperlinkId,
-        target: {
-          kind: 'sheet',
-          sheetId: sheetId ?? '',
-          row: Number(rowText),
-          column: Number(columnText),
-        },
-      };
-    }
-    return {
-      id: hyperlinkId,
-      target: {
-        kind: 'sheet',
-        sheetId: sheetId ?? '',
-        address: anchor,
-      },
-    };
+  if (target.kind === 'email') {
+    const address = target.address.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error(`Invalid email hyperlink address: ${target.address}`);
+    if (target.subject !== undefined && typeof target.subject !== 'string') throw new Error('Email hyperlink subject is invalid');
+    return;
   }
-  if (trimmed.startsWith('#name:')) {
-    return {
-      id: hyperlinkId,
-      target: { kind: 'name', name: trimmed.slice(6) },
-    };
+  if (target.kind === 'name') {
+    const name = target.name.trim();
+    if (!/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(name)) throw new Error(`Invalid defined-name hyperlink: ${target.name}`);
+    const found = workbook.definedNameModels.some((entry) => entry.name.toLowerCase() === name.toLowerCase()
+      && (entry.scope === 'workbook' || entry.sheetId === sourceSheetId));
+    if (!found) throw new Error(`Defined name not found: ${name}`);
+    return;
   }
-  return {
-    id: hyperlinkId,
-    target: { kind: 'url', url: trimmed },
-  };
+  if (!workbook.getSheets().some((sheet) => sheet.id === target.sheetId)) throw new Error(`Hyperlink target sheet not found: ${target.sheetId}`);
+  const hasAddress = target.address !== undefined;
+  const hasCoordinates = target.row !== undefined || target.column !== undefined;
+  if (hasAddress && hasCoordinates) throw new Error('Worksheet hyperlink must use either address or row/column coordinates');
+  if (!hasAddress && !hasCoordinates) throw new Error('Worksheet hyperlink address is required');
+  const targetSheet = workbook.getSheet(target.sheetId);
+  const coordinate = hasAddress ? parseAddress(target.address ?? '') : { row: target.row, column: target.column };
+  if (!coordinate || !Number.isSafeInteger(coordinate.row) || !Number.isSafeInteger(coordinate.column)
+    || coordinate.row < 0 || coordinate.column < 0
+    || coordinate.row >= targetSheet.rowCount || coordinate.column >= targetSheet.columnCount) {
+    throw new Error(`Worksheet hyperlink address is outside ${targetSheet.name}`);
+  }
 }
 
 export function resolveHyperlinkDisplay(

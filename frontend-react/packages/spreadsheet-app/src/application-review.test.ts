@@ -59,16 +59,42 @@ describe('WorkbookSession review integration', () => {
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(3, 1)?.hasComment, false);
   });
 
-  it('setHyperlink and removeHyperlink use hyperlink commands with detail payload', () => {
+  it('setActiveHyperlink and removeHyperlink use typed hyperlink commands with detail payload', () => {
     const app = new WorkbookSession();
     selectCell(app, 2, 2);
-    app.setHyperlink('https://example.com/docs');
+    app.setActiveHyperlink({ kind: 'url', url: 'https://example.com/docs' }, 'Documentation');
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(getCellHyperlink(sheet, 2, 2)?.target.kind, 'url');
+    assert.equal(getCellHyperlink(sheet, 2, 2)?.tooltip, 'Documentation');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(2, 2)?.hyperlink, 'https://example.com/docs');
 
     app.removeHyperlink();
     assert.equal(getCellHyperlink(sheet, 2, 2), undefined);
+  });
+
+  it('supports typed email, worksheet, and defined-name targets with atomic undo/redo', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 0, 0);
+    app['runtime'].model.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
+    app.setActiveHyperlink({ kind: 'email', address: 'team@example.com', subject: 'Review' }, 'Email tip');
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'email');
+    app.undo();
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0), undefined);
+    app.redo();
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.tooltip, 'Email tip');
+    app.setActiveHyperlink({ kind: 'sheet', sheetId, address: 'B2' });
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'sheet');
+    app.setActiveHyperlink({ kind: 'name', name: 'SalesTotal' });
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'name');
+  });
+
+  it('rejects invalid typed targets before creating a mutation', () => {
+    const app = new WorkbookSession();
+    selectCell(app, 0, 0);
+    assert.throws(() => app.setActiveHyperlink({ kind: 'url', url: 'not-a-url' }), /Invalid hyperlink URL/);
+    assert.throws(() => app.setActiveHyperlink({ kind: 'sheet', sheetId: 'missing', address: 'A1' }), /target sheet not found/);
+    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(app.getActiveSheetId()), 0, 0), undefined);
   });
 
   it('addNote and removeNote route through note.set and note.remove', () => {

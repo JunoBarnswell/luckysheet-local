@@ -43,6 +43,8 @@ import type {
   WorkbookTableModel,
   WorkbookSnapshot,
   WorksheetModel,
+  CellHyperlink,
+  HyperlinkTarget,
 } from '@react-sheets/core-model';
 import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
@@ -141,7 +143,6 @@ import {
   buildCommentThread,
   findCommentThreadAt,
   getCellHyperlink,
-  parseUrlHyperlink,
 } from './features/review';
 import {
   buildSparklineDataLocationParams,
@@ -1990,7 +1991,7 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
     this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
@@ -5063,17 +5064,28 @@ export class WorkbookSession {
     });
     this.refresh();
   }
-  setHyperlink(url: string): void {
-    if (!url.trim()) return;
+  getActiveHyperlink(): CellHyperlink | undefined {
     const sel = this.selectionService.getState();
-    const hyperlink = parseUrlHyperlink(url, nextId('link'));
+    return getCellHyperlink(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
+  }
+  getSheetOptions(): readonly { id: string; name: string; rowCount: number; columnCount: number }[] {
+    return this.runtime.model.getSheets().map((sheet) => ({ id: sheet.id, name: sheet.name, rowCount: sheet.rowCount, columnCount: sheet.columnCount }));
+  }
+  setActiveHyperlink(target: HyperlinkTarget, tooltip?: string): void {
+    const sel = this.selectionService.getState();
+    const current = getCellHyperlink(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
+    const hyperlink: CellHyperlink = {
+      id: current?.id ?? nextId('link'),
+      target: structuredClone(target),
+      ...(tooltip?.trim() ? { tooltip: tooltip.trim() } : {}),
+    };
     this.runCommand('hyperlink.set', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
       hyperlink,
     });
-    this.notify('Hyperlink inserted');
+    this.notify(current ? 'Hyperlink updated' : 'Hyperlink inserted');
     this.refresh();
   }
   removeHyperlink(): void {

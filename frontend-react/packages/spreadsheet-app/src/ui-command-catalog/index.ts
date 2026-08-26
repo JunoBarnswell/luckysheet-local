@@ -1300,7 +1300,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('picture', 'insert', 'illustrations', RIBBON_TEXT.commands.picture, () => ({ type: 'dialog.open', dialog: 'insert-picture' }), 'picture'),
   callback('camera', 'insert', 'illustrations', RIBBON_TEXT.commands.camera, (context) => context.actions.onCreateCamera(), 'camera'),
   callback('formControls', 'insert', 'illustrations', RIBBON_TEXT.commands.formControls, (context) => context.actions.onCreateFormControl(), 'form-control'),
-  intent('hyperlink', 'insert', 'insertLinks', RIBBON_TEXT.commands.hyperlink, () => ({ type: 'panel.open', panel: 'inspector', notice: '在检查器中设置超链接。' }), 'link'),
+  intent('hyperlink', 'insert', 'insertLinks', RIBBON_TEXT.commands.hyperlink, () => ({ type: 'dialog.open', dialog: 'hyperlink' }), 'link'),
   callback('checkbox', 'insert', 'insertControls', RIBBON_TEXT.commands.checkbox, (context) => context.actions.onApplyCheckbox(), 'checkbox'),
   callback('textbox', 'insert', 'insertControls', RIBBON_TEXT.commands.textbox, (context) => context.actions.onCreateTextBox(), 'textbox'),
 
@@ -1489,7 +1489,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('resolveComment', 'review', 'comments', RIBBON_TEXT.commands.resolveComment, (context) => context.actions.onResolveComment(), 'comment'),
   intent('showComments', 'review', 'comments', RIBBON_TEXT.commands.showComments, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
   intent('newNote', 'review', 'notesLinks', RIBBON_TEXT.commands.newNote, () => ({ type: 'panel.open', panel: 'inspector', notice: 'Add a cell note in the Inspector panel.' }), 'comment'),
-  intent('insertLink', 'review', 'notesLinks', RIBBON_TEXT.commands.insertLink, () => ({ type: 'panel.open', panel: 'inspector', notice: 'Insert a hyperlink in the Inspector panel.' }), 'share'),
+  intent('insertLink', 'review', 'notesLinks', RIBBON_TEXT.commands.insertLink, () => ({ type: 'dialog.open', dialog: 'hyperlink' }), 'share'),
   callback('protectSelection', 'review', 'protection', RIBBON_TEXT.commands.protectSelection, (context) => context.actions.onProtectSelection(), 'lock'),
   callback('unprotect', 'review', 'protection', RIBBON_TEXT.commands.unprotect, (context) => context.actions.onUnprotectSelection(), 'lock'),
   intent('revisionLog', 'review', 'historyAudit', RIBBON_TEXT.commands.revisionLog, () => ({ type: 'panel.open', panel: 'history' }), 'history'),

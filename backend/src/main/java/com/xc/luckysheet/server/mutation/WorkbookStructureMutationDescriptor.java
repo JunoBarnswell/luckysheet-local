@@ -9,6 +9,8 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Set;
 
@@ -133,6 +135,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         JsonNode hyperlink = params.get("hyperlink");
         if (hyperlink == null || !hyperlink.isObject() || hyperlink.path("id").asText().isBlank()
                 || !hyperlink.path("target").isObject()) throw ServiceException.validation("hyperlink.set requires a canonical hyperlink");
+        validateHyperlinkTarget(root, sheetId, hyperlink.get("target"));
+        if (hyperlink.has("tooltip") && !hyperlink.get("tooltip").isTextual()) throw ServiceException.validation("Hyperlink tooltip is invalid");
         ArrayNode hyperlinks = SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, sheetId), "hyperlinks");
         removeHyperlinkAt(hyperlinks, coordinate);
         ObjectNode entry = hyperlinks.objectNode();
@@ -140,6 +144,88 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         entry.put("column", coordinate.column());
         entry.set("hyperlink", hyperlink.deepCopy());
         hyperlinks.add(entry);
+    }
+
+    private void validateHyperlinkTarget(ObjectNode root, String sourceSheetId, JsonNode target) {
+        String kind = target.path("kind").asText().trim();
+        if (kind.isBlank()) throw ServiceException.validation("Hyperlink target kind is required");
+        switch (kind) {
+            case "url" -> {
+                String value = target.path("url").asText().trim();
+                if (value.isBlank()) throw ServiceException.validation("Hyperlink URL is required");
+                try {
+                    URI uri = new URI(value);
+                    if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()) || "ftp".equalsIgnoreCase(uri.getScheme()))) {
+                        throw ServiceException.validation("Unsupported hyperlink URL scheme");
+                    }
+                } catch (URISyntaxException exception) {
+                    throw ServiceException.validation("Invalid hyperlink URL");
+                }
+            }
+            case "email" -> {
+                String address = target.path("address").asText().trim();
+                if (!address.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) throw ServiceException.validation("Invalid email hyperlink address");
+                if (target.has("subject") && !target.get("subject").isTextual()) throw ServiceException.validation("Email hyperlink subject is invalid");
+            }
+            case "sheet" -> {
+                String targetSheetId = target.path("sheetId").asText().trim();
+                ObjectNode targetSheet = findSheet(root, targetSheetId);
+                if (targetSheet == null) throw ServiceException.notFound("Hyperlink target sheet not found: " + targetSheetId);
+                boolean hasAddress = target.has("address");
+                boolean hasRow = target.has("row");
+                boolean hasColumn = target.has("column");
+                if (hasAddress && (hasRow || hasColumn) || !hasAddress && !(hasRow && hasColumn)) {
+                    throw ServiceException.validation("Worksheet hyperlink address must be canonical");
+                }
+                int row;
+                int column;
+                if (hasAddress) {
+                    String address = target.path("address").asText().trim();
+                    java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^([A-Za-z]+)([1-9][0-9]*)$").matcher(address);
+                    if (!matcher.matches()) throw ServiceException.validation("Worksheet hyperlink address is invalid");
+                    column = columnIndex(matcher.group(1));
+                    row = Integer.parseInt(matcher.group(2)) - 1;
+                } else {
+                    if (!target.path("row").canConvertToInt() || !target.path("column").canConvertToInt()) throw ServiceException.validation("Worksheet hyperlink coordinates are invalid");
+                    row = target.path("row").intValue();
+                    column = target.path("column").intValue();
+                }
+                if (row < 0 || column < 0 || row >= targetSheet.path("rowCount").asInt(-1) || column >= targetSheet.path("columnCount").asInt(-1)) {
+                    throw ServiceException.validation("Worksheet hyperlink address is outside the worksheet bounds");
+                }
+            }
+            case "name" -> {
+                String name = target.path("name").asText().trim();
+                if (!name.matches("^[A-Za-z_\\\\][A-Za-z0-9_.]*$")) throw ServiceException.validation("Invalid defined-name hyperlink");
+                JsonNode names = root.get("definedNameModels");
+                boolean found = names != null && names.isArray();
+                if (found) {
+                    found = false;
+                    for (JsonNode entry : names) {
+                        if (name.equalsIgnoreCase(entry.path("name").asText())
+                                && ("workbook".equals(entry.path("scope").asText()) || sourceSheetId.equals(entry.path("sheetId").asText()))) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) throw ServiceException.notFound("Defined name not found: " + name);
+            }
+            default -> throw ServiceException.validation("Unsupported hyperlink target kind: " + kind);
+        }
+    }
+
+    private ObjectNode findSheet(ObjectNode root, String sheetId) {
+        ArrayNode sheets = SnapshotMutationSupport.sheets(root);
+        for (JsonNode sheet : sheets) if (sheetId.equals(sheet.path("id").asText()) && sheet.isObject()) return (ObjectNode) sheet;
+        return null;
+    }
+
+    private int columnIndex(String label) {
+        long value = 0;
+        for (int index = 0; index < label.length(); index++) value = value * 26 + Character.toUpperCase(label.charAt(index)) - 'A' + 1L;
+        if (value < 1 || value > Integer.MAX_VALUE) throw ServiceException.validation("Worksheet hyperlink column is invalid");
+        return (int) value - 1;
     }
 
     private void removeHyperlink(ObjectNode root, String sheetId, ObjectNode params) {

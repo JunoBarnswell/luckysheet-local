@@ -6,6 +6,7 @@ import {
   getCellHyperlink,
   removeCellHyperlink,
   setCellHyperlink,
+  validateHyperlinkTarget,
 } from './helpers';
 
 function sheetRange(sheetId: string) {
@@ -234,6 +235,7 @@ function applyReviewMutation(mutationId: string, params: unknown, context: impor
     }
     case 'hyperlink.set': {
       if (!isHyperlinkSet(params)) throw new Error('Invalid hyperlink.set parameters');
+      validateHyperlinkTarget(params.hyperlink.target, context.workbook, params.sheetId);
       setCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column, params.hyperlink);
       return;
     }
@@ -538,6 +540,8 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<HyperlinkSetParams>({
     id: 'hyperlink.set',
     execute: (params, context) => {
+      if (!isHyperlinkSet(params)) throw new Error('Invalid hyperlink.set parameters');
+      validateHyperlinkTarget(params.hyperlink.target, context.workbook, params.sheetId);
       const hyperlink = getCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column);
       const affectedRanges = cellRange(params.sheetId, params.row, params.column);
       if (hyperlink) {

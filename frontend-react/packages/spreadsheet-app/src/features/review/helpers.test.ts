@@ -6,8 +6,8 @@ import {
   buildCommentThread,
   findCommentThreadAt,
   getCellHyperlink,
-  parseUrlHyperlink,
   resolveHyperlinkDisplay,
+  validateHyperlinkTarget,
   threadToCellComment,
 } from './helpers';
 
@@ -28,13 +28,19 @@ describe('review helpers', () => {
     assert.equal(findCommentThreadAt(sheet, 0, 0), undefined);
   });
 
-  it('parses hyperlink targets and resolves display text', () => {
-    const email = parseUrlHyperlink('mailto:team@example.com?subject=Hello', 'link-1');
-    assert.equal(email.target.kind, 'email');
-    const named = parseUrlHyperlink('#name:SalesTotal', 'link-2');
-    assert.equal(named.target.kind, 'name');
-    const display = resolveHyperlinkDisplay(named);
+  it('validates typed hyperlink targets and resolves serialization only for display/interchange', () => {
+    const workbook = new WorkbookModel('wb', 'Review');
+    workbook.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
+    const email = { kind: 'email' as const, address: 'team@example.com', subject: 'Hello' };
+    validateHyperlinkTarget(email, workbook, 'sheet-1');
+    const named = { kind: 'name' as const, name: 'SalesTotal' };
+    validateHyperlinkTarget(named, workbook, 'sheet-1');
+    const namedLink = { id: 'link-2', target: named };
+    assert.equal(namedLink.target.kind, 'name');
+    const display = resolveHyperlinkDisplay(namedLink);
     assert.equal(display, '#name:SalesTotal');
+    assert.throws(() => validateHyperlinkTarget({ kind: 'url', url: 'not-a-url' }, workbook, 'sheet-1'), /Invalid hyperlink URL/);
+    assert.throws(() => validateHyperlinkTarget({ kind: 'sheet', sheetId: 'missing', address: 'A1' }, workbook, 'sheet-1'), /sheet not found/);
   });
 
   it('builds visible cell notes', () => {

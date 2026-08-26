@@ -17,6 +17,7 @@ const PrintPreviewDialog = lazy(() => import("../components/dialogs/PrintPreview
 const CellTemplateDialog = lazy(() => import('../components/dialogs/CellTemplateDialog').then((module) => ({ default: module.CellTemplateDialog })));
 const CellEditorDialog = lazy(() => import('../components/dialogs/CellEditorDialog').then((module) => ({ default: module.CellEditorDialog })));
 const InsertPictureDialog = lazy(() => import('../components/dialogs/InsertPictureDialog').then((module) => ({ default: module.InsertPictureDialog })));
+const HyperlinkDialog = lazy(() => import('../components/dialogs/HyperlinkDialog').then((module) => ({ default: module.HyperlinkDialog })));
 
 export interface EditorDialogHostProps {
   state: UiSnapshot;
@@ -26,6 +27,8 @@ export interface EditorDialogHostProps {
   formatCellsInitial: { numberFormat: string; style: UiSnapshot["homeRibbon"]["style"]; mixedFontFamily?: boolean };
   pivotSourceOptions: EditorCommandController["pivotSourceOptions"];
   createPivotFromDialog: EditorCommandController["createPivotFromDialog"];
+  hyperlinkInitial?: import('@react-sheets/core-model').CellHyperlink;
+  hyperlinkSheets: readonly import('../components/dialogs/HyperlinkDialog').HyperlinkSheetOption[];
 }
 
 /** Lazy dialog boundary. Dialog state remains session-owned; this host only maps typed callbacks. */
@@ -37,6 +40,8 @@ export function EditorDialogHost({
   formatCellsInitial,
   pivotSourceOptions,
   createPivotFromDialog,
+  hyperlinkInitial,
+  hyperlinkSheets,
 }: EditorDialogHostProps): ReactNode {
   return (
     <Suspense fallback={null}>
@@ -147,6 +152,15 @@ export function EditorDialogHost({
         open={state.dialogs.active === 'insert-picture'}
         onClose={session.closeActiveDialog.bind(session)}
         onInsert={(file, placement) => session.insertImageFile(file, placement)}
+      />
+      <HyperlinkDialog
+        open={state.dialogs.active === 'hyperlink'}
+        initial={hyperlinkInitial}
+        sheets={hyperlinkSheets}
+        definedNames={state.definedNameModels}
+        onClose={session.closeActiveDialog.bind(session)}
+        onApply={(target, tooltip) => { session.setActiveHyperlink(target, tooltip); session.closeActiveDialog(); }}
+        onRemove={session.removeHyperlink.bind(session)}
       />
     </Suspense>
   );

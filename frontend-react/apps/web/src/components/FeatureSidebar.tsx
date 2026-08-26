@@ -187,8 +187,6 @@ export interface FeatureSidebarProps {
   onRemoveComment: () => void;
   onAddNote: (text: string) => void;
   onRemoveNote: () => void;
-  onSetHyperlink: (url: string) => void;
-  onRemoveHyperlink: () => void;
 }
 
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
@@ -236,8 +234,6 @@ function InspectorPanel({
   onRemoveComment,
   onAddNote,
   onRemoveNote,
-  onSetHyperlink,
-  onRemoveHyperlink,
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
@@ -249,8 +245,6 @@ function InspectorPanel({
   onRemoveComment: () => void;
   onAddNote: (text: string) => void;
   onRemoveNote: () => void;
-  onSetHyperlink: (url: string) => void;
-  onRemoveHyperlink: () => void;
 }) {
   const selectedAddress = parseAddress(activeCell);
   const selected = selectedAddress ? sheet.getCell(selectedAddress.row, selectedAddress.column) : undefined;
@@ -285,15 +279,12 @@ function InspectorPanel({
         comment={selectedCell?.comment}
         commentText={selectedCell?.commentText ?? ''}
         note={selectedCell?.note}
-        hyperlinkUrl={selectedCell?.hyperlink ?? ''}
         onAddComment={onAddComment}
         onReplyComment={onReplyComment}
         onResolveComment={onResolveComment}
         onRemoveComment={onRemoveComment}
         onAddNote={onAddNote}
         onRemoveNote={onRemoveNote}
-        onSetHyperlink={onSetHyperlink}
-        onRemoveHyperlink={onRemoveHyperlink}
       />
 
       <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} />
@@ -416,8 +407,6 @@ export function FeatureSidebar({
   onRemoveComment,
   onAddNote,
   onRemoveNote,
-  onSetHyperlink,
-  onRemoveHyperlink,
 }: FeatureSidebarProps) {
   const tableResizeRange = activeTable && selectedRange
     && (selectedRange.startRow !== activeTable.range.startRow
@@ -528,8 +517,6 @@ export function FeatureSidebar({
             onRemoveComment={onRemoveComment}
             onAddNote={onAddNote}
             onRemoveNote={onRemoveNote}
-            onSetHyperlink={onSetHyperlink}
-            onRemoveHyperlink={onRemoveHyperlink}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'slicer' ? (
@@ -744,38 +731,30 @@ function CommentHyperlinkForms({
   comment,
   commentText: initialCommentText,
   note,
-  hyperlinkUrl: initialHyperlinkUrl,
   onAddComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
   onAddNote,
   onRemoveNote,
-  onSetHyperlink,
-  onRemoveHyperlink,
 }: {
   comment?: CellComment;
   commentText: string;
   note?: import('@react-sheets/core-model').CellNote;
-  hyperlinkUrl: string;
   onAddComment: (text: string) => void;
   onReplyComment: (text: string) => void;
   onResolveComment: () => void;
   onRemoveComment: () => void;
   onAddNote: (text: string) => void;
   onRemoveNote: () => void;
-  onSetHyperlink: (url: string) => void;
-  onRemoveHyperlink: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
   const [noteText, setNoteText] = useState('');
   const [replyText, setReplyText] = useState('');
-  const [hyperlinkUrl, setHyperlinkUrl] = useState('');
 
   useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
   useEffect(() => setNoteText(note?.text ?? ''), [note?.id, note?.text]);
   useEffect(() => setReplyText(''), [comment?.id]);
-  useEffect(() => setHyperlinkUrl(initialHyperlinkUrl), [initialHyperlinkUrl]);
 
   return (
     <Stack gap="md">
@@ -877,41 +856,6 @@ function CommentHyperlinkForms({
         </Panel>
       ) : null}
 
-      <Panel className="shadow-none">
-        <PanelHeader>
-          <Inline gap="sm">
-            <Icon name="share" size="sm" className="text-blue-600" />
-            <PanelTitle as="h3" size="sm">Hyperlink</PanelTitle>
-          </Inline>
-        </PanelHeader>
-        <PanelBody>
-          <Stack gap="sm">
-            <TextInput
-              type="url"
-              placeholder="https://example.com"
-              value={hyperlinkUrl}
-              onChange={(event) => setHyperlinkUrl(event.target.value)}
-            />
-            <Inline gap="sm" className="justify-end">
-              {onRemoveHyperlink ? (
-                <Button size="sm" variant="ghost" onClick={() => { onRemoveHyperlink(); }}>
-                  Remove
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={() => {
-                  if (!onSetHyperlink || !hyperlinkUrl.trim()) return;
-                  onSetHyperlink(hyperlinkUrl.trim());
-                }}
-              >
-                Apply link
-              </Button>
-            </Inline>
-          </Stack>
-        </PanelBody>
-      </Panel>
     </Stack>
   );
 }
