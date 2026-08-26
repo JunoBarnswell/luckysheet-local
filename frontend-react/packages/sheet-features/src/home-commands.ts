@@ -38,6 +38,7 @@ export interface HomeFillParams {
   targetRange: RangeRef;
   direction: FillDirection;
   mode: FillMode;
+  dateSystem?: '1900' | '1904';
 }
 
 interface FillMutationWrite {
@@ -338,7 +339,8 @@ function isValidAutoSumParams(value: unknown): value is AutoSumParams {
 function isValidFillParams(value: unknown): value is HomeFillParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange) || !isRange(value.targetRange)) return false;
   return ['down', 'up', 'right', 'left'].includes(String(value.direction))
-    && (value.mode === 'copy' || value.mode === 'series');
+    && (value.mode === 'copy' || value.mode === 'series')
+    && (value.dateSystem === undefined || value.dateSystem === '1900' || value.dateSystem === '1904');
 }
 
 function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
@@ -563,6 +565,7 @@ function applyFillMutation(params: FillMutationParams, context: CommandContext, 
     targetRange: params.targetRange,
     direction: params.direction,
     mode: params.mode,
+    dateSystem: params.dateSystem,
   };
   const validated = validateFillPlan(sheet, planParams);
   if (canonical) {
@@ -1051,6 +1054,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetRange: target,
         direction: params.direction,
         mode: params.mode,
+        dateSystem: params.dateSystem,
       });
       if (plan.writes.length === 0) return homeResult(context, rangeAffected(target));
       const writes: FillMutationWrite[] = plan.writes.map((write) => ({
@@ -1071,6 +1075,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetRange: target,
         direction: params.direction,
         mode: params.mode,
+        dateSystem: params.dateSystem,
         writes,
       };
       const inverseParams: FillMutationParams = { ...mutationParams, writes: inverseWrites };

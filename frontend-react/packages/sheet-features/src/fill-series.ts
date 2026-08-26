@@ -1,4 +1,5 @@
 import type { CellData, RangeRef, WorksheetModel } from '@react-sheets/core-model';
+import { canonicalExcelDateFromSerial, canonicalExcelDateFromValue, canonicalExcelDateToIso, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import { shiftFormula } from './clipboard';
 
 /** The only directions understood by the fill planner. */
@@ -13,6 +14,8 @@ export interface FillPlanParams {
   targetRange: RangeRef;
   direction: FillDirection;
   mode: FillMode;
+  /** Workbook calendar used when a date-formatted seed is extended. */
+  dateSystem?: ExcelDateSystem;
 }
 
 export interface FillWrite {
@@ -28,6 +31,7 @@ export interface FillPlan {
   readonly targetRange: RangeRef;
   readonly direction: FillDirection;
   readonly mode: FillMode;
+  readonly dateSystem: ExcelDateSystem;
   /** Only actual changes are emitted; seed cells are never rewritten. */
   readonly writes: readonly FillWrite[];
 }
@@ -164,6 +168,13 @@ interface SeriesSeed {
   readonly value: number;
   readonly cell: CellData;
   readonly travel: number;
+  readonly kind: 'number' | 'date';
+}
+
+function isDateFormat(format: string | undefined): boolean {
+  if (!format) return false;
+  const unquoted = format.replace(/"(?:[^"]|"")*"/g, '').replace(/\\./g, '').replace(/\[[^\]]*\]/g, '');
+  return /[ydhms]/i.test(unquoted);
 }
 
 function travelCoordinate(direction: FillDirection, row: number, column: number): number {
@@ -179,23 +190,30 @@ function seriesSeeds(
   sheet: WorksheetModel,
   source: RangeRef,
   direction: FillDirection,
+  dateSystem: ExcelDateSystem,
 ): Map<number, SeriesSeed[]> {
   const tracks = new Map<number, SeriesSeed[]>();
   for (let row = source.startRow; row <= source.endRow; row += 1) {
     for (let column = source.startColumn; column <= source.endColumn; column += 1) {
       const cell = sourceCell(sheet, row, column);
       if (cellIsBlank(cell)) continue;
-      if (cell?.formula !== undefined || cell?.formulaValue !== undefined || typeof cell?.value !== 'number' || !Number.isFinite(cell.value)) {
+      if (cell?.formula !== undefined || cell?.formulaValue !== undefined) {
         throw new Error('Series fill accepts only finite numeric seeds; use copy mode for formulas and text');
       }
+      const date = isDateFormat(cell?.numberFormat) ? canonicalExcelDateFromValue(cell?.value, dateSystem) : null;
+      const numericValue = date?.serial ?? (typeof cell?.value === 'number' && Number.isFinite(cell.value) ? cell.value : null);
+      if (numericValue === null) throw new Error('Series fill accepts only finite numeric seeds or canonical date seeds; use copy mode for formulas and text');
       const key = seriesTrackKey(direction, row, column);
-      const seed: SeriesSeed = { row, column, value: cell.value, cell, travel: travelCoordinate(direction, row, column) };
+      const seed: SeriesSeed = { row, column, value: numericValue, cell, travel: travelCoordinate(direction, row, column), kind: date ? 'date' : 'number' };
       const entries = tracks.get(key) ?? [];
       entries.push(seed);
       tracks.set(key, entries);
     }
   }
-  for (const entries of tracks.values()) entries.sort((left, right) => left.travel - right.travel);
+  for (const entries of tracks.values()) {
+    entries.sort((left, right) => left.travel - right.travel);
+    if (entries.some((entry) => entry.kind !== entries[0]!.kind)) throw new Error('Series seeds must use one value kind per track');
+  }
   return tracks;
 }
 
@@ -216,8 +234,8 @@ function seriesStep(seeds: readonly SeriesSeed[]): number {
   return step;
 }
 
-function planSeries(sheet: WorksheetModel, source: RangeRef, target: RangeRef, direction: FillDirection): FillPlan {
-  const tracks = seriesSeeds(sheet, source, direction);
+function planSeries(sheet: WorksheetModel, source: RangeRef, target: RangeRef, direction: FillDirection, dateSystem: ExcelDateSystem): FillPlan {
+  const tracks = seriesSeeds(sheet, source, direction, dateSystem);
   const writes: FillWrite[] = [];
   const seedCoordinates = new Set<string>();
   for (const entries of tracks.values()) for (const seed of entries) seedCoordinates.add(`${seed.row}:${seed.column}`);
@@ -232,7 +250,7 @@ function planSeries(sheet: WorksheetModel, source: RangeRef, target: RangeRef, d
       const value = first.value + seriesStep(seeds) * (travelCoordinate(direction, row, column) - first.travel);
       if (!Number.isFinite(value)) throw new Error('Series fill would produce a non-finite number');
       const next = structuredClone(first.cell);
-      next.value = value;
+      next.value = first.kind === 'date' ? canonicalExcelDateToIso(canonicalExcelDateFromSerial(value, dateSystem)) : value;
       delete next.formula;
       delete next.formulaValue;
       delete next.displayValue;
@@ -253,7 +271,9 @@ export function validateFillPlan(sheet: WorksheetModel, params: FillPlanParams):
   assertBounds(sheet, source, 'source range');
   assertBounds(sheet, target, 'target range');
   assertGeometry(source, target, params.direction);
-  return { ...params, sourceRange: source, targetRange: target };
+  const dateSystem = params.dateSystem ?? '1900';
+  if (dateSystem !== '1900' && dateSystem !== '1904') throw new Error('Fill dateSystem must be 1900 or 1904');
+  return { ...params, sourceRange: source, targetRange: target, dateSystem };
 }
 
 /** Build the canonical, side-effect-free plan shared by command and replay. */
@@ -261,5 +281,8 @@ export function planFill(sheet: WorksheetModel, params: FillPlanParams): FillPla
   const validated = validateFillPlan(sheet, params);
   const source = validated.sourceRange;
   const target = validated.targetRange;
-  return validated.mode === 'copy' ? planCopy(sheet, source, target, validated.direction) : planSeries(sheet, source, target, validated.direction);
+  const dateSystem = validated.dateSystem ?? '1900';
+  return validated.mode === 'copy'
+    ? { ...planCopy(sheet, source, target, validated.direction), dateSystem }
+    : planSeries(sheet, source, target, validated.direction, dateSystem);
 }
