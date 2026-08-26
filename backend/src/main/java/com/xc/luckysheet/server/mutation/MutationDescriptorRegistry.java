@@ -28,6 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
+    private static final Set<String> HORIZONTAL_ALIGNMENTS = Set.of("general", "left", "center", "right", "centerContinuous", "justify", "distributed", "fill");
+    private static final Set<String> VERTICAL_ALIGNMENTS = Set.of("top", "middle", "bottom", "justify", "distributed");
+    private static final Set<String> READING_ORDERS = Set.of("context", "ltr", "rtl");
+    private static final Set<String> TEXT_ORIENTATIONS = Set.of("horizontal", "stacked", "rotateUp", "rotateDown");
     private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
             "automation.recording.changed", "banded.set",
@@ -758,6 +762,7 @@ public class MutationDescriptorRegistry {
             JsonNode style = params.get("style");
             JsonNode numberFormat = params.get("numberFormat");
             if ((style == null || !style.isObject()) && (numberFormat == null || !numberFormat.isTextual())) throw ServiceException.validation("style.set requires style or numberFormat");
+            if (style != null && style.isObject()) validateStyle((ObjectNode) style);
             for (RangeRef range : ranges) {
                 for (int row = range.startRow(); row <= range.endRow(); row++) {
                     for (int column = range.startColumn(); column <= range.endColumn(); column++) {
@@ -771,6 +776,17 @@ public class MutationDescriptorRegistry {
                     }
                 }
             }
+        }
+
+        private void validateStyle(ObjectNode style) {
+            if (style.has("unsupportedAlignment")) throw ServiceException.validation("style.set cannot edit unsupported alignment attributes");
+            if (style.has("horizontalAlignment") && !HORIZONTAL_ALIGNMENTS.contains(SnapshotMutationSupport.text(style, "horizontalAlignment"))) throw ServiceException.validation("horizontalAlignment is invalid");
+            if (style.has("verticalAlignment") && !VERTICAL_ALIGNMENTS.contains(SnapshotMutationSupport.text(style, "verticalAlignment"))) throw ServiceException.validation("verticalAlignment is invalid");
+            if (style.has("readingOrder") && !READING_ORDERS.contains(SnapshotMutationSupport.text(style, "readingOrder"))) throw ServiceException.validation("readingOrder is invalid");
+            if (style.has("textOrientation") && !TEXT_ORIENTATIONS.contains(SnapshotMutationSupport.text(style, "textOrientation"))) throw ServiceException.validation("textOrientation is invalid");
+            if (style.has("shrinkToFit") && !style.path("shrinkToFit").isBoolean()) throw ServiceException.validation("shrinkToFit is invalid");
+            if (style.has("indent") && (!style.path("indent").canConvertToInt() || style.path("indent").asInt() < 0 || style.path("indent").asInt() > 250)) throw ServiceException.validation("indent is invalid");
+            if (style.has("textRotate") && (!style.path("textRotate").isNumber() || !Double.isFinite(style.path("textRotate").asDouble()) || style.path("textRotate").asDouble() < -180 || style.path("textRotate").asDouble() > 180)) throw ServiceException.validation("textRotate is invalid");
         }
 
         private void setMerge(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {

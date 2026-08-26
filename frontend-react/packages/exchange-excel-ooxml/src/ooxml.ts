@@ -939,16 +939,11 @@ function parseStyles(
     const alignment = xf.attrs.applyAlignment === '0' ? baseAlignment : child(xf, 'alignment') ?? baseAlignment;
     const baseProtection = child(base, 'protection');
     const protection = xf.attrs.applyProtection === '0' ? baseProtection : child(xf, 'protection') ?? baseProtection;
-    const rotation = alignment?.attrs.textRotation === '255' ? 90 : Number(alignment?.attrs.textRotation);
     const style: CellStyle = {
       ...fontStyle,
       ...(background ? { background } : {}),
       ...(cellBorders ? { borders: cellBorders } : {}),
-      ...(alignment?.attrs.horizontal ? { horizontalAlignment: normalizeHorizontal(alignment.attrs.horizontal) } : {}),
-      ...(alignment?.attrs.vertical ? { verticalAlignment: normalizeVertical(alignment.attrs.vertical) } : {}),
-      ...(Number.isInteger(Number(alignment?.attrs.indent)) && Number(alignment?.attrs.indent) >= 0 ? { indent: Number(alignment?.attrs.indent) } : {}),
-      ...(alignment?.attrs.wrapText !== undefined ? { wrapText: xmlBoolean(alignment.attrs.wrapText) } : {}),
-      ...(Number.isFinite(rotation) ? { textRotate: rotation } : {}),
+      ...parseAlignmentAttributes(alignment),
       ...(protection?.attrs.locked !== undefined ? { locked: xmlBoolean(protection.attrs.locked) } : {}),
       ...(protection?.attrs.hidden !== undefined ? { formulaHidden: xmlBoolean(protection.attrs.hidden) } : {}),
     };
@@ -969,10 +964,7 @@ function parseStyles(
       ...parseFontStyle(fonts[fontId], themeColors),
       ...(parseFillColor(fills[fillId], themeColors) ? { background: parseFillColor(fills[fillId], themeColors)! } : {}),
       ...(parseBorders(borders[borderId], themeColors) ? { borders: parseBorders(borders[borderId], themeColors)! } : {}),
-      ...(alignment?.attrs.horizontal ? { horizontalAlignment: normalizeHorizontal(alignment.attrs.horizontal) } : {}),
-      ...(alignment?.attrs.vertical ? { verticalAlignment: normalizeVertical(alignment.attrs.vertical) } : {}),
-      ...(Number.isInteger(Number(alignment?.attrs.indent)) && Number(alignment?.attrs.indent) >= 0 ? { indent: Number(alignment?.attrs.indent) } : {}),
-      ...(alignment?.attrs.wrapText !== undefined ? { wrapText: xmlBoolean(alignment.attrs.wrapText) } : {}),
+      ...parseAlignmentAttributes(alignment),
     };
     const numberFormat = customFormats.get(numberFormatId) ?? builtInNumberFormat(numberFormatId);
     return [{ id: `ooxml-cell-style-${index + 1}`, name, style: { ...style, ...(numberFormat ? { numberFormat } : {}) } } satisfies CellStyleTemplate];
@@ -982,6 +974,7 @@ function parseStyles(
       ...parseFontStyle(child(dxf, 'font'), themeColors),
       ...(parseFillColor(child(dxf, 'fill'), themeColors) ? { background: parseFillColor(child(dxf, 'fill'), themeColors)! } : {}),
       ...(parseBorders(child(dxf, 'border'), themeColors) ? { borders: parseBorders(child(dxf, 'border'), themeColors)! } : {}),
+      ...parseAlignmentAttributes(child(dxf, 'alignment')),
     };
     return Object.keys(style).length ? style : undefined;
   });
@@ -1206,9 +1199,7 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
     const fillId = style?.background ? (fillIndexes.get(style.background) ?? 0) : 0;
     const borderId = style?.borders ? (borderIndexes.get(JSON.stringify(style.borders)) ?? 0) : 0;
     const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, `borderId="${borderId}"`, `xfId="${xfId}"`, 'applyFont="1"', 'applyFill="1"', 'applyBorder="1"', 'applyNumberFormat="1"'];
-    const alignment = style && (style.horizontalAlignment || style.verticalAlignment || style.wrapText || style.indent !== undefined || style.textRotate !== undefined)
-      ? `<alignment${style.horizontalAlignment ? ` horizontal="${style.horizontalAlignment}"` : ''}${style.verticalAlignment ? ` vertical="${style.verticalAlignment}"` : ''}${style.wrapText ? ' wrapText="1"' : ''}${style.indent !== undefined ? ` indent="${style.indent}"` : ''}${style.textRotate !== undefined ? ` textRotation="${style.textRotate}"` : ''}/>`
-      : '';
+    const alignment = style ? serializeAlignment(style) : '';
     const protection = style && (style.locked !== undefined || style.formulaHidden !== undefined)
       ? `<protection${style.locked !== undefined ? ` locked="${style.locked ? '1' : '0'}"` : ''}${style.formulaHidden !== undefined ? ` hidden="${style.formulaHidden ? '1' : '0'}"` : ''}/>`
       : '';
@@ -2673,12 +2664,71 @@ function randomId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function normalizeHorizontal(value: string): CellStyle['horizontalAlignment'] | undefined {
-  return value === 'centerContinuous' ? 'center' : value === 'general' ? undefined : value as CellStyle['horizontalAlignment'];
+function parseAlignmentAttributes(node: XmlNode | undefined): Partial<CellStyle> {
+  if (!node) return {};
+  const attrs = node.attrs;
+  const style: Partial<CellStyle> = {};
+  const unsupported: NonNullable<CellStyle['unsupportedAlignment']> = {};
+  const preserved: Record<string, string> = {};
+  const known = new Set(['horizontal', 'vertical', 'wrapText', 'shrinkToFit', 'indent', 'readingOrder', 'textRotation']);
+
+  const horizontal = attrs.horizontal;
+  if (horizontal !== undefined) {
+    if (['general', 'left', 'center', 'right', 'centerContinuous', 'justify', 'distributed', 'fill'].includes(horizontal)) style.horizontalAlignment = horizontal as NonNullable<CellStyle['horizontalAlignment']>;
+    else unsupported.horizontal = horizontal;
+  }
+  const vertical = attrs.vertical;
+  if (vertical !== undefined) {
+    if (vertical === 'center') style.verticalAlignment = 'middle';
+    else if (['top', 'bottom', 'justify', 'distributed'].includes(vertical)) style.verticalAlignment = vertical as NonNullable<CellStyle['verticalAlignment']>;
+    else unsupported.vertical = vertical;
+  }
+  if (attrs.wrapText !== undefined) style.wrapText = strictXmlBoolean(attrs.wrapText, 'wrapText');
+  if (attrs.shrinkToFit !== undefined) style.shrinkToFit = strictXmlBoolean(attrs.shrinkToFit, 'shrinkToFit');
+  if (attrs.indent !== undefined) {
+    const indent = Number(attrs.indent);
+    if (!Number.isInteger(indent) || indent < 0 || indent > 250) throw new Error(`Invalid OOXML alignment indent: ${attrs.indent}`);
+    style.indent = indent;
+  }
+  if (attrs.readingOrder !== undefined) {
+    if (attrs.readingOrder === '0') style.readingOrder = 'context';
+    else if (attrs.readingOrder === '1') style.readingOrder = 'ltr';
+    else if (attrs.readingOrder === '2') style.readingOrder = 'rtl';
+    else preserved.readingOrder = attrs.readingOrder;
+  }
+  if (attrs.textRotation !== undefined) {
+    const rotation = Number(attrs.textRotation);
+    if (!Number.isInteger(rotation) || rotation < 0 || rotation > 180 && rotation !== 255) throw new Error(`Invalid OOXML alignment textRotation: ${attrs.textRotation}`);
+    if (rotation === 255) style.textOrientation = 'stacked';
+    else if (rotation > 0) style.textRotate = rotation;
+  }
+  for (const [key, value] of Object.entries(attrs)) if (!known.has(key)) preserved[key] = value;
+  if (Object.keys(preserved).length > 0) unsupported.attributes = preserved;
+  if (unsupported.horizontal !== undefined || unsupported.vertical !== undefined || unsupported.attributes !== undefined) style.unsupportedAlignment = unsupported;
+  return style;
 }
 
-function normalizeVertical(value: string): CellStyle['verticalAlignment'] | undefined {
-  return value === 'center' ? 'middle' : value as CellStyle['verticalAlignment'];
+function strictXmlBoolean(value: string, field: string): boolean {
+  if (!/^(?:0|1|true|false)$/iu.test(value)) throw new Error(`Invalid OOXML alignment ${field}: ${value}`);
+  return xmlBoolean(value);
+}
+
+function serializeAlignment(style: CellStyle): string {
+  const attrs: Record<string, string> = { ...(style.unsupportedAlignment?.attributes ?? {}) };
+  if (style.horizontalAlignment !== undefined) attrs.horizontal = style.horizontalAlignment;
+  else if (style.unsupportedAlignment?.horizontal !== undefined) attrs.horizontal = style.unsupportedAlignment.horizontal;
+  if (style.verticalAlignment !== undefined) attrs.vertical = style.verticalAlignment === 'middle' ? 'center' : style.verticalAlignment;
+  else if (style.unsupportedAlignment?.vertical !== undefined) attrs.vertical = style.unsupportedAlignment.vertical;
+  if (style.wrapText !== undefined) attrs.wrapText = style.wrapText ? '1' : '0';
+  if (style.shrinkToFit !== undefined) attrs.shrinkToFit = style.shrinkToFit ? '1' : '0';
+  if (style.indent !== undefined) attrs.indent = String(style.indent);
+  if (style.readingOrder !== undefined) attrs.readingOrder = style.readingOrder === 'context' ? '0' : style.readingOrder === 'ltr' ? '1' : '2';
+  if (style.textOrientation === 'stacked') attrs.textRotation = '255';
+  else if (style.textOrientation === 'rotateUp') attrs.textRotation = '90';
+  else if (style.textOrientation === 'rotateDown') attrs.textRotation = '180';
+  else if (style.textRotate !== undefined) attrs.textRotation = String(style.textRotate);
+  const serialized = Object.entries(attrs).map(([key, value]) => ` ${key}="${encodeXml(value)}"`).join('');
+  return serialized ? `<alignment${serialized}/>` : '';
 }
 
 function descriptorsForSnapshot(snapshot: WorkbookSnapshot): SheetDescriptor[] {

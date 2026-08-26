@@ -156,6 +156,67 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(bottomRight?.style?.borders, { bottom: line, right: line });
   });
 
+  it('round-trips the canonical extended alignment contract without lossy flattening', async () => {
+    const workbook = new WorkbookModel('wb-alignment-roundtrip', 'Alignment');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, {
+      value: 'Across',
+      style: {
+        horizontalAlignment: 'centerContinuous',
+        verticalAlignment: 'distributed',
+        shrinkToFit: true,
+        indent: 3,
+        readingOrder: 'rtl',
+        textOrientation: 'stacked',
+      },
+    });
+
+    const imported = await importXlsx({
+      fileName: 'alignment.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'B' },
+    });
+    const style = imported.snapshot.sheets[0]?.cells['0']?.['0']?.style;
+    assert.equal(style?.horizontalAlignment, 'centerContinuous');
+    assert.equal(style?.verticalAlignment, 'distributed');
+    assert.equal(style?.shrinkToFit, true);
+    assert.equal(style?.indent, 3);
+    assert.equal(style?.readingOrder, 'rtl');
+    assert.equal(style?.textOrientation, 'stacked');
+  });
+
+  it('preserves unsupported native alignment attributes and rejects malformed alignment values', async () => {
+    const workbook = new WorkbookModel('wb-alignment-unsupported', 'Alignment Unsupported');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'native', style: { horizontalAlignment: 'left' } });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const stylesXml = strFromU8(output.packageGraph.parts['xl/styles.xml']!);
+    const alignment = stylesXml.match(/<alignment\s+[^>]*\/>/)?.[0];
+    assert.ok(alignment, 'export must contain a cell alignment node');
+    output.packageGraph.parts['xl/styles.xml'] = strToU8(stylesXml.replace(
+      alignment,
+      '<alignment horizontal="vendorAlignment" vertical="vendorVertical" foo="preserve-me" shrinkToFit="1"/>',
+    ));
+
+    const imported = await importXlsx({
+      fileName: 'alignment-unsupported.xlsx',
+      buffer: zipXlsxPartsBuffer(output.packageGraph.parts),
+      options: { compatibilityTarget: 'B' },
+    });
+    const style = imported.snapshot.sheets[0]?.cells['0']?.['0']?.style;
+    assert.equal(style?.unsupportedAlignment?.horizontal, 'vendorAlignment');
+    assert.equal(style?.unsupportedAlignment?.vertical, 'vendorVertical');
+    assert.equal(style?.unsupportedAlignment?.attributes?.foo, 'preserve-me');
+    assert.equal(style?.shrinkToFit, true);
+
+    const malformed = strFromU8(output.packageGraph.parts['xl/styles.xml']!).replace('shrinkToFit="1"', 'shrinkToFit="maybe"');
+    output.packageGraph.parts['xl/styles.xml'] = strToU8(malformed);
+    await assert.rejects(
+      importXlsx({ fileName: 'alignment-malformed.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } }),
+      /Invalid OOXML alignment shrinkToFit/,
+    );
+  });
+
   it('round-trips native sheet protection allow flags and cell protection styles', async () => {
     const workbook = new WorkbookModel('wb-protection-roundtrip', 'Protection');
     const sheet = workbook.getSheet(workbook.primarySheetId);

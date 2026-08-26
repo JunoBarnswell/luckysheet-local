@@ -2,6 +2,7 @@ import { formatValue } from "@react-sheets/number-format";
 import * as bwipjs from "@bwip-js/browser";
 import {
   type CellAddress,
+  type CellValue,
   type CellProvider,
   type CellRange,
   type CellRenderData,
@@ -159,6 +160,15 @@ export function drawCellLayer(options: PaneDrawOptions): void {
             height: sumHeight(skeleton, merge.startRow, merge.endRow),
           }
         : rect;
+      const alignmentSpan = cell?.alignmentSpan;
+      const contentRect = alignmentSpan && alignmentSpan.isAnchor
+        ? {
+            x: skeleton.getColumnLeft(alignmentSpan.startColumn),
+            y: rect.y,
+            width: sumWidth(skeleton, alignmentSpan.startColumn, alignmentSpan.endColumn),
+            height: rect.height,
+          }
+        : spanRect;
 
       if (cell?.overlay?.colorScale || cell?.style?.background || (cell === undefined && false)) {
         // 背景(含色阶)
@@ -182,10 +192,10 @@ export function drawCellLayer(options: PaneDrawOptions): void {
       if (cell?.hasComment) drawCommentMark(context, spanRect, theme);
       if (cell?.invalid) drawInvalidRing(context, spanRect, theme);
 
-      if (cell) {
-        if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, spanRect, resolveDisplayText(cell), cell.presentation);
-        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, spanRect, cell.presentation);
-        else drawCellValue(context, skeleton, options, address, cell, spanRect);
+      if (cell && (!alignmentSpan || alignmentSpan.isAnchor)) {
+        if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
+        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation);
+        else drawCellValue(context, skeleton, options, address, cell, contentRect);
         if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
@@ -472,8 +482,18 @@ export function measureCellAutoFit(
     lineCount = lines.reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / Math.max(1, availableWidthPx - padding * 2))), 0);
     width = Math.min(width, availableWidthPx);
   }
+  if (style?.shrinkToFit && availableWidthPx && availableWidthPx > padding * 2) width = Math.min(width, availableWidthPx);
   let height = lineCount * lineHeight + padding * 2 + (style?.borders?.top ? 1 : 0) + (style?.borders?.bottom ? 1 : 0);
-  const rotation = Math.abs((style?.textRotate ?? 0) * Math.PI / 180);
+  if (style?.textOrientation === 'stacked') {
+    width = Math.max(fontSizePx, ...lines.map((line) => context.measureText(line).width / Math.max(1, line.length))) + padding * 2 + indent;
+    height = Array.from(text).length * lineHeight + padding * 2;
+  }
+  const rotationDegrees = style?.textOrientation === 'rotateUp'
+    ? 90
+    : style?.textOrientation === 'rotateDown'
+      ? 180
+      : style?.textRotate ?? 0;
+  const rotation = Math.abs(rotationDegrees * Math.PI / 180);
   if (rotation > 0) {
     const rotatedWidth = Math.abs(Math.cos(rotation)) * width + Math.abs(Math.sin(rotation)) * height;
     const rotatedHeight = Math.abs(Math.sin(rotation)) * width + Math.abs(Math.cos(rotation)) * height;
@@ -496,10 +516,11 @@ function drawCellValue(
   const style = cell.style;
   const text = resolveDisplayText(cell);
   if (!text) return;
+  if (style?.unsupportedAlignment?.horizontal || style?.unsupportedAlignment?.vertical) return;
 
   const padding = style?.padding ?? theme.cellPadding;
   const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
-  const hAlign = style?.horizontalAlignment ?? "left";
+  const hAlign = resolveHorizontalAlignment(style?.horizontalAlignment, cell.value);
   const vAlign = style?.verticalAlignment ?? "middle";
 
   context.save();
@@ -509,7 +530,19 @@ function drawCellValue(
 
   const wrap = Boolean(style?.wrapText);
   const maxWidth = rect.width - padding * 2 - indent;
-  const measured = context.measureText(text).width;
+  let measured = context.measureText(text).width;
+  if (style?.shrinkToFit && !wrap && maxWidth > 0 && measured > maxWidth) {
+    const currentSize = style.fontSizePx ?? 13;
+    const fittedSize = Math.max(4, currentSize * maxWidth / measured);
+    context.font = cellRenderFont({ ...style, fontSizePx: fittedSize }, theme);
+    measured = context.measureText(text).width;
+  }
+
+  if (style?.textOrientation === 'stacked') {
+    drawStackedText(context, text, rect, padding + indent, vAlign);
+    context.restore();
+    return;
+  }
 
   if (wrap) {
     drawWrapped(context, text, rect, padding + indent, hAlign, vAlign, maxWidth);
@@ -525,7 +558,7 @@ function drawCellValue(
   }
 
   let x: number;
-  if (hAlign === "center") x = rect.x + rect.width / 2;
+  if (hAlign === "center" || hAlign === "centerContinuous") x = rect.x + rect.width / 2;
   else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
   else x = rect.x + padding + indent;
 
@@ -535,7 +568,11 @@ function drawCellValue(
     : vAlign === 'bottom'
       ? rect.y + rect.height - padding - fontSize / 2
       : rect.y + rect.height / 2;
-  const rotate = style?.textRotate ?? 0;
+  const rotate = style?.textOrientation === 'rotateUp'
+    ? 90
+    : style?.textOrientation === 'rotateDown'
+      ? 180
+      : style?.textRotate ?? 0;
   if (rotate !== 0) {
     const radians = (rotate * Math.PI) / 180;
     context.translate(rect.x + rect.width / 2, rect.y + rect.height / 2);
@@ -544,12 +581,18 @@ function drawCellValue(
     y = 0;
   }
 
-  context.textAlign = hAlign === "center" ? "center" : hAlign;
-  context.fillText(text, x, y, overflowWidth);
+  if (hAlign === 'fill') drawFilledText(context, text, rect.x + padding + indent, y, overflowWidth);
+  else if (hAlign === 'justify' || hAlign === 'distributed') drawDistributedText(context, text, rect.x + padding + indent, y, overflowWidth, hAlign === 'distributed');
+  else {
+    const canvasAlign = canvasTextAlign(hAlign);
+    context.textAlign = canvasAlign;
+    context.fillText(text, x, y, overflowWidth);
+  }
 
   if (style?.underline || style?.strikethrough) {
     const textWidth = Math.min(measured, overflowWidth);
-    let lineX1 = hAlign === "center" ? x - textWidth / 2 : hAlign === "right" ? x - textWidth : x;
+    const canvasAlign = canvasTextAlign(hAlign);
+    let lineX1 = canvasAlign === "center" ? x - textWidth / 2 : canvasAlign === "right" ? x - textWidth : x;
     const lineX2 = lineX1 + textWidth;
     context.strokeStyle = style.textColor ?? theme.cellText;
     context.lineWidth = 1;
@@ -602,8 +645,8 @@ function drawWrapped(
   text: string,
   rect: Rect,
   padding: number,
-  hAlign: "left" | "center" | "right",
-  vAlign: "top" | "middle" | "bottom",
+  hAlign: import('@react-sheets/core-model').HorizontalAlignment,
+  vAlign: import('@react-sheets/core-model').VerticalAlignment,
   maxWidth: number,
 ): void {
   const hasCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text);
@@ -623,15 +666,106 @@ function drawWrapped(
   }
   if (currentLine) lines.push(currentLine);
 
+  const textHeight = lines.length * lineHeight;
   const startY = vAlign === "top"
     ? rect.y + padding + lineHeight / 2
     : vAlign === "bottom"
       ? rect.y + rect.height - padding - ((lines.length - 1) * lineHeight) - lineHeight / 2
+      : vAlign === 'justify' || vAlign === 'distributed'
+        ? rect.y + padding + lineHeight / 2
       : rect.y + rect.height / 2 - ((lines.length - 1) * lineHeight) / 2;
 
-  context.textAlign = hAlign;
+  const canvasAlign = canvasTextAlign(hAlign);
+  context.textAlign = canvasAlign;
   for (let i = 0; i < lines.length; i++) {
-    context.fillText(lines[i]!, hAlign === "center" ? rect.x + rect.width / 2 : hAlign === "right" ? rect.x + rect.width - padding : rect.x + padding, startY + i * lineHeight, maxWidth);
+    const line = lines[i]!;
+    const y = vAlign === 'justify' || vAlign === 'distributed'
+      ? rect.y + padding + lineHeight / 2 + (lines.length === 1 ? (rect.height - textHeight) / 2 : i * (rect.height - textHeight) / Math.max(1, lines.length - 1))
+      : startY + i * lineHeight;
+    if ((hAlign === 'justify' || hAlign === 'distributed') && i < lines.length - 1) {
+      drawDistributedText(context, line, rect.x + padding, y, maxWidth, hAlign === 'distributed');
+    } else {
+      const x = canvasAlign === 'center' ? rect.x + rect.width / 2 : canvasAlign === 'right' ? rect.x + rect.width - padding : rect.x + padding;
+      context.fillText(line, x, y, maxWidth);
+    }
+  }
+}
+
+function resolveHorizontalAlignment(
+  alignment: import('@react-sheets/core-model').HorizontalAlignment | undefined,
+  value: CellValue,
+): import('@react-sheets/core-model').HorizontalAlignment {
+  if (alignment !== undefined && alignment !== 'general') return alignment;
+  return typeof value === 'number' || typeof value === 'boolean' ? 'right' : 'left';
+}
+
+function canvasTextAlign(
+  alignment: import('@react-sheets/core-model').HorizontalAlignment,
+): CanvasTextAlign {
+  if (alignment === 'center' || alignment === 'centerContinuous') return 'center';
+  if (alignment === 'right') return 'right';
+  return 'left';
+}
+
+function drawFilledText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+): void {
+  if (!text || width <= 0) return;
+  context.textAlign = 'left';
+  const measured = context.measureText(text).width;
+  if (measured <= 0) return;
+  const count = Math.max(1, Math.ceil(width / measured));
+  context.fillText(text.repeat(count).slice(0, Math.max(text.length, Math.floor(count * text.length))), x, y, width);
+}
+
+function drawDistributedText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  includeEdges: boolean,
+): void {
+  if (!text || width <= 0) return;
+  const characters = Array.from(text);
+  if (characters.length < 2) {
+    context.textAlign = 'left';
+    context.fillText(text, x, y, width);
+    return;
+  }
+  const textWidth = context.measureText(text).width;
+  const gap = Math.max(0, (width - textWidth) / (includeEdges ? characters.length + 1 : characters.length - 1));
+  let cursor = x + (includeEdges ? gap : 0);
+  context.textAlign = 'left';
+  for (const character of characters) {
+    context.fillText(character, cursor, y);
+    cursor += context.measureText(character).width + gap;
+  }
+}
+
+function drawStackedText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  rect: Rect,
+  padding: number,
+  vAlign: import('@react-sheets/core-model').VerticalAlignment,
+): void {
+  const characters = Array.from(text);
+  if (characters.length === 0) return;
+  const lineHeight = 16;
+  const contentHeight = characters.length * lineHeight;
+  const startY = vAlign === 'top'
+    ? rect.y + padding + lineHeight / 2
+    : vAlign === 'bottom'
+      ? rect.y + rect.height - padding - contentHeight + lineHeight / 2
+      : rect.y + (rect.height - contentHeight) / 2 + lineHeight / 2;
+  context.textAlign = 'center';
+  for (let index = 0; index < characters.length; index += 1) {
+    context.fillText(characters[index]!, rect.x + rect.width / 2, startY + index * lineHeight);
   }
 }
 

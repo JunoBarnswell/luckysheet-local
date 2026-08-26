@@ -258,7 +258,9 @@ test('hidden rows collapse layout geometry without losing model row identity', (
 function recordingContext() {
   const textCalls: Array<{ text: string; x: number; y: number }> = [];
   const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
+  const textAlignValues: CanvasTextAlign[] = [];
   let current: [number, number] = [0, 0];
+  let currentTextAlign: CanvasTextAlign = 'left';
   const context = {
     beginPath() {},
     closePath() {},
@@ -290,9 +292,10 @@ function recordingContext() {
     strokeStyle: '',
     font: '',
     textBaseline: 'middle' as CanvasTextBaseline,
-    textAlign: 'left' as CanvasTextAlign,
+    get textAlign() { return currentTextAlign; },
+    set textAlign(value: CanvasTextAlign) { currentTextAlign = value; textAlignValues.push(value); },
   } as unknown as CanvasRenderingContext2D;
-  return { context, textCalls, lineCalls };
+  return { context, textCalls, lineCalls, textAlignValues };
 }
 
 function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
@@ -320,7 +323,7 @@ test('cell rendering calls the provider address and paints the value only in tha
     theme: DEFAULT_RENDER_THEME,
   });
 
-  assert.deepEqual(textCalls, [{ text: '4', x: 106, y: 170 }]);
+  assert.deepEqual(textCalls, [{ text: '4', x: 144, y: 170 }]);
 });
 
 test('cell rendering applies top, middle, and bottom vertical alignment to unwrapped text', () => {
@@ -332,6 +335,42 @@ test('cell rendering applies top, middle, and bottom vertical alignment to unwra
   assert.equal(textCalls[0]?.y, 12.5);
   assert.equal(textCalls[1]?.y, 30);
   assert.equal(textCalls[2]?.y, 47.5);
+});
+
+test('extended alignment renders through a Canvas-safe projection and center-across span', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 1, columnCount: 5, defaultRowHeight: 30, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 4 };
+  const provider = ({ column }: { row: number; column: number }): CellRenderData | undefined => {
+    if (column <= 2) {
+      return {
+        value: 'Across',
+        displayValue: 'Across',
+        style: { horizontalAlignment: 'centerContinuous' },
+        alignmentSpan: { startColumn: 0, endColumn: 2, isAnchor: column === 0 },
+      };
+    }
+    const horizontalAlignment = column === 3 ? ('justify' as const) : ('fill' as const);
+    return { value: 'Text', displayValue: 'Text', style: { horizontalAlignment } };
+  };
+  const { context, textCalls, textAlignValues } = recordingContext();
+  drawCellLayer({ context, skeleton: renderSkeleton, pane: mainPane(range), visibleRange: range, cellProvider: provider, theme: DEFAULT_RENDER_THEME });
+
+  assert.equal(textCalls.filter((call) => call.text === 'Across').length, 1);
+  assert.equal(textCalls.find((call) => call.text === 'Across')?.x, 75);
+  assert.ok(textAlignValues.every((value) => value === 'left' || value === 'center' || value === 'right'));
+});
+
+test('stacked orientation renders explicitly while unsupported native alignment stays out of Canvas', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 1, columnCount: 2, defaultRowHeight: 60, defaultColumnWidth: 60 });
+  const range = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 };
+  const provider = ({ column }: { row: number; column: number }): CellRenderData => column === 0
+    ? { value: 'AB', displayValue: 'AB', style: { textOrientation: 'stacked' } }
+    : { value: 'vendor', displayValue: 'vendor', style: { unsupportedAlignment: { horizontal: 'vendorAlignment' } } };
+  const { context, textCalls, textAlignValues } = recordingContext();
+  drawCellLayer({ context, skeleton: renderSkeleton, pane: mainPane(range), visibleRange: range, cellProvider: provider, theme: DEFAULT_RENDER_THEME });
+
+  assert.deepEqual(textCalls.map((call) => call.text), ['A', 'B']);
+  assert.ok(textAlignValues.every((value) => value === 'left' || value === 'center' || value === 'right'));
 });
 
 test('blank cells retain complete horizontal and vertical grid boundaries', () => {

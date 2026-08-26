@@ -348,6 +348,7 @@ export interface UiSnapshot extends DesignerState {
 const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'fontFamily',
   'fontSizePx',
+  'textOrientation',
   'bold',
   'italic',
   'underline',
@@ -358,6 +359,7 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'verticalAlignment',
   'indent',
   'wrapText',
+  'shrinkToFit',
   'numberFormat',
   'borders',
   'locked',

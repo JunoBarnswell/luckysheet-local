@@ -78,6 +78,8 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'font-color': return homeText(locale, 'textColor');
     case 'fill-color': return homeText(locale, 'fillBackground');
     case 'number-format': return translateRibbonText(locale, 'groups.number');
+    case 'alignment-menu': return homeText(locale, 'alignment');
+    case 'orientation-menu': return homeText(locale, 'textOrientation');
     case 'cells-insert-menu': return homeText(locale, 'insert');
     case 'cells-delete-menu': return homeText(locale, 'delete');
     case 'cells-format-menu': return homeText(locale, 'format');
@@ -183,6 +185,14 @@ export function HomeRibbon({
           {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
           {HOME_NUMBER_FORMAT_OPTIONS.map(({ value, labelKey }) => <option key={value} value={value}>{homeText(locale, labelKey)}</option>)}
         </Select>;
+      case 'alignment-menu':
+        return <DropdownMenu align="left" trigger={menuTrigger('align-left')}>
+          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.alignment-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack>
+        </DropdownMenu>;
+      case 'orientation-menu':
+        return <DropdownMenu align="left" trigger={menuTrigger('type')}>
+          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.orientation-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack>
+        </DropdownMenu>;
       case 'cells-insert-menu':
       case 'cells-delete-menu':
       case 'cells-format-menu': {

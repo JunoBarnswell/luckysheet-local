@@ -254,7 +254,14 @@ describe('Ribbon UI command catalog', () => {
   it('builds the complete alignment grid as canonical style commands', () => {
     const ready = context({ cellStyle: { indent: 1, verticalAlignment: 'middle' } });
     assert.deepEqual(buildRibbonCommand('alignTop', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { verticalAlignment: 'top' } } } });
+    assert.deepEqual(buildRibbonCommand('alignCenterContinuous', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { horizontalAlignment: 'centerContinuous' } } } });
+    assert.deepEqual(buildRibbonCommand('alignVerticalDistributed', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { verticalAlignment: 'distributed' } } } });
+    assert.deepEqual(buildRibbonCommand('shrinkToFit', context({ cellStyle: { shrinkToFit: false } })), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { shrinkToFit: true } } } });
+    assert.deepEqual(buildRibbonCommand('orientationStacked', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { textOrientation: 'stacked' } } } });
     assert.deepEqual(buildRibbonCommand('indentIncrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 2 } } } });
     assert.deepEqual(buildRibbonCommand('indentDecrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 0 } } } });
+    assert.deepEqual(getRibbonSurfaces('home', 'alignment', 'wide').filter((surface) => surface.menuId === 'control.alignment-menu').map((surface) => surface.commandId), [
+      'alignGeneral', 'alignCenterContinuous', 'alignJustify', 'alignDistributed', 'alignFill',
+    ]);
   });
 });

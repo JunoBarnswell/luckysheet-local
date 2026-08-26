@@ -133,13 +133,25 @@ export type RibbonCommandId =
   | 'alignLeft'
   | 'alignCenter'
   | 'alignRight'
+  | 'alignGeneral'
+  | 'alignCenterContinuous'
+  | 'alignJustify'
+  | 'alignDistributed'
+  | 'alignFill'
   | 'alignTop'
   | 'alignMiddle'
   | 'alignBottom'
+  | 'alignVerticalJustify'
+  | 'alignVerticalDistributed'
   | 'indentIncrease'
   | 'indentDecrease'
   | 'wrapText'
+  | 'shrinkToFit'
   | 'textOrientation'
+  | 'orientationHorizontal'
+  | 'orientationRotateUp'
+  | 'orientationRotateDown'
+  | 'orientationStacked'
   | 'mergeCenter'
   | 'mergeCells'
   | 'mergeAcross'
@@ -348,11 +360,13 @@ export interface RibbonCellStyleContext {
   italic?: boolean;
   underline?: boolean;
   strikethrough?: boolean;
-  horizontalAlignment?: 'left' | 'center' | 'right';
-  verticalAlignment?: 'top' | 'middle' | 'bottom';
+  horizontalAlignment?: import('@react-sheets/core-model').HorizontalAlignment;
+  verticalAlignment?: import('@react-sheets/core-model').VerticalAlignment;
   textRotate?: number;
+  textOrientation?: import('@react-sheets/core-model').TextOrientation;
   indent?: number;
   wrapText?: boolean;
+  shrinkToFit?: boolean;
   numberFormat?: string;
 }
 
@@ -506,6 +520,8 @@ export type RibbonControlId =
   | 'font-color'
   | 'fill-color'
   | 'number-format'
+  | 'alignment-menu'
+  | 'orientation-menu'
   | 'merge-menu'
   | 'cells-insert-menu'
   | 'cells-delete-menu'
@@ -631,13 +647,25 @@ export const RIBBON_TEXT = {
     alignLeft: 'commands.alignLeft',
     alignCenter: 'commands.alignCenter',
     alignRight: 'commands.alignRight',
+    alignGeneral: 'commands.alignGeneral',
+    alignCenterContinuous: 'commands.alignCenterContinuous',
+    alignJustify: 'commands.alignJustify',
+    alignDistributed: 'commands.alignDistributed',
+    alignFill: 'commands.alignFill',
     alignTop: 'commands.alignTop',
     alignMiddle: 'commands.alignMiddle',
     alignBottom: 'commands.alignBottom',
+    alignVerticalJustify: 'commands.alignVerticalJustify',
+    alignVerticalDistributed: 'commands.alignVerticalDistributed',
     indentIncrease: 'commands.indentIncrease',
     indentDecrease: 'commands.indentDecrease',
     wrapText: 'commands.wrapText',
+    shrinkToFit: 'commands.shrinkToFit',
     textOrientation: 'commands.textOrientation',
+    orientationHorizontal: 'commands.orientationHorizontal',
+    orientationRotateUp: 'commands.orientationRotateUp',
+    orientationRotateDown: 'commands.orientationRotateDown',
+    orientationStacked: 'commands.orientationStacked',
     mergeCenter: 'commands.mergeCenter',
     mergeCells: 'commands.mergeCells',
     mergeAcross: 'commands.mergeAcross',
@@ -877,6 +905,12 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.borders.none', 'font', 860, 'menu', 'borderNone', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
+  homeControl('alignment-menu', 'alignment', 10),
+  ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.distributed', 'alignment', 14, 'menu', 'alignDistributed', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.fill', 'alignment', 15, 'menu', 'alignFill', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.left', 'alignment', 20, 'small', 'alignLeft'),
   ribbonSurface('home', 'alignment.center', 'alignment', 30, 'small', 'alignCenter'),
   ribbonSurface('home', 'alignment.right', 'alignment', 40, 'small', 'alignRight'),
@@ -886,7 +920,14 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.indent-increase', 'alignment', 48, 'small', 'indentIncrease'),
   ribbonSurface('home', 'alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
   ribbonSurface('home', 'alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
-  ribbonSurface('home', 'alignment.orientation', 'alignment', 55, 'small', 'textOrientation'),
+  ribbonSurface('home', 'alignment.shrink-to-fit', 'alignment', 51, 'small', 'shrinkToFit'),
+  ribbonSurface('home', 'alignment.vertical-justify', 'alignment', 52, 'small', 'alignVerticalJustify'),
+  ribbonSurface('home', 'alignment.vertical-distributed', 'alignment', 53, 'small', 'alignVerticalDistributed'),
+  homeControl('orientation-menu', 'alignment', 55),
+  ribbonSurface('home', 'alignment.orientation-horizontal', 'alignment', 56, 'menu', 'orientationHorizontal', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
+  ribbonSurface('home', 'alignment.orientation-up', 'alignment', 57, 'menu', 'orientationRotateUp', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
+  ribbonSurface('home', 'alignment.orientation-down', 'alignment', 58, 'menu', 'orientationRotateDown', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
+  ribbonSurface('home', 'alignment.orientation-stacked', 'alignment', 59, 'menu', 'orientationStacked', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
   homeControl('merge-menu', 'alignment', 60),
   ribbonSurface('home', 'alignment.merge-center', 'alignment', 61, 'menu', 'mergeCenter', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
   ribbonSurface('home', 'alignment.merge-cells', 'alignment', 62, 'menu', 'mergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
@@ -1138,13 +1179,25 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   styleCommand('alignLeft', RIBBON_TEXT.commands.alignLeft, 'align-left', () => ({ horizontalAlignment: 'left' }), (context) => context.cellStyle.horizontalAlignment === 'left', 'alignment'),
   styleCommand('alignCenter', RIBBON_TEXT.commands.alignCenter, 'align-center', () => ({ horizontalAlignment: 'center' }), (context) => context.cellStyle.horizontalAlignment === 'center', 'alignment'),
   styleCommand('alignRight', RIBBON_TEXT.commands.alignRight, 'align-right', () => ({ horizontalAlignment: 'right' }), (context) => context.cellStyle.horizontalAlignment === 'right', 'alignment'),
+  styleCommand('alignGeneral', RIBBON_TEXT.commands.alignGeneral, 'align-left', () => ({ horizontalAlignment: 'general' }), (context) => context.cellStyle.horizontalAlignment === 'general', 'alignment'),
+  styleCommand('alignCenterContinuous', RIBBON_TEXT.commands.alignCenterContinuous, 'align-center', () => ({ horizontalAlignment: 'centerContinuous' }), (context) => context.cellStyle.horizontalAlignment === 'centerContinuous', 'alignment'),
+  styleCommand('alignJustify', RIBBON_TEXT.commands.alignJustify, 'align-left', () => ({ horizontalAlignment: 'justify' }), (context) => context.cellStyle.horizontalAlignment === 'justify', 'alignment'),
+  styleCommand('alignDistributed', RIBBON_TEXT.commands.alignDistributed, 'align-left', () => ({ horizontalAlignment: 'distributed' }), (context) => context.cellStyle.horizontalAlignment === 'distributed', 'alignment'),
+  styleCommand('alignFill', RIBBON_TEXT.commands.alignFill, 'align-left', () => ({ horizontalAlignment: 'fill' }), (context) => context.cellStyle.horizontalAlignment === 'fill', 'alignment'),
   styleCommand('alignTop', RIBBON_TEXT.commands.alignTop, 'align-top', () => ({ verticalAlignment: 'top' }), (context) => context.cellStyle.verticalAlignment === 'top', 'alignment'),
   styleCommand('alignMiddle', RIBBON_TEXT.commands.alignMiddle, 'align-middle', () => ({ verticalAlignment: 'middle' }), (context) => context.cellStyle.verticalAlignment === 'middle', 'alignment'),
   styleCommand('alignBottom', RIBBON_TEXT.commands.alignBottom, 'align-bottom', () => ({ verticalAlignment: 'bottom' }), (context) => context.cellStyle.verticalAlignment === 'bottom', 'alignment'),
+  styleCommand('alignVerticalJustify', RIBBON_TEXT.commands.alignVerticalJustify, 'align-middle', () => ({ verticalAlignment: 'justify' }), (context) => context.cellStyle.verticalAlignment === 'justify', 'alignment'),
+  styleCommand('alignVerticalDistributed', RIBBON_TEXT.commands.alignVerticalDistributed, 'align-middle', () => ({ verticalAlignment: 'distributed' }), (context) => context.cellStyle.verticalAlignment === 'distributed', 'alignment'),
   styleCommand('indentIncrease', RIBBON_TEXT.commands.indentIncrease, 'indent-increase', (context) => ({ indent: Math.min(250, Number(context.cellStyle.indent ?? 0) + 1) }), undefined, 'alignment'),
   styleCommand('indentDecrease', RIBBON_TEXT.commands.indentDecrease, 'indent-decrease', (context) => ({ indent: Math.max(0, Number(context.cellStyle.indent ?? 0) - 1) }), undefined, 'alignment'),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
-  styleCommand('textOrientation', RIBBON_TEXT.commands.textOrientation, 'type', (context) => ({ textRotate: context.cellStyle.textRotate === 45 ? 0 : 45 }), (context) => Boolean(context.cellStyle.textRotate), 'alignment'),
+  styleCommand('shrinkToFit', RIBBON_TEXT.commands.shrinkToFit, 'minimize', (context) => ({ shrinkToFit: !context.cellStyle.shrinkToFit }), (context) => Boolean(context.cellStyle.shrinkToFit), 'alignment'),
+  styleCommand('textOrientation', RIBBON_TEXT.commands.textOrientation, 'type', (context) => ({ textOrientation: context.cellStyle.textOrientation === 'rotateUp' ? 'horizontal' : 'rotateUp' }), (context) => context.cellStyle.textOrientation === 'rotateUp', 'alignment'),
+  styleCommand('orientationHorizontal', RIBBON_TEXT.commands.orientationHorizontal, 'type', () => ({ textOrientation: 'horizontal', textRotate: 0 }), (context) => context.cellStyle.textOrientation === 'horizontal', 'alignment'),
+  styleCommand('orientationRotateUp', RIBBON_TEXT.commands.orientationRotateUp, 'type', () => ({ textOrientation: 'rotateUp', textRotate: 90 }), (context) => context.cellStyle.textOrientation === 'rotateUp', 'alignment'),
+  styleCommand('orientationRotateDown', RIBBON_TEXT.commands.orientationRotateDown, 'type', () => ({ textOrientation: 'rotateDown', textRotate: 180 }), (context) => context.cellStyle.textOrientation === 'rotateDown', 'alignment'),
+  styleCommand('orientationStacked', RIBBON_TEXT.commands.orientationStacked, 'type', () => ({ textOrientation: 'stacked' }), (context) => context.cellStyle.textOrientation === 'stacked', 'alignment'),
   callback('mergeCenter', 'home', 'alignment', RIBBON_TEXT.commands.mergeCenter, (context) => context.actions.onMerge('center'), 'merge-cells'),
   callback('mergeCells', 'home', 'alignment', RIBBON_TEXT.commands.mergeCells, (context) => context.actions.onMerge('cells'), 'merge-cells'),
   callback('mergeAcross', 'home', 'alignment', RIBBON_TEXT.commands.mergeAcross, (context) => context.actions.onMerge('across'), 'merge-cells'),

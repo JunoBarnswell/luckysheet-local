@@ -341,6 +341,54 @@ test('canonical border command preserves non-border style and is atomic across u
   assert.equal(sheet.cells.get(1, 1)?.style?.background, '#fef3c7');
 });
 
+test('alignment styles use one canonical mutation across local undo/redo and remote replay', () => {
+  const workbook = new WorkbookModel('unit-alignment-style', 'Alignment');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 'Across' });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const style = {
+    horizontalAlignment: 'centerContinuous' as const,
+    verticalAlignment: 'distributed' as const,
+    shrinkToFit: true,
+    indent: 2,
+    readingOrder: 'rtl' as const,
+    textOrientation: 'stacked' as const,
+  };
+
+  runtime.execute('sheet.style.set', { sheetId: sheet.id, range, style });
+  assert.deepEqual(sheet.cells.get(0, 0)?.style, style);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.style, undefined);
+  runtime.redo();
+  assert.deepEqual(sheet.cells.get(0, 0)?.style, style);
+
+  const beforeRejected = structuredClone(sheet.cells.get(0, 0));
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'style.set',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, range, style: { horizontalAlignment: 'unsafe-native-value' } },
+    affectedRanges: [range],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(sheet.cells.get(0, 0), beforeRejected);
+
+  const replayWorkbook = new WorkbookModel('unit-alignment-style', 'Alignment');
+  const replayRuntime = new CommandRuntime(replayWorkbook);
+  registerSheetCommands(replayRuntime);
+  replayWorkbook.getSheet('sheet-1').cells.set(0, 0, { value: 'Across' });
+  replayRuntime.applyRemoteMutations([{
+    id: 'style.set',
+    unitId: replayWorkbook.unitId,
+    sheetId: 'sheet-1',
+    params: { sheetId: 'sheet-1', range, style },
+    affectedRanges: [range],
+  }]);
+  assert.deepEqual(replayWorkbook.getSheet('sheet-1').cells.get(0, 0)?.style, style);
+});
+
 test('sheet commands: sort and canonical fill', () => {
   const workbook = new WorkbookModel('unit-sort', 'SortAutofill');
   const runtime = new CommandRuntime(workbook);
