@@ -775,6 +775,9 @@ final class StructuralSnapshotReducer {
                 replaceRanges(ranges, range, rowMap);
             }
         }
+        SheetRuleLifecycle.transformStructuralFields(root, sheet, range.sheetId(), range,
+                candidate -> remapRangeExact(rangeNode(candidate), range, rowMap),
+                row -> remapRow(row, range, rowMap));
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) writeSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
@@ -942,6 +945,8 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) requireSingleRange(requireObject(raw, "Spill range").get("range"), range, rowMap, "spill range");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) for (JsonNode item : requireObject(raw, "Conditional format").path("ranges")) remapRangeExact(item, range, rowMap);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, range, rowMap);
+        SheetRuleLifecycle.validateStructuralFields(root, sheet, range.sheetId(), range,
+                candidate -> remapRangeExact(rangeNode(candidate), range, rowMap));
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) requireSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {

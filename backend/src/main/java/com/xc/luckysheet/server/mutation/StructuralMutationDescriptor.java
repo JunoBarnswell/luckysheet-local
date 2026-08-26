@@ -45,10 +45,10 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "rows.permuted" -> {
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
-                // Row permutation remaps row-addressed metadata such as
-                // protection rules across the full Excel coordinate domain,
-                // not merely the materialized worksheet width.
-                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, SnapshotMutationSupport.MAX_COLUMN));
+                int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
+                if (declaredEndColumn != canonicalEndColumn) throw ServiceException.validation("Rows permutation affected column extent is stale");
+                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, canonicalEndColumn));
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };

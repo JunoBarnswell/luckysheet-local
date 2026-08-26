@@ -380,13 +380,11 @@ public class MutationDescriptorRegistry {
             applyPasteHyperlinks(root, sheet, sheetId, snapshot.get("hyperlinks"), allowedRanges);
             applyPasteComments(root, sheet, sheetId, snapshot.get("commentCells"), snapshot.get("comments"), allowedRanges);
             if (snapshot.has("validations")) {
-                if (!snapshot.path("validations").isArray()) throw ServiceException.validation("Paste snapshot validations must be an array");
-                assertOwnerSnapshotUnchangedOutsideRanges(root, sheet, sheetId, "dataValidations", snapshot.path("validations"), allowedRanges);
+                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "dataValidations", snapshot.path("validations"), allowedRanges);
                 sheet.set("dataValidations", snapshot.path("validations").deepCopy());
             }
             if (snapshot.has("conditionalFormats")) {
-                if (!snapshot.path("conditionalFormats").isArray()) throw ServiceException.validation("Paste snapshot conditionalFormats must be an array");
-                assertOwnerSnapshotUnchangedOutsideRanges(root, sheet, sheetId, "conditionalFormats", snapshot.path("conditionalFormats"), allowedRanges);
+                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "conditionalFormats", snapshot.path("conditionalFormats"), allowedRanges);
                 sheet.set("conditionalFormats", snapshot.path("conditionalFormats").deepCopy());
             }
             if (snapshot.has("columnWidths")) {
@@ -425,37 +423,6 @@ public class MutationDescriptorRegistry {
                     SnapshotMutationSupport.removeThreads(sheet, range);
                 }
             }
-        }
-
-        private void assertOwnerSnapshotUnchangedOutsideRanges(ObjectNode root, ObjectNode sheet, String sheetId, String property, JsonNode proposed, List<RangeRef> allowedRanges) {
-            JsonNode existing = sheet.get(property);
-            ArrayNode current = existing != null && existing.isArray() ? (ArrayNode) existing : JsonNodeFactory.instance.arrayNode();
-            for (JsonNode rule : current) {
-                if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(proposed, rule)) throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
-            }
-            for (JsonNode rule : proposed) {
-                if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(current, rule)) throw ServiceException.validation("Paste snapshot adds an unrelated " + property + " rule");
-            }
-        }
-
-        private boolean ownerIsContained(ObjectNode root, String sheetId, JsonNode rule, List<RangeRef> allowedRanges) {
-            if (!rule.isObject()) throw ServiceException.validation("Paste owner rule must be an object");
-            JsonNode ranges = rule.get("ranges");
-            if (ranges == null || !ranges.isArray() || ranges.isEmpty()) throw ServiceException.validation("Paste owner rule ranges are required");
-            for (JsonNode value : ranges) {
-                RangeRef range = SnapshotMutationSupport.range(root, value);
-                if (!sheetId.equals(range.sheetId())) throw ServiceException.validation("Paste owner rule targets another sheet");
-                if (allowedRanges.stream().noneMatch(allowed -> allowed.sheetId().equals(range.sheetId())
-                        && allowed.startRow() <= range.startRow() && allowed.endRow() >= range.endRow()
-                        && allowed.startColumn() <= range.startColumn() && allowed.endColumn() >= range.endColumn())) return false;
-            }
-            return true;
-        }
-
-        private boolean containsJson(JsonNode array, JsonNode candidate) {
-            if (array == null || !array.isArray()) return false;
-            for (JsonNode value : array) if (value.equals(candidate)) return true;
-            return false;
         }
 
         private void applyPasteNotes(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode entries, List<RangeRef> allowedRanges) {
@@ -652,7 +619,10 @@ public class MutationDescriptorRegistry {
                 SnapshotMutationSupport.removeThreads(sheet, range);
                 SnapshotMutationSupport.removeHyperlinks(sheet, range);
             }
-            if ("formats".equals(family) || "all".equals(family)) cropConditionalFormats(root, sheet, sheetId, range);
+            if ("formats".equals(family) || "all".equals(family)) {
+                SheetRuleLifecycle.crop(root, sheet, sheetId, "conditionalFormats", range);
+                SheetRuleLifecycle.crop(root, sheet, sheetId, "dataValidations", range);
+            }
         }
 
         private void restoreRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
@@ -682,6 +652,11 @@ public class MutationDescriptorRegistry {
                 if (!rules.isArray()) throw ServiceException.validation("Range restore conditionalFormats must be an array");
                 sheet.set("conditionalFormats", rules.deepCopy());
             }
+            if (snapshot.has("dataValidations")) {
+                JsonNode rules = snapshot.get("dataValidations");
+                if (!rules.isArray()) throw ServiceException.validation("Range restore dataValidations must be an array");
+                sheet.set("dataValidations", rules.deepCopy());
+            }
         }
 
         private void restoreHyperlinks(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef range, JsonNode value) {
@@ -702,55 +677,6 @@ public class MutationDescriptorRegistry {
                 next.set("hyperlink", hyperlink.deepCopy());
                 hyperlinks.add(next);
             }
-        }
-
-        private void cropConditionalFormats(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef clear) {
-            JsonNode existing = sheet.get("conditionalFormats");
-            if (existing == null || existing.isNull()) return;
-            if (!existing.isArray()) throw ServiceException.validation("conditionalFormats must be an array");
-            ArrayNode nextRules = JsonNodeFactory.instance.arrayNode();
-            for (JsonNode rule : existing) {
-                if (!rule.isObject()) throw ServiceException.validation("conditionalFormats rule must be an object");
-                ObjectNode copy = ((ObjectNode) rule).deepCopy();
-                JsonNode ranges = copy.get("ranges");
-                if (ranges == null || !ranges.isArray()) throw ServiceException.validation("conditionalFormats rule ranges must be an array");
-                ArrayNode remaining = JsonNodeFactory.instance.arrayNode();
-                for (JsonNode candidate : ranges) {
-                    RangeRef source = SnapshotMutationSupport.range(root, candidate);
-                    if (!sheetId.equals(source.sheetId())) throw ServiceException.validation("conditionalFormats rule targets another sheet");
-                    for (RangeRef part : subtractRange(source, clear)) remaining.add(rangeNode(part));
-                }
-                if (!remaining.isEmpty()) {
-                    copy.set("ranges", remaining);
-                    nextRules.add(copy);
-                }
-            }
-            sheet.set("conditionalFormats", nextRules);
-        }
-
-        private List<RangeRef> subtractRange(RangeRef source, RangeRef clear) {
-            if (source.startRow() > clear.endRow() || clear.startRow() > source.endRow()
-                    || source.startColumn() > clear.endColumn() || clear.startColumn() > source.endColumn()) return List.of(source);
-            int top = Math.max(source.startRow(), clear.startRow());
-            int bottom = Math.min(source.endRow(), clear.endRow());
-            int left = Math.max(source.startColumn(), clear.startColumn());
-            int right = Math.min(source.endColumn(), clear.endColumn());
-            List<RangeRef> result = new ArrayList<>();
-            if (source.startRow() < top) result.add(new RangeRef(source.sheetId(), source.startRow(), top - 1, source.startColumn(), source.endColumn()));
-            if (bottom < source.endRow()) result.add(new RangeRef(source.sheetId(), bottom + 1, source.endRow(), source.startColumn(), source.endColumn()));
-            if (source.startColumn() < left) result.add(new RangeRef(source.sheetId(), top, bottom, source.startColumn(), left - 1));
-            if (right < source.endColumn()) result.add(new RangeRef(source.sheetId(), top, bottom, right + 1, source.endColumn()));
-            return result;
-        }
-
-        private ObjectNode rangeNode(RangeRef range) {
-            ObjectNode node = JsonNodeFactory.instance.objectNode();
-            node.put("sheetId", range.sheetId());
-            node.put("startRow", range.startRow());
-            node.put("endRow", range.endRow());
-            node.put("startColumn", range.startColumn());
-            node.put("endColumn", range.endColumn());
-            return node;
         }
 
         private RangeRef requireOwnRange(ObjectNode root, String sheetId, ObjectNode params) {

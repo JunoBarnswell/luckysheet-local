@@ -480,7 +480,8 @@ function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestore
     && isRecord(value.snapshot)
     && Array.isArray(value.snapshot.cells) && value.snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
     && Array.isArray(value.snapshot.notes) && Array.isArray(value.snapshot.hyperlinks) && Array.isArray(value.snapshot.comments)
-    && (value.snapshot.conditionalFormats === undefined || Array.isArray(value.snapshot.conditionalFormats));
+    && (value.snapshot.conditionalFormats === undefined || Array.isArray(value.snapshot.conditionalFormats))
+    && (value.snapshot.dataValidations === undefined || Array.isArray(value.snapshot.dataValidations));
 }
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {

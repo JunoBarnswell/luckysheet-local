@@ -11,9 +11,8 @@ import type {
   FilterScalar,
   RangeRef,
   WorksheetModel,
-  ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue } from "@react-sheets/core-model";
+import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
@@ -58,6 +57,7 @@ interface RowsPermutedMutationParams {
   sheetId: string;
   range: RangeRef;
   sourceRows: number[];
+  affectedColumnEnd: number;
   sortState?: AppliedSortState;
   previousSortState?: AppliedSortState;
 }
@@ -67,15 +67,13 @@ interface RowsPermutedMutationParams {
  * column, including protection rules outside the materialized grid width.
  * This is the frontend half of the persisted rows.permuted contract.
  */
-const EXCEL_MAX_COLUMN = 16_383;
-
 function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRef[] {
   return [{
     sheetId: params.sheetId,
     startRow: params.range.startRow,
     endRow: params.range.endRow,
     startColumn: 0,
-    endColumn: EXCEL_MAX_COLUMN,
+    endColumn: params.affectedColumnEnd,
   }];
 }
 
@@ -92,6 +90,8 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && Number(candidate.startRow) >= 0 && Number(candidate.endRow) >= Number(candidate.startRow)
     && Number(candidate.startColumn) >= 0 && Number(candidate.endColumn) >= Number(candidate.startColumn)
     && Array.isArray(params.sourceRows)
+    && Number.isInteger(params.affectedColumnEnd)
+    && Number(params.affectedColumnEnd) >= Number(candidate.endColumn)
     && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
     && new Set(params.sourceRows).size === params.sourceRows.length
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
@@ -101,6 +101,10 @@ function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | un
   const target = sheet as WorksheetModel & { appliedSortState?: AppliedSortState };
   if (state === undefined) delete target.appliedSortState;
   else target.appliedSortState = structuredClone(state);
+}
+
+function rowsPermutedAffectedColumnEnd(sheet: WorksheetModel, range: RangeRef): number {
+  return sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -265,76 +269,17 @@ export function normalizeConditionalFormatRule(
   rule: ConditionalFormatRule,
   fallbackPriority = 1,
 ): ConditionalFormatRule {
-  const ranges = rule.ranges.map(normalizeRangeRef);
-  if (ranges.length === 0) throw new Error(`Conditional format ${rule.id} requires at least one range`);
-  if (!rule.id.trim()) throw new Error('Conditional format id is required');
-  if (ranges.some((range) => range.sheetId !== rule.sheetId)) throw new Error('Conditional format ranges must target the rule sheet');
-  if (rule.formulaAnchor && (rule.formulaAnchor.sheetId !== rule.sheetId || !Number.isSafeInteger(rule.formulaAnchor.row) || rule.formulaAnchor.row < 0 || !Number.isSafeInteger(rule.formulaAnchor.column) || rule.formulaAnchor.column < 0)) throw new Error(`Conditional format ${rule.id} has an invalid formula anchor`);
-  if (rule.priority !== undefined && (!Number.isInteger(rule.priority) || rule.priority <= 0)) throw new Error('Conditional format priority must be a positive integer');
-  if (rule.stopIfTrue !== undefined && typeof rule.stopIfTrue !== 'boolean') throw new Error('Conditional format stopIfTrue must be boolean');
-  if (rule.operator === 'formula') {
-    const formula = String(rule.value1 ?? '').trim();
-    if (!formula) throw new Error(`Conditional format ${rule.id} requires a formula predicate`);
-    try { parseFormula(formula.startsWith('=') ? formula : `=${formula}`); }
+  return sheetRuleRegistry.normalizeConditionalFormat(rule, fallbackPriority, (formula) => {
+    try { parseFormula(formula); }
     catch { throw new Error(`Conditional format ${rule.id} has an invalid formula predicate`); }
-  }
-  if (rule.type === 'topBottom') {
-    const topBottom: ConditionalFormatTopBottom = rule.topBottom ?? {
-      direction: rule.operator === 'bottom' ? 'bottom' : 'top',
-      rank: Number(rule.value1 ?? 10),
-    };
-    if (!Number.isFinite(topBottom.rank) || topBottom.rank <= 0) throw new Error('Top/Bottom rank must be positive');
-    if (topBottom.percent && topBottom.rank > 100) throw new Error('Top/Bottom percentage cannot exceed 100');
-    return {
-      ...structuredClone(rule),
-      ranges,
-      priority: Number.isFinite(rule.priority) && (rule.priority ?? 0) > 0 ? rule.priority : fallbackPriority,
-      stopIfTrue: rule.stopIfTrue ?? false,
-      topBottom: { ...topBottom },
-    };
-  }
-  return {
-    ...structuredClone(rule),
-    ranges,
-    formulaAnchor: rule.formulaAnchor ? structuredClone(rule.formulaAnchor) : { sheetId: ranges[0]!.sheetId, row: ranges[0]!.startRow, column: ranges[0]!.startColumn },
-    priority: Number.isFinite(rule.priority) && (rule.priority ?? 0) > 0 ? rule.priority : fallbackPriority,
-    stopIfTrue: rule.stopIfTrue ?? false,
-  };
+  });
 }
 
 export function normalizeDataValidationRule(rule: DataValidationRule): DataValidationRule {
-  if (!rule.id.trim()) throw new Error('Data validation id is required');
-  if (rule.ranges.length === 0) throw new Error(`Data validation ${rule.id} requires at least one range`);
-  if (rule.formulaAnchor && (rule.formulaAnchor.sheetId !== rule.sheetId || !Number.isSafeInteger(rule.formulaAnchor.row) || rule.formulaAnchor.row < 0 || !Number.isSafeInteger(rule.formulaAnchor.column) || rule.formulaAnchor.column < 0)) throw new Error(`Data validation ${rule.id} has an invalid formula anchor`);
-  if (rule.type === 'list' && !rule.formula1 && !rule.listSource) {
-    throw new Error(`List validation ${rule.id} requires a list source`);
-  }
-  if ((rule.type === 'whole' || rule.type === 'decimal' || rule.type === 'textLength') && rule.formula1 === undefined) {
-    throw new Error(`Data validation ${rule.id} requires a lower bound`);
-  }
-  if (rule.type === 'checkbox' && rule.operator !== undefined) {
-    throw new Error('Checkbox validation does not accept a comparison operator');
-  }
-  if (rule.alertStyle !== undefined && !['stop', 'warning', 'information'].includes(rule.alertStyle)) {
-    throw new Error(`Unsupported data validation alert style: ${rule.alertStyle}`);
-  }
-  if (rule.listSource?.kind === 'range' && rule.listSource.range.sheetId !== rule.sheetId) {
-    throw new Error('Validation list range must target the validation sheet');
-  }
-  const formula = rule.type === 'custom' ? rule.formula1 : rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
-  if (formula?.trim().startsWith('=')) {
-    try { parseFormula(formula.trim()); }
+  return sheetRuleRegistry.normalizeDataValidation(rule, (formula) => {
+    try { parseFormula(formula); }
     catch { throw new Error(`Data validation ${rule.id} has an invalid formula source`); }
-  }
-  return {
-    ...structuredClone(rule),
-    ranges: rule.ranges.map(normalizeRangeRef),
-    formulaAnchor: rule.formulaAnchor ? structuredClone(rule.formulaAnchor) : { sheetId: rule.ranges[0]!.sheetId, row: rule.ranges[0]!.startRow, column: rule.ranges[0]!.startColumn },
-    alertStyle: rule.alertStyle ?? 'stop',
-    showErrorMessage: rule.showErrorMessage ?? true,
-    showInputMessage: rule.showInputMessage ?? false,
-    allowBlank: rule.allowBlank ?? true,
-  };
+  });
 }
 
 export interface ConditionalOverlay {
@@ -1826,7 +1771,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
-      const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows });
+      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
+      const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
       context.applyMutation({
         id: 'rows.permuted',
         unitId: context.workbook.unitId,
@@ -1837,6 +1783,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           dataRegionContext: regionContext,
           range: bodyRange,
           sourceRows,
+          affectedColumnEnd,
           sortState: {
             sheetId: params.sheetId,
             range,
@@ -1859,6 +1806,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
             dataRegionContext: regionContext,
             range: bodyRange,
             sourceRows: inverseRows,
+            affectedColumnEnd,
             sortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
               ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
               : undefined),

@@ -4,9 +4,11 @@ import type {
   CellNote,
   CommentThread,
   ConditionalFormatRule,
+  DataValidationRule,
   RangeRef,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import { sheetRuleRegistry } from '@react-sheets/core-model';
 
 /** The only clear semantics accepted by the worksheet range command. */
 export type ClearFamily = 'contents' | 'formats' | 'all' | 'comments-and-notes' | 'hyperlinks';
@@ -22,8 +24,9 @@ export interface ClearRangeSnapshot {
   notes: Array<{ row: number; column: number; note: CellNote }>;
   hyperlinks: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
   comments: CommentThread[];
-  /** A complete rule snapshot is required when formats/all crop conditional formats. */
+  /** Complete rule snapshots are required when formats/all crop rule ranges. */
   conditionalFormats?: ConditionalFormatRule[];
+  dataValidations?: DataValidationRule[];
 }
 
 export interface ClearRangePlan {
@@ -47,38 +50,6 @@ function normalizeRange(range: RangeRef): RangeRef {
 
 function contains(range: RangeRef, row: number, column: number): boolean {
   return range.startRow <= row && row <= range.endRow && range.startColumn <= column && column <= range.endColumn;
-}
-
-function intersects(left: RangeRef, right: RangeRef): boolean {
-  return left.sheetId === right.sheetId
-    && left.startRow <= right.endRow && right.startRow <= left.endRow
-    && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
-}
-
-/** Exact rectangle subtraction; the result never widens a non-contiguous remainder. */
-export function subtractClearRange(source: RangeRef, clear: RangeRef): RangeRef[] {
-  if (!intersects(source, clear)) return [structuredClone(source)];
-  const top = Math.max(source.startRow, clear.startRow);
-  const bottom = Math.min(source.endRow, clear.endRow);
-  const left = Math.max(source.startColumn, clear.startColumn);
-  const right = Math.min(source.endColumn, clear.endColumn);
-  const result: RangeRef[] = [];
-  if (source.startRow < top) result.push({ ...source, endRow: top - 1 });
-  if (bottom < source.endRow) result.push({ ...source, startRow: bottom + 1 });
-  if (source.startColumn < left) result.push({ ...source, startRow: top, endRow: bottom, endColumn: left - 1 });
-  if (right < source.endColumn) result.push({ ...source, startRow: top, endRow: bottom, startColumn: right + 1 });
-  return result;
-}
-
-/** Rebuilds every rule with the exact portions outside the clear rectangle. */
-export function cropConditionalFormats(
-  rules: readonly ConditionalFormatRule[],
-  range: RangeRef,
-): ConditionalFormatRule[] {
-  return rules.flatMap((rule) => {
-    const ranges = rule.ranges.flatMap((candidate) => subtractClearRange(candidate, range));
-    return ranges.length === 0 ? [] : [{ ...structuredClone(rule), ranges }];
-  });
 }
 
 function snapshotCells(sheet: WorksheetModel, range: RangeRef): ClearRangeSnapshot['cells'] {
@@ -118,6 +89,7 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
       hyperlinks,
       comments,
       ...(input.family === 'formats' || input.family === 'all' ? { conditionalFormats: structuredClone(sheet.conditionalFormats) } : {}),
+      ...(input.family === 'formats' || input.family === 'all' ? { dataValidations: structuredClone(sheet.dataValidations) } : {}),
     },
   };
 }
@@ -189,7 +161,8 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
     sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) => !contains(range, thread.row, thread.column)));
   }
   if (params.family === 'formats' || params.family === 'all') {
-    sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...cropConditionalFormats(sheet.conditionalFormats, range));
+    sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...sheetRuleRegistry.cropRules(sheet.conditionalFormats, range));
+    sheet.dataValidations.splice(0, sheet.dataValidations.length, ...sheetRuleRegistry.cropRules(sheet.dataValidations, range));
   }
 }
 
@@ -213,4 +186,5 @@ export function restoreClearRangeSnapshot(sheet: WorksheetModel, range: RangeRef
   for (const item of snapshot.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));
   sheet.commentThreads.push(...structuredClone(snapshot.comments));
   if (snapshot.conditionalFormats !== undefined) sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...structuredClone(snapshot.conditionalFormats));
+  if (snapshot.dataValidations !== undefined) sheet.dataValidations.splice(0, sheet.dataValidations.length, ...structuredClone(snapshot.dataValidations));
 }

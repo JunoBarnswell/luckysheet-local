@@ -389,6 +389,7 @@ export {
   type DrawingGraphSheet,
 } from './drawing-planner';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';
 export {
   planBorderChange,
   isBorderPlacement,

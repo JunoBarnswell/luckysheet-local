@@ -13,7 +13,7 @@ import type {
   BorderLine,
   BorderPlacement,
 } from '@react-sheets/core-model';
-import { clearFormulaProvenance, columnLabel, noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
+import { clearFormulaProvenance, columnLabel, noteCellKey, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -680,25 +680,6 @@ function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): voi
   }
 }
 
-function remapRange(range: RangeRef, source: RangeRef, target: RangeRef, targetSheetId: string, transpose: boolean): RangeRef {
-  if (transpose) {
-    return {
-      sheetId: targetSheetId,
-      startRow: target.startRow + (range.startColumn - source.startColumn),
-      endRow: target.startRow + (range.endColumn - source.startColumn),
-      startColumn: target.startColumn + (range.startRow - source.startRow),
-      endColumn: target.startColumn + (range.endRow - source.startRow),
-    };
-  }
-  return {
-    sheetId: targetSheetId,
-    startRow: target.startRow + (range.startRow - source.startRow),
-    endRow: target.startRow + (range.endRow - source.startRow),
-    startColumn: target.startColumn + (range.startColumn - source.startColumn),
-    endColumn: target.startColumn + (range.endColumn - source.startColumn),
-  };
-}
-
 function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParams, targetRange: RangeRef, after: PasteSnapshot): void {
   const source = params.clipboard.range;
   const sourceSheet = workbook.getSheet(source.sheetId);
@@ -726,25 +707,29 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
     after.hyperlinks = hyperlinks;
   }
   if (params.spec.metadata.validation) {
-    const targetRules = (after.validations ?? []).filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, targetRange))
-      && !(params.transfer === 'move' && source.sheetId === params.sheetId && rule.ranges.some((range) => rangesIntersect(range, source))));
-    const sourceRules = metadata.validations.map((rule) => ({
-      ...structuredClone(rule),
-      id: `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
-      sheetId: params.sheetId,
-      ranges: rule.ranges.map((range) => remapRange(range, source, targetRange, params.sheetId, params.spec.transpose)),
-    }));
+    let targetRules = sheetRuleRegistry.cropRules(after.validations ?? [], targetRange);
+    if (params.transfer === 'move' && source.sheetId === params.sheetId) {
+      targetRules = sheetRuleRegistry.cropRules(targetRules, source);
+    }
+    const sourceRules = sheetRuleRegistry.cloneRulesForPaste(metadata.validations, {
+      source,
+      target: targetRange,
+      transpose: params.spec.transpose,
+      id: (rule) => `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
+    });
     after.validations = [...targetRules, ...sourceRules];
   }
   if (params.spec.metadata.conditionalFormats) {
-    const targetRules = (after.conditionalFormats ?? []).filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, targetRange))
-      && !(params.transfer === 'move' && source.sheetId === params.sheetId && rule.ranges.some((range) => rangesIntersect(range, source))));
-    const sourceRules = metadata.conditionalFormats.map((rule) => ({
-      ...structuredClone(rule),
-      id: `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
-      sheetId: params.sheetId,
-      ranges: rule.ranges.map((range) => remapRange(range, source, targetRange, params.sheetId, params.spec.transpose)),
-    }));
+    let targetRules = sheetRuleRegistry.cropRules(after.conditionalFormats ?? [], targetRange);
+    if (params.transfer === 'move' && source.sheetId === params.sheetId) {
+      targetRules = sheetRuleRegistry.cropRules(targetRules, source);
+    }
+    const sourceRules = sheetRuleRegistry.cloneRulesForPaste(metadata.conditionalFormats, {
+      source,
+      target: targetRange,
+      transpose: params.spec.transpose,
+      id: (rule) => `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
+    });
     after.conditionalFormats = [...targetRules, ...sourceRules];
   }
   if (params.spec.metadata.columnWidths) {
@@ -883,8 +868,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         ...(sourceBefore.notes ? { notes: [] } : {}),
         ...(sourceBefore.hyperlinks ? { hyperlinks: [] } : {}),
         ...(sourceBefore.commentCells ? { commentCells: [], comments: [] } : {}),
-        ...(sourceBefore.validations ? { validations: sourceBefore.validations.filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, sourceRange!))) } : {}),
-        ...(sourceBefore.conditionalFormats ? { conditionalFormats: sourceBefore.conditionalFormats.filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, sourceRange!))) } : {}),
+        ...(sourceBefore.validations ? { validations: sheetRuleRegistry.cropRules(sourceBefore.validations, sourceRange!) } : {}),
+        ...(sourceBefore.conditionalFormats ? { conditionalFormats: sheetRuleRegistry.cropRules(sourceBefore.conditionalFormats, sourceRange!) } : {}),
         ...(sourceBefore.columnWidths ? { columnWidths: sourceBefore.columnWidths.map((entry) => ({ column: entry.column, widthPx: undefined })) } : {}),
       } : undefined;
       const afterCells = new Map(after.cells.map((entry) => [keyFor(entry.row, entry.column), entry]));

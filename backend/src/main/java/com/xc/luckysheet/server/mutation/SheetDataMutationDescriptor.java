@@ -300,7 +300,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     private void upsertRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
         ObjectNode rule = SnapshotMutationSupport.requiredObject(params, "rule");
-        validateRule(root, sheetId, rule);
+        validateRule(root, sheetId, rule, collection);
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, collection), rule);
     }
 
@@ -308,10 +308,8 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         SnapshotMutationSupport.removeById(SnapshotMutationSupport.array(sheet, collection), SnapshotMutationSupport.text(params, "ruleId"));
     }
 
-    private void validateRule(ObjectNode root, String sheetId, ObjectNode rule) {
-        SnapshotMutationSupport.text(rule, "id");
-        SnapshotMutationSupport.requireEntitySheet(rule, sheetId);
-        ruleRanges(root, sheetId, rule);
+    private void validateRule(ObjectNode root, String sheetId, ObjectNode rule, String collection) {
+        SheetRuleLifecycle.validateRule(root, sheetId, rule, collection);
     }
 
     private List<RangeRef> ruleRanges(ObjectNode root, String sheetId, ObjectNode rule) {
