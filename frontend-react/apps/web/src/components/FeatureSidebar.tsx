@@ -573,6 +573,10 @@ export function FeatureSidebar({
             sheetId={sheetId}
             drawings={drawings}
             drawingPayloads={drawingPayloads}
+            drawingGroups={sheet.drawingGroups}
+            snapSettings={sheet.snapSettings}
+            selectedDrawingIds={selectedDrawingIds}
+            onSelectDrawing={(drawingId) => onSelectDrawing(drawingId, 'replace')}
             onCommand={onCommand}
           />
         ) : null}

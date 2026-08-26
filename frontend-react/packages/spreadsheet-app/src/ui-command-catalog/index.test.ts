@@ -245,6 +245,35 @@ describe('Ribbon UI command catalog', () => {
     assert.deepEqual(buildRibbonCommand('sparklineDesign', withSparkline), { type: 'intent', intent: { type: 'panel.open', panel: 'sparkline' } });
   });
 
+  it('exposes Shape Format only for selected renderer-backed shapes and reuses drawing commands', () => {
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('shapeFormatPanel'), context()), false);
+    const withOneShape = context({ activeShape: {
+      sheetId: 'sheet-1',
+      drawingIds: ['shape-1'],
+      transforms: [{ drawingId: 'shape-1', transform: { x: 10, y: 20, width: 80, height: 40, rotation: 0 } }],
+    } });
+    assert.deepEqual(buildRibbonCommand('shapeFormatPanel', withOneShape), { type: 'intent', intent: { type: 'panel.open', panel: 'shape' } });
+    const rotate = buildRibbonCommand('shapeRotateClockwise', withOneShape);
+    assert.deepEqual(rotate, { type: 'command', descriptor: { commandId: 'drawing.transform.batch', params: { sheetId: 'sheet-1', entries: [{ drawingId: 'shape-1', before: { x: 10, y: 20, width: 80, height: 40, rotation: 0 }, after: { x: 10, y: 20, width: 80, height: 40, rotation: 90 } }] } } });
+    assert.equal(buildRibbonCommand('shapeAlignLeft', withOneShape), undefined);
+    const withThreeShapes = context({ activeShape: {
+      sheetId: 'sheet-1',
+      drawingIds: ['shape-1', 'shape-2', 'shape-3'],
+      transforms: [
+        { drawingId: 'shape-1', transform: { x: 10, y: 20, width: 80, height: 40, rotation: 0 } },
+        { drawingId: 'shape-2', transform: { x: 120, y: 50, width: 80, height: 40, rotation: 0 } },
+        { drawingId: 'shape-3', transform: { x: 240, y: 80, width: 80, height: 40, rotation: 0 } },
+      ],
+    } });
+    assert.deepEqual(buildRibbonCommand('shapeAlignLeft', withThreeShapes), { type: 'command', descriptor: { commandId: 'drawing.align', params: { sheetId: 'sheet-1', drawingIds: ['shape-1', 'shape-2', 'shape-3'], alignment: 'left' } } });
+    assert.deepEqual(buildRibbonCommand('shapeDistributeHorizontal', withThreeShapes), { type: 'command', descriptor: { commandId: 'drawing.distribute', params: { sheetId: 'sheet-1', drawingIds: ['shape-1', 'shape-2', 'shape-3'], axis: 'horizontal' } } });
+    assert.deepEqual(buildRibbonCommand('shapeBringForward', withOneShape), { type: 'command', descriptor: { commandId: 'drawing.zorder', params: { sheetId: 'sheet-1', drawingId: 'shape-1', direction: 'forward' } } });
+    const forbidden = context({ ...withOneShape, canExecute: () => false });
+    assert.equal(buildRibbonCommand('shapeRotateClockwise', forbidden), undefined);
+    assert.equal(buildRibbonCommand('shapeBringForward', forbidden), undefined);
+    assert.equal(getRibbonSurfaces('shapeFormat', 'shapeFormat', 'wide').length, 16);
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);

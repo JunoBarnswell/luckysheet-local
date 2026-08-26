@@ -3,6 +3,7 @@ import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
+import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -248,6 +249,11 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (table.sourceRange && dataChartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Data chart table');
   }
   const canonical = structuredClone(snapshot);
+  for (const sheet of canonical.sheets) {
+    sheet.drawingGroups ??= [];
+    sheet.snapSettings = canonicalSnapSettings(sheet.snapSettings);
+    validateDrawingGraph(sheet);
+  }
   canonical.cellStyleTemplates ??= [];
   const templateIds = new Set<string>();
   for (const template of canonical.cellStyleTemplates) {

@@ -136,7 +136,7 @@ export interface SheetTableModel {
   styleName?: string;
 }
 
-export type DrawingKind = 'image' | 'shape' | 'chart' | 'data-chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
+export type DrawingKind = 'image' | 'shape' | 'connector' | 'chart' | 'data-chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
 
 export interface DrawingTransform {
   x: number;
@@ -178,16 +178,88 @@ export interface ImageDrawingPayload {
   effects?: ImageEffects;
 }
 
+/** Renderer-backed auto-shape identity shared by gallery, payload, and export. */
+export type ShapeDrawingType = 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+
+export type ShapeDrawingCategory = 'basic-shapes' | 'lines' | 'callouts-and-stars';
+
+export type ShapeTextDirection = 'horizontal' | 'vertical';
+export type ShapeTextHorizontalAlignment = 'left' | 'center' | 'right';
+export type ShapeTextVerticalAlignment = 'top' | 'middle' | 'bottom';
+
+export interface ShapeDrawingEffects {
+  shadow?: { color: string; blur: number; offsetX: number; offsetY: number; opacity: number };
+  glow?: { color: string; radius: number; opacity: number };
+}
+
 export interface ShapeDrawingPayload {
   kind: 'shape';
-  type: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+  type: ShapeDrawingType;
   fill: string;
   stroke: string;
   strokeWidth?: number;
   text?: string;
   textColor?: string;
   fontSize?: number;
+  effects?: ShapeDrawingEffects;
+  textDirection?: ShapeTextDirection;
+  textAlignment?: ShapeTextHorizontalAlignment;
+  textVerticalAlignment?: ShapeTextVerticalAlignment;
+  hyperlink?: HyperlinkTarget;
+  propertyFormula?: string;
 }
+
+export type DrawingConnectorType = 'straight' | 'elbow' | 'curved';
+export type DrawingConnectionPoint = 'top' | 'right' | 'bottom' | 'left' | 'center';
+export type DrawingArrowhead = 'none' | 'triangle' | 'stealth' | 'diamond' | 'oval';
+
+export interface DrawingConnectionEndpoint {
+  drawingId: string;
+  connectionPoint: DrawingConnectionPoint;
+}
+
+export interface DrawingConnectorRoutePoint {
+  x: number;
+  y: number;
+}
+
+export interface DrawingConnectorRoute {
+  points: DrawingConnectorRoutePoint[];
+}
+
+/** Canonical connector semantics. Route points are derived from endpoint geometry. */
+export interface ConnectorDrawingPayload {
+  kind: 'connector';
+  connectorType: DrawingConnectorType;
+  start: DrawingConnectionEndpoint;
+  end: DrawingConnectionEndpoint;
+  stroke: string;
+  strokeWidth?: number;
+  startArrowhead: DrawingArrowhead;
+  endArrowhead: DrawingArrowhead;
+  route: DrawingConnectorRoute;
+}
+
+export interface DrawingGroup {
+  id: string;
+  sheetId: SheetId;
+  memberDrawingIds: string[];
+}
+
+/** Worksheet-owned snapping policy. Pointer code must not invent a grid. */
+export interface WorksheetSnapSettings {
+  enabled: boolean;
+  snapToGrid: boolean;
+  snapToShape: boolean;
+  gridSize: number;
+}
+
+export const DEFAULT_WORKSHEET_SNAP_SETTINGS: WorksheetSnapSettings = {
+  enabled: true,
+  snapToGrid: true,
+  snapToShape: true,
+  gridSize: 8,
+};
 
 export type TextBoxHorizontalAlignment = 'left' | 'center' | 'right';
 export type TextBoxVerticalAlignment = 'top' | 'middle' | 'bottom';
@@ -669,6 +741,7 @@ export interface PivotTimelineDrawingPayload {
 export type DrawingPayload =
   | ImageDrawingPayload
   | ShapeDrawingPayload
+  | ConnectorDrawingPayload
   | TextBoxDrawingPayload
   | ChartDrawingPayload
   | DataChartDrawingPayload
@@ -679,6 +752,64 @@ export type DrawingPayload =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+export function isDrawingConnectionPoint(value: unknown): value is DrawingConnectionPoint {
+  return value === 'top' || value === 'right' || value === 'bottom' || value === 'left' || value === 'center';
+}
+
+export function isWorksheetSnapSettings(value: unknown): value is WorksheetSnapSettings {
+  if (!isRecord(value)) return false;
+  return typeof value.enabled === 'boolean'
+    && typeof value.snapToGrid === 'boolean'
+    && typeof value.snapToShape === 'boolean'
+    && typeof value.gridSize === 'number'
+    && Number.isFinite(value.gridSize)
+    && value.gridSize > 0
+    && value.gridSize <= 1024;
+}
+
+export function isDrawingGroup(value: unknown): value is DrawingGroup {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string' && value.id.trim().length > 0
+    && typeof value.sheetId === 'string' && value.sheetId.trim().length > 0
+    && Array.isArray(value.memberDrawingIds)
+    && value.memberDrawingIds.length >= 2
+    && value.memberDrawingIds.every((id) => typeof id === 'string' && id.trim().length > 0);
+}
+
+export function isShapeDrawingPayload(value: unknown): value is ShapeDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'shape') return false;
+  if (!['rectangle', 'rounded-rectangle', 'ellipse', 'line', 'arrow', 'callout', 'star'].includes(String(value.type))) return false;
+  if (typeof value.fill !== 'string' || value.fill.trim().length === 0 || typeof value.stroke !== 'string' || value.stroke.trim().length === 0) return false;
+  if (value.strokeWidth !== undefined && (typeof value.strokeWidth !== 'number' || !Number.isFinite(value.strokeWidth) || value.strokeWidth <= 0 || value.strokeWidth > 100)) return false;
+  if (value.text !== undefined && typeof value.text !== 'string') return false;
+  if (value.textColor !== undefined && typeof value.textColor !== 'string') return false;
+  if (value.fontSize !== undefined && (typeof value.fontSize !== 'number' || !Number.isFinite(value.fontSize) || value.fontSize <= 0)) return false;
+  if (value.textDirection !== undefined && value.textDirection !== 'horizontal' && value.textDirection !== 'vertical') return false;
+  if (value.textAlignment !== undefined && !['left', 'center', 'right'].includes(String(value.textAlignment))) return false;
+  if (value.textVerticalAlignment !== undefined && !['top', 'middle', 'bottom'].includes(String(value.textVerticalAlignment))) return false;
+  if (value.propertyFormula !== undefined && (typeof value.propertyFormula !== 'string' || value.propertyFormula.trim().length === 0)) return false;
+  if (value.effects !== undefined && !isRecord(value.effects)) return false;
+  return true;
+}
+
+export function isDrawingConnectorPayload(value: unknown): value is ConnectorDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'connector') return false;
+  const endpoint = (entry: unknown): entry is DrawingConnectionEndpoint => isRecord(entry)
+    && typeof entry.drawingId === 'string' && entry.drawingId.trim().length > 0
+    && isDrawingConnectionPoint(entry.connectionPoint);
+  const route = value.route;
+  return (value.connectorType === 'straight' || value.connectorType === 'elbow' || value.connectorType === 'curved')
+    && endpoint(value.start) && endpoint(value.end)
+    && typeof value.stroke === 'string' && value.stroke.trim().length > 0
+    && (value.strokeWidth === undefined || (typeof value.strokeWidth === 'number' && Number.isFinite(value.strokeWidth) && value.strokeWidth > 0 && value.strokeWidth <= 100))
+    && ['none', 'triangle', 'stealth', 'diamond', 'oval'].includes(String(value.startArrowhead))
+    && ['none', 'triangle', 'stealth', 'diamond', 'oval'].includes(String(value.endArrowhead))
+    && isRecord(route)
+    && Array.isArray(route.points)
+    && route.points.length >= 2
+    && route.points.every((point) => isRecord(point) && typeof point.x === 'number' && Number.isFinite(point.x) && typeof point.y === 'number' && Number.isFinite(point.y));
 }
 
 function isPivotMemberKey(value: unknown): value is PivotMemberKey {

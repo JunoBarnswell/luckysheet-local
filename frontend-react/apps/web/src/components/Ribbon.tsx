@@ -33,7 +33,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -119,6 +119,7 @@ export interface RibbonProps {
   onInsertChartType: (type: ChartDrawingPayload['chartType']) => void;
   onInsertSparklineType: (type: SparklineModel['type']) => void;
   onInsertShapeType: (type: ShapeDrawingPayload['type']) => void;
+  onInsertConnectorType: (type: DrawingConnectorType) => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
@@ -129,6 +130,11 @@ export interface RibbonProps {
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
   activePicture?: { sheetId: string; drawingId: string };
+  activeShape?: {
+    sheetId: string;
+    drawingIds: readonly string[];
+    transforms: readonly { drawingId: string; transform: { x: number; y: number; width: number; height: number; rotation?: number } }[];
+  };
   activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
@@ -291,11 +297,13 @@ export function Ribbon({
   activeTable,
   activeChart,
   activePicture,
+  activeShape,
   activeSparkline,
   homeState,
   canExecute,
   commandPaletteOpen = false,
   onCloseCommandPalette,
+  onInsertConnectorType,
 }: RibbonProps) {
   const disabled = phase !== 'ready';
   const cellStyle = homeState.style;
@@ -383,6 +391,7 @@ export function Ribbon({
     activeTable,
     activeChart,
     activePicture,
+    activeShape,
     activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
@@ -433,6 +442,7 @@ export function Ribbon({
           ...(activeTable ? ['tableDesign'] as const : []),
           ...(activeChart ? ['chartDesign', 'chartFormat'] as const : []),
           ...(activePicture ? ['pictureFormat'] as const : []),
+          ...(activeShape ? ['shapeFormat'] as const : []),
           ...(activeSparkline ? ['sparklineDesign'] as const : []),
         ]}
         disabled={disabled}
@@ -484,6 +494,7 @@ export function Ribbon({
         onInsertBarcode={(symbology) => onApplyBarcode(symbology)}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
+            onInsertConnector={onInsertConnectorType}
             onInsertFormControl={onCreateFormControl}
           />
         ) : null}

@@ -1775,7 +1775,7 @@ interface ReactSheetsPackageMetadata {
   schema: 'ReactSheetsWorkbookMetadata';
   version: 1;
   dataModel: WorkbookSnapshot['dataModel'];
-  sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'drawings' | 'drawingPayloads'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
+  sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
 }
 
 function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
@@ -1787,7 +1787,9 @@ function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
       const drawings = sheet.drawings.filter((drawing) => drawing.kind !== 'slicer' && drawing.kind !== 'timeline');
       const payloadIds = new Set(drawings.map((drawing) => drawing.payloadId));
       const drawingPayloads = Object.fromEntries(Object.entries(sheet.drawingPayloads).filter(([payloadId]) => payloadIds.has(payloadId)));
-      return { id: sheet.id, kind: sheet.kind, tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined, ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined, reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined, drawings: structuredClone(drawings), drawingPayloads: structuredClone(drawingPayloads), cellMetadata };
+      const drawingIds = new Set(drawings.map((drawing) => drawing.id));
+      const drawingGroups = (sheet.drawingGroups ?? []).filter((group) => group.memberDrawingIds.every((id) => drawingIds.has(id)));
+      return { id: sheet.id, kind: sheet.kind, tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined, ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined, reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined, drawings: structuredClone(drawings), drawingPayloads: structuredClone(drawingPayloads), drawingGroups: structuredClone(drawingGroups), snapSettings: sheet.snapSettings ? structuredClone(sheet.snapSettings) : undefined, cellMetadata };
     }),
   };
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><reactSheetsWorkbook xmlns="urn:react-sheets:workbook-metadata:v1"><json>${encodeXml(JSON.stringify(metadata))}</json></reactSheetsWorkbook>`;
@@ -1827,6 +1829,8 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       sheet.reportSheet = metadata.reportSheet ? structuredClone(metadata.reportSheet) : undefined;
       sheet.drawings = structuredClone(metadata.drawings);
       sheet.drawingPayloads = structuredClone(metadata.drawingPayloads);
+      sheet.drawingGroups = structuredClone(metadata.drawingGroups ?? []);
+      sheet.snapSettings = metadata.snapSettings ? structuredClone(metadata.snapSettings) : sheet.snapSettings;
       for (const entry of metadata.cellMetadata ?? []) {
         sheet.cells[String(entry.row)] ??= {};
         const cell = sheet.cells[String(entry.row)]![String(entry.column)] ?? { value: null };

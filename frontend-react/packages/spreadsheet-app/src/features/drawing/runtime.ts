@@ -1,4 +1,5 @@
 import type { DrawingObject, DrawingTransform, WorksheetModel } from '@react-sheets/core-model';
+import { isWorksheetSnapSettings } from '@react-sheets/core-model';
 
 export type DrawingSelectionMode = 'replace' | 'add' | 'toggle';
 
@@ -113,10 +114,15 @@ export class DrawingRuntime {
   }
 
   /** Update only the transient preview; callers commit it through drawing.transform.commit. */
-  previewPointerTransform(transactionId: string, transform: DrawingTransform, grid = 1): DrawingTransform {
+  previewPointerTransform(sheet: WorksheetModel, transactionId: string, transform: DrawingTransform): DrawingTransform {
     const transaction = this.pointerTransactions.get(transactionId);
     if (!transaction) throw new Error(`Unknown drawing pointer transaction: ${transactionId}`);
-    transaction.preview = snapTransform(normalizeTransform(transform), grid);
+    if (transaction.sheetId !== sheet.id) throw new Error(`Drawing pointer worksheet mismatch: ${transactionId}`);
+    if (!isWorksheetSnapSettings(sheet.snapSettings)) throw new Error(`Worksheet snap settings are invalid: ${sheet.id}`);
+    const settings = sheet.snapSettings;
+    const gridSize = settings.enabled && settings.snapToGrid ? settings.gridSize : undefined;
+    transaction.preview = snapTransform(normalizeTransform(transform), gridSize);
+    if (settings.enabled && settings.snapToShape) transaction.preview = snapToShape(sheet, transaction.drawingId, transaction.preview);
     return structuredClone(transaction.preview);
   }
 
@@ -182,16 +188,41 @@ export function normalizeTransform(transform: DrawingTransform): DrawingTransfor
   };
 }
 
-export function snapTransform(transform: DrawingTransform, gridSize = 1): DrawingTransform {
-  if (!Number.isFinite(gridSize) || gridSize <= 0) return structuredClone(transform);
-  const snap = (value: number): number => Math.round(value / gridSize) * gridSize;
+export function snapTransform(transform: DrawingTransform, gridSize?: number): DrawingTransform {
+  const resolvedGridSize = gridSize;
+  if (resolvedGridSize === undefined || !Number.isFinite(resolvedGridSize) || resolvedGridSize <= 0) return structuredClone(transform);
+  const snap = (value: number): number => Math.round(value / resolvedGridSize) * resolvedGridSize;
   return {
     ...transform,
     x: snap(transform.x),
     y: snap(transform.y),
-    width: Math.max(gridSize, snap(transform.width)),
-    height: Math.max(gridSize, snap(transform.height)),
+    width: Math.max(resolvedGridSize, snap(transform.width)),
+    height: Math.max(resolvedGridSize, snap(transform.height)),
   };
+}
+
+/** Snap moving/resizing bounds to nearby shape edges and centers in worksheet coordinates. */
+function snapToShape(sheet: WorksheetModel, drawingId: string, transform: DrawingTransform): DrawingTransform {
+  const threshold = 8;
+  const others = sheet.drawings.filter((drawing) => drawing.id !== drawingId);
+  const xCandidates = others.flatMap((drawing) => [drawing.transform.x, drawing.transform.x + drawing.transform.width / 2, drawing.transform.x + drawing.transform.width]);
+  const yCandidates = others.flatMap((drawing) => [drawing.transform.y, drawing.transform.y + drawing.transform.height / 2, drawing.transform.y + drawing.transform.height]);
+  const nearest = (value: number, candidates: readonly number[]) => {
+    let result = value;
+    let distance = threshold + 1;
+    for (const candidate of candidates) {
+      const next = Math.abs(candidate - value);
+      if (next < distance) { result = candidate; distance = next; }
+    }
+    return result;
+  };
+  const left = nearest(transform.x, xCandidates);
+  const top = nearest(transform.y, yCandidates);
+  const right = nearest(transform.x + transform.width, xCandidates);
+  const bottom = nearest(transform.y + transform.height, yCandidates);
+  const width = right !== transform.x + transform.width ? Math.max(0, right - left) : transform.width;
+  const height = bottom !== transform.y + transform.height ? Math.max(0, bottom - top) : transform.height;
+  return { ...transform, x: left, y: top, width, height };
 }
 
 function inverseRotatePoint(point: { x: number; y: number }, transform: DrawingTransform): { x: number; y: number } {

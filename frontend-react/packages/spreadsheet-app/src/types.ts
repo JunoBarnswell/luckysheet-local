@@ -25,6 +25,7 @@ export type RibbonTabId =
   | 'chartDesign'
   | 'chartFormat'
   | 'pictureFormat'
+  | 'shapeFormat'
   | 'sparklineDesign';
 export type SidebarPanelId =
   | 'inspector'

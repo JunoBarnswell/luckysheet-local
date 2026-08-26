@@ -11,6 +11,8 @@ import type {
   DataChartDrawingPayload,
   CameraDrawingPayload,
   FormControlDrawingPayload,
+  ConnectorDrawingPayload,
+  DrawingArrowhead,
   DrawingObject,
   DrawingPayload,
   PivotMemberKey,
@@ -24,6 +26,7 @@ import type {
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
+import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
 import { buildPivotChartData } from "@react-sheets/spreadsheet-app";
 import {
@@ -190,6 +193,18 @@ function drawCanonicalShapeOnCanvas(options: {
     context.restore();
     return;
   }
+  if (payload.effects?.shadow) {
+    context.shadowColor = payload.effects.shadow.color;
+    context.shadowBlur = payload.effects.shadow.blur;
+    context.shadowOffsetX = payload.effects.shadow.offsetX;
+    context.shadowOffsetY = payload.effects.shadow.offsetY;
+    context.globalAlpha = payload.effects.shadow.opacity;
+  }
+  if (payload.effects?.glow) {
+    context.shadowColor = payload.effects.glow.color;
+    context.shadowBlur = payload.effects.glow.radius;
+    context.globalAlpha = payload.effects.glow.opacity;
+  }
   context.fillStyle = payload.fill;
   context.strokeStyle = payload.stroke;
   context.lineWidth = payload.strokeWidth ?? 1.5;
@@ -251,13 +266,155 @@ function drawCanonicalShapeOnCanvas(options: {
     context.stroke();
   }
   if (payload.text) {
+    context.globalAlpha = 1;
     context.fillStyle = payload.textColor ?? "#1e293b";
     context.font = `${payload.fontSize ?? 13}px Inter, sans-serif`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(payload.text, width / 2, height / 2, Math.max(10, width - 8));
+    context.textAlign = payload.textAlignment ?? "center";
+    context.textBaseline = payload.textVerticalAlignment === 'top' ? 'top' : payload.textVerticalAlignment === 'bottom' ? 'bottom' : 'middle';
+    const textX = payload.textAlignment === 'left' ? 6 : payload.textAlignment === 'right' ? width - 6 : width / 2;
+    const textY = payload.textVerticalAlignment === 'top' ? 6 : payload.textVerticalAlignment === 'bottom' ? height - 6 : height / 2;
+    if (payload.textDirection === 'vertical') {
+      const chars = [...payload.text];
+      const lineHeight = Math.max(10, (payload.fontSize ?? 13) * 1.15);
+      const startY = height / 2 - ((chars.length - 1) * lineHeight) / 2;
+      chars.forEach((char, index) => context.fillText(char, textX, startY + index * lineHeight, Math.max(10, width - 8)));
+    } else {
+      context.fillText(payload.text, textX, textY, Math.max(10, width - 8));
+    }
   }
   context.restore();
+}
+
+/**
+ * Render a connector from the route owned by the canonical drawing payload.
+ *
+ * `route.points` are worksheet-content coordinates. The extensions layer has
+ * already applied the PaneMap content-to-screen translation before invoking a
+ * drawable, so subtracting the drawable bounds here would make frozen panes
+ * drift. Keeping the route in content coordinates also means moving a bound
+ * shape is visible as soon as the canonical planner publishes a new route.
+ */
+export function drawCanonicalConnectorOnCanvas(
+  context: CanvasRenderingContext2D,
+  payload: ConnectorDrawingPayload,
+  bounds: Rect,
+): void {
+  if (!isDrawingConnectorPayload(payload)) {
+    drawUnsupportedDrawingOnCanvas(context, bounds, 'Unsupported connector payload');
+    return;
+  }
+  const points = payload.route.points;
+  const start = points[0];
+  const end = points[points.length - 1];
+  if (!start || !end) {
+    drawUnsupportedDrawingOnCanvas(context, bounds, 'Connector route is empty');
+    return;
+  }
+  const strokeWidth = payload.strokeWidth ?? 1.5;
+  context.save();
+  context.strokeStyle = payload.stroke;
+  context.lineWidth = strokeWidth;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  if (payload.connectorType === 'straight' || points.length === 2) {
+    context.lineTo(end.x, end.y);
+  } else if (payload.connectorType === 'curved') {
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const control = points[index]!;
+      const next = points[index + 1]!;
+      const midpoint = { x: (control.x + next.x) / 2, y: (control.y + next.y) / 2 };
+      context.quadraticCurveTo(control.x, control.y, midpoint.x, midpoint.y);
+    }
+    context.lineTo(end.x, end.y);
+  } else {
+    // Elbow routes are already orthogonalized by the canonical planner. Do not
+    // infer extra bends in the renderer; doing so would diverge on replay.
+    for (let index = 1; index < points.length; index += 1) {
+      const point = points[index]!;
+      context.lineTo(point.x, point.y);
+    }
+  }
+  context.stroke();
+  drawConnectorArrowhead(context, start, directionFrom(start, points[1]!), payload.startArrowhead, payload.stroke, strokeWidth);
+  drawConnectorArrowhead(context, end, directionFrom(end, points[points.length - 2]!), payload.endArrowhead, payload.stroke, strokeWidth);
+  context.restore();
+}
+
+function directionFrom(point: { x: number; y: number }, toward: { x: number; y: number }): number {
+  return Math.atan2(point.y - toward.y, point.x - toward.x);
+}
+
+function drawConnectorArrowhead(
+  context: CanvasRenderingContext2D,
+  point: { x: number; y: number },
+  angle: number,
+  arrowhead: DrawingArrowhead,
+  color: string,
+  strokeWidth: number,
+): void {
+  if (arrowhead === 'none') return;
+  const size = Math.max(6, Math.min(14, 6 + strokeWidth * 2));
+  context.save();
+  context.translate(point.x, point.y);
+  context.rotate(angle);
+  context.fillStyle = color;
+  context.strokeStyle = color;
+  context.lineWidth = Math.max(1, strokeWidth / 2);
+  context.beginPath();
+  if (arrowhead === 'diamond') {
+    context.moveTo(0, 0);
+    context.lineTo(-size, size * 0.55);
+    context.lineTo(-size * 2, 0);
+    context.lineTo(-size, -size * 0.55);
+    context.closePath();
+  } else if (arrowhead === 'oval') {
+    context.ellipse(-size * 0.75, 0, size * 0.75, size * 0.5, 0, 0, Math.PI * 2);
+  } else {
+    context.moveTo(0, 0);
+    context.lineTo(-size * (arrowhead === 'stealth' ? 1.7 : 2), size * (arrowhead === 'stealth' ? 0.42 : 0.65));
+    context.lineTo(-size * (arrowhead === 'stealth' ? 1.25 : 1.1), 0);
+    context.lineTo(-size * (arrowhead === 'stealth' ? 1.7 : 2), -size * (arrowhead === 'stealth' ? 0.42 : 0.65));
+    context.closePath();
+  }
+  context.fill();
+  if (arrowhead === 'diamond' || arrowhead === 'oval') context.stroke();
+  context.restore();
+}
+
+function drawUnsupportedDrawingOnCanvas(context: CanvasRenderingContext2D, bounds: Rect, reason: string): void {
+  context.save();
+  context.strokeStyle = '#b91c1c';
+  context.fillStyle = '#b91c1c';
+  context.lineWidth = 1.5;
+  context.setLineDash([4, 3]);
+  context.strokeRect(bounds.x + 1, bounds.y + 1, Math.max(0, bounds.width - 2), Math.max(0, bounds.height - 2));
+  context.setLineDash([]);
+  context.font = '11px Segoe UI, sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(reason, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(10, bounds.width - 8));
+  context.restore();
+}
+
+/** Return an endpoint control hit in drawable-local coordinates. */
+export function connectorEndpointHitTest(
+  payload: ConnectorDrawingPayload,
+  bounds: Rect,
+  point: { x: number; y: number },
+  tolerance = 8,
+): { action: 'drawing.connector.endpoint'; data: { kind: 'connector-endpoint'; edge: 'start' | 'end'; endpoint: ConnectorDrawingPayload['start'] } } | null {
+  if (!isDrawingConnectorPayload(payload)) return null;
+  const points = payload.route.points;
+  const start = points[0];
+  const end = points[points.length - 1];
+  if (!start || !end) return null;
+  const absolute = { x: point.x + bounds.x, y: point.y + bounds.y };
+  const distance = (candidate: { x: number; y: number }) => Math.hypot(absolute.x - candidate.x, absolute.y - candidate.y);
+  if (distance(start) <= tolerance) return { action: 'drawing.connector.endpoint', data: { kind: 'connector-endpoint', edge: 'start', endpoint: structuredClone(payload.start) } };
+  if (distance(end) <= tolerance) return { action: 'drawing.connector.endpoint', data: { kind: 'connector-endpoint', edge: 'end', endpoint: structuredClone(payload.end) } };
+  return null;
 }
 
 function dataChartSeries(
@@ -1054,6 +1211,18 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     }
     if (payload.kind === 'form-control') {
       drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawFormControlOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'connector') {
+      drawables.push({
+        // Connectors remain shape-layer drawables so the existing PaneMap
+        // clipping and floating selection chrome own their coordinates.
+        kind: 'shape',
+        id: drawing.id,
+        bounds,
+        draw: (context, rect) => drawCanonicalConnectorOnCanvas(context, payload, rect),
+        hitTest: (point) => connectorEndpointHitTest(payload, bounds, point),
+      });
       continue;
     }
     if (payload.kind === "shape" || payload.kind === "textbox") {

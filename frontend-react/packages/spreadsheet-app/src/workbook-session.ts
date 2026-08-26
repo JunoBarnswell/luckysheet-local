@@ -8,6 +8,8 @@ import type {
   BarcodeSymbology,
   CameraDrawingPayload,
   ChartDrawingPayload,
+  ConnectorDrawingPayload,
+  DrawingConnectorType,
   ConditionalFormatRule,
   DataBlockRef,
   DataSourceManifest,
@@ -3232,6 +3234,43 @@ export class WorkbookSession {
     };
     this.addShape(drawing, payload);
   }
+  insertConnector(type: DrawingConnectorType = 'straight'): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selected = this.selectedDrawingIds
+      .map((id) => sheet.drawings.find((drawing) => drawing.id === id))
+      .filter((drawing): drawing is DrawingObject => drawing?.kind === 'shape');
+    if (selected.length !== 2) {
+      throw new Error('Connector insertion requires exactly two selected shapes');
+    }
+    const start = selected[0];
+    const end = selected[1];
+    if (!start || !end) throw new Error('Connector insertion requires exactly two selected shapes');
+    const payloadId = nextId('connector');
+    const drawing: DrawingObject = {
+      id: nextId('draw'),
+      sheetId: this.activeSheetId,
+      kind: 'connector',
+      anchor: { kind: 'absolute' },
+      transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 },
+      zIndex: Math.max(...sheet.drawings.map((entry) => entry.zIndex), -1) + 1,
+      payloadId,
+    };
+    const payload: ConnectorDrawingPayload = {
+      kind: 'connector',
+      connectorType: type,
+      start: { drawingId: start.id, connectionPoint: 'right' },
+      end: { drawingId: end.id, connectionPoint: 'left' },
+      stroke: '#2563eb',
+      strokeWidth: 2,
+      startArrowhead: 'none',
+      endArrowhead: 'triangle',
+      route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
+    };
+    this.runCommand('drawing.connector.add', { sheetId: this.activeSheetId, drawing, payload });
+    this.setDrawingSelection([drawing.id]);
+    this.notify('Connector inserted');
+    this.refresh();
+  }
   updateShapeBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
@@ -4043,9 +4082,11 @@ export class WorkbookSession {
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
+      if (this.panels.active === 'shape') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'formControl') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'textbox') this.panels = { ...this.panels, open: false };
       if (this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
+      if (this.ribbonTab === 'shapeFormat') this.ribbonTab = 'home';
       this.emit();
       return;
     }
@@ -4057,6 +4098,9 @@ export class WorkbookSession {
     if (selectedDrawing?.kind === 'image') {
       this.panels = { ...this.panels, active: 'picture', open: true };
       this.ribbonTab = 'pictureFormat';
+    } else if (selectedDrawing?.kind === 'shape' || selectedDrawing?.kind === 'connector') {
+      this.panels = { ...this.panels, active: 'shape', open: true };
+      this.ribbonTab = 'shapeFormat';
     } else if (selectedDrawing?.kind === 'form-control') {
       this.panels = { ...this.panels, active: 'formControl', open: true };
     } else if (selectedDrawing?.kind === 'textbox') {

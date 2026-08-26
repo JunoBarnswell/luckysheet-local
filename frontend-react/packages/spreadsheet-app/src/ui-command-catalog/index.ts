@@ -26,6 +26,7 @@ export type RibbonCatalogTabId =
   | 'chartDesign'
   | 'chartFormat'
   | 'pictureFormat'
+  | 'shapeFormat'
   | 'sparklineDesign';
 
 export type RibbonGroupId =
@@ -77,6 +78,7 @@ export type RibbonGroupId =
   | 'chartDesign'
   | 'chartFormat'
   | 'pictureFormat'
+  | 'shapeFormat'
   | 'sparklineDesign';
 
 export type RibbonCommandId =
@@ -289,7 +291,23 @@ export type RibbonCommandId =
   | 'tableStyle'
   | 'chartElements'
   | 'chartFormatPanel'
-  | 'chartSelectData';
+  | 'chartSelectData'
+  | 'shapeFormatPanel'
+  | 'shapeRotateClockwise'
+  | 'shapeRotateCounterclockwise'
+  | 'shapeAlignLeft'
+  | 'shapeAlignCenter'
+  | 'shapeAlignRight'
+  | 'shapeAlignTop'
+  | 'shapeAlignMiddle'
+  | 'shapeAlignBottom'
+  | 'shapeDistributeHorizontal'
+  | 'shapeDistributeVertical'
+  | 'shapeBringForward'
+  | 'shapeSendBackward'
+  | 'shapeBringToFront'
+  | 'shapeSendToBack'
+  | 'shapeCopy';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -466,6 +484,11 @@ export interface RibbonCommandContext {
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
   activePicture?: { sheetId: string; drawingId: string };
+  activeShape?: {
+    sheetId: string;
+    drawingIds: readonly string[];
+    transforms: readonly { drawingId: string; transform: { x: number; y: number; width: number; height: number; rotation?: number } }[];
+  };
   activeSparkline?: { sheetId: string; sparklineId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
@@ -619,6 +642,7 @@ export const RIBBON_TEXT = {
     chartDesign: 'groups.chartDesign',
     chartFormat: 'groups.chartFormat',
     pictureFormat: 'groups.pictureFormat',
+    shapeFormat: 'groups.shapeFormat',
     sparklineDesign: 'groups.sparklineDesign',
   },
   commands: {
@@ -783,6 +807,22 @@ export const RIBBON_TEXT = {
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     pictureFormatPanel: 'commands.pictureFormatPanel',
+    shapeFormatPanel: 'commands.shapeFormatPanel',
+    shapeRotateClockwise: 'commands.shapeRotateClockwise',
+    shapeRotateCounterclockwise: 'commands.shapeRotateCounterclockwise',
+    shapeAlignLeft: 'commands.shapeAlignLeft',
+    shapeAlignCenter: 'commands.shapeAlignCenter',
+    shapeAlignRight: 'commands.shapeAlignRight',
+    shapeAlignTop: 'commands.shapeAlignTop',
+    shapeAlignMiddle: 'commands.shapeAlignMiddle',
+    shapeAlignBottom: 'commands.shapeAlignBottom',
+    shapeDistributeHorizontal: 'commands.shapeDistributeHorizontal',
+    shapeDistributeVertical: 'commands.shapeDistributeVertical',
+    shapeBringForward: 'commands.shapeBringForward',
+    shapeSendBackward: 'commands.shapeSendBackward',
+    shapeBringToFront: 'commands.shapeBringToFront',
+    shapeSendToBack: 'commands.shapeSendToBack',
+    shapeCopy: 'commands.shapeCopy',
     sparklineDesign: 'commands.sparklineDesign',
     shapesLines: 'commands.shapesLines',
     deleteRow: 'commands.deleteRow',
@@ -893,6 +933,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('chartDesign', 'chartDesign', 10),
   group('chartFormat', 'chartFormat', 20),
   group('pictureFormat', 'pictureFormat', 10),
+  group('shapeFormat', 'shapeFormat', 15),
   group('sparklineDesign', 'sparklineDesign', 10),
 ] as const;
 
@@ -1051,7 +1092,26 @@ export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('insert', 'controls.textbox', 'insertControls', 20, 'large', 'textbox'),
 ] as const;
 
-export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES];
+export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
+  ribbonSurface('shapeFormat', 'shape.format-panel', 'shapeFormat', 10, 'large', 'shapeFormatPanel'),
+  ribbonSurface('shapeFormat', 'shape.rotate-clockwise', 'shapeFormat', 20, 'small', 'shapeRotateClockwise'),
+  ribbonSurface('shapeFormat', 'shape.rotate-counterclockwise', 'shapeFormat', 21, 'small', 'shapeRotateCounterclockwise'),
+  ribbonSurface('shapeFormat', 'shape.align-left', 'shapeFormat', 30, 'small', 'shapeAlignLeft'),
+  ribbonSurface('shapeFormat', 'shape.align-center', 'shapeFormat', 31, 'small', 'shapeAlignCenter'),
+  ribbonSurface('shapeFormat', 'shape.align-right', 'shapeFormat', 32, 'small', 'shapeAlignRight'),
+  ribbonSurface('shapeFormat', 'shape.align-top', 'shapeFormat', 33, 'small', 'shapeAlignTop'),
+  ribbonSurface('shapeFormat', 'shape.align-middle', 'shapeFormat', 34, 'small', 'shapeAlignMiddle'),
+  ribbonSurface('shapeFormat', 'shape.align-bottom', 'shapeFormat', 35, 'small', 'shapeAlignBottom'),
+  ribbonSurface('shapeFormat', 'shape.distribute-horizontal', 'shapeFormat', 40, 'small', 'shapeDistributeHorizontal'),
+  ribbonSurface('shapeFormat', 'shape.distribute-vertical', 'shapeFormat', 41, 'small', 'shapeDistributeVertical'),
+  ribbonSurface('shapeFormat', 'shape.bring-forward', 'shapeFormat', 50, 'small', 'shapeBringForward'),
+  ribbonSurface('shapeFormat', 'shape.send-backward', 'shapeFormat', 51, 'small', 'shapeSendBackward'),
+  ribbonSurface('shapeFormat', 'shape.bring-front', 'shapeFormat', 52, 'small', 'shapeBringToFront'),
+  ribbonSurface('shapeFormat', 'shape.send-back', 'shapeFormat', 53, 'small', 'shapeSendToBack'),
+  ribbonSurface('shapeFormat', 'shape.copy', 'shapeFormat', 60, 'small', 'shapeCopy'),
+] as const;
+
+export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES, ...SHAPE_FORMAT_RIBBON_SURFACES];
 
 export function getRibbonSurfaces(
   tab: RibbonCatalogTabId,
@@ -1143,6 +1203,52 @@ const dynamicCommand = (
     return descriptor ? { type: 'command', descriptor } : undefined;
   },
 });
+
+function shapeTransformBatch(context: RibbonCommandContext, transform: (current: { x: number; y: number; width: number; height: number; rotation?: number }) => { x: number; y: number; width: number; height: number; rotation?: number }): CommandDescriptor | undefined {
+  const active = context.activeShape;
+  if (!active || active.transforms.length === 0) return undefined;
+  const params = {
+    sheetId: active.sheetId,
+    entries: active.transforms.map(({ drawingId, transform: current }) => ({ drawingId, before: current, after: transform(current) })),
+  };
+  if (context.canExecute && !context.canExecute('drawing.transform.batch', params)) return undefined;
+  return { commandId: 'drawing.transform.batch', params };
+}
+
+function shapeAlignDescriptor(context: RibbonCommandContext, alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): CommandDescriptor | undefined {
+  const active = context.activeShape;
+  if (!active || active.drawingIds.length < 2) return undefined;
+  const params = { sheetId: active.sheetId, drawingIds: [...active.drawingIds], alignment };
+  if (context.canExecute && !context.canExecute('drawing.align', params)) return undefined;
+  return { commandId: 'drawing.align', params };
+}
+
+function shapeDistributeDescriptor(context: RibbonCommandContext, axis: 'horizontal' | 'vertical'): CommandDescriptor | undefined {
+  const active = context.activeShape;
+  if (!active || active.drawingIds.length < 3) return undefined;
+  const params = { sheetId: active.sheetId, drawingIds: [...active.drawingIds], axis };
+  if (context.canExecute && !context.canExecute('drawing.distribute', params)) return undefined;
+  return { commandId: 'drawing.distribute', params };
+}
+
+function shapeZOrderDescriptor(context: RibbonCommandContext, direction: 'forward' | 'backward' | 'front' | 'back'): CommandDescriptor | undefined {
+  const active = context.activeShape;
+  const drawingId = active?.drawingIds[0];
+  if (!active || !drawingId) return undefined;
+  const params = { sheetId: active.sheetId, drawingId, direction };
+  if (context.canExecute && !context.canExecute('drawing.zorder', params)) return undefined;
+  return { commandId: 'drawing.zorder', params };
+}
+
+function shapeCopyDescriptor(context: RibbonCommandContext): CommandDescriptor | undefined {
+  const active = context.activeShape;
+  const sourceDrawingId = active?.drawingIds[0];
+  if (!active || !sourceDrawingId) return undefined;
+  const suffix = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const params = { sheetId: active.sheetId, sourceDrawingId, drawingId: `drawing-copy-${suffix}`, payloadId: `shape-copy-${suffix}`, offset: { x: 24, y: 24 } };
+  if (context.canExecute && !context.canExecute('drawing.copy', params)) return undefined;
+  return { commandId: 'drawing.copy', params };
+}
 
 const styleCommand = (
   id: RibbonCommandId,
@@ -1500,6 +1606,25 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     ...intent('pictureFormatPanel', 'pictureFormat', 'pictureFormat', RIBBON_TEXT.commands.pictureFormatPanel, () => ({ type: 'panel.open', panel: 'picture' }), 'picture'),
     enabled: (context) => Boolean(context.activePicture),
   },
+  {
+    ...intent('shapeFormatPanel', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeFormatPanel, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
+    enabled: (context) => Boolean(context.activeShape),
+  },
+  dynamicCommand('shapeRotateClockwise', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeRotateClockwise, (context) => shapeTransformBatch(context, (current) => ({ ...current, rotation: ((current.rotation ?? 0) + 90) % 360 })), 'redo'),
+  dynamicCommand('shapeRotateCounterclockwise', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeRotateCounterclockwise, (context) => shapeTransformBatch(context, (current) => ({ ...current, rotation: ((current.rotation ?? 0) + 270) % 360 })), 'undo'),
+  dynamicCommand('shapeAlignLeft', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignLeft, (context) => shapeAlignDescriptor(context, 'left'), 'align-left'),
+  dynamicCommand('shapeAlignCenter', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignCenter, (context) => shapeAlignDescriptor(context, 'center'), 'align-center'),
+  dynamicCommand('shapeAlignRight', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignRight, (context) => shapeAlignDescriptor(context, 'right'), 'align-right'),
+  dynamicCommand('shapeAlignTop', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignTop, (context) => shapeAlignDescriptor(context, 'top'), 'align-top'),
+  dynamicCommand('shapeAlignMiddle', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignMiddle, (context) => shapeAlignDescriptor(context, 'middle'), 'align-middle'),
+  dynamicCommand('shapeAlignBottom', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeAlignBottom, (context) => shapeAlignDescriptor(context, 'bottom'), 'align-bottom'),
+  dynamicCommand('shapeDistributeHorizontal', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeDistributeHorizontal, (context) => shapeDistributeDescriptor(context, 'horizontal'), 'layout'),
+  dynamicCommand('shapeDistributeVertical', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeDistributeVertical, (context) => shapeDistributeDescriptor(context, 'vertical'), 'layout'),
+  dynamicCommand('shapeBringForward', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeBringForward, (context) => shapeZOrderDescriptor(context, 'forward'), 'redo'),
+  dynamicCommand('shapeSendBackward', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeSendBackward, (context) => shapeZOrderDescriptor(context, 'backward'), 'undo'),
+  dynamicCommand('shapeBringToFront', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeBringToFront, (context) => shapeZOrderDescriptor(context, 'front'), 'redo'),
+  dynamicCommand('shapeSendToBack', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeSendToBack, (context) => shapeZOrderDescriptor(context, 'back'), 'undo'),
+  dynamicCommand('shapeCopy', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeCopy, shapeCopyDescriptor, 'copy'),
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
   intent('shapesLines', 'insert', 'illustrations', RIBBON_TEXT.commands.shapesLines, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
