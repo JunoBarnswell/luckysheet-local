@@ -1387,8 +1387,16 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
     groupSpec(
       'editing',
       80,
-      rowNode('editing.primary', homeSurfaceNode('control.auto-sum-menu'), homeSurfaceNode('editing.fill-down'), homeSurfaceNode('editing.fill-up'), homeSurfaceNode('editing.fill-right'), homeSurfaceNode('editing.fill-left')),
-      rowNode('editing.secondary', homeSurfaceNode('editing.fill-series'), homeSurfaceNode('editing.sort'), homeSurfaceNode('editing.filter'), homeSurfaceNode('control.clear-menu'), homeSurfaceNode('editing.find')),
+      rowNode(
+        'editing.layout',
+        columnNode(
+          'editing.actions',
+          rowNode('editing.primary', homeSurfaceNode('control.auto-sum-menu'), homeSurfaceNode('editing.fill-down'), homeSurfaceNode('editing.fill-up')),
+          rowNode('editing.secondary', homeSurfaceNode('editing.fill-right'), homeSurfaceNode('editing.fill-left'), homeSurfaceNode('editing.fill-series'), homeSurfaceNode('editing.sort')),
+          rowNode('editing.tertiary', homeSurfaceNode('editing.filter'), homeSurfaceNode('editing.find')),
+        ),
+        homeSurfaceNode('control.clear-menu'),
+      ),
     ),
   ],
 });

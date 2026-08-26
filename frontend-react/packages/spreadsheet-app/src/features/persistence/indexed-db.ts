@@ -87,11 +87,45 @@ export function unnamespaceWorkspaceSourceId(sourceId: string): string {
     : sourceId;
 }
 
+export type WorkspaceStorageMode = 'persistent' | 'memory' | 'unavailable';
+
+interface FactorySelection {
+  factory: IndexedDbFactoryLike | null;
+  mode: WorkspaceStorageMode;
+  allowMemoryFallback: boolean;
+}
+
+let inMemoryIndexedDb: IDBFactory | null = null;
+
+function memoryFactory(): IDBFactory {
+  inMemoryIndexedDb ??= new InMemoryIndexedDbFactory();
+  return inMemoryIndexedDb;
+}
+
+function isBrowserRuntime(): boolean {
+  return typeof window !== 'undefined' && typeof document !== 'undefined';
+}
+
+function resolveFactorySelection(explicit: IndexedDbFactoryLike | null | undefined): FactorySelection {
+  if (explicit !== undefined) return { factory: explicit, mode: explicit ? 'persistent' : 'unavailable', allowMemoryFallback: false };
+  if (!isBrowserRuntime()) return { factory: null, mode: 'unavailable', allowMemoryFallback: false };
+  try {
+    const nativeFactory = (globalThis as typeof globalThis & { indexedDB?: IDBFactory }).indexedDB;
+    if (nativeFactory) return { factory: nativeFactory, mode: 'persistent', allowMemoryFallback: true };
+  } catch {
+    // Access itself may throw SecurityError in a restricted browser context.
+  }
+  return { factory: memoryFactory(), mode: 'memory', allowMemoryFallback: false };
+}
+
 function resolveFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
-  if (explicit !== undefined) return explicit;
-  return typeof globalThis !== 'undefined' && 'indexedDB' in globalThis
-    ? (globalThis as typeof globalThis & { indexedDB?: IDBFactory }).indexedDB ?? null
-    : null;
+  return resolveFactorySelection(explicit).factory;
+}
+
+function isUnsupportedIndexedDbError(cause: unknown): boolean {
+  if (!cause || typeof cause !== 'object') return false;
+  const name = 'name' in cause ? String(cause.name) : '';
+  return name === 'NotSupportedError' || name === 'SecurityError';
 }
 
 export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -203,7 +237,9 @@ function assertWorkspaceSchema(database: IDBDatabase, databaseName: string): voi
 export class WorkspaceDatabaseCoordinator {
   readonly databaseName: string;
   readonly instanceId: string;
-  private readonly factory: IndexedDbFactoryLike | null;
+  private factory: IndexedDbFactoryLike | null;
+  private storageModeValue: WorkspaceStorageMode;
+  private allowMemoryFallback: boolean;
   private readonly channel: BroadcastChannel | null;
   private readonly openTimeoutMs: number;
   private database: IDBDatabase | null = null;
@@ -216,12 +252,15 @@ export class WorkspaceDatabaseCoordinator {
 
   constructor(options: Omit<IndexedDbStoreOptions, 'coordinator' | 'unitId'> & { openTimeoutMs?: number; broadcast?: boolean } = {}) {
     this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
-    this.factory = resolveFactory(options.indexedDB);
+    const selection = resolveFactorySelection(options.indexedDB);
+    this.factory = selection.factory;
+    this.storageModeValue = selection.mode;
+    this.allowMemoryFallback = selection.allowMemoryFallback;
     this.openTimeoutMs = options.openTimeoutMs ?? WORKSPACE_DATABASE_OPEN_TIMEOUT_MS;
     this.instanceId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    this.channel = options.broadcast !== false && typeof BroadcastChannel === 'function'
+    this.channel = options.broadcast !== false && selection.mode === 'persistent' && typeof BroadcastChannel === 'function'
       ? new BroadcastChannel(`${WORKSPACE_DATABASE_CHANNEL_PREFIX}:${this.databaseName}`)
       : null;
     if (this.channel) this.channel.onmessage = (event: MessageEvent<WorkspaceDatabaseMessage>) => this.receive(event.data);
@@ -231,6 +270,7 @@ export class WorkspaceDatabaseCoordinator {
   }
 
   get state(): WorkspaceDatabaseState { return this.stateValue; }
+  get storageMode(): WorkspaceStorageMode { return this.storageModeValue; }
 
   open(): Promise<IDBDatabase> {
     if (this.closing) return this.closing.then(() => this.open());
@@ -251,7 +291,21 @@ export class WorkspaceDatabaseCoordinator {
     this.opening = new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
       let blocked = false;
-      const request = (this.factory as IndexedDbFactory).open(this.databaseName, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
+      let request: IndexedDbOpenRequest;
+      try {
+        request = (this.factory as IndexedDbFactory).open(this.databaseName, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
+      } catch (error) {
+        if (this.switchToMemoryIfUnsupported(error)) {
+          this.opening = null;
+          this.stateValue = 'idle';
+          void this.open().then(resolve, reject);
+          return;
+        }
+        this.opening = null;
+        this.stateValue = 'failed';
+        reject(storageError('STORAGE_UNAVAILABLE', this.databaseName, 'open', '当前浏览器拒绝本地工作簿存储。', '请允许站点存储后重试。', error));
+        return;
+      }
       const finishFailure = (error: WorkspaceStorageError): void => {
         if (settled) return;
         settled = true;
@@ -288,14 +342,26 @@ export class WorkspaceDatabaseCoordinator {
           instanceId: this.instanceId,
         } satisfies WorkspaceDatabaseMessage);
       };
-      request.onerror = () => finishFailure(storageError(
-        'STORAGE_TRANSACTION_FAILED',
-        this.databaseName,
-        'open',
-        '无法打开本地工作簿存储。',
-        '请保留浏览器数据并重试；错误详情可用于管理员诊断。',
-        request.error,
-      ));
+      request.onerror = () => {
+        if (this.switchToMemoryIfUnsupported(request.error)) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          if (this.cancelOpening === finishFailure) this.cancelOpening = null;
+          this.opening = null;
+          this.stateValue = 'idle';
+          void this.open().then(resolve, reject);
+          return;
+        }
+        finishFailure(storageError(
+          'STORAGE_TRANSACTION_FAILED',
+          this.databaseName,
+          'open',
+          '无法打开本地工作簿存储。',
+          '请保留浏览器数据并重试；错误详情可用于管理员诊断。',
+          request.error,
+        ));
+      };
       request.onsuccess = () => {
         if (settled) {
           request.result.close();
@@ -399,6 +465,15 @@ export class WorkspaceDatabaseCoordinator {
       void this.close('upgrade-request');
     }
   }
+
+  private switchToMemoryIfUnsupported(cause: unknown): boolean {
+    if (!this.allowMemoryFallback || !isUnsupportedIndexedDbError(cause)) return false;
+    this.channel?.close();
+    this.factory = memoryFactory();
+    this.storageModeValue = 'memory';
+    this.allowMemoryFallback = false;
+    return true;
+  }
 }
 
 type CoordinatorMap = Map<string, WorkspaceDatabaseCoordinator>;
@@ -407,7 +482,8 @@ const ownedCoordinators = new Set<WorkspaceDatabaseCoordinator>();
 
 export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptions = {}): WorkspaceDatabaseCoordinator {
   if (options.coordinator) return options.coordinator;
-  const factory = resolveFactory(options.indexedDB);
+  const selection = resolveFactorySelection(options.indexedDB);
+  const factory = selection.factory;
   if (!factory) return new WorkspaceDatabaseCoordinator(options);
   let byName = coordinatorByFactory.get(factory as object);
   if (!byName) {
@@ -417,7 +493,9 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
   const name = options.databaseName ?? WORKSPACE_DATABASE_NAME;
   let coordinator = byName.get(name);
   if (!coordinator) {
-    coordinator = new WorkspaceDatabaseCoordinator({ databaseName: name, indexedDB: factory });
+    coordinator = selection.mode === 'memory'
+      ? new WorkspaceDatabaseCoordinator({ databaseName: name, broadcast: false })
+      : new WorkspaceDatabaseCoordinator({ databaseName: name, indexedDB: factory, broadcast: selection.mode === 'persistent' });
     byName.set(name, coordinator);
     ownedCoordinators.add(coordinator);
   }
@@ -433,3 +511,4 @@ hotModule?.dispose(() => {
 export function resolveIndexedDbFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
   return resolveFactory(explicit);
 }
+import { IDBFactory as InMemoryIndexedDbFactory } from 'fake-indexeddb';

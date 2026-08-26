@@ -40,7 +40,15 @@ import type {
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
-import { DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError } from "@react-sheets/core-model";
+import {
+  DEFAULT_PIVOT_STYLE_OPTIONS,
+  formatPivotMember,
+  isPivotError,
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
+  SHEET_COLUMN_GROWTH_CHUNK,
+  SHEET_ROW_GROWTH_CHUNK,
+} from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
@@ -90,6 +98,7 @@ export interface SheetCanvasProps {
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
+  onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
   onCommitCell: (value: string) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
@@ -390,6 +399,7 @@ export function SheetCanvas({
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
+  onEnsureSheetExtent,
   onCommitCell,
   onBeginEdit,
   onCancelEdit,
@@ -463,8 +473,35 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
+  const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
 
   const zoomFactor = zoom / 100;
+
+  useEffect(() => {
+    const pending = requestedExtentRef.current;
+    if (pending.sheetId !== sheetId) {
+      requestedExtentRef.current = { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      return;
+    }
+    if (sheet.rowCount >= pending.rowCount && sheet.columnCount >= pending.columnCount) {
+      requestedExtentRef.current = { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+    }
+  }, [sheet.columnCount, sheet.rowCount, sheetId]);
+
+  const requestExtentGrowth = useCallback((axes: { rows?: boolean; columns?: boolean }) => {
+    const pending = requestedExtentRef.current.sheetId === sheetId
+      ? requestedExtentRef.current
+      : { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+    const rowCount = axes.rows && pending.rowCount <= sheet.rowCount
+      ? Math.min(MAX_SHEET_ROW_COUNT, sheet.rowCount + SHEET_ROW_GROWTH_CHUNK)
+      : Math.max(sheet.rowCount, pending.rowCount);
+    const columnCount = axes.columns && pending.columnCount <= sheet.columnCount
+      ? Math.min(MAX_SHEET_COLUMN_COUNT, sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK)
+      : Math.max(sheet.columnCount, pending.columnCount);
+    if (rowCount === sheet.rowCount && columnCount === sheet.columnCount) return;
+    requestedExtentRef.current = { sheetId, rowCount, columnCount };
+    onEnsureSheetExtent(rowCount, columnCount);
+  }, [onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
 
   const skeleton = useMemo(
     () =>
@@ -648,6 +685,7 @@ export function SheetCanvas({
     onFormulaDraftChange,
     onJumpEdge,
     onMovePrimary,
+    onRequestExtentGrowth: requestExtentGrowth,
     onPivotContextHit,
     onPivotControlAction,
     onPivotExpansionToggle,
@@ -1012,14 +1050,20 @@ export function SheetCanvas({
                   <ScrollBar
                     contentSize={content.width}
                     offset={viewport.scrollX}
-                    onChange={(offset) => engineRef.current?.scrollTo(offset, viewport.scrollY)}
+                    onChange={(offset) => {
+                      if (content.width - offset - viewport.width <= Math.max(viewport.width, skeleton.defaultColumnWidth * 8)) requestExtentGrowth({ columns: true });
+                      engineRef.current?.scrollTo(offset, viewport.scrollY);
+                    }}
                     orientation="horizontal"
                     viewportSize={viewport.width}
                   />
                   <ScrollBar
                     contentSize={content.height}
                     offset={viewport.scrollY}
-                    onChange={(offset) => engineRef.current?.scrollTo(viewport.scrollX, offset)}
+                    onChange={(offset) => {
+                      if (content.height - offset - viewport.height <= Math.max(viewport.height, skeleton.defaultRowHeight * 50)) requestExtentGrowth({ rows: true });
+                      engineRef.current?.scrollTo(viewport.scrollX, offset);
+                    }}
                     orientation="vertical"
                     viewportSize={viewport.height}
                   />

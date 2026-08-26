@@ -18,6 +18,8 @@
     "INTERNAL_ERROR"
   ],
   "mutations": {
+    "sheet.extent.grow": { "durability": "local", "remote": false, "schema": "SheetExtentGrow", "minRole": "viewer", "rebasePolicy": "none", "javaReducer": false },
+    "sheet.extent.restore": { "durability": "local", "remote": false, "schema": "SheetExtentRestore", "minRole": "viewer", "rebasePolicy": "none", "javaReducer": false },
     "pivot.chart.create": { "durability": "transient", "remote": false, "schema": "PivotChartCreate", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false, "replacement": "drawing.add" },
     "sheet.add": { "durability": "remote", "remote": true, "schema": "SheetAdd", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "sheet.remove": { "durability": "remote", "remote": true, "schema": "SheetRemove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
@@ -60,6 +62,7 @@
       "select-unlocked": "selectUnlocked"
     },
     "commands": {
+      "sheet.extent.grow": { "capability": "navigate", "protectionAction": "none", "checksProtection": false },
       "sheet.cell.set": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cell.commitText": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "find.replace": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -224,6 +227,8 @@
       { "prefix": "ui.history.", "capability": "edit-cell", "protectionAction": "none", "checksProtection": false }
     ],
     "mutations": {
+      "sheet.extent.grow": { "capability": "navigate", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "worksheet" },
+      "sheet.extent.restore": { "capability": "navigate", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "worksheet" },
       "banded.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cell.editor.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cell.restore": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },

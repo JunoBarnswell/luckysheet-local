@@ -942,6 +942,29 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('sheet.extent.grow expands sparse bounds without polluting edit history and rejects unsupported limits', () => {
+  const workbook = new WorkbookModel('unit-extent-grow', 'Extent growth');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const mutations: string[] = [];
+  runtime.onMutation((mutation) => mutations.push(mutation.id));
+
+  runtime.execute('sheet.extent.grow', { sheetId: sheet.id, rowCount: 2_000, columnCount: 52 });
+
+  assert.equal(sheet.rowCount, 2_000);
+  assert.equal(sheet.columnCount, 52);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+  assert.deepEqual(mutations, ['sheet.extent.grow']);
+
+  assert.throws(
+    () => runtime.execute('sheet.extent.grow', { sheetId: sheet.id, rowCount: 1_048_577, columnCount: 52 }),
+    /Invalid sheet\.extent\.grow command payload/,
+  );
+  assert.equal(sheet.rowCount, 2_000);
+  assert.equal(sheet.columnCount, 52);
+});
+
 test('sheet.cells.insert undo restores the complete affected band', () => {
   const workbook = new WorkbookModel('unit-shift-undo', 'Shift Undo');
   const runtime = new CommandRuntime(workbook);

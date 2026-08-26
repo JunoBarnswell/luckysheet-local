@@ -92,6 +92,12 @@ export interface OperationResult {
 
 export interface Command<P = unknown> {
   id: string;
+  /**
+   * Commands driven by view geometry may persist canonical local state while
+   * intentionally staying out of the user's edit history.  Rollback still
+   * uses the mutation inverse plan if execution fails.
+   */
+  history?: 'record' | 'none';
   execute(params: P, context: CommandContext): CommandResult;
 }
 
@@ -847,7 +853,7 @@ export class CommandRuntime {
       this.transactionDepth -= 1;
 
       if (isRootTransaction) {
-        if (this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
+        if (command.history !== 'none' && this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
           this.undoStack.push(this.activeEntry);
           if (this.undoStack.length > 200) this.undoStack.shift();
           this.redoStack.length = 0;

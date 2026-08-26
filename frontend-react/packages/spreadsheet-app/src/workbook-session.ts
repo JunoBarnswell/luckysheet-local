@@ -49,7 +49,15 @@ import type {
   HyperlinkTarget,
   AssetRef,
 } from '@react-sheets/core-model';
-import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
+import {
+  createDefaultTextBoxTextFrame,
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
+  protectionResolver,
+  resolveFilterCellValue,
+  SHEET_COLUMN_GROWTH_CHUNK,
+  SHEET_ROW_GROWTH_CHUNK,
+} from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
@@ -1431,7 +1439,7 @@ export class WorkbookSession {
       const updateParams = resolvedParams as { pivotId?: string };
       if (updateParams.pivotId) this.refreshPivotsForTrigger({ kind: 'layout-change', pivotId: updateParams.pivotId });
     }
-    if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
+    if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh' && commandId !== 'sheet.extent.grow') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
     }
     if (commandId === 'history.restore') {
@@ -2395,11 +2403,34 @@ export class WorkbookSession {
   }
 
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const requestedRow = active.row + rowDelta;
+    const requestedColumn = active.column + columnDelta;
+    if (requestedRow >= sheet.rowCount || requestedColumn >= sheet.columnCount) {
+      this.ensureSheetExtent(
+        requestedRow >= sheet.rowCount ? sheet.rowCount + SHEET_ROW_GROWTH_CHUNK : sheet.rowCount,
+        requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount,
+      );
+    }
     this.selectionService.movePrimary(rowDelta, columnDelta, opts);
     if (!this.editSession.editingCell) {
       this.syncDraftFromPrimary();
     }
     this.emit();
+  }
+
+  /** Grow the sparse worksheet address space through the sole local-durable command. */
+  ensureSheetExtent(rowCount: number, columnCount: number): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const targetRowCount = Math.min(MAX_SHEET_ROW_COUNT, Math.max(sheet.rowCount, Math.trunc(rowCount)));
+    const targetColumnCount = Math.min(MAX_SHEET_COLUMN_COUNT, Math.max(sheet.columnCount, Math.trunc(columnCount)));
+    if (targetRowCount === sheet.rowCount && targetColumnCount === sheet.columnCount) return;
+    this.runCommand('sheet.extent.grow', {
+      sheetId: this.activeSheetId,
+      rowCount: targetRowCount,
+      columnCount: targetColumnCount,
+    });
   }
 
   jumpEdge(direction: 'up' | 'down' | 'left' | 'right', extend = false): void {

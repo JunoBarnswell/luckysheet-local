@@ -112,6 +112,7 @@ export interface CanvasInteractionOptions {
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
+  onRequestExtentGrowth: (axes: { rows?: boolean; columns?: boolean }) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
@@ -219,6 +220,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     editComposing,
     onJumpEdge,
     onMovePrimary,
+    onRequestExtentGrowth,
     onPivotContextHit,
     onPivotControlAction,
     onPivotResolve,
@@ -347,6 +349,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const speed = (distance: number) => Math.max(2, Math.min(24, Math.round(distance / threshold * 24)));
       const dx = left ? -speed(currentOrigin.x + threshold - point.x) : right ? speed(point.x - (currentHost.clientWidth - threshold)) : 0;
       const dy = top ? -speed(currentOrigin.y + threshold - point.y) : bottom ? speed(point.y - (currentHost.clientHeight - threshold)) : 0;
+      if (right || bottom) onRequestExtentGrowth({ rows: bottom, columns: right });
       if (dx !== 0 || dy !== 0) currentEngine.scrollBy(dx, dy);
       const queryPoint = {
         x: Math.max(currentOrigin.x + 1, Math.min(currentHost.clientWidth - 1, point.x)),
@@ -387,7 +390,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (autoScrollPointRef.current && typeof window !== "undefined") autoScrollFrameRef.current = window.requestAnimationFrame(tick);
     };
     autoScrollFrameRef.current = window.requestAnimationFrame(tick);
-  }, [containerRef, engineRef, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll]);
+  }, [containerRef, engineRef, onRequestExtentGrowth, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll]);
 
   useEffect(() => () => {
     stopAutoScroll();
@@ -873,8 +876,13 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const engine = engineRef.current;
     if (!engine) return;
     event.preventDefault();
+    const viewport = engine.viewport.getSnapshot();
+    const content = engine.skeleton.contentSize;
+    const rows = event.deltaY > 0 && content.height - viewport.scrollY - viewport.height <= Math.max(viewport.height, skeleton.defaultRowHeight * 50);
+    const columns = event.deltaX > 0 && content.width - viewport.scrollX - viewport.width <= Math.max(viewport.width, skeleton.defaultColumnWidth * 8);
+    if (rows || columns) onRequestExtentGrowth({ rows, columns });
     engine.scrollBy(event.deltaX, event.deltaY);
-  }, [engineRef]);
+  }, [engineRef, onRequestExtentGrowth, skeleton]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (phase !== "ready") return;

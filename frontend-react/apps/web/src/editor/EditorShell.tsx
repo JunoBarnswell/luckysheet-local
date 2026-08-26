@@ -266,6 +266,7 @@ export function EditorShell({
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
+                onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
                 onCommitCell={(value) => session.commitFormula(value)}
                 onBeginEdit={(initialText) => session.beginEdit(initialText)}
                 onCancelEdit={session.cancelEdit.bind(session)}

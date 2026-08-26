@@ -19,6 +19,8 @@ import type {
 } from '@react-sheets/core-model';
 import {
   clearFormulaProvenance,
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
   StructuralTransform,
   normalizeDefinedNameModel,
   normalizeFontFamily,
@@ -133,6 +135,12 @@ export interface AddSheetParams {
   name: string;
   rowCount?: number;
   columnCount?: number;
+}
+
+export interface SheetExtentParams {
+  sheetId: string;
+  rowCount: number;
+  columnCount: number;
 }
 
 export interface RenameSheetParams {
@@ -327,6 +335,13 @@ function isAddSheetMutation(value: unknown): value is AddSheetParams {
 
 function isSheetIdMutation(value: unknown): value is { id: string } {
   return isRecord(value) && typeof value.id === 'string' && value.id.length > 0;
+}
+
+function isSheetExtentMutation(value: unknown): value is SheetExtentParams {
+  return isRecord(value)
+    && typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(value.rowCount) && Number(value.rowCount) > 0 && Number(value.rowCount) <= MAX_SHEET_ROW_COUNT
+    && Number.isSafeInteger(value.columnCount) && Number(value.columnCount) > 0 && Number(value.columnCount) <= MAX_SHEET_COLUMN_COUNT;
 }
 
 function isSheetRestoreMutation(value: unknown): value is { sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number } {
@@ -660,6 +675,76 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
   registerCellTemplateCommands(runtime);
+
+  runtime.registry.registerMutation<SheetExtentParams>({
+    id: 'sheet.extent.grow',
+    handler: (item, context) => {
+      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.grow mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      if (item.params.rowCount < sheet.rowCount || item.params.columnCount < sheet.columnCount) {
+        throw new Error('Sheet extent growth cannot shrink a worksheet');
+      }
+      sheet.rowCount = item.params.rowCount;
+      sheet.columnCount = item.params.columnCount;
+    },
+    metadata: {
+      schema: { name: 'SheetExtentGrow', validate: isSheetExtentMutation },
+      permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.extent.restore'],
+    },
+  });
+  runtime.registry.registerMutation<SheetExtentParams>({
+    id: 'sheet.extent.restore',
+    handler: (item, context) => {
+      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.restore mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      sheet.rowCount = item.params.rowCount;
+      sheet.columnCount = item.params.columnCount;
+    },
+    metadata: {
+      schema: { name: 'SheetExtentRestore', validate: isSheetExtentMutation },
+      permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.extent.grow'],
+    },
+  });
+  runtime.registry.registerCommand<SheetExtentParams>({
+    id: 'sheet.extent.grow',
+    history: 'none',
+    execute: (params, context) => {
+      if (!isSheetExtentMutation(params)) throw new Error('Invalid sheet.extent.grow command payload');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const next = {
+        sheetId: params.sheetId,
+        rowCount: Math.max(sheet.rowCount, params.rowCount),
+        columnCount: Math.max(sheet.columnCount, params.columnCount),
+      };
+      if (next.rowCount === sheet.rowCount && next.columnCount === sheet.columnCount) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const previous = { sheetId: params.sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      context.applyMutation({
+        id: 'sheet.extent.grow',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: next,
+        affectedRanges: [],
+        inverse: [{
+          id: 'sheet.extent.restore',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: previous,
+          affectedRanges: [],
+        }],
+        apply: () => {
+          sheet.rowCount = next.rowCount;
+          sheet.columnCount = next.columnCount;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',

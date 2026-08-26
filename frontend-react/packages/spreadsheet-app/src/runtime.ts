@@ -67,6 +67,8 @@ export interface SpreadsheetRuntime {
   remoteConnected: boolean;
   remoteRevision: number;
   pendingMutations: MutationInfo[];
+  /** Local-durable geometry changed without producing a remote operation. */
+  pendingLocalCheckpoint: boolean;
   /** Mutation facts are drained by the refresh coordinator after each apply. */
   pendingPivotMutations: MutationInfo[];
   drainPivotMutations: () => MutationInfo[];
@@ -181,6 +183,7 @@ export function createSpreadsheetRuntime(options: {
     remoteConnected: false,
     remoteRevision: 0,
     pendingMutations: [],
+    pendingLocalCheckpoint: false,
     pendingPivotMutations: [],
     drainPivotMutations: () => {
       const pending = runtime.pendingPivotMutations;
@@ -575,7 +578,12 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
       if (source !== 'command') return;
-      if (mutationCapability(mutation.id)?.durability === 'transient') return;
+      const durability = mutationCapability(mutation.id)?.durability;
+      if (durability === 'transient') return;
+      if (durability === 'local') {
+        runtime.pendingLocalCheckpoint = true;
+        return;
+      }
       runtime.pendingMutations.push({
         id: mutation.id,
         unitId: mutation.unitId,
@@ -592,17 +600,21 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (runtime.commands.activeDepth > 0) return;
       const batch = runtime.pendingMutations;
       runtime.pendingMutations = [];
-      if (batch.length === 0) return;
+      const localCheckpoint = runtime.pendingLocalCheckpoint;
+      runtime.pendingLocalCheckpoint = false;
+      if (batch.length === 0 && !localCheckpoint) return;
       runtime.handlers.onMutationsApplied?.();
-      const history = runtime.commands.getUndoEntries().at(-1);
+      const history = runtime.commands.getUndoEntries().find((entry) => entry.operationId === result.operationId);
       if (history) {
         runtime.collaboration?.recordLocalUndo({
           operationId: result.operationId,
           undoMutations: history.inversePlan,
         });
       }
-      if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
-      else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
+      if (batch.length > 0) {
+        if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
+        else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
+      }
       void runtime.checkpointWorkspace();
     }),
   );
@@ -636,6 +648,7 @@ function detachCoreListeners(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.detachers) detach();
   runtime.detachers = [];
   runtime.pendingMutations = [];
+  runtime.pendingLocalCheckpoint = false;
   runtime.pendingPivotMutations = [];
 }
 
