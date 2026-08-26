@@ -4,7 +4,7 @@ import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
-import type { WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -14,12 +14,14 @@ import type { WorkbookCollationContext } from '@react-sheets/formula-engine';
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 5;
+  version: 6;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
   /** Workbook-owned deterministic ordering semantics for values and query keys. */
   collationContext?: WorkbookCollationContext;
+  /** Workbook-owned calculation policy; formula workers consume this exact state. */
+  calculationSettings: WorkbookCalculationSettings;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   dataModel: import('./data-model').WorkbookDataModel;
@@ -38,7 +40,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 5 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 6 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -53,8 +55,13 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
-  if (input.version === 4 && Array.isArray(input.sheets)) {
+  if (input.version === 5 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
+  if (input.version === 4 && Array.isArray(input.sheets)) {
+    input.version = 5;
     input.dataModel = {
       sources: Array.isArray(input.dataSources) ? input.dataSources : [],
       tables: Array.isArray(input.tables) ? input.tables : [],
@@ -64,7 +71,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete input.dataSources;
     delete input.tables;
     for (const sheet of input.sheets as Array<Record<string, any>>) sheet.kind = sheet.kind ?? 'worksheet';
-    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version === 3 && Array.isArray(input.sheets)) {
     input.version = 4;
@@ -171,6 +178,9 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       || !Array.isArray(context.customLists) || context.customLists.some((list) => !Array.isArray(list) || list.some((entry) => typeof entry !== 'string'))) {
       throw new Error('Workbook snapshot collationContext is invalid');
     }
+  }
+  if (!isWorkbookCalculationSettings(snapshot.calculationSettings)) {
+    throw new Error('Workbook calculation settings are invalid');
   }
   const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {

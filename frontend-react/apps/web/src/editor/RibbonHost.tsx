@@ -124,7 +124,7 @@ export function RibbonHost({
       onTogglePrintGridlines={() => session.togglePrintGridlines()}
       onToggleViewHeadings={() => session.toggleViewHeadings()}
       onTogglePrintHeadings={() => session.togglePrintHeadings()}
-      onAutoSum={() => session.autoSum()}
+      onAutoSum={(functionName) => session.autoSum(functionName)}
       onFill={(direction, mode) => mode === 'series' ? session.fillSeries() : session.fillSelection(direction)}
       onFreezeAtPrimary={() => session.freezeAtPrimary()}
       onOpenColumnWidth={() => onOpenColumnWidthDialog(columnDimensions.selectedColumns())}
@@ -161,7 +161,7 @@ export function RibbonHost({
       onFlipSelection={(axis: "h" | "v") => session.flipSelection(axis)}
       onSplitByDelimiter={() => session.splitByDelimiter(",")}
       onToggleBandedRows={() => session.toggleBandedRows()}
-      onSetRecalculationMode={(mode: "automatic" | "manual") => session.setRecalculationMode(mode)}
+      onSetRecalculationMode={(mode: "automatic" | "manual" | "partial") => session.setRecalculationMode(mode)}
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
       onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}

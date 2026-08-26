@@ -25,6 +25,7 @@ import {
   canonicalExcelDateFromValue,
   canonicalExcelDateFromUtcDate,
   canonicalExcelDateToUtcDate,
+  DEFAULT_WORKBOOK_CALCULATION_SETTINGS,
   shiftCanonicalExcelDate,
   type CanonicalExcelDate,
   type CanonicalExcelDateParts,
@@ -240,10 +241,11 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 5,
+    version: 6,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
+    calculationSettings: structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS),
     definedNames,
     definedNameModels,
     dataModel: { sources: [], tables: [], relationships: [], views: [] },

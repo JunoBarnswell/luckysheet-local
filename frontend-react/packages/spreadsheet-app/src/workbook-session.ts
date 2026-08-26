@@ -2387,7 +2387,7 @@ export class WorkbookSession {
     if (next) this.selectSheet(next.id);
   }
 
-  autoSum(): void {
+  autoSum(functionName?: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN'): void {
     const selection = this.selectionService.getState();
     const range = this.getCurrentRegion();
     this.dispatch({
@@ -2396,6 +2396,7 @@ export class WorkbookSession {
         sheetId: this.activeSheetId,
         range,
         target: { ...selection.activeCell },
+        ...(functionName ? { functionName } : {}),
       },
     });
   }

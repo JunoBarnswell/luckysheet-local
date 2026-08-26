@@ -9,6 +9,7 @@ import type {
   WorkbookSnapshot,
   WorkbookTableBlock,
 } from '@react-sheets/core-model';
+import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 import {
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
@@ -911,6 +912,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   if (!dimensionMetrics || !isNonEmptyString(dimensionMetrics.normalFontFamily)
     || typeof dimensionMetrics.normalFontSizePx !== 'number' || !Number.isFinite(dimensionMetrics.normalFontSizePx) || dimensionMetrics.normalFontSizePx <= 0
     || typeof dimensionMetrics.maximumDigitWidthPx !== 'number' || !Number.isFinite(dimensionMetrics.maximumDigitWidthPx) || dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('WorkbookSnapshot dimensionMetrics is invalid');
+  if (!isWorkbookCalculationSettings(input.calculationSettings)) throw new Error('WorkbookSnapshot calculationSettings is invalid');
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }

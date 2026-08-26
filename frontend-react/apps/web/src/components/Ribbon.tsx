@@ -69,7 +69,7 @@ export interface RibbonProps {
   onTogglePrintGridlines: () => void;
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
-  onAutoSum: () => void;
+  onAutoSum: (functionName?: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN') => void;
   onFill: (direction: 'down' | 'up' | 'right' | 'left', mode?: 'copy' | 'series') => void;
   onFreezeAtPrimary: () => void;
   onOpenColumnWidth: () => void;
@@ -108,7 +108,7 @@ export interface RibbonProps {
   onFlipSelection: (axis: 'h' | 'v') => void;
   onSplitByDelimiter: () => void;
   onToggleBandedRows: () => void;
-  onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
+  onSetRecalculationMode: (mode: 'automatic' | 'manual' | 'partial') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;

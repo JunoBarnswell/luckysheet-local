@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Button, Dialog, Inline, ScrollArea, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { BUILTIN_FUNCTIONS } from '@react-sheets/formula-engine';
+import { Box, Button, Dialog, Inline, ScrollArea, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { FUNCTION_LIBRARY, type FunctionLibraryCategory } from '@react-sheets/formula-engine';
 
 export interface FunctionWizardDialogProps {
   open: boolean;
@@ -9,7 +9,7 @@ export interface FunctionWizardDialogProps {
 }
 
 const FUNCTION_DESCRIPTIONS: Record<string, { category: string; syntax: string; description: string }> = {
-  SUM: { category: 'Math', syntax: 'SUM(number1, [number2], ...)', description: 'Adds all numbers in a range of cells.' },
+  SUM: { category: 'Math & Trig', syntax: 'SUM(number1, [number2], ...)', description: 'Adds all numbers in a range of cells.' },
   AVERAGE: { category: 'Statistical', syntax: 'AVERAGE(number1, [number2], ...)', description: 'Returns the average (arithmetic mean) of its arguments.' },
   COUNT: { category: 'Statistical', syntax: 'COUNT(value1, [value2], ...)', description: 'Counts how many numbers are in the list of arguments.' },
   COUNTA: { category: 'Statistical', syntax: 'COUNTA(value1, [value2], ...)', description: 'Counts how many values are in the list of arguments.' },
@@ -27,13 +27,23 @@ const FUNCTION_DESCRIPTIONS: Record<string, { category: string; syntax: string; 
   NOW: { category: 'Date', syntax: 'NOW()', description: 'Returns the serial number of the current date and time.' },
 };
 
+const CATEGORY_LABELS: Record<FunctionLibraryCategory, string> = {
+  logical: 'Logical',
+  text: 'Text',
+  'date-time': 'Date & Time',
+  'lookup-reference': 'Lookup & Reference',
+  'math-trig': 'Math & Trig',
+  'more-functions': 'More Functions',
+};
+
 export function FunctionWizardDialog({ open, onClose, onInsertFormula }: FunctionWizardDialogProps) {
   const [selectedFunction, setSelectedFunction] = useState('SUM');
   const [search, setSearch] = useState('');
+  const [category, setCategory] = useState<FunctionLibraryCategory | 'all'>('all');
 
-  const fnList = Object.keys(BUILTIN_FUNCTIONS).filter((fn) =>
-    fn.toLowerCase().includes(search.toLowerCase()),
-  );
+  const fnList = FUNCTION_LIBRARY.filter((entry) => (category === 'all' || entry.category === category)
+    && entry.id.toLowerCase().includes(search.toLowerCase()));
+  const selected = FUNCTION_LIBRARY.find((entry) => entry.id === selectedFunction);
 
   const meta = FUNCTION_DESCRIPTIONS[selectedFunction] || {
     category: 'General',
@@ -71,23 +81,32 @@ export function FunctionWizardDialog({ open, onClose, onInsertFormula }: Functio
             onChange={(e) => setSearch(e.target.value)}
             leadingIcon="search"
           />
+          <Select aria-label="Function category" sizeVariant="sm" value={category} onChange={(event) => setCategory(event.target.value as FunctionLibraryCategory | 'all')}>
+            <option value="all">All Functions</option>
+            <option value="logical">Logical</option>
+            <option value="text">Text</option>
+            <option value="date-time">Date &amp; Time</option>
+            <option value="lookup-reference">Lookup &amp; Reference</option>
+            <option value="math-trig">Math &amp; Trig</option>
+            <option value="more-functions">More Functions</option>
+          </Select>
         </Box>
 
         <Box className="grid grid-cols-2 gap-4">
           <ScrollArea className="h-56 rounded-lg border border-slate-200 bg-slate-50/50 p-1">
-            {fnList.map((fn) => (
+            {fnList.map((entry) => (
               <Button
-                key={fn}
-                onClick={() => setSelectedFunction(fn)}
+                key={entry.id}
+                onClick={() => setSelectedFunction(entry.id)}
                 size="sm"
                 variant="ghost"
                 className={`w-full justify-start rounded px-2.5 py-1.5 text-left text-xs font-semibold transition-colors ${
-                  selectedFunction === fn
+                  selectedFunction === entry.id
                     ? 'bg-blue-600 text-white'
                     : 'text-slate-700 hover:bg-slate-200/70'
                 }`}
               >
-                {fn}
+                {entry.id}
               </Button>
             ))}
           </ScrollArea>
@@ -97,7 +116,7 @@ export function FunctionWizardDialog({ open, onClose, onInsertFormula }: Functio
               <Inline className="justify-between">
                 <Text size="sm" weight="bold" className="text-slate-900">{selectedFunction}</Text>
                 <Text size="xs" weight="semibold" className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">
-                  {meta.category}
+                  {selected ? CATEGORY_LABELS[selected.category] : meta.category}
                 </Text>
               </Inline>
               <Box className="mt-2 rounded border border-slate-100 bg-slate-50 p-1.5 font-mono text-xs font-medium text-blue-600">

@@ -15,7 +15,7 @@ import java.util.Set;
 /** Reducers for workbook-owned tables, names, and persisted print documents. */
 final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
-            "table.add", "table.remove", "name.set", "name.remove",
+            "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
             "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
             "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear",
@@ -58,6 +58,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
             case "table.remove" -> removeTable(root, rawId(mutation.params(), "Table id"));
             case "name.set" -> setName(root, SnapshotMutationSupport.params(mutation));
             case "name.remove" -> removeName(root, SnapshotMutationSupport.params(mutation));
+            case "workbook.calculation.mode.set" -> setCalculationMode(root, SnapshotMutationSupport.params(mutation));
             case "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
                     "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
                     "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear",
@@ -129,6 +130,19 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         if (index < 0) throw ServiceException.notFound("Defined name not found: " + name);
         models.remove(index);
         if (scope.equals("workbook")) SnapshotMutationSupport.object(root, "definedNames").remove(name);
+    }
+
+    private void setCalculationMode(ObjectNode root, ObjectNode params) {
+        String mode = SnapshotMutationSupport.text(params, "mode");
+        if (!Set.of("automatic", "manual", "partial").contains(mode)) throw ServiceException.validation("Workbook calculation mode is invalid");
+        ObjectNode settings = root.with("calculationSettings");
+        if (!settings.has("iterativeCalculation")) settings.put("iterativeCalculation", false);
+        if (!settings.has("maximumIterations")) settings.put("maximumIterations", 100);
+        if (!settings.has("maximumChange")) settings.put("maximumChange", 0.001);
+        if (!settings.has("precisionAsDisplayed")) settings.put("precisionAsDisplayed", false);
+        if (!settings.has("calculateBeforeSave")) settings.put("calculateBeforeSave", true);
+        if (!settings.has("fullCalculationOnLoad")) settings.put("fullCalculationOnLoad", false);
+        settings.put("mode", mode);
     }
 
     private void validatePageLayoutMutation(ObjectNode root, OperationMutation mutation) {
@@ -318,6 +332,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     }
 
     private static String action(String id) {
-        return id.startsWith("pageLayout.") ? "print" : id.startsWith("table.") ? "format" : "edit-cell";
+        return id.startsWith("pageLayout.") ? "print" : id.equals("workbook.calculation.mode.set") ? "calculate" : id.startsWith("table.") ? "format" : "edit-cell";
     }
 }

@@ -254,7 +254,7 @@ export class FormulaEngine {
     this.recalculationMode = this.calculationSettings.mode;
     this.markCalculationStateChanged();
     const affected = this.allFormulaAddresses();
-    if (this.recalculationMode === 'manual') {
+    if (this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
@@ -511,7 +511,7 @@ export class FormulaEngine {
     this.sheetTables = normalizeSheetTables(tables);
     this.markCalculationStateChanged();
     const affected = this.allFormulaAddresses();
-    if (this.recalculationMode === 'manual') {
+    if (this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
@@ -664,7 +664,7 @@ export class FormulaEngine {
       }
     }
     if (affected.size === 0) return { recalculated: [], results: new Map() };
-    if (this.recalculationMode === 'manual') {
+    if (this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
@@ -743,7 +743,7 @@ export class FormulaEngine {
         return this.recalculateAffected(affected);
       }
 
-      const affected = this.recalculationMode === 'manual' && this.pendingRecalculationRoots.size > 0
+      const affected = this.recalculationMode !== 'automatic' && this.pendingRecalculationRoots.size > 0
         ? this.collectAffectedFromRoots(this.pendingRecalculationRoots)
         : this.allFormulaAddresses();
       for (const key of this.volatileCells) {
@@ -1350,7 +1350,7 @@ function formulaErrorFrom(error: unknown): FormulaError {
 }
 
 function isAutomaticCalculationMode(mode: RecalculationMode): boolean {
-  return mode === 'automatic' || mode === 'automatic-except-data-tables';
+  return mode === 'automatic';
 }
 
 function formulaValueDelta(previous: FormulaValue | undefined, current: FormulaValue | undefined): number {

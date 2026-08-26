@@ -1,4 +1,4 @@
-export type WorkbookCalculationMode = 'automatic' | 'automatic-except-data-tables' | 'manual';
+export type WorkbookCalculationMode = 'automatic' | 'manual' | 'partial';
 
 export interface WorkbookCalculationSettings {
   readonly mode: WorkbookCalculationMode;
@@ -39,7 +39,7 @@ export function normalizeWorkbookCalculationSettings(
 export function isWorkbookCalculationSettings(value: unknown): value is WorkbookCalculationSettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const settings = value as Partial<WorkbookCalculationSettings>;
-  return (settings.mode === 'automatic' || settings.mode === 'automatic-except-data-tables' || settings.mode === 'manual')
+  return (settings.mode === 'automatic' || settings.mode === 'manual' || settings.mode === 'partial')
     && typeof settings.iterativeCalculation === 'boolean'
     && Number.isSafeInteger(settings.maximumIterations)
     && settings.maximumIterations >= 1

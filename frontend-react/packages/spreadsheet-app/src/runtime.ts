@@ -137,7 +137,7 @@ export function createSpreadsheetRuntime(options: {
     const address = { sheetId: sheet.id, row, column };
     return formula?.getCellResult(address)?.value;
   });
-  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext, rowVisibilityResolver });
+  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext, calculationSettings: model.calculationSettings, rowVisibilityResolver });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -272,6 +272,7 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'table.remove',
   'name.set',
   'name.remove',
+  'workbook.calculation.mode.set',
   'row.hidden',
   'row.unhidden',
   'rows.unhidden.all',
@@ -393,7 +394,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       const engine = runtime.formula;
       const workbook = runtime.model;
       loadFormulaInputs(engine, workbook);
-      if (engine.getRecalculationMode() === 'manual' && !forceCalculation) {
+      if (engine.getRecalculationMode() !== 'automatic' && !forceCalculation) {
         if (!runtime.disposed && epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
           runtime.handlers.onMutationsApplied?.();
         }
@@ -484,6 +485,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (runtime.disposed) return;
       runtime.rowVisibilityResolver.invalidate();
       runtime.formula.notifyVisibilityChanged();
+      if (mutation.id === 'workbook.calculation.mode.set') {
+        const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
+        if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
+        runtime.formula.setCalculationSettings({ mode });
+      }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
       // direct write into a dynamic-array child cannot leave partial model or
@@ -500,7 +506,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
-        if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+        if (runtime.formula.getRecalculationMode() !== 'automatic' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
           synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
         } else {
           void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
@@ -662,7 +668,7 @@ export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: E
 }
 
 function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts, rowVisibilityResolver?: WorkbookRowVisibilityResolver): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, rowVisibilityResolver });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, calculationSettings: workbook.calculationSettings, rowVisibilityResolver });
   loadFormulaInputs(engine, workbook);
   return engine;
 }

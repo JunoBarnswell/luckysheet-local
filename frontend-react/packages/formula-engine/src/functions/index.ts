@@ -32,6 +32,12 @@ export interface FunctionDescriptor {
   volatile: boolean;
 }
 
+export type FunctionLibraryCategory = 'logical' | 'text' | 'date-time' | 'lookup-reference' | 'math-trig' | 'more-functions';
+
+export interface FunctionLibraryEntry extends FunctionDescriptor {
+  category: FunctionLibraryCategory;
+}
+
 const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'AGGREGATE', 'SUMPRODUCT']);
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
@@ -45,6 +51,25 @@ export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new
     return [id, { id, cost, streaming: cost === 'range', volatile }];
   }),
 );
+
+const categoryForFunction = (name: string): FunctionLibraryCategory => {
+  if (Object.prototype.hasOwnProperty.call(logicalFunctions, name)) return 'logical';
+  if (Object.prototype.hasOwnProperty.call(textFunctions, name)) return 'text';
+  if (Object.prototype.hasOwnProperty.call(datetimeFunctions, name)) return 'date-time';
+  if (Object.prototype.hasOwnProperty.call(lookupFunctions, name)) return 'lookup-reference';
+  if (Object.prototype.hasOwnProperty.call(mathFunctions, name)) return 'math-trig';
+  return 'more-functions';
+};
+
+/** The only UI-facing function list; it is derived from the executable registry. */
+export const FUNCTION_LIBRARY: readonly FunctionLibraryEntry[] = [...FUNCTION_DESCRIPTORS.values()]
+  .filter((descriptor) => Object.prototype.hasOwnProperty.call(BUILTIN_FUNCTIONS, descriptor.id))
+  .map((descriptor) => ({ ...descriptor, category: categoryForFunction(descriptor.id) }))
+  .sort((left, right) => left.id.localeCompare(right.id));
+
+export function listFunctionLibrary(category?: FunctionLibraryCategory): readonly FunctionLibraryEntry[] {
+  return category ? FUNCTION_LIBRARY.filter((entry) => entry.category === category) : FUNCTION_LIBRARY;
+}
 
 export function getBuiltinFunction(name: string): BuiltinFunction | undefined {
   return BUILTIN_FUNCTIONS[name.trim().toUpperCase()];
