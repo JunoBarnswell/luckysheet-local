@@ -1034,6 +1034,48 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationAllowsBoundedExactMetadataFragmentation() throws Exception {
+        JsonNode current = applyFragmentedMetadataPermutation(256);
+
+        assertEquals(256, current.path("sheets").get(0).path("conditionalFormats").get(0).path("ranges").size());
+    }
+
+    @Test
+    void rowPermutationRejectsExcessiveExactMetadataFragmentation() throws Exception {
+        ServiceException error = assertThrows(ServiceException.class, () -> applyFragmentedMetadataPermutation(257));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("Row permutation metadata produces too many exact ranges", error.getMessage());
+    }
+
+    private JsonNode applyFragmentedMetadataPermutation(int segmentCount) throws Exception {
+        int rowCount = segmentCount * 2;
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","columnCount":1,"cells":{},"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[],"type":"highlight"}],"dataValidations":[],"sheetTables":[]}]}
+                """);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        sheet.put("rowCount", rowCount);
+        ArrayNode ranges = (ArrayNode) sheet.path("conditionalFormats").get(0).path("ranges");
+        ranges.add(mapper.readTree("{\"sheetId\":\"sheet-1\",\"startRow\":0,\"endRow\":" + (segmentCount - 1) + ",\"startColumn\":0,\"endColumn\":0}"));
+
+        ArrayNode sourceRows = mapper.createArrayNode();
+        int firstOutsideEvenRow = segmentCount + (segmentCount & 1);
+        for (int row = 0; row < rowCount; row++) {
+            if (row < segmentCount && (row & 1) == 1) sourceRows.add(firstOutsideEvenRow + row - 1);
+            else if (row >= firstOutsideEvenRow && (row & 1) == 0) sourceRows.add(row - firstOutsideEvenRow + 1);
+            else sourceRows.add(row);
+        }
+        ObjectNode params = mapper.createObjectNode();
+        params.put("sheetId", "sheet-1");
+        params.set("range", mapper.readTree("{\"sheetId\":\"sheet-1\",\"startRow\":0,\"endRow\":" + (rowCount - 1) + ",\"startColumn\":0,\"endColumn\":0}"));
+        params.set("sourceRows", sourceRows);
+        OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", params);
+
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        return registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+    }
+
+    @Test
     void tableDataBodySortUsesCanonicalFormulaOrderWithoutMovingHeaderOrTableOwner() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
