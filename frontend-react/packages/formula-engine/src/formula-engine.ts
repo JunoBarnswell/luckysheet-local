@@ -139,6 +139,8 @@ export class FormulaEngine {
     const engine = new FormulaEngine({
       defaultSheetId: snapshot.defaultSheetId,
       recalculationMode: 'manual',
+      dateSystem: snapshot.dateSystem,
+      canonicalReferenceDate: snapshot.canonicalReferenceDate,
     });
     engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
     engine.sheetTables = normalizeSheetTables(snapshot.sheetTables);
@@ -207,6 +209,10 @@ export class FormulaEngine {
 
   getCanonicalReferenceDate(): CanonicalExcelDateParts | undefined {
     return this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined;
+  }
+
+  getDateSystem(): ExcelDateSystem {
+    return this.dateSystem;
   }
 
   /** Monotonic input/calculation generation used by derived consumers. */
@@ -361,6 +367,8 @@ export class FormulaEngine {
     return {
       defaultSheetId: this.defaultSheetId,
       recalculationMode: this.recalculationMode,
+      dateSystem: this.dateSystem,
+      canonicalReferenceDate: this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined,
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),

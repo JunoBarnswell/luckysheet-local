@@ -1,6 +1,6 @@
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
+import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   WorkbookApiClient,
@@ -123,10 +123,14 @@ export function createSpreadsheetRuntime(options: {
   canonicalReferenceDate?: CanonicalExcelDateParts;
 } = {}): SpreadsheetRuntime {
   const model = new WorkbookModel(options.unitId ?? resolveUnitId(), 'Untitled workbook');
+  const dateSystem = options.dateSystem ?? '1900';
+  const canonicalReferenceDate = options.canonicalReferenceDate
+    ? structuredClone(options.canonicalReferenceDate)
+    : canonicalExcelDateFromUtcDate(new Date(), dateSystem);
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
-  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem: options.dateSystem, canonicalReferenceDate: options.canonicalReferenceDate });
+  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -145,8 +149,8 @@ export function createSpreadsheetRuntime(options: {
     api,
     formula,
     formulaAudit,
-    dateSystem: options.dateSystem ?? '1900',
-    canonicalReferenceDate: options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined,
+    dateSystem,
+    canonicalReferenceDate,
     model,
     commands,
     drawing,
@@ -611,6 +615,16 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
     runtime.collaboration?.setRevision(revision);
   }
   runtime.pivotResults = {};
+  void scheduleFormulaRecalculation(runtime);
+}
+
+export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: ExcelDateSystem, canonicalReferenceDate?: CanonicalExcelDateParts): void {
+  runtime.dateSystem = dateSystem;
+  runtime.canonicalReferenceDate = canonicalReferenceDate ? structuredClone(canonicalReferenceDate) : runtime.canonicalReferenceDate;
+  runtime.formula.disposeCalculationTasks();
+  runtime.formula = rebuildFormulaEngine(runtime.model, runtime.dateSystem, runtime.canonicalReferenceDate);
+  runtime.formulaAudit.setFormula(runtime.formula);
+  runtime.formulaAudit.refresh();
   void scheduleFormulaRecalculation(runtime);
 }
 

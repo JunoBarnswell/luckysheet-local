@@ -86,7 +86,7 @@ import {
   type FillDirection,
   type FillMode,
 } from '@react-sheets/sheet-features';
-import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
+import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
 import {
   buildCollaborationSnapshot,
@@ -106,6 +106,7 @@ import {
   resolveShareToken,
   resolveUnitId,
   scheduleFormulaRecalculation,
+  setRuntimeDateContext,
   startCollaborationSession,
   startPersistenceSession,
   type SpreadsheetRuntime,
@@ -244,6 +245,9 @@ export interface WorkbookSessionOptions {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   automationWorkerFactory?: AutomationWorkerFactory;
+  /** Workbook calendar and one fixed calculation-cycle clock basis. */
+  dateSystem?: ExcelDateSystem;
+  canonicalReferenceDate?: CanonicalExcelDateParts;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   xlsxExecution?: 'worker' | 'inline-test';
 }
@@ -526,7 +530,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       unitId,
@@ -534,6 +538,8 @@ export class WorkbookSession {
       workspacePersistence,
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
+      dateSystem,
+      canonicalReferenceDate,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
@@ -725,6 +731,7 @@ export class WorkbookSession {
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
+        if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
         this.projectionGeneration += 1;
         this.emit();
       }

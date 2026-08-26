@@ -3,6 +3,7 @@ import type { RecalculationMode } from './formula-engine';
 import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
 import type { FormulaDefinedName } from './defined-names';
+import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -11,6 +12,8 @@ import type { FormulaDefinedName } from './defined-names';
 export interface FormulaCalculationSnapshot {
   readonly defaultSheetId: string;
   readonly recalculationMode: RecalculationMode;
+  readonly dateSystem: ExcelDateSystem;
+  readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -45,6 +48,10 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   }
   if (value.recalculationMode !== 'automatic' && value.recalculationMode !== 'manual') {
     throw new Error('Calculation snapshot has an invalid recalculation mode');
+  }
+  if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation snapshot has an invalid date system');
+  if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
+    throw new Error('Calculation snapshot has an invalid canonical reference date');
   }
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
@@ -130,6 +137,17 @@ function isFormulaDefinedName(value: unknown): value is FormulaDefinedName {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCanonicalDateParts(value: unknown): value is CanonicalExcelDateParts {
+  if (!isRecord(value)) return false;
+  return Number.isInteger(value.year) && value.year >= 1 && value.year <= 9999
+    && Number.isInteger(value.month) && value.month >= 1 && value.month <= 12
+    && Number.isInteger(value.day) && value.day >= 1 && value.day <= 31
+    && Number.isInteger(value.hour) && value.hour >= 0 && value.hour <= 23
+    && Number.isInteger(value.minute) && value.minute >= 0 && value.minute <= 59
+    && Number.isInteger(value.second) && value.second >= 0 && value.second <= 59
+    && Number.isInteger(value.millisecond) && value.millisecond >= 0 && value.millisecond <= 999;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
