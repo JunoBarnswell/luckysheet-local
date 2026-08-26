@@ -9,6 +9,8 @@ import type {
   CommentThread,
   DrawingObject,
   DrawingPayload,
+  DrawingGroup,
+  WorksheetSnapSettings,
   ImageCrop,
   ImageEffects,
   SparklineGroup,
@@ -20,7 +22,7 @@ import type {
   DefinedNameModel,
   DefinedNameScope,
 } from './domain';
-import { isFormulaError, normalizeDefinedNameModel } from './domain';
+import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
 import {
@@ -256,6 +258,15 @@ export type {
   ShapeDrawingPayload,
   ShapeDrawingType,
   ShapeDrawingCategory,
+  ConnectorDrawingPayload,
+  DrawingConnectorType,
+  DrawingConnectionPoint,
+  DrawingArrowhead,
+  DrawingConnectionEndpoint,
+  DrawingConnectorRoutePoint,
+  DrawingConnectorRoute,
+  DrawingGroup,
+  WorksheetSnapSettings,
   TextBoxDrawingPayload,
   TextBoxTextFrame,
   TextBoxHorizontalAlignment,
@@ -333,7 +344,22 @@ export {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
   isFormControlDrawingPayload,
+  isDrawingConnectorPayload,
+  isDrawingGroup,
+  isWorksheetSnapSettings,
+  isDrawingConnectionPoint,
 } from './domain';
+export { DEFAULT_WORKSHEET_SNAP_SETTINGS } from './domain';
+export {
+  assertCanonicalConnector,
+  canonicalSnapSettings,
+  planConnectorRoute,
+  recomputeConnectorRoutes,
+  validateDrawingGraph,
+  type ConnectorRoutePlan,
+  type ConnectorTransformOverride,
+  type DrawingGraphSheet,
+} from './drawing-planner';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
 export {
   planBorderChange,
@@ -765,6 +791,8 @@ export class WorksheetModel {
   readonly sheetTables: SheetTableModel[] = [];
   readonly drawings: DrawingObject[] = [];
   readonly drawingPayloads = new Map<string, DrawingPayload>();
+  readonly drawingGroups: DrawingGroup[] = [];
+  snapSettings: WorksheetSnapSettings = structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
   /** Canonical persisted hyperlink metadata keyed by row:column. */
   readonly hyperlinks = new Map<string, CellHyperlink>();
   readonly notes = new Map<string, CellNote>();
@@ -817,6 +845,8 @@ export class WorksheetModel {
     copy.sheetTables.push(...structuredClone(this.sheetTables));
     copy.drawings.push(...structuredClone(this.drawings));
     for (const [key, payload] of this.drawingPayloads) copy.drawingPayloads.set(key, structuredClone(payload));
+    copy.drawingGroups.push(...structuredClone(this.drawingGroups));
+    copy.snapSettings = structuredClone(this.snapSettings);
     for (const [key, hyperlink] of this.hyperlinks) copy.hyperlinks.set(key, structuredClone(hyperlink));
     for (const [key, note] of this.notes) copy.notes.set(key, structuredClone(note));
     copy.commentThreads.push(...structuredClone(this.commentThreads));
@@ -884,6 +914,8 @@ export interface SheetSnapshot {
   /** Canonical floating-object collection. Legacy per-kind collections are not part of snapshots. */
   drawings: DrawingObject[];
   drawingPayloads: Record<string, DrawingPayload>;
+  drawingGroups?: DrawingGroup[];
+  snapSettings?: WorksheetSnapSettings;
   hyperlinks?: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
   notes?: Array<{ row: number; column: number; note: CellNote }>;
   commentThreads?: CommentThread[];
@@ -1290,6 +1322,8 @@ export class WorkbookModel {
         sparklineGroups: structuredClone(sheet.sparklineGroups),
         drawings: structuredClone(sheet.drawings),
         drawingPayloads: Object.fromEntries([...sheet.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
+        drawingGroups: structuredClone(sheet.drawingGroups),
+        snapSettings: structuredClone(sheet.snapSettings),
         hyperlinks: [...sheet.hyperlinks.entries()].map(([key, hyperlink]) => {
           const [row, column] = key.split(':').map(Number);
           return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
@@ -1359,6 +1393,8 @@ export class WorkbookModel {
       for (const [key, payload] of Object.entries(input.drawingPayloads)) {
         sheet.drawingPayloads.set(key, structuredClone(payload));
       }
+      if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
+      sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
       if (input.hyperlinks) {
         for (const entry of input.hyperlinks) sheet.hyperlinks.set(noteCellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       }
