@@ -57,6 +57,7 @@ public final class WorkbookSnapshotValidator {
         }
         java.util.Set<String> pivotIds = new java.util.HashSet<>();
         java.util.Map<String, JsonNode> pivotsById = new java.util.HashMap<>();
+        java.util.Map<String, String> pivotSourceKeys = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
             String sheetId = sheet.path("id").asText().trim();
@@ -148,7 +149,8 @@ public final class WorkbookSnapshotValidator {
                     JsonNode primary = pivotsById.get(pivotId);
                     JsonNode primaryField = findPivotField(primary, payload.path("fieldId").asText());
                     if (primaryField == null) throw ServiceException.validation("Drawing primary field is missing: " + drawingId);
-                    String primarySourceKey = canonicalJson(primary.get("source"));
+                    if (connections.isEmpty()) continue;
+                    String primarySourceKey = pivotSourceKeys.computeIfAbsent(pivotId, ignored -> canonicalJson(primary.get("source")));
                     java.util.Set<String> seenConnections = new java.util.HashSet<>();
                     for (JsonNode connection : connections) {
                         if (!connection.isObject()) throw ServiceException.validation("Drawing connection is invalid: " + drawingId);
@@ -160,7 +162,8 @@ public final class WorkbookSnapshotValidator {
                         }
                         JsonNode target = pivotsById.get(targetId);
                         JsonNode targetField = findPivotField(target, fieldId);
-                        if (!primarySourceKey.equals(sourceKey) || !primarySourceKey.equals(canonicalJson(target.get("source"))) || !compatiblePivotField(primaryField, targetField)) {
+                        String targetSourceKey = pivotSourceKeys.computeIfAbsent(targetId, ignored -> canonicalJson(target.get("source")));
+                        if (!primarySourceKey.equals(sourceKey) || !primarySourceKey.equals(targetSourceKey) || !compatiblePivotField(primaryField, targetField)) {
                             throw ServiceException.validation("Drawing connection source/cache/field is incompatible: " + drawingId);
                         }
                         if ("timeline".equals(kind) && (!"date".equals(primaryField.path("dataType").asText()) || !"date".equals(targetField.path("dataType").asText()))) {
