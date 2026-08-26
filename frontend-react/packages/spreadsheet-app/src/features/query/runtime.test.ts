@@ -9,8 +9,7 @@ import {
   buildQueryLoadPlan,
   createInlineJsonQuery,
   executeQueryDefinition,
-  InMemoryWorkbookTableQueryStore,
-  queryResultToRangeValues,
+  prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
 } from './runtime';
@@ -115,15 +114,16 @@ describe('query runtime', () => {
     assert.deepEqual(result.columns, ['Region', 'Units']);
   });
 
-  it('maps query results to sheet range values with headers', () => {
-    const values = queryResultToRangeValues({
-      columns: ['Name', 'Qty'],
-      rows: [['Alpha', 2]],
-      rowCount: 1,
+  it('prepares block-backed query load metadata without embedding result rows', async () => {
+    const model = new WorkbookModel('wb-query-blocks', 'Query');
+    const query = createInlineJsonQuery('q-blocks', 'Blocks', [{ Name: 'Alpha', Qty: 2 }]);
+    const prepared = await prepareQueryLoadPayload(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, {
+      columns: ['Name', 'Qty'], rows: [['Alpha', 2]], rowCount: 1,
     });
-    assert.equal(values.length, 2);
-    assert.equal(values[0]?.[0]?.value, 'Name');
-    assert.equal(values[1]?.[1]?.value, 2);
+    assert.equal(prepared.payload.kind, 'data-source-load');
+    assert.equal('result' in prepared.payload, false);
+    assert.equal(prepared.blocks.length, 1);
+    assert.equal(prepared.payload.source.blocks.length, 1);
   });
 
   it('builds query result snapshots', () => {
@@ -174,7 +174,7 @@ describe('query commands', () => {
     registry.assertComplete();
   });
 
-  it('loads query results into worksheet cells through query.load', () => {
+  it('loads query results into a block-backed worksheet region through query.load', async () => {
     const model = new WorkbookModel('wb-query', 'Query');
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
@@ -182,23 +182,20 @@ describe('query commands', () => {
     const sheetId = model.primarySheetId;
     const query = createInlineJsonQuery('q-load', 'Load', [{ Product: 'X', Units: 9 }]);
     const result = { columns: ['Product', 'Units'], rows: [['X', 9]], rowCount: 1 };
-
-    runtime.execute('query.load', {
-      query,
-      target: { kind: 'range', sheetId, range: { startRow: 0, startColumn: 0 } },
-      result,
-    });
+    const prepared = await prepareQueryLoadPayload(model, query, { kind: 'range', sheetId, range: { startRow: 0, startColumn: 0 } }, result);
+    runtime.execute('query.load', prepared.payload);
 
     const sheet = model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'Product');
-    assert.equal(sheet.cells.get(1, 1)?.value, 9);
+    assert.equal(sheet.cells.get(1, 1), undefined);
+    assert.equal(model.getSheet(sheetId).dataRegions[0]?.sourceId, 'query:q-load');
     assert.equal(Array.isArray(model.getQueryDefinition('q-load')?.connectorConfig.data), true);
     assert.deepEqual(model.getQueryDefinition('q-load')?.steps, []);
     const restored = WorkbookModel.fromSnapshot(model.snapshot());
     assert.deepEqual(restored.getQueryDefinition('q-load'), model.getQueryDefinition('q-load'));
   });
 
-  it('builds distinct load plans for sheet tables and pivots', () => {
+  it('builds distinct load plans for sheet tables and pivots', async () => {
     const model = new WorkbookModel('wb-query-targets', 'Query');
     const sheet = model.getSheet(model.primarySheetId);
     sheet.sheetTables.push({
@@ -211,17 +208,17 @@ describe('query commands', () => {
     sheet.pivots.push(pivot);
     const query = createInlineJsonQuery('q-targets', 'Targets', [{ A: 1, B: 2 }]);
     const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
-    const store = { get: () => undefined, set: () => undefined, delete: () => undefined };
-    assert.equal(buildQueryLoadPlan(model, { query, target: { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result }, store).mutationId, 'query.load.sheet-table');
-    assert.equal(buildQueryLoadPlan(model, { query, target: { kind: 'pivot-source', pivotId: 'pivot-1' }, result }, store).mutationId, 'query.load.pivot-source');
+    const sheetTable = await prepareQueryLoadPayload(model, query, { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result);
+    const pivotSource = await prepareQueryLoadPayload(model, query, { kind: 'pivot-source', pivotId: 'pivot-1' }, result);
+    assert.equal(buildQueryLoadPlan(model, sheetTable.payload).mutationId, 'query.load.sheet-table');
+    assert.equal(buildQueryLoadPlan(model, pivotSource.payload).mutationId, 'query.load.pivot-source');
   });
 
-  it('applies and reverts sheet-table, workbook-table, and pivot-source loads', () => {
+  it('applies and reverts sheet-table, workbook-table, and pivot-source loads', async () => {
     const model = new WorkbookModel('wb-query-replay', 'Query');
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
-    const tableStore = new InMemoryWorkbookTableQueryStore();
-    registerQueryCommands(runtime.registry, { tableStore });
+    registerQueryCommands(runtime.registry);
     const sheet = model.getSheet(model.primarySheetId);
     sheet.sheetTables.push({
       id: 'table-1', sheetId: sheet.id, name: 'Sales',
@@ -235,21 +232,24 @@ describe('query commands', () => {
     const query = createInlineJsonQuery('q-replay', 'Replay', [{ A: 1, B: 2 }]);
     const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
 
-    runtime.execute('query.load', { query, target: { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result });
-    assert.equal(sheet.cells.get(1, 1)?.value, 2);
+    const sheetLoad = await prepareQueryLoadPayload(model, query, { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result);
+    runtime.execute('query.load', sheetLoad.payload);
+    assert.equal(sheet.cells.get(1, 1), undefined);
     assert.equal(model.getQueryDefinition('q-replay')?.id, 'q-replay');
     assert.equal(runtime.undo(), true);
     assert.equal(sheet.cells.get(1, 1), undefined);
     assert.equal(model.getQueryDefinition('q-replay'), undefined);
 
-    runtime.execute('query.load', { query, target: { kind: 'workbook-table', tableId: 'workbook-table-1' }, result });
+    const workbookTableLoad = await prepareQueryLoadPayload(model, query, { kind: 'workbook-table', tableId: 'workbook-table-1' }, result);
+    runtime.execute('query.load', workbookTableLoad.payload);
     assert.equal(model.getTable('workbook-table-1').rowCount, 1);
-    assert.equal(tableStore.get('workbook-table-1')?.result.rowCount, 1);
+    assert.equal(model.getTable('workbook-table-1').sourceId, 'query:q-replay');
     assert.equal(runtime.undo(), true);
     assert.equal(model.getTable('workbook-table-1').rowCount, 0);
 
-    runtime.execute('query.load', { query, target: { kind: 'pivot-source', pivotId: 'pivot-1' }, result });
-    assert.equal(sheet.cells.get(6, 1)?.value, 2);
+    const pivotLoad = await prepareQueryLoadPayload(model, query, { kind: 'pivot-source', pivotId: 'pivot-1' }, result);
+    runtime.execute('query.load', pivotLoad.payload);
+    assert.equal(sheet.cells.get(6, 1), undefined);
     assert.equal(runtime.undo(), true);
     assert.equal(sheet.cells.get(6, 1), undefined);
   });

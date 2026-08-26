@@ -165,11 +165,10 @@ test('invalid stored byte length and uncovered rows return explicit errors witho
   assert.equal(invalid.state.availability, 'error');
   assert.match(invalid.state.error ?? '', /byteLength/i);
 
-  const uncovered = new DataSourceContentQuery(manifest(sourceId, 2, [block.ref]), store);
-  const missing = await uncovered.getRows(0, 2);
-  assert.equal(missing.value, undefined);
-  assert.equal(missing.state.availability, 'missing');
-  assert.match(missing.state.error ?? '', /no data block covers/i);
+  assert.throws(
+    () => new DataSourceContentQuery(manifest(sourceId, 2, [block.ref]), store),
+    /contiguous source coverage|complete source rowCount/i,
+  );
 });
 
 test('invalid ranges and fields are errors, while empty ranges are ready and empty', async () => {

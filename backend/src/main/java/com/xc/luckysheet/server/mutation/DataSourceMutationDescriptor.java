@@ -41,6 +41,12 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported data-source mutation: " + id);
     }
 
+    /** Shared validation boundary for metadata-only query-load mutations. */
+    static ObjectNode validateQuerySource(ObjectNode root, String mutationSheetId, ObjectNode source) {
+        String sourceSheetId = optionalIdentity(source, "sourceSheetId");
+        return new DataSourceMutationDescriptor("dataSource.add").validateSource(root, sourceSheetId == null ? mutationSheetId : sourceSheetId, source);
+    }
+
     @Override
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
@@ -217,15 +223,22 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             if (!SHA256.matcher(SnapshotMutationSupport.text(block, "checksum")).matches()) throw ServiceException.validation("Data block checksum is invalid: " + blockId);
             if (nonNegative(block, "byteLength") < 1) throw ServiceException.validation("Data block byteLength must be positive: " + blockId);
             nonNegative(block, "revision");
+            if (block.path("revision").longValue() != source.path("revision").longValue()) throw ServiceException.validation("Data block revision does not match source revision: " + blockId);
             if (SnapshotMutationSupport.text(block, "storageKey").length() > 500) throw ServiceException.validation("Data block storageKey is too long");
             ranges.add(new BlockRange(startRow, startRow + blockRows, blockId));
         }
         ranges.sort(Comparator.comparingLong(BlockRange::start));
+        long coveredUntil = 0;
         for (int index = 1; index < ranges.size(); index++) {
             if (ranges.get(index - 1).end() > ranges.get(index).start()) {
                 throw ServiceException.validation("Data blocks must not overlap");
             }
         }
+        for (BlockRange range : ranges) {
+            if (range.start() != coveredUntil) throw ServiceException.validation("Data blocks must provide contiguous source coverage");
+            coveredUntil = range.end();
+        }
+        if (coveredUntil != rowCount) throw ServiceException.validation("Data blocks must cover the complete source rowCount");
     }
 
     private ObjectNode validateRegion(ObjectNode root, String sheetId, ObjectNode params) {

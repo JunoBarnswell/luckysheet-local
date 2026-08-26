@@ -23,6 +23,8 @@ export interface WorkbookTableBlock {
 export interface WorkbookTableModel {
   id: string;
   name: string;
+  /** Block-backed query table source. Rows stay outside WorkbookSnapshot. */
+  sourceId?: string;
   sourceSheetId?: SheetId;
   /** The canonical source range when rows remain sheet-backed in local mode. */
   sourceRange?: RangeRef;

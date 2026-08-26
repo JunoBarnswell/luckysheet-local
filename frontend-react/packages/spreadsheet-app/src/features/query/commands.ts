@@ -1,23 +1,19 @@
-import type { CellData } from '@react-sheets/core-model';
+import type { DataSourceManifest, RangeRef, TableScalar } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
   buildQueryLoadPlan,
-  InMemoryWorkbookTableQueryStore,
-  type QueryCellLoadPayload,
+  type QueryLoadBinding,
   type QueryLoadCommandPayload,
-  type QueryWorkbookTableLoadPayload,
-  type WorkbookTableQueryStore,
+  type QueryLoadMutationPayload,
 } from './runtime';
-import { serializeQueryDefinition, type QueryDefinitionPersistence, type QueryResult } from './index';
+import { normalizeDataSourceManifest } from '@react-sheets/core-model';
+import { serializeQueryDefinition, type QueryDefinitionPersistence } from './index';
 import { type LoadTarget, type QueryDefinition } from './query-steps';
 
 export interface QueryLoadParams extends QueryLoadCommandPayload {}
 
-export interface QueryRefreshParams {
+export interface QueryRefreshParams extends QueryLoadCommandPayload {
   queryId: string;
-  query: QueryDefinition;
-  target: LoadTarget;
-  result: QueryResult;
 }
 
 export interface QueryDefinitionReplaceParams {
@@ -29,87 +25,166 @@ interface QueryDefinitionReplaceMutationParams {
   definition: QueryDefinitionPersistence | null;
 }
 
-interface QueryCellRestorePayload extends QueryCellLoadPayload {
-  previousCells: Array<{ row: number; column: number; value?: CellData }>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-interface QueryWorkbookTableRestorePayload extends QueryWorkbookTableLoadPayload {
-  previousTable?: QueryWorkbookTableLoadPayload['table'];
-  previousRecord?: ReturnType<WorkbookTableQueryStore['get']>;
+function isQueryDefinition(value: unknown): value is QueryDefinitionPersistence {
+  return value === null || (isRecord(value) && value.schema === 'QueryDefinition');
 }
 
-type QueryMutationPayload = QueryCellLoadPayload | QueryCellRestorePayload | QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload;
-
-function isQueryDefinitionReplacePayload(value: unknown): value is QueryDefinitionReplaceMutationParams {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Record<string, unknown>;
-  return typeof payload.queryId === 'string' && payload.queryId.trim().length > 0
-    && (payload.definition === null || (typeof payload.definition === 'object' && (payload.definition as { schema?: unknown }).schema === 'QueryDefinition'));
+function isQueryLoadPayload(value: unknown): value is QueryLoadMutationPayload {
+  if (!isRecord(value) || value.kind !== 'data-source-load') return false;
+  if (typeof value.queryId !== 'string' || !value.queryId.trim() || typeof value.sourceId !== 'string' || !value.sourceId.trim()) return false;
+  if (!isQueryDefinition(value.queryDefinition) || !isRecord(value.target) || !['range', 'sheet-table', 'pivot-source', 'workbook-table'].includes(String(value.target.kind))) return false;
+  if (value.source !== null && !isRecord(value.source)) return false;
+  if (value.binding !== null && !isRecord(value.binding)) return false;
+  if (value.source !== null && value.binding !== null && value.sourceId !== value.source.id) return false;
+  return true;
 }
 
-function isQueryLoadPayload(value: unknown): value is QueryMutationPayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Record<string, unknown>;
-  if (typeof payload.queryId !== 'string' || !payload.queryId.trim()) return false;
-  if (!(payload.queryDefinition === null || (typeof payload.queryDefinition === 'object' && (payload.queryDefinition as { schema?: unknown }).schema === 'QueryDefinition'))) return false;
-  if (payload.kind === 'workbook-table') return typeof payload.tableId === 'string' && Boolean(payload.table) && Boolean(payload.result);
-  if (payload.kind !== 'cells') return false;
-  return Boolean(payload.clearRange) && Array.isArray(payload.values);
+function sameRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow === right.startRow
+    && left.endRow === right.endRow
+    && left.startColumn === right.startColumn
+    && left.endColumn === right.endColumn;
 }
 
-function queryMutationRanges(params: QueryMutationPayload): readonly import('@react-sheets/core-model').RangeRef[] {
-  return params.kind === 'cells' ? [params.clearRange] : [];
+function queryMutationRanges(params: QueryLoadMutationPayload): readonly RangeRef[] {
+  return params.binding?.kind === 'sheet-region' ? [params.binding.region.range] : [];
 }
 
-export interface QueryCommandOptions {
-  tableStore?: WorkbookTableQueryStore;
-}
-
-function applyCells(context: CommandContext, payload: QueryCellLoadPayload): void {
-  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
-  else context.workbook.setQueryDefinition(payload.queryDefinition);
-  const sheet = context.workbook.getSheet(payload.clearRange.sheetId);
-  for (let row = payload.clearRange.startRow; row <= payload.clearRange.endRow; row += 1) {
-    for (let column = payload.clearRange.startColumn; column <= payload.clearRange.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
-  for (let rowOffset = 0; rowOffset < payload.values.length; rowOffset += 1) {
-    const row = payload.values[rowOffset] ?? [];
-    for (let columnOffset = 0; columnOffset < row.length; columnOffset += 1) {
-      const value = row[columnOffset];
-      if (value) sheet.cells.set(payload.clearRange.startRow + rowOffset, payload.clearRange.startColumn + columnOffset, structuredClone(value));
+function clearRegionCells(context: CommandContext, range: RangeRef): void {
+  const sheet = context.workbook.getSheet(range.sheetId);
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const cell = sheet.cells.get(row, column) as (Record<string, unknown> & { __cellPatch?: unknown }) | undefined;
+      // CellPatch is the sole local-edit overlay; it must survive a source refresh.
+      if (cell?.__cellPatch) continue;
+      sheet.cells.delete(row, column);
     }
   }
 }
 
-function restoreCells(context: CommandContext, payload: QueryCellRestorePayload): void {
-  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
-  else context.workbook.setQueryDefinition(payload.queryDefinition);
-  const sheet = context.workbook.getSheet(payload.clearRange.sheetId);
-  for (let row = payload.clearRange.startRow; row <= payload.clearRange.endRow; row += 1) {
-    for (let column = payload.clearRange.startColumn; column <= payload.clearRange.endColumn; column += 1) sheet.cells.delete(row, column);
+function removeCurrentBinding(context: CommandContext, sourceId: string): void {
+  for (const sheet of context.workbook.getSheets()) {
+    for (let index = sheet.dataRegions.length - 1; index >= 0; index -= 1) {
+      const region = sheet.dataRegions[index]!;
+      if (region.sourceId !== sourceId) continue;
+      clearRegionCells(context, region.range);
+      sheet.dataRegions.splice(index, 1);
+    }
   }
-  for (const previous of payload.previousCells) {
-    if (previous.value) sheet.cells.set(previous.row, previous.column, structuredClone(previous.value));
+  for (const table of context.workbook.dataModel.tables.values()) {
+    if (table.sourceId === sourceId) delete table.sourceId;
+  }
+  context.workbook.dataModel.sources.delete(sourceId);
+}
+
+function applySource(context: CommandContext, source: DataSourceManifest | null): void {
+  if (!source) return;
+  if (context.workbook.dataModel.sources.has(source.id)) context.workbook.updateDataSource(source);
+  else context.workbook.addDataSource(source);
+}
+
+function writeHeader(context: CommandContext, header: readonly TableScalar[], region: QueryLoadBinding & { kind: 'sheet-region' }): void {
+  const sheet = context.workbook.getSheet(region.region.range.sheetId);
+  for (let offset = 0; offset < header.length; offset += 1) {
+    const value = header[offset];
+    if (value !== undefined && value !== null) sheet.cells.set(region.region.headerRow, region.region.range.startColumn + offset, { value });
   }
 }
 
-function applyWorkbookTable(context: CommandContext, payload: QueryWorkbookTableLoadPayload, store: WorkbookTableQueryStore): void {
-  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
-  else context.workbook.setQueryDefinition(payload.queryDefinition);
-  context.workbook.dataModel.tables.set(payload.table.id, structuredClone(payload.table));
-  store.set(payload.tableId, { result: structuredClone(payload.result), sourceRevision: payload.sourceRevision });
+function applyBinding(context: CommandContext, binding: QueryLoadBinding | null, extent?: { sheetId: string; rowCount: number; columnCount: number }): void {
+  if (extent) {
+    const sheet = context.workbook.getSheet(extent.sheetId);
+    if (extent.rowCount < 1 || extent.columnCount < 1) throw new Error('Query load extent must be positive');
+    sheet.rowCount = extent.rowCount;
+    sheet.columnCount = extent.columnCount;
+  }
+  if (!binding) return;
+  if (binding.kind === 'workbook-table') {
+    if (!context.workbook.dataModel.tables.has(binding.tableId)) throw new Error(`Unknown workbook table: ${binding.tableId}`);
+    context.workbook.dataModel.tables.set(binding.tableId, structuredClone(binding.table));
+    return;
+  }
+  const sheet = context.workbook.getSheet(binding.region.range.sheetId);
+  if (extent) {
+    if (extent.sheetId !== sheet.id || extent.rowCount < binding.region.range.endRow + 1 || extent.columnCount < binding.region.range.endColumn + 1) throw new Error(`Query load extent does not contain region ${binding.region.id}`);
+  } else {
+    sheet.ensureRangeExtent(binding.region.range.startRow, binding.region.range.endRow, binding.region.range.startColumn, binding.region.range.endColumn);
+  }
+  clearRegionCells(context, binding.region.range);
+  sheet.dataRegions.push(structuredClone(binding.region));
+  writeHeader(context, binding.header, binding);
 }
 
-function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTableRestorePayload, store: WorkbookTableQueryStore): void {
+function applyQueryLoad(context: CommandContext, payload: QueryLoadMutationPayload): void {
+  if (!isQueryLoadPayload(payload)) throw new Error('Invalid block-backed query load mutation payload');
+  const normalizedSource = payload.source ? normalizeDataSourceManifest(structuredClone(payload.source)) : null;
+  if (payload.binding && !normalizedSource) throw new Error(`Query load binding has no source manifest: ${payload.sourceId}`);
+  if (normalizedSource && payload.binding?.kind === 'sheet-region') {
+    const regionWidth = payload.binding.region.range.endColumn - payload.binding.region.range.startColumn + 1;
+    if (payload.binding.region.sourceId !== payload.sourceId
+      || payload.binding.header.length !== normalizedSource.fields.length
+      || regionWidth !== normalizedSource.fields.length
+      || payload.binding.region.revision !== normalizedSource.revision) {
+      throw new Error(`Query load source and sheet-region binding revision/shape do not match: ${payload.sourceId}`);
+    }
+    if (normalizedSource.sourceSheetId !== undefined && normalizedSource.sourceSheetId !== payload.binding.region.range.sheetId) {
+      throw new Error(`Query load source sheet does not match sheet-region binding: ${payload.sourceId}`);
+    }
+    if (normalizedSource.sourceRange !== undefined && !sameRange(normalizedSource.sourceRange, payload.binding.region.range)) {
+      throw new Error(`Query load source range does not match sheet-region binding: ${payload.sourceId}`);
+    }
+  }
+  if (payload.binding?.kind === 'workbook-table') {
+    const currentTable = context.workbook.dataModel.tables.get(payload.binding.tableId);
+    if (!currentTable || payload.binding.table.id !== payload.binding.tableId) throw new Error(`Unknown workbook table: ${payload.binding.tableId}`);
+    if (normalizedSource && payload.binding.table.sourceId !== payload.sourceId) throw new Error(`Query load table source does not match sourceId: ${payload.sourceId}`);
+  }
+  if (payload.binding?.kind === 'sheet-region') {
+    const range = payload.binding.region.range;
+    if (![range.startRow, range.endRow, range.startColumn, range.endColumn, payload.binding.region.headerRow].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || range.endRow < range.startRow || range.endColumn < range.startColumn
+      || payload.binding.region.headerRow !== range.startRow) {
+      throw new Error(`Query load sheet-region range is invalid: ${payload.binding.region.id}`);
+    }
+    context.workbook.getSheet(range.sheetId);
+  }
+  if (payload.extent) {
+    const extentSheet = context.workbook.getSheet(payload.extent.sheetId);
+    if (!Number.isSafeInteger(payload.extent.rowCount) || payload.extent.rowCount < 1
+      || !Number.isSafeInteger(payload.extent.columnCount) || payload.extent.columnCount < 1) {
+      throw new Error(`Query load extent is invalid: ${payload.extent.sheetId}`);
+    }
+    if (payload.binding?.kind === 'sheet-region') {
+      const range = payload.binding.region.range;
+      if (extentSheet.id !== range.sheetId || payload.extent.rowCount < range.endRow + 1 || payload.extent.columnCount < range.endColumn + 1) {
+        throw new Error(`Query load extent does not contain region ${payload.binding.region.id}`);
+      }
+    }
+  }
   if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
   else context.workbook.setQueryDefinition(payload.queryDefinition);
-  if (payload.previousTable) context.workbook.dataModel.tables.set(payload.tableId, structuredClone(payload.previousTable));
-  else context.workbook.dataModel.tables.delete(payload.tableId);
-  if (payload.previousRecord) store.set(payload.tableId, structuredClone(payload.previousRecord));
-  else store.delete(payload.tableId);
+  removeCurrentBinding(context, payload.sourceId);
+  applySource(context, normalizedSource);
+  applyBinding(context, payload.binding, payload.extent);
+  if (payload.pivotSource && payload.target.pivotId) {
+    const owner = context.workbook.getSheets().find((sheet) => sheet.pivots.some((pivot) => pivot.id === payload.target.pivotId));
+    const pivot = owner?.pivots.find((entry) => entry.id === payload.target.pivotId);
+    if (!pivot) throw new Error(`Unknown pivot: ${payload.target.pivotId}`);
+    pivot.source = structuredClone(payload.pivotSource);
+  }
 }
 
-function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQueryStore): void {
+function isQueryDefinitionReplacePayload(value: unknown): value is QueryDefinitionReplaceMutationParams {
+  if (!isRecord(value)) return false;
+  return typeof value.queryId === 'string' && value.queryId.trim().length > 0 && isQueryDefinition(value.definition);
+}
+
+function registerQueryMutations(registry: CommandRegistry): void {
   registry.registerMutation<QueryDefinitionReplaceMutationParams>({
     id: 'query.definition.replace',
     handler: (item, context) => {
@@ -124,25 +199,42 @@ function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQ
       inverseIds: ['query.definition.replace'],
     },
   });
-  const applyCellQueryMutation = (item: import('@react-sheets/command-runtime').MutationInfo<QueryCellLoadPayload | QueryCellRestorePayload>, context: CommandContext): void => {
-    const payload = item.params;
-    if (!isQueryLoadPayload(payload)) throw new Error('Invalid query cell mutation payload');
-    if ('previousCells' in payload) restoreCells(context, payload);
-    else applyCells(context, payload);
-  };
-  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.range', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadRangeMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.range'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.sheet-table', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadSheetTableMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.sheet-table'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.pivot-source', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadPivotSourceMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.pivot-source'], minCount: 1, maxCount: 1 } } });
-  registry.registerMutation<QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload>({
-    id: 'query.load.workbook-table',
-    handler: (item, context) => {
-      const payload = item.params as QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload;
-      if (!isQueryLoadPayload(payload)) throw new Error('Invalid query.load.workbook-table mutation payload');
-      if ('previousTable' in payload || 'previousRecord' in payload) restoreWorkbookTable(context, payload, store);
-      else applyWorkbookTable(context, payload, store);
-    },
+  const queryLoadHandler = (item: { params: QueryLoadMutationPayload }, context: CommandContext): void => applyQueryLoad(context, item.params);
+  registry.registerMutation<QueryLoadMutationPayload>({
+    id: 'query.load.range',
+    handler: queryLoadHandler,
     metadata: {
-      schema: { name: 'query.load.workbook-tableParams', validate: isQueryLoadPayload },
+      schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
+      permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
+      inversePolicy: { allowedMutationIds: ['query.load.range'], minCount: 1, maxCount: 1 },
+    },
+  });
+  registry.registerMutation<QueryLoadMutationPayload>({
+    id: 'query.load.sheet-table',
+    handler: queryLoadHandler,
+    metadata: {
+      schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
+      permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
+      inversePolicy: { allowedMutationIds: ['query.load.sheet-table'], minCount: 1, maxCount: 1 },
+    },
+  });
+  registry.registerMutation<QueryLoadMutationPayload>({
+    id: 'query.load.pivot-source',
+    handler: queryLoadHandler,
+    metadata: {
+      schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
+      permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
+      inversePolicy: { allowedMutationIds: ['query.load.pivot-source'], minCount: 1, maxCount: 1 },
+    },
+  });
+  registry.registerMutation<QueryLoadMutationPayload>({
+    id: 'query.load.workbook-table',
+    handler: queryLoadHandler,
+    metadata: {
+      schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
       inversePolicy: { allowedMutationIds: ['query.load.workbook-table'], minCount: 1, maxCount: 1 },
@@ -150,74 +242,64 @@ function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQ
   });
 }
 
-function applyQueryLoadRange(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
-  context.applyMutation({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.range')({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
-}
-
-function applyQueryLoadSheetTable(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
-  context.applyMutation({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.sheet-table')({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
-}
-
-function applyQueryLoadPivotSource(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
-  context.applyMutation({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.pivot-source')({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
-}
-
-function applyQueryLoadWorkbookTable(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
-  context.applyMutation({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.workbook-table')({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
-}
-
-function executeLoad(
-  registry: CommandRegistry,
-  params: QueryLoadCommandPayload,
-  context: CommandContext,
-  store: WorkbookTableQueryStore,
-): CommandResult {
-  const plan = buildQueryLoadPlan(context.workbook, params, store);
-  const sheetId = params.target.sheetId ?? context.workbook.primarySheetId;
+function applyQueryLoadMutation(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext): void {
+  const sheetId = plan.payload.binding.kind === 'sheet-region'
+    ? plan.payload.binding.region.range.sheetId
+    : plan.payload.target.sheetId ?? context.workbook.primarySheetId;
   switch (plan.mutationId) {
-    case 'query.load.range': applyQueryLoadRange(registry, plan, context, sheetId); break;
-    case 'query.load.sheet-table': applyQueryLoadSheetTable(registry, plan, context, sheetId); break;
-    case 'query.load.pivot-source': applyQueryLoadPivotSource(registry, plan, context, sheetId); break;
-    case 'query.load.workbook-table': applyQueryLoadWorkbookTable(registry, plan, context, sheetId); break;
-    default: throw new Error(`Unsupported query load mutation: ${String(plan.mutationId)}`);
+    case 'query.load.range':
+      context.applyMutation({
+        id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
+        inverse: [{ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
+        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.range')({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
+      });
+      return;
+    case 'query.load.sheet-table':
+      context.applyMutation({
+        id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
+        inverse: [{ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
+        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.sheet-table')({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
+      });
+      return;
+    case 'query.load.pivot-source':
+      context.applyMutation({
+        id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
+        inverse: [{ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
+        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.pivot-source')({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
+      });
+      return;
+    case 'query.load.workbook-table':
+      context.applyMutation({
+        id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
+        inverse: [{ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
+        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.workbook-table')({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
+      });
+      return;
   }
+}
+
+function executeLoad(registry: CommandRegistry, params: QueryLoadCommandPayload, context: CommandContext): CommandResult {
+  const plan = buildQueryLoadPlan(context.workbook, params);
+  applyQueryLoadMutation(registry, plan, context);
   return { operationId: context.operationId, mutationCount: 1, affectedRanges: plan.affectedRanges };
 }
 
-export function registerQueryCommands(registry: CommandRegistry, options: QueryCommandOptions = {}): void {
-  const store = options.tableStore ?? new InMemoryWorkbookTableQueryStore();
-  registerQueryMutations(registry, store);
-  registry.registerCommand<QueryLoadParams>({
-    id: 'query.load',
-    execute: (params, context) => executeLoad(registry, params, context, store),
-  });
-
+export function registerQueryCommands(registry: CommandRegistry): void {
+  registerQueryMutations(registry);
+  registry.registerCommand<QueryLoadParams>({ id: 'query.load', execute: (params, context) => executeLoad(registry, params, context) });
   registry.registerCommand<QueryDefinitionReplaceParams>({
     id: 'query.definition.replace',
     execute: (params, context) => {
       const next = serializeQueryDefinition(params.definition);
       const previous = context.workbook.getQueryDefinition(next.id) ?? null;
       context.applyMutation({
-        id: 'query.definition.replace',
-        unitId: context.workbook.unitId,
-        sheetId: context.workbook.primarySheetId,
-        params: { queryId: next.id, definition: next },
-        affectedRanges: [],
-        inverse: [{
-          id: 'query.definition.replace',
-          unitId: context.workbook.unitId,
-          sheetId: context.workbook.primarySheetId,
-          params: { queryId: next.id, definition: previous },
-          affectedRanges: [],
-        }],
+        id: 'query.definition.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId,
+        params: { queryId: next.id, definition: next }, affectedRanges: [],
+        inverse: [{ id: 'query.definition.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { queryId: next.id, definition: previous }, affectedRanges: [] }],
         apply: () => context.workbook.setQueryDefinition(next),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
-
-  registry.registerCommand<QueryRefreshParams>({
-    id: 'query.refresh',
-    execute: (params, context) => executeLoad(registry, { query: params.query, target: params.target, result: params.result }, context, store),
-  });
+  registry.registerCommand<QueryRefreshParams>({ id: 'query.refresh', execute: (params, context) => executeLoad(registry, params, context) });
 }

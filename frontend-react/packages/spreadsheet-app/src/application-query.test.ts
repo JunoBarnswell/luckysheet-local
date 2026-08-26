@@ -19,7 +19,8 @@ describe('WorkbookSession query integration', () => {
 
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Region');
-    assert.equal(sheet.cells.get(1, 1)?.value, 12);
+    assert.equal(sheet.cells.get(1, 1), undefined);
+    assert.equal(sheet.dataRegions[0]?.sourceId, 'query:demo-query');
   });
 
   it('refreshes a loaded query through query.refresh', async () => {

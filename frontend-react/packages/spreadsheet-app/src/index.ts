@@ -131,7 +131,7 @@ export {
   executeQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
-  queryResultToRangeValues,
+  prepareQueryLoadPayload,
   type QueryResultSnapshot,
   type QuerySessionEntry,
   type QueryLoadCommandPayload,

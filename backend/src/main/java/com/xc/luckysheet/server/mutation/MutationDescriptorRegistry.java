@@ -62,7 +62,6 @@ public class MutationDescriptorRegistry {
             Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("query.load.workbook-table", "Workbook-table query result blocks have no persisted, frontend-readable canonical data plane."),
             Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
     );

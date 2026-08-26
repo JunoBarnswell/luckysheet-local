@@ -183,6 +183,7 @@ import {
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
   executeQueryDefinition,
+  prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
   type QueryResultSnapshot,
@@ -4383,6 +4384,17 @@ export class WorkbookSession {
 
   readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
     const table = this.runtime.model.dataModel.tables.get(tableId);
+    if (table?.sourceId) {
+      const query = this.runtime.dataContent.get(table.sourceId);
+      if (!query) return Promise.reject(new Error(`Data source ${table.sourceId} is unavailable`));
+      const start = Math.max(0, offset);
+      const count = Math.max(1, limit);
+      return query.getRows(start, Math.min(count, Math.max(0, table.rowCount - start))).then((result) => {
+        if (!result.value || result.state.availability !== 'ready') throw new Error(result.state.error ?? `Data source ${table.sourceId} could not be loaded`);
+        const end = start + result.value.length;
+        return { table: structuredClone(table), rows: result.value.map((row) => [...row]), ...(end < table.rowCount ? { nextOffset: end } : {}) };
+      });
+    }
     if (!table || !table.sourceSheetId || !table.sourceRange) return Promise.reject(new Error('Data table not found'));
     const sheet = this.runtime.model.getSheet(table.sourceSheetId);
     const start = Math.max(0, offset);
@@ -4658,7 +4670,15 @@ export class WorkbookSession {
       );
       const result = await this.executeQuery(query);
       const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
-      this.runCommand('query.load', { query: persistedQuery, target: resolvedTarget, result });
+      const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
+      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      try {
+        this.runCommand('query.load', prepared.payload);
+      } catch (error) {
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        throw error;
+      }
+      persistedQuery.sourceRevision = prepared.payload.source.revision;
       const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
       this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
       this.lastQueryResult = snapshot;
@@ -4691,12 +4711,15 @@ export class WorkbookSession {
       );
       const result = await this.executeQuery(session.definition);
       session.definition.lastTarget = structuredClone(target);
-      this.runCommand('query.refresh', {
-        queryId,
-        query: session.definition,
-        target,
-        result,
-      });
+      const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
+      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      try {
+        this.runCommand('query.refresh', prepared.payload);
+      } catch (error) {
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        throw error;
+      }
+      session.definition.sourceRevision = prepared.payload.source.revision;
       const snapshot = buildQueryResultSnapshot(session.definition, result, target);
       session.lastResult = snapshot;
       this.lastQueryResult = snapshot;

@@ -92,6 +92,8 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         if (revision == null || !revision.isIntegralNumber() || revision.longValue() < 0) throw ServiceException.validation("Workbook table revision is invalid");
         if (!table.path("fields").isArray() || !table.path("blocks").isArray()) throw ServiceException.validation("Workbook table fields and blocks are required");
         String sourceSheetId = SnapshotMutationSupport.optionalText(table, "sourceSheetId");
+        String sourceId = SnapshotMutationSupport.optionalText(table, "sourceId");
+        if (sourceId != null) SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"), sourceId, "Data source");
         JsonNode sourceRange = table.get("sourceRange");
         if (sourceRange != null && !sourceRange.isNull()) {
             RangeRef range = SnapshotMutationSupport.range(root, sourceRange);

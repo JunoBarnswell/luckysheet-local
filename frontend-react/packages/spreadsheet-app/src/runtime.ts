@@ -260,6 +260,10 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'style.preset.set',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',
+  'query.load.range',
+  'query.load.sheet-table',
+  'query.load.pivot-source',
+  'query.load.workbook-table',
   'cells.inserted',
   'cells.deleted',
   'cells.inserted.restore',
@@ -535,7 +539,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       runtime.pendingPivotMutations.push(structuredClone(mutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
-        || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore') {
+        || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'
+        || mutation.id === 'query.load.range' || mutation.id === 'query.load.sheet-table'
+        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table') {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
