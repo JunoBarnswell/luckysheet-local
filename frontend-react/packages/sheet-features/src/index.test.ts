@@ -309,7 +309,7 @@ test('sheet commands: range.clear, style.set, and merges', () => {
   assert.equal(sheet.cells.get(0, 1), undefined);
 });
 
-test('sheet commands: sort and autofill', () => {
+test('sheet commands: sort and canonical fill', () => {
   const workbook = new WorkbookModel('unit-sort', 'SortAutofill');
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
@@ -339,12 +339,14 @@ test('sheet commands: sort and autofill', () => {
   assert.equal(sheet.cells.get(2, 0)?.value, 'Bob');     // 85
   assert.equal(sheet.cells.get(3, 0)?.value, 'Alice');   // 95
 
-  // Autofill formula
+  // Canonical fill formula copy
   sheet.cells.set(5, 0, { value: null, formula: '=A1+B1' });
-  runtime.execute('sheet.autofill', {
+  runtime.execute('sheet.range.fill', {
     sheetId: 'sheet-1',
     sourceRange: { sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 },
     targetRange: { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 0 },
+    direction: 'down',
+    mode: 'copy',
   });
   assert.equal(sheet.cells.get(6, 0)?.formula, '=A2+B2');
   assert.equal(sheet.cells.get(7, 0)?.formula, '=A3+B3');

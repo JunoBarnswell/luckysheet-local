@@ -18,6 +18,7 @@ import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type Cl
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 import { parseReplacementValue, replacementCell, replaceFindText, type ReplacementValue } from './find-replace';
+import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -35,8 +36,19 @@ export interface HomeFillParams {
   sheetId: string;
   sourceRange: RangeRef;
   targetRange: RangeRef;
-  direction?: 'down' | 'up' | 'right' | 'left';
-  mode?: 'copy' | 'series';
+  direction: FillDirection;
+  mode: FillMode;
+}
+
+interface FillMutationWrite {
+  row: number;
+  column: number;
+  before?: CellData;
+  after?: CellData;
+}
+
+interface FillMutationParams extends HomeFillParams {
+  writes: FillMutationWrite[];
 }
 
 export interface AutoSumParams {
@@ -325,8 +337,8 @@ function isValidAutoSumParams(value: unknown): value is AutoSumParams {
 
 function isValidFillParams(value: unknown): value is HomeFillParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange) || !isRange(value.targetRange)) return false;
-  return (value.direction === undefined || ['down', 'up', 'right', 'left'].includes(String(value.direction)))
-    && (value.mode === undefined || value.mode === 'copy' || value.mode === 'series');
+  return ['down', 'up', 'right', 'left'].includes(String(value.direction))
+    && (value.mode === 'copy' || value.mode === 'series');
 }
 
 function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
@@ -492,6 +504,82 @@ function replaceCandidate(
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
     && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+}
+
+function isFillMutationWrite(value: unknown): value is FillMutationWrite {
+  if (!isRecord(value) || !isFiniteInt(value.row) || !isFiniteInt(value.column)) return false;
+  const validCell = (cell: unknown): cell is CellData | undefined => cell === undefined
+    || (isRecord(cell) && 'value' in cell);
+  return validCell(value.before) && validCell(value.after);
+}
+
+function isValidFillMutationParams(value: unknown): value is FillMutationParams {
+  if (!isRecord(value) || !isValidFillParams(value)) return false;
+  const candidate = value as HomeFillParams & { writes?: unknown };
+  return Array.isArray(candidate.writes)
+    && candidate.writes.length > 0
+    && candidate.writes.every(isFillMutationWrite);
+}
+
+function fillAffectedRanges(params: FillMutationParams): RangeRef[] {
+  return [structuredClone(params.targetRange)];
+}
+
+function cellsEqual(left: CellData | undefined, right: CellData | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function assertFillProtection(sheet: WorksheetModel, range: RangeRef): void {
+  const decision = protectionResolver.resolve({
+    sheetId: sheet.id,
+    rules: sheet.protectionRules,
+    ranges: [range],
+    action: 'edit-cell',
+    rowCount: sheet.rowCount,
+    columnCount: sheet.columnCount,
+    readCellStyle: (row, column) => sheet.cells.get(row, column)?.style,
+  });
+  if (!decision.allowed) throw new Error(decision.reason ?? `Fill target ${sheet.id}!${range.startRow}:${range.startColumn}-${range.endRow}:${range.endColumn} is protected`);
+}
+
+function fillWritesEqual(expected: readonly FillWrite[], actual: readonly FillMutationWrite[]): boolean {
+  if (expected.length !== actual.length) return false;
+  return expected.every((entry, index) => {
+    const candidate = actual[index];
+    return candidate !== undefined && entry.row === candidate.row && entry.column === candidate.column
+      && cellsEqual(entry.cell, candidate.after);
+  });
+}
+
+function applyFillMutation(params: FillMutationParams, context: CommandContext, canonical: boolean): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const target = normalizeRange(params.targetRange, params.sheetId);
+  assertNoDataRegionIntersection(sheet, target, 'Fill');
+  assertFillProtection(sheet, target);
+  const planParams: FillPlanParams = {
+    sheetId: params.sheetId,
+    sourceRange: params.sourceRange,
+    targetRange: params.targetRange,
+    direction: params.direction,
+    mode: params.mode,
+  };
+  const validated = validateFillPlan(sheet, planParams);
+  if (canonical) {
+    const plan = planFill(sheet, validated);
+    if (!fillWritesEqual(plan.writes, params.writes)) throw new Error('Fill mutation does not match the canonical plan');
+  }
+  for (const write of params.writes) {
+    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
+      throw new Error('Fill mutation contains a write outside its target range');
+    }
+    const current = sheet.cells.get(write.row, write.column);
+    if (!cellsEqual(current, write.before)) throw new Error(`Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
+  }
+  for (const write of params.writes) {
+    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
+    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
+  }
 }
 
 /**
@@ -669,6 +757,32 @@ function tableStyleAffected(params: TableStyleMutationParams): RangeRef[] {
 }
 
 export function registerHomeCommands(runtime: CommandRuntime): void {
+  runtime.registry.registerMutation<FillMutationParams>({
+    id: 'fill.applied',
+    handler: (item, context) => {
+      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.applied mutation payload');
+      applyFillMutation(item.params, context, true);
+    },
+    metadata: {
+      schema: { name: 'FillApplied', validate: isValidFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
+      inverseIds: ['fill.restored'],
+    },
+  });
+  runtime.registry.registerMutation<FillMutationParams>({
+    id: 'fill.restored',
+    handler: (item, context) => {
+      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.restored mutation payload');
+      applyFillMutation(item.params, context, false);
+    },
+    metadata: {
+      schema: { name: 'FillRestored', validate: isValidFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
+      inverseIds: ['fill.applied'],
+    },
+  });
   runtime.registry.registerMutation<DataRegionMaterializeParams>({
     id: 'dataRegion.materialize.commit',
     handler: (item, context) => {
@@ -930,39 +1044,53 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       assertNoDataRegionIntersection(sheet, source, 'Fill');
       assertNoDataRegionIntersection(sheet, target, 'Fill');
-      const direction = params.direction ?? (target.endRow > source.endRow ? 'down' : target.endColumn > source.endColumn ? 'right' : 'down');
-      const values: CellData[][] = [];
-      const sourceHeight = source.endRow - source.startRow + 1;
-      const sourceWidth = source.endColumn - source.startColumn + 1;
-      for (let row = target.startRow; row <= target.endRow; row += 1) {
-        const line: CellData[] = [];
-        for (let column = target.startColumn; column <= target.endColumn; column += 1) {
-          const sourceRow = direction === 'up' ? source.endRow - ((source.endRow - row) % sourceHeight) : source.startRow + ((row - target.startRow) % sourceHeight);
-          const sourceColumn = direction === 'left' ? source.endColumn - ((source.endColumn - column) % sourceWidth) : source.startColumn + ((column - target.startColumn) % sourceWidth);
-          const sourceCell = structuredClone(sheet.cells.get(sourceRow, sourceColumn) ?? { value: null });
-          const rowDelta = row - sourceRow;
-          const columnDelta = column - sourceColumn;
-          if (sourceCell.formula) {
-            sourceCell.formula = shiftFormula(sourceCell.formula, rowDelta, columnDelta);
-            sourceCell.value = null;
-          } else if (params.mode === 'series' && typeof sourceCell.value === 'number') {
-            const previousSource = direction === 'up' || direction === 'left'
-              ? sheet.cells.get(sourceRow + (direction === 'up' ? 1 : 0), sourceColumn + (direction === 'left' ? 1 : 0))
-              : sheet.cells.get(sourceRow - (direction === 'down' ? 1 : 0), sourceColumn - (direction === 'right' ? 1 : 0));
-            const step = typeof previousSource?.value === 'number' ? sourceCell.value - previousSource.value : 1;
-            const distance = direction === 'up' ? source.endRow - row : direction === 'left' ? source.endColumn - column : direction === 'down' ? row - source.startRow : column - source.startColumn;
-            sourceCell.value += step * Math.max(0, distance);
-          }
-          line.push(sourceCell);
-        }
-        values.push(line);
-      }
-      return runtime.execute('sheet.range.set', {
+      assertFillProtection(sheet, target);
+      const plan = planFill(sheet, {
         sheetId: params.sheetId,
-        startRow: target.startRow,
-        startColumn: target.startColumn,
-        values,
+        sourceRange: source,
+        targetRange: target,
+        direction: params.direction,
+        mode: params.mode,
       });
+      if (plan.writes.length === 0) return homeResult(context, rangeAffected(target));
+      const writes: FillMutationWrite[] = plan.writes.map((write) => ({
+        row: write.row,
+        column: write.column,
+        before: sheet.cells.get(write.row, write.column) ? structuredClone(sheet.cells.get(write.row, write.column)) : undefined,
+        after: write.cell ? structuredClone(write.cell) : undefined,
+      }));
+      const inverseWrites: FillMutationWrite[] = writes.map((write) => ({
+        row: write.row,
+        column: write.column,
+        before: write.after ? structuredClone(write.after) : undefined,
+        after: write.before ? structuredClone(write.before) : undefined,
+      }));
+      const mutationParams: FillMutationParams = {
+        sheetId: params.sheetId,
+        sourceRange: source,
+        targetRange: target,
+        direction: params.direction,
+        mode: params.mode,
+        writes,
+      };
+      const inverseParams: FillMutationParams = { ...mutationParams, writes: inverseWrites };
+      const affectedRanges = rangeAffected(target);
+      context.applyMutation({
+        id: 'fill.applied',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: mutationParams,
+        affectedRanges,
+        inverse: [{
+          id: 'fill.restored',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: inverseParams,
+          affectedRanges,
+        }],
+        apply: () => applyFillMutation(mutationParams, context, true),
+      });
+      return homeResult(context, affectedRanges, 1);
     },
   });
 

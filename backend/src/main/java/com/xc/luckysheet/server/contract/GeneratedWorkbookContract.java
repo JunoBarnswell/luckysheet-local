@@ -26,6 +26,8 @@ public final class GeneratedWorkbookContract {
         Map.entry("cellTemplate.set", new MutationCapability("remote", true, "CellStyleTemplateSet", "editor", "exact", true)),
         Map.entry("cellTemplate.remove", new MutationCapability("remote", true, "CellStyleTemplateRemove", "editor", "exact", true)),
         Map.entry("cell.editor.set", new MutationCapability("remote", true, "CellEditorSet", "editor", "range", true)),
+        Map.entry("fill.applied", new MutationCapability("remote", true, "FillApplied", "editor", "exact", true)),
+        Map.entry("fill.restored", new MutationCapability("remote", true, "FillRestored", "editor", "exact", true)),
         Map.entry("tableSheet.update", new MutationCapability("remote", true, "TableSheetDefinitionUpdate", "editor", "exact", true)),
         Map.entry("ganttSheet.update", new MutationCapability("remote", true, "GanttSheetDefinitionUpdate", "editor", "exact", true)),
         Map.entry("reportSheet.update", new MutationCapability("remote", true, "ReportSheetDefinitionUpdate", "editor", "exact", true)),

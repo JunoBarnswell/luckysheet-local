@@ -956,6 +956,43 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void fillSeriesUsesOneCanonicalTargetBandAndRejectsStaleBeforeImages() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
+                  "cells":{"0":{"0":{"value":1}},"1":{"0":{"value":3}}},
+                  "protectionRules":[]}]}
+                """);
+        OperationMutation fill = new OperationMutation("fill.applied", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},
+                 "targetRange":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0},
+                 "direction":"down","mode":"series","writes":[
+                   {"row":2,"column":0,"before":null,"after":{"value":5}},
+                   {"row":3,"column":0,"before":null,"after":{"value":7}},
+                   {"row":4,"column":0,"before":null,"after":{"value":9}}
+                 ]}
+                """));
+
+        var prepared = registry.prepare(snapshot, fill, WorkbookAclRole.EDITOR);
+        assertEquals(0, prepared.affectedRanges().get(0).startRow());
+        assertEquals(4, prepared.affectedRanges().get(0).endRow());
+        JsonNode next = prepared.descriptor().apply(snapshot, fill);
+        assertEquals(5, next.path("sheets").get(0).path("cells").path("2").path("0").path("value").asInt());
+        assertEquals(9, next.path("sheets").get(0).path("cells").path("4").path("0").path("value").asInt());
+        assertEquals(2, snapshot.path("sheets").get(0).path("cells").size());
+
+        OperationMutation stale = new OperationMutation("fill.applied", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "targetRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},
+                 "direction":"down","mode":"copy","writes":[
+                   {"row":1,"column":0,"before":{"value":99},"after":{"value":1}}
+                 ]}
+                """));
+        ServiceException conflict = assertThrows(ServiceException.class, () -> registry.prepare(next, stale, WorkbookAclRole.EDITOR).descriptor().apply(next, stale));
+        assertEquals("CONFLICT", conflict.code());
+    }
+
+    @Test
     void rowPermutationMovesOnlyExactCellOwnersAndSplitsRangeMetadata() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

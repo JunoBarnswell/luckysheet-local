@@ -45,6 +45,8 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'cell.set': 'cell-value',
   'cell.restore': 'cell-value',
   'range.set': 'cell-value',
+  'fill.applied': 'cell-value',
+  'fill.restored': 'cell-value',
   'range.paste': 'cell-value',
   'range.clear': 'clear',
   'cells.inserted': 'move-range',

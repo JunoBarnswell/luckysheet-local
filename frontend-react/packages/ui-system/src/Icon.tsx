@@ -47,7 +47,9 @@ export type IconName =
   | 'external-link'
   | 'eye'
   | 'fill-down'
+  | 'fill-up'
   | 'fill-right'
+  | 'fill-left'
   | 'file-plus'
   | 'file-spreadsheet'
   | 'file-text'
@@ -224,8 +226,12 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z" /><circle cx="12" cy="12" r="2" /></>;
     case 'fill-down':
       return <><rect x="5" y="4" width="14" height="11" rx="1" /><path d="M12 8v10M8 14l4 4 4-4" /></>;
+    case 'fill-up':
+      return <><rect x="5" y="9" width="14" height="11" rx="1" /><path d="M12 16V6M8 10l4-4 4 4" /></>;
     case 'fill-right':
       return <><rect x="4" y="5" width="11" height="14" rx="1" /><path d="M8 12h10M14 8l4 4-4 4" /></>;
+    case 'fill-left':
+      return <><rect x="9" y="5" width="11" height="14" rx="1" /><path d="M16 12H6M10 8l-4 4 4 4" /></>;
     case 'file-plus':
       return <><path d="M7 3.5h6l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" /><path d="M13 3.5v4h4" /><path d="M12 11v5M9.5 13.5h5" /></>;
     case 'file-spreadsheet':

@@ -156,7 +156,10 @@ export type RibbonCommandId =
   | 'clearHyperlinks'
   | 'autoSum'
   | 'fillDown'
+  | 'fillUp'
   | 'fillRight'
+  | 'fillLeft'
+  | 'fillSeries'
   | 'sortRange'
   | 'conditionalFormat'
   | 'cellTemplate'
@@ -284,7 +287,9 @@ export type RibbonIconName =
   | 'decimal-increase'
   | 'filter'
   | 'fill-down'
+  | 'fill-up'
   | 'fill-right'
+  | 'fill-left'
   | 'freeze'
   | 'function'
   | 'form-control'
@@ -370,7 +375,7 @@ export interface RibbonCommandActions {
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
   onMerge: (operation: RibbonMergeOperation) => void;
-  onFill: (direction: 'down' | 'right') => void;
+  onFill: (direction: 'down' | 'up' | 'right' | 'left', mode?: 'copy' | 'series') => void;
   onFreezeAtPrimary: () => void;
   onCreateSheetTable: () => void;
   onOpenTableSettings: () => void;
@@ -639,7 +644,10 @@ export const RIBBON_TEXT = {
     clearHyperlinks: 'commands.clearHyperlinks',
     autoSum: 'commands.autoSum',
     fillDown: 'commands.fillDown',
+    fillUp: 'commands.fillUp',
     fillRight: 'commands.fillRight',
+    fillLeft: 'commands.fillLeft',
+    fillSeries: 'commands.fillSeries',
     sortRange: 'commands.sortRange',
     conditionalFormat: 'commands.conditionalFormat',
     cellTemplate: 'commands.cellTemplate',
@@ -884,7 +892,10 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   homeControl('default-column-width', 'cells', 64, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
-  ribbonSurface('home', 'editing.fill-right', 'editing', 66, 'small', 'fillRight'),
+  ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'small', 'fillUp'),
+  ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'small', 'fillRight'),
+  ribbonSurface('home', 'editing.fill-left', 'editing', 68, 'small', 'fillLeft'),
+  ribbonSurface('home', 'editing.fill-series', 'editing', 69, 'small', 'fillSeries'),
   ribbonSurface('home', 'editing.sort', 'editing', 70, 'small', 'sortRange'),
   ribbonSurface('home', 'editing.filter', 'editing', 80, 'small', 'filterSelection'),
   homeControl('clear-menu', 'editing', 90),
@@ -1124,7 +1135,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   command('clearHyperlinks', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearHyperlinks, undefined, { family: 'hyperlinks' }),
   callback('autoSum', 'home', 'editing', RIBBON_TEXT.commands.autoSum, (context) => context.actions.onAutoSum(), 'calculator'),
   callback('fillDown', 'home', 'editing', RIBBON_TEXT.commands.fillDown, (context) => context.actions.onFill('down'), 'fill-down'),
+  callback('fillUp', 'home', 'editing', RIBBON_TEXT.commands.fillUp, (context) => context.actions.onFill('up'), 'fill-up'),
   callback('fillRight', 'home', 'editing', RIBBON_TEXT.commands.fillRight, (context) => context.actions.onFill('right'), 'fill-right'),
+  callback('fillLeft', 'home', 'editing', RIBBON_TEXT.commands.fillLeft, (context) => context.actions.onFill('left'), 'fill-left'),
+  callback('fillSeries', 'home', 'editing', RIBBON_TEXT.commands.fillSeries, (context) => context.actions.onFill('down', 'series'), 'sort'),
   intent('sortRange', 'home', 'editing', RIBBON_TEXT.commands.sortRange, () => ({ type: 'dialog.open', dialog: 'sort-dialog' }), 'sort'),
   intent('conditionalFormat', 'home', 'editing', RIBBON_TEXT.commands.conditionalFormat, () => ({ type: 'panel.open', panel: 'conditionalFormat' }), 'sparkles'),
   intent('cellTemplate', 'home', 'styles', RIBBON_TEXT.commands.cellTemplate, () => ({ type: 'dialog.open', dialog: 'cell-template' }), 'star'),
