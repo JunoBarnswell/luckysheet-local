@@ -41,6 +41,7 @@ function commandOptions(node: Extract<RibbonLayoutNode, { kind: 'command' }>, co
   return {
     iconOverride: node.icon ? iconFor(node as { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) : undefined,
     iconOnly: false,
+    ribbonLayoutNodeId: node.id,
     tile: node.size === 'large' && !context.inMenu,
     className: context.inMenu ? 'w-full justify-start rounded-none' : undefined,
   };
@@ -64,13 +65,13 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'split':
       return (
         <Inline key={node.id} gap="none" className={context.inMenu ? 'w-full flex-nowrap' : 'flex-nowrap'}>
-          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), tile: !context.inMenu, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : undefined })}
+          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), ribbonLayoutNodeId: node.id, tile: !context.inMenu, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : undefined })}
           <DropdownMenu
             align="left"
-            trigger={<Button aria-label="More options" icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-8 !w-5 rounded-none px-0" />}
+            trigger={<Button aria-label="More options" data-ribbon-layout-node={`${node.id}.menu`} icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-8 !w-5 rounded-none px-0" />}
           >
             <Stack gap="none" className="min-w-[12rem] p-1">
-              {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
+              {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), ribbonLayoutNodeId: `${node.id}.item.${item.commandId}`, className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
             </Stack>
           </DropdownMenu>
         </Inline>
@@ -80,10 +81,10 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
         <DropdownMenu
           key={node.id}
           align="left"
-          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), tile: !context.inMenu, className: context.inMenu ? 'w-full justify-start rounded-none' : undefined })}
+          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), ribbonLayoutNodeId: node.id, tile: !context.inMenu, className: context.inMenu ? 'w-full justify-start rounded-none' : undefined })}
         >
           <Stack gap="none" className="min-w-[12rem] p-1">
-            {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
+            {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), ribbonLayoutNodeId: `${node.id}.item.${item.commandId}`, className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
           </Stack>
         </DropdownMenu>
       );
@@ -91,7 +92,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'spinner':
     case 'combo':
     case 'launcher':
-      return <React.Fragment key={node.id}>{renderCommand(node.commandId, { iconOverride: iconFor(node), className: context.inMenu ? 'w-full justify-start rounded-none' : undefined })}</React.Fragment>;
+      return <React.Fragment key={node.id}>{renderCommand(node.commandId, { iconOverride: iconFor(node), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'w-full justify-start rounded-none' : undefined })}</React.Fragment>;
     case 'separator':
       return <Divider key={node.id} orientation="vertical" className="mx-0.5 h-8" />;
   }

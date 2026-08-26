@@ -30,6 +30,7 @@ export interface HomeRibbonCommandOptions {
   className?: string;
   iconOnly?: boolean;
   iconOverride?: import('@react-sheets/ui-system').IconName;
+  ribbonLayoutNodeId?: string;
   ribbonSurfaceId?: string;
   testId?: string;
   tile?: boolean;

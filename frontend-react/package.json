@@ -29,7 +29,7 @@
     "check:e2e-artifacts": "tsx tools/e2e-provenance.ts check-tracked",
     "check:e2e-provenance": "tsx tools/e2e-provenance.ts check",
     "check:acceptance-matrix": "tsx tools/check-acceptance-matrix.ts",
-    "check:boundaries": "node tools/check-boundaries.mjs && node tools/check-mutation-registry.mjs && npm run check:contracts && npm run check:e2e-artifacts",
+    "check:boundaries": "node tools/check-boundaries.mjs && node tools/check-mutation-registry.mjs && npm run check:contracts && npm run check:e2e-artifacts && npm run check:acceptance-matrix",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium"
   },
