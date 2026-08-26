@@ -17,7 +17,16 @@ import type {
   GanttSheetDefinition,
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
-import { StructuralTransform, normalizeDefinedNameModel, normalizeFontFamily } from '@react-sheets/core-model';
+import {
+  StructuralTransform,
+  normalizeDefinedNameModel,
+  normalizeFontFamily,
+  planBorderChange,
+  isBorderPlacement,
+  isBorderLine,
+  type BorderPlacement,
+  type BorderLine,
+} from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { buildCellFromText } from './text-input';
@@ -188,6 +197,15 @@ export interface SetRangeStyleParams {
   style: Partial<CellStyle>;
 }
 
+/** Canonical topology command shared by HOME and Format Cells. */
+export interface SetBorderParams {
+  sheetId: string;
+  range?: RangeRef;
+  ranges?: RangeRef[];
+  placement: BorderPlacement;
+  line?: BorderLine;
+}
+
 export interface SortRangeParams {
   sheetId: string;
   range: RangeRef;
@@ -356,6 +374,17 @@ function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheet
 function normalizeStyleFontFamily(style: Partial<CellStyle> | undefined): Partial<CellStyle> | undefined {
   if (!style || style.fontFamily === undefined) return style;
   return { ...style, fontFamily: normalizeFontFamily(style.fontFamily) };
+}
+
+function isBorderCommand(value: unknown): value is SetBorderParams {
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isBorderPlacement(value.placement)) return false;
+  if (value.range !== undefined && value.ranges !== undefined) return false;
+  const ranges = value.range !== undefined
+    ? (isRange(value.range) ? [value.range] : undefined)
+    : (Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange) ? value.ranges : undefined);
+  if (!ranges || ranges.some((range) => range.sheetId !== value.sheetId)) return false;
+  if (value.placement === 'none') return value.line === undefined;
+  return isBorderLine(value.line);
 }
 
 function styleAffectedRanges(value: SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string }): RangeRef[] {
@@ -1321,6 +1350,66 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: canonicalParams.sheetId, params: canonicalParams, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  // 5b. Canonical border topology. The planner is pure; this command expands
+  // its side-aware patches into existing style.set mutations so the current
+  // collaboration, permission, undo and OOXML style paths remain identical.
+  runtime.registry.registerCommand<SetBorderParams>({
+    id: 'sheet.borders.set',
+    execute: (params, context) => {
+      if (!isBorderCommand(params)) throw new Error('Invalid sheet.borders.set command payload');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const inputRanges = params.range ? [params.range] : (params.ranges ?? []);
+      const plans = inputRanges.map((range) => planBorderChange(range, params.placement, params.line, {
+        rowCount: sheet.rowCount,
+        columnCount: sheet.columnCount,
+      }));
+      const affectedRanges = plans.map((plan) => structuredClone(plan.range));
+
+      for (const plan of plans) {
+        for (const plannedCell of plan.cells) {
+          // Empty side sets are no-ops for perimeter/inside placements. The
+          // explicit none placement is the only operation that clears a cell.
+          if (plan.placement !== 'none' && Object.keys(plannedCell.sides).length === 0) continue;
+          const previous = sheet.cells.get(plannedCell.row, plannedCell.column);
+          const existingBorders = previous?.style?.borders ?? {};
+          const borders = plan.placement === 'none'
+            ? {}
+            : { ...existingBorders, ...plannedCell.sides };
+          const cellRange: RangeRef = {
+            sheetId: params.sheetId,
+            startRow: plannedCell.row,
+            endRow: plannedCell.row,
+            startColumn: plannedCell.column,
+            endColumn: plannedCell.column,
+          };
+          const style: Partial<CellStyle> = { borders };
+          context.applyMutation({
+            id: 'style.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, range: cellRange, style },
+            affectedRanges: [cellRange],
+            inverse: [{
+              id: 'cell.restore',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, row: plannedCell.row, column: plannedCell.column, previous: previous ? structuredClone(previous) : undefined },
+              affectedRanges: [cellRange],
+            }],
+            apply: () => runtime.registry.getMutation('style.set')({
+              id: 'style.set',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, range: cellRange, style },
+              affectedRanges: [cellRange],
+            }, context),
+          });
+        }
+      }
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges };
     },
   });
 

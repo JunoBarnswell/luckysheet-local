@@ -121,6 +121,15 @@ export type RibbonCommandId =
   | 'underline'
   | 'strikethrough'
   | 'allBorders'
+  | 'borderTop'
+  | 'borderBottom'
+  | 'borderLeft'
+  | 'borderRight'
+  | 'borderNone'
+  | 'borderOutside'
+  | 'borderThickOutside'
+  | 'borderInsideHorizontal'
+  | 'borderInsideVertical'
   | 'alignLeft'
   | 'alignCenter'
   | 'alignRight'
@@ -493,6 +502,7 @@ export type RibbonControlId =
   | 'font-size'
   | 'font-increase'
   | 'font-decrease'
+  | 'font-borders-menu'
   | 'font-color'
   | 'fill-color'
   | 'number-format'
@@ -609,6 +619,15 @@ export const RIBBON_TEXT = {
     underline: 'commands.underline',
     strikethrough: 'commands.strikethrough',
     allBorders: 'commands.allBorders',
+    borderTop: 'commands.borderTop',
+    borderBottom: 'commands.borderBottom',
+    borderLeft: 'commands.borderLeft',
+    borderRight: 'commands.borderRight',
+    borderNone: 'commands.borderNone',
+    borderOutside: 'commands.borderOutside',
+    borderThickOutside: 'commands.borderThickOutside',
+    borderInsideHorizontal: 'commands.borderInsideHorizontal',
+    borderInsideVertical: 'commands.borderInsideVertical',
     alignLeft: 'commands.alignLeft',
     alignCenter: 'commands.alignCenter',
     alignRight: 'commands.alignRight',
@@ -845,7 +864,17 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.italic', 'font', 60, 'small', 'italic'),
   ribbonSurface('home', 'font.underline', 'font', 70, 'small', 'underline'),
   ribbonSurface('home', 'font.strikethrough', 'font', 80, 'small', 'strikethrough'),
-  ribbonSurface('home', 'font.borders', 'font', 85, 'small', 'allBorders'),
+  homeControl('font-borders-menu', 'font', 85),
+  ribbonSurface('home', 'font.borders.all', 'font', 851, 'menu', 'allBorders', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.top', 'font', 852, 'menu', 'borderTop', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.bottom', 'font', 853, 'menu', 'borderBottom', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.left', 'font', 854, 'menu', 'borderLeft', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.right', 'font', 855, 'menu', 'borderRight', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.outside', 'font', 856, 'menu', 'borderOutside', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.thick-outside', 'font', 857, 'menu', 'borderThickOutside', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.inside-horizontal', 'font', 858, 'menu', 'borderInsideHorizontal', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.inside-vertical', 'font', 859, 'menu', 'borderInsideVertical', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
+  ribbonSurface('home', 'font.borders.none', 'font', 860, 'menu', 'borderNone', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
   ribbonSurface('home', 'alignment.left', 'alignment', 20, 'small', 'alignLeft'),
@@ -1096,7 +1125,16 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   styleCommand('italic', RIBBON_TEXT.commands.italic, 'italic', (context) => ({ italic: !context.cellStyle.italic }), (context) => Boolean(context.cellStyle.italic)),
   styleCommand('underline', RIBBON_TEXT.commands.underline, 'underline', (context) => ({ underline: !context.cellStyle.underline }), (context) => Boolean(context.cellStyle.underline)),
   styleCommand('strikethrough', RIBBON_TEXT.commands.strikethrough, 'strikethrough', (context) => ({ strikethrough: !context.cellStyle.strikethrough }), (context) => Boolean(context.cellStyle.strikethrough)),
-  command('allBorders', 'home', 'font', 'sheet.style.set', RIBBON_TEXT.commands.allBorders, 'borders', { style: { borders: { top: { style: 'thin', color: '#334155' }, right: { style: 'thin', color: '#334155' }, bottom: { style: 'thin', color: '#334155' }, left: { style: 'thin', color: '#334155' } } } }),
+  command('allBorders', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.allBorders, 'borders', { placement: 'all', line: { style: 'thin', color: '#334155' } }),
+  command('borderTop', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderTop, undefined, { placement: 'top', line: { style: 'thin', color: '#334155' } }),
+  command('borderBottom', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderBottom, undefined, { placement: 'bottom', line: { style: 'thin', color: '#334155' } }),
+  command('borderLeft', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderLeft, undefined, { placement: 'left', line: { style: 'thin', color: '#334155' } }),
+  command('borderRight', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderRight, undefined, { placement: 'right', line: { style: 'thin', color: '#334155' } }),
+  command('borderNone', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderNone, undefined, { placement: 'none' }),
+  command('borderOutside', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderOutside, undefined, { placement: 'outside', line: { style: 'thin', color: '#334155' } }),
+  command('borderThickOutside', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderThickOutside, undefined, { placement: 'thick-outside', line: { style: 'thick', color: '#334155' } }),
+  command('borderInsideHorizontal', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderInsideHorizontal, undefined, { placement: 'inside-horizontal', line: { style: 'thin', color: '#334155' } }),
+  command('borderInsideVertical', 'home', 'font', 'sheet.borders.set', RIBBON_TEXT.commands.borderInsideVertical, undefined, { placement: 'inside-vertical', line: { style: 'thin', color: '#334155' } }),
   styleCommand('alignLeft', RIBBON_TEXT.commands.alignLeft, 'align-left', () => ({ horizontalAlignment: 'left' }), (context) => context.cellStyle.horizontalAlignment === 'left', 'alignment'),
   styleCommand('alignCenter', RIBBON_TEXT.commands.alignCenter, 'align-center', () => ({ horizontalAlignment: 'center' }), (context) => context.cellStyle.horizontalAlignment === 'center', 'alignment'),
   styleCommand('alignRight', RIBBON_TEXT.commands.alignRight, 'align-right', () => ({ horizontalAlignment: 'right' }), (context) => context.cellStyle.horizontalAlignment === 'right', 'alignment'),

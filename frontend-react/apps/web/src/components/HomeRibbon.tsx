@@ -74,6 +74,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'font-size': return homeText(locale, 'fontSize');
     case 'font-increase': return homeText(locale, 'increaseFontSize');
     case 'font-decrease': return homeText(locale, 'decreaseFontSize');
+    case 'font-borders-menu': return homeText(locale, 'borders');
     case 'font-color': return homeText(locale, 'textColor');
     case 'fill-color': return homeText(locale, 'fillBackground');
     case 'number-format': return translateRibbonText(locale, 'groups.number');
@@ -170,6 +171,12 @@ export function HomeRibbon({
       case 'fill-color':
         return <DropdownMenu disabled={!canFormat} trigger={mode === 'wide' ? <Button aria-label={label} disabled={!canFormat} icon={controlId === 'font-color' ? 'type' : 'paint-bucket'} iconOnly size="sm" variant="ghost" className="!h-8 !min-h-0 !w-8 !rounded-none" /> : menuTrigger(controlId === 'font-color' ? 'type' : 'paint-bucket')}>
           {({ close }) => <ColorPicker color={controlId === 'font-color' ? cellStyle.textColor ?? '#1e293b' : cellStyle.background ?? '#ffffff'} onChange={(color) => { onEmitStyle({ [controlId === 'font-color' ? 'textColor' : 'background']: color }); close(); }} />}
+        </DropdownMenu>;
+      case 'font-borders-menu':
+        return <DropdownMenu align="left" trigger={menuTrigger('borders')}>
+          <Stack gap="none" className="min-w-[14rem] p-1">
+            {menuMembers('control.font-borders-menu').map((surface) => renderSurface(surface, 'menu'))}
+          </Stack>
         </DropdownMenu>;
       case 'number-format':
         return <Select aria-label={label} className="w-full" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>

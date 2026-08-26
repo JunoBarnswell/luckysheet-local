@@ -312,6 +312,16 @@ export {
   isFormControlDrawingPayload,
 } from './domain';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export {
+  planBorderChange,
+  isBorderPlacement,
+  isBorderLine,
+  type BorderPlacement,
+  type BorderLine,
+  type BorderPlan,
+  type BorderPlanCell,
+  type BorderPlanBounds,
+} from './border-planner';
 export { ProtectionResolver, protectionResolver, type ProtectionAction, type ProtectionCellResolution, type ProtectionDecision, type ProtectionResolveRequest } from './protection';
 export {
   canonicalExcelDateDayOfWeek,

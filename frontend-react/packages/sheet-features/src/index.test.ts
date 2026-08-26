@@ -309,6 +309,38 @@ test('sheet commands: range.clear, style.set, and merges', () => {
   assert.equal(sheet.cells.get(0, 1), undefined);
 });
 
+test('canonical border command preserves non-border style and is atomic across undo/redo', () => {
+  const workbook = new WorkbookModel('unit-border-topology', 'Borders');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const range = { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 1, endColumn: 2 };
+  sheet.cells.set(1, 1, { value: 'keep', style: { bold: true, background: '#fef3c7' } });
+
+  runtime.execute('sheet.borders.set', { sheetId: sheet.id, range, placement: 'outside', line: { style: 'thin', color: '#334155' } });
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  assert.deepEqual(sheet.cells.get(1, 1)?.style?.borders, {
+    top: { style: 'thin', color: '#334155' },
+    left: { style: 'thin', color: '#334155' },
+  });
+  assert.deepEqual(sheet.cells.get(1, 2)?.style?.borders, { top: { style: 'thin', color: '#334155' }, right: { style: 'thin', color: '#334155' } });
+  assert.equal(sheet.cells.get(1, 1)?.style?.bold, true);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'keep');
+  assert.equal(sheet.cells.get(2, 1)?.style?.borders?.bottom?.style, 'thin');
+  assert.equal(sheet.cells.get(2, 2)?.style?.borders?.right?.style, 'thin');
+
+  runtime.undo();
+  assert.equal(sheet.cells.get(1, 1)?.style?.borders, undefined);
+  assert.equal(sheet.cells.get(1, 1)?.style?.bold, true);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'keep');
+  runtime.redo();
+  assert.equal(sheet.cells.get(1, 1)?.style?.borders?.top?.style, 'thin');
+
+  runtime.execute('sheet.borders.set', { sheetId: sheet.id, range, placement: 'none' });
+  assert.deepEqual(sheet.cells.get(1, 1)?.style?.borders, {});
+  assert.equal(sheet.cells.get(1, 1)?.style?.background, '#fef3c7');
+});
+
 test('sheet commands: sort and canonical fill', () => {
   const workbook = new WorkbookModel('unit-sort', 'SortAutofill');
   const runtime = new CommandRuntime(workbook);

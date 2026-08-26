@@ -82,7 +82,7 @@ export function EditorDialogHost({
         initial={formatCellsInitial}
         locale={locale}
         onClose={session.closeFormatCells.bind(session)}
-        onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
+        onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style, border: draft.border })}
       />
       <ShiftCellsDialog
         open={state.dialogs.active === 'shift-cells'}
