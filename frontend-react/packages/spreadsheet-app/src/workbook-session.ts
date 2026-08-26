@@ -222,6 +222,7 @@ import type {
   EditSession as DesignerEditSession,
   FocusState,
   HomeRibbonState,
+  HomeStyleAggregate,
   HomeStyleKey,
   InputMode,
   PanelState,
@@ -373,8 +374,6 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'locked',
   'formulaHidden',
 ];
-const HOME_STYLE_SCAN_LIMIT = 10_000;
-
 function sameRange(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
     && left.startRow === right.startRow
@@ -391,8 +390,14 @@ function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
     && left.endColumn >= right.startColumn;
 }
 
-function compareStyleValue(value: unknown): string {
-  return value === undefined ? '__unset__' : JSON.stringify(value);
+function styleValueSignature(value: unknown): { signature: string } | { reason: string } {
+  if (value === undefined) return { signature: '__unset__' };
+  try {
+    const signature = JSON.stringify(value);
+    return typeof signature === 'string' ? { signature } : { reason: 'Style value cannot be represented in the Home aggregate' };
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : 'Style value cannot be represented in the Home aggregate' };
+  }
 }
 
 export interface ExtendedSnapshot {
@@ -859,45 +864,70 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primary = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0]
       ?? normalizeRangeRef({ sheetId: this.activeSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
-    const seen = new Map<HomeStyleKey, { value: unknown; signature: string; mixed: boolean }>();
-    let scanned = 0;
-    let truncated = false;
+    const styleAggregate = Object.fromEntries(HOME_STYLE_KEYS.map((key) => [key, { status: 'unset' as const }])) as HomeStyleAggregate;
+    const signatures = new Map<HomeStyleKey, string>();
+    const observed = new Set<HomeStyleKey>();
+    let selectedCellCount = 0;
+    let occupiedCellCount = 0;
 
-    outer: for (const selectedRange of selection.ranges) {
+    for (const selectedRange of selection.ranges) {
       const range = normalizeRangeRef({ ...selectedRange, sheetId: this.activeSheetId });
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const cell = this.readResolvedCell(sheet, row, column);
-          const style: Partial<CellStyle> = {
-            ...(cell?.style ?? {}),
-            ...(cell?.numberFormat === undefined ? {} : { numberFormat: cell.numberFormat }),
-          };
-          for (const key of HOME_STYLE_KEYS) {
-            const value = style[key];
-            const signature = compareStyleValue(value);
-            const prior = seen.get(key);
-            if (!prior) {
-              seen.set(key, { value, signature, mixed: false });
-            } else if (prior.signature !== signature) {
-              prior.mixed = true;
-            }
+      selectedCellCount += (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1);
+      sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell) => {
+        occupiedCellCount += 1;
+        const style: Partial<CellStyle> = {
+          ...(cell.style ?? {}),
+          ...(cell.numberFormat === undefined ? {} : { numberFormat: cell.numberFormat }),
+        };
+        for (const key of HOME_STYLE_KEYS) {
+          const value = style[key];
+          const encoded = styleValueSignature(value);
+          const current = styleAggregate[key];
+          if ('reason' in encoded) {
+            styleAggregate[key] = { status: 'unsupported', reason: encoded.reason };
+            continue;
           }
-          scanned += 1;
-          if (scanned >= HOME_STYLE_SCAN_LIMIT) {
-            truncated = true;
-            break outer;
+          if (current.status === 'unsupported' || current.status === 'mixed') continue;
+          if (current.status === 'unset') {
+            if (value !== undefined) {
+              if (observed.has(key)) {
+                styleAggregate[key] = { status: 'mixed' };
+              } else {
+                styleAggregate[key] = { status: 'uniform', value };
+                signatures.set(key, encoded.signature);
+              }
+            }
+            observed.add(key);
+            continue;
+          }
+          observed.add(key);
+          if (current.status === 'uniform' && signatures.get(key) !== encoded.signature) {
+            styleAggregate[key] = { status: 'mixed' };
+            signatures.delete(key);
           }
         }
-      }
+      });
     }
 
     const style: Partial<CellStyle> = {};
     const mixedStyleKeys: HomeStyleKey[] = [];
+    const unsupportedStyleKeys: HomeStyleKey[] = [];
+    if (occupiedCellCount < selectedCellCount) {
+      for (const key of HOME_STYLE_KEYS) {
+        const current = styleAggregate[key];
+        if (current.status === 'uniform') {
+          styleAggregate[key] = { status: 'mixed' };
+          signatures.delete(key);
+        }
+      }
+    }
     for (const key of HOME_STYLE_KEYS) {
-      const summary = seen.get(key);
-      if (truncated || summary?.mixed) {
+      const summary = styleAggregate[key];
+      if (summary.status === 'mixed') {
         mixedStyleKeys.push(key);
-      } else if (summary?.value !== undefined) {
+      } else if (summary.status === 'unsupported') {
+        unsupportedStyleKeys.push(key);
+      } else if (summary.status === 'uniform') {
         style[key] = summary.value as never;
       }
     }
@@ -909,10 +939,12 @@ export class WorkbookSession {
       sheetId: this.activeSheetId,
       ranges: selection.ranges.map((range) => structuredClone(range)),
       activeCell: { ...selection.activeCell },
+      styleAggregate,
       style,
       mixedStyleKeys,
+      unsupportedStyleKeys,
       merge: exactMerge ? 'full' : intersectsMerge ? 'mixed' : 'none',
-      canFormat: this.canExecute('sheet.style.set', { style: {} }),
+      canFormat: unsupportedStyleKeys.length === 0 && this.canExecute('sheet.style.set', { style: {} }),
       canEdit: this.canExecute('sheet.range.clear', { family: 'contents' }),
       canStructure: this.canExecute('sheet.rows.insert', { count: 1 }),
       hasFilter: Boolean(activeAutoFilter),

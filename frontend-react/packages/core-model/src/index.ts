@@ -724,6 +724,22 @@ export class CellMatrix {
     }
   }
 
+  /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
+  forEachInRange(
+    startRow: Row,
+    endRow: Row,
+    startColumn: Column,
+    endColumn: Column,
+    callback: (cell: CellData, row: Row, column: Column) => void,
+  ): void {
+    for (const [row, columns] of this.rows) {
+      if (row < startRow || row > endRow) continue;
+      for (const [column, cell] of columns) {
+        if (column >= startColumn && column <= endColumn) callback(cell, row, column);
+      }
+    }
+  }
+
   clone(): CellMatrix {
     const copy = new CellMatrix();
     this.forEach((cell, row, column) => copy.set(row, column, { ...cell }));

@@ -50,6 +50,15 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(cloned.has(100_000, 4), true);
 });
 
+test('CellMatrix range iteration visits only persisted cells', () => {
+  const matrix = new CellMatrix();
+  matrix.set(2, 3, { value: 'inside' });
+  matrix.set(20, 3, { value: 'outside' });
+  const entries: string[] = [];
+  matrix.forEachInRange(0, 10, 0, 10, (_cell, row, column) => entries.push(`${row}:${column}`));
+  assert.deepEqual(entries, ['2:3']);
+});
+
 test('font families use one canonical trim/case contract while preserving unknown names', () => {
   assert.equal(normalizeFontFamily('  arial  '), 'Arial');
   assert.equal(normalizeFontFamily('  My Imported Font  '), 'My Imported Font');

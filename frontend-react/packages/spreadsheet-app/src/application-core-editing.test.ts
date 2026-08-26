@@ -430,6 +430,7 @@ describe('WorkbookSession core editing integration', () => {
 
     const home = app.getUiSnapshot().homeRibbon;
     assert.ok(home.mixedStyleKeys.includes('bold'));
+    assert.equal(home.styleAggregate.bold.status, 'mixed');
     assert.equal(home.style.bold, undefined);
     assert.equal(home.canFormat, true);
   });

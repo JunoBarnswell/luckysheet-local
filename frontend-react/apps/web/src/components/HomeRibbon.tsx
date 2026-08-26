@@ -121,6 +121,29 @@ export function HomeRibbon({
   const cellStyle = homeState.style;
   const mixed = (key: keyof typeof cellStyle) => homeState.mixedStyleKeys.includes(key as never);
   const canFormat = !disabled && homeState.canFormat;
+  const fontSizeMixed = mixed('fontSizePx');
+  const fontSizeValue = fontSizeMixed ? '' : String(Math.round(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11))));
+  const [fontSizeDraft, setFontSizeDraft] = React.useState<string | undefined>(undefined);
+  const fontSizeDraftRef = React.useRef<string | undefined>(undefined);
+  const fontSizeCommitRef = React.useRef(false);
+  const fontSizeCancelRef = React.useRef(false);
+  React.useEffect(() => {
+    fontSizeDraftRef.current = undefined;
+    fontSizeCommitRef.current = false;
+    fontSizeCancelRef.current = false;
+    setFontSizeDraft(undefined);
+  }, [fontSizeMixed, fontSizeValue]);
+  const commitFontSizeDraft = (): void => {
+    const raw = fontSizeDraftRef.current;
+    if (raw === undefined) return;
+    const value = Number(raw);
+    fontSizeDraftRef.current = undefined;
+    setFontSizeDraft(undefined);
+    if (Number.isFinite(value) && value >= 1 && value <= 409) {
+      fontSizeCommitRef.current = true;
+      onEmitStyle({ fontSizePx: pointsToPixels(value) });
+    }
+  };
   const allSurfaces = (group: HomeGroup): readonly RibbonSurfaceDefinition[] => {
     const seen = new Set<string>();
     return (['wide', 'compact', 'narrow'] as const)
@@ -162,7 +185,40 @@ export function HomeRibbon({
           onCommit={(fontFamily) => onEmitStyle({ fontFamily })}
         /></Box>;
       case 'font-size':
-        return <TextInput aria-label={label} className={mode === 'wide' ? '!w-[48px]' : 'w-full'} disabled={!canFormat} inputMode="decimal" value={mixed('fontSizePx') ? '' : String(Math.round(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11))))} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 1 && value <= 409) onEmitStyle({ fontSizePx: pointsToPixels(value) }); }} />;
+        return <TextInput
+          aria-label={label}
+          className={mode === 'wide' ? '!w-[48px]' : 'w-full'}
+          disabled={!canFormat}
+          inputMode="decimal"
+          value={fontSizeDraft ?? fontSizeValue}
+          onChange={(event) => {
+            fontSizeCommitRef.current = false;
+            fontSizeCancelRef.current = false;
+            fontSizeDraftRef.current = event.target.value;
+            setFontSizeDraft(event.target.value);
+          }}
+          onBlur={() => {
+            if (fontSizeCommitRef.current || fontSizeCancelRef.current) {
+              fontSizeCommitRef.current = false;
+              fontSizeCancelRef.current = false;
+              return;
+            }
+            commitFontSizeDraft();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commitFontSizeDraft();
+              event.currentTarget.blur();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              fontSizeDraftRef.current = undefined;
+              fontSizeCancelRef.current = true;
+              setFontSizeDraft(undefined);
+              event.currentTarget.blur();
+            }
+          }}
+        />;
       case 'font-increase':
       case 'font-decrease':
         return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-7 rounded-none px-0 font-semibold text-[#2572bc]' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: controlId === 'font-increase' ? Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) : Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })}>{mode === 'wide' ? 'A' : label}</Button>;
