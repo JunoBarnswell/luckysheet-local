@@ -18,6 +18,10 @@ const CellTemplateDialog = lazy(() => import('../components/dialogs/CellTemplate
 const CellEditorDialog = lazy(() => import('../components/dialogs/CellEditorDialog').then((module) => ({ default: module.CellEditorDialog })));
 const InsertPictureDialog = lazy(() => import('../components/dialogs/InsertPictureDialog').then((module) => ({ default: module.InsertPictureDialog })));
 const HyperlinkDialog = lazy(() => import('../components/dialogs/HyperlinkDialog').then((module) => ({ default: module.HyperlinkDialog })));
+const RecommendedChartsDialog = lazy(() => import('../components/dialogs/RecommendedChartsDialog').then((module) => ({ default: module.RecommendedChartsDialog })));
+const RecommendedPivotTablesDialog = lazy(() => import('../components/dialogs/RecommendedPivotTablesDialog').then((module) => ({ default: module.RecommendedPivotTablesDialog })));
+const PhoneticGuideDialog = lazy(() => import('../components/dialogs/PhoneticGuideDialog').then((module) => ({ default: module.PhoneticGuideDialog })));
+const SymbolDialog = lazy(() => import('../components/dialogs/SymbolDialog').then((module) => ({ default: module.SymbolDialog })));
 
 export interface EditorDialogHostProps {
   state: UiSnapshot;
@@ -43,6 +47,25 @@ export function EditorDialogHost({
   hyperlinkInitial,
   hyperlinkSheets,
 }: EditorDialogHostProps): ReactNode {
+  let chartRecommendations: ReturnType<WorkbookSession['getChartRecommendations']> = [];
+  let chartRecommendationError: string | undefined;
+  if (state.dialogs.active === 'recommended-charts') {
+    try {
+      chartRecommendations = session.getChartRecommendations();
+    } catch (error) {
+      chartRecommendationError = error instanceof Error ? error.message : 'INVALID_CHART_SOURCE: Recommended Charts analysis failed';
+    }
+  }
+  let pivotRecommendations: ReturnType<WorkbookSession['getPivotTableRecommendations']> = [];
+  let pivotRecommendationError: string | undefined;
+  if (state.dialogs.active === 'recommended-pivots') {
+    try {
+      pivotRecommendations = session.getPivotTableRecommendations();
+    } catch (error) {
+      pivotRecommendationError = error instanceof Error ? error.message : 'PIVOT_SOURCE_INVALID: Recommended PivotTables analysis failed';
+    }
+  }
+  const phoneticContext = state.dialogs.active === 'phonetic-guide' ? session.getActivePhoneticContext() : { text: '' };
   return (
     <Suspense fallback={null}>
       <FunctionWizardDialog
@@ -88,6 +111,7 @@ export function EditorDialogHost({
       />
       <FormatCellsDialog
         open={state.dialogs.active === 'format-cells'}
+        initialTab={state.dialogs.formatCellsTab}
         initial={formatCellsInitial}
         locale={locale}
         onClose={session.closeFormatCells.bind(session)}
@@ -167,6 +191,43 @@ export function EditorDialogHost({
         onClose={session.closeActiveDialog.bind(session)}
         onApply={(target, tooltip) => { session.setActiveHyperlink(target, tooltip); session.closeActiveDialog(); }}
         onRemove={session.removeHyperlink.bind(session)}
+      />
+      <RecommendedChartsDialog
+        open={state.dialogs.active === 'recommended-charts'}
+        locale={locale}
+        candidates={chartRecommendations}
+        {...(chartRecommendationError ? { error: chartRecommendationError } : {})}
+        onClose={session.closeActiveDialog.bind(session)}
+        onSelect={(candidate) => { session.insertRecommendedChart(candidate); session.closeActiveDialog(); }}
+      />
+      <RecommendedPivotTablesDialog
+        open={state.dialogs.active === 'recommended-pivots'}
+        locale={locale}
+        candidates={pivotRecommendations}
+        {...(pivotRecommendationError ? { error: pivotRecommendationError } : {})}
+        onClose={session.closeActiveDialog.bind(session)}
+        onSelect={async (candidate) => {
+          const outcome = await session.createRecommendedPivotTable(candidate);
+          if (outcome.status === 'created') session.closeActiveDialog();
+        }}
+      />
+      <PhoneticGuideDialog
+        open={state.dialogs.active === 'phonetic-guide'}
+        locale={locale}
+        sourceText={phoneticContext.text}
+        {...(phoneticContext.metadata ? { initial: phoneticContext.metadata } : {})}
+        onClose={session.closeActiveDialog.bind(session)}
+        onApply={session.setPhoneticGuide.bind(session)}
+      />
+      <SymbolDialog
+        open={state.dialogs.active === 'symbol'}
+        locale={locale}
+        recent={session.getRecentSymbols()}
+        onClose={session.closeActiveDialog.bind(session)}
+        onInsert={(symbol) => {
+          try { session.insertSymbolText(symbol); return undefined; }
+          catch (error) { return error instanceof Error ? error.message : 'INVALID_SYMBOL: Symbol insertion failed'; }
+        }}
       />
     </Suspense>
   );

@@ -94,6 +94,7 @@ export interface CellRenderData {
   style?: CellRenderStyle;
   editor?: CellEditorConfig;
   presentation?: import('@react-sheets/core-model').CellPresentation;
+  phonetic?: import('@react-sheets/core-model').CellPhoneticMetadata;
   error?: string;
   merge?: MergeInfo;
   overlay?: ConditionalRenderOverlay;

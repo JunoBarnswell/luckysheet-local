@@ -45,7 +45,6 @@ import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPh
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
-import { DataChartPanel } from './panels/DataChartPanel';
 import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { SlicerEditorPanel } from './panels/SlicerEditorPanel';
@@ -145,7 +144,7 @@ export interface FeatureSidebarProps {
   onAddSparkline: (sparkline: SparklineModel) => void;
   onCreateSparklineGroup: (sparklineIds: string[]) => void;
   onRemoveSparkline: (id: string) => void;
-  onInsertChart: (type: import('@react-sheets/core-model').ChartDrawingPayload['chartType'], sourceRange: RangeRef, title: string, stacked: NonNullable<import('@react-sheets/core-model').ChartDrawingPayload['stacked']>) => void;
+  onInsertChart: (type: import('@react-sheets/core-model').ChartDrawingPayload['chartType'], subtype: import('@react-sheets/core-model').ChartDrawingPayload['subtype'], sourceRange: RangeRef, title: string, stacked: NonNullable<import('@react-sheets/core-model').ChartDrawingPayload['stacked']>) => void;
   onAddConditionalFormat: (rule: ConditionalFormatRule) => void;
   onRemoveConditionalFormat: (id: string) => void;
   onAddDataValidation: (rule: DataValidationRule) => void;
@@ -180,7 +179,6 @@ export interface FeatureSidebarProps {
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
-  { id: 'dataChart', label: 'Data Chart', icon: 'data-chart' },
   { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'slicer', label: 'Slicer', icon: 'sliders' },
@@ -513,17 +511,6 @@ export function FeatureSidebar({
             onCommand={onCommand}
           />
         ) : null}
-        {phase === 'ready' && activePanel === 'dataChart' ? (
-          <DataChartPanel
-            sheetId={sheetId}
-            sheet={sheet}
-            drawings={drawings}
-            drawingPayloads={drawingPayloads}
-            selectedDrawingIds={selectedDrawingIds}
-            tables={tables}
-            onCommand={onCommand}
-          />
-        ) : null}
         {phase === 'ready' && activePanel === 'barcode' ? (
           <BarcodePanel
             sheetId={sheetId}
@@ -821,7 +808,7 @@ function CommentHyperlinkForms({
               ))}
               <Textarea rows={2} aria-label="Reply to comment" placeholder="Reply to this comment" value={replyText} onChange={(event) => setReplyText(event.target.value)} />
               <Inline gap="sm" className="justify-end">
-                {!comment.resolved ? <Button size="xs" variant="ghost" onClick={onResolveComment}>Resolve</Button> : null}
+                <Button size="xs" variant="ghost" onClick={onResolveComment}>{comment.resolved ? 'Reopen' : 'Resolve'}</Button>
                 <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => { onReplyComment(replyText.trim()); setReplyText(''); }}>Reply</Button>
               </Inline>
             </Stack>

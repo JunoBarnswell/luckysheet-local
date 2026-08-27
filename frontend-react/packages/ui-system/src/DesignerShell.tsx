@@ -5,7 +5,7 @@ import { RIBBON_DENSITY_CLASSES } from './shell-types';
 
 /**
  * Excel Designer shell geometry is a product contract, not a responsive guess:
- * ribbon 133px, formula bar 48px, workbook 877px, status bar 22px at 1920x1080.
+ * ribbon 167px, formula bar 48px, workbook 843px, status bar 22px at 1920x1080.
  * Sheet tabs live inside the workbook region like the reference Designer.
  */
 export function DesignerShell({ children, floatingOverlay, formulaBar, isBusy, ribbon, sheetTabs, statusBar, workspacePhase }: DesignerShellProps): ReactNode {

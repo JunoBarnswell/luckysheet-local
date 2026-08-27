@@ -557,7 +557,14 @@ export function measureCellAutoFit(
 ): AutoFitMeasurement {
   const text = resolveDisplayText(cell);
   const layout = resolveCellTextLayout(context, cell, theme, text, availableWidthPx, reserveFilterButton);
-  return { widthPx: layout.widthPx, heightPx: layout.heightPx };
+  if (!cell.phonetic?.visible || cell.phonetic.runs.length === 0) return { widthPx: layout.widthPx, heightPx: layout.heightPx };
+  const phoneticText = cell.phonetic.runs.map((run) => run.text).join('');
+  const phoneticSize = cell.phonetic.fontSizePx ?? Math.max(7, layout.fontSizePx * 0.55);
+  context.save();
+  context.font = `${phoneticSize}px ${cell.phonetic.fontFamily ?? cell.style?.fontFamily ?? 'Microsoft YaHei'}, sans-serif`;
+  const phoneticWidth = context.measureText(phoneticText).width + theme.cellPadding * 2;
+  context.restore();
+  return { widthPx: Math.max(layout.widthPx, phoneticWidth), heightPx: layout.heightPx + phoneticSize * 1.25 };
 }
 
 function drawCellValue(
@@ -588,6 +595,7 @@ function drawCellValue(
   context.font = textLayout.font;
   context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
+  const phoneticHeight = drawPhoneticGuide(context, cell, rect, textLayout.fontSizePx, style?.fontFamily, style?.textColor ?? theme.cellText);
 
   const wrap = Boolean(style?.wrapText);
   const measured = textLayout.rawTextWidthPx;
@@ -618,10 +626,10 @@ function drawCellValue(
 
   const fontSize = textLayout.fontSizePx;
   let y = vAlign === 'top'
-    ? rect.y + padding + fontSize / 2
+    ? rect.y + padding + phoneticHeight + fontSize / 2
     : vAlign === 'bottom'
       ? rect.y + rect.height - padding - fontSize / 2
-      : rect.y + rect.height / 2;
+      : rect.y + rect.height / 2 + phoneticHeight * 0.25;
   const rotate = style?.textOrientation === 'rotateUp'
     ? 90
     : style?.textOrientation === 'rotateDown'
@@ -665,6 +673,22 @@ function drawCellValue(
 
   context.restore();
   void skeleton;
+}
+
+function drawPhoneticGuide(context: CanvasRenderingContext2D, cell: CellRenderData, rect: Rect, baseFontSize: number, baseFontFamily: string | undefined, color: string): number {
+  const metadata = cell.phonetic;
+  if (!metadata?.visible || metadata.runs.length === 0) return 0;
+  const text = metadata.runs.map((run) => run.text).join('');
+  const size = metadata.fontSizePx ?? Math.max(7, baseFontSize * 0.55);
+  context.save();
+  context.font = `${size}px ${metadata.fontFamily ?? baseFontFamily ?? 'Microsoft YaHei'}, sans-serif`;
+  context.fillStyle = color;
+  context.textBaseline = 'top';
+  context.textAlign = metadata.alignment === 'left' ? 'left' : 'center';
+  const x = metadata.alignment === 'left' ? rect.x + 2 : rect.x + rect.width / 2;
+  context.fillText(text, x, rect.y + 1, Math.max(1, rect.width - 4));
+  context.restore();
+  return size * 1.25;
 }
 
 /** 计算允许的溢出宽度:右侧连续空单元格宽度之和 */

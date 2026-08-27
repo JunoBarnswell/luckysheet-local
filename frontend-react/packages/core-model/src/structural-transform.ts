@@ -402,7 +402,8 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
   }
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind === 'chart') {
-      payload.sourceRanges = payload.sourceRanges.filter(shiftRange);
+      if (payload.source.kind === 'worksheet-ranges') payload.source.ranges = payload.source.ranges.filter(shiftRange);
+      else if (payload.source.kind === 'report-range' && !shiftRange(payload.source.range)) throw new Error('Cell shift would remove Chart report binding');
       if (payload.categoryRange) shiftRange(payload.categoryRange);
       payload.series = payload.series?.filter((series) => {
         const valid = shiftRange(series.range);
@@ -412,8 +413,6 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
         if (series.errorBars?.minusRange) shiftRange(series.errorBars.minusRange);
         return valid;
       });
-    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
-      if (!shiftRange(payload.source.range)) throw new Error('Cell shift would remove Data Chart report binding');
     }
   }
   for (const pivot of sheet.pivots) {
@@ -735,7 +734,8 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind === 'chart') {
-      for (const range of payload.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
+      if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) shiftRangeRef(range, axis, at, count, direction);
+      else if (payload.source.kind === 'report-range') shiftRangeRef(payload.source.range, axis, at, count, direction);
       if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
       for (const series of payload.series ?? []) {
         shiftRangeRef(series.range, axis, at, count, direction);
@@ -744,8 +744,6 @@ function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: n
         if (series.errorBars?.plusRange) shiftRangeRef(series.errorBars.plusRange, axis, at, count, direction);
         if (series.errorBars?.minusRange) shiftRangeRef(series.errorBars.minusRange, axis, at, count, direction);
       }
-    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
-      shiftRangeRef(payload.source.range, axis, at, count, direction);
     }
   }
 }
@@ -998,7 +996,8 @@ function applyMoveRange(
   }
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind === 'chart') {
-      for (const range of payload.sourceRanges) relocate(range);
+      if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) relocate(range);
+      else if (payload.source.kind === 'report-range') relocate(payload.source.range);
       if (payload.categoryRange) relocate(payload.categoryRange);
       for (const series of payload.series ?? []) {
         relocate(series.range);
@@ -1007,8 +1006,6 @@ function applyMoveRange(
         if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
         if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
       }
-    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
-      relocate(payload.source.range);
     }
   }
   for (const pivot of sheet.pivots) {
@@ -1153,7 +1150,8 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   if (sheet.bandedRule) validateRange(sheet.bandedRule.range, 'banded rule');
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind === 'chart') {
-      for (const range of payload.sourceRanges) validateRange(range, 'chart source');
+      if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) validateRange(range, 'chart source');
+      else if (payload.source.kind === 'report-range') validateRange(payload.source.range, 'chart report binding');
       if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
       for (const series of payload.series ?? []) {
         validateRange(series.range, 'chart series source');
@@ -1162,8 +1160,6 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
         if (series.errorBars?.plusRange) validateRange(series.errorBars.plusRange, 'chart error bar plus source');
         if (series.errorBars?.minusRange) validateRange(series.errorBars.minusRange, 'chart error bar minus source');
       }
-    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
-      validateRange(payload.source.range, 'data chart report binding');
     }
   }
   for (const drawing of sheet.drawings) {

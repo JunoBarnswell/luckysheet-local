@@ -89,9 +89,9 @@ test('PivotChart with a missing Pivot renders a broken reference instead of sour
   const payload: DrawingPayload = {
     kind: 'chart',
     chartId: drawing.payloadId,
-    pivotId: 'missing-pivot',
-    sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }],
+    source: { kind: 'pivot', pivotId: 'missing-pivot' },
     chartType: 'column',
+    subtype: 'clustered',
     elements: { hiddenData: 'show' },
   };
   const sheet = { id: 'sheet-1', pivotResults: {} } as unknown as CanvasSheetSnapshot;

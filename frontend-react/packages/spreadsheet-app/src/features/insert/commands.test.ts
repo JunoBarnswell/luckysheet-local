@@ -102,7 +102,7 @@ describe('insert feature', () => {
     const sheet = workbook.getSheet('sheet-1');
     const presentation = {
       kind: 'image' as const,
-      src: 'data:image/png;base64,AA==',
+      asset: { schema: 'AssetRef' as const, assetId: 'cell-logo', contentHash: '0'.repeat(64), mimeType: 'image/png', byteLength: 1 },
       altText: 'Cell logo',
       fit: 'cover' as const,
       crop: { left: 0.1, top: 0.05, right: 0, bottom: 0.1 },
@@ -116,7 +116,7 @@ describe('insert feature', () => {
     });
     assert.equal(sheet.cells.get(1, 1)?.presentation, undefined);
     assert.deepEqual(sheet.drawingPayloads.get('picture-payload'), {
-      kind: 'image', src: presentation.src, altText: presentation.altText,
+      kind: 'image', asset: presentation.asset, altText: presentation.altText,
       crop: presentation.crop, effects: presentation.effects,
     });
     assert.equal(runtime.getHistoryDepth().undo, 1);
@@ -154,7 +154,7 @@ describe('insert feature', () => {
         id: 'occupied-target-picture', sheetId: 'sheet-1', kind: 'image', payloadId: 'occupied-target-payload',
         anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60, rotation: 0 }, zIndex: 1,
       },
-      payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Floating' },
+      payload: { kind: 'image', asset: { schema: 'AssetRef', assetId: 'floating-logo', contentHash: '1'.repeat(64), mimeType: 'image/png', byteLength: 1 }, altText: 'Floating' },
     });
     runtime.clearHistory();
     const before = workbook.snapshot();
@@ -165,8 +165,8 @@ describe('insert feature', () => {
     assert.equal(runtime.getHistoryDepth().undo, 0);
   });
 
-  it('creates and updates a canonical Data Chart with typed bindings and undo', () => {
-    const workbook = new WorkbookModel('data-chart-command-test', 'Data Chart');
+  it('creates and updates a canonical structured Chart with typed bindings and undo', () => {
+    const workbook = new WorkbookModel('structured-chart-command-test', 'Structured Chart');
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
     registerDrawingFeature(runtime);
@@ -175,21 +175,22 @@ describe('insert feature', () => {
       id: 'data-table', name: 'Sales', sourceSheetId: 'sheet-1', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }, rowCount: 3,
       fields: [{ id: 'category', name: 'Category', ordinal: 0, type: 'text' }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' }], blockSize: 1024, blocks: [], revision: 0,
     };
-    const drawing = { id: 'data-drawing', sheetId: 'sheet-1', kind: 'data-chart' as const, payloadId: 'data-payload', anchor: { kind: 'absolute' as const }, transform: { x: 0, y: 0, width: 320, height: 200, rotation: 0 }, zIndex: 0 };
-    const payload = { kind: 'data-chart' as const, source: { kind: 'table' as const, tableId: table.id }, plotType: 'column' as const, bindings: { values: [{ area: 'values' as const, fieldId: 'amount', aggregate: 'sum' as const }], category: [{ area: 'category' as const, fieldId: 'category', aggregate: 'none' as const }], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { title: 'Sales', legendPosition: 'bottom' as const, showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } };
-    runtime.execute('dataChart.create', { sheetId: 'sheet-1', drawing, payload, table });
-    assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('data-payload')?.kind, 'data-chart');
-    runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: { ...payload, plotType: 'line', inspector: { ...payload.inspector, title: 'Updated' } } });
-    const updated = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
-    assert.equal(updated?.kind === 'data-chart' ? updated.plotType : undefined, 'line');
-    const invalid = structuredClone(payload) as typeof payload & { bindings: typeof payload.bindings };
-    (invalid.bindings.values[0] as { area: string }).area = 'category';
-    assert.throws(() => runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: invalid as never }), /binding is invalid/);
-    const rejectedState = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
-    assert.equal(rejectedState?.kind === 'data-chart' ? rejectedState.plotType : undefined, 'line');
+    const drawing = { id: 'chart-drawing', sheetId: 'sheet-1', kind: 'chart' as const, payloadId: 'chart-payload', anchor: { kind: 'absolute' as const }, transform: { x: 0, y: 0, width: 320, height: 200, rotation: 0 }, zIndex: 0 };
+    const bindings = { values: [{ area: 'values' as const, fieldId: 'amount', aggregate: 'sum' as const }], category: [{ area: 'category' as const, fieldId: 'category', aggregate: 'none' as const }], details: [], color: [], size: [], tooltip: [], filter: [] };
+    const payload = { kind: 'chart' as const, chartId: drawing.payloadId, source: { kind: 'table' as const, tableId: table.id, bindings }, chartType: 'column' as const, subtype: 'clustered' as const, elements: { title: 'Sales', hiddenData: 'show' as const } };
+    runtime.execute('chart.insert.structured', { sheetId: 'sheet-1', drawing, payload, table });
+    assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('chart-payload')?.kind, 'chart');
+    runtime.execute('chart.update.structured', { sheetId: 'sheet-1', drawingId: drawing.id, payload: { ...payload, chartType: 'line', subtype: 'line', elements: { ...payload.elements, title: 'Updated' } } });
+    const updated = workbook.getSheet('sheet-1').drawingPayloads.get('chart-payload');
+    assert.equal(updated?.kind === 'chart' ? updated.chartType : undefined, 'line');
+    const invalid = structuredClone(payload);
+    (invalid.source.bindings.values[0] as { area: string }).area = 'category';
+    assert.throws(() => runtime.execute('chart.update.structured', { sheetId: 'sheet-1', drawingId: drawing.id, payload: invalid as never }), /binding is invalid/);
+    const rejectedState = workbook.getSheet('sheet-1').drawingPayloads.get('chart-payload');
+    assert.equal(rejectedState?.kind === 'chart' ? rejectedState.chartType : undefined, 'line');
     assert.equal(runtime.undo(), true);
-    const restored = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
-    assert.equal(restored?.kind === 'data-chart' ? restored.inspector.title : undefined, 'Sales');
+    const restored = workbook.getSheet('sheet-1').drawingPayloads.get('chart-payload');
+    assert.equal(restored?.kind === 'chart' ? restored.elements.title : undefined, 'Sales');
   });
 
   it('enforces typed form controls, numeric bounds, explicit list selection, option groups, and button events', () => {

@@ -9,7 +9,7 @@ describe('permission policy', () => {
     assert.equal(resolveCommandAction('comment.add'), 'comment');
     assert.equal(resolveCommandAction('hyperlink.set'), 'edit-cell');
     assert.equal(resolveCommandAction('checkbox.toggle'), 'edit-cell');
-    assert.equal(resolveCommandAction('dataChart.create'), 'drawing');
+    assert.equal(resolveCommandAction('chart.insert.structured'), 'drawing');
     assert.equal(resolveCommandAction('ui.panel.open'), 'navigate');
   });
 

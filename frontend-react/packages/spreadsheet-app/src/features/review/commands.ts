@@ -99,7 +99,8 @@ const isCellNote = (value: unknown): value is CellNote => isRecord(value)
   && typeof value.createdAt === 'string' && typeof value.visible === 'boolean';
 const isCommentReply = (value: unknown): value is CommentReply => isRecord(value)
   && isNonEmptyString(value.id) && typeof value.author === 'string'
-  && typeof value.text === 'string' && typeof value.createdAt === 'string';
+  && typeof value.text === 'string' && typeof value.createdAt === 'string'
+  && (value.mentions === undefined || (Array.isArray(value.mentions) && value.mentions.every((mention) => typeof mention === 'string' && mention.length > 0)));
 const isCommentThread = (value: unknown): value is CommentThread => isRecord(value)
   && isNonEmptyString(value.id) && isNonEmptyString(value.sheetId)
   && Number.isSafeInteger(value.row) && Number.isSafeInteger(value.column)

@@ -41,6 +41,7 @@ import { registerSheetTableCommands } from './sheet-table-commands';
 import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
+import { registerPhoneticCommands } from './phonetic-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
@@ -75,6 +76,7 @@ export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
 export * from './home-commands';
+export * from './phonetic-commands';
 export * from './auto-sum-contract';
 export * from './fill-series';
 export * from './find-replace';
@@ -848,6 +850,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   registerSheetTableCommands(runtime);
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
+  registerPhoneticCommands(runtime);
   registerCellTemplateCommands(runtime);
 
   runtime.registry.registerMutation<SheetExtentParams>({

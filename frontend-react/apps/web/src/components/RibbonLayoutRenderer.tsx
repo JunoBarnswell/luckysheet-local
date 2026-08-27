@@ -44,7 +44,6 @@ interface NodeRenderContext {
  * into the viewport or clipping their controls vertically.
  */
 const WIDE_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  history: 'w-[56px]',
   clipboard: 'w-[124px]',
   font: 'w-[224px]',
   alignment: 'w-[248px]',
@@ -59,13 +58,16 @@ const WIDE_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = 
   functionLibrary: 'w-[220px]',
   formulaAudit: 'w-[276px]',
   definedNames: 'w-[128px]',
-  insertSheets: 'w-[152px]',
-  insertTables: 'w-[152px]',
-  insertCharts: 'w-[240px]',
-  insertDataCharts: 'w-[72px]',
-  illustrations: 'w-[200px]',
-  insertLinks: 'w-[68px]',
-  insertControls: 'w-[108px]',
+  tables: 'w-[265px]',
+  illustrations: 'w-[308px]',
+  controls: 'w-[68px]',
+  charts: 'w-[369px]',
+  sparklines: 'w-[181px]',
+  filters: 'w-[132px]',
+  links: 'w-[68px]',
+  insertComments: 'w-[83px]',
+  text: 'w-[260px]',
+  symbols: 'w-[171px]',
   sortFilter: 'w-[220px]',
   dataTools: 'w-[292px]',
   findTransform: 'w-[292px]',
@@ -82,14 +84,13 @@ const DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, st
 };
 
 const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  history: 'w-[64px]',
-  clipboard: 'w-[118px]',
-  font: 'w-[205px]',
-  alignment: 'w-[211px]',
-  number: 'w-[120px]',
-  styles: 'w-[266px]',
-  cells: 'w-[158px]',
-  editing: 'min-w-[222px] flex-1',
+  clipboard: 'w-[141px]',
+  font: 'w-[347px]',
+  alignment: 'w-[342px]',
+  number: 'w-[201px]',
+  styles: 'w-[251px]',
+  cells: 'w-[191px]',
+  editing: 'w-[310px]',
 };
 
 export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
@@ -125,17 +126,16 @@ const HOME_COLUMN_CLASSES: Readonly<Record<string, string>> = {
 };
 
 const HOME_ROW_CLASSES: Readonly<Record<string, string>> = {
-  'history.layout': 'h-[70px] gap-2',
-  'clipboard.layout': 'h-[70px] gap-1',
+  'clipboard.layout': 'h-[104px] gap-1',
   'font.controls': 'gap-1',
   'font.actions': 'gap-1',
-  'alignment.layout': 'h-[70px] gap-2',
+  'alignment.layout': 'h-[104px] gap-2',
   'alignment.controls.top': 'gap-1',
   'alignment.controls.bottom': 'gap-1',
   'number.actions': 'gap-1',
-  'styles.actions': 'h-[70px] gap-1',
-  'cells.actions': 'h-[70px] gap-1',
-  'editing.layout': 'h-[70px] w-full gap-3',
+  'styles.actions': 'h-[104px] gap-1',
+  'cells.actions': 'h-[104px] gap-1',
+  'editing.layout': 'h-[104px] w-full gap-3',
 };
 
 function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, props: RibbonLayoutRendererProps): ReactNode {
@@ -199,9 +199,9 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
     return (
       <React.Fragment key={group.id}>
         {index > 0 ? isHome
-          ? <Box className="relative h-[76px] w-0 shrink-0"><AssetIcon src="/figma/home-ribbon/divider.svg" className="absolute left-[-38px] top-[37.5px] h-px w-[76px] max-w-none rotate-90" /></Box>
+          ? <Box className="relative h-[110px] w-0 shrink-0"><AssetIcon src="/figma/home-ribbon/divider.svg" className="absolute left-[-55px] top-[54px] h-px w-[110px] max-w-none rotate-90" /></Box>
           : <Divider orientation="vertical" className={RIBBON_DENSITY_CLASSES.groupContent} /> : null}
-        <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} min-w-0 shrink-0 justify-between overflow-hidden ${isHome ? 'pb-0.5' : 'px-1'} ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+        <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} relative min-w-0 shrink-0 justify-between overflow-hidden ${isHome ? 'pb-0.5' : 'px-1'} ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
           <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
           <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} ${isHome ? 'text-[10px] font-normal text-[var(--home-ribbon-color-caption)]' : 'font-medium text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
         </Stack>
@@ -211,8 +211,8 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   return (
     <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {isHome
-        ? <Inline gap="none" className="h-full min-w-[1500px] flex-1 gap-2 bg-[var(--home-ribbon-color-surface)] px-3 py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
-        : groups}
+        ? <Inline gap="none" className="h-full min-w-[1783px] flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
+        : tab === 'insert' ? <Inline gap="none" className="h-full min-w-[1905px] flex-1 bg-[#fffdf9]">{groups}</Inline> : groups}
     </Inline>
   );
 }

@@ -46,7 +46,7 @@ describe('INSERT variant catalog localization', () => {
   });
 
   it('keeps every semantic INSERT group and surface reachable at every responsive breakpoint', () => {
-    const groups = ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls'] as const;
+    const groups = ['tables', 'illustrations', 'controls', 'charts', 'sparklines', 'filters', 'links', 'insertComments', 'text', 'symbols'] as const;
     const breakpoints = ['wide', 'compact', 'narrow'] as const;
     for (const group of groups) {
       const byBreakpoint = breakpoints.map((breakpoint) => getRibbonSurfaces('insert', group, breakpoint).map((surface) => surface.id));

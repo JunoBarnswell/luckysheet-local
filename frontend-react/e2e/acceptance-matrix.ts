@@ -8,11 +8,8 @@ import {
   type RibbonSurfaceDefinition,
 } from '@react-sheets/spreadsheet-app';
 import {
-  INSERT_BARCODE_VARIANTS,
   INSERT_CHART_VARIANTS,
   INSERT_CONNECTOR_VARIANTS,
-  INSERT_DATA_CHART_VARIANTS,
-  INSERT_FORM_CONTROL_VARIANTS,
   INSERT_SHAPE_GALLERY,
   INSERT_SPARKLINE_VARIANTS,
 } from '../apps/web/src/components/insert-ribbon-catalog';
@@ -301,12 +298,9 @@ export const HOME_BEHAVIOR_CASES: readonly AcceptanceCase[] = [
 
 export const INSERT_VARIANT_GROUPS = [
   { id: 'chart', commandId: 'chartBuilder' as const, rootSurfaceId: 'charts.gallery', variants: INSERT_CHART_VARIANTS },
-  { id: 'data-chart', commandId: 'dataChart' as const, rootSurfaceId: 'data-charts.insert', variants: INSERT_DATA_CHART_VARIANTS },
-  { id: 'barcode', commandId: 'barcode' as const, rootSurfaceId: 'charts.barcode', variants: INSERT_BARCODE_VARIANTS },
-  { id: 'sparkline', commandId: 'sparkline' as const, rootSurfaceId: 'charts.sparkline', variants: INSERT_SPARKLINE_VARIANTS },
+  { id: 'sparkline', commandId: 'sparkline' as const, rootSurfaceId: 'sparklines.gallery', variants: INSERT_SPARKLINE_VARIANTS },
   { id: 'shape', commandId: 'shapesLines' as const, rootSurfaceId: 'illustrations.shape', variants: INSERT_SHAPE_GALLERY.flatMap((category) => category.variants) },
   { id: 'connector', commandId: 'shapesLines' as const, rootSurfaceId: 'illustrations.shape', variants: INSERT_CONNECTOR_VARIANTS },
-  { id: 'form-control', commandId: 'formControls' as const, rootSurfaceId: 'illustrations.controls', variants: INSERT_FORM_CONTROL_VARIANTS },
 ] as const;
 
 export const INSERT_VARIANT_CASES = INSERT_VARIANT_GROUPS.flatMap((group) => group.variants.map((variant) => ({
@@ -338,7 +332,7 @@ export const PARITY_MUTATION_FAMILIES = [
   { id: 'style-rules', prefixes: ['sheet.style.', 'conditionalFormat.', 'dataValidation.'] },
   { id: 'dimensions', prefixes: ['row.height', 'column.width', 'row.visibility', 'column.visibility'] },
   { id: 'protection', prefixes: ['sheet.protection.', 'workbook.protection.'] },
-  { id: 'drawing-insert', prefixes: ['drawing.', 'chart.', 'dataChart.', 'sparkline.'] },
+  { id: 'drawing-insert', prefixes: ['drawing.', 'chart.', 'sparkline.'] },
   { id: 'extent-ensure', prefixes: ['sheet.extent.'] },
 ] as const;
 

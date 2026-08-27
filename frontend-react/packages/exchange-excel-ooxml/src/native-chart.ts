@@ -41,14 +41,14 @@ export function synchronizeNativePivotCharts(input: NativePivotChartSyncInput): 
   for (const entry of entries) {
     const part = input.sheetPartById[entry.sheet.id];
     if (!part) throw new Error(`PivotChart ${entry.drawing.id} points to a worksheet that is not in the package`);
-    const table = resolveTable(entry.payload.pivotId, input.graph);
-    if (!table) throw new Error(`PivotChart ${entry.drawing.id} references PivotTable ${entry.payload.pivotId}, but no native PivotTable was generated`);
+    const table = resolveTable(entry.payload.source.pivotId, input.graph);
+    if (!table) throw new Error(`PivotChart ${entry.drawing.id} references PivotTable ${entry.payload.source.pivotId}, but no native PivotTable was generated`);
     const cache = input.graph.caches.find((candidate) => candidate.cacheId === table.cacheId);
     if (!cache) throw new Error(`PivotChart ${entry.drawing.id} references PivotTable ${table.name}, but its PivotCache ${table.cacheId} is missing`);
     if (cache.source.kind === 'unsupported') throw new Error(`PivotChart ${entry.drawing.id} references an unsupported PivotCache source; export is fail-closed`);
-    const pivot = input.snapshot.sheets.flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === entry.payload.pivotId);
-    if (!pivot) throw new Error(`PivotChart ${entry.drawing.id} references missing PivotTable ${entry.payload.pivotId}`);
-    assertSupportedChartType(entry.payload.chartType, entry.drawing.id);
+    const pivot = input.snapshot.sheets.flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === entry.payload.source.pivotId);
+    if (!pivot) throw new Error(`PivotChart ${entry.drawing.id} references missing PivotTable ${entry.payload.source.pivotId}`);
+    assertSupportedChartType(entry.payload.chartType, entry.payload.subtype, entry.drawing.id);
     const pivotSheet = input.snapshot.sheets.find((candidate) => input.sheetPartById[candidate.id] === table.sheetPart);
     if (!pivotSheet) throw new Error(`PivotChart ${entry.drawing.id} references PivotTable ${table.name} on a missing worksheet`);
     const chartPart = chartPartFor(entry.sheet.id, entry.drawing.id);
@@ -96,19 +96,19 @@ export function synchronizeNativePivotCharts(input: NativePivotChartSyncInput): 
 interface ChartEntry {
   sheet: SheetSnapshot;
   drawing: DrawingObject;
-  payload: ChartDrawingPayload & { pivotId: string };
+  payload: ChartDrawingPayload & { source: { kind: 'pivot'; pivotId: string } };
   sheetPart: string;
   chartPart: string;
   table: NativePivotTableDefinition;
 }
 
-function collectEntries(snapshot: WorkbookSnapshot): Array<{ sheet: SheetSnapshot; drawing: DrawingObject; payload: ChartDrawingPayload & { pivotId: string } }> {
-  const entries: Array<{ sheet: SheetSnapshot; drawing: DrawingObject; payload: ChartDrawingPayload & { pivotId: string } }> = [];
+function collectEntries(snapshot: WorkbookSnapshot): Array<{ sheet: SheetSnapshot; drawing: DrawingObject; payload: ChartDrawingPayload & { source: { kind: 'pivot'; pivotId: string } } }> {
+  const entries: Array<{ sheet: SheetSnapshot; drawing: DrawingObject; payload: ChartDrawingPayload & { source: { kind: 'pivot'; pivotId: string } } }> = [];
   for (const sheet of snapshot.sheets) {
     for (const drawing of sheet.drawings ?? []) {
       const payload = sheet.drawingPayloads[drawing.payloadId];
-      if (payload?.kind !== 'chart' || !payload.pivotId) continue;
-      entries.push({ sheet, drawing, payload: payload as ChartDrawingPayload & { pivotId: string } });
+      if (payload?.kind !== 'chart' || payload.source.kind !== 'pivot') continue;
+      entries.push({ sheet, drawing, payload: payload as ChartDrawingPayload & { source: { kind: 'pivot'; pivotId: string } } });
     }
   }
   return entries;
@@ -118,14 +118,18 @@ function resolveTable(pivotId: string, graph: NativePivotGraph): NativePivotTabl
   return graph.tables.find((table) => table.pivotId === pivotId);
 }
 
-function assertSupportedChartType(type: ChartDrawingPayload['chartType'], drawingId: string): asserts type is 'column' | 'bar' | 'line' | 'area' {
+function assertSupportedChartType(type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], drawingId: string): asserts type is 'column' | 'bar' | 'line' | 'area' {
   if (!['column', 'bar', 'line', 'area'].includes(type)) {
     throw new Error(`PivotChart ${drawingId} uses unsupported native chart type ${type}; export is fail-closed`);
   }
+  const supported = type === 'column' || type === 'bar'
+    ? ['clustered', 'stacked', 'percent-stacked'].includes(subtype)
+    : type === 'line' ? ['line', 'line-markers', 'stacked', 'percent-stacked'].includes(subtype) : ['area', 'stacked', 'percent-stacked'].includes(subtype);
+  if (!supported) throw new Error(`PivotChart ${drawingId} uses unsupported native chart subtype ${type}/${subtype}; export is fail-closed`);
 }
 
 function buildPivotChartXml(
-  payload: ChartDrawingPayload & { pivotId: string },
+  payload: ChartDrawingPayload & { source: { kind: 'pivot'; pivotId: string } },
   drawingId: string,
   sheet: SheetSnapshot,
   table: NativePivotTableDefinition,
@@ -145,7 +149,7 @@ function buildPivotChartXml(
   const categoryValue = displayCells[String(dataStartRow)]?.[String(categoryColumn)]?.value;
   const categoryReference = typeof categoryValue === 'number' ? 'numRef' : 'strRef';
   const chartType = payload.chartType;
-  assertSupportedChartType(chartType, drawingId);
+  assertSupportedChartType(chartType, payload.subtype, drawingId);
   const seriesXml = Array.from({ length: seriesCount }, (_, index) => {
     const column = dataStartColumn + index;
     const declared = payload.series?.[index];
@@ -153,16 +157,18 @@ function buildPivotChartXml(
     const name = declared?.name ?? (header === null || header === undefined || header === '' ? table.dataFields[index % Math.max(1, table.dataFields.length)]?.name ?? `Series ${index + 1}` : String(header));
     return `<c:ser><c:idx val="${index}"/><c:order val="${index}"/><c:tx><c:v>${encodeXml(name)}</c:v></c:tx><c:cat><c:${categoryReference}><c:f>${formula(sheet.name, categoryColumn, dataStartRow, dataEndRow)}</c:f></c:${categoryReference}></c:cat><c:val><c:numRef><c:f>${formula(sheet.name, column, dataStartRow, dataEndRow)}</c:f></c:numRef></c:val>${declared?.color ? `<c:spPr><a:solidFill><a:srgbClr val="${encodeXml(declared.color.replace(/^#/, ''))}"/></a:solidFill></c:spPr>` : ''}</c:ser>`;
   }).join('');
-  const chartBody = chartBodyFor(chartType, seriesXml);
+  const chartBody = chartBodyFor(chartType, payload.subtype, seriesXml);
   const title = payload.elements.title ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>${encodeXml(payload.elements.title)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>` : '<c:autoTitleDeleted val="1"/>';
   const legend = payload.elements.legend?.visible === false ? '' : `<c:legend><c:legendPos val="${payload.elements.legend?.position === 'left' ? 'l' : payload.elements.legend?.position === 'right' ? 'r' : payload.elements.legend?.position === 'top' ? 't' : 'b'}"/><c:layout/><c:overlay val="0"/></c:legend>`;
   return withXmlDeclaration(`<c:chartSpace xmlns:c="${NS_CHART}" xmlns:a="${NS_DRAWING_MAIN}" xmlns:r="${NS_DOC_REL}"><c:date1904 val="0"/><c:lang val="en-US"/><c:pivotSource><c:name>${encodeXml(table.name)}</c:name><c:fmtId val="0"/></c:pivotSource><c:chart>${title}<c:plotArea><c:layout/>${chartBody}<c:catAx><c:axId val="-201"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="-202"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx><c:valAx><c:axId val="-202"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="-201"/><c:crosses val="autoZero"/><c:crossBetween val="midCat"/></c:valAx>${legend}</c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>`);
 }
 
-function chartBodyFor(type: 'column' | 'bar' | 'line' | 'area', seriesXml: string): string {
-  if (type === 'line') return `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${seriesXml}<c:axId val="-201"/><c:axId val="-202"/></c:lineChart>`;
-  if (type === 'area') return `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${seriesXml}<c:axId val="-201"/><c:axId val="-202"/></c:areaChart>`;
-  return `<c:barChart><c:barDir val="${type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${seriesXml}<c:axId val="-201"/><c:axId val="-202"/></c:barChart>`;
+function chartBodyFor(type: 'column' | 'bar' | 'line' | 'area', subtype: ChartDrawingPayload['subtype'], seriesXml: string): string {
+  const grouping = subtype === 'stacked' ? 'stacked' : subtype === 'percent-stacked' ? 'percentStacked' : 'standard';
+  if (type === 'line') return `<c:lineChart><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${subtype === 'line-markers' ? '<c:marker val="1"/>' : ''}<c:axId val="-201"/><c:axId val="-202"/></c:lineChart>`;
+  if (type === 'area') return `<c:areaChart><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}<c:axId val="-201"/><c:axId val="-202"/></c:areaChart>`;
+  const barGrouping = subtype === 'clustered' ? 'clustered' : grouping;
+  return `<c:barChart><c:barDir val="${type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="${barGrouping}"/><c:varyColors val="0"/>${seriesXml}<c:axId val="-201"/><c:axId val="-202"/></c:barChart>`;
 }
 
 function buildChartAnchor(entry: ChartEntry, relationshipId: string, objectId: number): XmlNode {

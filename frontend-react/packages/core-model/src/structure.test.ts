@@ -147,8 +147,9 @@ describe('structural operations', () => {
       kind: 'chart',
       chartId: 'chart-1',
       chartType: 'combo',
+      subtype: 'custom-combo',
       stacked: 'percent',
-      sourceRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }],
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }] },
       categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
       series: [{ name: 'Sales', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 } }],
       elements: { hiddenData: 'show' },
@@ -161,7 +162,7 @@ describe('structural operations', () => {
     if (payload?.kind !== 'chart') throw new Error('Expected chart payload');
     assert.equal(payload.chartType, 'combo');
     assert.equal(payload.stacked, 'percent');
-    assert.deepEqual(payload.sourceRanges[0], { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
+    assert.deepEqual(payload.source.kind === 'worksheet-ranges' ? payload.source.ranges[0] : undefined, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
     assert.deepEqual(payload.categoryRange, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 });
     assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
     assert.equal(sheet.drawings.filter((drawing) => drawing.kind === 'chart').length, 1);

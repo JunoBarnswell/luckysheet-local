@@ -127,7 +127,7 @@ export interface SheetTableModel {
   styleName?: string;
 }
 
-export type DrawingKind = 'image' | 'shape' | 'connector' | 'chart' | 'data-chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
+export type DrawingKind = 'image' | 'shape' | 'connector' | 'chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
 
 export interface DrawingTransform {
   x: number;
@@ -173,6 +173,17 @@ export interface ImageDrawingPayload {
 export type ShapeDrawingType = 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
 
 export type ShapeDrawingCategory = 'basic-shapes' | 'lines' | 'callouts-and-stars';
+
+/** Canonical shape gallery ownership. UI galleries must project this registry instead of redefining model identities. */
+export const SHAPE_DRAWING_PRESETS: readonly { category: ShapeDrawingCategory; type: ShapeDrawingType }[] = [
+  { category: 'basic-shapes', type: 'rectangle' },
+  { category: 'basic-shapes', type: 'rounded-rectangle' },
+  { category: 'basic-shapes', type: 'ellipse' },
+  { category: 'lines', type: 'line' },
+  { category: 'lines', type: 'arrow' },
+  { category: 'callouts-and-stars', type: 'callout' },
+  { category: 'callouts-and-stars', type: 'star' },
+] as const;
 
 export type ShapeTextDirection = 'horizontal' | 'vertical';
 export type ShapeTextHorizontalAlignment = 'left' | 'center' | 'right';
@@ -294,44 +305,6 @@ export interface TextBoxDrawingPayload {
   kind: 'textbox';
   text: string;
   textFrame: TextBoxTextFrame;
-}
-
-export type DataChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
-
-export type DataChartPlotType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
-export type DataChartBindingArea = 'values' | 'category' | 'details' | 'color' | 'size' | 'tooltip' | 'filter';
-export type DataChartSource =
-  | { kind: 'table'; tableId: string }
-  | { kind: 'report-sheet'; range: RangeRef };
-
-export interface DataChartFieldBinding {
-  fieldId: string;
-  area: DataChartBindingArea;
-  aggregate: DataChartAggregate;
-  sort?: 'asc' | 'desc';
-  format?: string;
-}
-
-export interface DataChartInspectorModel {
-  title?: string;
-  legendPosition: 'top' | 'bottom' | 'left' | 'right' | 'none';
-  showDataLabels: boolean;
-  showHiddenData: boolean;
-  chartArea: { fill: string; border: string; borderWidth: number };
-  plotArea: { fill: string; border?: string };
-  axis: {
-    categoryTitle?: string;
-    valueTitle?: string;
-    showGridlines: boolean;
-  };
-}
-
-export interface DataChartDrawingPayload {
-  kind: 'data-chart';
-  source: DataChartSource;
-  plotType: DataChartPlotType;
-  bindings: Record<DataChartBindingArea, DataChartFieldBinding[]>;
-  inspector: DataChartInspectorModel;
 }
 
 export interface CameraDrawingPayload {
@@ -516,7 +489,88 @@ export type P1ChartType =
   | 'doughnut'
   | 'area'
   | 'scatter'
+  | 'bubble'
+  | 'treemap'
+  | 'sunburst'
+  | 'histogram'
+  | 'pareto'
+  | 'box-whisker'
+  | 'waterfall'
+  | 'funnel'
+  | 'stock'
+  | 'surface'
+  | 'radar'
+  | 'map'
   | 'combo';
+
+export type ChartSubtype =
+  | 'clustered'
+  | 'stacked'
+  | 'percent-stacked'
+  | 'three-dimensional'
+  | 'line'
+  | 'line-markers'
+  | 'area'
+  | 'pie'
+  | 'pie-of-pie'
+  | 'bar-of-pie'
+  | 'doughnut'
+  | 'scatter-markers'
+  | 'scatter-smooth-lines'
+  | 'scatter-straight-lines'
+  | 'bubble'
+  | 'bubble-three-dimensional'
+  | 'treemap'
+  | 'sunburst'
+  | 'histogram'
+  | 'pareto'
+  | 'box-whisker'
+  | 'waterfall'
+  | 'funnel'
+  | 'stock-high-low-close'
+  | 'stock-open-high-low-close'
+  | 'surface-three-dimensional'
+  | 'surface-wireframe'
+  | 'radar'
+  | 'radar-markers'
+  | 'radar-filled'
+  | 'custom-combo'
+  | 'filled-map';
+
+export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly ChartSubtype[]>> = {
+  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional'],
+  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional'],
+  line: ['line', 'line-markers', 'stacked', 'percent-stacked'],
+  area: ['area', 'stacked', 'percent-stacked'],
+  pie: ['pie', 'three-dimensional', 'pie-of-pie', 'bar-of-pie'],
+  doughnut: ['doughnut'],
+  scatter: ['scatter-markers', 'scatter-smooth-lines', 'scatter-straight-lines'],
+  bubble: ['bubble', 'bubble-three-dimensional'],
+  treemap: ['treemap'],
+  sunburst: ['sunburst'],
+  histogram: ['histogram'],
+  pareto: ['pareto'],
+  'box-whisker': ['box-whisker'],
+  waterfall: ['waterfall'],
+  funnel: ['funnel'],
+  stock: ['stock-high-low-close', 'stock-open-high-low-close'],
+  surface: ['surface-three-dimensional', 'surface-wireframe'],
+  radar: ['radar', 'radar-markers', 'radar-filled'],
+  map: ['filled-map'],
+  combo: ['custom-combo'],
+};
+
+export function defaultChartSubtype(type: P1ChartType): ChartSubtype {
+  return CHART_SUBTYPES_BY_TYPE[type][0]!;
+}
+
+export function isChartSubtypeForType(type: P1ChartType, subtype: ChartSubtype): boolean {
+  return CHART_SUBTYPES_BY_TYPE[type].includes(subtype);
+}
+
+export function chartStackingForSubtype(subtype: ChartSubtype): 'stacked' | 'percent' | undefined {
+  return subtype === 'stacked' ? 'stacked' : subtype === 'percent-stacked' ? 'percent' : undefined;
+}
 
 export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;
 export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
@@ -603,6 +657,26 @@ export interface ChartSeriesModel {
   errorBars?: ChartErrorBarsModel;
 }
 
+export type ChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
+export type ChartBindingArea = 'values' | 'category' | 'details' | 'color' | 'size' | 'tooltip' | 'filter';
+
+export interface ChartFieldBinding {
+  fieldId: string;
+  area: ChartBindingArea;
+  aggregate: ChartAggregate;
+  sort?: 'asc' | 'desc';
+  format?: string;
+}
+
+export type ChartBindings = Record<ChartBindingArea, ChartFieldBinding[]>;
+
+/** The data source is a first-class chart dimension; it never changes drawing identity. */
+export type ChartSource =
+  | { kind: 'worksheet-ranges'; ranges: RangeRef[] }
+  | { kind: 'pivot'; pivotId: string }
+  | { kind: 'table'; tableId: string; bindings: ChartBindings }
+  | { kind: 'report-range'; range: RangeRef; bindings: ChartBindings };
+
 /** All chart semantics live in this value object; DrawingObject only owns placement. */
 export interface ChartElementModel {
   title?: string;
@@ -624,8 +698,8 @@ export interface ChartDrawingPayload {
   kind: 'chart';
   chartId: string;
   chartType: P1ChartType;
-  pivotId?: string;
-  sourceRanges: RangeRef[];
+  subtype: ChartSubtype;
+  source: ChartSource;
   series?: ChartSeriesModel[];
   categoryRange?: RangeRef;
   stacked?: 'none' | 'stacked' | 'percent';
@@ -735,7 +809,6 @@ export type DrawingPayload =
   | ConnectorDrawingPayload
   | TextBoxDrawingPayload
   | ChartDrawingPayload
-  | DataChartDrawingPayload
   | CameraDrawingPayload
   | FormControlDrawingPayload
   | PivotSlicerDrawingPayload
@@ -978,6 +1051,7 @@ export interface CommentReply {
   author: string;
   text: string;
   createdAt: string;
+  mentions?: string[];
 }
 
 export type SpillState = 'ok' | 'blocked' | 'spill-error';

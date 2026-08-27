@@ -31,7 +31,8 @@ describe('chart feature', () => {
       kind: 'chart',
       chartId: 'chart-1',
       chartType: 'combo',
-      sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }],
+      subtype: 'custom-combo',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }] },
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 1, endColumn: 1 }, chartType: 'column', axis: 'primary', color: '#2563eb' },
         { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 2, endColumn: 2 }, chartType: 'line', axis: 'secondary', color: '#dc2626', smooth: true },
@@ -92,7 +93,8 @@ describe('chart feature', () => {
       kind: 'chart',
       chartId: 'scatter-1',
       chartType: 'scatter',
-      sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }],
+      subtype: 'scatter-markers',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
       elements: { hiddenData: 'show' },
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
@@ -116,7 +118,7 @@ describe('chart feature', () => {
       grandTotal: null,
       sourceRowPaths: [],
     };
-    const pivotPayload: ChartPayload = { ...payload, chartId: 'pivot-chart', chartType: 'combo', pivotId: 'pivot-1', series: undefined };
+    const pivotPayload: ChartPayload = { ...payload, chartId: 'pivot-chart', chartType: 'combo', subtype: 'custom-combo', source: { kind: 'pivot', pivotId: 'pivot-1' }, series: undefined };
     const pivotData = resolveChartData(workbook, pivotPayload, { 'pivot-1': pivotTree });
     assert.equal(pivotData.source, 'pivot');
     assert.deepEqual(pivotData.categories, ['Jan', 'Feb']);

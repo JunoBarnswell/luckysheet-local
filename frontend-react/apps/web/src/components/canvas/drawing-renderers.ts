@@ -8,7 +8,6 @@ import {
 import type {
   ChartDrawingPayload,
   ChartMarkerModel,
-  DataChartDrawingPayload,
   CameraDrawingPayload,
   FormControlDrawingPayload,
   ConnectorDrawingPayload,
@@ -29,7 +28,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildPivotChartData } from "@react-sheets/spreadsheet-app";
+import { buildPivotChartData, resolveStructuredChartBindings } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
   SheetSkeleton,
@@ -73,13 +72,19 @@ function getChartSeries(
   getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
+  tables: readonly WorkbookTableModel[],
 ): { categories: string[]; series: CanvasChartSeries[]; brokenReference?: string } {
   const categories: string[] = [];
   const series: CanvasChartSeries[] = [];
-  const pivot = payload.pivotId
-    ? pivotResults[payload.pivotId] ?? sheets.map((candidate) => candidate.pivotResults[payload.pivotId!]).find(Boolean)
+  if (payload.source.kind === 'table' || payload.source.kind === 'report-range') {
+    const structured = resolveStructuredChartBindings(payload, tables, (sheetId) => getSheet(sheetId));
+    return { categories: structured.categories, series: structured.series.map((entry) => ({ ...entry })) };
+  }
+  const pivotId = payload.source.kind === 'pivot' ? payload.source.pivotId : undefined;
+  const pivot = pivotId
+    ? pivotResults[pivotId] ?? sheets.map((candidate) => candidate.pivotResults[pivotId]).find(Boolean)
     : undefined;
-  if (payload.pivotId && !pivot) return { categories, series, brokenReference: `Pivot reference unavailable: ${payload.pivotId}` };
+  if (pivotId && !pivot) return { categories, series, brokenReference: `Pivot reference unavailable: ${pivotId}` };
   if (pivot) {
     const pivotDefinition = sheets.flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === pivot.pivotId);
     const projected = buildPivotChartData(pivot, pivotDefinition);
@@ -121,7 +126,8 @@ function getChartSeries(
       series.push({ name: entry.name, values, color: entry.color, marker: entry.marker, chartType: entry.chartType });
     }
   }
-  const source = payload.sourceRanges[0];
+  const sourceRanges = payload.source.kind === 'worksheet-ranges' ? payload.source.ranges : [];
+  const source = sourceRanges[0];
   if (!source) return { categories, series };
   const matrix = readRange(source);
   const categoryMatrix = payload.categoryRange ? readRange(payload.categoryRange) : [];
@@ -418,61 +424,6 @@ export function connectorEndpointHitTest(
   return null;
 }
 
-function dataChartSeries(
-  payload: DataChartDrawingPayload,
-  tables: readonly WorkbookTableModel[],
-  getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
-): { categories: string[]; series: CanvasChartSeries[] } {
-  const source = payload.source;
-  const table = source.kind === 'table' ? tables.find((entry) => entry.id === source.tableId) : undefined;
-  const sourceRange = table?.sourceRange ?? (source.kind === 'report-sheet' ? source.range : undefined);
-  if (!sourceRange) return { categories: [], series: [] };
-  const sheet = getSheet(sourceRange.sheetId);
-  if (!sheet) return { categories: [], series: [] };
-  const fields = source.kind === 'table'
-    ? (table?.fields ?? []).map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
-    : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
-  const fieldById = new Map(fields.map((field) => [field.id, field]));
-  const isVisibleField = (field: { ordinal: number } | undefined): boolean => Boolean(field && (payload.inspector.showHiddenData || !sheet.hiddenColumns.includes(sourceRange.startColumn + field.ordinal)));
-  const categoryBinding = payload.bindings.category[0];
-  const categoryField = categoryBinding && isVisibleField(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
-  const valueBindings = payload.bindings.values.filter((binding) => isVisibleField(fieldById.get(binding.fieldId)));
-  if (!valueBindings.length) return { categories: [], series: [] };
-  const buckets = new Map<string, Map<string, number[]>>();
-  for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
-    if (!payload.inspector.showHiddenData && sheet.hiddenRows.includes(row)) continue;
-    const category = String(categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow);
-    const byField = buckets.get(category) ?? new Map<string, number[]>();
-    for (const binding of valueBindings) {
-      const field = fieldById.get(binding.fieldId)!;
-      const raw = sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value ?? '';
-      const value = numericCellValue(String(raw));
-      if (value !== undefined) byField.set(binding.fieldId, [...(byField.get(binding.fieldId) ?? []), value]);
-    }
-    buckets.set(category, byField);
-  }
-  const aggregate = (values: number[], mode: DataChartDrawingPayload['bindings']['values'][number]['aggregate']): number => {
-    if (!values.length || mode === 'none') return values.length ? values[values.length - 1]! : 0;
-    if (mode === 'count') return values.length;
-    if (mode === 'min') return Math.min(...values);
-    if (mode === 'max') return Math.max(...values);
-    if (mode === 'average') return values.reduce((sum, value) => sum + value, 0) / values.length;
-    return values.reduce((sum, value) => sum + value, 0);
-  };
-  const categories = [...buckets.keys()];
-  const series = valueBindings.map((binding) => ({ name: fieldById.get(binding.fieldId)!.name, values: categories.map((category) => aggregate(buckets.get(category)?.get(binding.fieldId) ?? [], binding.aggregate)) }));
-  const sortBinding = valueBindings.find((binding) => binding.sort);
-  if (sortBinding) {
-    const index = series.findIndex((entry) => entry.name === fieldById.get(sortBinding.fieldId)?.name);
-    if (index >= 0) {
-      const order = sortBinding.sort === 'desc' ? -1 : 1;
-      const orderIndexes = categories.map((_category, categoryIndex) => categoryIndex).sort((left, right) => (series[index]!.values[left]! - series[index]!.values[right]!) * order);
-      return { categories: orderIndexes.map((categoryIndex) => categories[categoryIndex]!), series: series.map((entry) => ({ ...entry, values: orderIndexes.map((categoryIndex) => entry.values[categoryIndex]!) })) };
-    }
-  }
-  return { categories, series };
-}
-
 export interface CameraSourceGeometry {
   left: number;
   top: number;
@@ -745,6 +696,60 @@ function drawCanonicalChartOnCanvas(options: {
   };
   const yFor = (value: number): number => plotTop + ((maxAxis - value) / axisSpan) * plotHeight;
   const categoryCount = Math.max(1, categories.length, ...series.map((entry) => entry.values.length));
+  if (payload.chartType === 'treemap') {
+    drawCanonicalTreemap(context, series, plotLeft, plotTop, plotWidth, plotHeight);
+    drawCanonicalLegend(context, series, width, height, legendPosition);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'sunburst') {
+    drawCanonicalSunburst(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
+    drawCanonicalLegend(context, series, width, height, legendPosition);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'histogram' || payload.chartType === 'pareto') {
+    drawCanonicalHistogram(context, series[0], plotLeft, plotTop, plotWidth, plotHeight, payload.chartType === 'pareto');
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'box-whisker') {
+    drawCanonicalBoxWhisker(context, series, plotLeft, plotTop, plotWidth, plotHeight);
+    drawCanonicalLegend(context, series, width, height, legendPosition);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'waterfall') {
+    drawCanonicalWaterfall(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'funnel') {
+    drawCanonicalFunnel(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'stock') {
+    drawCanonicalStock(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'surface') {
+    drawCanonicalSurface(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'radar') {
+    drawCanonicalRadar(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
+    drawCanonicalLegend(context, series, width, height, legendPosition);
+    context.restore();
+    return;
+  }
+  if (payload.chartType === 'map') {
+    drawCanonicalMap(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
+    context.restore();
+    return;
+  }
   if (payload.chartType === "column" || payload.chartType === "bar" || payload.chartType === "combo") {
     const categorySize = (payload.chartType === "bar" ? plotHeight : plotWidth) / categoryCount;
     const columnSeries = payload.chartType === "combo" ? series.slice(1) : series;
@@ -787,7 +792,7 @@ function drawCanonicalChartOnCanvas(options: {
     if (payload.chartType === "combo" && series.length > 0) {
       drawCanonicalLineSeries(context, series[0]!, categories, plotLeft, plotTop, plotWidth, plotHeight, yFor, "#2563eb", false);
     }
-  } else if (payload.chartType !== "scatter") {
+  } else if (payload.chartType === 'line' || payload.chartType === 'area') {
     for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex += 1) {
       const current = series[seriesIndex]!;
       const lineSeries = stacked
@@ -796,7 +801,7 @@ function drawCanonicalChartOnCanvas(options: {
       drawCanonicalLineSeries(context, lineSeries, categories, plotLeft, plotTop, plotWidth, plotHeight, yFor, current.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!, payload.chartType === "area");
     }
   }
-  if (payload.chartType === "scatter") {
+  if (payload.chartType === "scatter" || payload.chartType === 'bubble') {
     for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex += 1) {
       const current = series[seriesIndex]!;
       context.fillStyle = current.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
@@ -804,13 +809,287 @@ function drawCanonicalChartOnCanvas(options: {
         const pointX = plotLeft + (categoryIndex / Math.max(1, categoryCount - 1)) * plotWidth;
         const pointY = yFor(current.values[categoryIndex] ?? 0);
         context.beginPath();
-        context.arc(pointX, pointY, 4, 0, Math.PI * 2);
+        const radius = payload.chartType === 'bubble' ? Math.max(3, Math.min(14, Math.sqrt(Math.abs(current.values[categoryIndex] ?? 0)))) : 4;
+        context.arc(pointX, pointY, radius, 0, Math.PI * 2);
         context.fill();
       }
     }
   }
   drawCanonicalLegend(context, series, width, height, legendPosition);
   context.restore();
+}
+
+function numericSeriesValues(series: CanvasChartSeries | undefined): number[] {
+  return (series?.values ?? []).filter((value) => Number.isFinite(value));
+}
+
+function drawCanonicalTreemap(context: CanvasRenderingContext2D, series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const items = series.flatMap((entry, seriesIndex) => entry.values.map((value, valueIndex) => ({ name: `${entry.name} ${valueIndex + 1}`, value: Math.abs(value), color: entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]! }))).filter((item) => item.value > 0);
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  if (total <= 0) return;
+  let x = left;
+  for (const item of items) {
+    const itemWidth = width * (item.value / total);
+    context.fillStyle = item.color;
+    context.fillRect(x, top, Math.max(1, itemWidth - 1), height);
+    if (itemWidth > 42) {
+      context.fillStyle = '#ffffff';
+      context.font = '10px Segoe UI, sans-serif';
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText(item.name, x + itemWidth / 2, top + height / 2, Math.max(8, itemWidth - 6));
+    }
+    x += itemWidth;
+  }
+}
+
+function drawCanonicalSunburst(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const centerX = left + width / 2;
+  const centerY = top + height / 2;
+  const outerRadius = Math.max(8, Math.min(width, height) * 0.44);
+  const ringWidth = outerRadius / Math.max(1, series.length + 1);
+  series.forEach((entry, ringIndex) => {
+    const values = entry.values.map((value) => Math.abs(value));
+    const total = values.reduce((sum, value) => sum + value, 0) || 1;
+    let angle = -Math.PI / 2;
+    values.forEach((value, index) => {
+      const sweep = Math.PI * 2 * value / total;
+      context.beginPath();
+      context.arc(centerX, centerY, ringWidth * (ringIndex + 2), angle, angle + sweep);
+      context.arc(centerX, centerY, ringWidth * (ringIndex + 1), angle + sweep, angle, true);
+      context.closePath();
+      context.fillStyle = CHART_PALETTE[(ringIndex + index) % CHART_PALETTE.length]!;
+      context.globalAlpha = Math.max(0.45, 1 - ringIndex * 0.12);
+      context.fill();
+      context.globalAlpha = 1;
+      if (ringIndex === series.length - 1 && sweep > 0.45) {
+        const mid = angle + sweep / 2;
+        context.fillStyle = '#334155';
+        context.font = '9px Segoe UI, sans-serif';
+        context.textAlign = 'center';
+        context.fillText(categories[index] ?? String(index + 1), centerX + Math.cos(mid) * outerRadius * 0.78, centerY + Math.sin(mid) * outerRadius * 0.78, ringWidth * 2.3);
+      }
+      angle += sweep;
+    });
+  });
+}
+
+function drawCanonicalHistogram(context: CanvasRenderingContext2D, series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number, pareto: boolean): void {
+  const values = numericSeriesValues(series).slice().sort((a: number, b: number) => a - b);
+  if (!values.length) return;
+  const binCount = Math.max(1, Math.min(12, Math.ceil(Math.sqrt(values.length))));
+  const minimum = values[0]!;
+  const maximum = values[values.length - 1]!;
+  const span = Math.max(1, maximum - minimum);
+  const counts = Array.from({ length: binCount }, () => 0);
+  for (const value of values) {
+    const bucket = Math.min(binCount - 1, Math.floor((value - minimum) / span * binCount));
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
+  }
+  const maxCount = Math.max(1, ...counts);
+  const binWidth = width / binCount;
+  counts.forEach((count, index) => {
+    const barHeight = count / maxCount * height;
+    context.fillStyle = series?.color ?? '#3b82f6';
+    context.fillRect(left + index * binWidth, top + height - barHeight, Math.max(1, binWidth - 1), barHeight);
+  });
+  if (pareto) {
+    let cumulative = 0;
+    context.beginPath();
+    counts.forEach((count, index) => {
+      cumulative += count;
+      const x = left + (index + 0.5) * binWidth;
+      const y = top + height * (1 - cumulative / values.length);
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    });
+    context.strokeStyle = '#dc2626';
+    context.lineWidth = 2;
+    context.stroke();
+  }
+}
+
+function quartile(sorted: number[], ratio: number): number {
+  if (!sorted.length) return 0;
+  const position = (sorted.length - 1) * ratio;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (position - lower);
+}
+
+function drawCanonicalBoxWhisker(context: CanvasRenderingContext2D, series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const all = series.flatMap((entry) => numericSeriesValues(entry));
+  if (!all.length) return;
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const span = Math.max(1, max - min);
+  const yFor = (value: number) => top + height - (value - min) / span * height;
+  const slot = width / Math.max(1, series.length);
+  series.forEach((entry, index) => {
+  const values = numericSeriesValues(entry).slice().sort((a: number, b: number) => a - b);
+    if (!values.length) return;
+    const q1 = quartile(values, 0.25);
+    const median = quartile(values, 0.5);
+    const q3 = quartile(values, 0.75);
+    const x = left + slot * (index + 0.5);
+    const boxWidth = Math.max(10, slot * 0.45);
+    context.strokeStyle = entry.color ?? CHART_PALETTE[index % CHART_PALETTE.length]!;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(x, yFor(values[0]!));
+    context.lineTo(x, yFor(values[values.length - 1]!));
+    context.stroke();
+    context.strokeRect(x - boxWidth / 2, yFor(q3), boxWidth, Math.max(1, yFor(q1) - yFor(q3)));
+    context.beginPath();
+    context.moveTo(x - boxWidth / 2, yFor(median));
+    context.lineTo(x + boxWidth / 2, yFor(median));
+    context.stroke();
+  });
+}
+
+function drawCanonicalWaterfall(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
+  const values = numericSeriesValues(series);
+  if (!values.length) return;
+  const totals: number[] = [0];
+  for (const value of values) totals.push(totals[totals.length - 1]! + value);
+  const min = Math.min(0, ...totals);
+  const max = Math.max(0, ...totals);
+  const span = Math.max(1, max - min);
+  const yFor = (value: number) => top + height - (value - min) / span * height;
+  const slot = width / values.length;
+  values.forEach((value, index) => {
+    const start = totals[index]!;
+    const end = totals[index + 1]!;
+    context.fillStyle = value >= 0 ? '#10b981' : '#ef4444';
+    context.fillRect(left + index * slot + slot * 0.16, yFor(Math.max(start, end)), slot * 0.68, Math.max(1, Math.abs(yFor(start) - yFor(end))));
+    context.fillStyle = '#64748b';
+    context.font = '9px Segoe UI, sans-serif';
+    context.textAlign = 'center';
+    context.fillText(categories[index] ?? String(index + 1), left + (index + 0.5) * slot, top + height + 11, slot - 2);
+  });
+}
+
+function drawCanonicalFunnel(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
+  const values = numericSeriesValues(series).map(Math.abs);
+  if (!values.length) return;
+  const max = Math.max(1, ...values);
+  const bandHeight = height / values.length;
+  values.forEach((value, index) => {
+    const currentWidth = width * value / max;
+    const nextWidth = width * (values[index + 1] ?? value) / max;
+    const center = left + width / 2;
+    context.beginPath();
+    context.moveTo(center - currentWidth / 2, top + index * bandHeight);
+    context.lineTo(center + currentWidth / 2, top + index * bandHeight);
+    context.lineTo(center + nextWidth / 2, top + (index + 1) * bandHeight - 1);
+    context.lineTo(center - nextWidth / 2, top + (index + 1) * bandHeight - 1);
+    context.closePath();
+    context.fillStyle = CHART_PALETTE[index % CHART_PALETTE.length]!;
+    context.fill();
+    context.fillStyle = '#ffffff';
+    context.font = '10px Segoe UI, sans-serif';
+    context.textAlign = 'center';
+    context.fillText(`${categories[index] ?? index + 1}: ${value}`, center, top + (index + 0.55) * bandHeight, Math.max(12, currentWidth - 4));
+  });
+}
+
+function drawCanonicalStock(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const high = series[0]?.values ?? [];
+  const low = series[1]?.values ?? [];
+  const close = series[2]?.values ?? series[0]?.values ?? [];
+  const all = [...high, ...low, ...close].filter(Number.isFinite);
+  if (!all.length) return;
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const span = Math.max(1, max - min);
+  const yFor = (value: number) => top + height - (value - min) / span * height;
+  const count = Math.max(1, categories.length, high.length, low.length);
+  const slot = width / count;
+  for (let index = 0; index < count; index += 1) {
+    const x = left + (index + 0.5) * slot;
+    const hi = high[index] ?? close[index] ?? 0;
+    const lo = low[index] ?? close[index] ?? 0;
+    const last = close[index] ?? hi;
+    context.strokeStyle = '#334155';
+    context.beginPath();
+    context.moveTo(x, yFor(hi));
+    context.lineTo(x, yFor(lo));
+    context.stroke();
+    context.fillStyle = last >= (close[index - 1] ?? last) ? '#10b981' : '#ef4444';
+    context.fillRect(x - Math.max(2, slot * 0.15), yFor(last) - 2, Math.max(4, slot * 0.3), 4);
+  }
+}
+
+function drawCanonicalSurface(context: CanvasRenderingContext2D, _categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const rows = series.length;
+  const columns = Math.max(0, ...series.map((entry) => entry.values.length));
+  const all = series.flatMap((entry) => entry.values).filter(Number.isFinite);
+  if (!rows || !columns || !all.length) return;
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const span = Math.max(1, max - min);
+  const cellWidth = width / columns;
+  const cellHeight = height / rows;
+  series.forEach((entry, row) => entry.values.forEach((value, column) => {
+    const ratio = (value - min) / span;
+    const red = Math.round(239 * ratio + 37 * (1 - ratio));
+    const green = Math.round(68 * ratio + 99 * (1 - ratio));
+    const blue = Math.round(68 * ratio + 235 * (1 - ratio));
+    context.fillStyle = `rgb(${red},${green},${blue})`;
+    context.fillRect(left + column * cellWidth, top + row * cellHeight, Math.ceil(cellWidth), Math.ceil(cellHeight));
+  }));
+}
+
+function drawCanonicalRadar(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
+  const count = Math.max(3, categories.length, ...series.map((entry) => entry.values.length));
+  const max = Math.max(1, ...series.flatMap((entry) => entry.values.map(Math.abs)));
+  const centerX = left + width / 2;
+  const centerY = top + height / 2;
+  const radius = Math.min(width, height) * 0.43;
+  for (let ring = 1; ring <= 4; ring += 1) {
+    context.beginPath();
+    for (let index = 0; index < count; index += 1) {
+      const angle = -Math.PI / 2 + Math.PI * 2 * index / count;
+      const r = radius * ring / 4;
+      const x = centerX + Math.cos(angle) * r;
+      const y = centerY + Math.sin(angle) * r;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.closePath();
+    context.strokeStyle = '#cbd5e1';
+    context.stroke();
+  }
+  series.forEach((entry, seriesIndex) => {
+    context.beginPath();
+    for (let index = 0; index < count; index += 1) {
+      const angle = -Math.PI / 2 + Math.PI * 2 * index / count;
+      const r = radius * Math.abs(entry.values[index] ?? 0) / max;
+      const x = centerX + Math.cos(angle) * r;
+      const y = centerY + Math.sin(angle) * r;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.closePath();
+    context.strokeStyle = entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
+    context.globalAlpha = 0.8;
+    context.stroke();
+    context.globalAlpha = 0.16;
+    context.fillStyle = entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
+    context.fill();
+    context.globalAlpha = 1;
+  });
+}
+
+function drawCanonicalMap(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
+  context.strokeStyle = '#b91c1c';
+  context.lineWidth = 1.5;
+  context.strokeRect(left, top, width, height);
+  context.fillStyle = '#b91c1c';
+  context.font = '11px Segoe UI, sans-serif';
+  context.textAlign = 'left';
+  context.textBaseline = 'top';
+  const reason = categories.length && numericSeriesValues(series).length
+    ? 'UNSUPPORTED_FEATURE: geographic regions are not resolved'
+    : 'INVALID_CHART_SOURCE: Map requires region and numeric value fields';
+  context.fillText(reason, left + 8, top + 8, Math.max(10, width - 16));
 }
 
 function drawCanonicalLineSeries(
@@ -1174,7 +1453,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets);
+      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables);
       if (data.brokenReference) {
         drawables.push({
           kind: 'shape',
@@ -1199,15 +1478,6 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         bounds,
         draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload, bounds: rect, categories: data.categories, series }),
       });
-      continue;
-    }
-    if (payload.kind === 'data-chart') {
-      const data = dataChartSeries(payload, tables, getSheet);
-      const chartPayload: ChartDrawingPayload = {
-        kind: 'chart', chartId: drawing.payloadId, chartType: payload.plotType === 'radar' || payload.plotType === 'treemap' || payload.plotType === 'funnel' ? 'column' : payload.plotType,
-        sourceRanges: [], elements: { title: payload.inspector.title, legend: { visible: payload.inspector.legendPosition !== 'none', position: payload.inspector.legendPosition === 'none' ? 'bottom' : payload.inspector.legendPosition }, dataLabels: { visible: payload.inspector.showDataLabels }, hiddenData: 'show', chartArea: payload.inspector.chartArea, plotArea: payload.inspector.plotArea, valueAxis: { id: 'value', position: 'left', title: payload.inspector.axis.valueTitle, majorGridlines: { visible: payload.inspector.axis.showGridlines, color: '#e2e8f0', width: 1, dash: 'solid' } }, categoryAxis: { id: 'category', position: 'bottom', title: payload.inspector.axis.categoryTitle, majorGridlines: { visible: false } } },
-      };
-      drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload: chartPayload, bounds: rect, categories: data.categories, series: data.series }) });
       continue;
     }
     if (payload.kind === 'camera') {

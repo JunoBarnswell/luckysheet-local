@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import type { ChartDrawingPayload, DrawingObject, DrawingPayload, RangeRef } from '@react-sheets/core-model';
+import { CHART_SUBTYPES_BY_TYPE, defaultChartSubtype, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type RangeRef } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
@@ -10,12 +10,12 @@ export interface ChartPanelProps {
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
   defaultRange?: string;
-  onInsertChart: (type: ChartDrawingPayload['chartType'], sourceRange: RangeRef, title: string, stacked: NonNullable<ChartDrawingPayload['stacked']>) => void;
+  onInsertChart: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], sourceRange: RangeRef, title: string, stacked: NonNullable<ChartDrawingPayload['stacked']>) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
 }
 
-const chartTypes: readonly ChartDrawingPayload['chartType'][] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'];
+const chartTypes: readonly ChartDrawingPayload['chartType'][] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'bubble', 'treemap', 'sunburst', 'histogram', 'pareto', 'box-whisker', 'waterfall', 'funnel', 'stock', 'surface', 'radar', 'map', 'combo'];
 
 function parseA1Range(value: string, sheetId: string): RangeRef | undefined {
   const range = parseRangeInput(value, sheetId);
@@ -41,6 +41,7 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   const selectedEntry = chartEntries.find(({ drawing }) => selectedDrawingIds.includes(drawing.id));
   const selectedPayload = selectedEntry?.payload;
   const [type, setType] = useState<ChartDrawingPayload['chartType']>('column');
+  const [subtype, setSubtype] = useState<ChartDrawingPayload['subtype']>('clustered');
   const [stacked, setStacked] = useState<NonNullable<ChartDrawingPayload['stacked']>>('none');
   const [title, setTitle] = useState('Sales Overview');
   const [rangeInput, setRangeInput] = useState(defaultRange ?? 'A1:C5');
@@ -48,13 +49,15 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   const sourceRange = parseA1Range(rangeInput, sheetId);
   const selectedId = selectedPayload?.chartId;
   const selectedCategoryRange = useMemo(() => parseA1Range(categoryInput, sheetId), [categoryInput, sheetId]);
+  const primaryWorksheetRange = selectedPayload?.source.kind === 'worksheet-ranges' ? selectedPayload.source.ranges[0] : undefined;
 
   useEffect(() => {
     if (!selectedPayload) return;
     setType(selectedPayload.chartType);
+    setSubtype(selectedPayload.subtype);
     setStacked(selectedPayload.stacked ?? 'none');
     setTitle(selectedPayload.elements.title ?? '');
-    const source = selectedPayload.sourceRanges[0];
+    const source = selectedPayload.source.kind === 'worksheet-ranges' ? selectedPayload.source.ranges[0] : selectedPayload.source.kind === 'report-range' ? selectedPayload.source.range : undefined;
     setRangeInput(formatRange(source));
     const category = selectedPayload.categoryRange;
     setCategoryInput(formatRange(category));
@@ -66,11 +69,11 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   };
   const updateSeries = (series: NonNullable<ChartDrawingPayload['series']>, categoryRange = selectedCategoryRange) => {
     if (!selectedPayload) return;
-    onCommand({ commandId: 'chart.setSeries', params: { sheetId, chartId: selectedPayload.chartId, sourceRanges: selectedPayload.sourceRanges, series, categoryRange } });
+    onCommand({ commandId: 'chart.setSeries', params: { sheetId, chartId: selectedPayload.chartId, source: selectedPayload.source, series, categoryRange } });
   };
   const handleCreate = () => {
     if (!sourceRange) return;
-    onInsertChart(type, sourceRange, title, stacked);
+    onInsertChart(type, subtype, sourceRange, title, stacked);
   };
 
   return (
@@ -79,16 +82,19 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
       <PanelBody className="p-4"><Stack gap="md">
         {selectedPayload ? <>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Title</Text><TextInput value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => updateElements({ title })} /></Box>
-          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Type</Text><Select value={selectedPayload.chartType} onChange={(event) => onCommand({ commandId: 'chart.setType', params: { sheetId, chartId: selectedPayload.chartId, chartType: event.target.value } })} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{entry[0]!.toUpperCase() + entry.slice(1)}</option>)}</Select></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Type</Text><Select value={selectedPayload.chartType} onChange={(event) => { const chartType = event.target.value as ChartDrawingPayload['chartType']; onCommand({ commandId: 'chart.setType', params: { sheetId, chartId: selectedPayload.chartId, chartType, subtype: defaultChartSubtype(chartType) } }); }} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{entry[0]!.toUpperCase() + entry.slice(1)}</option>)}</Select></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Subtype</Text><Select value={selectedPayload.subtype} onChange={(event) => onCommand({ commandId: 'chart.setType', params: { sheetId, chartId: selectedPayload.chartId, chartType: selectedPayload.chartType, subtype: event.target.value } })} sizeVariant="sm">{CHART_SUBTYPES_BY_TYPE[selectedPayload.chartType].map((entry) => <option key={entry} value={entry}>{entry}</option>)}</Select></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Legend</Text><Select value={selectedPayload.elements.legend?.visible ? selectedPayload.elements.legend.position : 'none'} onChange={(event) => updateElements({ legend: event.target.value === 'none' ? { visible: false, position: 'bottom' } : { visible: true, position: event.target.value as 'top' | 'bottom' | 'left' | 'right' } })} sizeVariant="sm">{['none', 'top', 'bottom', 'left', 'right'].map((entry) => <option key={entry} value={entry}>{entry}</option>)}</Select></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Data Labels</Text><Button variant="secondary" size="sm" onClick={() => updateElements({ dataLabels: { ...(selectedPayload.elements.dataLabels ?? { visible: false }), visible: !selectedPayload.elements.dataLabels?.visible } })}>{selectedPayload.elements.dataLabels?.visible ? 'Hide labels' : 'Show labels'}</Button></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Hidden/Filtered Data</Text><Select value={selectedPayload.elements.hiddenData} onChange={(event) => updateElements({ hiddenData: event.target.value as ChartDrawingPayload['elements']['hiddenData'] })} sizeVariant="sm"><option value="show">Show all data</option><option value="hideRows">Hide hidden rows</option><option value="hideColumns">Hide hidden columns</option></Select></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Value Axis</Text><Stack gap="xs"><TextInput value={selectedPayload.elements.valueAxis?.title ?? ''} placeholder="Axis title" onChange={(event) => updateElements({ valueAxis: { ...(selectedPayload.elements.valueAxis ?? { id: 'value', position: 'left' }), title: event.target.value } })} /><Button variant="secondary" size="sm" onClick={() => updateElements({ valueAxis: { ...(selectedPayload.elements.valueAxis ?? { id: 'value', position: 'left' }), majorGridlines: { visible: selectedPayload.elements.valueAxis?.majorGridlines?.visible === false } } })}>{selectedPayload.elements.valueAxis?.majorGridlines?.visible === false ? 'Show gridlines' : 'Hide gridlines'}</Button></Stack></Box>
-          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Select Data / Series</Text><Stack gap="xs">{(selectedPayload.series ?? []).map((series, index, all) => <Box key={`${series.name}-${index}`} className="flex items-center gap-1 rounded border border-slate-200 p-1"><TextInput value={series.name} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, name: event.target.value } : entry))} /><Select value={series.chartType ?? (selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType)} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, chartType: event.target.value as Exclude<ChartDrawingPayload['chartType'], 'combo'> } : entry))} sizeVariant="sm"><option value="column">Column</option><option value="bar">Bar</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option></Select><Select value={series.axis ?? 'primary'} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, axis: event.target.value as 'primary' | 'secondary' } : entry))} sizeVariant="sm"><option value="primary">Primary</option><option value="secondary">Secondary</option></Select><Button icon="arrow-up" iconOnly variant="ghost" size="xs" disabled={index === 0} onClick={() => { const next = [...all]; [next[index - 1], next[index]] = [next[index]!, next[index - 1]!]; updateSeries(next); }} /><Button icon="arrow-down" iconOnly variant="ghost" size="xs" disabled={index === all.length - 1} onClick={() => { const next = [...all]; [next[index], next[index + 1]] = [next[index + 1]!, next[index]!]; updateSeries(next); }} /><Button icon="trash" iconOnly variant="ghost" size="xs" onClick={() => updateSeries(all.filter((_entry, entryIndex) => entryIndex !== index))} /></Box>)}<Button variant="secondary" size="sm" onClick={() => { const range = selectedPayload.sourceRanges[0]; if (range) updateSeries([...(selectedPayload.series ?? []), { name: `Series ${(selectedPayload.series?.length ?? 0) + 1}`, range: structuredClone(range), chartType: selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType }]); }}>Add series</Button></Stack></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Data source</Text><Text size="xs" tone="muted">{selectedPayload.source.kind}</Text></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Select Data / Series</Text><Stack gap="xs">{(selectedPayload.series ?? []).map((series, index, all) => <Box key={`${series.name}-${index}`} className="flex items-center gap-1 rounded border border-slate-200 p-1"><TextInput value={series.name} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, name: event.target.value } : entry))} /><Select value={series.chartType ?? (selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType)} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, chartType: event.target.value as Exclude<ChartDrawingPayload['chartType'], 'combo'> } : entry))} sizeVariant="sm"><option value="column">Column</option><option value="bar">Bar</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option></Select><Select value={series.axis ?? 'primary'} onChange={(event) => updateSeries(all.map((entry, entryIndex) => entryIndex === index ? { ...entry, axis: event.target.value as 'primary' | 'secondary' } : entry))} sizeVariant="sm"><option value="primary">Primary</option><option value="secondary">Secondary</option></Select><Button icon="arrow-up" iconOnly variant="ghost" size="xs" disabled={index === 0} onClick={() => { const next = [...all]; [next[index - 1], next[index]] = [next[index]!, next[index - 1]!]; updateSeries(next); }} /><Button icon="arrow-down" iconOnly variant="ghost" size="xs" disabled={index === all.length - 1} onClick={() => { const next = [...all]; [next[index], next[index + 1]] = [next[index + 1]!, next[index]!]; updateSeries(next); }} /><Button icon="trash" iconOnly variant="ghost" size="xs" onClick={() => updateSeries(all.filter((_entry, entryIndex) => entryIndex !== index))} /></Box>)}{primaryWorksheetRange ? <Button variant="secondary" size="sm" onClick={() => updateSeries([...(selectedPayload.series ?? []), { name: `Series ${(selectedPayload.series?.length ?? 0) + 1}`, range: structuredClone(primaryWorksheetRange), chartType: selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType }])}>Add series</Button> : null}</Stack></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Category Range</Text><TextInput value={categoryInput} onChange={(event) => setCategoryInput(event.target.value)} onBlur={() => updateSeries(selectedPayload.series ?? [], selectedCategoryRange)} placeholder="A2:A5" /></Box>
         </> : <>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Title</Text><TextInput value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Monthly Revenue" /></Box>
-          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Type</Text><Select value={type} onChange={(event) => setType(event.target.value as ChartDrawingPayload['chartType'])} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{entry[0]!.toUpperCase() + entry.slice(1)}</option>)}</Select></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Chart Type</Text><Select value={type} onChange={(event) => { const next = event.target.value as ChartDrawingPayload['chartType']; setType(next); setSubtype(defaultChartSubtype(next)); }} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{entry[0]!.toUpperCase() + entry.slice(1)}</option>)}</Select></Box>
+          <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Subtype</Text><Select value={subtype} onChange={(event) => setSubtype(event.target.value as ChartDrawingPayload['subtype'])} sizeVariant="sm">{CHART_SUBTYPES_BY_TYPE[type].map((entry) => <option key={entry} value={entry}>{entry}</option>)}</Select></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Stacking</Text><Select value={stacked} onChange={(event) => setStacked(event.target.value as NonNullable<ChartDrawingPayload['stacked']>)} sizeVariant="sm"><option value="none">Grouped</option><option value="stacked">Stacked</option><option value="percent">100% Stacked</option></Select></Box>
           <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Data Source Range</Text><TextInput value={rangeInput} onChange={(event) => setRangeInput(event.target.value)} placeholder="e.g. A1:F6" /></Box>
           <Button variant="primary" size="sm" icon="plus" disabled={!sourceRange} onClick={handleCreate}>Insert Chart to Canvas</Button>

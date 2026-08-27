@@ -99,11 +99,13 @@ export function buildCommentThread(
 }
 
 export function buildCommentReply(author: string, text: string, replyId: string): CommentReply {
+  const mentions = [...text.matchAll(/@([\w-]+)/g)].map((match) => match[1]).filter(Boolean) as string[];
   return {
     id: replyId,
     author,
     text: text.trim(),
     createdAt: new Date().toISOString(),
+    mentions,
   };
 }
 

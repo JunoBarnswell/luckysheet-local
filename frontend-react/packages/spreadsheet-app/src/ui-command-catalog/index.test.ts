@@ -82,7 +82,6 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onOpenDefinedNames: () => undefined,
     onCreateAdvancedSheet: () => undefined,
     onApplyBarcode: () => undefined,
-    onCreateDataChart: () => undefined,
     onCreateCamera: () => undefined,
     onCreateFormControl: () => undefined,
     onApplyCheckbox: () => undefined,
@@ -183,10 +182,10 @@ describe('Ribbon UI command catalog', () => {
     });
     assert.equal(getRibbonCommandDefinition('pivotFieldList').placements[0]?.tab, 'pivotAnalyze');
     assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').placements[0]?.tab, 'pivotDesign');
-    assert.deepEqual(INSERT_RIBBON_SURFACES.find((surface) => surface.id === 'tables.slicer')?.commandId, 'pivotSlicer');
+    assert.deepEqual(INSERT_RIBBON_SURFACES.find((surface) => surface.id === 'filters.slicer')?.commandId, 'pivotSlicer');
     assert.deepEqual(getRibbonCommandDefinition('pivotSlicer').placements, [
       { tab: 'pivotAnalyze', group: 'pivotAnalyze' },
-      { tab: 'insert', group: 'insertTables' },
+      { tab: 'insert', group: 'filters' },
     ]);
     for (const id of ['pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
       assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition(id), current), true, id);
@@ -320,13 +319,12 @@ describe('Ribbon UI command catalog', () => {
     const layout = RIBBON_LAYOUT_SPECS.home;
     const layoutSurfaceIds = layout.groups.flatMap((group) => collectSurfaceIds(group.children));
     const visibleSurfaceIds = [
-      'history.undo', 'history.redo',
       'clipboard.paste', 'clipboard.cut', 'clipboard.copy', 'control.format-painter',
       'control.font-family', 'control.font-size', 'control.font-increase', 'control.font-decrease', 'font.bold', 'font.italic',
-      'font.underline', 'font.strikethrough', 'control.font-borders-menu', 'control.fill-color', 'control.font-color',
+      'font.underline', 'control.font-borders-menu', 'control.fill-color', 'control.font-color', 'font.phonetic-guide', 'font.dialog-launcher',
       'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
-      'alignment.center', 'alignment.right', 'alignment.wrap', 'control.merge-menu', 'control.orientation-menu',
-      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease',
+      'alignment.center', 'alignment.right', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
+      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
       'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
       'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',
       'control.auto-sum-menu', 'editing.fill-down', 'control.clear-menu', 'editing.sort', 'editing.find',
@@ -334,29 +332,25 @@ describe('Ribbon UI command catalog', () => {
 
     assert.equal(new Set(layoutSurfaceIds).size, layoutSurfaceIds.length);
     assert.deepEqual(new Set(layoutSurfaceIds), new Set(visibleSurfaceIds));
-    assert.deepEqual(layout.groups.find((group) => group.id === 'history')?.children[0], {
-      kind: 'row',
-      id: 'history.layout',
-      children: [
-        { kind: 'surface', id: 'history.undo', surfaceId: 'history.undo' },
-        { kind: 'surface', id: 'history.redo', surfaceId: 'history.redo' },
-      ],
-    });
+    assert.equal(layout.groups.map((group) => group.id).includes('clipboard'), true);
   });
 
-  it('keeps the Insert layout explicit in the historical group and surface order', () => {
+  it('keeps the Insert layout explicit in the Excel group and surface order', () => {
     const layout = RIBBON_LAYOUT_SPECS.insert;
     assert.deepEqual(layout.groups.map((group) => group.id), [
-      'insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls',
+      'tables', 'illustrations', 'controls', 'charts', 'sparklines', 'filters', 'links', 'insertComments', 'text', 'symbols',
     ]);
     const expectedSurfaceIds = [
-      ['sheets.table-sheet', 'sheets.gantt-sheet', 'sheets.report-sheet'],
-      ['tables.worksheet-table', 'tables.pivot', 'tables.slicer'],
-      ['charts.gallery', 'charts.barcode', 'charts.sparkline'],
-      ['data-charts.insert'],
-      ['illustrations.picture', 'illustrations.shape', 'illustrations.camera', 'illustrations.controls'],
+      ['tables.pivot', 'tables.recommended-pivot', 'tables.worksheet-table', 'tables.forms'],
+      ['illustrations.picture', 'illustrations.shape', 'illustrations.icons', 'illustrations.models3d', 'illustrations.smartart', 'illustrations.screenshot'],
+      ['controls.checkbox'],
+      ['charts.recommended', 'charts.gallery', 'charts.pivot'],
+      ['sparklines.gallery'],
+      ['filters.slicer', 'filters.timeline'],
       ['links.hyperlink'],
-      ['controls.checkbox', 'controls.textbox'],
+      ['comments.threaded'],
+      ['text.textbox', 'text.header-footer', 'text.wordart', 'text.signature-line', 'text.object'],
+      ['symbols.equation', 'symbols.symbol'],
     ];
     assert.deepEqual(layout.groups.map((group) => {
       const node = group.children[0];
@@ -365,15 +359,14 @@ describe('Ribbon UI command catalog', () => {
     }), expectedSurfaceIds);
   });
 
-  it('uses SpreadJS Home appearances for history and fill-down', () => {
+  it('uses Excel Home appearances for fill-down without a History group', () => {
     const surface = (id: string) => HOME_RIBBON_SURFACES.find((entry) => entry.id === id);
-    assert.equal(surface('history.undo')?.appearance, 'small');
-    assert.equal(surface('history.redo')?.appearance, 'small');
+    assert.equal(surface('history.undo'), undefined);
     assert.equal(surface('editing.fill-down')?.appearance, 'tile');
   });
 
   it('keeps the complete HOME surface set identical across responsive breakpoints', () => {
-    const groups = ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'] as const;
+    const groups = ['clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'] as const;
     const breakpoints = ['wide', 'compact', 'narrow'] as const;
     for (const group of groups) {
       const byBreakpoint = breakpoints.map((breakpoint) => getRibbonSurfaces('home', group, breakpoint).map((surface) => surface.id));

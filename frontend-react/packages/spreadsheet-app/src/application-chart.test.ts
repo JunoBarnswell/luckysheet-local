@@ -19,7 +19,8 @@ describe('WorkbookSession chart integration', () => {
       kind: 'chart',
       chartId: 'chart-test-1',
       chartType: 'column',
-      sourceRanges: [{ sheetId, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }],
+      subtype: 'clustered',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
       elements: { title: 'Revenue', legend: { visible: true, position: 'right' }, dataLabels: { visible: true }, hiddenData: 'show' },
     });
 
@@ -59,9 +60,9 @@ describe('WorkbookSession chart integration', () => {
     const snapshot = app.getUiSnapshot();
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'chart');
-    const payload = sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { chartType?: string; sourceRanges?: unknown[] } | undefined;
+    const payload = sheet.drawingPayloads.get(drawing?.payloadId ?? '') as import('@react-sheets/core-model').ChartDrawingPayload | undefined;
     assert.equal(payload?.chartType, 'bar');
-    assert.deepEqual(payload?.sourceRanges?.[0], {
+    assert.deepEqual(payload?.source.kind === 'worksheet-ranges' ? payload.source.ranges[0] : undefined, {
       sheetId: app.getActiveSheetId(),
       startRow: 1,
       endRow: 4,

@@ -38,9 +38,9 @@ function pivotChartDrawing(pivotId: string) {
     payload: {
       kind: 'chart' as const,
       chartId: `chart-payload-${pivotId}`,
-      pivotId,
-      sourceRanges: [],
+      source: { kind: 'pivot', pivotId },
       chartType: 'column' as const,
+      subtype: 'clustered' as const,
       elements: {
         hiddenData: 'show' as const,
         legend: { visible: true, position: 'bottom' as const },

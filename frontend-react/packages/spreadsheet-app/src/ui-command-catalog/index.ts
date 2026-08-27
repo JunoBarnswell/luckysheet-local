@@ -1,6 +1,6 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
-import type { BarcodeSymbology, DataChartPlotType, SheetTableModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, SheetTableModel } from '@react-sheets/core-model';
 import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 
 export type RibbonCatalogTabId =
@@ -37,7 +37,6 @@ export type RibbonGroupId =
   | 'pageSetup'
   | 'scaleToFit'
   | 'sheetOptions'
-  | 'history'
   | 'clipboard'
   | 'font'
   | 'alignment'
@@ -46,12 +45,15 @@ export type RibbonGroupId =
   | 'cells'
   | 'editing'
   | 'illustrations'
-  | 'insertSheets'
-  | 'insertTables'
-  | 'insertCharts'
-  | 'insertDataCharts'
-  | 'insertLinks'
-  | 'insertControls'
+  | 'tables'
+  | 'controls'
+  | 'charts'
+  | 'sparklines'
+  | 'filters'
+  | 'links'
+  | 'insertComments'
+  | 'text'
+  | 'symbols'
   | 'sortFilter'
   | 'dataTools'
   | 'outline'
@@ -162,6 +164,10 @@ export type RibbonCommandId =
   | 'mergeAcross'
   | 'unmergeCells'
   | 'formatCells'
+  | 'formatCellsFont'
+  | 'formatCellsAlignment'
+  | 'formatCellsNumber'
+  | 'phoneticGuide'
   | 'numberFormatGeneral'
   | 'numberFormatCurrency'
   | 'numberFormatPercent'
@@ -202,7 +208,6 @@ export type RibbonCommandId =
   | 'ganttSheet'
   | 'reportSheet'
   | 'worksheetTable'
-  | 'dataChart'
   | 'barcode'
   | 'picture'
   | 'camera'
@@ -310,7 +315,21 @@ export type RibbonCommandId =
   | 'shapeSendBackward'
   | 'shapeBringToFront'
   | 'shapeSendToBack'
-  | 'shapeCopy';
+  | 'shapeCopy'
+  | 'recommendedPivotTables'
+  | 'forms'
+  | 'icons'
+  | 'models3d'
+  | 'smartArt'
+  | 'screenshot'
+  | 'recommendedCharts'
+  | 'threadedComment'
+  | 'headerFooter'
+  | 'wordArt'
+  | 'signatureLine'
+  | 'embeddedObject'
+  | 'equation'
+  | 'symbol';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -331,7 +350,6 @@ export type RibbonIconName =
   | 'calculator'
   | 'chart'
   | 'chart-column'
-  | 'data-chart'
   | 'camera'
   | 'checkbox'
   | 'check-circle'
@@ -479,7 +497,6 @@ export interface RibbonCommandActions {
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
-  onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: () => void;
   onApplyCheckbox: () => void;
@@ -526,7 +543,8 @@ export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
   | { type: 'intent'; intent: UiSessionIntent }
-  | { type: 'callback'; invoke: () => void };
+  | { type: 'callback'; invoke: () => void }
+  | { type: 'rejection'; error: { code: 'UNSUPPORTED_FEATURE'; feature: string; reason: string; recovery: string } };
 
 export interface RibbonCommandPlacement {
   readonly tab: RibbonCatalogTabId;
@@ -704,7 +722,6 @@ export const RIBBON_TEXT = {
     pageSetup: 'groups.pageSetup',
     scaleToFit: 'groups.scaleToFit',
     sheetOptions: 'groups.sheetOptions',
-    history: 'groups.history',
     clipboard: 'groups.clipboard',
     font: 'groups.font',
     alignment: 'groups.alignment',
@@ -713,12 +730,15 @@ export const RIBBON_TEXT = {
     cells: 'groups.cells',
     editing: 'groups.editing',
     illustrations: 'groups.illustrations',
-    insertSheets: 'groups.insertSheets',
-    insertTables: 'groups.insertTables',
-    insertCharts: 'groups.insertCharts',
-    insertDataCharts: 'groups.insertDataCharts',
-    insertLinks: 'groups.insertLinks',
-    insertControls: 'groups.insertControls',
+    tables: 'groups.tables',
+    controls: 'groups.controls',
+    charts: 'groups.charts',
+    sparklines: 'groups.sparklines',
+    filters: 'groups.filters',
+    links: 'groups.links',
+    insertComments: 'groups.insertComments',
+    text: 'groups.text',
+    symbols: 'groups.symbols',
     sortFilter: 'groups.sortFilter',
     dataTools: 'groups.dataTools',
     outline: 'groups.outline',
@@ -829,6 +849,10 @@ export const RIBBON_TEXT = {
     mergeAcross: 'commands.mergeAcross',
     unmergeCells: 'commands.unmergeCells',
     formatCells: 'commands.formatCells',
+    formatCellsFont: 'commands.formatCellsFont',
+    formatCellsAlignment: 'commands.formatCellsAlignment',
+    formatCellsNumber: 'commands.formatCellsNumber',
+    phoneticGuide: 'commands.phoneticGuide',
     numberFormatGeneral: 'commands.numberFormatGeneral',
     numberFormatCurrency: 'commands.numberFormatCurrency',
     numberFormatPercent: 'commands.numberFormatPercent',
@@ -869,7 +893,6 @@ export const RIBBON_TEXT = {
     ganttSheet: 'commands.ganttSheet',
     reportSheet: 'commands.reportSheet',
     worksheetTable: 'commands.worksheetTable',
-    dataChart: 'commands.dataChart',
     barcode: 'commands.barcode',
     picture: 'commands.picture',
     camera: 'commands.camera',
@@ -931,6 +954,20 @@ export const RIBBON_TEXT = {
     shapeCopy: 'commands.shapeCopy',
     sparklineDesign: 'commands.sparklineDesign',
     shapesLines: 'commands.shapesLines',
+    recommendedPivotTables: 'commands.recommendedPivotTables',
+    forms: 'commands.forms',
+    icons: 'commands.icons',
+    models3d: 'commands.models3d',
+    smartArt: 'commands.smartArt',
+    screenshot: 'commands.screenshot',
+    recommendedCharts: 'commands.recommendedCharts',
+    threadedComment: 'commands.threadedComment',
+    headerFooter: 'commands.headerFooter',
+    wordArt: 'commands.wordArt',
+    signatureLine: 'commands.signatureLine',
+    embeddedObject: 'commands.embeddedObject',
+    equation: 'commands.equation',
+    symbol: 'commands.symbol',
     deleteRow: 'commands.deleteRow',
     deleteColumn: 'commands.deleteColumn',
     sortAscending: 'commands.sortAscending',
@@ -999,7 +1036,6 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('pageSetup', 'pageLayout', 10),
   group('scaleToFit', 'pageLayout', 30),
   group('sheetOptions', 'pageLayout', 50),
-  group('history', 'home', 10),
   group('clipboard', 'home', 10),
   group('font', 'home', 20),
   group('alignment', 'home', 30),
@@ -1007,13 +1043,16 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('styles', 'home', 35),
   group('cells', 'home', 40),
   group('editing', 'home', 50),
-  group('insertSheets', 'insert', 10),
-  group('insertTables', 'insert', 20),
-  group('insertCharts', 'insert', 30),
-  group('insertDataCharts', 'insert', 40),
-  group('illustrations', 'insert', 50),
-  group('insertLinks', 'insert', 60),
-  group('insertControls', 'insert', 70),
+  group('tables', 'insert', 10),
+  group('illustrations', 'insert', 20),
+  group('controls', 'insert', 30),
+  group('charts', 'insert', 40),
+  group('sparklines', 'insert', 50),
+  group('filters', 'insert', 60),
+  group('links', 'insert', 70),
+  group('insertComments', 'insert', 80),
+  group('text', 'insert', 90),
+  group('symbols', 'insert', 100),
   group('sortFilter', 'data', 10),
   group('dataTools', 'data', 20),
   group('findTransform', 'data', 30),
@@ -1159,13 +1198,11 @@ const homeControl = (
 /** Single render catalogue for the Home tab. Components must not invent
  * command placements independently from this declaration. */
 export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('home', 'history.undo', 'history', 10, 'small', 'undo'),
-  ribbonSurface('home', 'history.redo', 'history', 20, 'small', 'redo'),
   ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste'),
   ribbonSurface('home', 'clipboard.cut', 'clipboard', 20, 'small', 'cut'),
   ribbonSurface('home', 'clipboard.copy', 'clipboard', 30, 'small', 'copy'),
   homeControl('format-painter', 'clipboard', 40),
-  ribbonSurface('home', 'clipboard.paste-special', 'clipboard', 50, 'small', 'pasteSpecial'),
+  ribbonSurface('home', 'clipboard.paste-special', 'clipboard', 50, 'menu', 'pasteSpecial', ['wide', 'compact', 'narrow'], undefined, 'clipboard.paste'),
   homeControl('font-family', 'font', 10),
   homeControl('font-size', 'font', 20),
   homeControl('font-increase', 'font', 30),
@@ -1173,7 +1210,6 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.bold', 'font', 50, 'small', 'bold'),
   ribbonSurface('home', 'font.italic', 'font', 60, 'small', 'italic'),
   ribbonSurface('home', 'font.underline', 'font', 70, 'small', 'underline'),
-  ribbonSurface('home', 'font.strikethrough', 'font', 80, 'small', 'strikethrough'),
   homeControl('font-borders-menu', 'font', 85),
   ribbonSurface('home', 'font.borders.all', 'font', 851, 'menu', 'allBorders', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   ribbonSurface('home', 'font.borders.top', 'font', 852, 'menu', 'borderTop', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
@@ -1187,6 +1223,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.borders.none', 'font', 860, 'menu', 'borderNone', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
+  ribbonSurface('home', 'font.phonetic-guide', 'font', 105, 'small', 'phoneticGuide'),
+  ribbonSurface('home', 'font.dialog-launcher', 'font', 110, 'small', 'formatCellsFont'),
   homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1215,6 +1253,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.merge-cells', 'alignment', 62, 'menu', 'mergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
   ribbonSurface('home', 'alignment.merge-across', 'alignment', 63, 'menu', 'mergeAcross', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
   ribbonSurface('home', 'alignment.unmerge', 'alignment', 64, 'menu', 'unmergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.dialog-launcher', 'alignment', 99, 'small', 'formatCellsAlignment'),
   homeControl('number-format', 'number', 10),
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
@@ -1222,6 +1261,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.decimal', 'number', 50, 'menu', 'numberFormatDecimal', ['wide', 'compact', 'narrow'], undefined, 'control.number-format'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
+  ribbonSurface('home', 'number.dialog-launcher', 'number', 99, 'small', 'formatCellsNumber'),
   homeControl('cell-styles-menu', 'styles', 5),
   ribbonSurface('home', 'styles.cell-style.normal', 'styles', 11, 'menu', 'cellStyleNormal', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.cell-style.good', 'styles', 12, 'menu', 'cellStyleGood', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
@@ -1278,23 +1318,32 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('insert', 'sheets.table-sheet', 'insertSheets', 10, 'large', 'tableSheet'),
-  ribbonSurface('insert', 'sheets.gantt-sheet', 'insertSheets', 20, 'large', 'ganttSheet'),
-  ribbonSurface('insert', 'sheets.report-sheet', 'insertSheets', 30, 'large', 'reportSheet'),
-  ribbonSurface('insert', 'tables.worksheet-table', 'insertTables', 10, 'split', 'worksheetTable'),
-  ribbonSurface('insert', 'tables.pivot', 'insertTables', 20, 'large', 'pivotTable'),
-  ribbonSurface('insert', 'tables.slicer', 'insertTables', 30, 'large', 'pivotSlicer'),
-  ribbonSurface('insert', 'charts.gallery', 'insertCharts', 10, 'gallery', 'chartBuilder'),
-  ribbonSurface('insert', 'charts.barcode', 'insertCharts', 20, 'large', 'barcode'),
-  ribbonSurface('insert', 'charts.sparkline', 'insertCharts', 30, 'split', 'sparkline'),
-  ribbonSurface('insert', 'data-charts.insert', 'insertDataCharts', 10, 'large', 'dataChart'),
+  ribbonSurface('insert', 'tables.pivot', 'tables', 10, 'large', 'pivotTable'),
+  ribbonSurface('insert', 'tables.recommended-pivot', 'tables', 20, 'large', 'recommendedPivotTables'),
+  ribbonSurface('insert', 'tables.worksheet-table', 'tables', 30, 'large', 'worksheetTable'),
+  ribbonSurface('insert', 'tables.forms', 'tables', 40, 'large', 'forms'),
   ribbonSurface('insert', 'illustrations.picture', 'illustrations', 10, 'split', 'picture'),
   ribbonSurface('insert', 'illustrations.shape', 'illustrations', 20, 'split', 'shapesLines'),
-  ribbonSurface('insert', 'illustrations.camera', 'illustrations', 30, 'large', 'camera'),
-  ribbonSurface('insert', 'illustrations.controls', 'illustrations', 40, 'gallery', 'formControls'),
-  ribbonSurface('insert', 'links.hyperlink', 'insertLinks', 10, 'large', 'hyperlink'),
-  ribbonSurface('insert', 'controls.checkbox', 'insertControls', 10, 'large', 'checkbox'),
-  ribbonSurface('insert', 'controls.textbox', 'insertControls', 20, 'large', 'textbox'),
+  ribbonSurface('insert', 'illustrations.icons', 'illustrations', 30, 'large', 'icons'),
+  ribbonSurface('insert', 'illustrations.models3d', 'illustrations', 40, 'large', 'models3d'),
+  ribbonSurface('insert', 'illustrations.smartart', 'illustrations', 50, 'large', 'smartArt'),
+  ribbonSurface('insert', 'illustrations.screenshot', 'illustrations', 60, 'large', 'screenshot'),
+  ribbonSurface('insert', 'controls.checkbox', 'controls', 10, 'large', 'checkbox'),
+  ribbonSurface('insert', 'charts.recommended', 'charts', 10, 'large', 'recommendedCharts'),
+  ribbonSurface('insert', 'charts.gallery', 'charts', 20, 'gallery', 'chartBuilder'),
+  ribbonSurface('insert', 'charts.pivot', 'charts', 30, 'large', 'pivotChart'),
+  ribbonSurface('insert', 'sparklines.gallery', 'sparklines', 10, 'gallery', 'sparkline'),
+  ribbonSurface('insert', 'filters.slicer', 'filters', 10, 'large', 'pivotSlicer'),
+  ribbonSurface('insert', 'filters.timeline', 'filters', 20, 'large', 'pivotTimeline'),
+  ribbonSurface('insert', 'links.hyperlink', 'links', 10, 'large', 'hyperlink'),
+  ribbonSurface('insert', 'comments.threaded', 'insertComments', 10, 'large', 'threadedComment'),
+  ribbonSurface('insert', 'text.textbox', 'text', 10, 'large', 'textbox'),
+  ribbonSurface('insert', 'text.header-footer', 'text', 20, 'large', 'headerFooter'),
+  ribbonSurface('insert', 'text.wordart', 'text', 30, 'large', 'wordArt'),
+  ribbonSurface('insert', 'text.signature-line', 'text', 40, 'large', 'signatureLine'),
+  ribbonSurface('insert', 'text.object', 'text', 50, 'large', 'embeddedObject'),
+  ribbonSurface('insert', 'symbols.equation', 'symbols', 10, 'large', 'equation'),
+  ribbonSurface('insert', 'symbols.symbol', 'symbols', 20, 'large', 'symbol'),
 ] as const;
 
 export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1330,7 +1379,6 @@ const homeSurfaceNode = (surfaceId: string): RibbonLayoutNode => ({ kind: 'surfa
 const homeRibbonLayout = (): RibbonLayoutSpec => ({
   tab: 'home',
   groups: [
-    groupSpec('history', 10, rowNode('history.layout', homeSurfaceNode('history.undo'), homeSurfaceNode('history.redo'))),
     groupSpec(
       'clipboard',
       20,
@@ -1346,7 +1394,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'font.layout',
         rowNode('font.controls', homeSurfaceNode('control.font-family'), homeSurfaceNode('control.font-size'), homeSurfaceNode('control.font-increase'), homeSurfaceNode('control.font-decrease')),
-        rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('font.strikethrough'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color')),
+        rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color'), homeSurfaceNode('font.phonetic-guide'), homeSurfaceNode('font.dialog-launcher')),
       ),
     ),
     groupSpec(
@@ -1362,7 +1410,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         columnNode(
           'alignment.wrap-merge',
           homeSurfaceNode('alignment.wrap'),
-          homeSurfaceNode('control.merge-menu'),
+          homeSurfaceNode('control.merge-menu'), homeSurfaceNode('alignment.dialog-launcher'),
         ),
         homeSurfaceNode('control.orientation-menu'),
       ),
@@ -1373,7 +1421,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'number.layout',
         rowNode('number.format', homeSurfaceNode('control.number-format')),
-        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
       ),
     ),
     groupSpec(
@@ -1407,35 +1455,16 @@ export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], Ribbo
   insert: {
     tab: 'insert',
     groups: [
-      groupSpec(
-        'insertSheets',
-        10,
-        rowNode('insertSheets.layout', homeSurfaceNode('sheets.table-sheet'), homeSurfaceNode('sheets.gantt-sheet'), homeSurfaceNode('sheets.report-sheet')),
-      ),
-      groupSpec(
-        'insertTables',
-        20,
-        rowNode('insertTables.layout', homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.slicer')),
-      ),
-      groupSpec(
-        'insertCharts',
-        30,
-        rowNode('insertCharts.layout', homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.barcode'), homeSurfaceNode('charts.sparkline')),
-      ),
-      groupSpec('insertDataCharts', 40, rowNode('insertDataCharts.layout', homeSurfaceNode('data-charts.insert'))),
-      groupSpec(
-        'illustrations',
-        50,
-        rowNode(
-          'illustrations.layout',
-          homeSurfaceNode('illustrations.picture'),
-          homeSurfaceNode('illustrations.shape'),
-          homeSurfaceNode('illustrations.camera'),
-          homeSurfaceNode('illustrations.controls'),
-        ),
-      ),
-      groupSpec('insertLinks', 60, rowNode('insertLinks.layout', homeSurfaceNode('links.hyperlink'))),
-      groupSpec('insertControls', 70, rowNode('insertControls.layout', homeSurfaceNode('controls.checkbox'), homeSurfaceNode('controls.textbox'))),
+      groupSpec('tables', 10, rowNode('tables.layout', homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.recommended-pivot'), homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.forms'))),
+      groupSpec('illustrations', 20, rowNode('illustrations.layout', homeSurfaceNode('illustrations.picture'), homeSurfaceNode('illustrations.shape'), homeSurfaceNode('illustrations.icons'), homeSurfaceNode('illustrations.models3d'), homeSurfaceNode('illustrations.smartart'), homeSurfaceNode('illustrations.screenshot'))),
+      groupSpec('controls', 30, rowNode('controls.layout', homeSurfaceNode('controls.checkbox'))),
+      groupSpec('charts', 40, rowNode('charts.layout', homeSurfaceNode('charts.recommended'), homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.pivot'))),
+      groupSpec('sparklines', 50, rowNode('sparklines.layout', homeSurfaceNode('sparklines.gallery'))),
+      groupSpec('filters', 60, rowNode('filters.layout', homeSurfaceNode('filters.slicer'), homeSurfaceNode('filters.timeline'))),
+      groupSpec('links', 70, rowNode('links.layout', homeSurfaceNode('links.hyperlink'))),
+      groupSpec('insertComments', 80, rowNode('comments.layout', homeSurfaceNode('comments.threaded'))),
+      groupSpec('text', 90, rowNode('text.layout', homeSurfaceNode('text.textbox'), homeSurfaceNode('text.header-footer'), homeSurfaceNode('text.wordart'), homeSurfaceNode('text.signature-line'), homeSurfaceNode('text.object'))),
+      groupSpec('symbols', 100, rowNode('symbols.layout', homeSurfaceNode('symbols.equation'), homeSurfaceNode('symbols.symbol'))),
     ],
   },
 };
@@ -1506,6 +1535,24 @@ const intent = (
   priority: 30,
   display: icon ? 'small' : 'medium',
   build: (context) => ({ type: 'intent', intent: buildIntent(context) }),
+});
+
+const unsupportedFeature = (
+  id: RibbonCommandId,
+  groupId: RibbonGroupId,
+  labelKey: RibbonTextKey,
+  feature: string,
+  reason: string,
+  recovery: string,
+  icon?: RibbonIconName,
+): CommandDefinition => ({
+  id,
+  placements: [{ tab: 'insert', group: groupId }],
+  labelKey,
+  icon,
+  priority: 30,
+  display: icon ? 'small' : 'medium',
+  build: () => ({ type: 'rejection', error: { code: 'UNSUPPORTED_FEATURE', feature, reason, recovery } }),
 });
 
 const dynamicCommand = (
@@ -1658,8 +1705,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('viewHeadings', 'pageLayout', 'sheetOptions', RIBBON_TEXT.commands.viewHeadings, (context) => context.actions.onToggleViewHeadings(), 'rows'),
   callback('printHeadings', 'pageLayout', 'sheetOptions', RIBBON_TEXT.commands.printHeadings, (context) => context.actions.onTogglePrintHeadings(), 'printer'),
 
-  callback('undo', 'home', 'history', RIBBON_TEXT.commands.undo, (context) => context.actions.onUndo(), 'undo'),
-  callback('redo', 'home', 'history', RIBBON_TEXT.commands.redo, (context) => context.actions.onRedo(), 'redo'),
+  callback('undo', 'file', 'workbook', RIBBON_TEXT.commands.undo, (context) => context.actions.onUndo(), 'undo'),
+  callback('redo', 'file', 'workbook', RIBBON_TEXT.commands.redo, (context) => context.actions.onRedo(), 'redo'),
   callback('cut', 'home', 'clipboard', RIBBON_TEXT.commands.cut, (context) => context.actions.onCut(), 'scissors'),
   callback('copy', 'home', 'clipboard', RIBBON_TEXT.commands.copy, (context) => context.actions.onCopy(), 'copy'),
   callback('paste', 'home', 'clipboard', RIBBON_TEXT.commands.paste, (context) => context.actions.onPaste(), 'clipboard'),
@@ -1705,6 +1752,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('mergeAcross', 'home', 'alignment', RIBBON_TEXT.commands.mergeAcross, (context) => context.actions.onMerge('across'), 'merge-cells'),
   callback('unmergeCells', 'home', 'alignment', RIBBON_TEXT.commands.unmergeCells, (context) => context.actions.onMerge('unmerge'), 'merge-cells'),
   intent('formatCells', 'home', 'styles', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
+  intent('formatCellsFont', 'home', 'font', RIBBON_TEXT.commands.formatCellsFont, () => ({ type: 'dialog.open', dialog: 'format-cells', formatCellsTab: 'font' }), 'arrow-down'),
+  intent('formatCellsAlignment', 'home', 'alignment', RIBBON_TEXT.commands.formatCellsAlignment, () => ({ type: 'dialog.open', dialog: 'format-cells', formatCellsTab: 'alignment' }), 'arrow-down'),
+  intent('formatCellsNumber', 'home', 'number', RIBBON_TEXT.commands.formatCellsNumber, () => ({ type: 'dialog.open', dialog: 'format-cells', formatCellsTab: 'number' }), 'arrow-down'),
+  intent('phoneticGuide', 'home', 'font', RIBBON_TEXT.commands.phoneticGuide, () => ({ type: 'dialog.open', dialog: 'phonetic-guide' }), 'type'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),
   command('numberFormatPercent', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatPercent, 'percent', { style: { numberFormat: '0%' } }),
@@ -1746,21 +1797,34 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   stylePresetCommand('cellStyleTotal', RIBBON_TEXT.commands.cellStyleTotal, 'total'),
   callback('formatAsTable', 'home', 'styles', RIBBON_TEXT.commands.formatAsTable, (context) => context.actions.onCreateSheetTable(), 'table'),
 
-  callback('tableSheet', 'insert', 'insertSheets', RIBBON_TEXT.commands.tableSheet, (context) => context.actions.onCreateAdvancedSheet('table-sheet'), 'table-sheet'),
-  callback('ganttSheet', 'insert', 'insertSheets', RIBBON_TEXT.commands.ganttSheet, (context) => context.actions.onCreateAdvancedSheet('gantt-sheet'), 'gantt-sheet'),
-  callback('reportSheet', 'insert', 'insertSheets', RIBBON_TEXT.commands.reportSheet, (context) => context.actions.onCreateAdvancedSheet('report-sheet'), 'report-sheet'),
-  callback('worksheetTable', 'insert', 'insertTables', RIBBON_TEXT.commands.worksheetTable, (context) => context.actions.onCreateSheetTable(), 'table'),
-  callback('barcode', 'insert', 'insertCharts', RIBBON_TEXT.commands.barcode, (context) => context.actions.onApplyBarcode(), 'barcode'),
-  callback('dataChart', 'insert', 'insertDataCharts', RIBBON_TEXT.commands.dataChart, (context) => context.actions.onCreateDataChart(), 'data-chart'),
+  callback('tableSheet', 'file', 'workbook', RIBBON_TEXT.commands.tableSheet, (context) => context.actions.onCreateAdvancedSheet('table-sheet'), 'table-sheet'),
+  callback('ganttSheet', 'file', 'workbook', RIBBON_TEXT.commands.ganttSheet, (context) => context.actions.onCreateAdvancedSheet('gantt-sheet'), 'gantt-sheet'),
+  callback('reportSheet', 'file', 'workbook', RIBBON_TEXT.commands.reportSheet, (context) => context.actions.onCreateAdvancedSheet('report-sheet'), 'report-sheet'),
+  callback('worksheetTable', 'insert', 'tables', RIBBON_TEXT.commands.worksheetTable, (context) => context.actions.onCreateSheetTable(), 'table'),
+  callback('barcode', 'file', 'workbook', RIBBON_TEXT.commands.barcode, (context) => context.actions.onApplyBarcode(), 'barcode'),
   intent('picture', 'insert', 'illustrations', RIBBON_TEXT.commands.picture, () => ({ type: 'dialog.open', dialog: 'insert-picture' }), 'picture'),
-  callback('camera', 'insert', 'illustrations', RIBBON_TEXT.commands.camera, (context) => context.actions.onCreateCamera(), 'camera'),
-  callback('formControls', 'insert', 'illustrations', RIBBON_TEXT.commands.formControls, (context) => context.actions.onCreateFormControl(), 'form-control'),
-  intent('hyperlink', 'insert', 'insertLinks', RIBBON_TEXT.commands.hyperlink, () => ({ type: 'dialog.open', dialog: 'hyperlink' }), 'link'),
-  callback('checkbox', 'insert', 'insertControls', RIBBON_TEXT.commands.checkbox, (context) => context.actions.onApplyCheckbox(), 'checkbox'),
-  callback('textbox', 'insert', 'insertControls', RIBBON_TEXT.commands.textbox, (context) => context.actions.onCreateTextBox(), 'textbox'),
+  callback('camera', 'file', 'workbook', RIBBON_TEXT.commands.camera, (context) => context.actions.onCreateCamera(), 'camera'),
+  callback('formControls', 'file', 'workbook', RIBBON_TEXT.commands.formControls, (context) => context.actions.onCreateFormControl(), 'form-control'),
+  intent('hyperlink', 'insert', 'links', RIBBON_TEXT.commands.hyperlink, () => ({ type: 'dialog.open', dialog: 'hyperlink' }), 'link'),
+  callback('checkbox', 'insert', 'controls', RIBBON_TEXT.commands.checkbox, (context) => context.actions.onApplyCheckbox(), 'checkbox'),
+  callback('textbox', 'insert', 'text', RIBBON_TEXT.commands.textbox, (context) => context.actions.onCreateTextBox(), 'textbox'),
+  intent('threadedComment', 'insert', 'insertComments', RIBBON_TEXT.commands.threadedComment, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
+  intent('headerFooter', 'insert', 'text', RIBBON_TEXT.commands.headerFooter, () => ({ type: 'panel.open', panel: 'print' }), 'printer'),
+  intent('recommendedPivotTables', 'insert', 'tables', RIBBON_TEXT.commands.recommendedPivotTables, () => ({ type: 'dialog.open', dialog: 'recommended-pivots' }), 'table-pivot'),
+  unsupportedFeature('forms', 'tables', RIBBON_TEXT.commands.forms, 'microsoft-forms', 'Microsoft Forms requires an authenticated Microsoft 365 host connection.', 'Open the workbook in Microsoft 365 to create a linked form.', 'form-control'),
+  unsupportedFeature('icons', 'illustrations', RIBBON_TEXT.commands.icons, 'office-icons', 'The licensed Office icon library is not installed.', 'Install an approved icon asset provider.', 'picture'),
+  unsupportedFeature('models3d', 'illustrations', RIBBON_TEXT.commands.models3d, 'office-3d-model', 'Browser 3D model import and OOXML scene editing are not available.', 'Use desktop Excel to insert or edit a 3D model.', 'picture'),
+  unsupportedFeature('smartArt', 'illustrations', RIBBON_TEXT.commands.smartArt, 'smart-art', 'SmartArt layout editing is not available.', 'Use desktop Excel while the opaque SmartArt parts remain preserved.', 'layout'),
+  unsupportedFeature('screenshot', 'illustrations', RIBBON_TEXT.commands.screenshot, 'screen-clipping', 'Screen clipping requires an operating-system capture host.', 'Use the system screenshot tool and insert the resulting picture.', 'camera'),
+  intent('recommendedCharts', 'insert', 'charts', RIBBON_TEXT.commands.recommendedCharts, () => ({ type: 'dialog.open', dialog: 'recommended-charts' }), 'chart'),
+  unsupportedFeature('wordArt', 'text', RIBBON_TEXT.commands.wordArt, 'word-art', 'WordArt transform geometry editing is not available.', 'Use a Text Box or edit WordArt in desktop Excel.', 'type'),
+  unsupportedFeature('signatureLine', 'text', RIBBON_TEXT.commands.signatureLine, 'signature-line', 'Digital signing requires a certificate provider and Office host.', 'Sign the workbook in desktop Excel.', 'type'),
+  unsupportedFeature('embeddedObject', 'text', RIBBON_TEXT.commands.embeddedObject, 'embedded-object', 'OLE activation is unavailable in the browser sandbox.', 'Use desktop Excel; existing embedded parts remain preserved.', 'table'),
+  unsupportedFeature('equation', 'symbols', RIBBON_TEXT.commands.equation, 'office-math', 'Office Math editing is not available.', 'Edit the equation in desktop Excel; existing math parts remain preserved.', 'function'),
+  intent('symbol', 'insert', 'symbols', RIBBON_TEXT.commands.symbol, () => ({ type: 'dialog.open', dialog: 'symbol' }), 'type'),
 
   {
-    ...callback('pivotTable', 'insert', 'insertTables', RIBBON_TEXT.commands.pivotTable, (context) => context.openCreatePivotDialog?.(), 'table-pivot'),
+    ...callback('pivotTable', 'insert', 'tables', RIBBON_TEXT.commands.pivotTable, (context) => context.openCreatePivotDialog?.(), 'table-pivot'),
     enabled: (context) => Boolean(context.openCreatePivotDialog),
   },
   {
@@ -1782,18 +1846,18 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotSlicer', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer(), 'sliders'),
-    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }, { tab: 'insert', group: 'insertTables' }],
+    ...callback('pivotSlicer', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer(), 'sliders', [{ tab: 'insert', group: 'filters' }]),
+    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }, { tab: 'insert', group: 'filters' }],
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.slicer.create', context.activePivot)),
   },
   {
-    ...callback('pivotTimeline', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline(), 'history'),
+    ...callback('pivotTimeline', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline(), 'history', [{ tab: 'insert', group: 'filters' }]),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.timeline.create', context.activePivot)),
   },
   {
-    ...callback('pivotChart', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart(), 'chart'),
+    ...callback('pivotChart', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart(), 'chart', [{ tab: 'insert', group: 'charts' }]),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.chart.create', context.activePivot)),
   },
@@ -1953,8 +2017,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   dynamicCommand('shapeBringToFront', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeBringToFront, (context) => shapeZOrderDescriptor(context, 'front'), 'redo'),
   dynamicCommand('shapeSendToBack', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeSendToBack, (context) => shapeZOrderDescriptor(context, 'back'), 'undo'),
   dynamicCommand('shapeCopy', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeCopy, shapeCopyDescriptor, 'copy'),
-  intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
-  intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
+  intent('chartBuilder', 'insert', 'charts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
+  intent('sparkline', 'insert', 'sparklines', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
   intent('shapesLines', 'insert', 'illustrations', RIBBON_TEXT.commands.shapesLines, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
 
   {

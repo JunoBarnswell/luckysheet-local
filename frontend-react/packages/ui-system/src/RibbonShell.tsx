@@ -9,7 +9,7 @@ export type { RibbonLayoutMode, RibbonLayoutState, RibbonTabId } from './shell-t
 export { RIBBON_TAB_ORDER } from './shell-types';
 
 export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
-  if (width >= 1920) return 'wide';
+  if (width >= 1783) return 'wide';
   if (width >= 1024) return 'compact';
   return 'narrow';
 }

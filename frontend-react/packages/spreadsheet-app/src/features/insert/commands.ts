@@ -1,4 +1,4 @@
-import { BARCODE_SYMBOLOGIES, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type ChartBindingArea, type ChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 
@@ -14,17 +14,17 @@ export interface BarcodeApplyParams {
   presentation: BarcodeCellPresentation;
 }
 
-export interface DataChartCreateParams {
+export interface StructuredChartCreateParams {
   sheetId: string;
   drawing: DrawingObject;
-  payload: DataChartDrawingPayload;
+  payload: ChartDrawingPayload;
   table?: WorkbookTableModel;
 }
 
-export interface DataChartUpdateParams {
+export interface StructuredChartUpdateParams {
   sheetId: string;
   drawingId: string;
-  payload: DataChartDrawingPayload;
+  payload: ChartDrawingPayload;
 }
 
 export interface CellImageApplyParams { sheetId: string; row: number; column: number; presentation: ImageCellPresentation }
@@ -83,12 +83,12 @@ function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: 
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
 
-function executeDataChartCreate(params: DataChartCreateParams, context: CommandContext) {
-  if (params.drawing.kind !== 'data-chart' || params.payload.kind !== 'data-chart') throw new Error('DataChart drawing and payload kinds must match');
+function executeStructuredChartCreate(params: StructuredChartCreateParams, context: CommandContext) {
+  if (params.drawing.kind !== 'chart' || params.payload.kind !== 'chart') throw new Error('Chart drawing and payload kinds must match');
   const boundTable = params.payload.source.kind === 'table' ? params.table ?? context.workbook.dataModel.tables.get(params.payload.source.tableId) : undefined;
-  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Data Chart table binding not found: ${params.payload.source.tableId}`);
-  validateDataChartPayload(params.payload, boundTable);
-  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-sheet'
+  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Chart table binding not found: ${params.payload.source.tableId}`);
+  validateStructuredChartPayload(params.payload, boundTable);
+  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-range'
     ? [params.payload.source.range]
     : params.table?.sourceRange ? [params.table.sourceRange] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
   const table = params.table;
@@ -111,49 +111,46 @@ function executeDataChartCreate(params: DataChartCreateParams, context: CommandC
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
 
-const DATA_CHART_AREAS: readonly DataChartBindingArea[] = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'];
-const DATA_CHART_AGGREGATES = new Set(['sum', 'average', 'count', 'min', 'max', 'none']);
-const DATA_CHART_PLOT_TYPES = new Set(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'treemap', 'funnel']);
+const CHART_BINDING_AREAS: readonly ChartBindingArea[] = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'];
+const CHART_AGGREGATES = new Set(['sum', 'average', 'count', 'min', 'max', 'none']);
 
-function validateDataChartPayload(payload: DataChartDrawingPayload, table?: WorkbookTableModel): void {
-  if (payload.kind !== 'data-chart' || !DATA_CHART_PLOT_TYPES.has(payload.plotType)) throw new Error('Data Chart payload plot type is invalid');
+function validateStructuredChartPayload(payload: ChartDrawingPayload, table?: WorkbookTableModel): void {
+  if (payload.kind !== 'chart' || (payload.source.kind !== 'table' && payload.source.kind !== 'report-range')) throw new Error('Structured Chart source is invalid');
   if (payload.source.kind === 'table') {
-    if (!payload.source.tableId.trim()) throw new Error('Data Chart table binding is required');
-    if (table && table.id !== payload.source.tableId) throw new Error('Data Chart table binding does not match the inserted table');
+    if (!payload.source.tableId.trim()) throw new Error('Chart table binding is required');
+    if (table && table.id !== payload.source.tableId) throw new Error('Chart table binding does not match the inserted table');
   } else {
     const range = payload.source.range;
-    if (!range.sheetId || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) throw new Error('Data Chart report-sheet binding range is invalid');
+    if (!range.sheetId || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) throw new Error('Chart report range is invalid');
   }
-  if (!payload.bindings || typeof payload.bindings !== 'object') throw new Error('Data Chart bindings are required');
-  for (const area of DATA_CHART_AREAS) {
-    const entries = payload.bindings[area];
-    if (!Array.isArray(entries)) throw new Error(`Data Chart binding area is missing: ${area}`);
+  if (!payload.source.bindings || typeof payload.source.bindings !== 'object') throw new Error('Chart bindings are required');
+  for (const area of CHART_BINDING_AREAS) {
+    const entries = payload.source.bindings[area];
+    if (!Array.isArray(entries)) throw new Error(`Chart binding area is missing: ${area}`);
     for (const entry of entries) {
-      if (!entry || typeof entry.fieldId !== 'string' || !entry.fieldId.trim() || entry.area !== area || !DATA_CHART_AGGREGATES.has(entry.aggregate)) throw new Error(`Data Chart binding is invalid: ${area}`);
-      if (entry.sort !== undefined && entry.sort !== 'asc' && entry.sort !== 'desc') throw new Error(`Data Chart sort is invalid: ${area}`);
+      if (!entry || typeof entry.fieldId !== 'string' || !entry.fieldId.trim() || entry.area !== area || !CHART_AGGREGATES.has(entry.aggregate)) throw new Error(`Chart binding is invalid: ${area}`);
+      if (entry.sort !== undefined && entry.sort !== 'asc' && entry.sort !== 'desc') throw new Error(`Chart sort is invalid: ${area}`);
     }
   }
-  const inspector = payload.inspector;
-  if (!inspector || !['top', 'bottom', 'left', 'right', 'none'].includes(inspector.legendPosition) || typeof inspector.showDataLabels !== 'boolean') throw new Error('Data Chart inspector configuration is invalid');
-  if (!inspector.chartArea || !inspector.plotArea || !inspector.axis || typeof inspector.axis.showGridlines !== 'boolean') throw new Error('Data Chart inspector style is invalid');
 }
 
-function findDataChart(sheet: WorksheetModel, drawingId: string): { drawing: DrawingObject; payload: DataChartDrawingPayload } {
+function findStructuredChart(sheet: WorksheetModel, drawingId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } {
   const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
   const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
-  if (!drawing || drawing.kind !== 'data-chart' || payload?.kind !== 'data-chart') throw new Error(`Unknown Data Chart drawing: ${drawingId}`);
+  if (!drawing || drawing.kind !== 'chart' || payload?.kind !== 'chart' || (payload.source.kind !== 'table' && payload.source.kind !== 'report-range')) throw new Error(`Unknown structured Chart drawing: ${drawingId}`);
   return { drawing, payload };
 }
 
-function executeDataChartUpdate(params: DataChartUpdateParams, context: CommandContext) {
+function executeStructuredChartUpdate(params: StructuredChartUpdateParams, context: CommandContext) {
   const sheet = context.workbook.getSheet(params.sheetId);
-  const current = findDataChart(sheet, params.drawingId);
+  const current = findStructuredChart(sheet, params.drawingId);
   const boundTable = params.payload.source.kind === 'table' ? context.workbook.dataModel.tables.get(params.payload.source.tableId) : undefined;
-  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Data Chart table binding not found: ${params.payload.source.tableId}`);
-  validateDataChartPayload(params.payload, boundTable);
-  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-sheet'
+  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Chart table binding not found: ${params.payload.source.tableId}`);
+  validateStructuredChartPayload(params.payload, boundTable);
+  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-range'
     ? [params.payload.source.range]
     : (() => {
+      if (params.payload.source.kind !== 'table') throw new Error(`Structured Chart source is invalid: ${params.payload.source.kind}`);
       const table = context.workbook.dataModel.tables.get(params.payload.source.tableId);
       return table?.sourceRange ? [table.sourceRange] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
     })();
@@ -358,8 +355,8 @@ function executePictureConvertToFloating(params: PictureConvertToFloatingParams,
 export function registerInsertCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<AdvancedSheetCreateParams>({ id: 'sheet.create.advanced', execute: executeAdvancedSheetCreate });
   runtime.registry.registerCommand<BarcodeApplyParams>({ id: 'cell.barcode.apply', execute: executeBarcodeApply });
-  runtime.registry.registerCommand<DataChartCreateParams>({ id: 'dataChart.create', execute: executeDataChartCreate });
-  runtime.registry.registerCommand<DataChartUpdateParams>({ id: 'dataChart.update', execute: executeDataChartUpdate });
+  runtime.registry.registerCommand<StructuredChartCreateParams>({ id: 'chart.insert.structured', execute: executeStructuredChartCreate });
+  runtime.registry.registerCommand<StructuredChartUpdateParams>({ id: 'chart.update.structured', execute: executeStructuredChartUpdate });
   runtime.registry.registerCommand<CellImageApplyParams>({
     id: 'cell.image.apply',
     execute: (params, context) => {
@@ -381,7 +378,7 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<PictureConvertToFloatingParams>({ id: 'picture.convertToFloating', execute: executePictureConvertToFloating });
   runtime.registry.registerCommand<FormControlUpdateParams>({ id: 'formControl.update', execute: executeFormControlUpdate });
   runtime.registry.registerCommand<FormControlActivateParams>({ id: 'formControl.activate', execute: executeFormControlActivate });
-  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'picture.convertToCell', 'picture.convertToFloating', 'formControl.update', 'formControl.activate'];
+  return ['sheet.create.advanced', 'cell.barcode.apply', 'chart.insert.structured', 'chart.update.structured', 'cell.image.apply', 'picture.convertToCell', 'picture.convertToFloating', 'formControl.update', 'formControl.activate'];
 }
 
 function formControlAnchorRange(sheetId: string, drawing: DrawingObject): RangeRef {

@@ -162,6 +162,8 @@ export interface CellData {
   numberFormat?: string;
   /** Canonical rich text. `value` remains the plain-text projection used by formulas and search. */
   richText?: RichTextRun[];
+  /** East Asian phonetic guide runs. Visibility is a render/edit property, not cell text. */
+  phonetic?: import('./phonetic').CellPhoneticMetadata;
   /** OOXML formula provenance used to preserve cached values for Excel-only formula families. */
   formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
@@ -175,6 +177,9 @@ export interface CellData {
     icon?: { iconSet: string; iconId: number };
   };
 }
+
+export type { CellPhoneticMetadata, PhoneticAlignment, PhoneticRun, PhoneticType } from './phonetic';
+export { isCellPhoneticMetadata } from './phonetic';
 
 export const BARCODE_SYMBOLOGIES = ['qr', 'code128', 'code39', 'code93', 'code49', 'codabar', 'ean13', 'ean8', 'upca', 'gs1-128', 'pdf417', 'data-matrix'] as const;
 export type BarcodeSymbology = typeof BARCODE_SYMBOLOGIES[number];
@@ -318,6 +323,7 @@ export type {
   TextBoxTextDirection,
   TextBoxAutofit,
   ChartDrawingPayload,
+  ChartSubtype,
   ChartSeriesType,
   ChartAxisModel,
   ChartGridlineModel,
@@ -328,12 +334,11 @@ export type {
   ChartDataLabelsModel,
   ChartSeriesModel,
   ChartElementModel,
-  DataChartDrawingPayload,
-  DataChartPlotType,
-  DataChartBindingArea,
-  DataChartSource,
-  DataChartFieldBinding,
-  DataChartInspectorModel,
+  ChartAggregate,
+  ChartBindingArea,
+  ChartBindings,
+  ChartSource,
+  ChartFieldBinding,
   CameraDrawingPayload,
   FormControlStyle,
   FormControlCellLink,
@@ -375,7 +380,7 @@ export type {
   CellShiftSpec,
   StructuralTransformParams,
 } from './domain';
-export { createDefaultTextBoxTextFrame } from './domain';
+export { createDefaultTextBoxTextFrame, SHAPE_DRAWING_PRESETS } from './domain';
 export {
   createEmptySelection,
   isFormulaError,
@@ -393,6 +398,10 @@ export {
   isDrawingGroup,
   isWorksheetSnapSettings,
   isDrawingConnectionPoint,
+  CHART_SUBTYPES_BY_TYPE,
+  defaultChartSubtype,
+  isChartSubtypeForType,
+  chartStackingForSubtype,
 } from './domain';
 export { DEFAULT_WORKSHEET_SNAP_SETTINGS } from './domain';
 export {

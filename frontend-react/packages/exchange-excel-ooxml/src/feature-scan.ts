@@ -46,9 +46,8 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'chart') {
         features.add('charts');
-        if (payload.pivotId) features.add('pivot-chart');
+        if (payload.source.kind === 'pivot') features.add('pivot-chart');
       }
-      else if (payload.kind === 'data-chart') features.add('data-chart');
       else if (payload.kind === 'camera') features.add('camera');
       else if (payload.kind === 'form-control') features.add('form-control');
       else if (payload.kind === 'slicer') features.add('slicer');
