@@ -1,4 +1,5 @@
 export { Button, type ButtonProps, type ButtonSize, type ButtonVariant } from './Button';
+export { AssetIcon, type AssetIconProps, type AssetIconSize } from './AssetIcon';
 export { DataTable, type DataTableColumn, type DataTableProps } from './DataTable';
 export { CheckToggle, type CheckToggleProps } from './CheckToggle';
 export { cn, type ClassValue } from './cn';

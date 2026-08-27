@@ -8,6 +8,7 @@ export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children?: ReactNode;
   icon?: IconName;
+  iconNode?: ReactNode;
   iconOnly?: boolean;
   loading?: boolean;
   size?: ButtonSize;
@@ -32,7 +33,7 @@ const sizes: Record<ButtonSize, string> = {
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { children, className, disabled, icon, iconOnly = false, loading = false, size = 'md', type = 'button', variant = 'secondary', ...props },
+  { children, className, disabled, icon, iconNode, iconOnly = false, loading = false, size = 'md', type = 'button', variant = 'secondary', ...props },
   ref,
 ) {
   return (
@@ -50,7 +51,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type={type}
       {...props}
     >
-      {loading ? <Icon name="loader" size="sm" className="animate-spin" /> : icon ? <Icon name={icon} size="sm" /> : null}
+      {loading ? <Icon name="loader" size="sm" className="animate-spin" /> : iconNode ?? (icon ? <Icon name={icon} size="sm" /> : null)}
       {children}
     </button>
   );

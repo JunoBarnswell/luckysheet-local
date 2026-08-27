@@ -335,7 +335,7 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(new Set(layoutSurfaceIds).size, layoutSurfaceIds.length);
     assert.deepEqual(new Set(layoutSurfaceIds), new Set(visibleSurfaceIds));
     assert.deepEqual(layout.groups.find((group) => group.id === 'history')?.children[0], {
-      kind: 'column',
+      kind: 'row',
       id: 'history.layout',
       children: [
         { kind: 'surface', id: 'history.undo', surfaceId: 'history.undo' },

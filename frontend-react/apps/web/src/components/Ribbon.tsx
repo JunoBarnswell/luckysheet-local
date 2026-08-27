@@ -3,6 +3,7 @@ import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-oox
 import {
   Button,
   Icon,
+  Inline,
   RibbonShell,
   Text,
   type RibbonTabId,
@@ -160,7 +161,9 @@ function CatalogButton({
   ribbonLayoutNodeId,
   ribbonSurfaceId,
   mixed = false,
+  iconNode,
   iconOverride,
+  trailingNode,
 }: {
   id: RibbonCommandId;
   context: RibbonCommandContext;
@@ -173,7 +176,9 @@ function CatalogButton({
   testId?: string;
   ribbonLayoutNodeId?: string;
   ribbonSurfaceId?: string;
+  iconNode?: React.ReactNode;
   iconOverride?: import('@react-sheets/ui-system').IconName;
+  trailingNode?: React.ReactNode;
   mixed?: boolean;
 }) {
   const locale = useContext(RibbonLocaleContext);
@@ -197,7 +202,8 @@ function CatalogButton({
       data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
       disabled={!enabled}
-      icon={iconOverride ?? definition.icon}
+      icon={iconNode ? undefined : iconOverride ?? definition.icon}
+      iconNode={iconNode}
       iconOnly={iconOnly || compactIcon}
       onClick={() => {
         const result = buildRibbonCommand(id, context);
@@ -211,7 +217,7 @@ function CatalogButton({
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
     >
-      {iconOnly || compactIcon || compactTile ? null : label}
+      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{label}{trailingNode}</Inline> : label}
     </Button>
   );
 }
@@ -419,7 +425,9 @@ export function Ribbon({
       context={catalogContext}
       onExecute={executeCatalogResult}
       iconOnly={options.iconOnly}
+      iconNode={options.iconNode}
       iconOverride={options.iconOverride}
+      trailingNode={options.trailingNode}
       labelOverride={options.labelOverride}
       ribbonLayoutNodeId={options.ribbonLayoutNodeId}
       textBelow={options.tile}

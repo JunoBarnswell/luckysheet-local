@@ -16,7 +16,7 @@ async function listOutputAssets(directory: string, relative = ''): Promise<strin
     const nextPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       paths.push(...await listOutputAssets(nextPath, nextRelative));
-    } else if (/\.(?:css|js|mjs|wasm|woff2?|ttf|otf)$/i.test(entry.name)) {
+    } else if (/\.(?:css|js|mjs|wasm|woff2?|ttf|otf|svg)$/i.test(entry.name)) {
       paths.push(`/${nextRelative}`);
     }
   }

@@ -1274,6 +1274,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.clear-comments-notes', 'editing', 94, 'menu', 'clearCommentsNotes', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
+  ribbonSurface('home', 'editing.go-to', 'editing', 101, 'menu', 'goTo', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1329,18 +1330,14 @@ const homeSurfaceNode = (surfaceId: string): RibbonLayoutNode => ({ kind: 'surfa
 const homeRibbonLayout = (): RibbonLayoutSpec => ({
   tab: 'home',
   groups: [
-    groupSpec('history', 10, columnNode('history.layout', homeSurfaceNode('history.undo'), homeSurfaceNode('history.redo'))),
+    groupSpec('history', 10, rowNode('history.layout', homeSurfaceNode('history.undo'), homeSurfaceNode('history.redo'))),
     groupSpec(
       'clipboard',
       20,
       rowNode(
         'clipboard.layout',
         homeSurfaceNode('clipboard.paste'),
-        columnNode(
-          'clipboard.secondary',
-          rowNode('clipboard.secondary.top', homeSurfaceNode('clipboard.cut'), homeSurfaceNode('clipboard.copy')),
-          rowNode('clipboard.secondary.bottom', homeSurfaceNode('control.format-painter')),
-        ),
+        columnNode('clipboard.secondary', homeSurfaceNode('clipboard.cut'), homeSurfaceNode('clipboard.copy'), homeSurfaceNode('control.format-painter')),
       ),
     ),
     groupSpec(

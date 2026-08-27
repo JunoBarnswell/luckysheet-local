@@ -54,7 +54,7 @@ async function createWindow(backendOrigin) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: path.join(electronDirectory, 'preload.mjs'),
+      preload: path.join(electronDirectory, 'preload.cjs'),
       additionalArguments: [collaborationArgument(collaborationUrl)],
     },
   });

@@ -1,13 +1,30 @@
 import assert from 'node:assert/strict';
+import { existsSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
+import { HOME_RIBBON_ICON_NAMES } from './home/HomeRibbonIcon';
 import { ribbonGroupWidthClass } from './RibbonLayoutRenderer';
 
 describe('Home Ribbon compact group geometry', () => {
   it('keeps the late command groups dense and horizontally reachable', () => {
-    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[180px]');
-    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1581, 'home'), 'w-[166px]');
-    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1581, 'home'), 'w-[118px]');
-    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1581, 'home'), 'w-[204px]');
-    assert.equal(ribbonGroupWidthClass('editing', 'narrow', 900, 'home'), 'w-[196px]');
+    assert.equal(ribbonGroupWidthClass('history', 'compact', 1581, 'home'), 'w-[64px]');
+    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1581, 'home'), 'w-[118px]');
+    assert.equal(ribbonGroupWidthClass('font', 'compact', 1581, 'home'), 'w-[205px]');
+    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[211px]');
+    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1581, 'home'), 'w-[266px]');
+    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1581, 'home'), 'w-[158px]');
+    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1581, 'home'), 'min-w-[222px] flex-1');
+    assert.equal(ribbonGroupWidthClass('editing', 'narrow', 900, 'home'), 'min-w-[222px] flex-1');
+  });
+
+  it('ships every Figma SVG and the exact Noto Sans SC font used by the Home design', () => {
+    const publicRoot = fileURLToPath(new URL('../../public/', import.meta.url));
+    for (const name of HOME_RIBBON_ICON_NAMES) {
+      const path = `${publicRoot}figma/home-ribbon/${name}.svg`;
+      assert.equal(existsSync(path), true, `${name} is missing`);
+      assert.ok(statSync(path).size > 0, `${name} is empty`);
+    }
+    assert.equal(existsSync(`${publicRoot}figma/home-ribbon/divider.svg`), true);
+    assert.ok(statSync(`${publicRoot}fonts/NotoSansSC-VF.ttf`).size > 0);
   });
 });

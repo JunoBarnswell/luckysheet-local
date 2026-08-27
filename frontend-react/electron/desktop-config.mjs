@@ -18,12 +18,6 @@ export function collaborationArgument(url) {
   return `${COLLABORATION_ARGUMENT}${validateCollaborationUrl(url)}`;
 }
 
-export function parseDesktopConfig(argv) {
-  const argument = argv.find((value) => value.startsWith(COLLABORATION_ARGUMENT));
-  if (!argument) throw new Error('Desktop runtime is missing its collaboration endpoint');
-  return Object.freeze({ collaborationUrl: validateCollaborationUrl(argument.slice(COLLABORATION_ARGUMENT.length)) });
-}
-
 function validateCollaborationUrl(value) {
   const url = new URL(value);
   if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/ws' || url.search || url.hash) {

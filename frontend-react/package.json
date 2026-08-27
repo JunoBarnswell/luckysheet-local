@@ -19,7 +19,7 @@
     "build": "npm run typecheck && vite build --config vite.config.ts",
     "desktop:dev": "npm run build && electron electron/main.mjs",
     "desktop:dist": "npm run build && electron-builder --win nsis --x64",
-    "test:desktop": "node --test electron/desktop-config.test.mjs && node --check electron/main.mjs && node --check electron/preload.mjs",
+    "test:desktop": "node --test electron/desktop-config.test.mjs && node --check electron/main.mjs && node --check electron/preload.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate:contracts": "node ../contracts/generate-contracts.mjs",
     "check:contracts": "node tools/check-contracts.mjs",
