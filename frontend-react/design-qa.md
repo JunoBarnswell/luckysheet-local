@@ -2,6 +2,13 @@
 
 final result: passed
 
+## Icon alignment follow-up
+
+- Official Fluent regular assets are vendored under `apps/web/public/icons/fluent/` and used by HOME/INSERT command-bar surfaces.
+- HOME: Paste 64×104 with 32 px glyph; font family 214 px; number format 188 px; compact command glyphs explicit 16 px.
+- INSERT: Illustration items are six fixed 50 px cells inside the 308 px group, preventing Screenshot/SmartArt overlap. Charts use a fixed 320 px grid, 48 px family cells, 20 px thumbnails and a 284 px categorized gallery. Sparklines use three equal 58 px cells inside the 181 px group.
+- Latest browser evidence (temporary files): `C:\Users\kuo13\AppData\Local\Temp\issue-304-icon-home-1783.png`, `C:\Users\kuo13\AppData\Local\Temp\issue-304-icon-gallery-final.png`, and `C:\Users\kuo13\AppData\Local\Temp\issue-304-icon-alignment-insert.png`.
+
 ## Reference
 
 - HOME: `C:\Users\kuo13\AppData\Local\Temp\codex-clipboard-fe420d56-7b06-41bf-801d-250843c45638.png` (1783×141)
