@@ -47,7 +47,7 @@ import {
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -181,9 +181,11 @@ export function findPivotProjectionCell(
 ): { projection: PivotGridProjection; cell: PivotProjectionCell } | null {
   for (const projection of Object.values(sheet.pivotProjections)) {
     if (projection.sheetId !== sheet.id || projection.collision.status !== "clear") continue;
+    if (row < projection.occupiedRange.startRow || row > projection.occupiedRange.endRow
+      || column < projection.occupiedRange.startColumn || column > projection.occupiedRange.endColumn) continue;
     const relativeRow = row - projection.target.anchor.row;
     const relativeColumn = column - projection.target.anchor.column;
-    const cell = projection.cells.find((candidate) => candidate.row === relativeRow && candidate.column === relativeColumn);
+    const cell = findPivotProjectionCellAt(projection, relativeRow, relativeColumn);
     if (cell) return { projection, cell };
   }
   return null;

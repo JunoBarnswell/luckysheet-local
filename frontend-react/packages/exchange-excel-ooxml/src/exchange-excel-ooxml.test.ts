@@ -1194,6 +1194,27 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.definedNameModels?.[0]?.scope, 'sheet');
   });
 
+  it('keeps OOXML cell types authoritative for numeric-looking text, numbers, and date-formatted serials', async () => {
+    const workbook = new WorkbookModel('wb-cell-types', 'Cell types');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: '260' });
+    sheet.cells.set(0, 1, { value: 260 });
+    sheet.cells.set(0, 2, { value: 45292, numberFormat: 'm/d/yy' });
+    const imported = await importXlsx({
+      fileName: 'cell-types.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'A' },
+    });
+    const cells = imported.snapshot.sheets[0]!.cells['0']!;
+    assert.equal(cells['0']?.value, '260');
+    assert.equal(typeof cells['0']?.value, 'string');
+    assert.equal(cells['1']?.value, 260);
+    assert.equal(typeof cells['1']?.value, 'number');
+    assert.equal(cells['2']?.value, '2024-01-01T00:00:00.000Z');
+    assert.equal(typeof cells['2']?.value, 'string');
+    assert.equal(cells['2']?.numberFormat, 'm/d/yy');
+  });
+
   it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });

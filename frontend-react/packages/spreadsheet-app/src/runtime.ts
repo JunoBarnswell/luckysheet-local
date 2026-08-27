@@ -365,7 +365,7 @@ function synchronizeManualCellMutation(engine: FormulaEngine, workbook: Workbook
  * is intentionally scheduled separately through FormulaEngine.recalculateAsync
  * so browser calculation stays in its Worker.
  */
-function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void {
+function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): number {
   const mode = engine.getRecalculationMode();
   engine.cancelCalculation();
   engine.reset();
@@ -373,14 +373,29 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void
   engine.setDefinedNameModels(workbook.definedNameModels);
   configureWorkbookSpillEnvironments(engine, workbook);
   syncWorkbookSheetTables(engine, workbook);
+  let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
+      if (cell.formula === undefined || cell.formulaMetadata?.preservedOnly) return;
       const address = { sheetId: sheet.id, row, column };
-      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
-      else if (cell.value != null) engine.setValue(address, cell.value as never);
+      formulaCount += 1;
+      engine.setFormula(address, cell.formula);
     });
   }
+  // A value-only workbook has no formula dependency graph. Keeping tens of
+  // thousands of ordinary cells in FormulaEngine duplicates CellMatrix and
+  // makes XLSX open proportional to every imported value for no calculation
+  // benefit. Formula workbooks retain the complete existing input contract.
+  if (formulaCount > 0) {
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEach((cell, row, column) => {
+        if (cell.formula !== undefined || cell.value == null) return;
+        engine.setValue({ sheetId: sheet.id, row, column }, cell.value as never);
+      });
+    }
+  }
   engine.setRecalculationMode(mode);
+  return formulaCount;
 }
 
 interface FormulaQueueState {
@@ -428,7 +443,11 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       state.force = false;
       const engine = runtime.formula;
       const workbook = runtime.model;
-      loadFormulaInputs(engine, workbook);
+      const formulaCount = loadFormulaInputs(engine, workbook);
+      if (formulaCount === 0) {
+        runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
+        return;
+      }
       if (engine.getRecalculationMode() !== 'automatic' && !forceCalculation) {
         if (!runtime.disposed && epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
           runtime.handlers.onMutationsApplied?.();
@@ -1031,7 +1050,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   let resolvedRemote: SnapshotResponse | null = null;
   if (resolution) {
     if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
-    localRecord = resolution.localRecord ? structuredClone(resolution.localRecord) : null;
+    localRecord = resolution.localRecord ?? null;
     if (localRecord) runtime.operationJournal.hydrate(localRecord);
     if (resolution.mode === 'remote') {
       runtime.localOnly = false;
@@ -1086,17 +1105,18 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     // though the workbook remains local-only. Recreate the journal owner
     // before the first post-remount command so edits remain durable.
     if (!runtime.collaboration) replaceCollaborationSession(runtime, localRecord);
-    try {
-      await checkpointStartupLocally(runtime);
-    } catch (error) {
-      publishPersistenceFailure(runtime, error);
-      return;
+    if (!runtime.workspaceRecord) {
+      try {
+        await checkpointStartupLocally(runtime);
+      } catch (error) {
+        publishPersistenceFailure(runtime, error);
+        return;
+      }
     }
     if (isActive()) {
       runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-      runtime.handlers.onMutationsApplied?.();
     }
     return;
   }
@@ -1133,7 +1153,6 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       runtime.handlers.onNotice?.('Workbook restored from server');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-      runtime.handlers.onMutationsApplied?.();
       runtime.handlers.onWorkspacePersisted?.();
     }
   } catch (error) {
@@ -1166,7 +1185,6 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       runtime.handlers.onSaveState?.('offline');
       runtime.handlers.onNotice?.('Server unavailable; using the current memory workspace');
       runtime.handlers.onPhaseChange?.('ready');
-      runtime.handlers.onMutationsApplied?.();
     }
   }
 }

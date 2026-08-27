@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy, pivotSourceIdentity } from '@react-sheets/core-model';
+import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy, pivotSourceIdentity } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -17,7 +17,7 @@ import type {
   RangeRef,
 } from '@react-sheets/core-model';
 import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs } from './panel-state';
-import { buildPivotGridProjection, computePivotResult, getPivotSourceRanges, normalizePivotDefinition } from './engine';
+import { buildPivotGridProjection, computePivotResult, computePivotResultFromDefinition, detectPivotCollision, getPivotOccupiedRange, getPivotSourceRanges, normalizePivotDefinition } from './engine';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -312,7 +312,7 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
 function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): void {
   const pivot = pivotFor(context, params.sheetId, params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-  const current = normalizePivotDefinition(context.workbook, pivot);
+  const current = pivot as PivotDefinition;
   const source = params.source ?? current.source;
   const next: PivotModel = {
     schema: 'PivotDefinition',
@@ -325,13 +325,17 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     presentation: structuredClone(params.presentation ?? current.presentation),
     ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
-  assertPivotDefinition(context.workbook, next);
-  const projection = buildPivotGridProjection(context.workbook, next, undefined, { refreshAuthorized: true });
-  if (projection.collision.status === 'collision') {
-    throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+  const canonical = normalizePivotDefinition(context.workbook, next);
+  assertPivotDefinition(context.workbook, canonical);
+  const result = computePivotResultFromDefinition(context.workbook, canonical);
+  const occupiedRange = getPivotOccupiedRange(canonical, result);
+  const collision = detectPivotCollision(context.workbook, canonical, occupiedRange);
+  if (collision.status === 'collision') {
+    throw new Error(`Pivot target collision: ${collision.reasons.join(', ')}`);
   }
-  assertPivotControlConnectionsRemainValid(context.workbook, current, next);
-  Object.assign(pivot, next);
+  buildPivotGridProjection(context.workbook, canonical, result, { refreshAuthorized: true, canonicalDefinition: canonical });
+  assertPivotControlConnectionsRemainValid(context.workbook, current, canonical);
+  Object.assign(pivot, canonical);
 }
 
 function assertPivotControlConnectionsRemainValid(workbook: WorkbookModel, current: PivotModel, replacement: PivotModel): void {
@@ -570,25 +574,37 @@ function assertPivotCreateIdentity(workbook: WorkbookModel, params: PivotCreateP
 function planPivotCreate(workbook: WorkbookModel, params: PivotCreateParams): PivotCreatePlan {
   if (!isPivotCreate(params)) throw new Error('Invalid pivot.create payload');
   assertPivotCreateIdentity(workbook, params);
-
-  const preflight = WorkbookModel.fromSnapshot(workbook.snapshot());
-  if (params.destination.kind === 'new-sheet') {
-    preflight.addSheet(
-      params.destination.sheetId,
-      params.destination.name.trim(),
-      params.destination.rowCount,
-      params.destination.columnCount,
-    );
-  }
   const candidate = structuredClone(params.pivot);
-  assertPivotDefinition(preflight, candidate);
-  assertPivotSourceHeaders(preflight, candidate);
-  const canonical = structuredClone(normalizePivotDefinition(preflight, candidate));
+  const sourceRanges = getPivotSourceRanges(workbook, candidate);
+  for (const range of sourceRanges) {
+    const sheet = workbook.getSheet(range.sheetId);
+    if (range.startRow < 0 || range.endRow < range.startRow || range.endRow >= sheet.rowCount
+      || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn >= sheet.columnCount) {
+      throw new Error('Pivot source range is invalid');
+    }
+  }
+  if (!Number.isSafeInteger(candidate.target.anchor.row) || candidate.target.anchor.row < 0
+    || !Number.isSafeInteger(candidate.target.anchor.column) || candidate.target.anchor.column < 0) {
+    throw new Error('Pivot target anchor is invalid');
+  }
+  assertPivotSourceHeaders(workbook, candidate);
+  const canonical = structuredClone(normalizePivotDefinition(workbook, candidate));
   if (canonical.fieldCatalog.fields.length === 0) throw new Error('PivotTable source does not contain usable fields');
-  assertPivotDefinition(preflight, canonical);
-  const projection = buildPivotGridProjection(preflight, canonical, undefined, { refreshAuthorized: true });
-  if (projection.collision.status === 'collision') {
-    throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+  if (params.destination.kind === 'existing-sheet') {
+    assertPivotDefinition(workbook, canonical);
+    const projection = buildPivotGridProjection(workbook, canonical, undefined, { refreshAuthorized: true });
+    if (projection.collision.status === 'collision') {
+      throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+    }
+  } else {
+    const requiresTree = canonical.layout.rows.length > 0 || canonical.layout.columns.length > 0 || canonical.layout.values.length > 0;
+    const tree = requiresTree ? computePivotResult(workbook, canonical) : undefined;
+    const occupied = getPivotOccupiedRange(canonical, tree);
+    const rowCount = params.destination.rowCount ?? DEFAULT_SHEET_ROW_COUNT;
+    const columnCount = params.destination.columnCount ?? DEFAULT_SHEET_COLUMN_COUNT;
+    if (occupied.endRow >= rowCount || occupied.endColumn >= columnCount) {
+      throw new Error('Pivot target range exceeds the destination worksheet boundary');
+    }
   }
   return {
     pivot: canonical,
@@ -790,7 +806,11 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: pivot.id,
           affectedRanges,
         }],
-        apply: () => applyPivotAdd(context, structuredClone(pivot)),
+        apply: () => {
+          const owner = context.workbook.getSheet(pivot.target.sheetId);
+          if (owner.pivots.some((entry) => entry.id === pivot.id)) throw new Error(`Pivot already exists: ${pivot.id}`);
+          owner.pivots.push(structuredClone(pivot));
+        },
       });
       return { operationId: context.operationId, mutationCount: destination.kind === 'new-sheet' ? 2 : 1, affectedRanges };
     },

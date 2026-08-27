@@ -68,6 +68,7 @@ function assertUnitId(unitId: string): string {
 }
 
 function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): WorkbookResolution {
+  const localRecord = clone(record);
   return {
     schema: 'WorkbookResolution',
     unitId: record.unitId,
@@ -78,10 +79,10 @@ function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): Wo
       location: record.metadata.location,
       syncMode: record.syncMode,
     },
-    snapshot: clone(record.snapshot),
+    snapshot: localRecord.snapshot,
     revision: record.serverRevision,
     access: null,
-    localRecord: clone(record),
+    localRecord,
   };
 }
 

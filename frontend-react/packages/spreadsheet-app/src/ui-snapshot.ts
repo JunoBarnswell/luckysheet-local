@@ -335,18 +335,14 @@ export function buildCanvasSheetSnapshot(
   for (const pivot of sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
-    const retainedResult = getLastValidPivotResult(workbook, pivot.id);
     // A snapshot is a projection boundary, never a refresh authority.  A
     // source-stale result is still renderable for every policy as long as its
     // layout/filter contract matches; the coordinator decides if/when it is
     // replaced.
     const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result, formula)
       || pivotResultMatchesLayoutAndFilter(workbook, pivot, result, formula);
-    let cachedResult = reusable(runtimeResult)
-      ? runtimeResult
-      : reusable(retainedResult)
-        ? retainedResult
-        : undefined;
+    const retainedResult = reusable(runtimeResult) ? undefined : getLastValidPivotResult(workbook, pivot.id);
+    let cachedResult = reusable(runtimeResult) ? runtimeResult : reusable(retainedResult) ? retainedResult : undefined;
     if (cachedResult) pivotResults[pivot.id] = cachedResult;
     try {
       pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula, refreshError: pivotErrors[pivot.id] });

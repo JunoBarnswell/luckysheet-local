@@ -62,7 +62,7 @@ import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } fro
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './features/pivot/engine';
+import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition, pivotResultMatchesRevision } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -820,6 +820,12 @@ export class WorkbookSession {
     this.persistenceDispose = startPersistenceSession(this.runtime);
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
+      const persisted = this.runtime.workspaceRecord;
+      if (persisted) {
+        this.hasPendingOperations = persisted.pending.operations.length > 0;
+        this.persistenceChecksum = persisted.checksum;
+        this.persistenceMetaDirty = false;
+      }
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
@@ -3617,7 +3623,10 @@ export class WorkbookSession {
       // Refresh is a calculation boundary. Build the authoritative source
       // engine from the current model so an explicit refresh cannot observe a
       // formula worker generation that was queued by the preceding edit.
-      const result = computePivotResult(this.runtime.model, pivot);
+      const retained = getLastValidPivotResult(this.runtime.model, pivotId);
+      const result = pivotResultMatchesRevision(this.runtime.model, pivot, retained)
+        ? retained
+        : computePivotResult(this.runtime.model, pivot);
       const revision = getPivotRevisionKey(this.runtime.model, pivot, this.runtime.formula);
       result.sourceRevision = revision.sourceRevision;
       result.layoutRevision = revision.layoutRevision;

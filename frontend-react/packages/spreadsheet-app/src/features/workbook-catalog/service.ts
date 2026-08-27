@@ -214,11 +214,10 @@ function assertRole(record: WorkspaceRecord, action: string, allowed: readonly W
 }
 
 function renameSnapshot(snapshot: WorkbookSnapshot, name: string): WorkbookSnapshot {
-  const next = clone(snapshot);
-  next.name = name.trim();
-  if (!next.name) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
-  if (next.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-  return next;
+  const nextName = name.trim();
+  if (!nextName) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
+  if (nextName.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
+  return { ...snapshot, name: nextName };
 }
 
 function newOperationId(): string {
@@ -227,10 +226,11 @@ function newOperationId(): string {
 }
 
 function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
-  const next = clone(snapshot);
-  next.unitId = unitId;
-  next.printDocuments = (next.printDocuments ?? []).map((document) => ({ ...document, unitId }));
-  return next;
+  return {
+    ...snapshot,
+    unitId,
+    printDocuments: (snapshot.printDocuments ?? []).map((document) => ({ ...document, unitId })),
+  };
 }
 
 export class WorkbookCatalogService {
