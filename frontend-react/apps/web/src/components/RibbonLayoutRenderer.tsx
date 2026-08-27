@@ -30,7 +30,7 @@ export interface RibbonLayoutRendererProps {
   locale: Locale;
   layout: RibbonLayoutState;
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => ReactNode;
-  renderSurface?: (surface: RibbonSurfaceDefinition, context: { inMenu: boolean; mode: 'wide' | 'menu' }) => ReactNode;
+  renderSurface?: (surface: RibbonSurfaceDefinition, context: { inMenu: boolean; mode: RibbonLayoutState['mode'] | 'menu' }) => ReactNode;
 }
 
 interface NodeRenderContext {
@@ -93,8 +93,21 @@ const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = 
   editing: 'w-[310px]',
 };
 
+const HOME_COMPACT_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
+  clipboard: 'w-[124px]',
+  font: 'w-[224px]',
+  alignment: 'w-[248px]',
+  number: 'w-[154px]',
+  styles: 'w-[220px]',
+  cells: 'w-[144px]',
+  editing: 'w-[300px]',
+};
+
 export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
-  if (tab === 'home') return HOME_RIBBON_GROUP_WIDTH_CLASSES[groupId] ?? 'min-w-[72px] flex-1';
+  if (tab === 'home') {
+    const widths = mode === 'wide' || width >= 1440 ? HOME_RIBBON_GROUP_WIDTH_CLASSES : HOME_COMPACT_GROUP_WIDTH_CLASSES;
+    return widths[groupId] ?? 'min-w-[72px] flex-1';
+  }
   const widths = mode === 'wide'
     ? WIDE_RIBBON_GROUP_WIDTH_CLASSES
     : width >= 1440 ? DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES : COMPACT_RIBBON_GROUP_WIDTH_CLASSES;
@@ -151,7 +164,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
       return <React.Fragment key={node.id}>{renderCommand(node.commandId, commandOptions(node, context))}</React.Fragment>;
     case 'surface': {
       const surface = RIBBON_TAB_SURFACES.find((candidate) => candidate.id === node.surfaceId);
-      return surface && renderSurface ? <React.Fragment key={node.id}>{renderSurface(surface, { inMenu: context.inMenu, mode: context.inMenu ? 'menu' : 'wide' })}</React.Fragment> : null;
+      return surface && renderSurface ? <React.Fragment key={node.id}>{renderSurface(surface, { inMenu: context.inMenu, mode: context.inMenu ? 'menu' : props.layout.mode })}</React.Fragment> : null;
     }
     case 'split':
       return (

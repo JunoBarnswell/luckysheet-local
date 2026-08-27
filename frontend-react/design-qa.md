@@ -2,6 +2,14 @@
 
 final result: passed
 
+## Compact-width alignment follow-up
+
+- `ribbonLayoutModeForWidth(1183)` now reaches the HOME compact geometry rather than reusing the 1783px wide geometry.
+- Compact HOME group widths are Clipboard 124px, Font 224px, Alignment 248px, Number 154px, Styles 220px, Cells 144px, Editing 300px.
+- Compact Font controls use a 100px family field, 45px size field and 25px A↑/A↓ controls; Alignment's wrap/merge controls are 74px/84px with 22px alignment glyph buttons.
+- Important padding utilities are explicit (`!px-*`) so the shared Button base padding cannot compress icon boxes; measured compact Fluent glyphs are 16px (font) and 14px (alignment).
+- Browser comment target at 1183px was rechecked with no group-child overflow or overlap.
+
 ## Icon alignment follow-up
 
 - Official Fluent regular assets are vendored under `apps/web/public/icons/fluent/` and used by HOME/INSERT command-bar surfaces.

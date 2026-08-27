@@ -107,12 +107,12 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
   }
 }
 
-const HOME_SMALL_ACTION_CLASS = '!h-6 !min-h-0 !w-6 !rounded-[var(--home-ribbon-radius)] px-1';
-const HOME_ALIGNMENT_ACTION_CLASS = '!h-[22px] !min-h-0 !w-[22px] !rounded-[var(--home-ribbon-radius)] px-1';
-const HOME_INLINE_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 rounded-[var(--home-ribbon-radius)] px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)]';
-const HOME_LARGE_TILE_CLASS = '!h-[104px] !min-h-0 !max-w-none flex-col gap-1 rounded-[var(--home-ribbon-radius)] px-2 py-1 text-center text-[13px] font-normal leading-[16px] text-[var(--home-ribbon-color-text)] !whitespace-normal';
-const HOME_EDITING_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 overflow-hidden rounded-[var(--home-ribbon-radius)] px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)] whitespace-nowrap';
-const HOME_EDITING_MENU_CLASS = '!h-6 !min-h-0 !w-4 rounded-[var(--home-ribbon-radius)] px-0';
+const HOME_SMALL_ACTION_CLASS = '!h-6 !min-h-0 !w-6 !rounded-[var(--home-ribbon-radius)] !px-1';
+const HOME_ALIGNMENT_ACTION_CLASS = '!h-[22px] !min-h-0 !w-[22px] !rounded-[var(--home-ribbon-radius)] !px-1';
+const HOME_INLINE_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 rounded-[var(--home-ribbon-radius)] !px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)]';
+const HOME_LARGE_TILE_CLASS = '!h-[104px] !min-h-0 !max-w-none flex-col gap-1 rounded-[var(--home-ribbon-radius)] !px-2 !py-1 text-center text-[13px] font-normal leading-[16px] text-[var(--home-ribbon-color-text)] !whitespace-normal';
+const HOME_EDITING_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 overflow-hidden rounded-[var(--home-ribbon-radius)] !px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)] whitespace-nowrap';
+const HOME_EDITING_MENU_CLASS = '!h-6 !min-h-0 !w-4 rounded-[var(--home-ribbon-radius)] !px-0';
 
 const HOME_SURFACE_ICONS: Readonly<Partial<Record<string, { name: HomeRibbonIconName; size: React.ComponentProps<typeof HomeRibbonIcon>['size'] }>>> = {
   'clipboard.paste': { name: 'clipboard-paste', size: 'xl' },
@@ -206,7 +206,7 @@ export function HomeRibbon({
   };
   const menuMembers = (menuId: string): readonly RibbonSurfaceDefinition[] => HOME_GROUPS.flatMap((group) => allSurfaces(group)).filter((surface) => surface.menuId === menuId);
 
-  const renderSurface = (surface: RibbonSurfaceDefinition, mode: 'wide' | 'menu'): React.ReactNode => {
+  const renderSurface = (surface: RibbonSurfaceDefinition, mode: RibbonLayoutState['mode'] | 'menu'): React.ReactNode => {
     if (surface.controlId) return renderControl(surface.controlId, mode, surface.id);
     if (!surface.commandId) return null;
     if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
@@ -243,11 +243,13 @@ export function HomeRibbon({
       return renderCommand(surface.commandId, { iconNode, iconOnly: true, className: '!h-[18px] !min-h-0 !w-[18px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px]', ribbonSurfaceId: surface.id });
     }
     if (surface.id === 'styles.conditional-format' || surface.id === 'styles.table') {
-      const widthClass = surface.id === 'styles.conditional-format' ? '!w-[74px] !min-w-[74px]' : '!w-[98px] !min-w-[98px]';
+      const widthClass = surface.id === 'styles.conditional-format'
+        ? (mode === 'wide' ? '!w-[74px] !min-w-[74px]' : '!w-[58px] !min-w-[58px]')
+        : (mode === 'wide' ? '!w-[98px] !min-w-[98px]' : '!w-[80px] !min-w-[80px]');
       return renderCommand(surface.commandId, { iconNode, tile: true, trailingNode: <HomeRibbonIcon name="chevron-down" size="xs" />, className: `${HOME_LARGE_TILE_CLASS} ${widthClass}`, ribbonSurfaceId: surface.id });
     }
     if (surface.id === 'editing.fill-down') {
-      return <Inline gap="none" className="h-6 w-16 items-stretch">
+      return <Inline gap="none" className={`${mode === 'wide' ? 'w-16' : 'w-14'} h-6 items-stretch`}>
         {renderCommand(surface.commandId, { iconNode, className: `${HOME_EDITING_ACTION_CLASS} !w-12`, labelOverride: homeText(locale, 'fill'), ribbonSurfaceId: surface.id })}
         <DropdownMenu align="left" trigger={<Button aria-label="Fill options" title="Fill options" disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={HOME_EDITING_MENU_CLASS} />}>
           <Stack gap="none" className="min-w-[10rem] p-1">{menuMembers('editing.fill-down').map((member) => renderSurface(member, 'menu'))}</Stack>
@@ -257,7 +259,7 @@ export function HomeRibbon({
     if (surface.id === 'editing.sort' || surface.id === 'editing.find') {
       const isSort = surface.id === 'editing.sort';
       const triggerLabel = homeText(locale, isSort ? 'sortAndFilter' : 'findAndSelect');
-      return <DropdownMenu align="left" disabled={disabled} trigger={<Button aria-label={triggerLabel} data-ribbon-surface={surface.id} title={triggerLabel} disabled={disabled} iconNode={iconNode} size="sm" variant="ghost" className={`${HOME_EDITING_ACTION_CLASS} !w-[100px]`}>{triggerLabel}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>}>
+      return <DropdownMenu align="left" disabled={disabled} trigger={<Button aria-label={triggerLabel} data-ribbon-surface={surface.id} title={triggerLabel} disabled={disabled} iconNode={iconNode} size="sm" variant="ghost" className={`${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-[100px]' : '!w-[84px]'}`}>{triggerLabel}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>}>
         <Stack gap="none" className="min-w-[11rem] p-1">
           {renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id })}
           {menuMembers(surface.id).map((member) => renderSurface(member, 'menu'))}
@@ -268,26 +270,26 @@ export function HomeRibbon({
     return renderCommand(surface.commandId, { iconNode, tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? HOME_LARGE_TILE_CLASS : HOME_SMALL_ACTION_CLASS, ribbonSurfaceId: surface.id });
   };
 
-  const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu', surfaceId: string): React.ReactNode => {
+  const renderControl = (controlId: RibbonControlId, mode: RibbonLayoutState['mode'] | 'menu', surfaceId: string): React.ReactNode => {
     const label = surfaceLabel(locale, controlId);
     const compactMenu = controlId === 'font-borders-menu' || controlId === 'orientation-menu';
-    const menuTrigger = (iconName: HomeRibbonIconName, presentation: 'tile' | 'inline' | 'editing-inline' | 'style' | 'cell' = 'tile') => mode === 'wide'
+    const menuTrigger = (iconName: HomeRibbonIconName, presentation: 'tile' | 'inline' | 'editing-inline' | 'style' | 'cell' = 'tile') => mode !== 'menu'
       ? compactMenu
         ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} iconOnly size="sm" variant="ghost" className={controlId === 'orientation-menu' ? HOME_SMALL_ACTION_CLASS : HOME_SMALL_ACTION_CLASS} />
         : presentation === 'inline' || presentation === 'editing-inline'
-          ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} !w-16` : `${HOME_INLINE_ACTION_CLASS} !w-[97px]`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
-        : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="xl" />} type="button" className={presentation === 'style' ? '!w-[86px] !min-w-[86px]' : presentation === 'cell' ? '!w-[50px] !min-w-[50px]' : undefined}><Inline gap="none" className="gap-0.5">{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Inline></HomeTile>
+          ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-16' : '!w-14'}` : `${HOME_INLINE_ACTION_CLASS} ${mode === 'wide' ? '!w-[97px]' : '!w-[84px]'}`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
+        : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="xl" />} type="button" className={presentation === 'style' ? `${mode === 'wide' ? '!w-[86px] !min-w-[86px]' : '!w-[70px] !min-w-[70px]'}` : presentation === 'cell' ? `${mode === 'wide' ? '!w-[50px] !min-w-[50px]' : '!w-[44px] !min-w-[44px]'}` : undefined}><Inline gap="none" className="gap-0.5">{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Inline></HomeTile>
       : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
         return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} iconNode={<HomeRibbonIcon name="paintbrush-2" size="md" />} iconOnly={false} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? `${HOME_INLINE_ACTION_CLASS} !w-16` : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{label}</Button>;
       case 'font-family':
-        return <Box data-ribbon-surface={surfaceId} className={mode === 'wide' ? 'w-[100px] shrink-0' : 'w-full'}><FontFamilyControl
+        return <Box data-ribbon-surface={surfaceId} className={mode === 'menu' ? 'w-full' : mode === 'wide' ? 'w-[214px] shrink-0' : 'w-[100px] shrink-0'}><FontFamilyControl
           value={cellStyle.fontFamily}
           fallbackValue="Microsoft YaHei"
           mixed={mixed('fontFamily')}
           mixedPlaceholder={homeText(locale, 'mixed')}
-          className="!h-6 !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]"
+          className="!h-6 !w-full !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]"
           disabled={!canFormat}
           label={label}
           testId="home-font-family"
@@ -297,7 +299,7 @@ export function HomeRibbon({
         return <TextInput
           aria-label={label}
           data-ribbon-surface={surfaceId}
-          className={mode === 'wide' ? '!h-6 !w-[45px] !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]' : 'w-full'}
+          className={mode === 'menu' ? 'w-full' : '!h-6 !w-[45px] !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]'}
           disabled={!canFormat}
           inputMode="decimal"
           value={fontSizeDraft ?? fontSizeValue}
@@ -331,10 +333,10 @@ export function HomeRibbon({
         />;
       case 'font-increase':
       case 'font-decrease':
-        return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode === 'wide' ? '!h-[19px] !min-h-0 !w-[25px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px] text-[11px] font-bold leading-[13px] text-black' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: pointsToPixels(adjacentExcelFontSize(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)), controlId === 'font-increase' ? 1 : -1)) })}>{mode === 'wide' ? (controlId === 'font-increase' ? 'A↑' : 'A↓') : label}</Button>;
+        return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode !== 'menu' ? '!h-[19px] !min-h-0 !w-[25px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px] text-[11px] font-bold leading-[13px] text-black' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: pointsToPixels(adjacentExcelFontSize(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)), controlId === 'font-increase' ? 1 : -1)) })}>{mode !== 'menu' ? (controlId === 'font-increase' ? 'A↑' : 'A↓') : label}</Button>;
       case 'font-color':
       case 'fill-color':
-        return <DropdownMenu disabled={!canFormat} trigger={mode === 'wide' ? <Button aria-label={label} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
+        return <DropdownMenu disabled={!canFormat} trigger={mode !== 'menu' ? <Button aria-label={label} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
           {({ close }) => <ColorPicker color={controlId === 'font-color' ? cellStyle.textColor ?? '#1e293b' : cellStyle.background ?? '#ffffff'} onChange={(color) => { onEmitStyle({ [controlId === 'font-color' ? 'textColor' : 'background']: color }); close(); }} />}
         </DropdownMenu>;
       case 'font-borders-menu':
@@ -403,9 +405,9 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'auto-sum-menu':
-        return <Inline gap="none" className={mode === 'wide' ? 'h-6 w-[88px] items-stretch' : 'w-full'}>
-          {renderCommand('autoSum', { iconNode: <HomeRibbonIcon name="sigma-square" size="md" />, className: mode === 'wide' ? `${HOME_EDITING_ACTION_CLASS} !w-[72px]` : 'w-full justify-start', labelOverride: homeText(locale, 'autoSumCompact'), ribbonSurfaceId: surfaceId })}
-          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={mode === 'wide' ? HOME_EDITING_MENU_CLASS : 'w-5 shrink-0 justify-center px-0'} />}>
+        return <Inline gap="none" className={mode !== 'menu' ? 'h-6 w-[88px] items-stretch' : 'w-full'}>
+          {renderCommand('autoSum', { iconNode: <HomeRibbonIcon name="sigma-square" size="md" />, className: mode !== 'menu' ? `${HOME_EDITING_ACTION_CLASS} !w-[72px]` : 'w-full justify-start', labelOverride: homeText(locale, 'autoSumCompact'), ribbonSurfaceId: surfaceId })}
+          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={mode !== 'menu' ? HOME_EDITING_MENU_CLASS : 'w-5 shrink-0 justify-center px-0'} />}>
             <Stack gap="none" className="min-w-[10rem] p-1">
               {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}
             </Stack>
