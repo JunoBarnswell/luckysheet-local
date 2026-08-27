@@ -10,6 +10,7 @@ test.describe('Pivot worker runtime', () => {
   test('imports the real OCR workbook and applies a deferred Pivot layout without blocking', async ({ page }, testInfo) => {
     test.skip(!existsSync(fixturePath), 'OCR fixture is not installed on this host');
     const diagnostics = installBrowserDiagnostics(page);
+    await page.addInitScript(() => window.localStorage.setItem('react-sheets:locale', 'zh-CN'));
     await page.goto('/workbooks?dialog=import');
     const chooser = page.waitForEvent('filechooser');
     await page.getByRole('button', { name: '选择文件', exact: true }).click();
