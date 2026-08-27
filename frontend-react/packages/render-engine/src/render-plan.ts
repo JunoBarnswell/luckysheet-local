@@ -51,7 +51,7 @@ export interface LayerRenderPlan {
   drawRects: Rect[];
 }
 
-export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'large-scroll' | 'mixed' | 'scroll' | 'dirty' | 'idle';
+export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'scroll-redraw' | 'mixed' | 'scroll' | 'dirty' | 'idle';
 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
@@ -280,7 +280,16 @@ export function calculateScrollDelta(
     && nextViewport.height > 0
     && Math.abs(dx) < nextViewport.width
     && Math.abs(dy) < nextViewport.height;
-  const canBlit = hasDelta && isSmall;
+  // Repeatedly resampling text at fractional device-pixel offsets leaves
+  // visible trails on a canvas.  Thumb dragging commonly produces fractional
+  // logical offsets, so bitmap reuse is safe only when both axes land exactly
+  // on device pixels.  Non-aligned scrolling redraws the affected pane.
+  const devicePixelRatio = nextViewport.devicePixelRatio;
+  const isDevicePixelAligned = (value: number) => {
+    const scaled = value * devicePixelRatio;
+    return Math.abs(scaled - Math.round(scaled)) <= 1e-6;
+  };
+  const canBlit = hasDelta && isSmall && isDevicePixelAligned(dx) && isDevicePixelAligned(dy);
   if (!canBlit) {
     return {
       delta: { x: dx, y: dy },
@@ -338,17 +347,20 @@ function resolvePaneScrollDelta(base: ScrollDeltaPlan, panes: readonly RenderPan
   if (!base.hasDelta) return base;
   const blits: ScrollBlit[] = [];
   const exposedRects: Rect[] = [];
-  let hasLargePane = false;
+  let requiresPaneRedraw = false;
   for (const pane of panes) {
     const dx = pane.id === 'topLeft' || pane.id === 'bottomLeft' ? 0 : base.dx;
     const dy = pane.id === 'topLeft' || pane.id === 'topRight' ? 0 : base.dy;
     if (dx === 0 && dy === 0) continue;
-    const canBlit = Math.abs(dx) < pane.screenRect.width && Math.abs(dy) < pane.screenRect.height;
+    const canBlit = base.canBlit
+      && Math.abs(dx) < pane.screenRect.width
+      && Math.abs(dy) < pane.screenRect.height;
     if (!canBlit) {
-      // A thumb jump can move by several viewports.  Redraw only the visible
-      // pane, not the entire canvas or the inactive worksheet projection.
+      // A thumb jump can move by several viewports, and a fractional device-
+      // pixel delta cannot be resampled without leaving text trails. Redraw
+      // only the affected visible pane in either case.
       exposedRects.push({ ...pane.screenRect });
-      hasLargePane = true;
+      requiresPaneRedraw = true;
       continue;
     }
     const source = {
@@ -372,7 +384,7 @@ function resolvePaneScrollDelta(base: ScrollDeltaPlan, panes: readonly RenderPan
   const primary = blits[0];
   return {
     ...base,
-    isSmall: !hasLargePane,
+    isSmall: !requiresPaneRedraw,
     canBlit: blits.length > 0,
     source: primary?.source ?? null,
     destination: primary?.destination ?? null,
@@ -407,15 +419,15 @@ function calculateReason(
   hasPrevious: boolean,
   forceFull: boolean,
   resized: boolean,
-  largeScroll: boolean,
+  redrawScroll: boolean,
   hasScroll: boolean,
   hasDirtyRects: boolean,
 ): RenderPlanReason {
   if (!hasPrevious) return 'initial';
   if (forceFull) return 'forced';
   if (resized) return 'resize';
-  if (largeScroll && hasDirtyRects) return 'mixed';
-  if (largeScroll) return 'large-scroll';
+  if (redrawScroll && hasDirtyRects) return 'mixed';
+  if (redrawScroll) return 'scroll-redraw';
   if (hasScroll && hasDirtyRects) return 'mixed';
   if (hasScroll) return 'scroll';
   if (hasDirtyRects) return 'dirty';
@@ -436,7 +448,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
       .filter((rect): rect is Rect => rect !== null),
   );
   const resized = viewportChanged(previousViewport, input.viewport);
-  const largeScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
+  const redrawScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
   // A large scrollbar jump redraws the current pane rectangle through the
   // scroll plan.  It must not clear and redraw the whole canvas, because that
   // includes headers, frozen panes, and unrelated canvas layers.
@@ -445,7 +457,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     hasPrevious,
     input.forceFull === true,
     resized,
-    largeScroll,
+    redrawScroll,
     scrollDelta.hasDelta,
     dirtyRects.length > 0,
   );

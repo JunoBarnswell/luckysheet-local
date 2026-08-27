@@ -85,6 +85,33 @@ test('small scroll delta produces a reusable copy and exposed strips', () => {
   assert.equal(calculateScrollDelta(viewport(), viewport({ scrollX: 240 })).canBlit, false);
 });
 
+test('fractional device-pixel scroll redraws the pane instead of resampling text', () => {
+  const fractional = calculateScrollDelta(viewport(), viewport({ scrollY: 8.5 }));
+  assert.equal(fractional.isSmall, true);
+  assert.equal(fractional.canBlit, false);
+
+  const plan = calculateRenderPlan({
+    skeleton,
+    viewport: viewport({ scrollY: 8.5 }),
+    previousViewport: viewport(),
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(plan.reason, 'scroll-redraw');
+  assert.deepEqual(plan.scrollDelta.blits, []);
+  assert.deepEqual(plan.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [
+    { x: 39, y: 20, width: 201, height: 80 },
+  ]);
+});
+
+test('fractional logical scroll may blit when it is aligned to the device pixel grid', () => {
+  const highDpiViewport = viewport({ devicePixelRatio: 1.25 });
+  const aligned = calculateScrollDelta(highDpiViewport, {
+    ...highDpiViewport,
+    scrollY: 0.8,
+  });
+  assert.equal(aligned.canBlit, true);
+});
+
 test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', () => {
   const initial = calculateRenderPlan({ skeleton, viewport: viewport() });
   assert.equal(initial.fullRedraw, true);
@@ -217,7 +244,7 @@ test('RenderPlan keeps frozen panes disjoint while scrolling only their movable 
   assert.ok(frozen.scrollDelta.exposedRects.every((rect) => rect.x >= 39 && rect.y >= 20));
 });
 
-test('RenderPlan redraws a large scrollbar jump inside the current pane only', () => {
+test('RenderPlan redraws a non-blittable scrollbar jump inside the current pane only', () => {
   const jumped = calculateRenderPlan({
     skeleton,
     viewport: viewport({ scrollY: 400 }),
@@ -225,7 +252,7 @@ test('RenderPlan redraws a large scrollbar jump inside the current pane only', (
     headerOffset: defaultHeaderOffset(),
   });
   assert.equal(jumped.fullRedraw, false);
-  assert.equal(jumped.reason, 'large-scroll');
+  assert.equal(jumped.reason, 'scroll-redraw');
   assert.equal(jumped.scrollDelta.canBlit, false);
   assert.deepEqual(jumped.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [{ x: 39, y: 20, width: 201, height: 80 }]);
 });
