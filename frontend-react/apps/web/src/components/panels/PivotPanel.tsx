@@ -141,6 +141,16 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
     if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); }
     else callbacks?.onLayoutReplace(next);
   };
+  const applyDraft = () => {
+    if (draft) callbacks?.onLayoutReplace(draft);
+    setDirty(false);
+  };
+  const toggleDeferredUpdate = (enabled: boolean) => {
+    if (!enabled && dirty) applyDraft();
+    setDelayUpdate(enabled);
+    setDraft(enabled ? cloneLayout(pivot.layout) : null);
+    if (enabled) setDirty(false);
+  };
   const idsFor = (area: Area): readonly string[] => area === 'filters' ? filters : area === 'columns' ? columns : area === 'rows' ? rows : values.map((field) => field.valueId);
   const changeArea = (fieldId: string, area: Area, index: number) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
@@ -218,15 +228,15 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
           {showAreas ? (
             <Box className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
               <Inline gap="xs" className="mb-1 h-7 shrink-0"><Text size="sm" weight="medium">{pivotText(locale, 'dragFields')}</Text><Text size="xs" tone="subtle" className="ml-auto">{pivotText(locale, 'dragOrChoose')}</Text></Inline>
-              <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-2'} min-h-0 flex-1 gap-1`}>
+              <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-[minmax(0,1fr)_minmax(0,1fr)]'} h-full min-h-0 flex-1 gap-1`}>
                 {PIVOT_FIELD_AREAS.map((area) => <PivotFieldArea key={area} locale={locale} area={area} fields={fields} baseFields={fields.filter((field) => idsFor('rows').includes(field.fieldId) || idsFor('columns').includes(field.fieldId))} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + direction)} onSort={sort} onValueChange={valueChange} />)}
               </Box>
             </Box>
           ) : null}
         </Box>
-        <Inline gap="sm" className="h-9 justify-between">
-          <CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => { setDelayUpdate(event.target.checked); setDraft(cloneLayout(pivot.layout)); setDirty(false); }} />
-          <Button size="sm" variant="outline" disabled={!delayUpdate || !dirty} onClick={() => { if (draft) callbacks?.onLayoutReplace(draft); setDirty(false); }}>{pivotText(locale, 'update')}</Button>
+        <Inline gap="sm" className="h-11 shrink-0 justify-between border-t border-[#d0d0d0] bg-white pt-1">
+          <Stack gap="none" className="min-w-0"><CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => toggleDeferredUpdate(event.target.checked)} />{delayUpdate && dirty ? <Text size="xs" tone="subtle" className="truncate text-amber-700">{pivotText(locale, 'pendingLayout')}</Text> : null}</Stack>
+          <Button size="sm" variant={dirty ? 'primary' : 'outline'} disabled={!delayUpdate || !dirty} onClick={applyDraft}>{pivotText(locale, 'update')}</Button>
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">

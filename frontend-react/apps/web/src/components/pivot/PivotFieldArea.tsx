@@ -217,7 +217,7 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
     };
   });
   return (
-    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-[#bdbdbd] bg-white ${dragActive ? 'border-accent bg-blue-50/40' : ''} ${className ?? ''}`}>
+    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-[#bdbdbd] bg-white ${dragActive ? 'border-accent bg-blue-50/40' : ''} ${className ?? ''}`}>
       <Inline gap="xs" className="h-8 shrink-0 border-b border-[#dedede] bg-[#fafafa] px-2">
         <Icon name={icons[area]} size="xs" className="text-accent" />
         <Text size="sm" weight="medium">{pivotText(locale, area)}</Text>
