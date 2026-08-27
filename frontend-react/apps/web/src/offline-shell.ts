@@ -15,9 +15,13 @@ function sameOriginResourceUrls(): string[] {
 export function registerOfflineShell(): void {
   if (import.meta.env.DEV) {
     if ('serviceWorker' in navigator) {
-      void navigator.serviceWorker.getRegistrations().then((registrations) =>
-        Promise.all(registrations.map((registration) => registration.unregister())),
-      );
+      void navigator.serviceWorker.getRegistrations().then(async (registrations) => {
+        const hadController = Boolean(navigator.serviceWorker.controller);
+        const unregistered = await Promise.all(
+          registrations.map((registration) => registration.unregister()),
+        );
+        if (hadController && unregistered.some(Boolean)) window.location.reload();
+      });
     }
     return;
   }
