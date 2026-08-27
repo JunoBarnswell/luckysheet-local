@@ -3,10 +3,12 @@ import type {
   FilterCellValue,
   CellEditorConfig,
   CellStyle,
+  CellPhoneticMetadata,
   ProtectionAllow,
   CellStyleTemplate,
   BarcodeSymbology,
   CameraDrawingPayload,
+  ChartBindings,
   ChartDrawingPayload,
   ConnectorDrawingPayload,
   DrawingConnectorType,
@@ -18,8 +20,6 @@ import type {
   FilterCriterion,
   DrawingObject,
   DrawingTransform,
-  DataChartDrawingPayload,
-  DataChartPlotType,
   FormControlDrawingPayload,
   FormControlType,
   ImageDrawingPayload,
@@ -52,6 +52,8 @@ import type {
 } from '@react-sheets/core-model';
 import {
   createDefaultTextBoxTextFrame,
+  chartStackingForSubtype,
+  defaultChartSubtype,
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
   protectionResolver,
@@ -158,6 +160,8 @@ import { cellAddress, columnLabel } from './address';
 import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipboard-browser';
 import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
 import { pivotIdsToRefresh, type PivotRefreshTrigger } from './features/pivot/refresh-coordinator';
+import { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
+import { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 import {
   findDrawingByPayloadId,
   resolveDrawingMoveTransform,
@@ -494,6 +498,7 @@ export interface ExtendedSnapshot {
 
 export interface CreatePivotTableParams {
   source?: PivotDefinition['source'];
+  layout?: PivotLayout;
   destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
 }
 
@@ -610,6 +615,7 @@ export class WorkbookSession {
   private drawingSelectionMode = false;
   private textBoxPlacement = false;
   private textBoxEdit: { sheetId: string; drawingId: string; draftText: string } | null = null;
+  private recentSymbols: string[] = [];
   private activeContext: ActiveContext = { kind: 'none' };
   private peers: PeerCursor[] = [];
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
@@ -620,7 +626,7 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert' };
+  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number' };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
   private findCursorSignature = '';
@@ -800,7 +806,7 @@ export class WorkbookSession {
       this.inputMode = 'grid';
       this.focus = { mode: 'grid', target: 'grid' };
     }
-    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape' || this.panels.active === 'picture' || this.panels.active === 'textbox')) {
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'barcode' || this.panels.active === 'shape' || this.panels.active === 'picture' || this.panels.active === 'textbox')) {
       this.panels = { ...this.panels, open: false };
     }
     if (contextRemoved && this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
@@ -1206,16 +1212,11 @@ export class WorkbookSession {
           addRange(payload.sourceRange);
           break;
         case 'chart':
-          for (const range of payload.sourceRanges) addRange(range);
+          if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) addRange(range);
+          else if (payload.source.kind === 'table') addRange(this.runtime.model.dataModel.tables.get(payload.source.tableId)?.sourceRange);
+          else if (payload.source.kind === 'report-range') addRange(payload.source.range);
           addRange(payload.categoryRange);
           break;
-        case 'data-chart': {
-          const sourceRange = payload.source.kind === 'table'
-            ? this.runtime.model.dataModel.tables.get(payload.source.tableId)?.sourceRange
-            : payload.source.kind === 'report-sheet' ? payload.source.range : undefined;
-          addRange(sourceRange);
-          break;
-        }
         case 'form-control':
           if ('inputRange' in payload) addRange(payload.inputRange);
           if ('cellLink' in payload && payload.cellLink) ids.add(payload.cellLink.sheetId);
@@ -1619,7 +1620,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight, intent.formatCellsTab);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -2339,10 +2340,10 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number'): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
@@ -3129,6 +3130,17 @@ export class WorkbookSession {
       border: params.border,
     } });
   }
+  getActivePhoneticContext(): { text: string; metadata?: CellPhoneticMetadata } {
+    const active = this.selectionService.getState().activeCell;
+    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(active.row, active.column);
+    if (!cell || typeof cell.value !== 'string' || !cell.value) return { text: '' };
+    return { text: cell.value, ...(cell.phonetic ? { metadata: structuredClone(cell.phonetic) } : {}) };
+  }
+  setPhoneticGuide(metadata: CellPhoneticMetadata): void {
+    const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
+    this.runCommand('sheet.phonetic.set', { sheetId: this.activeSheetId, range, metadata });
+    this.refresh();
+  }
 
   beginFormatPainter(locked = false): void {
     if (this.formatPainter) {
@@ -3684,20 +3696,20 @@ export class WorkbookSession {
     return this.barcodeDraftSymbology;
   }
 
-  insertDataChart(type: DataChartPlotType = 'column'): void {
-    const table = this.buildSelectionWorkbookTable('data-chart');
-    if (!table.sourceRange) throw new Error('Data Chart requires a non-empty selected range with a header row');
+  insertStructuredChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
+    const table = this.buildSelectionWorkbookTable('chart');
+    if (!table.sourceRange) throw new Error('Chart requires a non-empty selected range with a header row');
     const numericFields = table.fields.filter((field) => field.type === 'number');
-    if (numericFields.length === 0) throw new Error('Data Chart requires at least one numeric value field');
+    if (numericFields.length === 0) throw new Error('Chart requires at least one numeric value field');
     const category = table.fields.find((field) => field.type !== 'number') ?? table.fields[0];
-    const bindings: DataChartDrawingPayload['bindings'] = { values: numericFields.map((field) => ({ area: 'values', fieldId: field.id, aggregate: 'sum' })), category: category ? [{ area: 'category', fieldId: category.id, aggregate: 'none' }] : [], details: [], color: [], size: [], tooltip: [], filter: [] };
-    const drawing = this.createInsertDrawing('data-chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'data-chart' });
-    const payload: DataChartDrawingPayload = { kind: 'data-chart', source: { kind: 'table', tableId: table.id }, plotType: type, bindings, inspector: { title: '数据图表', legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 }, plotArea: { fill: '#ffffff' }, axis: { showGridlines: true } } };
-    this.commitInsertDrawing({ commandId: 'dataChart.create', sheetId: this.activeSheetId, drawing, payload, extraParams: { table } }, () => {
+    const bindings: ChartBindings = { values: numericFields.map((field) => ({ area: 'values', fieldId: field.id, aggregate: 'sum' })), category: category ? [{ area: 'category', fieldId: category.id, aggregate: 'none' }] : [], details: [], color: [], size: [], tooltip: [], filter: [] };
+    const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart' });
+    const payload: ChartDrawingPayload = { kind: 'chart', chartId: drawing.payloadId, source: { kind: 'table', tableId: table.id, bindings }, chartType: type, subtype: defaultChartSubtype(type), elements: { title: '数据图表', legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show', chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 }, plotArea: { fill: '#ffffff' }, valueAxis: { id: 'value', position: 'left', majorGridlines: { visible: true } }, categoryAxis: { id: 'category', position: 'bottom', majorGridlines: { visible: false } } } };
+    this.commitInsertDrawing({ commandId: 'chart.insert.structured', sheetId: this.activeSheetId, drawing, payload, extraParams: { table } }, () => {
       this.setDrawingSelection([drawing.id]);
-      this.panels = { ...this.panels, active: 'dataChart', open: true };
+      this.panels = { ...this.panels, active: 'chart', open: true };
     });
-    this.notify('数据图表已插入');
+    this.notify('图表已插入');
     this.refresh();
   }
 
@@ -3788,6 +3800,20 @@ export class WorkbookSession {
     this.emit();
   }
 
+  getRecentSymbols(): readonly string[] {
+    return [...this.recentSymbols];
+  }
+
+  insertSymbolText(text: string): void {
+    const codePoints = Array.from(text);
+    if (!text || codePoints.length > 8 || codePoints.some((entry) => /[\u0000-\u001f\u007f]/.test(entry))) throw new Error('INVALID_SYMBOL: Symbol text must contain visible Unicode characters');
+    if (this.textBoxEdit) this.setTextBoxDraft(`${this.textBoxEdit.draftText}${text}`);
+    else if (this.cellEditDomain.getSnapshot().session) this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'text.insert', text }));
+    else throw new Error('TEXT_TARGET_REQUIRED: Enter cell or text-box edit mode before inserting a symbol');
+    this.recentSymbols = [text, ...this.recentSymbols.filter((entry) => entry !== text)].slice(0, 20);
+    this.emit();
+  }
+
   commitTextBoxEdit(): void {
     const edit = this.textBoxEdit;
     if (!edit) return;
@@ -3827,14 +3853,13 @@ export class WorkbookSession {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
     if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
-    const sourceRanges = pivot.source.kind === 'worksheet-range' ? [structuredClone(pivot.source.range)] : [];
     const drawing = this.createInsertDrawing('chart', sheet.id, { kind: 'absolute' }, { objectPrefix: 'pivot-drawing', payloadPrefix: 'pivot-chart', transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 } });
     const payload: ChartDrawingPayload = {
       kind: 'chart',
       chartId: drawing.payloadId,
-      pivotId,
       chartType: 'column',
-      sourceRanges,
+      subtype: 'clustered',
+      source: { kind: 'pivot', pivotId },
       elements: {
         title,
         legend: { visible: true, position: 'bottom' },
@@ -3850,14 +3875,16 @@ export class WorkbookSession {
       this.refresh();
     });
   }
-  insertChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
+  insertChart(type: ChartDrawingPayload['chartType'] = 'column', subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(type)): void {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart' });
     const payload: ChartDrawingPayload = {
       kind: 'chart',
       chartId: drawing.payloadId,
       chartType: type,
-      sourceRanges: [{ ...range, sheetId: this.activeSheetId }],
+      subtype,
+      source: { kind: 'worksheet-ranges', ranges: [{ ...range, sheetId: this.activeSheetId }] },
+      ...(chartStackingForSubtype(subtype) ? { stacked: chartStackingForSubtype(subtype) } : {}),
       series: type === 'combo' ? [{ name: 'Series 1', range: { ...range, sheetId: this.activeSheetId }, chartType: 'column', axis: 'primary' }] : undefined,
       elements: {
         title: 'Chart',
@@ -3872,20 +3899,32 @@ export class WorkbookSession {
     };
     this.addChart(drawing, payload);
   }
+  getChartRecommendations(): readonly ChartRecommendation[] {
+    const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
+    return recommendCharts(this.runtime.model, range);
+  }
+  insertRecommendedChart(candidate: ChartRecommendation): void {
+    const range = candidate.source.ranges[0];
+    if (!range || range.sheetId !== this.activeSheetId) throw new Error('INVALID_CHART_SOURCE: Recommended Chart source is no longer active');
+    this.insertChartFromPanel(candidate.chartType, structuredClone(range), candidate.title, 'none', candidate.subtype);
+  }
   insertChartFromPanel(
     type: ChartDrawingPayload['chartType'],
     sourceRange: RangeRef,
     title: string,
     stacked: NonNullable<ChartDrawingPayload['stacked']> = 'none',
+    subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(type),
   ): void {
     const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart', transform: { x: 100, y: 100, width: 480, height: 280, rotation: 0 } });
+    const effectiveStacking = stacked === 'none' ? chartStackingForSubtype(subtype) : stacked;
     const payload: ChartDrawingPayload = {
       kind: 'chart',
       chartId: drawing.payloadId,
       chartType: type,
-      sourceRanges: [structuredClone(sourceRange)],
+      subtype,
+      source: { kind: 'worksheet-ranges', ranges: [structuredClone(sourceRange)] },
       series: type === 'combo' ? [{ name: 'Series 1', range: structuredClone(sourceRange), chartType: 'column', axis: 'primary' }] : undefined,
-      stacked: stacked === 'none' ? undefined : stacked,
+      ...(effectiveStacking ? { stacked: effectiveStacking } : {}),
       elements: {
         title,
         legend: { visible: true, position: 'bottom' },
@@ -3895,15 +3934,15 @@ export class WorkbookSession {
     };
     this.addChart(drawing, payload);
   }
-  updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType']): void {
-    this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType });
+  updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(chartType)): void {
+    this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType, subtype });
     this.refresh();
   }
   updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartDrawingPayload['series'], categoryRange?: RangeRef): void {
     this.runCommand('chart.setSeries', {
       sheetId: this.activeSheetId,
       chartId,
-      sourceRanges,
+      source: { kind: 'worksheet-ranges', ranges: sourceRanges },
       series: series?.map((entry) => structuredClone(entry)),
       categoryRange,
     });
@@ -3982,6 +4021,16 @@ export class WorkbookSession {
       return { status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message, pivotId: 'unbound', sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } };
     }
     return this.addPivot(pivot);
+  }
+  getPivotTableRecommendations(): readonly PivotTableRecommendation[] {
+    const range = { ...normalizeRangeRef(this.getCurrentRegion()), sheetId: this.activeSheetId };
+    return recommendPivotTables(this.runtime.model, this.activeSheetId, range);
+  }
+  createRecommendedPivotTable(candidate: PivotTableRecommendation): Promise<PivotCreateOutcome> {
+    if (candidate.source.range.sheetId !== this.activeSheetId) {
+      return Promise.resolve({ status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message: 'Recommended PivotTable source is no longer active', pivotId: 'unbound', sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } });
+    }
+    return this.createPivotTable({ source: structuredClone(candidate.source), layout: structuredClone(candidate.layout), destination: { kind: 'new-sheet' } });
   }
 
   private pivotTaskError(
@@ -4148,7 +4197,7 @@ export class WorkbookSession {
         target: { sheetId: targetSheetId, anchor: targetPosition },
         fieldCatalog: { fields: [] },
         refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
-        layout: {
+        layout: params.layout ? structuredClone(params.layout) : {
           rows: [],
           columns: [],
           filters: [],
@@ -6318,14 +6367,15 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
-    if (!thread || thread.resolved) return;
+    if (!thread) return;
+    const resolved = !thread.resolved;
     this.runCommand('comment.resolve', {
       sheetId: this.activeSheetId,
       threadId: thread.id,
-      resolved: true,
-      resolvedAt: new Date().toISOString(),
+      resolved,
+      ...(resolved ? { resolvedAt: new Date().toISOString() } : {}),
     });
-    this.notify('Comment resolved');
+    this.notify(resolved ? 'Comment resolved' : 'Comment reopened');
     this.refresh();
   }
   removeComment(): void {

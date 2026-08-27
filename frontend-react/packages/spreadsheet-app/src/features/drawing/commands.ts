@@ -228,7 +228,7 @@ function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
   if (value.kind === 'textbox') return isTextBoxPayload(value);
   if (value.kind === 'shape') return isShapeDrawingPayload(value);
-  if (['chart', 'data-chart', 'camera'].includes(String(value.kind))) return true;
+  if (['chart', 'camera'].includes(String(value.kind))) return true;
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
 }
 
@@ -945,7 +945,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
 
   runtime.registry.registerCommand<DrawingAddParams>({ id: 'drawing.add', execute: (params, context) => executeAdd(params, context) });
   commandIds.push('drawing.add');
-  for (const kind of ['image', 'shape', 'data-chart', 'camera', 'textbox', 'form-control', 'slicer', 'timeline'] as const) {
+  for (const kind of ['image', 'shape', 'camera', 'textbox', 'form-control', 'slicer', 'timeline'] as const) {
     const id = `drawing.add.${kind}`;
     runtime.registry.registerCommand<DrawingAddParams>({ id, execute: (params, context) => executeAdd(params, context, kind) });
     commandIds.push(id);

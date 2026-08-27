@@ -20,9 +20,10 @@ export interface FormatCellsDialogProps {
   locale?: Locale;
   onClose: () => void;
   onApply: (draft: FormatCellsDraft) => void;
+  initialTab?: FormatTab;
 }
 
-type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill' | 'protection';
+export type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill' | 'protection';
 
 const TABS: Array<{ id: FormatTab; labelKey: HomeUiTextKey }> = [
   { id: 'number', labelKey: 'number' },
@@ -58,16 +59,16 @@ const BORDER_ACTIONS: Array<{ placement: BorderPlacement; labelKey: HomeUiTextKe
   { placement: 'none', labelKey: 'noBorder' },
 ];
 
-export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: FormatCellsDialogProps): React.ReactElement | null {
+export function FormatCellsDialog({ open, initial, locale, onClose, onApply, initialTab = 'number' }: FormatCellsDialogProps): React.ReactElement | null {
   const [tab, setTab] = useState<FormatTab>('number');
   const [draft, setDraft] = useState<FormatCellsDraft>(initial);
 
   useEffect(() => {
     if (open) {
       setDraft(initial);
-      setTab('number');
+      setTab(initialTab);
     }
-  }, [open, initial]);
+  }, [open, initial, initialTab]);
 
   const style = draft.style;
   const setStyle = (patch: Partial<CellStyle>) => setDraft((prev) => ({

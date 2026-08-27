@@ -29,7 +29,9 @@ export {
 export * from './ui-command-catalog';
 export * from './features/formula-audit';
 export * from './features/pivot-controls';
-export { buildPivotChartData, type PivotChartCategory, type PivotChartData, type PivotChartSeries } from './features/chart/data';
+export { buildPivotChartData, resolveStructuredChartBindings, type PivotChartCategory, type PivotChartData, type PivotChartSeries, type StructuredChartData, type StructuredChartSeries, type StructuredChartSheet } from './features/chart/data';
+export { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
+export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 export * from './features/data-source';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';

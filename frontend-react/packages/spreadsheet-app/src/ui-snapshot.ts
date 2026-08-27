@@ -89,6 +89,7 @@ export interface CanvasCellSnapshot {
   style?: CellStyle;
   editor?: CellEditorConfig;
   presentation?: CellPresentation;
+  phonetic?: import('@react-sheets/core-model').CellPhoneticMetadata;
   value: string;
   hasComment?: boolean;
   commentText?: string;
@@ -295,6 +296,7 @@ export function buildCanvasSheetSnapshot(
       style,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,
+      phonetic: modelCell?.phonetic ? structuredClone(modelCell.phonetic) : undefined,
       value,
       displayValue: value,
       hasComment: Boolean(comment || note),

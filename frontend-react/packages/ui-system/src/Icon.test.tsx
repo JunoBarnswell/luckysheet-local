@@ -6,7 +6,7 @@ import { Icon, type IconName } from './Icon';
 const ribbonIconNames: readonly IconName[] = [
   'scissors', 'copy', 'clipboard', 'palette', 'align-left', 'align-center', 'align-right', 'align-top', 'align-middle', 'align-bottom',
   'borders', 'dollar-sign', 'percent', 'comma', 'decimal-increase', 'decimal-decrease', 'filter', 'search', 'trash',
-  'table-sheet', 'gantt-sheet', 'report-sheet', 'table', 'table-pivot', 'chart-column', 'barcode', 'sparkline', 'data-chart',
+  'table-sheet', 'gantt-sheet', 'report-sheet', 'table', 'table-pivot', 'chart-column', 'barcode', 'sparkline',
   'picture', 'shape-square', 'camera', 'form-control', 'link', 'checkbox', 'textbox',
 ];
 

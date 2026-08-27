@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPivotMemberKey, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
@@ -93,7 +93,8 @@ describe('exchange-excel-ooxml', () => {
       kind: 'chart',
       chartId: 'chart-payload',
       chartType: 'line',
-      sourceRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
       elements: { hiddenData: 'show' },
     });
     sheet.drawingPayloads.set('image-payload', {
@@ -818,7 +819,7 @@ describe('exchange-excel-ooxml', () => {
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push({ id: 'pivot-chart-drawing', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'pivot-chart-payload' });
-    sheet.drawingPayloads.set('pivot-chart-payload', { kind: 'chart', chartId: 'pivot-chart-1', chartType: 'column', pivotId: 'pivot-chart-1', sourceRanges: [], elements: { hiddenData: 'show', title: 'Amounts', legend: { visible: true, position: 'bottom' } } });
+    sheet.drawingPayloads.set('pivot-chart-payload', { kind: 'chart', chartId: 'pivot-chart-1', chartType: 'column', subtype: 'clustered', source: { kind: 'pivot', pivotId: 'pivot-chart-1' }, elements: { hiddenData: 'show', title: 'Amounts', legend: { visible: true, position: 'bottom' } } });
 
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     const chartParts = Object.keys(output.files).filter((name) => name.startsWith('xl/charts/react-pivot-chart-'));
@@ -840,6 +841,7 @@ describe('exchange-excel-ooxml', () => {
       const payload = typed.sheets[0]!.drawingPayloads['pivot-chart-payload'];
       if (!payload || payload.kind !== 'chart') throw new Error('PivotChart test fixture is missing its chart payload');
       payload.chartType = type;
+      payload.subtype = defaultChartSubtype(type);
       const typedOutput = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(typed));
       const typedChartPart = Object.keys(typedOutput.files).find((name) => name.startsWith('xl/charts/react-pivot-chart-'));
       assert.ok(typedChartPart);
@@ -866,7 +868,7 @@ describe('exchange-excel-ooxml', () => {
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
     sheet.drawings.push({ id: 'invalid-pivot-chart', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1, payloadId: 'invalid-pivot-chart' });
-    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'pie', pivotId: 'pivot-invalid-chart', sourceRanges: [], elements: { hiddenData: 'show' } });
+    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'pie', subtype: 'pie', source: { kind: 'pivot', pivotId: 'pivot-invalid-chart' }, elements: { hiddenData: 'show' } });
     assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unsupported native chart type/);
   });
 
@@ -1371,5 +1373,16 @@ describe('exchange-excel-ooxml', () => {
     workbook.setEditingOptions({ allowEditDirectly: false, moveAfterEnter: true, enterDirection: 'right', formulaAutoComplete: false, valueAutoComplete: true, fixedDecimalPlaces: 3 });
     const imported = await importXlsx({ fileName: 'editing-options.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     assert.deepEqual(imported.snapshot.editingOptions, workbook.editingOptions);
+  });
+
+  it('round-trips East Asian phonetic runs without changing canonical cell text', async () => {
+    const workbook = new WorkbookModel('phonetic-roundtrip', 'Phonetic Roundtrip');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: '東京', phonetic: { visible: true, type: 'hiragana', alignment: 'center', fontFamily: 'Microsoft YaHei', fontSizePx: 8, runs: [{ text: 'とうきょう', start: 0, end: 2 }] } });
+    const imported = await importXlsx({ fileName: 'phonetic.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const cell = imported.snapshot.sheets[0]?.cells['0']?.['0'];
+    assert.equal(cell?.value, '東京');
+    assert.deepEqual(cell?.phonetic?.runs, [{ text: 'とうきょう', start: 0, end: 2 }]);
+    assert.equal(cell?.phonetic?.type, 'hiragana');
   });
 });

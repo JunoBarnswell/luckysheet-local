@@ -34,7 +34,7 @@ import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
 import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -112,12 +112,11 @@ export interface RibbonProps {
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
-  onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
   onCreateTextBox: () => void;
-  onInsertChartType: (type: ChartDrawingPayload['chartType']) => void;
+  onInsertChartType: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype']) => void;
   onInsertSparklineType: (type: SparklineModel['type']) => void;
   onInsertShapeType: (type: ShapeDrawingPayload['type']) => void;
   onInsertConnectorType: (type: DrawingConnectorType) => void;
@@ -212,7 +211,7 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[66px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[104px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[13px] leading-4 !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
@@ -296,7 +295,6 @@ export function Ribbon({
   onOpenDefinedNames,
   onCreateAdvancedSheet,
   onApplyBarcode,
-  onCreateDataChart,
   onCreateCamera,
   onCreateFormControl,
   onApplyCheckbox,
@@ -387,7 +385,6 @@ export function Ribbon({
     onOpenDefinedNames,
     onCreateAdvancedSheet,
     onApplyBarcode,
-    onCreateDataChart,
     onCreateCamera,
     onCreateFormControl: () => onCreateFormControl('button'),
     onApplyCheckbox,
@@ -416,7 +413,8 @@ export function Ribbon({
   const executeCatalogResult = (result: RibbonCommandResult) => {
     if (result.type === 'command') onCommand(result.descriptor);
     else if (result.type === 'intent') onSessionIntent(result.intent);
-    else result.invoke();
+    else if (result.type === 'callback') result.invoke();
+    else onSessionIntent({ type: 'notice', message: `${result.error.code}: ${result.error.reason} ${result.error.recovery}` });
   };
   const renderHomeCommand = (id: RibbonCommandId, options: HomeRibbonCommandOptions = {}) => (
     <CatalogButton
@@ -516,12 +514,9 @@ export function Ribbon({
             disabled={disabled}
             renderCommand={renderHomeCommand}
         onInsertChart={onInsertChartType}
-        onInsertDataChart={(type) => onCreateDataChart(type)}
-        onInsertBarcode={(symbology) => onApplyBarcode(symbology)}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
             onInsertConnector={onInsertConnectorType}
-            onInsertFormControl={onCreateFormControl}
           />
         ) : null}
 

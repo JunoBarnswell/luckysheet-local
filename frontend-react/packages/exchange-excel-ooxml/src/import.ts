@@ -55,7 +55,7 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures: detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature)),
-    projectedFeatures: ['table-sheet', 'gantt-sheet', 'report-sheet', 'data-chart', 'barcode', 'camera', 'form-control'].filter((feature) => detectedFeatures.includes(feature)),
+    projectedFeatures: ['table-sheet', 'gantt-sheet', 'report-sheet', 'barcode', 'camera', 'form-control'].filter((feature) => detectedFeatures.includes(feature)),
   });
   const completedReport = refreshCompatibilitySummary({ ...report, issues: [...report.issues, ...scanFormulaPreserveIssues(snapshot)] });
   if (mode === 'strict') {

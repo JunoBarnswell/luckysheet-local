@@ -60,7 +60,7 @@ export interface DataViewDefinition {
   sort?: Array<{ fieldId: string; direction: 'asc' | 'desc' }>;
 }
 
-/** Canonical structured-data graph consumed by TableSheet, GanttSheet and DataChart. */
+/** Canonical structured-data graph consumed by TableSheet, GanttSheet and Chart sources. */
 export interface WorkbookDataModel {
   sources: import('./data-source').DataSourceManifest[];
   tables: WorkbookTableModel[];

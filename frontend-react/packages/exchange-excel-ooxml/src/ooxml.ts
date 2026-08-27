@@ -3,6 +3,7 @@ import type {
   CellStyleTemplate,
   CellStyle,
   CellHyperlink,
+  CellPhoneticMetadata,
   ConditionalFormatRule,
   DataValidationRule,
   DefinedNameModel,
@@ -114,8 +115,9 @@ interface StyleRecord {
 }
 
 interface SharedStringRecord {
-  value: string;
+  value: string | number | boolean | null;
   richText?: RichTextRun[];
+  phonetic?: CellPhoneticMetadata;
 }
 
 interface StyleContext {
@@ -575,6 +577,7 @@ function parseSheet(
       const cell: CellData = {
         value: canonicalValue,
         ...(valueRecord.richText ? { richText: valueRecord.richText } : {}),
+        ...(valueRecord.phonetic ? { phonetic: valueRecord.phonetic } : {}),
         ...(formulaRecord.formula ? { formula: formulaRecord.formula } : {}),
         ...(formulaRecord.metadata ? { formulaMetadata: formulaRecord.metadata } : {}),
         ...(formulaRecord.formula && isScalar(canonicalValue) ? { formulaValue: canonicalValue } : {}),
@@ -1094,7 +1097,8 @@ function resolvedXfId(xf: XmlNode, base: XmlNode | undefined, key: string, apply
 
 function parseRichTextContainer(container: XmlNode, themeColors: string[] = []): SharedStringRecord {
   const runs = children(container, 'r');
-  if (!runs.length) return { value: descendants(container, 't').map(textContent).join('') };
+  const phonetic = parsePhoneticMetadata(container);
+  if (!runs.length) return { value: children(container, 't').map(textContent).join(''), ...(phonetic ? { phonetic } : {}) };
   const richText = runs.map((run) => {
     const properties = child(run, 'rPr');
     const known = new Set(['rFont', 'name', 'sz', 'b', 'i', 'u', 'strike', 'color', 'vertAlign']);
@@ -1119,7 +1123,24 @@ function parseRichTextContainer(container: XmlNode, themeColors: string[] = []):
       ...(preservedProperties.length ? { preservedProperties } : {}),
     } satisfies RichTextRun;
   });
-  return { value: richText.map((run) => run.text).join(''), richText };
+  return { value: richText.map((run) => run.text).join(''), richText, ...(phonetic ? { phonetic } : {}) };
+}
+
+function parsePhoneticMetadata(container: XmlNode): CellPhoneticMetadata | undefined {
+  const runNodes = children(container, 'rPh');
+  if (!runNodes.length) return undefined;
+  const properties = child(container, 'phoneticPr');
+  const typeMap: Record<string, CellPhoneticMetadata['type']> = { fullwidthKatakana: 'fullwidth-katakana', halfwidthKatakana: 'halfwidth-katakana', Hiragana: 'hiragana', noConversion: 'no-conversion' };
+  const alignmentMap: Record<string, CellPhoneticMetadata['alignment']> = { left: 'left', center: 'center', distributed: 'distributed', noControl: 'no-control' };
+  const runs = runNodes.map((node) => {
+    const start = Number(node.attrs.sb);
+    const end = Number(node.attrs.eb);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start) throw new Error('Invalid OOXML phonetic run bounds');
+    const text = descendants(node, 't').map(textContent).join('');
+    if (!text) throw new Error('Invalid OOXML phonetic run text');
+    return { text, start, end };
+  });
+  return { visible: true, type: typeMap[properties?.attrs.type ?? ''] ?? 'no-conversion', alignment: alignmentMap[properties?.attrs.alignment ?? ''] ?? 'no-control', runs };
 }
 
 function parseFontStyle(font: XmlNode | undefined, themeColors: string[]): CellStyle {
@@ -1238,21 +1259,21 @@ function applyTint(color: string, tint: number): string {
 }
 
 function buildSharedStrings(snapshot: WorkbookSnapshot): string {
-  const values: Array<{ value: string; richText?: RichTextRun[] }> = [];
+  const values: Array<{ value: string; richText?: RichTextRun[]; phonetic?: CellPhoneticMetadata }> = [];
   const lookup = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
         if (cell.formula || typeof cell.value !== 'string') continue;
-        const key = JSON.stringify({ value: cell.value, richText: cell.richText });
+        const key = JSON.stringify({ value: cell.value, richText: cell.richText, phonetic: cell.phonetic });
         if (!lookup.has(key)) {
           lookup.set(key, values.length);
-          values.push({ value: cell.value, richText: cell.richText });
+          values.push({ value: cell.value, richText: cell.richText, ...(cell.phonetic ? { phonetic: cell.phonetic } : {}) });
         }
       }
     }
   }
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si>${serializeRichText(value.value, value.richText)}</si>`).join('')}</sst>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si>${serializeRichText(value.value, value.richText)}${serializePhoneticMetadata(value.phonetic)}</si>`).join('')}</sst>`;
 }
 
 function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): string {
@@ -1561,7 +1582,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
     const serial = canonicalDateToSerial(cell.value, dateSystem);
     return `<c r="${ref}"${styleAttr}><v>${serial}</v></c>`;
   }
-  return `<c r="${ref}"${styleAttr} t="inlineStr"><is>${serializeRichText(cell.value, cell.richText)}</is></c>`;
+  return `<c r="${ref}"${styleAttr} t="inlineStr"><is>${serializeRichText(cell.value, cell.richText)}${serializePhoneticMetadata(cell.phonetic)}</is></c>`;
 }
 
 function formulaSourceForExport(cell: CellData): string {
@@ -1596,6 +1617,14 @@ function serializeRichText(value: string, runs?: RichTextRun[]): string {
     const properties = style ? `<rPr>${style.fontFamily ? `<rFont val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}${style.verticalAlignment && style.verticalAlignment !== 'baseline' ? `<vertAlign val="${style.verticalAlignment}"/>` : ''}</rPr>` : '';
     return `<r>${properties}<t xml:space="preserve">${encodeXml(run.text)}</t></r>`;
   }).join('');
+}
+
+function serializePhoneticMetadata(metadata: CellPhoneticMetadata | undefined): string {
+  if (!metadata?.runs.length) return '';
+  const typeMap: Record<CellPhoneticMetadata['type'], string> = { 'fullwidth-katakana': 'fullwidthKatakana', 'halfwidth-katakana': 'halfwidthKatakana', hiragana: 'Hiragana', 'no-conversion': 'noConversion' };
+  const alignmentMap: Record<CellPhoneticMetadata['alignment'], string> = { left: 'left', center: 'center', distributed: 'distributed', 'no-control': 'noControl' };
+  const runs = metadata.runs.map((run) => `<rPh sb="${run.start}" eb="${run.end}"><t xml:space="preserve">${encodeXml(run.text)}</t></rPh>`).join('');
+  return `${runs}<phoneticPr fontId="0" type="${typeMap[metadata.type]}" alignment="${alignmentMap[metadata.alignment]}"/>`;
 }
 
 function serializeBorders(borders: NonNullable<CellStyle['borders']>): string {
@@ -2583,7 +2612,7 @@ function parseColumnWidths(root: XmlNode, maximumDigitWidthPx: number): Record<n
   return result;
 }
 
-function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[], themeColors: string[]): { value: string | number | boolean | null; richText?: RichTextRun[] } {
+function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[], themeColors: string[]): SharedStringRecord {
   const type = cell.attrs.t;
   if (type === 'inlineStr') return parseRichTextContainer(child(cell, 'is') ?? cell, themeColors);
   const raw = textContent(child(cell, 'v'));

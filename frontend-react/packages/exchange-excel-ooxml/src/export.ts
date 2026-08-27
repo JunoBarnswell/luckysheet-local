@@ -29,7 +29,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
   const canonicalCharts = request.snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)).filter((payload): payload is import('@react-sheets/core-model').ChartDrawingPayload => payload.kind === 'chart');
   const sourceHasOpaqueCharts = sourcePackage ? Object.keys(sourcePackage.opaqueParts).some((name) => name.toLowerCase().includes('/charts/')) : false;
-  const allNativePivotCharts = canonicalCharts.length > 0 && canonicalCharts.every((payload) => Boolean(payload.pivotId) && ['column', 'bar', 'line', 'area'].includes(payload.chartType));
+  const allNativePivotCharts = canonicalCharts.length > 0 && canonicalCharts.every((payload) => payload.source.kind === 'pivot' && ['column', 'bar', 'line', 'area'].includes(payload.chartType));
   const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
   const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));
   if (allNativePivotCharts && !sourceHasOpaqueCharts) {
@@ -63,7 +63,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   if (nativeStatus.timeline) editableFeatures.add('timeline');
   for (const feature of ['slicer', 'timeline'] as const) if (detectedFeatures.includes(feature) && !editableFeatures.has(feature)) preservedFeatures.add(feature);
   const unsupportedFeatures = detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature));
-  const projectedFeatures = new Set(['table-sheet', 'gantt-sheet', 'report-sheet', 'data-chart', 'barcode', 'camera', 'form-control'].filter((feature) => detectedFeatures.includes(feature)));
+  const projectedFeatures = new Set(['table-sheet', 'gantt-sheet', 'report-sheet', 'barcode', 'camera', 'form-control'].filter((feature) => detectedFeatures.includes(feature)));
   const report = createCompatibilityReport({
     fileName: request.fileName,
     importLevel: request.options.compatibilityTarget,

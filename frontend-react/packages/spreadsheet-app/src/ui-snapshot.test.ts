@@ -154,8 +154,9 @@ describe('canonical drawing UI projection', () => {
       kind: 'chart',
       chartId: 'chart-combo',
       chartType: 'combo',
+      subtype: 'custom-combo',
       stacked: 'percent',
-      sourceRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }],
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
       elements: { hiddenData: 'show' },
     });
 

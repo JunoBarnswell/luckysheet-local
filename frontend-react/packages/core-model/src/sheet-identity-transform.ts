@@ -169,11 +169,6 @@ function remapDrawingPayload(
     case 'camera':
       next.sourceRange = mapRange(next.sourceRange, sourceSheetId, targetSheetId);
       break;
-    case 'data-chart':
-      next.source = next.source.kind === 'report-sheet'
-        ? { ...next.source, range: mapRange(next.source.range, sourceSheetId, targetSheetId) }
-        : { ...next.source, tableId: tableIds.get(next.source.tableId) ?? next.source.tableId };
-      break;
     case 'form-control':
       if ('cellLink' in next && next.cellLink) next.cellLink = { ...next.cellLink, sheetId: mapSheetId(next.cellLink.sheetId, sourceSheetId, targetSheetId) };
       if ('inputRange' in next) next.inputRange = mapRange(next.inputRange, sourceSheetId, targetSheetId);
@@ -187,7 +182,13 @@ function remapDrawingPayload(
       if (next.hyperlink) next.hyperlink = remapHyperlinkTarget(next.hyperlink, sourceSheetId, targetSheetId);
       break;
     case 'chart':
-      next.sourceRanges = next.sourceRanges.map((range) => mapRange(range, sourceSheetId, targetSheetId));
+      next.source = next.source.kind === 'worksheet-ranges'
+        ? { ...next.source, ranges: next.source.ranges.map((range) => mapRange(range, sourceSheetId, targetSheetId)) }
+        : next.source.kind === 'report-range'
+          ? { ...next.source, range: mapRange(next.source.range, sourceSheetId, targetSheetId) }
+          : next.source.kind === 'table'
+            ? { ...next.source, tableId: tableIds.get(next.source.tableId) ?? next.source.tableId }
+            : { ...next.source, pivotId: pivotIds.get(next.source.pivotId) ?? next.source.pivotId };
       break;
     default:
       break;

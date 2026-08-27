@@ -220,9 +220,9 @@ test('canonical snapshots reject drawings whose Pivot reference no longer exists
   sheet.drawingPayloads.set('broken-pivot-chart-payload', {
     kind: 'chart',
     chartId: 'broken-pivot-chart',
-    pivotId: 'missing-pivot',
-    sourceRanges: [],
+    source: { kind: 'pivot', pivotId: 'missing-pivot' },
     chartType: 'column',
+    subtype: 'clustered',
     elements: { hiddenData: 'show' },
   });
   assert.throws(() => assertCanonicalWorkbookSnapshot(workbook.snapshot()), /references missing Pivot/);
@@ -257,7 +257,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     kind: 'chart',
     chartId: 'chart-1',
     chartType: 'column',
-    sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 }],
+    subtype: 'clustered',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 }] },
     elements: { title: 'Revenue', hiddenData: 'show' },
   });
   sheet.drawings.push({

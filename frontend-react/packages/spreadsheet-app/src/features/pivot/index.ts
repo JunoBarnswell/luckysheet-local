@@ -4,6 +4,7 @@ import { PIVOT_MUTATION_IDS, registerPivotCommands } from './commands';
 
 export * from './commands';
 export * from './helpers';
+export * from './recommendation';
 export * from './engine';
 export * from './source-index';
 export * from './task-protocol';

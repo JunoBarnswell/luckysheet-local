@@ -34,6 +34,7 @@ export interface CellPatch {
   style?: CellPatchField<CellStyle>;
   editor?: CellPatchField<NonNullable<CellData['editor']>>;
   presentation?: CellPatchField<NonNullable<CellData['presentation']>>;
+  phonetic?: CellPatchField<NonNullable<CellData['phonetic']>>;
   numberFormat?: CellPatchField<NonNullable<CellData['numberFormat']>>;
   richText?: CellPatchField<NonNullable<CellData['richText']>>;
   formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
@@ -111,6 +112,7 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'hyperlink',
   'hyperlinkDetail',
   'filterMetadata',
+  'phonetic',
 ];
 const PATCH_KEYS: readonly CellPatchKey[] = ['value', ...PATCH_FIELDS];
 

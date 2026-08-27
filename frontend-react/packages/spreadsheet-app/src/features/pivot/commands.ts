@@ -623,7 +623,7 @@ interface PivotRemovalPlan {
 }
 
 function pivotDependentPayload(payload: DrawingPayload, pivotId: string): boolean {
-  if (payload.kind === 'chart') return payload.pivotId === pivotId;
+  if (payload.kind === 'chart') return payload.source.kind === 'pivot' && payload.source.pivotId === pivotId;
   if (payload.kind !== 'slicer' && payload.kind !== 'timeline') return false;
   return payload.pivotId === pivotId || payload.connections?.some((connection) => connection.pivotId === pivotId) === true;
 }
@@ -637,7 +637,9 @@ function planPivotRemoval(context: CommandContext, pivotId: string, sheetId: str
     for (const drawing of sheet.drawings) {
       const payload = sheet.drawingPayloads.get(drawing.payloadId);
       if (!payload || !pivotDependentPayload(payload, pivotId)) continue;
-      const primary = payload.kind === 'chart' || payload.kind === 'slicer' || payload.kind === 'timeline' ? payload.pivotId : undefined;
+      const primary = payload.kind === 'chart'
+        ? (payload.source.kind === 'pivot' ? payload.source.pivotId : undefined)
+        : payload.kind === 'slicer' || payload.kind === 'timeline' ? payload.pivotId : undefined;
       if (primary === pivotId) {
         removals.push({ sheetId: sheet.id, drawing: structuredClone(drawing), payload: structuredClone(payload) });
         continue;
@@ -887,7 +889,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       if (params.drawing.sheetId !== params.sheetId || params.drawing.kind !== 'chart'
         || params.payload.kind !== 'chart' || params.drawing.payloadId !== params.payload.chartId
-        || params.payload.pivotId !== pivot.id) {
+        || params.payload.source.kind !== 'pivot' || params.payload.source.pivotId !== pivot.id) {
         throw new Error('PivotChart drawing and payload identity mismatch');
       }
       const sheet = context.workbook.getSheet(params.sheetId);

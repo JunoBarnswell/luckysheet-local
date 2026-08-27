@@ -39,7 +39,6 @@ export const XLSX_CAPABILITY_MANIFEST = {
   'table-sheet': capability('table-sheet', 'full', 'full', 'partial', 'full', 'full', 'Exported as a materialized worksheet and Excel table; canonical metadata is retained in custom XML.'),
   'gantt-sheet': capability('gantt-sheet', 'full', 'full', 'partial', 'full', 'full', 'Task data is materialized; the canonical Gantt definition is retained in custom XML.'),
   'report-sheet': capability('report-sheet', 'full', 'full', 'partial', 'full', 'full', 'The generated report grid is exported and the canonical template binding is retained in custom XML.'),
-  'data-chart': capability('data-chart', 'full', 'full', 'partial', 'full', 'full', 'DataChart metadata is retained and projected for Excel.'),
   barcode: capability('barcode', 'full', 'full', 'partial', 'full', 'full', 'Barcode source and symbology are retained and projected for Excel.'),
   camera: capability('camera', 'full', 'full', 'partial', 'full', 'full', 'The live source range is retained in custom XML.'),
   'form-control': capability('form-control', 'full', 'full', 'partial', 'full', 'full', 'Supported controls are projected; canonical cell-link metadata is retained.'),

@@ -165,12 +165,11 @@ export function RibbonHost({
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
       onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}
-      onCreateDataChart={(type) => session.insertDataChart(type)}
       onCreateCamera={() => session.insertCamera()}
       onCreateFormControl={(type) => session.insertFormControl(type)}
       onApplyCheckbox={() => session.setCellEditor({ kind: 'checkbox' })}
       onCreateTextBox={() => session.insertTextBox()}
-      onInsertChartType={(type) => session.insertChart(type)}
+      onInsertChartType={(type, subtype) => session.insertChart(type, subtype)}
       onInsertSparklineType={(type) => { session.insertSparkline(type); }}
       onInsertShapeType={(type) => session.insertShape(type)}
       onInsertConnectorType={(type: DrawingConnectorType) => session.insertConnector(type)}

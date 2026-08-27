@@ -5,13 +5,13 @@ export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' 
 export const DESIGNER_GEOMETRY = {
   viewportWidth: 1920,
   viewportHeight: 1080,
-  ribbonHeight: 133,
+  ribbonHeight: 167,
   formulaBarHeight: 48,
-  workspaceHeight: 877,
+  workspaceHeight: 843,
   sheetTabsHeight: 29,
   statusBarHeight: 22,
   ribbonTabHeight: 32,
-  ribbonContentHeight: 101,
+  ribbonContentHeight: 135,
 } as const;
 
 /**
@@ -21,22 +21,22 @@ export const DESIGNER_GEOMETRY = {
  * explicit for visual tests and future surfaces.
  */
 export const RIBBON_DENSITY = {
-  shellHeight: 133,
+  shellHeight: 167,
   tabStripHeight: 32,
-  commandAreaHeight: 101,
-  groupContentHeight: 93,
-  largeCommandHeight: 72,
-  groupCaptionHeight: 12,
+  commandAreaHeight: 135,
+  groupContentHeight: 127,
+  largeCommandHeight: 104,
+  groupCaptionHeight: 18,
 } as const;
 
 export const RIBBON_DENSITY_CLASSES = {
-  shell: 'h-[133px]',
+  shell: 'h-[167px]',
   tabStrip: 'h-[32px]',
-  commandArea: 'h-[101px]',
-  groupContent: 'h-[93px]',
-  groupControls: 'h-[70px]',
-  largeCommand: '!h-[72px]',
-  groupCaption: 'h-[12px] leading-[12px]',
+  commandArea: 'h-[135px]',
+  groupContent: 'h-[127px]',
+  groupControls: 'h-[104px]',
+  largeCommand: '!h-[104px]',
+  groupCaption: 'h-[18px] leading-[18px]',
 } as const;
 
 export interface PeerCursor {

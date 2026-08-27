@@ -7,14 +7,13 @@ import { ribbonGroupWidthClass } from './RibbonLayoutRenderer';
 
 describe('Home Ribbon compact group geometry', () => {
   it('keeps the late command groups dense and horizontally reachable', () => {
-    assert.equal(ribbonGroupWidthClass('history', 'compact', 1581, 'home'), 'w-[64px]');
-    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1581, 'home'), 'w-[118px]');
-    assert.equal(ribbonGroupWidthClass('font', 'compact', 1581, 'home'), 'w-[205px]');
-    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[211px]');
-    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1581, 'home'), 'w-[266px]');
-    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1581, 'home'), 'w-[158px]');
-    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1581, 'home'), 'min-w-[222px] flex-1');
-    assert.equal(ribbonGroupWidthClass('editing', 'narrow', 900, 'home'), 'min-w-[222px] flex-1');
+    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1581, 'home'), 'w-[141px]');
+    assert.equal(ribbonGroupWidthClass('font', 'compact', 1581, 'home'), 'w-[347px]');
+    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[342px]');
+    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1581, 'home'), 'w-[251px]');
+    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1581, 'home'), 'w-[191px]');
+    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1581, 'home'), 'w-[310px]');
+    assert.equal(ribbonGroupWidthClass('editing', 'narrow', 900, 'home'), 'w-[310px]');
   });
 
   it('ships every Figma SVG and the exact Noto Sans SC font used by the Home design', () => {

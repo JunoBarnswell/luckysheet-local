@@ -7,6 +7,8 @@ import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
+import { isChartSubtypeForType } from './domain';
+import { isCellPhoneticMetadata } from './phonetic';
 import type { ReviewStoreSnapshot } from './review-store';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
@@ -340,12 +342,19 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       canonicalizePivotDefinition(pivot);
     }
     for (const payload of Object.values(sheet.drawingPayloads)) {
+      const runtimeKind = (payload as { kind?: string }).kind;
+      if (runtimeKind === 'data-chart') throw new Error('MIGRATION_REQUIRED: legacy data-chart payloads must be converted by the offline snapshot migrator');
+      if (runtimeKind === 'chart' && !['worksheet-ranges', 'pivot', 'table', 'report-range'].includes(String((payload as { source?: { kind?: string } }).source?.kind))) {
+        throw new Error('MIGRATION_REQUIRED: chart payload is missing the canonical source discriminator');
+      }
+      if (payload.kind === 'chart' && !isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
       if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
     }
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
         if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
+        if (cell.phonetic && !isCellPhoneticMetadata(cell.phonetic)) throw new Error(`Cell ${sheet.id} contains invalid phonetic metadata`);
         if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
       }
     }
@@ -355,9 +364,10 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       const payload = sheet.drawingPayloads[drawing.payloadId];
       if (!payload) throw new Error(`Drawing payload is missing: ${drawing.payloadId}`);
       if (payload.kind !== 'chart' && payload.kind !== 'slicer' && payload.kind !== 'timeline') continue;
-      if (payload.kind === 'chart' && payload.pivotId === undefined) continue;
-      if (typeof payload.pivotId !== 'string' || !payload.pivotId.trim() || !pivotIds.has(payload.pivotId)) {
-        throw new Error(`Drawing ${drawing.id} references missing Pivot: ${payload.pivotId ?? ''}`);
+      const pivotId = payload.kind === 'chart' ? (payload.source.kind === 'pivot' ? payload.source.pivotId : undefined) : payload.pivotId;
+      if (payload.kind === 'chart' && pivotId === undefined) continue;
+      if (typeof pivotId !== 'string' || !pivotId.trim() || !pivotIds.has(pivotId)) {
+        throw new Error(`Drawing ${drawing.id} references missing Pivot: ${pivotId ?? ''}`);
       }
       if ((payload.kind === 'slicer' || payload.kind === 'timeline') && payload.connections) {
         const primary = snapshot.sheets.flatMap((candidate) => candidate.pivots).find((pivot) => pivot.id === payload.pivotId);
@@ -379,15 +389,15 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       }
     }
   }
-  const dataChartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
-    .flatMap((payload) => payload.kind === 'data-chart' && payload.source.kind === 'table' ? [payload.source.tableId] : [])));
+  const chartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
+    .flatMap((payload) => payload.kind === 'chart' && payload.source.kind === 'table' ? [payload.source.tableId] : [])));
   for (const sheet of snapshot.sheets) {
     for (const payload of Object.values(sheet.drawingPayloads)) {
-      if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') validateDrawingSourceRange(payload.source.range, snapshot, 'Data chart');
+      if (payload.kind === 'chart' && payload.source.kind === 'report-range') validateDrawingSourceRange(payload.source.range, snapshot, 'Chart');
     }
   }
   for (const table of snapshot.dataModel.tables) {
-    if (table.sourceRange && dataChartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Data chart table');
+    if (table.sourceRange && chartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Chart table');
   }
   const canonical = structuredClone(snapshot);
   for (const sheet of canonical.sheets) {

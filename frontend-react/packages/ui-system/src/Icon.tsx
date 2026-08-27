@@ -23,7 +23,6 @@ export type IconName =
   | 'chart-area'
   | 'chart-pie'
   | 'chart-scatter'
-  | 'data-chart'
   | 'barcode'
   | 'camera'
   | 'checkbox'
@@ -193,8 +192,6 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M12 3a9 9 0 1 0 9 9h-9Z" fill="#93c5fd" /><path d="M14 3.3V10h6.7A9 9 0 0 0 14 3.3Z" fill="#f59e0b" /></>;
     case 'chart-scatter':
       return <><path d="M4 5v15h16" /><circle cx="8" cy="15" r="1.5" fill="#3b82f6" stroke="none" /><circle cx="12" cy="11" r="1.5" fill="#10b981" stroke="none" /><circle cx="17" cy="7" r="1.5" fill="#ef4444" stroke="none" /></>;
-    case 'data-chart':
-      return <><rect x="3" y="4" width="7" height="16" rx="1" fill="#93c5fd" /><path d="M5 8h3M5 12h3M5 16h3" /><rect x="13" y="11" width="3" height="8" fill="#10b981" stroke="none" /><rect x="18" y="6" width="3" height="13" fill="#3b82f6" stroke="none" /></>;
     case 'barcode':
       return <><path d="M4 5v14M7 5v14M10 5v14M12 5v14M16 5v14M19 5v14" strokeWidth="2" /><path d="M5.5 5v14M14 5v14" /></>;
     case 'camera':

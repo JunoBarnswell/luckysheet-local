@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import type { ChartAxisModel, ChartDrawingPayload, ChartSeriesModel, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
+import { chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -30,6 +30,7 @@ export interface ChartSetTypeParams {
   sheetId: string;
   chartId: string;
   chartType: ChartType;
+  subtype: ChartSubtype;
   stacked?: ChartPayload['stacked'];
 }
 
@@ -48,7 +49,7 @@ export interface ChartSetDataLabelsParams {
 export interface ChartSetSeriesParams {
   sheetId: string;
   chartId: string;
-  sourceRanges: RangeRef[];
+  source: ChartSource;
   series?: ChartPayload['series'];
   categoryRange?: RangeRef;
 }
@@ -100,6 +101,20 @@ function isRange(value: unknown): value is RangeRef {
     && (value.startColumn as number) >= 0 && (value.endColumn as number) >= (value.startColumn as number);
 }
 
+const CHART_TYPES: readonly ChartType[] = [
+  'column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter', 'bubble',
+  'treemap', 'sunburst', 'histogram', 'pareto', 'box-whisker', 'waterfall',
+  'funnel', 'stock', 'surface', 'radar', 'map', 'combo',
+];
+
+function isChartSource(value: unknown): value is ChartSource {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.every(isRange);
+  if (value.kind === 'pivot') return typeof value.pivotId === 'string' && value.pivotId.length > 0;
+  if (value.kind === 'table') return typeof value.tableId === 'string' && value.tableId.length > 0 && isRecord(value.bindings);
+  return value.kind === 'report-range' && isRange(value.range) && isRecord(value.bindings);
+}
+
 function isAxis(value: unknown): value is ChartAxis {
   if (!isRecord(value)) return false;
   return typeof value.id === 'string'
@@ -147,7 +162,7 @@ function isSeries(value: unknown): value is ChartSeries {
     && isRange(series.range)
     && (series.xRange === undefined || isRange(series.xRange))
     && (series.yRange === undefined || isRange(series.yRange))
-    && (series.chartType === undefined || ['column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter'].includes(String(series.chartType)))
+    && (series.chartType === undefined || (CHART_TYPES.includes(series.chartType as ChartType) && series.chartType !== 'combo'))
     && (series.axis === undefined || series.axis === 'primary' || series.axis === 'secondary')
     && (series.smooth === undefined || typeof series.smooth === 'boolean')
     && (series.marker === undefined || isRecord(series.marker))
@@ -159,12 +174,12 @@ function isSeries(value: unknown): value is ChartSeries {
 function isChartPayload(value: unknown): value is ChartPayload {
   if (!isRecord(value) || value.kind !== 'chart') return false;
   const payload = value as Record<string, unknown>;
-  const sourceRanges = payload.sourceRanges;
   const series = payload.series;
   return typeof payload.chartId === 'string'
-    && ['column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter', 'combo'].includes(String(value.chartType))
-    && Array.isArray(sourceRanges)
-    && sourceRanges.every(isRange)
+    && CHART_TYPES.includes(value.chartType as ChartType)
+    && typeof payload.subtype === 'string'
+    && isChartSubtypeForType(value.chartType as ChartType, payload.subtype as ChartSubtype)
+    && isChartSource(payload.source)
     && (series === undefined || (Array.isArray(series) && series.every(isSeries)))
     && isElements(payload.elements)
     && (payload.categoryRange === undefined || isRange(payload.categoryRange))
@@ -256,7 +271,7 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<ChartInsertParams>({ id: 'chart.insert', execute: (params, context) => executeChartInsert(params, context) });
   commandIds.push('chart.insert');
 
-  for (const chartType of ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'] as const) {
+  for (const chartType of CHART_TYPES) {
     const id = `chart.insert.${chartType}`;
     runtime.registry.registerCommand<ChartInsertParams>({ id, execute: (params, context) => executeChartInsert(params, context, chartType) });
     commandIds.push(id);
@@ -264,13 +279,18 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
 
   runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId })) });
   commandIds.push('chart.update');
-  runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, chartType: input.chartType, stacked: input.stacked ?? payload.stacked })) });
+  runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    if (!isChartSubtypeForType(input.chartType, input.subtype)) throw new Error(`Chart subtype ${input.subtype} does not belong to ${input.chartType}`);
+    const next = { ...payload, chartType: input.chartType, subtype: input.subtype, stacked: input.stacked ?? chartStackingForSubtype(input.subtype) };
+    if (next.stacked === undefined) delete next.stacked;
+    return next;
+  }) });
   commandIds.push('chart.setType');
   runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, legend: { visible: true, position: input.legendPosition } } })) });
   commandIds.push('chart.setLegend');
   runtime.registry.registerCommand<ChartSetDataLabelsParams>({ id: 'chart.setDataLabels', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, dataLabels: { ...(payload.elements.dataLabels ?? { visible: false }), visible: input.showDataLabels } } })) });
   commandIds.push('chart.setDataLabels');
-  runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, sourceRanges: structuredClone(input.sourceRanges), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
+  runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, source: structuredClone(input.source), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
   commandIds.push('chart.setSeries');
   runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.elements.secondaryValueAxis } })) });
   commandIds.push('chart.setAxes');
