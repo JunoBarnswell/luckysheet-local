@@ -4,6 +4,7 @@ import {
   Button,
   ColorPicker,
   DropdownMenu,
+  Icon,
   Inline,
   Select,
   Stack,
@@ -98,6 +99,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
 
 const HOME_COMPACT_ACTION_CLASS = '!h-6 !min-h-0 !w-6 !rounded-[4px] px-0 [&>svg]:!h-4 [&>svg]:!w-4';
 const HOME_HISTORY_ACTION_CLASS = '!h-7 !min-h-0 !w-7 !rounded-[4px] px-0 [&>svg]:!h-5 [&>svg]:!w-5';
+const HOME_INLINE_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 rounded-[4px] px-1 text-[12px] leading-[14px] [&>svg]:!h-4 [&>svg]:!w-4';
 
 function HomeTile({ children, className, compact = false, ...props }: React.ComponentProps<typeof Button> & { compact?: boolean }) {
   return <Button {...props} className={`${compact ? '!h-6 !min-h-0 !w-6 px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[72px] !min-h-0 min-w-[38px] max-w-[98px] flex-col gap-1 overflow-hidden rounded-[4px] px-2 text-[12px] leading-[14px] text-center !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>svg]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
@@ -168,6 +170,17 @@ export function HomeRibbon({
     if (!surface.commandId) return null;
     if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
     if (surface.id.startsWith('history.')) return renderCommand(surface.commandId, { iconOnly: true, className: HOME_HISTORY_ACTION_CLASS, ribbonSurfaceId: surface.id });
+    if (surface.id === 'editing.sort' || surface.id === 'editing.find') {
+      return renderCommand(surface.commandId, { className: HOME_INLINE_ACTION_CLASS, ribbonSurfaceId: surface.id });
+    }
+    if (surface.id === 'editing.fill-down') {
+      return <Inline gap="none" className="h-6 items-stretch">
+        {renderCommand(surface.commandId, { className: HOME_INLINE_ACTION_CLASS, ribbonSurfaceId: surface.id })}
+        <DropdownMenu align="left" trigger={<Button aria-label="Fill options" title="Fill options" disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-6 !min-h-0 !w-5 rounded-[4px] px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
+          <Stack gap="none" className="min-w-[10rem] p-1">{menuMembers('editing.fill-down').map((member) => renderSurface(member, 'menu'))}</Stack>
+        </DropdownMenu>
+      </Inline>;
+    }
     const tile = surface.appearance === 'large' || surface.appearance === 'tile';
     return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? '!h-[72px] !min-h-0 rounded-[4px] [&>svg]:!h-8 [&>svg]:!w-8' : HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
   };
@@ -175,14 +188,16 @@ export function HomeRibbon({
   const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu', surfaceId: string): React.ReactNode => {
     const label = surfaceLabel(locale, controlId);
     const compactMenu = controlId === 'font-borders-menu' || controlId === 'orientation-menu' || controlId === 'merge-menu';
-    const menuTrigger = (icon: React.ComponentProps<typeof Button>['icon']) => mode === 'wide'
+    const menuTrigger = (icon: React.ComponentProps<typeof Button>['icon'], horizontal = false) => mode === 'wide'
       ? compactMenu
         ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} iconOnly size="sm" variant="ghost" className={HOME_COMPACT_ACTION_CLASS} />
+        : horizontal
+          ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className={HOME_INLINE_ACTION_CLASS}>{label}<Icon name="chevron-down" size="xs" /></Button>
         : <HomeTile aria-label={label} compact={layout.mode === 'narrow'} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
       : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
-        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? HOME_COMPACT_ACTION_CLASS : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
+        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={false} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? HOME_INLINE_ACTION_CLASS : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{label}</Button>;
       case 'font-family':
         return <Box data-ribbon-surface={surfaceId} className={mode === 'wide' ? 'w-[110px] shrink-0' : 'w-full'}><FontFamilyControl
           value={cellStyle.fontFamily}
@@ -271,7 +286,7 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'clear-menu':
-        return <DropdownMenu align="left" trigger={menuTrigger('trash')}><Stack gap="none" className="min-w-[14rem] p-1">{menuMembers('control.clear-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
+        return <DropdownMenu align="left" trigger={menuTrigger('trash', true)}><Stack gap="none" className="min-w-[14rem] p-1">{menuMembers('control.clear-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
       case 'column-width':
       case 'auto-fit-column-width':
       case 'hide-columns':
@@ -299,14 +314,14 @@ export function HomeRibbon({
         return <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
       case 'merge-menu':
-        return <DropdownMenu align="left" trigger={menuTrigger('columns')}>
+        return <DropdownMenu align="left" trigger={menuTrigger('columns', true)}>
           <Stack gap="none" className="min-w-[14rem] p-1">
             {menuMembers('control.merge-menu').map((surface) => renderSurface(surface, 'menu'))}
           </Stack>
         </DropdownMenu>;
       case 'auto-sum-menu':
         return <Inline gap="none" className={mode === 'wide' ? 'h-6 items-stretch' : 'w-full'}>
-          {renderCommand('autoSum', { iconOnly: mode === 'wide', className: mode === 'wide' ? HOME_COMPACT_ACTION_CLASS : 'w-full justify-start', ribbonSurfaceId: surfaceId })}
+          {renderCommand('autoSum', { className: mode === 'wide' ? HOME_INLINE_ACTION_CLASS : 'w-full justify-start', ribbonSurfaceId: surfaceId })}
           <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={mode === 'wide' ? '!h-6 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : 'w-5 shrink-0 justify-center px-0'} />}>
             <Stack gap="none" className="min-w-[10rem] p-1">
               {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}

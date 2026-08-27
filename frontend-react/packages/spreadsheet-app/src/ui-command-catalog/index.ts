@@ -1339,7 +1339,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         columnNode(
           'clipboard.secondary',
           rowNode('clipboard.secondary.top', homeSurfaceNode('clipboard.cut'), homeSurfaceNode('clipboard.copy')),
-          rowNode('clipboard.secondary.bottom', homeSurfaceNode('control.format-painter'), homeSurfaceNode('clipboard.paste-special')),
+          rowNode('clipboard.secondary.bottom', homeSurfaceNode('control.format-painter')),
         ),
       ),
     ),
@@ -1359,14 +1359,15 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         'alignment.layout',
         columnNode(
           'alignment.controls',
-          rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom'), homeSurfaceNode('control.orientation-menu')),
-          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.indent-increase')),
+          rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
         ),
         columnNode(
           'alignment.wrap-merge',
           homeSurfaceNode('alignment.wrap'),
           homeSurfaceNode('control.merge-menu'),
         ),
+        homeSurfaceNode('control.orientation-menu'),
       ),
     ),
     groupSpec(
@@ -1375,13 +1376,13 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'number.layout',
         rowNode('number.format', homeSurfaceNode('control.number-format')),
-        rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
       ),
     ),
     groupSpec(
       'styles',
       60,
-      rowNode('styles.actions', homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('control.cell-styles-menu'), homeSurfaceNode('styles.template'), homeSurfaceNode('styles.editor')),
+      rowNode('styles.actions', homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('control.cell-styles-menu')),
     ),
     groupSpec('cells', 70, rowNode('cells.actions', homeSurfaceNode('control.cells-insert-menu'), homeSurfaceNode('control.cells-delete-menu'), homeSurfaceNode('control.cells-format-menu'))),
     groupSpec(

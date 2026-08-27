@@ -48,6 +48,60 @@ function shouldDrawRect(rects: readonly Rect[] | undefined, rect: Rect): boolean
     && candidate.y + candidate.height > rect.y);
 }
 
+function intersectCellRanges(left: CellRange, right: CellRange): CellRange | null {
+  const startRow = Math.max(left.startRow, right.startRow);
+  const endRow = Math.min(left.endRow, right.endRow);
+  const startColumn = Math.max(left.startColumn, right.startColumn);
+  const endColumn = Math.min(left.endColumn, right.endColumn);
+  return startRow <= endRow && startColumn <= endColumn
+    ? { startRow, endRow, startColumn, endColumn }
+    : null;
+}
+
+/**
+ * Converts incremental content rectangles into the exact model ranges that
+ * need painting.  Scanning the entire visible range and filtering every cell
+ * afterwards turns a one-row scroll strip into a viewport-sized hot loop.
+ */
+function resolveDrawRanges(
+  skeleton: SheetSkeleton,
+  visibleRange: CellRange,
+  drawRects: readonly Rect[] | undefined,
+): CellRange[] {
+  if (!drawRects || drawRects.length === 0) return [visibleRange];
+  const ranges: CellRange[] = [];
+  for (const rect of drawRects) {
+    const range = skeleton.getVisibleRange(rect);
+    if (!range) continue;
+    const clipped = intersectCellRanges(range, visibleRange);
+    if (clipped) ranges.push(clipped);
+  }
+  return ranges;
+}
+
+function forEachCellInRanges(
+  skeleton: SheetSkeleton,
+  ranges: readonly CellRange[],
+  visit: (address: CellAddress) => void,
+): void {
+  if (ranges.length === 0) return;
+  const seen = ranges.length > 1 ? new Set<string>() : null;
+  for (const range of ranges) {
+    for (let row = range.startRow; row <= range.endRow; row++) {
+      if (skeleton.isRowHidden(row)) continue;
+      for (let column = range.startColumn; column <= range.endColumn; column++) {
+        if (skeleton.isColumnHidden(column)) continue;
+        if (seen) {
+          const key = `${row}:${column}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        visit({ row, column });
+      }
+    }
+  }
+}
+
 // ---------------- 网格层 ----------------
 
 export function drawGridLayer(options: PaneDrawOptions): void {
@@ -64,34 +118,31 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   // 网格线属于整张可见网格，而不是 occupied cells。先收集可见合并区域，
   // 再逐个空白/有值单元格绘制四条边，确保空白单元格仍保持完整网格。
   // 旧实现只在每一行/列的第一个单元格后 break，导致内容区只剩 A 列和首行的线。
-  const merges = collectVisibleMerges(options, visibleRange);
+  const drawRanges = resolveDrawRanges(skeleton, visibleRange, drawRects);
+  const merges = collectVisibleMerges(options, drawRanges);
   context.strokeStyle = theme.gridLine;
   context.lineWidth = 1;
   context.beginPath();
-  for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-    if (skeleton.isRowHidden(row)) continue;
-    for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-      if (skeleton.isColumnHidden(column)) continue;
-      const cell = options.cellProvider({ row, column });
-      if (cell?.merge) continue;
-      const x = skeleton.getColumnLeft(column);
-      const y = skeleton.getRowTop(row);
-      const width = skeleton.getColumnWidth(column);
-      const height = skeleton.getRowHeight(row);
-      const rect = { x, y, width, height };
-      if (!shouldDrawRect(drawRects, rect)) continue;
-      const right = x + width;
-      const bottom = y + height;
-      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
-      context.moveTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
-      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
-      context.moveTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
-    }
-  }
+  forEachCellInRanges(skeleton, drawRanges, ({ row, column }) => {
+    const cell = options.cellProvider({ row, column });
+    if (cell?.merge) return;
+    const x = skeleton.getColumnLeft(column);
+    const y = skeleton.getRowTop(row);
+    const width = skeleton.getColumnWidth(column);
+    const height = skeleton.getRowHeight(row);
+    const rect = { x, y, width, height };
+    if (!shouldDrawRect(drawRects, rect)) return;
+    const right = x + width;
+    const bottom = y + height;
+    context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+    context.moveTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+  });
 
   // 非锚点单元格被跳过后，合并区域的外框由这里一次性绘制；内部不生成线。
   for (const merge of merges.values()) {
@@ -124,23 +175,21 @@ interface VisibleMerge {
   endColumn: number;
 }
 
-function collectVisibleMerges(options: PaneDrawOptions, range: CellRange): Map<string, VisibleMerge> {
+function collectVisibleMerges(options: PaneDrawOptions, ranges: readonly CellRange[]): Map<string, VisibleMerge> {
   const merges = new Map<string, VisibleMerge>();
   const { cellProvider } = options;
-  for (let row = range.startRow; row <= range.endRow; row++) {
-    for (let column = range.startColumn; column <= range.endColumn; column++) {
-      const merge = cellProvider({ row, column })?.merge;
-      if (!merge) continue;
-      const value = {
-        startRow: merge.startRow,
-        endRow: merge.endRow,
-        startColumn: merge.startColumn,
-        endColumn: merge.endColumn,
-      };
-      const key = `${value.startRow}:${value.startColumn}:${value.endRow}:${value.endColumn}`;
-      merges.set(key, value);
-    }
-  }
+  forEachCellInRanges(options.skeleton, ranges, ({ row, column }) => {
+    const merge = cellProvider({ row, column })?.merge;
+    if (!merge) return;
+    const value = {
+      startRow: merge.startRow,
+      endRow: merge.endRow,
+      startColumn: merge.startColumn,
+      endColumn: merge.endColumn,
+    };
+    const key = `${value.startRow}:${value.startColumn}:${value.endRow}:${value.endColumn}`;
+    merges.set(key, value);
+  });
   return merges;
 }
 
@@ -151,18 +200,33 @@ export function drawCellLayer(options: PaneDrawOptions): void {
   if (!visibleRange) return;
   context.textBaseline = "middle";
 
-  for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-    if (skeleton.isRowHidden(row)) continue;
-    for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-      if (skeleton.isColumnHidden(column)) continue;
-      const address: CellAddress = { row, column };
+  const addresses: CellAddress[] = [];
+  const queued = new Set<string>();
+  const queue = (address: CellAddress) => {
+    const key = `${address.row}:${address.column}`;
+    if (queued.has(key)) return;
+    queued.add(key);
+    addresses.push(address);
+  };
+  forEachCellInRanges(skeleton, resolveDrawRanges(skeleton, visibleRange, drawRects), (address) => {
+    queue(address);
+    const cell = cellProvider(address);
+    if (cell?.merge && !cell.merge.isAnchor) {
+      queue({ row: cell.merge.startRow, column: cell.merge.startColumn });
+    }
+    if (cell?.alignmentSpan && !cell.alignmentSpan.isAnchor) {
+      queue({ row: address.row, column: cell.alignmentSpan.startColumn });
+    }
+  });
+
+  for (const address of addresses) {
+      const { row, column } = address;
       const rect: Rect = {
         x: skeleton.getColumnLeft(column),
         y: skeleton.getRowTop(row),
         width: skeleton.getColumnWidth(column),
         height: skeleton.getRowHeight(row),
       };
-      if (!shouldDrawRect(drawRects, rect)) continue;
       const cell = cellProvider(address);
       const merge = cell?.merge;
       const isAnchor = !merge || merge.isAnchor;
@@ -183,6 +247,8 @@ export function drawCellLayer(options: PaneDrawOptions): void {
             height: rect.height,
           }
         : spanRect;
+      const paintRect = merge?.isAnchor ? spanRect : alignmentSpan?.isAnchor ? contentRect : rect;
+      if (!shouldDrawRect(drawRects, paintRect)) continue;
 
       if (cell?.overlay?.colorScale || cell?.style?.background || (cell === undefined && false)) {
         // 背景(含色阶)
@@ -213,7 +279,6 @@ export function drawCellLayer(options: PaneDrawOptions): void {
         if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
-    }
   }
 }
 

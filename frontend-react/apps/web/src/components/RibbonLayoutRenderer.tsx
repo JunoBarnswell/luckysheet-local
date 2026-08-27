@@ -1,5 +1,6 @@
 import React, { type ReactNode } from 'react';
 import {
+  Box,
   Button,
   Divider,
   DropdownMenu,
@@ -166,17 +167,20 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
 export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.ReactElement {
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
+  const isHome = tab === 'home';
   return (
-    <Inline gap="none" className="h-[101px] w-full min-w-0 flex-nowrap items-start overflow-hidden px-3 py-1" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" className={`${isHome ? 'h-[101px] px-3 py-1' : 'h-[86px]'} w-full min-w-0 flex-nowrap items-start overflow-hidden`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {spec.groups.map((group, index) => {
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
         const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
         return (
           <React.Fragment key={group.id}>
-            {index > 0 ? <Divider orientation="vertical" className="mx-2 h-[76px] shrink-0" /> : null}
-            <Stack data-ribbon-group={group.id} gap="none" className={`h-[93px] min-w-0 shrink-0 justify-between overflow-visible px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
-              <Inline gap="none" className="h-[70px] min-h-0 flex-nowrap items-center justify-center content-center">{content}</Inline>
-              <Text size="xs" tone="subtle" className="h-[12px] shrink-0 truncate text-center text-[10px] font-normal leading-[12px] text-[#999] select-none">{groupLabel}</Text>
+            {index > 0 ? isHome
+              ? <Box className="relative mx-2 h-[76px] w-0 shrink-0"><Divider orientation="vertical" className="absolute left-0 h-full" /></Box>
+              : <Divider orientation="vertical" className="h-[82px]" /> : null}
+            <Stack data-ribbon-group={group.id} gap="none" className={`${isHome ? 'h-[93px] overflow-visible' : 'h-[86px] overflow-hidden'} min-w-0 shrink-0 justify-between px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+              <Inline gap="none" className={`${isHome ? 'h-[70px]' : 'h-[72px] pt-1'} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
+              <Text size="xs" tone="subtle" className={`${isHome ? 'h-[12px] text-[10px] font-normal leading-[12px] text-[#999]' : 'h-[14px] font-medium leading-[14px] text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
             </Stack>
           </React.Fragment>
         );

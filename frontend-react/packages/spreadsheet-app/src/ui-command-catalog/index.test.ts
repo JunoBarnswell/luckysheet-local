@@ -319,7 +319,18 @@ describe('Ribbon UI command catalog', () => {
     });
     const layout = RIBBON_LAYOUT_SPECS.home;
     const layoutSurfaceIds = layout.groups.flatMap((group) => collectSurfaceIds(group.children));
-    const visibleSurfaceIds = HOME_RIBBON_SURFACES.filter((surface) => !surface.menuId).map((surface) => surface.id);
+    const visibleSurfaceIds = [
+      'history.undo', 'history.redo',
+      'clipboard.paste', 'clipboard.cut', 'clipboard.copy', 'control.format-painter',
+      'control.font-family', 'control.font-size', 'control.font-increase', 'control.font-decrease', 'font.bold', 'font.italic',
+      'font.underline', 'font.strikethrough', 'control.font-borders-menu', 'control.fill-color', 'control.font-color',
+      'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
+      'alignment.center', 'alignment.right', 'alignment.wrap', 'control.merge-menu', 'control.orientation-menu',
+      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease',
+      'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
+      'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',
+      'control.auto-sum-menu', 'editing.fill-down', 'control.clear-menu', 'editing.sort', 'editing.find',
+    ];
 
     assert.equal(new Set(layoutSurfaceIds).size, layoutSurfaceIds.length);
     assert.deepEqual(new Set(layoutSurfaceIds), new Set(visibleSurfaceIds));

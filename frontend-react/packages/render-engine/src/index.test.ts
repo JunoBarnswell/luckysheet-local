@@ -472,6 +472,54 @@ test('incremental grid redraw fills only the exposed content strip', () => {
   assert.deepEqual(fillCalls, [{ x: 100, y: 40, width: 50, height: 20 }]);
 });
 
+test('incremental cell redraw reads only the exposed strip instead of the visible viewport', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 100, columnCount: 20, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 20, endRow: 49, startColumn: 0, endColumn: 19 };
+  let reads = 0;
+  const { context } = recordingContext();
+  drawCellLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: () => {
+      reads += 1;
+      return undefined;
+    },
+    theme: DEFAULT_RENDER_THEME,
+    drawRects: [{ x: 0, y: 980, width: 1000, height: 20 }],
+  });
+
+  // One exposed row has 20 cells. Each candidate is resolved once to retain
+  // merge/center-across semantics and once while painting. A full viewport
+  // scan would require 30 * 20 * 2 reads.
+  assert.ok(reads <= 40, `expected at most 40 provider reads for an exposed row, got ${reads}`);
+});
+
+test('incremental cell redraw includes a merged anchor that begins outside the exposed strip', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 5, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 };
+  const { context, textCalls } = recordingContext();
+  drawCellLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: ({ row, column }) => {
+      if (column !== 0 || (row !== 1 && row !== 2)) return undefined;
+      return {
+        value: 'Merged anchor',
+        displayValue: 'Merged anchor',
+        merge: { startRow: 1, endRow: 2, startColumn: 0, endColumn: 0, isAnchor: row === 1 },
+      };
+    },
+    theme: DEFAULT_RENDER_THEME,
+    drawRects: [{ x: 0, y: 40, width: 50, height: 20 }],
+  });
+
+  assert.equal(textCalls.filter((call) => call.text === 'Merged anchor').length, 1);
+});
+
 test('merged blank cells suppress only their internal grid boundaries', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };

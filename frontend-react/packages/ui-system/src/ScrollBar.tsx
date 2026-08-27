@@ -50,26 +50,41 @@ export function ScrollBar({ orientation, viewportSize, contentSize, offset, onCh
     scheduleOffset(Math.max(0, Math.min(maxOffset, ((position - thumbLength / 2) / usable) * maxOffset)));
   };
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    // The scrollbar is mounted inside the spreadsheet grid.  Without an
+    // explicit interaction boundary these pointer events bubble into the
+    // canvas selection controller, so dragging the thumb also creates a
+    // thousands-of-rows selection in imported workbooks.
+    event.stopPropagation();
     dragging.current = true;
     event.currentTarget.setPointerCapture(event.pointerId);
     updateFromPoint(orientation === 'horizontal' ? event.clientX : event.clientY);
   };
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    event.stopPropagation();
     if (dragging.current) updateFromPoint(orientation === 'horizontal' ? event.clientX : event.clientY);
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const page = viewportSize * 0.9;
+    let handled = false;
     if (orientation === 'horizontal') {
-      if (event.key === 'ArrowLeft') scheduleOffset(offset - 40);
-      if (event.key === 'ArrowRight') scheduleOffset(offset + 40);
-      if (event.key === 'PageUp') scheduleOffset(offset - page);
-      if (event.key === 'PageDown') scheduleOffset(offset + page);
+      if (event.key === 'ArrowLeft') { scheduleOffset(offset - 40); handled = true; }
+      if (event.key === 'ArrowRight') { scheduleOffset(offset + 40); handled = true; }
+      if (event.key === 'PageUp') { scheduleOffset(offset - page); handled = true; }
+      if (event.key === 'PageDown') { scheduleOffset(offset + page); handled = true; }
     } else {
-      if (event.key === 'ArrowUp') scheduleOffset(offset - 40);
-      if (event.key === 'ArrowDown') scheduleOffset(offset + 40);
-      if (event.key === 'PageUp') scheduleOffset(offset - page);
-      if (event.key === 'PageDown') scheduleOffset(offset + page);
+      if (event.key === 'ArrowUp') { scheduleOffset(offset - 40); handled = true; }
+      if (event.key === 'ArrowDown') { scheduleOffset(offset + 40); handled = true; }
+      if (event.key === 'PageUp') { scheduleOffset(offset - page); handled = true; }
+      if (event.key === 'PageDown') { scheduleOffset(offset + page); handled = true; }
     }
+    if (!handled) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    dragging.current = false;
+    flushPendingOffset();
   };
   const thumbStyle = orientation === 'horizontal'
     ? { width: `${thumbRatio * 100}%`, left: `${(offset / maxOffset) * (100 - thumbRatio * 100)}%`, top: 1, bottom: 1 }
@@ -84,8 +99,8 @@ export function ScrollBar({ orientation, viewportSize, contentSize, offset, onCh
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={() => { dragging.current = false; flushPendingOffset(); }}
-      onPointerCancel={() => { dragging.current = false; flushPendingOffset(); }}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
       ref={trackRef}
       role="scrollbar"
       tabIndex={0}

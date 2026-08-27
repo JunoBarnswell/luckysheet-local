@@ -605,6 +605,13 @@ export function SheetCanvas({
       .filter((cell) => (cell.kind === 'column-header' || cell.kind === 'filter') && Boolean(cell.fieldId))
       .map((cell) => ({ projection, cell }));
   }), [sheet.pivotProjections]);
+  const requiresViewportProjection = Boolean(
+    editingCell
+    || textBoxEdit
+    || pivotStatusProjections.length > 0
+    || sheet.kind === 'gantt-sheet'
+    || sheet.kind === 'report-sheet',
+  );
 
   // ---------- 浮动对象绘制器 ----------
 
@@ -748,10 +755,10 @@ export function SheetCanvas({
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine || !requiresViewportProjection) return;
     const detach = engine.onViewportChanged(() => setScrollTick((tick) => tick + 1));
     return detach;
-  }, []);
+  }, [requiresViewportProjection]);
 
   // 选区变化 → 滚动至可见
   useEffect(() => {
@@ -1042,34 +1049,9 @@ export function SheetCanvas({
               }}
               className="absolute inset-0"
             />
-            {engineReady && engineRef.current ? (() => {
-              const viewport = engineRef.current.viewport.getSnapshot();
-              const content = engineRef.current.skeleton.contentSize;
-              return (
-                <>
-                  <ScrollBar
-                    contentSize={content.width}
-                    offset={viewport.scrollX}
-                    onChange={(offset) => {
-                      if (content.width - offset - viewport.width <= Math.max(viewport.width, skeleton.defaultColumnWidth * 8)) requestExtentGrowth({ columns: true });
-                      engineRef.current?.scrollTo(offset, viewport.scrollY);
-                    }}
-                    orientation="horizontal"
-                    viewportSize={viewport.width}
-                  />
-                  <ScrollBar
-                    contentSize={content.height}
-                    offset={viewport.scrollY}
-                    onChange={(offset) => {
-                      if (content.height - offset - viewport.height <= Math.max(viewport.height, skeleton.defaultRowHeight * 50)) requestExtentGrowth({ rows: true });
-                      engineRef.current?.scrollTo(viewport.scrollX, offset);
-                    }}
-                    orientation="vertical"
-                    viewportSize={viewport.height}
-                  />
-                </>
-              );
-            })() : null}
+            {engineReady && engineRef.current ? (
+              <SheetScrollBars engine={engineRef.current} onRequestExtentGrowth={requestExtentGrowth} />
+            ) : null}
             {engineReady ? pivotStatusProjections.map((projection) => (
               <PivotProjectionStatusNotice
                 key={`${projection.pivotId}:${projection.refresh.status}:${projection.refresh.error ?? ""}`}
@@ -1204,6 +1186,58 @@ function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | n
   if (cell.value === "TRUE") return true;
   if (cell.value === "FALSE") return false;
   return cell.value;
+}
+
+/**
+ * Keeps the high-frequency viewport subscription at the smallest React
+ * boundary.  The canvas engine owns scroll geometry; only the two scrollbar
+ * thumbs need to re-render on every rendered viewport change in a normal
+ * workbook.  Editing and specialised overlays subscribe separately above.
+ */
+function SheetScrollBars({
+  engine,
+  onRequestExtentGrowth,
+}: {
+  engine: CanvasRenderEngine;
+  onRequestExtentGrowth: (axes: { rows?: boolean; columns?: boolean }) => void;
+}): React.ReactElement {
+  const [viewport, setViewport] = useState(() => engine.viewport.getSnapshot());
+  useEffect(() => {
+    setViewport(engine.viewport.getSnapshot());
+    return engine.onViewportChanged(() => setViewport(engine.viewport.getSnapshot()));
+  }, [engine]);
+
+  const content = engine.skeleton.contentSize;
+  return (
+    <>
+      <ScrollBar
+        contentSize={content.width}
+        offset={viewport.scrollX}
+        onChange={(offset) => {
+          const currentViewport = engine.viewport.getSnapshot();
+          if (content.width - offset - currentViewport.width <= Math.max(currentViewport.width, engine.skeleton.defaultColumnWidth * 8)) {
+            onRequestExtentGrowth({ columns: true });
+          }
+          engine.scrollTo(offset, currentViewport.scrollY);
+        }}
+        orientation="horizontal"
+        viewportSize={viewport.width}
+      />
+      <ScrollBar
+        contentSize={content.height}
+        offset={viewport.scrollY}
+        onChange={(offset) => {
+          const currentViewport = engine.viewport.getSnapshot();
+          if (content.height - offset - currentViewport.height <= Math.max(currentViewport.height, engine.skeleton.defaultRowHeight * 50)) {
+            onRequestExtentGrowth({ rows: true });
+          }
+          engine.scrollTo(currentViewport.scrollX, offset);
+        }}
+        orientation="vertical"
+        viewportSize={viewport.height}
+      />
+    </>
+  );
 }
 
 function pivotProjectionStatusMessage(projection: PivotGridProjection, locale: Locale): string | null {
