@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text, TextInput } from '@react-sheets/ui-system';
-import { DEFAULT_PIVOT_DISPLAY_OPTIONS, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotDisplayOptions, type PivotDisplayOptions, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotPresentation, type PivotValueField } from '@react-sheets/core-model';
+import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
+import { type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { buildPivotGroupedFilterMembers } from '@react-sheets/spreadsheet-app';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
 import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
+import { PivotFormatOptions } from '../pivot/PivotFormatOptions';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
-import { pivotText } from '../pivot/pivot-localization';
-import { defaultPivotFieldArea, PIVOT_FIELD_PANE_LAYOUTS, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
+import { pivotTemplate, pivotText } from '../pivot/pivot-localization';
+import { DEFAULT_PIVOT_FIELD_PANE_LAYOUT, defaultPivotFieldArea, PIVOT_FIELD_AREAS, PIVOT_FIELD_PANE_LAYOUTS, shouldDeferPivotLayoutUpdates, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
 import type { PivotMessageKey } from '../pivot/pivot-localization';
 
 export interface PivotPanelProps {
@@ -88,12 +89,12 @@ const fieldPaneLayoutLabels: Record<PivotFieldPaneLayout, PivotMessageKey> = {
 
 export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFields, locale, onClose, pivot, pivotList = [], slicerControls = [], slots, state, timelineControls = [] }: PivotPanelProps) {
   const fields = suppliedFields ?? pivot?.fieldCatalog.fields ?? [];
-  const [delayUpdate, setDelayUpdate] = useState(false);
+  const [delayUpdate, setDelayUpdate] = useState(() => pivot ? shouldDeferPivotLayoutUpdates(pivot) : false);
   const [draft, setDraft] = useState<PivotLayout | null>(pivot ? cloneLayout(pivot.layout) : null);
   const [dirty, setDirty] = useState(false);
-  const [fieldPaneLayout, setFieldPaneLayout] = useState<PivotFieldPaneLayout>(() => typeof window !== 'undefined' && window.innerWidth >= 1280 ? 'side-by-side' : 'stacked');
-  const [fieldPaneSplit, setFieldPaneSplit] = useState(42);
-  useEffect(() => { setDraft(pivot ? cloneLayout(pivot.layout) : null); setDirty(false); }, [pivot?.id]);
+  const [fieldPaneLayout, setFieldPaneLayout] = useState<PivotFieldPaneLayout>(DEFAULT_PIVOT_FIELD_PANE_LAYOUT);
+  const [fieldPaneSplit, setFieldPaneSplit] = useState(45);
+  useEffect(() => { setDraft(pivot ? cloneLayout(pivot.layout) : null); setDelayUpdate(pivot ? shouldDeferPivotLayoutUpdates(pivot) : false); setDirty(false); }, [pivot?.id]);
   const layout = delayUpdate && draft ? draft : pivot?.layout;
   const disabled = Boolean(state?.disabled || state?.loading || state?.error || !pivot || !layout);
 
@@ -107,6 +108,9 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const showFields = fieldPaneLayout !== 'areas-only';
   const showAreas = fieldPaneLayout !== 'fields-only';
   const sideBySide = fieldPaneLayout === 'side-by-side';
+  const workspaceClass = sideBySide
+    ? 'flex flex-row'
+    : showFields && showAreas ? 'grid grid-rows-[minmax(120px,45%)_8px_minmax(220px,1fr)]' : 'flex flex-col';
 
   const beginSplitDrag = (event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
@@ -136,6 +140,16 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const applyLayout = (next: PivotLayout) => {
     if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); }
     else callbacks?.onLayoutReplace(next);
+  };
+  const applyDraft = () => {
+    if (draft) callbacks?.onLayoutReplace(draft);
+    setDirty(false);
+  };
+  const toggleDeferredUpdate = (enabled: boolean) => {
+    if (!enabled && dirty) applyDraft();
+    setDelayUpdate(enabled);
+    setDraft(enabled ? cloneLayout(pivot.layout) : null);
+    if (enabled) setDirty(false);
   };
   const idsFor = (area: Area): readonly string[] => area === 'filters' ? filters : area === 'columns' ? columns : area === 'rows' ? rows : values.map((field) => field.valueId);
   const changeArea = (fieldId: string, area: Area, index: number) => {
@@ -178,58 +192,24 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
   const subtotal = (fieldId: string, nextSubtotal: Parameters<NonNullable<PivotPanelCallbacks['onSubtotalChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry) });
   const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.valueId === value.valueId ? value : entry) });
-  const presentation: PivotPresentation = {
-    ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
-    styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
-    displayOptions: normalizePivotDisplayOptions(pivot.presentation?.displayOptions),
-  };
-  const updatePresentation = (patch: Partial<PivotPresentation['styleOptions']> & { styleName?: string }) => {
-    const { styleName, ...options } = patch;
-    callbacks?.onPresentationChange?.({ ...(styleName ?? presentation.styleName ? { styleName: styleName ?? presentation.styleName } : {}), styleOptions: { ...presentation.styleOptions, ...options }, displayOptions: presentation.displayOptions });
-  };
-  const updateDisplayOptions = (patch: Partial<PivotDisplayOptions>) => callbacks?.onDisplayOptionsChange?.(normalizePivotDisplayOptions({ ...presentation.displayOptions, ...patch }));
-
   return (
-    <Panel className="flex h-full min-h-0 flex-col rounded-none border-0 bg-white shadow-none" data-testid="pivot-field-list">
+    <Panel className="flex h-full max-h-full min-h-0 flex-col overflow-hidden rounded-none border-0 bg-white shadow-none" data-testid="pivot-field-list">
       <Inline gap="sm" className="h-14 w-full shrink-0 justify-between px-4">
         <Text size="lg" weight="bold">{pivotText(locale, 'fieldsTitle')}</Text>
         <Inline gap="sm"><Box className="rounded-full border-2 border-[#a529ff] px-3 py-0.5 text-[#8b20e8]"><Text size="sm" weight="bold">AI</Text></Box>{onClose ? <Button aria-label={pivotText(locale, 'close')} icon="x" iconOnly size="sm" variant="ghost" onClick={onClose} /> : null}</Inline>
       </Inline>
-      <Stack gap="sm" className="min-h-0 flex-1 px-4 pb-2">
-        <Inline gap="sm" className="h-9 shrink-0 justify-between">
-          <Text size="sm" weight="medium">{pivotText(locale, 'fieldPaneLayout')}</Text>
+      <Stack gap="sm" className="min-h-0 flex-1 overflow-hidden px-4 pb-2">
+        <Inline gap="sm" className="h-9 shrink-0 justify-between border-b border-slate-100 pb-1">
+          <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost" icon="chevron-down" className="justify-start px-1">{pivotText(locale, 'formatAndOptions')}</Button>}><PivotFormatOptions locale={locale} disabled={disabled} presentation={pivot.presentation} refreshPolicy={pivot.refreshPolicy} onPresentationChange={callbacks?.onPresentationChange} onDisplayOptionsChange={callbacks?.onDisplayOptionsChange} onRefreshPolicyChange={callbacks?.onRefreshPolicyChange} /></DropdownMenu>
           <Select aria-label={pivotText(locale, 'fieldPaneLayout')} sizeVariant="sm" value={fieldPaneLayout} onChange={(event) => setFieldPaneLayout(event.target.value as PivotFieldPaneLayout)}>
             {PIVOT_FIELD_PANE_LAYOUTS.map((mode) => <option key={mode} value={mode}>{pivotText(locale, fieldPaneLayoutLabels[mode])}</option>)}
           </Select>
         </Inline>
-        <Stack gap="xs" className="shrink-0 rounded border border-slate-200 p-2">
-          <Text size="sm" weight="medium">{pivotText(locale, 'pivotStyle')}</Text>
-          <Select aria-label={pivotText(locale, 'pivotStyle')} sizeVariant="sm" value={presentation.styleName ?? 'PivotStyleLight16'} disabled={disabled} onChange={(event) => updatePresentation({ styleName: event.target.value })}>
-            <option value="PivotStyleLight16">{pivotText(locale, 'styleLight')}</option>
-            <option value="PivotStyleMedium4">{pivotText(locale, 'styleMedium')}</option>
-            <option value="PivotStyleDark2">{pivotText(locale, 'styleDark')}</option>
-          </Select>
-          <Inline gap="sm" className="flex-wrap">
-            {(['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'] as const).map((option) => <CheckToggle key={option} label={pivotText(locale, option === 'showRowHeaders' ? 'rowHeaders' : option === 'showColumnHeaders' ? 'columnHeaders' : option === 'showRowStripes' ? 'bandedRows' : option === 'showColumnStripes' ? 'bandedColumns' : 'lastColumn')} checked={presentation.styleOptions[option]} disabled={disabled} onChange={(event) => updatePresentation({ [option]: event.target.checked })} />)}
-          </Inline>
-        </Stack>
-        <Stack gap="xs" className="shrink-0 rounded border border-slate-200 p-2">
-          <Text size="sm" weight="medium">{pivotText(locale, 'pivotOptions')}</Text>
-          <Text size="xs" tone="muted">{pivotText(locale, 'layoutFormat')}</Text>
-          <CheckToggle label={pivotText(locale, 'fillEmptyCells')} checked={presentation.displayOptions?.fillEmptyCells ?? DEFAULT_PIVOT_DISPLAY_OPTIONS.fillEmptyCells} disabled={disabled} onChange={(event) => updateDisplayOptions({ fillEmptyCells: event.target.checked })} />
-          <TextInput aria-label={pivotText(locale, 'emptyCellText')} value={presentation.displayOptions?.emptyCellText ?? ''} disabled={disabled || !(presentation.displayOptions?.fillEmptyCells ?? false)} placeholder={pivotText(locale, 'emptyCellText')} onChange={(event) => updateDisplayOptions({ emptyCellText: event.target.value })} />
-          <CheckToggle label={pivotText(locale, 'showErrorValues')} checked={presentation.displayOptions?.showErrorValues ?? DEFAULT_PIVOT_DISPLAY_OPTIONS.showErrorValues} disabled={disabled} onChange={(event) => updateDisplayOptions({ showErrorValues: event.target.checked })} />
-          <TextInput aria-label={pivotText(locale, 'errorCellText')} value={presentation.displayOptions?.errorCellText ?? ''} disabled={disabled || !(presentation.displayOptions?.showErrorValues ?? true)} placeholder={pivotText(locale, 'errorCellText')} onChange={(event) => updateDisplayOptions({ errorCellText: event.target.value })} />
-          <Text size="xs" tone="muted">{pivotText(locale, 'displayOptions')}</Text>
-          <CheckToggle label={pivotText(locale, 'showFieldHeaders')} checked={presentation.displayOptions?.showFieldHeaders ?? true} disabled={disabled} onChange={(event) => updateDisplayOptions({ showFieldHeaders: event.target.checked })} />
-          <CheckToggle label={pivotText(locale, 'autoFitColumns')} checked={presentation.displayOptions?.autoFitColumnsOnUpdate ?? true} disabled={disabled} onChange={(event) => updateDisplayOptions({ autoFitColumnsOnUpdate: event.target.checked })} />
-          <CheckToggle label={pivotText(locale, 'preserveFormatting')} checked={pivot.refreshPolicy.preserveFormatting} disabled={disabled} onChange={(event) => callbacks?.onRefreshPolicyChange?.({ ...pivot.refreshPolicy, preserveFormatting: event.target.checked })} />
-        </Stack>
-        <Box className={`min-h-0 min-w-0 flex flex-1 ${sideBySide ? 'flex-row' : 'flex-col'} gap-2`}>
+        <Box className={`${workspaceClass} min-h-0 min-w-0 flex-1 overflow-hidden gap-2`}>
           {showFields ? (
-            <Box className="min-h-0 min-w-0 flex flex-col" style={sideBySide ? { width: `${showAreas ? fieldPaneSplit : 100}%` } : { flexBasis: `${showAreas ? fieldPaneSplit : 100}%` }}>
-              <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'addFields')}</Text>
-              <PivotFieldCatalog className="flex-1" locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(field) => { const area = defaultPivotFieldArea(field); changeArea(field.fieldId, area, idsFor(area).length); }} />
+            <Box className="min-h-0 min-w-0 flex flex-col overflow-hidden" style={sideBySide ? { width: `${showAreas ? fieldPaneSplit : 100}%` } : undefined}>
+              <Inline gap="xs" className="mb-1 h-7 shrink-0"><Text size="sm" weight="medium">{pivotText(locale, 'addFields')}</Text><Text size="xs" tone="subtle" className="ml-auto">{pivotTemplate(locale, 'selectedFields', { selected: selected.size, total: fields.length })}</Text></Inline>
+              <PivotFieldCatalog className="min-h-[120px] flex-1" locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(field) => { const area = defaultPivotFieldArea(field); changeArea(field.fieldId, area, idsFor(area).length); }} onAssignField={(field, area) => changeArea(field.fieldId, area, idsFor(area).length)} />
             </Box>
           ) : null}
           {showFields && showAreas ? (
@@ -246,17 +226,17 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
             />
           ) : null}
           {showAreas ? (
-            <Box className="min-h-0 min-w-0 flex flex-1 flex-col">
-              <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'dragFields')}</Text>
-              <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-2'} min-h-0 flex-1 gap-1`}>
-                {(['filters', 'columns', 'rows', 'values'] as const).map((area) => <Box key={area} className="min-h-0 min-w-0 border border-[#bdbdbd]"><PivotFieldArea className="border-0" locale={locale} area={area} fields={fields} baseFields={fields.filter((field) => idsFor('rows').includes(field.fieldId) || idsFor('columns').includes(field.fieldId))} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
+            <Box className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
+              <Inline gap="xs" className="mb-1 h-7 shrink-0"><Text size="sm" weight="medium">{pivotText(locale, 'dragFields')}</Text><Text size="xs" tone="subtle" className="ml-auto">{pivotText(locale, 'dragOrChoose')}</Text></Inline>
+              <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-[minmax(0,1fr)_minmax(0,1fr)]'} h-full min-h-0 flex-1 gap-1`}>
+                {PIVOT_FIELD_AREAS.map((area) => <PivotFieldArea key={area} locale={locale} area={area} fields={fields} baseFields={fields.filter((field) => idsFor('rows').includes(field.fieldId) || idsFor('columns').includes(field.fieldId))} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + direction)} onSort={sort} onValueChange={valueChange} />)}
               </Box>
             </Box>
           ) : null}
         </Box>
-        <Inline gap="sm" className="h-9 justify-between">
-          <CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => { setDelayUpdate(event.target.checked); setDraft(cloneLayout(pivot.layout)); setDirty(false); }} />
-          <Button size="sm" variant="outline" disabled={!delayUpdate || !dirty} onClick={() => { if (draft) callbacks?.onLayoutReplace(draft); setDirty(false); }}>{pivotText(locale, 'update')}</Button>
+        <Inline gap="sm" className="h-11 shrink-0 justify-between border-t border-[#d0d0d0] bg-white pt-1">
+          <Stack gap="none" className="min-w-0"><CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => toggleDeferredUpdate(event.target.checked)} />{delayUpdate && dirty ? <Text size="xs" tone="subtle" className="truncate text-amber-700">{pivotText(locale, 'pendingLayout')}</Text> : null}</Stack>
+          <Button size="sm" variant={dirty ? 'primary' : 'outline'} disabled={!delayUpdate || !dirty} onClick={applyDraft}>{pivotText(locale, 'update')}</Button>
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">
