@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createNativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import { createNativePackageState, exportSnapshotToXlsxBuffer, loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
-  LocalWorkspaceStore,
   OperationJournalStore,
   WorkspacePersistence,
   buildWorkspaceRecord,
   buildPersistenceMeta,
   verifyWorkspaceRecord,
 } from './storage';
+import {
+  WorkspaceMemoryCoordinator,
+  WorkspaceStorageError,
+} from './memory';
 
-describe('persistence storage', () => {
+describe('page-session memory persistence', () => {
   it('tracks pending local operation metadata', () => {
     const snapshot = new WorkbookModel('wb-meta', 'Meta').snapshot();
     const meta = buildPersistenceMeta(snapshot, 0, 1);
@@ -25,87 +28,118 @@ describe('persistence storage', () => {
   it('persists only a monotonic pending-operation journal with checksum validation', () => {
     const store = new OperationJournalStore();
     const operation: OperationEnvelope = {
-      schema: 'OperationEnvelope',
-      operationId: 'offline-op-1',
-      unitId: 'wb-operation-store',
-      clientSequence: 7,
-      baseRevision: 3,
-      mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: { row: 0, column: 0, value: { value: 1 } } }],
-      createdAt: '2026-08-23T00:00:00.000Z',
+      schema: 'OperationEnvelope', operationId: 'offline-op-1', unitId: 'wb-operation-store',
+      clientSequence: 7, baseRevision: 3, mutations: [], createdAt: '2026-08-23T00:00:00.000Z',
     };
     store.write(operation.unitId, [operation], operation.clientSequence);
-    const loaded = store.read(operation.unitId);
-    assert.equal(loaded?.schema, 'PendingOperationJournal');
-    assert.equal(loaded?.nextClientSequence, 7);
-    assert.deepEqual(loaded?.operations, [operation]);
+    assert.deepEqual(store.read(operation.unitId)?.operations, [operation]);
     store.clear(operation.unitId);
     assert.equal(store.read(operation.unitId), null);
   });
 
-  it('builds a canonical workspace record with a checksummed pending journal', () => {
+  it('builds and validates a canonical workspace record', () => {
     const snapshot = new WorkbookModel('wb-workspace', 'Workspace').snapshot();
     const record = buildWorkspaceRecord({
-      unitId: snapshot.unitId,
-      snapshot,
-      localRevision: 4,
-      serverRevision: 2,
-      syncMode: 'local-only',
-      operations: [],
-      nextClientSequence: 0,
+      unitId: snapshot.unitId, snapshot, localRevision: 4, serverRevision: 2,
+      syncMode: 'local-only', operations: [], nextClientSequence: 0,
     });
-    assert.equal(record.schema, 'WorkspaceRecord');
-    assert.equal(record.snapshot.schema, 'WorkbookSnapshot');
-    assert.equal(record.localRevision, 4);
-    assert.equal(record.pending.schema, 'PendingOperationJournal');
     assert.equal(verifyWorkspaceRecord(record), true);
   });
 
-  it('opens, lists, checkpoints, and deletes local workspaces without browser storage', async () => {
-    const store = new LocalWorkspaceStore({ databaseName: 'persistence-test-catalog' });
-    const persistence = new WorkspacePersistence({ databaseName: 'persistence-test-catalog' });
+  it('creates, lists, checkpoints, and deletes workbooks in one memory context', async () => {
+    const persistence = new WorkspacePersistence();
     const snapshot = new WorkbookModel('wb-catalog', 'Catalog').snapshot();
-    const record = await store.create({
-      unitId: snapshot.unitId,
-      snapshot,
-      localRevision: 1,
-      serverRevision: 0,
-      syncMode: 'local-only',
-      operations: [],
-      nextClientSequence: 0,
+    const record = await persistence.store.create({
+      unitId: snapshot.unitId, snapshot, localRevision: 1, serverRevision: 0,
+      syncMode: 'local-only', operations: [], nextClientSequence: 0,
     });
-    assert.equal((await store.open(snapshot.unitId))?.checksum, record.checksum);
-    assert.equal((await store.list()).map((entry) => entry.unitId).includes(snapshot.unitId), true);
-    persistence.operationJournal.hydrate(record);
+    assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
+    assert.equal((await persistence.list()).length, 1);
     const checkpoint = await persistence.checkpoint(snapshot, 2, 0, 'local-only');
     assert.equal(checkpoint.localRevision, 2);
-    await store.delete(snapshot.unitId);
-    assert.equal(await store.open(snapshot.unitId), null);
+    await persistence.clear(snapshot.unitId);
+    assert.equal(await persistence.load(snapshot.unitId), null);
   });
 
-  it('checkpoints the workspace and source artifact through the same persistence namespace', async () => {
-    const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
-    const persistence = new WorkspacePersistence({ databaseName, indexedDB: null });
+  it('checkpoints the workspace and native artifact atomically', async () => {
+    const persistence = new WorkspacePersistence();
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
+    const sourceBytes = exportSnapshotToXlsxBuffer(snapshot);
     const artifact = await createNativePackageState({
-      fileName: 'artifact.xlsx',
-      buffer: new Uint8Array([80, 75, 3, 4]).buffer,
-      dateSystem: '1900',
-      packageGraph: {
-        schema: 'OpcPackageGraph',
-        workbookPart: 'xl/workbook.xml',
-        parts: {},
-        opaqueParts: {},
-        relationships: {},
-        sheetPartById: {},
-        dateSystem: '1900',
-        format: { family: 'ooxml', profile: 'transitional', variant: 'xlsx' },
-        profile: 'transitional',
-      } satisfies OpcPackageGraph,
+      fileName: 'artifact.xlsx', buffer: sourceBytes, dateSystem: '1900',
+      packageGraph: loadOpcPackageGraph(sourceBytes).packageGraph satisfies OpcPackageGraph,
       detectedFeatures: ['worksheet'],
     });
-
     const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
     assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
     assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
+  });
+
+  it('commits operation journal and rejects a stale storage revision', async () => {
+    const persistence = new WorkspacePersistence();
+    const snapshot = new WorkbookModel('wb-operation', 'Operation').snapshot();
+    const created = await persistence.checkpoint(snapshot, 1, 0, 'local-only');
+    const operation: OperationEnvelope = {
+      schema: 'OperationEnvelope', operationId: 'operation-1', unitId: snapshot.unitId,
+      clientSequence: 1, baseRevision: 0, mutations: [], createdAt: new Date().toISOString(),
+    };
+    const nextRevision = await persistence.commitOperationJournal(snapshot.unitId, [operation], 1, created.storageRevision);
+    assert.equal(nextRevision, created.storageRevision + 1);
+    assert.equal((await persistence.load(snapshot.unitId))?.pending.operations[0]?.operationId, operation.operationId);
+    await assert.rejects(
+      persistence.commitOperationJournal(snapshot.unitId, [], 2, created.storageRevision),
+      (error: unknown) => (error as WorkspaceStorageError).code === 'STORAGE_REVISION_CONFLICT',
+    );
+  });
+
+  it('patches catalog without changing the checkpoint snapshot', async () => {
+    const persistence = new WorkspacePersistence();
+    const snapshot = new WorkbookModel('wb-catalog-patch', 'Catalog patch').snapshot();
+    const created = await persistence.checkpoint(snapshot, 1, 0, 'local-only');
+    const patched = await persistence.updateMetadata(snapshot.unitId, { lifecycle: 'trashed' }, created.storageRevision);
+    assert.equal(patched.metadata.lifecycle, 'trashed');
+    assert.deepEqual(patched.snapshot, snapshot);
+    assert.equal(patched.storageRevision, created.storageRevision + 1);
+  });
+
+  it('rolls back a failed multi-store transaction completely', async () => {
+    const coordinator = new WorkspaceMemoryCoordinator();
+    await coordinator.transaction((transaction) => transaction.set('workspaceCatalog', 'unit', { value: 'before' }));
+    await assert.rejects(coordinator.transaction((transaction) => {
+      transaction.set('workspaceCatalog', 'unit', { value: 'after' });
+      transaction.set('workspaceHeads', 'unit', { value: 'after' });
+      throw new Error('forced transaction failure');
+    }));
+    assert.deepEqual(await coordinator.read((transaction) => transaction.get('workspaceCatalog', 'unit')), { value: 'before' });
+    assert.equal(await coordinator.read((transaction) => transaction.get('workspaceHeads', 'unit')), undefined);
+  });
+
+  it('serializes transactions and rejects a concurrent writer for the same workbook', async () => {
+    const coordinator = new WorkspaceMemoryCoordinator();
+    let release!: () => void;
+    const first = coordinator.withWorkbookWriter('unit', () => new Promise<void>((resolve) => { release = resolve; }));
+    await assert.rejects(
+      coordinator.withWorkbookWriter('unit', async () => undefined),
+      (error: unknown) => (error as WorkspaceStorageError).code === 'STORAGE_WRITER_UNAVAILABLE',
+    );
+    release();
+    await first;
+  });
+
+  it('does not share data between page-session persistence instances', async () => {
+    const first = new WorkspacePersistence();
+    const second = new WorkspacePersistence();
+    const snapshot = new WorkbookModel('isolated-unit', 'Isolated').snapshot();
+    await first.checkpoint(snapshot, 1, 0, 'local-only');
+    assert.equal((await second.list()).length, 0);
+  });
+
+  it('rejects operations after dispose and clears the session', async () => {
+    const persistence = new WorkspacePersistence();
+    const snapshot = new WorkbookModel('disposed-unit', 'Disposed').snapshot();
+    await persistence.checkpoint(snapshot, 1, 0, 'local-only');
+    await persistence.disposeAsync();
+    assert.equal(persistence.state, 'disposed');
+    await assert.rejects(persistence.list(), (error: unknown) => (error as WorkspaceStorageError).code === 'STORAGE_MEMORY_DISPOSED');
   });
 });

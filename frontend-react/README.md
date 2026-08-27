@@ -10,7 +10,7 @@ UI intent
 → CommandRuntime transaction
 → typed mutation + inverse
 → WorkbookModel / FormulaEngine
-→ IndexedDB workspace checkpoint + operation journal
+→ Page-session memory workspace checkpoint + operation journal
 → REST `POST /api/workbooks/{unitId}/operations`
 → durable backend commit + WebSocket `revision.created` broadcast
 ```
@@ -26,7 +26,7 @@ npm run dev
 
 Web：`http://127.0.0.1:4180/`
 
-复制 `.env.example` 并由部署环境提供 OIDC public-client 配置。浏览器使用 Authorization Code + PKCE，不在工作簿、IndexedDB 快照或 URL 中存储 bearer token。开发时 Vite 将 `/api` 和 `/ws` 同源代理到 `REACT_SHEETS_API_ORIGIN`；生产环境也必须保持同源。
+复制 `.env.example` 并由部署环境提供 OIDC public-client 配置。浏览器使用 Authorization Code + PKCE，不在工作簿或 URL 中存储 bearer token。本地工作簿只存在于当前页面内存会话，刷新或关闭页面后清空。开发时 Vite 将 `/api` 和 `/ws` 同源代理到 `REACT_SHEETS_API_ORIGIN`；生产环境也必须保持同源。
 
 详细的文件中心模型、空间/文件夹、权限、导入导出和像素验收基线见 [workbook-hub-prd.md](docs/workbook-hub-prd.md)。
 

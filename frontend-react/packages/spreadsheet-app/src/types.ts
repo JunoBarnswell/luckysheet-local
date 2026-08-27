@@ -12,7 +12,6 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
@@ -46,7 +45,6 @@ export type SidebarPanelId =
   | 'dataValidation'
   | 'print'
   | 'query'
-  | 'automate'
   | 'extended'
   | 'history'
   | 'data';

@@ -280,13 +280,6 @@ export function planCellShift(workbook: WorkbookModel, spec: CellShiftSpec): Cel
     || selection.endRow >= sheet.rowCount || selection.endColumn >= sheet.columnCount) {
     throw new Error('Cell shift selection is outside worksheet bounds');
   }
-  // Cell insertion shifts the complete tail of the affected band.  Grow the
-  // runtime extent before calculating that band so the same plan can be
-  // consumed by the model, command runtime, and inverse operation.
-  if (spec.operation === 'insert') {
-    if (spec.axis === 'row') sheet.ensureCellExtent(sheet.rowCount + count - 1, 0);
-    else sheet.ensureCellExtent(0, sheet.columnCount + count - 1);
-  }
   const direction: 1 | -1 = spec.operation === 'insert' ? 1 : -1;
   const band: RangeRef = spec.axis === 'row'
     ? { sheetId: sheet.id, startRow: selection.startRow, endRow: sheet.rowCount - 1, startColumn: selection.startColumn, endColumn: selection.endColumn }

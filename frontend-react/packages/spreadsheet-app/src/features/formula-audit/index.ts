@@ -415,9 +415,10 @@ function matchesScan(address: CellAddress, options: FormulaErrorScanOptions): bo
 }
 
 function dependencyKey(dependency: FormulaDependency): string {
-  return dependency.kind === 'cell'
-    ? `cell:${cellAddressKey(dependency.address)}`
-    : `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+  if (dependency.kind === 'cell') return `cell:${cellAddressKey(dependency.address)}`;
+  if (dependency.kind === 'range') return `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+  if (dependency.kind === 'name') return `name:${dependency.name}`;
+  return `reference:${JSON.stringify(dependency.reference)}`;
 }
 
 function cloneAddress(address: CellAddress): CellAddress {
@@ -425,9 +426,9 @@ function cloneAddress(address: CellAddress): CellAddress {
 }
 
 function cloneDependency(dependency: FormulaDependency): FormulaDependency {
-  return dependency.kind === 'cell'
-    ? { kind: 'cell', address: cloneAddress(dependency.address) }
-    : { kind: 'range', start: cloneAddress(dependency.start), end: cloneAddress(dependency.end) };
+  if (dependency.kind === 'cell') return { kind: 'cell', address: cloneAddress(dependency.address) };
+  if (dependency.kind === 'range') return { kind: 'range', start: cloneAddress(dependency.start), end: cloneAddress(dependency.end) };
+  return structuredClone(dependency);
 }
 
 function cloneArrow(arrow: FormulaAuditArrow): FormulaAuditArrow {

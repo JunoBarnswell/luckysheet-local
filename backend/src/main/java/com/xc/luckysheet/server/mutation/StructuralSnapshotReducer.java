@@ -115,19 +115,20 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    static void permuteRows(ObjectNode root, String sheetId, RangeRef range, JsonNode sourceRows) {
+    static void permuteRows(ObjectNode root, String sheetId, RangeRef range, int affectedColumnEnd, JsonNode sourceRows) {
         PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(range, sheetId);
         RangeRef selected = normalize(range);
+        RangeRef metadataScope = new RangeRef(sheetId, selected.startRow(), selected.endRow(), 0, affectedColumnEnd);
         if (sourceRows == null || !sourceRows.isArray()) throw ServiceException.validation("Row permutation sourceRows must be an array");
         int expected = selected.endRow() - selected.startRow() + 1;
         if (sourceRows.size() != expected) throw ServiceException.validation("Row permutation length does not match range");
         validatePermutationPreservation(sheet, selected);
         int[] mapping = validatePermutation(selected, (ArrayNode) sourceRows);
-        validatePermutationMetadataExact(sheet, selected, mapping);
+        validatePermutationMetadataExact(root, sheet, selected, metadataScope, mapping);
         remapPermutedCells(sheet, selected, mapping);
-        remapPermutationMetadata(sheet, selected, mapping);
+        remapPermutationMetadata(root, sheet, selected, metadataScope, mapping);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
 
@@ -727,7 +728,7 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void remapPermutationMetadata(ObjectNode sheet, RangeRef range, int[] sourceRows) {
+    private static void remapPermutationMetadata(ObjectNode root, ObjectNode sheet, RangeRef range, RangeRef metadataScope, int[] sourceRows) {
         int[] rowMap = new int[sourceRows.length];
         for (int targetOffset = 0; targetOffset < sourceRows.length; targetOffset++) rowMap[sourceRows[targetOffset] - range.startRow()] = range.startRow() + targetOffset;
         SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> contains(range, coordinate.row(), coordinate.column())
@@ -750,12 +751,12 @@ final class StructuralSnapshotReducer {
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) {
                 ArrayNode ranges = (ArrayNode) requireObject(rule, "Range rule").path("ranges");
-                replaceRanges(ranges, range, rowMap);
+                replaceRanges(ranges, metadataScope, rowMap);
             }
         }
-        SheetRuleLifecycle.transformStructuralFields(root, sheet, range.sheetId(), range,
-                candidate -> remapRangeExact(rangeNode(candidate), range, rowMap),
-                row -> remapRow(row, range, rowMap));
+        SheetRuleLifecycle.transformStructuralFields(root, sheet, range.sheetId(), metadataScope,
+                candidate -> remapRangeExact(rangeNode(candidate), metadataScope, rowMap),
+                row -> remapRow(row, metadataScope, rowMap));
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) writeSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
@@ -790,7 +791,7 @@ final class StructuralSnapshotReducer {
                 ((ObjectNode) group).put("start", Math.min(start, end)).put("end", Math.max(start, end));
             }
         }
-        for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), range, rowMap, "protection rule");
+        for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), metadataScope, rowMap, "protection rule");
     }
 
     private static void remapCellOwner(ObjectNode owner, RangeRef range, int[] rowMap) {
@@ -899,14 +900,14 @@ final class StructuralSnapshotReducer {
         return a.sheetId().equals(b.sheetId()) && a.startRow() <= b.endRow() && b.startRow() <= a.endRow() && a.startColumn() <= b.endColumn() && b.startColumn() <= a.endColumn();
     }
 
-    private static void validatePermutationMetadataExact(ObjectNode sheet, RangeRef range, int[] rowMap) {
+    private static void validatePermutationMetadataExact(ObjectNode root, ObjectNode sheet, RangeRef range, RangeRef metadataScope, int[] rowMap) {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) validateDrawingExact(requireObject(raw, "Drawing"), range);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) requireSingleRange(requireObject(raw, "Sparkline").get("sourceRange"), range, rowMap, "sparkline source");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) requireSingleRange(requireObject(raw, "Spill range").get("range"), range, rowMap, "spill range");
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) for (JsonNode item : requireObject(raw, "Conditional format").path("ranges")) remapRangeExact(item, range, rowMap);
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, range, rowMap);
-        SheetRuleLifecycle.validateStructuralFields(root, sheet, range.sheetId(), range,
-                candidate -> remapRangeExact(rangeNode(candidate), range, rowMap));
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) for (JsonNode item : requireObject(raw, "Conditional format").path("ranges")) remapRangeExact(item, metadataScope, rowMap);
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, metadataScope, rowMap);
+        SheetRuleLifecycle.validateStructuralFields(root, sheet, range.sheetId(), metadataScope,
+                candidate -> remapRangeExact(rangeNode(candidate), metadataScope, rowMap));
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) requireSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
@@ -918,7 +919,7 @@ final class StructuralSnapshotReducer {
         }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, rowMap, "pivot source"));
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, rowMap, "merge");
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), range, rowMap, "protection rule");
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, rowMap, "protection rule");
     }
 
     private static void validateDrawingExact(ObjectNode drawing, RangeRef range) {

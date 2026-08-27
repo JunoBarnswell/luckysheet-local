@@ -9,6 +9,17 @@ const PRESERVE_FORMULA_PATTERNS: Array<{ feature: string; pattern: RegExp }> = [
   { feature: 'cube', pattern: /\bCUBE(?:VALUE|SET|MEMBER)\s*\(/i },
 ];
 
+function columnLabel(column: number): string {
+  let value = column + 1;
+  let label = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+}
+
 export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
   const features = new Set<string>(['cells', 'styles']);
   let hasFormula = false;
@@ -74,7 +85,6 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
       const row = sheet.cells[rowKey] ?? {};
       for (const colKey of Object.keys(row)) {
         const formula = row[colKey]?.formula;
-        if (!formula) continue;
         const metadata = row[colKey]?.formulaMetadata;
         if (metadata?.preservedOnly) {
           const key = `${sheet.id}:${rowKey}:${colKey}:preserved-formula`;
@@ -82,12 +92,13 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
             seen.add(key);
             issues.push({
               level: 'C', severity: 'warning', feature: metadata.kind === 'dataTable' ? 'data-table-formula' : 'formulas',
-              location: `${sheet.name}!${colKey}${Number(rowKey) + 1}`,
+              location: `${sheet.name}!${columnLabel(Number(colKey))}${Number(rowKey) + 1}`,
               message: `Formula is preserved-only: ${metadata.reason ?? 'unsupported formula syntax'}`,
               preserved: true, status: 'preserved-only', reason: metadata.reason ?? 'unsupported formula syntax',
             });
           }
         }
+        if (!formula) continue;
         for (const rule of PRESERVE_FORMULA_PATTERNS) {
           if (!rule.pattern.test(formula) || seen.has(rule.feature)) continue;
           seen.add(rule.feature);
@@ -95,7 +106,7 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
             level: classifyFeature(rule.feature) === 'A' ? 'B' : 'C',
             severity: 'info',
             feature: rule.feature,
-            location: `${sheet.name}!${colKey}${Number(rowKey) + 1}`,
+            location: `${sheet.name}!${columnLabel(Number(colKey))}${Number(rowKey) + 1}`,
             message: `${rule.feature} preserved on import; recalculation may differ from Excel`,
             preserved: true,
             status: 'preserved-only',

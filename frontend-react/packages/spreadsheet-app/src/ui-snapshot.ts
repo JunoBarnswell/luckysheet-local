@@ -99,13 +99,6 @@ export interface CanvasCellSnapshot {
   overlay?: ConditionalOverlay;
 }
 
-/** Bounded preview row for print UI only */
-export interface PreviewRowSnapshot {
-  rowNumber: number;
-  cells: Array<{ value: string }>;
-  height: number;
-}
-
 /** Canvas-friendly sheet snapshot — single getCell path, no SheetView DTO */
 export interface CanvasSheetSnapshot {
   kind?: WorksheetModel['kind'];
@@ -117,6 +110,11 @@ export interface CanvasSheetSnapshot {
   isEmpty?: boolean;
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
+  /** Sparse model addresses for operations such as AutoFit; never a rectangle scan. */
+  forEachOccupiedCell: (
+    visitor: (row: number, column: number) => void,
+    selection?: { rows?: ReadonlySet<number>; columns?: ReadonlySet<number> },
+  ) => void;
   usedRange: RangeRef;
   /** Canonical floating-object aggregate. UI never consumes legacy projections. */
   drawings: DrawingObject[];
@@ -164,8 +162,6 @@ export interface CanvasSheetSnapshot {
   reportSheet?: ReportSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
-  /** Print preview only — bounded slice */
-  previewRows: PreviewRowSnapshot[];
 }
 
 function toFormulaDisplay(value: FormulaValue): string {
@@ -196,32 +192,6 @@ function formatDisplayValue(
     return formatNumberValue(resolved.value, cell.numberFormat ?? cell.style?.numberFormat);
   }
   return resolved.text;
-}
-
-function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
-  let minRow = Number.POSITIVE_INFINITY;
-  let minColumn = Number.POSITIVE_INFINITY;
-  let maxRow = 0;
-  let maxColumn = 0;
-  sheet.cells.forEach((_cell, row, column) => {
-    minRow = Math.min(minRow, row);
-    minColumn = Math.min(minColumn, column);
-    maxRow = Math.max(maxRow, row);
-    maxColumn = Math.max(maxColumn, column);
-  });
-  for (const region of sheet.dataRegions) {
-    minRow = Math.min(minRow, region.range.startRow);
-    minColumn = Math.min(minColumn, region.range.startColumn);
-    maxRow = Math.max(maxRow, region.range.endRow);
-    maxColumn = Math.max(maxColumn, region.range.endColumn);
-  }
-  return {
-    sheetId: sheet.id,
-    startRow: Number.isFinite(minRow) ? minRow : 0,
-    endRow: Number.isFinite(minRow) ? maxRow : 0,
-    startColumn: Number.isFinite(minColumn) ? minColumn : 0,
-    endColumn: Number.isFinite(minColumn) ? maxColumn : 0,
-  };
 }
 
 function pivotSourceState(
@@ -283,7 +253,7 @@ export function buildCanvasSheetSnapshot(
   const filterButtons = resolveFilterButtonCells(sheet);
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
-  const usedRange = usedRangeOfSheet(sheet);
+  const usedRange = sheet.usedRange;
   const advancedTableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : sheet.kind === 'report-sheet' ? sheet.reportSheet?.tableId : undefined;
   const advancedTable = advancedTableId ? workbook.dataModel.tables.get(advancedTableId) : undefined;
 
@@ -336,34 +306,43 @@ export function buildCanvasSheetSnapshot(
     };
   };
 
-  const previewRows: PreviewRowSnapshot[] = [];
-  const previewRowLimit = Math.min(Math.max(0, sheet.rowCount), 200);
-  for (let row = 0; row < previewRowLimit; row += 1) {
-    if (hiddenRows.has(row)) continue;
-    const cells: Array<{ value: string }> = [];
-    for (let column = 0; column < viewColumns.length; column += 1) {
-      cells.push({ value: getCell(row, column)?.value ?? '' });
+  const forEachOccupiedCell: CanvasSheetSnapshot['forEachOccupiedCell'] = (visitor, selection = {}) => {
+    const visitMaterialized = (_cell: CellData, row: number, column: number) => {
+      if (selection.rows && !selection.rows.has(row)) return;
+      if (selection.columns && !selection.columns.has(column)) return;
+      visitor(row, column);
+    };
+    if (selection.rows) sheet.cells.forEachInRows(selection.rows, visitMaterialized);
+    else if (selection.columns) sheet.cells.forEachInColumns(selection.columns, visitMaterialized);
+    else sheet.cells.forEach(visitMaterialized);
+
+    for (const region of sheet.dataRegions) {
+      const startRow = Math.max(region.range.startRow, region.headerRow + 1);
+      const rows = selection.rows
+        ? [...selection.rows].filter((row) => row >= startRow && row <= region.range.endRow)
+        : Array.from({ length: Math.max(0, region.range.endRow - startRow + 1) }, (_, offset) => startRow + offset);
+      const columns = selection.columns
+        ? [...selection.columns].filter((column) => column >= region.range.startColumn && column <= region.range.endColumn)
+        : Array.from({ length: region.range.endColumn - region.range.startColumn + 1 }, (_, offset) => region.range.startColumn + offset);
+      for (const row of rows) for (const column of columns) {
+        if (!sheet.cells.has(row, column)) visitor(row, column);
+      }
     }
-    previewRows.push({ rowNumber: row + 1, cells, height: sheet.rowHeightsPx[row] ?? sheet.defaultRowHeightPx });
-  }
+  };
 
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
-    const retainedResult = getLastValidPivotResult(workbook, pivot.id);
     // A snapshot is a projection boundary, never a refresh authority.  A
     // source-stale result is still renderable for every policy as long as its
     // layout/filter contract matches; the coordinator decides if/when it is
     // replaced.
     const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result, formula)
       || pivotResultMatchesLayoutAndFilter(workbook, pivot, result, formula);
-    let cachedResult = reusable(runtimeResult)
-      ? runtimeResult
-      : reusable(retainedResult)
-        ? retainedResult
-        : undefined;
+    const retainedResult = reusable(runtimeResult) ? undefined : getLastValidPivotResult(workbook, pivot.id);
+    let cachedResult = reusable(runtimeResult) ? runtimeResult : reusable(retainedResult) ? retainedResult : undefined;
     if (cachedResult) pivotResults[pivot.id] = cachedResult;
     try {
       pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula, refreshError: pivotErrors[pivot.id] });
@@ -385,6 +364,7 @@ export function buildCanvasSheetSnapshot(
     isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
     occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
+    forEachOccupiedCell,
     usedRange,
     drawings: structuredClone(sheet.drawings),
     drawingPayloads: new Map(
@@ -399,7 +379,7 @@ export function buildCanvasSheetSnapshot(
     sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
-    dataRegions: structuredClone(sheet.dataRegions),
+    dataRegions: sheet.dataRegions.map((region) => structuredClone(region)),
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
     autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,
@@ -434,7 +414,6 @@ export function buildCanvasSheetSnapshot(
     reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
-    previewRows,
   };
 }
 

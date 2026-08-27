@@ -16,20 +16,20 @@ import {
   type ViewportSnapshot,
 } from './types';
 
-export type LayerRenderMode = 'none' | 'full' | 'dirty' | 'scroll';
+export type LayerRenderMode = 'none' | 'full' | 'dirty';
 
 export interface ScrollDeltaPlan {
   delta: Point;
   dx: number;
   dy: number;
   hasDelta: boolean;
-  isSmall: boolean;
-  canBlit: boolean;
-  source: Rect | null;
-  destination: Rect | null;
-  copySource: Rect | null;
-  copyDestination: Rect | null;
-  exposedRects: Rect[];
+  /**
+   * Full screen-space rectangles of panes whose content origin changed.
+   * Scrolling always clears and redraws these visible panes. Reusing pixels
+   * from the same canvas is intentionally unsupported because repeated
+   * overlapping copies accumulate stale glyphs during continuous scrolling.
+   */
+  redrawRects: Rect[];
 }
 
 export interface LayerRenderPlan {
@@ -39,7 +39,7 @@ export interface LayerRenderPlan {
   drawRects: Rect[];
 }
 
-export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'large-scroll' | 'mixed' | 'scroll' | 'dirty' | 'idle';
+export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'scroll-redraw' | 'mixed' | 'dirty' | 'idle';
 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
@@ -50,7 +50,6 @@ export interface RenderPlan {
   dirtyRanges: CellRange[];
   dirtyRects: Rect[];
   scrollDelta: ScrollDeltaPlan;
-  scroll: ScrollDeltaPlan;
   fullRedraw: boolean;
   reason: RenderPlanReason;
   layers: LayerRenderPlan[];
@@ -228,28 +227,8 @@ function emptyScrollDelta(): ScrollDeltaPlan {
     dx: 0,
     dy: 0,
     hasDelta: false,
-    isSmall: false,
-    canBlit: false,
-    source: null,
-    destination: null,
-    copySource: null,
-    copyDestination: null,
-    exposedRects: [],
+    redrawRects: [],
   };
-}
-
-export function getScrollExposedRects(viewport: SizeLike, dx: number, dy: number): Rect[] {
-  const exposed: Rect[] = [];
-  if (dy > 0) exposed.push({ x: 0, y: viewport.height - dy, width: viewport.width, height: dy });
-  if (dy < 0) exposed.push({ x: 0, y: 0, width: viewport.width, height: -dy });
-  if (dx > 0) exposed.push({ x: viewport.width - dx, y: 0, width: dx, height: viewport.height });
-  if (dx < 0) exposed.push({ x: 0, y: 0, width: -dx, height: viewport.height });
-  return exposed.filter((rect) => rect.width > 0 && rect.height > 0);
-}
-
-interface SizeLike {
-  width: number;
-  height: number;
 }
 
 export function calculateScrollDelta(
@@ -260,58 +239,45 @@ export function calculateScrollDelta(
   const dx = nextViewport.scrollX - previousViewport.scrollX;
   const dy = nextViewport.scrollY - previousViewport.scrollY;
   const hasDelta = dx !== 0 || dy !== 0;
-  const sameSize = previousViewport.width === nextViewport.width
-    && previousViewport.height === nextViewport.height;
-  const isSmall = sameSize
-    && nextViewport.width > 0
-    && nextViewport.height > 0
-    && Math.abs(dx) < nextViewport.width
-    && Math.abs(dy) < nextViewport.height;
-  const canBlit = hasDelta && isSmall;
-  if (!canBlit) {
-    return {
-      delta: { x: dx, y: dy },
-      dx,
-      dy,
-      hasDelta,
-      isSmall,
-      canBlit: false,
-      source: null,
-      destination: null,
-      copySource: null,
-      copyDestination: null,
-      exposedRects: [],
-    };
-  }
-
-  const copyWidth = nextViewport.width - Math.abs(dx);
-  const copyHeight = nextViewport.height - Math.abs(dy);
-  const source = {
-    x: Math.max(dx, 0),
-    y: Math.max(dy, 0),
-    width: copyWidth,
-    height: copyHeight,
-  };
-  const destination = {
-    x: Math.max(-dx, 0),
-    y: Math.max(-dy, 0),
-    width: copyWidth,
-    height: copyHeight,
-  };
-  const exposedRects = getScrollExposedRects(nextViewport, dx, dy);
   return {
     delta: { x: dx, y: dy },
     dx,
     dy,
     hasDelta,
-    isSmall,
-    canBlit,
-    source,
-    destination,
-    copySource: source,
-    copyDestination: destination,
-    exposedRects,
+    redrawRects: [],
   };
+}
+
+/**
+ * Resolves the viewport delta into disjoint screen-space pane operations.
+ * PaneMap is deliberately the only coordinate authority here: this prevents
+ * frozen headers and panes from being translated as part of the main grid.
+ */
+function resolvePaneScrollDelta(base: ScrollDeltaPlan, panes: readonly RenderPane[]): ScrollDeltaPlan {
+  if (!base.hasDelta) return base;
+  const redrawRects: Rect[] = [];
+  for (const pane of panes) {
+    const dx = pane.id === 'topLeft' || pane.id === 'bottomLeft' ? 0 : base.dx;
+    const dy = pane.id === 'topLeft' || pane.id === 'topRight' ? 0 : base.dy;
+    if (dx === 0 && dy === 0) continue;
+    redrawRects.push({ ...pane.screenRect });
+  }
+  return {
+    ...base,
+    redrawRects,
+  };
+}
+
+function combineScrollRedrawRects(scrollRects: readonly Rect[], dirtyRects: readonly Rect[]): Rect[] {
+  const redrawRects = scrollRects.map((rect) => ({ ...rect }));
+  for (const dirtyRect of dirtyRects) {
+    const coveredByScrolledPane = scrollRects.some((paneRect) => dirtyRect.x >= paneRect.x
+      && dirtyRect.y >= paneRect.y
+      && dirtyRect.x + dirtyRect.width <= paneRect.x + paneRect.width
+      && dirtyRect.y + dirtyRect.height <= paneRect.y + paneRect.height);
+    if (!coveredByScrolledPane) redrawRects.push({ ...dirtyRect });
+  }
+  return redrawRects;
 }
 
 export function rangeToViewportRect(
@@ -338,17 +304,14 @@ function calculateReason(
   hasPrevious: boolean,
   forceFull: boolean,
   resized: boolean,
-  largeScroll: boolean,
-  hasScroll: boolean,
+  redrawScroll: boolean,
   hasDirtyRects: boolean,
 ): RenderPlanReason {
   if (!hasPrevious) return 'initial';
   if (forceFull) return 'forced';
   if (resized) return 'resize';
-  if (largeScroll && hasDirtyRects) return 'mixed';
-  if (largeScroll) return 'large-scroll';
-  if (hasScroll && hasDirtyRects) return 'mixed';
-  if (hasScroll) return 'scroll';
+  if (redrawScroll && hasDirtyRects) return 'mixed';
+  if (redrawScroll) return 'scroll-redraw';
   if (hasDirtyRects) return 'dirty';
   return 'idle';
 }
@@ -356,7 +319,10 @@ function calculateReason(
 export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   const previousViewport = input.previousViewport ?? null;
   const hasPrevious = previousViewport !== null;
-  const scrollDelta = calculateScrollDelta(previousViewport, input.viewport);
+  const baseScrollDelta = calculateScrollDelta(previousViewport, input.viewport);
+  const paneMap = computePaneMap(input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
+  const panes = [...paneMap.panes];
+  const scrollDelta = resolvePaneScrollDelta(baseScrollDelta, panes);
   const dirtyRanges = mergeCellRanges(input.dirtyRanges ?? []);
   const dirtyRects = mergeRects(
     dirtyRanges
@@ -364,14 +330,15 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
       .filter((rect): rect is Rect => rect !== null),
   );
   const resized = viewportChanged(previousViewport, input.viewport);
-  const largeScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
-  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll;
+  const redrawScroll = scrollDelta.hasDelta;
+  // Scrolling redraws only panes whose content origin changed. It must not
+  // clear the whole canvas, because that includes headers and frozen panes.
+  const fullRedraw = input.forceFull === true || !hasPrevious || resized;
   const reason = calculateReason(
     hasPrevious,
     input.forceFull === true,
     resized,
-    largeScroll,
-    scrollDelta.hasDelta,
+    redrawScroll,
     dirtyRects.length > 0,
   );
 
@@ -382,8 +349,8 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
       if (definition.scrollable === false) {
         return { layerId: definition.id, mode: 'full', clearRects: [], drawRects: [] };
       }
-      const redrawRects = mergeRects([...scrollDelta.exposedRects, ...dirtyRects]);
-      return { layerId: definition.id, mode: 'scroll', clearRects: redrawRects, drawRects: redrawRects };
+      const redrawRects = combineScrollRedrawRects(scrollDelta.redrawRects, dirtyRects);
+      return { layerId: definition.id, mode: 'dirty', clearRects: redrawRects, drawRects: redrawRects };
     }
     if (dirtyRects.length > 0) {
       return { layerId: definition.id, mode: 'dirty', clearRects: dirtyRects, drawRects: dirtyRects };
@@ -394,9 +361,6 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     return { layerId: definition.id, mode: 'none', clearRects: [], drawRects: [] };
   });
 
-  const paneMap = computePaneMap(input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
-  const panes = [...paneMap.panes];
-
   return {
     viewport: { ...input.viewport },
     paneMap,
@@ -405,7 +369,6 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     dirtyRanges,
     dirtyRects,
     scrollDelta,
-    scroll: scrollDelta,
     fullRedraw,
     reason,
     layers,
@@ -413,4 +376,3 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
 }
 
 export const createRenderPlan = calculateRenderPlan;
-export const calculateSmallScrollDelta = calculateScrollDelta;

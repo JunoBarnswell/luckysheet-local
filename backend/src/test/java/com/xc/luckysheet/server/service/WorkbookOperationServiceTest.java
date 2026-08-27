@@ -90,7 +90,7 @@ class WorkbookOperationServiceTest {
                 "book-1",
                 1,
                 0,
-                List.of(new OperationMutation("cell.set", "sheet-1", mapper.readTree("{\"row\":1,\"column\":2,\"value\":{\"value\":42}}"))),
+                List.of(new OperationMutation("cell.set", "sheet-1", mapper.readTree("{\"sheetId\":\"sheet-1\",\"row\":1,\"column\":2,\"value\":{\"value\":42},\"writeAuthority\":{\"kind\":\"script\",\"target\":{\"sheetId\":\"sheet-1\",\"row\":1,\"column\":2},\"candidate\":{\"value\":42},\"validationDecision\":{\"status\":\"accepted\"}}}"))),
                 Instant.parse("2000-01-01T00:00:00Z")
         );
 

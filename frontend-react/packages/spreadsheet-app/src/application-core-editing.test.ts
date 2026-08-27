@@ -137,9 +137,12 @@ describe('WorkbookSession core editing integration', () => {
     const sheetId = app.getActiveSheetId();
     selectCell(app, 0, 0);
     app.setClipboard({
+      schema: 'SparseClipboardPayload',
       range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-      values: [[{ value: 'blocked' }]],
+      sourceExtent: { rows: 1, columns: 1 },
+      occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 'blocked' } }],
       transfer: 'move',
+      representations: [],
       rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     });
     const historyDepth = app['runtime'].commands.getHistoryDepth();
@@ -159,7 +162,7 @@ describe('WorkbookSession core editing integration', () => {
   it('keeps paste pending until data-region materialization rejects and then preserves all state', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app['runtime'].model.getSheet(sheetId).dataRegions.push({
+    app['runtime'].model.getSheet(sheetId).addDataRegion({
       id: 'missing-source-region',
       sourceId: 'missing-source',
       range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
@@ -346,6 +349,32 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app.getActiveSheetId(), 'sheet-2');
     assert.equal(app['runtime'].model.primarySheetId, sourceId);
     assert.equal(app['runtime'].commands.getHistoryDepth().undo, 1);
+  });
+
+  it('builds Canvas projection only for the active sheet until a visible dependency needs another sheet', () => {
+    const app = new WorkbookSession();
+    const firstSheetId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'sheet-projection-2', name: 'Projection second' });
+    app.selectSheet(firstSheetId);
+
+    let snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.projectionSheets.map((sheet) => sheet.id), [firstSheetId]);
+    assert.equal(app['sheetProjectionCache'].size, 1);
+
+    app.runCommand('sheet.cell.set', {
+      sheetId: firstSheetId,
+      row: 0,
+      column: 0,
+      value: { value: 'active-only' },
+    });
+    snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.projectionSheets.map((sheet) => sheet.id), [firstSheetId]);
+    assert.equal(app['sheetProjectionCache'].size, 1);
+
+    app.selectSheet('sheet-projection-2');
+    snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.projectionSheets.map((sheet) => sheet.id), ['sheet-projection-2']);
+    assert.equal(app['sheetProjectionCache'].size, 2);
   });
 
   it('edits the active canvas cell instead of the top-left of a dragged range', () => {

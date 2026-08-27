@@ -65,6 +65,6 @@ describe('formula audit projections', () => {
     runtime.execute('formula.audit.errors.scan', { sheetId });
     assert.equal(controller.getProjection().errors.length, 1);
     runtime.execute('formula.calculation.mode.set', { mode: 'manual' });
-    assert.equal(formula.getRecalculationMode(), 'manual');
+    assert.equal(workbook.calculationSettings.mode, 'manual');
   });
 });

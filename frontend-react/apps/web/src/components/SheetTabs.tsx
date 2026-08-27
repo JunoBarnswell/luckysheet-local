@@ -1,13 +1,13 @@
 import React, { useRef, useState } from 'react';
 import { Box, Button, ContextMenu, Dialog, DropdownMenu, Inline, Stack, Tab, Text, TextInput, type ContextMenuItem } from '@react-sheets/ui-system';
-import type { CanvasSheetSnapshot, SheetDialogState } from '@react-sheets/spreadsheet-app';
+import type { SheetDialogState, SheetTabSnapshot } from '@react-sheets/spreadsheet-app';
 import type { Locale } from '../i18n';
 
 export interface SheetTabsProps {
   activeSheetId: string;
   locale: Locale;
   disabled: boolean;
-  sheets: CanvasSheetSnapshot[];
+  sheets: SheetTabSnapshot[];
   onAdd: () => void;
   onSelect: (sheetId: string) => void;
   onRenameSheet?: (sheetId: string, name: string) => void;
@@ -136,21 +136,7 @@ export function SheetTabs({
       <Inline gap="none" className="h-full min-w-0 flex-1 items-center pl-2">
         <Button aria-label={locale === 'zh-CN' ? '向左滚动工作表' : 'Scroll worksheets left'} disabled={disabled} icon="chevron-left" iconOnly onClick={() => tabsViewportRef.current?.scrollBy({ left: -180, behavior: 'smooth' })} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
         <Button aria-label={locale === 'zh-CN' ? '向右滚动工作表' : 'Scroll worksheets right'} disabled={disabled} icon="chevron-right" iconOnly onClick={() => tabsViewportRef.current?.scrollBy({ left: 180, behavior: 'smooth' })} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
-        <DropdownMenu
-          align="left"
-          disabled={disabled}
-          trigger={<Button aria-label={locale === 'zh-CN' ? '工作表列表' : 'Worksheet list'} icon="menu" iconOnly size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#217345]" />}
-        >
-          {({ close }) => (
-            <Stack gap="none" className="min-w-[13rem] p-1">
-              {sheets.filter((sheet) => !sheet.hidden).map((sheet) => (
-                <Button key={sheet.id} size="sm" variant={sheet.id === activeSheetId ? 'secondary' : 'ghost'} className="justify-start" onClick={() => { close(); onSelect(sheet.id); }}>
-                  {sheet.name}
-                </Button>
-              ))}
-            </Stack>
-          )}
-        </DropdownMenu>
+        <Button aria-label={locale === 'zh-CN' ? '添加工作表' : 'Add worksheet'} disabled={disabled} icon="plus" iconOnly onClick={onAdd} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#217345]" />
         <Box className="mx-3 h-5 w-px shrink-0 bg-[#d9d9d9]" />
         <Box ref={tabsViewportRef} className="h-full w-[580px] shrink-0 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <Inline gap="none" className="h-full min-w-max items-center">
@@ -169,7 +155,6 @@ export function SheetTabs({
             ))}
           </Inline>
         </Box>
-        <Button aria-label={locale === 'zh-CN' ? '添加工作表' : 'Add worksheet'} disabled={disabled} icon="plus" iconOnly onClick={onAdd} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
         <DropdownMenu
           align="right"
           disabled={disabled}

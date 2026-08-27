@@ -29,7 +29,20 @@ import {
   type SelectionGesture,
   type SelectionState,
 } from "@react-sheets/spreadsheet-app";
+import {
+  claimPointerGesture,
+  ownsPointerGesture,
+  releasePointerGesture,
+  releasePointerGesturesForSurface,
+  resolvePointerGestureOwner,
+} from "@react-sheets/ui-system";
 import type { PivotControlAction } from "./drawing-renderers";
+import {
+  beginDimensionResizeGesture,
+  updateDimensionResizeGesture,
+  type DimensionResizeGesture,
+} from "./dimension-resize-gesture";
+import { resolveAutoScrollExtentGrowth } from './sheet-extent-growth';
 
 export interface CanvasFillPreview {
   startRow: number;
@@ -67,8 +80,7 @@ interface DragState {
   currentColumn: number;
   additive: boolean;
   extend: boolean;
-  resizeStartSize: number;
-  resizeIndex: number;
+  dimensionResize?: DimensionResizeGesture;
   floating?: {
     id: string;
     kind: "chart" | "shape" | "image" | "pivot-control";
@@ -112,6 +124,7 @@ export interface CanvasInteractionOptions {
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
+  onRequestExtentGrowth: (axes: { rows?: boolean; columns?: boolean }) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
@@ -219,6 +232,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     editComposing,
     onJumpEdge,
     onMovePrimary,
+    onRequestExtentGrowth,
     onPivotContextHit,
     onPivotControlAction,
     onPivotResolve,
@@ -347,6 +361,17 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const speed = (distance: number) => Math.max(2, Math.min(24, Math.round(distance / threshold * 24)));
       const dx = left ? -speed(currentOrigin.x + threshold - point.x) : right ? speed(point.x - (currentHost.clientWidth - threshold)) : 0;
       const dy = top ? -speed(currentOrigin.y + threshold - point.y) : bottom ? speed(point.y - (currentHost.clientHeight - threshold)) : 0;
+      const viewport = currentEngine.viewport.getSnapshot();
+      const content = currentEngine.skeleton.contentSize;
+      const { rows, columns } = resolveAutoScrollExtentGrowth({
+        right,
+        bottom,
+        viewport,
+        content,
+        defaultRowHeight: currentEngine.skeleton.defaultRowHeight,
+        defaultColumnWidth: currentEngine.skeleton.defaultColumnWidth,
+      });
+      if (rows || columns) onRequestExtentGrowth({ rows, columns });
       if (dx !== 0 || dy !== 0) currentEngine.scrollBy(dx, dy);
       const queryPoint = {
         x: Math.max(currentOrigin.x + 1, Math.min(currentHost.clientWidth - 1, point.x)),
@@ -387,24 +412,28 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (autoScrollPointRef.current && typeof window !== "undefined") autoScrollFrameRef.current = window.requestAnimationFrame(tick);
     };
     autoScrollFrameRef.current = window.requestAnimationFrame(tick);
-  }, [containerRef, engineRef, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll]);
+  }, [containerRef, engineRef, onRequestExtentGrowth, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll]);
 
   useEffect(() => () => {
     stopAutoScroll();
+    const host = containerRef.current;
+    if (host) releasePointerGesturesForSurface(host.ownerDocument, host);
     if (transientSelectionFrameRef.current === null) return;
     if (typeof window !== "undefined") window.cancelAnimationFrame(transientSelectionFrameRef.current);
     transientSelectionFrameRef.current = null;
-  }, [stopAutoScroll]);
+  }, [containerRef, stopAutoScroll]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent) => {
     if (phase !== "ready") return;
     if (event.button === 2) return;
-    if ((event.target as Element).closest('[aria-label="Cell editor"]')) return;
+    if (resolvePointerGestureOwner(event.target) !== "worksheet") return;
     stopAutoScroll();
     setFillPreview(null);
     const engine = engineRef.current;
     const host = containerRef.current;
     if (!engine || !host) return;
+    if (!claimPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    host.setPointerCapture(event.pointerId);
     host.focus();
     if (editingCell || editingActiveRef.current) {
       editingActiveRef.current = false;
@@ -429,8 +458,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         currentColumn: 0,
         additive: false,
         extend: false,
-        resizeStartSize: 0,
-        resizeIndex: 0,
         textBox: { startContent: content },
       };
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -463,8 +490,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           currentColumn: 0,
           additive: false,
           extend: false,
-          resizeStartSize: 0,
-          resizeIndex: 0,
           floating: {
             id: floatingHit.id,
             kind: floatingHit.kind,
@@ -500,8 +525,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           currentColumn: 0,
           additive: false,
           extend: false,
-          resizeStartSize: headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index),
-          resizeIndex: headerHit.index,
+          dimensionResize: beginDimensionResizeGesture({
+            axis: headerHit.kind === "col" ? "column" : "row",
+            boundaryIndex: headerHit.index,
+            startModelSizePx: (headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index)) / (zoom / 100),
+            startPointerScreenPx: headerHit.kind === "col" ? local.x : local.y,
+            zoomScale: zoom / 100,
+            minimumModelSizePx: headerHit.kind === "col" ? 1 : 18,
+          }),
         };
         (event.target as Element).setPointerCapture?.(event.pointerId);
         return;
@@ -542,8 +573,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         currentColumn: headerHit.kind === "col" ? headerHit.index : 0,
         additive,
         extend: false,
-        resizeStartSize: 0,
-        resizeIndex: 0,
         floating: { id: headerHit.kind, kind: "shape", handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
       };
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -568,8 +597,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             currentColumn: primaryRange.endColumn,
             additive: false,
             extend: false,
-            resizeStartSize: 0,
-            resizeIndex: 0,
           };
           (event.target as Element).setPointerCapture?.(event.pointerId);
           return;
@@ -643,8 +670,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       currentColumn: cell.column,
       additive,
       extend,
-      resizeStartSize: 0,
-      resizeIndex: 0,
     };
     if (!additive && !extend) {
       onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
@@ -658,24 +683,31 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const local = localPointOf(event);
     const drag = dragRef.current;
     if (!drag) {
+      if (resolvePointerGestureOwner(event.target) !== "worksheet") return;
       stopAutoScroll();
       const headerHit = engine.headerHitAtLocal(local);
       const host = containerRef.current;
       if (host) host.style.cursor = headerHit?.resizeBoundaryPx !== undefined ? (headerHit.kind === "col" ? "col-resize" : "row-resize") : "default";
       return;
     }
+    const host = containerRef.current;
+    if (!host || drag.pointerId !== event.pointerId
+      || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
     if (drag.kind === "col-resize" || drag.kind === "row-resize") {
       setFillPreview(null);
       stopAutoScroll();
-      const content = engine.localToContent(local);
-      const boundary = drag.kind === "col-resize" ? skeleton.getColumnLeft(drag.resizeIndex) : skeleton.getRowTop(drag.resizeIndex);
-      const size = Math.max(24, (drag.kind === "col-resize" ? content.x : content.y) - boundary);
-      const modelSizePx = Math.round(size / (zoom / 100));
+      if (!drag.dimensionResize) throw new Error('Dimension resize drag is missing its canonical gesture');
+      drag.dimensionResize = updateDimensionResizeGesture(
+        drag.dimensionResize,
+        drag.kind === "col-resize" ? local.x : local.y,
+      );
+      const modelSizePx = drag.dimensionResize.currentModelSizePx;
+      const size = modelSizePx * drag.dimensionResize.zoomScale;
       const columnPreview = drag.kind === 'col-resize' ? formatColumnWidthPreview(modelSizePx) : undefined;
       const label = drag.kind === 'col-resize'
         ? `${columnPreview!.excelWidth.toFixed(2)} chars (${columnPreview!.widthPx}px)`
         : `${modelSizePx}px`;
-      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size, label } });
+      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.dimensionResize.axis, index: drag.dimensionResize.boundaryIndex, sizePx: size, label } });
       return;
     }
     if (drag.kind === "floating-move" && drag.floating) {
@@ -746,26 +778,27 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
   }, [chromeState, containerRef, engineRef, formatColumnWidthPreview, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent) => {
+    const host = containerRef.current;
+    if (!host || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    releasePointerGesture(host.ownerDocument, event.pointerId, "worksheet", host);
     const drag = dragRef.current;
     dragRef.current = null;
     const engine = engineRef.current;
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
     if (!drag || !engine) return;
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
     if (drag.kind === "select" || drag.kind === "fill") {
       const finalCell = resolveDragCell(engine, sheet, localPointOf(event), drag);
       if (finalCell) onPivotContextHit?.(onPivotResolve(sheet, finalCell.row, finalCell.column));
     }
     stopAutoScroll();
     if (drag.kind === "col-resize") {
-      const content = engine.localToContent(localPointOf(event));
-      const width = Math.max(24, content.x - skeleton.getColumnLeft(drag.resizeIndex));
-      onResizeColumn(drag.resizeIndex, Math.round(width / (zoom / 100)));
+      if (!drag.dimensionResize) throw new Error('Column resize drag is missing its canonical gesture');
+      onResizeColumn(drag.dimensionResize.boundaryIndex, drag.dimensionResize.currentModelSizePx);
       return;
     }
     if (drag.kind === "row-resize") {
-      const content = engine.localToContent(localPointOf(event));
-      const height = Math.max(18, content.y - skeleton.getRowTop(drag.resizeIndex));
-      onResizeRow(drag.resizeIndex, Math.round(height / (zoom / 100)));
+      if (!drag.dimensionResize) throw new Error('Row resize drag is missing its canonical gesture');
+      onResizeRow(drag.dimensionResize.boundaryIndex, drag.dimensionResize.currentModelSizePx);
       return;
     }
     if (drag.kind === "textbox-placement" && drag.textBox) {
@@ -819,7 +852,18 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       clearTransientSelection();
       onSelectionChange(nextSelection);
     }
-  }, [clearTransientSelection, engineRef, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onPivotResolve, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
+  }, [clearTransientSelection, containerRef, engineRef, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onPivotResolve, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
+
+  const handlePointerCancel = useCallback((event: React.PointerEvent) => {
+    const host = containerRef.current;
+    if (!host || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    releasePointerGesture(host.ownerDocument, event.pointerId, "worksheet", host);
+    dragRef.current = null;
+    stopAutoScroll();
+    setFillPreview(null);
+    clearTransientSelection();
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
+  }, [clearTransientSelection, containerRef, setFillPreview, stopAutoScroll]);
 
   const handleDoubleClick = useCallback((event: React.PointerEvent | React.MouseEvent) => {
     const engine = engineRef.current;
@@ -990,6 +1034,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     handleKeyDown,
     handlePointerDown,
     handlePointerMove,
+    handlePointerCancel,
     handlePointerUp,
     handleWheel,
     localPointOf,

@@ -156,7 +156,7 @@ export class ProtectionResolver {
         if (count === undefined) {
           return { allowed: false, reason: 'Protection resolution cannot safely represent the requested cell extent', lockedCells, unlockedCells };
         }
-        const rangeRule = request.rules.find((rule) => ruleCoversRange(rule, range));
+        const rangeRule = request.rules.find((rule) => rule.scope === 'range' && ruleCoversRange(rule, range));
         if (rangeRule) {
           lockedCells += 1;
           return {

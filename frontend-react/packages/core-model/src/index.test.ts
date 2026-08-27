@@ -59,6 +59,51 @@ test('CellMatrix range iteration visits only persisted cells', () => {
   assert.deepEqual(entries, ['2:3']);
 });
 
+test('CellMatrix maintains sparse occupied bounds through overwrite, delete, and clear', () => {
+  const matrix = new CellMatrix();
+  matrix.set(100_000, 2, { value: 'tail-row' });
+  matrix.set(3, 800, { value: 'wide-column' });
+  matrix.set(100_000, 800, { value: 'corner' });
+  assert.deepEqual(matrix.occupiedRange('sheet-1'), {
+    sheetId: 'sheet-1', startRow: 3, endRow: 100_000, startColumn: 2, endColumn: 800,
+  });
+  matrix.set(100_000, 800, { value: 'overwritten' });
+  assert.equal(matrix.count(), 3);
+  matrix.delete(100_000, 2);
+  matrix.delete(100_000, 800);
+  assert.deepEqual(matrix.occupiedRange('sheet-1'), {
+    sheetId: 'sheet-1', startRow: 3, endRow: 3, startColumn: 800, endColumn: 800,
+  });
+  matrix.clear();
+  assert.deepEqual(matrix.occupiedRange('sheet-1'), {
+    sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0,
+  });
+});
+
+test('Worksheet used range combines the incremental cell and data-region indexes', () => {
+  const workbook = new WorkbookModel('unit-used-range', 'Used range');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.addDataRegion({
+    id: 'region-1', sourceId: 'source-1',
+    range: { sheetId: sheet.id, startRow: 20, endRow: 40, startColumn: 10, endColumn: 30 },
+    headerRow: 20, revision: 0,
+  });
+  sheet.cells.set(5, 2, { value: 'first' });
+  sheet.cells.set(50, 1, { value: 'last' });
+  assert.deepEqual(sheet.usedRange, {
+    sheetId: sheet.id, startRow: 5, endRow: 50, startColumn: 1, endColumn: 30,
+  });
+  sheet.removeDataRegionAt(0);
+  assert.deepEqual(sheet.usedRange, {
+    sheetId: sheet.id, startRow: 5, endRow: 50, startColumn: 1, endColumn: 2,
+  });
+  assert.throws(() => sheet.addDataRegion({
+    id: 'wrong-sheet', sourceId: 'source-1',
+    range: { sheetId: 'other', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    headerRow: 0, revision: 0,
+  }), /belongs to other/);
+});
+
 test('font families use one canonical trim/case contract while preserving unknown names', () => {
   assert.equal(normalizeFontFamily('  arial  '), 'Arial');
   assert.equal(normalizeFontFamily('  My Imported Font  '), 'My Imported Font');

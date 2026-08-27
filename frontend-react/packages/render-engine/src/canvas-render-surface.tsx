@@ -20,11 +20,16 @@ export const CanvasRenderSurface = forwardRef<CanvasRenderEngine, CanvasRenderSu
     }
     const engine = engineRef.current;
     const hostRef = useRef<HTMLDivElement | null>(null);
+    const disposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onReadyRef = useRef(props.onReady);
     onReadyRef.current = props.onReady;
 
     useImperativeHandle(ref, () => engine, [engine]);
     useLayoutEffect(() => {
+      if (disposeTimerRef.current !== null) {
+        clearTimeout(disposeTimerRef.current);
+        disposeTimerRef.current = null;
+      }
       const host = hostRef.current;
       if (!host) return undefined;
       engine.mount(host);
@@ -41,7 +46,15 @@ export const CanvasRenderSurface = forwardRef<CanvasRenderEngine, CanvasRenderSu
         observer?.disconnect();
         if (frame !== null) cancelAnimationFrame(frame);
         engine.unmount();
-        if (ownsEngineRef.current) engine.dispose();
+        if (ownsEngineRef.current) {
+          // React StrictMode replays layout effects in development. Defer
+          // disposal so the replayed setup can reuse this engine instead of
+          // sending later SheetCanvas effects to a disposed instance.
+          disposeTimerRef.current = setTimeout(() => {
+            disposeTimerRef.current = null;
+            engine.dispose();
+          }, 0);
+        }
       };
     }, [engine]);
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ColumnDimensionController } from './column-dimension-controller';
+import { createAutoFitBlock } from './column-autofit-protocol';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
 type TestCell = { value: string; displayValue?: string; formula?: string; style?: { padding?: number } };
@@ -56,7 +57,10 @@ function makeSheet(cells: Record<string, TestCell>, rows = 2, columns = 4): Canv
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     sheetTables: [],
-    previewRows: [],
+    forEachOccupiedCell: (visitor: (row: number, column: number) => void) => Object.keys(cells).forEach((key) => {
+      const [row, column] = key.split(':').map(Number);
+      visitor(row!, column!);
+    }),
   } as unknown as CanvasSheetSnapshot;
 }
 
@@ -125,7 +129,21 @@ test('AutoFit rows and main-thread columns measure canonical 0, FALSE, formatted
   }
 });
 
-test('AutoFit worker uses the same typed-content gate and measurement as main thread', async () => {
+test('AutoFit compact blocks intern matching styles and keep per-cell flags positional', () => {
+  const style = { fontSizePx: 14, bold: true };
+  const block = createAutoFitBlock([
+    { column: 2, value: 'A', style, filterButton: true },
+    { column: 4, value: 'B', style },
+    { column: 8, value: 'C' },
+  ]);
+  assert.deepEqual([...block.columns], [2, 4, 8]);
+  assert.deepEqual(block.values, ['A', 'B', 'C']);
+  assert.deepEqual([...block.styleIndexes], [1, 1, 0]);
+  assert.deepEqual([...block.filterButtons], [1, 0, 0]);
+  assert.deepEqual(block.styles, [style]);
+});
+
+test('AutoFit worker uses the compact block protocol with the same typed-content gate and measurement', async () => {
   const previousSelf = (globalThis as { self?: unknown }).self;
   const previousOffscreenCanvas = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
   const messages: unknown[] = [];
@@ -143,12 +161,12 @@ test('AutoFit worker uses the same typed-content gate and measurement as main th
     worker.onmessage!({ data: {
       kind: 'chunk',
       taskId: 'test',
-      cells: [
+      block: createAutoFitBlock([
         { column: 0, value: '0' },
         { column: 1, value: 'FALSE' },
         { column: 2, value: '#DIV/0!' },
         { column: 3, value: '' },
-      ],
+      ]),
     } } as MessageEvent);
     worker.onmessage!({ data: { kind: 'finish', taskId: 'test' } } as MessageEvent);
     const complete = messages.find((message) => (message as { kind?: string }).kind === 'complete') as { widths: Array<{ column: number; widthPx: number }> };

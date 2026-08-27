@@ -10,6 +10,7 @@ import {
   computePivotResult,
   computePivotResultFromBlockSource,
   detectPivotCollision,
+  findPivotProjectionCellAt,
   getPivotFieldCatalog,
   getPivotSourceRanges,
   hitTestPivotProjection,
@@ -48,6 +49,20 @@ it('does not calculate a Pivot from a read-only projection request', () => {
   const authorized = buildPivotGridProjectionCore(workbook, pivot, undefined, { refreshAuthorized: true });
   assert.equal(authorized.refresh.status, 'ready');
   assert.equal(authorized.cells.some((cell) => cell.kind === 'value'), true);
+});
+
+it('keeps Pivot projection cells row-major and resolves coordinates without a full scan', () => {
+  const workbook = workbookWithData();
+  const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-coordinate-index', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+  assert.ok(pivot);
+  const projection = buildPivotGridProjection(workbook, pivot);
+  for (let index = 1; index < projection.cells.length; index += 1) {
+    const previous = projection.cells[index - 1]!;
+    const current = projection.cells[index]!;
+    assert.ok(previous.row < current.row || (previous.row === current.row && previous.column < current.column));
+  }
+  for (const cell of projection.cells) assert.equal(findPivotProjectionCellAt(projection, cell.row, cell.column)?.id, cell.id);
+  assert.equal(findPivotProjectionCellAt(projection, projection.occupiedRange.endRow + 1, 0), undefined);
 });
 
 it('keeps repeated source fields independent through Values placement identities', () => {
@@ -1285,7 +1300,11 @@ describe('native PivotGridProjection contract', () => {
         { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' },
       ],
       blockRowCount: 65_536,
-      blocks: [],
+      blocks: [{
+        id: 'source-block-0', dataSourceId: 'source-block', startRow: 0, rowCount: 2,
+        storageKey: 'source-block-0', checksum: 'c'.repeat(64), byteLength: 1,
+        encoding: 'columnar-v1', revision: 1,
+      }],
       revision: 1,
     });
     const pivot = {

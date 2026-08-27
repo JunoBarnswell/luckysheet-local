@@ -1,5 +1,6 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
+import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 import {
   planGoalSeek,
   planScenario,
@@ -31,13 +32,12 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
     id: 'cell.set',
     unitId: context.workbook.unitId,
     sheetId: write.sheetId,
-    params: {
+    params: createCellSetMutationParams(sheet, {
       sheetId: write.sheetId,
       row: write.row,
       column: write.column,
       value: structuredClone(write.value),
-      entryIntent: { kind: 'formula-result', target: { sheetId: write.sheetId, row: write.row, column: write.column }, candidate: structuredClone(write.value), validationDecision: { status: 'not-applicable' } },
-    },
+    }, 'script'),
     affectedRanges,
     inverse: [{
       id: 'cell.restore',

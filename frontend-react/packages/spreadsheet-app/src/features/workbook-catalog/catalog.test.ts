@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { exchangeExportXlsx } from '../xlsx';
-import { WorkspacePersistence } from '../persistence';
+import { WorkspaceMemoryCoordinator, WorkspacePersistence } from '../persistence';
 import { LocalDataBlockStore } from '../persistence';
 import { computeBinaryChecksum } from '../persistence/checksum';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
@@ -14,7 +14,7 @@ import type { WorkbookCatalogRemoteClient } from './types';
 
 function service(name: string): WorkbookCatalogService {
   return new WorkbookCatalogService({
-    persistence: new WorkspacePersistence({ databaseName: `catalog-${name}`, indexedDB: null }),
+    persistence: new WorkspacePersistence(),
     unitIdFactory: (() => {
       let sequence = 0;
       return () => `catalog-${name}-${++sequence}`;
@@ -25,7 +25,7 @@ function service(name: string): WorkbookCatalogService {
 describe('WorkbookCatalogService', () => {
   it('keeps resolution read-only and records MRU only after the session is ready', async () => {
     let now = new Date('2026-08-26T00:00:00.000Z');
-    const persistence = new WorkspacePersistence({ databaseName: 'catalog-resolution', indexedDB: null });
+    const persistence = new WorkspacePersistence();
     const catalog = new WorkbookCatalogService({ persistence, now: () => now });
     const created = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'resolution-unit') });
     const before = await persistence.store.open(created.unitId);
@@ -45,7 +45,7 @@ describe('WorkbookCatalogService', () => {
 
     await assert.rejects(
       () => catalog.resolve('unknown-unit'),
-      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'permission-denied',
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'memory-session-reset',
     );
     assert.equal((await catalog.resolve(existing.unitId)).unitId, existing.unitId);
   });
@@ -73,7 +73,10 @@ describe('WorkbookCatalogService', () => {
     assert.equal(restored.lifecycle, 'active');
     assert.equal((await catalog.list()).some((entry) => entry.unitId === created.unitId), true);
     await catalog.purge(created.unitId);
-    await assert.rejects(() => catalog.resolve(created.unitId), /not found/i);
+    await assert.rejects(
+      () => catalog.resolve(created.unitId),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'memory-session-reset',
+    );
   });
 
   it('imports XLSX as a new workbook and exports it through the same catalog boundary', async () => {
@@ -137,7 +140,7 @@ describe('WorkbookCatalogService', () => {
       checkpointWorkbook: async () => ({ created: true, snapshot: { snapshot: structuredClone(remoteSnapshot!), revision: 1 } }),
     };
     const catalog = new WorkbookCatalogService({
-      persistence: new WorkspacePersistence({ databaseName: 'catalog-sync', indexedDB: null }),
+      persistence: new WorkspacePersistence(),
       remote,
     });
     const local = await catalog.create({ destination: 'local', snapshot: createTemplateSnapshot('blank', 'offline-unit') });
@@ -170,8 +173,9 @@ describe('Workbook catalog state', () => {
       id: 'block-1', dataSourceId: 'source-1', startRow: 0, rowCount: 1,
       storageKey: 'source-1:block-1', checksum, byteLength: 10, encoding: 'columnar-v1' as const, revision: 1,
     });
-    const first = new LocalDataBlockStore({ databaseName: 'catalog-blocks', indexedDB: null, unitId: 'unit-a' });
-    const second = new LocalDataBlockStore({ databaseName: 'catalog-blocks', indexedDB: null, unitId: 'unit-b' });
+    const coordinator = new WorkspaceMemoryCoordinator();
+    const first = new LocalDataBlockStore(coordinator, 'unit-a');
+    const second = new LocalDataBlockStore(coordinator, 'unit-b');
     await first.put(ref(checksumA), bytesA);
     await second.put(ref(checksumB), bytesB);
     assert.deepEqual(new Uint8Array((await first.get(ref(checksumA)))!.bytes), new Uint8Array(bytesA));
@@ -180,8 +184,9 @@ describe('Workbook catalog state', () => {
 
   it('keeps sparse overlays isolated by workbook namespace', async () => {
     const overlay = { schema: 'SparseCellOverlayMetadata' as const, revision: 1, cells: [{ row: 0, column: 0, formula: '=1' }] };
-    const first = new LocalSparseOverlayStore({ databaseName: 'catalog-overlays', indexedDB: null, unitId: 'unit-a' });
-    const second = new LocalSparseOverlayStore({ databaseName: 'catalog-overlays', indexedDB: null, unitId: 'unit-b' });
+    const coordinator = new WorkspaceMemoryCoordinator();
+    const first = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-a' });
+    const second = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-b' });
     await first.put('source-1', 'block-1', overlay);
     assert.ok(await first.get('source-1', 'block-1', 1));
     assert.equal(await second.get('source-1', 'block-1', 1), null);

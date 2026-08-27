@@ -1,7 +1,11 @@
 {
   "name": "react-sheets-reimplementation",
+  "version": "1.0.0",
+  "description": "A local-first spreadsheet desktop application",
+  "author": "React Sheets",
   "private": true,
   "type": "module",
+  "main": "electron/main.mjs",
   "workspaces": [
     "apps/web",
     "packages/*"
@@ -13,16 +17,22 @@
     "dev": "npm run dev:web",
     "dev:web": "vite --config vite.config.ts --host 127.0.0.1 --port 4180",
     "build": "npm run typecheck && vite build --config vite.config.ts",
+    "desktop:dev": "npm run build && electron electron/main.mjs",
+    "desktop:dist": "npm run build && electron-builder --win nsis --x64",
+    "test:desktop": "node --test electron/desktop-config.test.mjs && node --check electron/main.mjs && node --check electron/preload.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate:contracts": "node ../contracts/generate-contracts.mjs",
     "check:contracts": "node tools/check-contracts.mjs",
     "check:mutation-registry": "node tools/check-mutation-registry.mjs",
-    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/formula-engine/src/defined-names.test.ts packages/formula-engine/src/recalculation-mode.test.ts packages/formula-engine/src/sheet-table-resolver.test.ts packages/formula-engine/src/functions/dynamic-array.test.ts packages/formula-engine/src/spill-resolver.test.ts packages/formula-engine/src/functions/extended-matrix.test.ts packages/render-engine/src/index.test.ts packages/sheet-features/src/index.test.ts packages/sheet-features/src/home-commands.test.ts packages/sheet-features/src/find-replace.test.ts packages/sheet-features/src/sheet-table-features.test.ts packages/sheet-features/src/outline-features.test.ts packages/sheet-features/src/m3-m4-data.test.ts packages/spreadsheet-app/src/features/drawing/drawing.test.ts packages/spreadsheet-app/src/application-drawing.test.ts packages/spreadsheet-app/src/application-chart.test.ts packages/spreadsheet-app/src/application-pivot.test.ts packages/spreadsheet-app/src/application-sparkline.test.ts packages/spreadsheet-app/src/application-review.test.ts packages/spreadsheet-app/src/application-permission.test.ts packages/spreadsheet-app/src/application-collaboration.test.ts packages/spreadsheet-app/src/application-history.test.ts packages/spreadsheet-app/src/application-persistence.test.ts packages/spreadsheet-app/src/features/history/replay.test.ts packages/spreadsheet-app/src/features/persistence/storage.test.ts packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts packages/spreadsheet-app/src/application-xlsx.test.ts packages/spreadsheet-app/src/features/print/layout.test.ts packages/spreadsheet-app/src/application-print.test.ts packages/spreadsheet-app/src/features/query/runtime.test.ts packages/spreadsheet-app/src/application-query.test.ts packages/spreadsheet-app/src/features/automation/runtime.test.ts packages/spreadsheet-app/src/application-automation.test.ts packages/spreadsheet-app/src/features/extended/runtime.test.ts packages/spreadsheet-app/src/application-extended.test.ts packages/spreadsheet-app/src/application-core-editing.test.ts packages/spreadsheet-app/src/clipboard-browser.test.ts packages/spreadsheet-app/src/selection-service.test.ts packages/spreadsheet-app/src/application-formula.test.ts packages/spreadsheet-app/src/application-data-objects.test.ts packages/spreadsheet-app/src/application-data-tools.test.ts packages/spreadsheet-app/src/features/sparkline/helpers.test.ts packages/spreadsheet-app/src/features/review/helpers.test.ts packages/spreadsheet-app/src/features/permission/policy.test.ts packages/spreadsheet-app/src/collaboration/helpers.test.ts packages/spreadsheet-app/src/features/review/review.test.ts packages/spreadsheet-app/src/features/find-replace/commands.test.ts packages/number-format/src/index.test.ts packages/core-model/src/structure.test.ts packages/core-model/src/data-transform.test.ts packages/spreadsheet-app/src/permission-service.test.ts packages/spreadsheet-app/src/collaboration/ot-rebase.test.ts packages/exchange-excel-ooxml/src/date-system.test.ts packages/exchange-excel-ooxml/src/exchange-excel-ooxml.test.ts packages/formula-engine/src/calculation-worker-entry.test.ts packages/spreadsheet-app/src/features/persistence/runtime.test.ts packages/spreadsheet-app/src/features/pivot/feature.test.ts packages/spreadsheet-app/src/features/pivot/projection.test.ts packages/spreadsheet-app/src/features/pivot/block-source.test.ts packages/spreadsheet-app/src/features/data-source/codec.test.ts packages/spreadsheet-app/src/features/data-source/content-query.test.ts packages/spreadsheet-app/src/features/data-source/import.test.ts packages/spreadsheet-app/src/features/data-source/overlay-store.test.ts packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts packages/spreadsheet-app/src/ui-command-catalog/index.test.ts packages/spreadsheet-app/src/features/sparkline/commands.test.ts packages/spreadsheet-app/src/features/chart/chart.test.ts apps/web/src/components/insert-ribbon-catalog.test.ts apps/web/src/components/home/home-localization.test.ts apps/web/src/components/canvas/drawing-renderers.test.ts apps/web/src/components/pivot/PivotSlicer.test.ts apps/web/src/components/FilterPopover.test.ts apps/web/src/editor/column-dimension-controller.test.ts",
+    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/formula-engine/src/defined-names.test.ts packages/formula-engine/src/recalculation-mode.test.ts packages/formula-engine/src/sheet-table-resolver.test.ts packages/formula-engine/src/functions/dynamic-array.test.ts packages/formula-engine/src/spill-resolver.test.ts packages/formula-engine/src/functions/extended-matrix.test.ts packages/render-engine/src/index.test.ts packages/sheet-features/src/index.test.ts packages/sheet-features/src/home-commands.test.ts packages/sheet-features/src/find-replace.test.ts packages/sheet-features/src/sheet-table-features.test.ts packages/sheet-features/src/outline-features.test.ts packages/sheet-features/src/m3-m4-data.test.ts packages/spreadsheet-app/src/features/drawing/drawing.test.ts packages/spreadsheet-app/src/application-drawing.test.ts packages/spreadsheet-app/src/application-chart.test.ts packages/spreadsheet-app/src/application-pivot.test.ts packages/spreadsheet-app/src/application-sparkline.test.ts packages/spreadsheet-app/src/application-review.test.ts packages/spreadsheet-app/src/application-permission.test.ts packages/spreadsheet-app/src/application-collaboration.test.ts packages/spreadsheet-app/src/application-history.test.ts packages/spreadsheet-app/src/application-persistence.test.ts packages/spreadsheet-app/src/features/history/replay.test.ts packages/spreadsheet-app/src/features/persistence/storage.test.ts packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts packages/spreadsheet-app/src/application-xlsx.test.ts packages/spreadsheet-app/src/features/print/layout.test.ts packages/spreadsheet-app/src/application-print.test.ts packages/spreadsheet-app/src/features/query/runtime.test.ts packages/spreadsheet-app/src/application-query.test.ts packages/spreadsheet-app/src/features/extended/runtime.test.ts packages/spreadsheet-app/src/application-extended.test.ts packages/spreadsheet-app/src/application-core-editing.test.ts packages/spreadsheet-app/src/clipboard-browser.test.ts packages/spreadsheet-app/src/selection-service.test.ts packages/spreadsheet-app/src/application-formula.test.ts packages/spreadsheet-app/src/application-data-objects.test.ts packages/spreadsheet-app/src/application-data-tools.test.ts packages/spreadsheet-app/src/features/sparkline/helpers.test.ts packages/spreadsheet-app/src/features/review/helpers.test.ts packages/spreadsheet-app/src/features/permission/policy.test.ts packages/spreadsheet-app/src/collaboration/helpers.test.ts packages/spreadsheet-app/src/features/review/review.test.ts packages/spreadsheet-app/src/features/find-replace/commands.test.ts packages/number-format/src/index.test.ts packages/core-model/src/structure.test.ts packages/core-model/src/data-transform.test.ts packages/spreadsheet-app/src/permission-service.test.ts packages/spreadsheet-app/src/collaboration/ot-rebase.test.ts packages/exchange-excel-ooxml/src/date-system.test.ts packages/exchange-excel-ooxml/src/exchange-excel-ooxml.test.ts packages/formula-engine/src/calculation-worker-entry.test.ts packages/spreadsheet-app/src/features/persistence/runtime.test.ts packages/spreadsheet-app/src/features/pivot/feature.test.ts packages/spreadsheet-app/src/features/pivot/projection.test.ts packages/spreadsheet-app/src/features/pivot/block-source.test.ts packages/spreadsheet-app/src/features/data-source/codec.test.ts packages/spreadsheet-app/src/features/data-source/content-query.test.ts packages/spreadsheet-app/src/features/data-source/import.test.ts packages/spreadsheet-app/src/features/data-source/overlay-store.test.ts packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts packages/spreadsheet-app/src/ui-command-catalog/index.test.ts packages/spreadsheet-app/src/features/sparkline/commands.test.ts packages/spreadsheet-app/src/features/chart/chart.test.ts apps/web/src/components/insert-ribbon-catalog.test.ts apps/web/src/components/home-ribbon-layout.test.ts apps/web/src/components/home/home-localization.test.ts apps/web/src/components/canvas/drawing-renderers.test.ts apps/web/src/components/pivot/PivotSlicer.test.ts apps/web/src/components/FilterPopover.test.ts apps/web/src/editor/column-dimension-controller.test.ts",
+    "test:pointer-gesture": "tsx --test packages/ui-system/src/pointer-gesture-owner.test.ts apps/web/src/components/canvas/dimension-resize-gesture.test.ts apps/web/src/components/canvas/sheet-extent-growth.test.ts",
     "test:gantt": "tsx --test packages/spreadsheet-app/src/features/gantt/projection.test.ts packages/sheet-features/src/index.test.ts",
+    "test:ui-icons": "tsx --test packages/ui-system/src/Icon.test.tsx",
     "test:pivot-source-picker": "tsx --test apps/web/src/editor/command-controller.test.ts",
     "test:report": "tsx --test packages/spreadsheet-app/src/features/report/projection.test.ts packages/sheet-features/src/index.test.ts",
     "test:insert": "tsx --test packages/spreadsheet-app/src/features/insert/commands.test.ts",
     "test:pivot-field-pane": "tsx --test apps/web/src/components/pivot/pivot-field-pane-layout.test.ts",
+    "test:performance": "tsx --test packages/spreadsheet-app/src/features/pivot/performance.test.ts packages/spreadsheet-app/src/features/xlsx/performance.test.ts",
     "test:xlsx-metrics": "tsx --test packages/exchange-excel-ooxml/src/ooxml-metrics.test.ts",
     "e2e:provenance": "tsx tools/e2e-provenance.ts write",
     "test:e2e-provenance": "tsx --test tools/e2e-provenance.test.ts",
@@ -49,10 +59,42 @@
     "@types/react": "19.2.8",
     "@types/react-dom": "19.2.3",
     "autoprefixer": "10.4.21",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "postcss": "8.5.26",
     "tailwindcss": "3.4.17",
     "tsx": "4.23.12",
     "typescript": "6.0.3",
     "vite": "6.4.3"
+  },
+  "build": {
+    "appId": "local.luckysheet.react.sheets",
+    "productName": "React Sheets",
+    "asar": true,
+    "directories": {
+      "output": "dist/desktop"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/web/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "React-Sheets-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "React Sheets"
+    }
   }
 }

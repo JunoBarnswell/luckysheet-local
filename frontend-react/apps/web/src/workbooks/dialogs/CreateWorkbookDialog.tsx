@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Dialog, LocationPicker, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
+import { Button, Dialog, LocationPicker, Stack, StatePanel, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 
 export interface CreateWorkbookDialogValue {
   name: string;
@@ -11,12 +11,26 @@ export interface CreateWorkbookDialogProps {
   defaultName?: string;
   locationOptions: readonly LocationOption[];
   defaultLocationId?: string;
+  error?: string;
+  errorRecovery?: string;
   onClose: () => void;
   onSubmit: (value: CreateWorkbookDialogValue) => void;
+  onRetryStorage?: () => void;
   submitting?: boolean;
 }
 
-export function CreateWorkbookDialog({ open, defaultName = '未命名工作簿', locationOptions, defaultLocationId, onClose, onSubmit, submitting = false }: CreateWorkbookDialogProps) {
+export function CreateWorkbookDialog({
+  open,
+  defaultName = '未命名工作簿',
+  locationOptions,
+  defaultLocationId,
+  error,
+  errorRecovery,
+  onClose,
+  onSubmit,
+  onRetryStorage,
+  submitting = false,
+}: CreateWorkbookDialogProps) {
   const [name, setName] = useState(defaultName);
   const [locationId, setLocationId] = useState(defaultLocationId ?? locationOptions[0]?.id ?? '');
 
@@ -32,6 +46,8 @@ export function CreateWorkbookDialog({ open, defaultName = '未命名工作簿',
     onSubmit({ name: trimmedName, locationId });
   };
 
+  const errorDescription = errorRecovery ? `${error} ${errorRecovery}` : error;
+
   return (
     <Dialog
       closeLabel="关闭新建工作簿"
@@ -44,6 +60,15 @@ export function CreateWorkbookDialog({ open, defaultName = '未命名工作簿',
       testId="create-workbook-dialog"
     >
       <Stack gap="md">
+        {error ? (
+          <StatePanel
+            actionLabel={onRetryStorage ? '重试打开存储' : undefined}
+            description={errorDescription}
+            kind="error"
+            onAction={onRetryStorage}
+            title="无法创建工作簿"
+          />
+        ) : null}
         <Stack gap="xs">
           <Text as="label" htmlFor="workbook-name" size="sm" weight="medium">工作簿名称</Text>
           <TextInput autoFocus id="workbook-name" onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit(); }} value={name} />

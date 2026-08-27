@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { WorkbookSession } from './workbook-session';
@@ -50,7 +51,11 @@ describe('WorkbookSession collaboration integration', () => {
       mutations: [{
         id: 'cell.set',
         sheetId: 'sheet-1',
-        params: { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'remote' } },
+        params: createCellSetMutationParams(
+          workbook.getSheet('sheet-1'),
+          { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'remote' } },
+          'external-sync',
+        ),
         affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
       }],
       createdAt: new Date().toISOString(),

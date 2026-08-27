@@ -13,8 +13,11 @@ import {
   isRibbonCommandEnabled,
   RIBBON_COMMAND_CATALOG,
   RIBBON_GROUP_CATALOG,
+  RIBBON_LAYOUT_SPECS,
+  validateRibbonLayoutSpecs,
   type RibbonCommandActions,
   type RibbonCommandContext,
+  type RibbonLayoutNode,
 } from './index';
 
 function descriptor(commandId: string, params?: unknown): CommandDescriptor {
@@ -91,7 +94,6 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     cellStyle: {},
     actions,
     dispatchSessionIntent: () => undefined,
-    sampleAutomationScript: 'return 1;',
     ...overrides,
   };
 }
@@ -109,6 +111,10 @@ describe('Ribbon UI command catalog', () => {
         assert.equal(getRibbonGroupDefinition(placement.group).tab, placement.tab);
       }
     }
+  });
+
+  it('keeps every ribbon layout group and command placement resolvable', () => {
+    assert.deepEqual(validateRibbonLayoutSpecs(), []);
   });
 
   it('builds typed commands, callbacks and UI intents from one context', () => {
@@ -157,7 +163,7 @@ describe('Ribbon UI command catalog', () => {
     }
     assert.deepEqual(
       getRibbonSurfaces('home', 'styles', 'wide')
-        .filter((surface) => surface.menuId === 'control.cell-styles-menu')
+        .filter((surface) => surface.menuId === 'control.cell-styles-menu' && surface.commandId?.startsWith('cellStyle'))
         .map((surface) => surface.commandId),
       presets.map(([commandId]) => commandId),
     );
@@ -178,7 +184,10 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(getRibbonCommandDefinition('pivotFieldList').placements[0]?.tab, 'pivotAnalyze');
     assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').placements[0]?.tab, 'pivotDesign');
     assert.deepEqual(INSERT_RIBBON_SURFACES.find((surface) => surface.id === 'tables.slicer')?.commandId, 'pivotSlicer');
-    assert.deepEqual(getRibbonCommandDefinition('pivotSlicer').placements, [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }]);
+    assert.deepEqual(getRibbonCommandDefinition('pivotSlicer').placements, [
+      { tab: 'pivotAnalyze', group: 'pivotAnalyze' },
+      { tab: 'insert', group: 'insertTables' },
+    ]);
     for (const id of ['pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
       assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition(id), current), true, id);
       const result = buildRibbonCommand(id, current);
@@ -302,6 +311,67 @@ describe('Ribbon UI command catalog', () => {
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
   });
 
+  it('keeps the Home layout explicit and renders each visible surface exactly once', () => {
+    const collectSurfaceIds = (nodes: readonly RibbonLayoutNode[]): string[] => nodes.flatMap((node) => {
+      if (node.kind === 'surface') return [node.surfaceId];
+      if ('children' in node) return collectSurfaceIds(node.children);
+      return [];
+    });
+    const layout = RIBBON_LAYOUT_SPECS.home;
+    const layoutSurfaceIds = layout.groups.flatMap((group) => collectSurfaceIds(group.children));
+    const visibleSurfaceIds = [
+      'history.undo', 'history.redo',
+      'clipboard.paste', 'clipboard.cut', 'clipboard.copy', 'control.format-painter',
+      'control.font-family', 'control.font-size', 'control.font-increase', 'control.font-decrease', 'font.bold', 'font.italic',
+      'font.underline', 'font.strikethrough', 'control.font-borders-menu', 'control.fill-color', 'control.font-color',
+      'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
+      'alignment.center', 'alignment.right', 'alignment.wrap', 'control.merge-menu', 'control.orientation-menu',
+      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease',
+      'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
+      'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',
+      'control.auto-sum-menu', 'editing.fill-down', 'control.clear-menu', 'editing.sort', 'editing.find',
+    ];
+
+    assert.equal(new Set(layoutSurfaceIds).size, layoutSurfaceIds.length);
+    assert.deepEqual(new Set(layoutSurfaceIds), new Set(visibleSurfaceIds));
+    assert.deepEqual(layout.groups.find((group) => group.id === 'history')?.children[0], {
+      kind: 'row',
+      id: 'history.layout',
+      children: [
+        { kind: 'surface', id: 'history.undo', surfaceId: 'history.undo' },
+        { kind: 'surface', id: 'history.redo', surfaceId: 'history.redo' },
+      ],
+    });
+  });
+
+  it('keeps the Insert layout explicit in the historical group and surface order', () => {
+    const layout = RIBBON_LAYOUT_SPECS.insert;
+    assert.deepEqual(layout.groups.map((group) => group.id), [
+      'insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls',
+    ]);
+    const expectedSurfaceIds = [
+      ['sheets.table-sheet', 'sheets.gantt-sheet', 'sheets.report-sheet'],
+      ['tables.worksheet-table', 'tables.pivot', 'tables.slicer'],
+      ['charts.gallery', 'charts.barcode', 'charts.sparkline'],
+      ['data-charts.insert'],
+      ['illustrations.picture', 'illustrations.shape', 'illustrations.camera', 'illustrations.controls'],
+      ['links.hyperlink'],
+      ['controls.checkbox', 'controls.textbox'],
+    ];
+    assert.deepEqual(layout.groups.map((group) => {
+      const node = group.children[0];
+      assert.equal(node?.kind, 'row');
+      return node && 'children' in node ? node.children.map((child) => child.kind === 'surface' ? child.surfaceId : child.kind) : [];
+    }), expectedSurfaceIds);
+  });
+
+  it('uses SpreadJS Home appearances for history and fill-down', () => {
+    const surface = (id: string) => HOME_RIBBON_SURFACES.find((entry) => entry.id === id);
+    assert.equal(surface('history.undo')?.appearance, 'small');
+    assert.equal(surface('history.redo')?.appearance, 'small');
+    assert.equal(surface('editing.fill-down')?.appearance, 'tile');
+  });
+
   it('keeps the complete HOME surface set identical across responsive breakpoints', () => {
     const groups = ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'] as const;
     const breakpoints = ['wide', 'compact', 'narrow'] as const;
@@ -313,7 +383,7 @@ describe('Ribbon UI command catalog', () => {
       for (const surface of getRibbonSurfaces('home', group, 'wide')) {
         assert.equal(Boolean(surface.commandId) !== Boolean(surface.controlId), true, `${surface.id} must be command or control`);
         if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId), `${surface.id} has no command`);
-        if (surface.menuId) assert.ok(getRibbonSurfaces('home', group, 'wide').some((owner) => owner.id === surface.menuId), `${surface.id} has no menu owner`);
+        if (surface.menuId) assert.ok(HOME_RIBBON_SURFACES.some((owner) => owner.id === surface.menuId), `${surface.id} has no menu owner`);
       }
     }
   });
@@ -359,7 +429,7 @@ describe('Ribbon UI command catalog', () => {
     assert.deepEqual(buildRibbonCommand('indentIncrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 2 } } } });
     assert.deepEqual(buildRibbonCommand('indentDecrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 0 } } } });
     assert.deepEqual(getRibbonSurfaces('home', 'alignment', 'wide').filter((surface) => surface.menuId === 'control.alignment-menu').map((surface) => surface.commandId), [
-      'alignGeneral', 'alignCenterContinuous', 'alignJustify', 'alignDistributed', 'alignFill',
+      'alignGeneral', 'alignCenterContinuous', 'alignJustify', 'alignDistributed', 'alignFill', 'shrinkToFit', 'alignVerticalJustify', 'alignVerticalDistributed',
     ]);
   });
 });

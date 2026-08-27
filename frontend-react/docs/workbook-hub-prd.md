@@ -17,8 +17,8 @@ The application never keeps `Map<unitId, WorkbookSession>`. Opening another work
 ## Decisions
 
 - Web runtime: desktop-style chrome is visual only. Help, Settings and the file-center exit are real controls; OS window glyphs are decorative and non-interactive.
-- Identity: OIDC Authorization Code + PKCE. The browser obtains bearer tokens from `AuthSession`; no token is stored in a workbook, URL, or IndexedDB workbook record.
-- Storage: server state is authoritative for remote workbooks. IndexedDB is a per-workbook cache, pending-operation journal, local-only workspace store, and local XLSX artifact cache.
+- Identity: OIDC Authorization Code + PKCE. The browser obtains bearer tokens from `AuthSession`; no token is stored in a workbook, URL, or page-session memory record.
+- Storage: server state is authoritative for remote workbooks. Local-only workbooks, pending-operation journals, source blocks, overlays, assets, and native artifacts exist only in the current page-session memory and are cleared on reload or page close.
 - File domain: personal/team spaces and nested folders are first-class. Shared-with-me is a virtual view and never copies a workbook.
 - Permissions: Owner controls sharing, cross-space moves, trash and purge. Editor may rename and move inside a permitted space. Commenter/Viewer are read-only. Every accessible role can export a copy.
 - XLSX: importing always creates a new canonical workbook identity. The original XLSX package is stored locally and, for remote workbooks, in a server-owned LOB record. Export uses the latest snapshot plus that artifact.

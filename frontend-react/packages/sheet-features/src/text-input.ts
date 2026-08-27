@@ -82,9 +82,9 @@ export function createCellInputInterpretationContext(
 ): CellInputInterpretationContext {
   const cultureId = workbook.collationContext.cultureId.trim();
   if (!cultureId) throw new Error('Workbook culture is required for cell input interpretation');
-  const parts = new Intl.NumberFormat(cultureId).formatToParts(12345.6);
-  const decimalSeparator = parts.find((part) => part.type === 'decimal')?.value;
-  const groupSeparator = parts.find((part) => part.type === 'group')?.value;
+  const parts = cultureId === 'invariant' ? undefined : new Intl.NumberFormat(cultureId).formatToParts(12345.6);
+  const decimalSeparator = cultureId === 'invariant' ? '.' : parts?.find((part) => part.type === 'decimal')?.value;
+  const groupSeparator = cultureId === 'invariant' ? ',' : parts?.find((part) => part.type === 'group')?.value;
   if (!decimalSeparator || !groupSeparator || decimalSeparator === groupSeparator) {
     throw new Error(`Workbook culture has no stable numeric separators: ${cultureId}`);
   }
@@ -244,7 +244,8 @@ function parseCultureNumber(text: string, context: CellInputInterpretationContex
   if (!pattern.test(text)) return undefined;
   const normalized = text.split(context.groupSeparator).join('').replace(context.decimalSeparator, '.');
   const value = Number(normalized);
-  return Number.isFinite(value) ? value : undefined;
+  if (!Number.isFinite(value)) throw new Error(`Numeric input is not finite: ${text}`);
+  return value;
 }
 
 function parseFraction(text: string, context: CellInputInterpretationContext): number | undefined {

@@ -17,9 +17,10 @@ import type {
   GanttSheetDefinition,
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
-import { isAutoSumDescriptor, type AutoSumDescriptor } from './auto-sum-contract';
 import {
   clearFormulaProvenance,
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
   StructuralTransform,
   normalizeDefinedNameModel,
   normalizeFontFamily,
@@ -41,6 +42,7 @@ import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
+import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -77,56 +79,7 @@ export * from './find-replace';
 export * from './cell-template-commands';
 export * from './clear-planner';
 export * from './data-region-context';
-
-
-export type CellEntryIntentKind =
-  | 'direct-entry'
-  | 'paste'
-  | 'fill'
-  | 'formula-result'
-  | 'query-load'
-  | 'script'
-  | 'external-sync'
-  | 'restore';
-
-export type CellEntryValidationStatus = 'accepted' | 'confirmed' | 'rejected' | 'not-applicable';
-
-export interface CellEntryIntent {
-  kind: CellEntryIntentKind;
-  target: {
-    sheetId: string;
-    row: number;
-    column: number;
-  } | {
-    sheetId: string;
-    startRow: number;
-    endRow: number;
-    startColumn: number;
-    endColumn: number;
-  };
-  candidate?: CellData | CellData[][];
-  validationDecision: {
-    status: CellEntryValidationStatus;
-    ruleId?: string;
-    alertStyle?: 'stop' | 'warning' | 'information';
-  };
-  /** Present only for formula-result writes planned by formula.autosum. */
-  autoSum?: AutoSumDescriptor;
-}
-
-export function createCellEntryIntent(
-  kind: CellEntryIntentKind,
-  target: CellEntryIntent['target'],
-  candidate?: CellData | CellData[][],
-  validationDecision: CellEntryIntent['validationDecision'] = { status: 'not-applicable' },
-): CellEntryIntent {
-  return {
-    kind,
-    target: structuredClone(target),
-    ...(candidate === undefined ? {} : { candidate: structuredClone(candidate) }),
-    validationDecision: structuredClone(validationDecision),
-  };
-}
+export * from './cell-write-authority';
 
 
 export interface SetCellValueParams {
@@ -134,7 +87,6 @@ export interface SetCellValueParams {
   row: number;
   column: number;
   value: CellData;
-  entryIntent: CellEntryIntent;
 }
 
 /** Host/UI text commit contract. The command owns parsing, validation and
@@ -172,7 +124,6 @@ export interface SetRangeValuesParams {
   startRow: number;
   startColumn: number;
   values: CellData[][];
-  entryIntent: CellEntryIntent;
 }
 
 interface ClearRangeRestoreParams {
@@ -186,6 +137,12 @@ export interface AddSheetParams {
   name: string;
   rowCount?: number;
   columnCount?: number;
+}
+
+export interface SheetExtentParams {
+  sheetId: string;
+  rowCount: number;
+  columnCount: number;
 }
 
 export interface RenameSheetParams {
@@ -260,6 +217,8 @@ export interface SetRangeStyleParams {
   sheetId: string;
   range: RangeRef;
   style: Partial<CellStyle>;
+  /** Canonical authored number format stored on CellData. */
+  numberFormat?: string;
   /** Replace the authored style instead of merging a patch. */
   replaceStyle?: boolean;
   /** Remove the top-level number format when the source has no format. */
@@ -293,7 +252,7 @@ export interface AddDataValidationParams {
   rule: DataValidationRule;
 }
 
-function cellRange(params: SetCellValueParams): RangeRef[] {
+function cellRange(params: Pick<SetCellValueParams, 'sheetId' | 'row' | 'column'>): RangeRef[] {
   return [
     {
       sheetId: params.sheetId,
@@ -342,36 +301,12 @@ function isCellData(value: unknown): value is CellData {
     && ('value' in value || typeof value.formula === 'string');
 }
 
-function isCellEntryIntent(value: unknown): value is CellEntryIntent {
-  if (!isRecord(value) || !['direct-entry', 'paste', 'fill', 'formula-result', 'query-load', 'script', 'external-sync', 'restore'].includes(String(value.kind))) return false;
-  if (!isRecord(value.target) || typeof value.target.sheetId !== 'string') return false;
-  const target = value.target;
-  const isCellTarget = Number.isSafeInteger(target.row) && Number(target.row) >= 0
-    && Number.isSafeInteger(target.column) && Number(target.column) >= 0;
-  const isRangeTarget = Number.isSafeInteger(target.startRow) && Number(target.startRow) >= 0
-    && Number.isSafeInteger(target.endRow) && Number(target.endRow) >= Number(target.startRow)
-    && Number.isSafeInteger(target.startColumn) && Number(target.startColumn) >= 0
-    && Number.isSafeInteger(target.endColumn) && Number(target.endColumn) >= Number(target.startColumn);
-  if (!isCellTarget && !isRangeTarget) return false;
-  if (value.candidate !== undefined && !isCellData(value.candidate)
-    && !(Array.isArray(value.candidate) && value.candidate.every((row) => Array.isArray(row) && row.every(isCellData)))) return false;
-  if (!isRecord(value.validationDecision) || !['accepted', 'confirmed', 'rejected', 'not-applicable'].includes(String(value.validationDecision.status))) return false;
-  return (value.validationDecision.ruleId === undefined || typeof value.validationDecision.ruleId === 'string')
-    && (value.validationDecision.alertStyle === undefined || ['stop', 'warning', 'information'].includes(String(value.validationDecision.alertStyle)))
-    && (value.autoSum === undefined || (value.kind === 'formula-result' && isAutoSumDescriptor(value.autoSum)));
-}
-
 function isCellSetMutation(value: unknown): value is SetCellValueParams {
   return isRecord(value)
     && typeof value.sheetId === 'string'
     && Number.isInteger(value.row) && Number(value.row) >= 0
     && Number.isInteger(value.column) && Number(value.column) >= 0
-    && isCellData(value.value)
-    && isCellEntryIntent(value.entryIntent)
-    && value.entryIntent.target.sheetId === value.sheetId
-    && ('row' in value.entryIntent.target
-      ? value.entryIntent.target.row === value.row && value.entryIntent.target.column === value.column
-      : false);
+    && isCellData(value.value);
 }
 
 function isCellRestoreMutation(value: unknown): value is { sheetId: string; row: number; column: number; previous?: CellData } {
@@ -404,6 +339,13 @@ function isSheetIdMutation(value: unknown): value is { id: string } {
   return isRecord(value) && typeof value.id === 'string' && value.id.length > 0;
 }
 
+function isSheetExtentMutation(value: unknown): value is SheetExtentParams {
+  return isRecord(value)
+    && typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(value.rowCount) && Number(value.rowCount) > 0 && Number(value.rowCount) <= MAX_SHEET_ROW_COUNT
+    && Number.isSafeInteger(value.columnCount) && Number(value.columnCount) > 0 && Number(value.columnCount) <= MAX_SHEET_COLUMN_COUNT;
+}
+
 function isSheetRestoreMutation(value: unknown): value is { sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number } {
   return isRecord(value) && isRecord(value.sheet) && typeof value.sheet.id === 'string' && typeof value.sheet.name === 'string'
     && (value.index === undefined || (Number.isSafeInteger(value.index) && Number(value.index) >= 0));
@@ -433,33 +375,8 @@ function isSetRangeMutation(value: unknown): value is SetRangeValuesParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string'
     || !Number.isInteger(value.startRow) || Number(value.startRow) < 0
     || !Number.isInteger(value.startColumn) || Number(value.startColumn) < 0
-    || !Array.isArray(value.values)
-    || !isCellEntryIntent(value.entryIntent)
-    || value.entryIntent.target.sheetId !== value.sheetId
-    || ('row' in value.entryIntent.target)) return false;
+    || !Array.isArray(value.values)) return false;
   return value.values.every((row) => Array.isArray(row) && row.every(isCellData));
-}
-
-function assertCellEntryIntent(params: SetCellValueParams, sheet: WorksheetModel): void {
-  const intent = params.entryIntent;
-  if (intent.kind !== 'direct-entry') return;
-  if (!intent.candidate || Array.isArray(intent.candidate) || JSON.stringify(intent.candidate) !== JSON.stringify(params.value)) {
-    throw new Error('CELL_ENTRY_INTENT_MISMATCH: direct-entry candidate does not match cell.set value');
-  }
-  const validation = params.value.formula
-    ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
-    : validateDataInput(sheet, params.row, params.column, params.value.value);
-  if (intent.validationDecision.ruleId !== undefined && intent.validationDecision.ruleId !== validation.ruleId) {
-    throw new Error('CELL_ENTRY_VALIDATION_STALE: validation rule changed before direct entry commit');
-  }
-  if (!validation.valid) {
-    if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
-    if (intent.validationDecision.status !== 'confirmed') {
-      throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
-    }
-  } else if (!['accepted', 'confirmed'].includes(intent.validationDecision.status)) {
-    throw new Error('CELL_ENTRY_DECISION_INVALID: accepted direct entry decision is required');
-  }
 }
 
 function setRangeAffectedRanges(value: SetRangeValuesParams): RangeRef[] {
@@ -760,6 +677,76 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
   registerCellTemplateCommands(runtime);
+
+  runtime.registry.registerMutation<SheetExtentParams>({
+    id: 'sheet.extent.grow',
+    handler: (item, context) => {
+      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.grow mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      if (item.params.rowCount < sheet.rowCount || item.params.columnCount < sheet.columnCount) {
+        throw new Error('Sheet extent growth cannot shrink a worksheet');
+      }
+      sheet.rowCount = item.params.rowCount;
+      sheet.columnCount = item.params.columnCount;
+    },
+    metadata: {
+      schema: { name: 'SheetExtentGrow', validate: isSheetExtentMutation },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.extent.restore'],
+    },
+  });
+  runtime.registry.registerMutation<SheetExtentParams>({
+    id: 'sheet.extent.restore',
+    handler: (item, context) => {
+      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.restore mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      sheet.rowCount = item.params.rowCount;
+      sheet.columnCount = item.params.columnCount;
+    },
+    metadata: {
+      schema: { name: 'SheetExtentRestore', validate: isSheetExtentMutation },
+      permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.extent.grow'],
+    },
+  });
+  runtime.registry.registerCommand<SheetExtentParams>({
+    id: 'sheet.extent.grow',
+    history: 'none',
+    execute: (params, context) => {
+      if (!isSheetExtentMutation(params)) throw new Error('Invalid sheet.extent.grow command payload');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const next = {
+        sheetId: params.sheetId,
+        rowCount: Math.max(sheet.rowCount, params.rowCount),
+        columnCount: Math.max(sheet.columnCount, params.columnCount),
+      };
+      if (next.rowCount === sheet.rowCount && next.columnCount === sheet.columnCount) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const previous = { sheetId: params.sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      context.applyMutation({
+        id: 'sheet.extent.grow',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: next,
+        affectedRanges: [],
+        inverse: [{
+          id: 'sheet.extent.restore',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: previous,
+          affectedRanges: [],
+        }],
+        apply: () => {
+          sheet.rowCount = next.rowCount;
+          sheet.columnCount = next.columnCount;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',
@@ -1117,18 +1104,18 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
 
   // 2. Cell mutations & commands
-  runtime.registry.registerMutation<SetCellValueParams>({
+  runtime.registry.registerMutation<CellSetMutationParams>({
     id: 'cell.set',
     handler: (item, context) => {
-      if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
+      if (!isCellSetMutationParams(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
-      assertCellEntryIntent(params, context.workbook.getSheet(params.sheetId));
+      assertCellWriteAuthority(params, context.workbook.getSheet(params.sheetId));
       const value = clearFormulaProvenance(params.value);
       assertCanonicalCheckboxCell(value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
     },
     metadata: {
-      schema: { name: 'SetCellValue', validate: isCellSetMutation },
+      schema: { name: 'SetCellValue', validate: isCellSetMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: cellRange, mode: 'exact' },
       inverseIds: ['cell.restore'],
@@ -1144,7 +1131,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     metadata: {
       schema: { name: 'RestoreCell', validate: isCellRestoreMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => cellRange({ ...params, value: { value: null } }), mode: 'declared' },
+      affectedRanges: { resolve: cellRange, mode: 'declared' },
       inverseIds: ['cell.set'],
     },
   });
@@ -1154,11 +1141,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isCellSetMutation(params)) throw new Error('Invalid cell.set command payload');
       const sheet = context.workbook.getSheet(params.sheetId);
-      assertCellEntryIntent(params, sheet);
       const previous = sheet.cells.get(params.row, params.column);
       const affectedRanges = cellRange(params);
       const value = clearFormulaProvenance(params.value);
-      const canonicalParams = { ...params, value };
+      const canonicalParams = createCellSetMutationParams(sheet, { ...params, value }, 'script');
       context.applyMutation({
         id: 'cell.set',
         unitId: context.workbook.unitId,
@@ -1207,36 +1193,21 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
         }
       }
-      const validation = next.formula
-        ? { valid: true, ruleId: undefined, alertStyle: undefined }
-        : validateDataInput(sheet, params.row, params.column, next.value);
-      const entryIntent = createCellEntryIntent(
-        'direct-entry',
-        { sheetId: params.sheetId, row: params.row, column: params.column },
-        next,
-        {
-          status: validation.valid ? 'accepted' : 'confirmed',
-          ...(validation.ruleId ? { ruleId: validation.ruleId } : {}),
-          ...(validation.alertStyle ? { alertStyle: validation.alertStyle } : {}),
-        },
-      );
       const affectedRanges = cellRange({
         sheetId: params.sheetId,
         row: params.row,
         column: params.column,
-        value: next,
       });
       context.applyMutation({
         id: 'cell.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params: {
+        params: createCellSetMutationParams(sheet, {
           sheetId: params.sheetId,
           row: params.row,
           column: params.column,
           value: structuredClone(next),
-          entryIntent,
-        },
+        }, 'direct-entry', params.validationConfirmation === true),
         affectedRanges,
         inverse: [{
           id: 'cell.restore',
@@ -1262,7 +1233,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSetRangeMutation(item.params)) throw new Error('Invalid range.set mutation payload');
       const params = item.params;
-      if (params.entryIntent.kind === 'direct-entry') throw new Error('RANGE_DIRECT_ENTRY_FORBIDDEN: use sheet.cell.commitText for validated direct entry');
       const sheet = context.workbook.getSheet(params.sheetId);
       for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
         const rowValues = params.values[rowOffset] ?? [];
@@ -1284,7 +1254,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.set',
     execute: (params, context) => {
       if (!isSetRangeMutation(params)) throw new Error('Invalid range.set command payload');
-      if (params.entryIntent.kind === 'direct-entry') throw new Error('RANGE_DIRECT_ENTRY_FORBIDDEN: use sheet.cell.commitText for validated direct entry');
       const sheet = context.workbook.getSheet(params.sheetId);
       const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
       const writeRange = setRangeAffectedRanges(params)[0];
@@ -1334,7 +1303,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         id: 'range.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params: { ...params, values },
+        params: { sheetId: params.sheetId, startRow: params.startRow, startColumn: params.startColumn, values },
         affectedRanges,
         inverse: previous.map((item) => ({
           id: 'cell.restore',
@@ -1421,7 +1390,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           } else if (Object.keys(style).length > 0) {
             next.style = { ...(current.style ?? {}), ...style };
           }
-          if (style.numberFormat !== undefined) next.numberFormat = style.numberFormat;
+          const numberFormat = 'numberFormat' in params && typeof params.numberFormat === 'string'
+            ? params.numberFormat
+            : style.numberFormat;
+          if (numberFormat !== undefined) next.numberFormat = numberFormat;
           if ('clearNumberFormat' in params && params.clearNumberFormat) delete next.numberFormat;
           if ('replaceStyle' in params && params.replaceStyle) delete next.displayValue;
           sheet.cells.set(row, column, next);
@@ -2213,7 +2185,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
             params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.cell },
-            affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column, value: entry.cell }),
+            affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
         apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
@@ -2286,7 +2258,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
             params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.cell },
-            affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column, value: entry.cell }),
+            affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
         apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
@@ -2325,18 +2297,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         startRow: params.row,
         startColumn: params.column,
         values,
-        entryIntent: {
-          kind: 'script',
-          target: {
-            sheetId: params.sheetId,
-            startRow: params.row,
-            endRow: params.row,
-            startColumn: params.column,
-            endColumn: params.column + Math.max(0, values[0]!.length - 1),
-          },
-          candidate: structuredClone(values),
-          validationDecision: { status: 'not-applicable' },
-        },
       });
     },
   });

@@ -13,6 +13,9 @@ import {
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
 import type { AssetRef } from '@react-sheets/core-model';
+import { cellRenderFont, resolveCellTextLayout } from './cell-text-layout';
+
+export { cellRenderFont } from './cell-text-layout';
 
 export type AssetUrlResolver = (asset: AssetRef) => Promise<string>;
 
@@ -45,46 +48,101 @@ function shouldDrawRect(rects: readonly Rect[] | undefined, rect: Rect): boolean
     && candidate.y + candidate.height > rect.y);
 }
 
+function intersectCellRanges(left: CellRange, right: CellRange): CellRange | null {
+  const startRow = Math.max(left.startRow, right.startRow);
+  const endRow = Math.min(left.endRow, right.endRow);
+  const startColumn = Math.max(left.startColumn, right.startColumn);
+  const endColumn = Math.min(left.endColumn, right.endColumn);
+  return startRow <= endRow && startColumn <= endColumn
+    ? { startRow, endRow, startColumn, endColumn }
+    : null;
+}
+
+/**
+ * Converts incremental content rectangles into the exact model ranges that
+ * need painting.  Scanning the entire visible range and filtering every cell
+ * afterwards turns a one-row scroll strip into a viewport-sized hot loop.
+ */
+function resolveDrawRanges(
+  skeleton: SheetSkeleton,
+  visibleRange: CellRange,
+  drawRects: readonly Rect[] | undefined,
+): CellRange[] {
+  if (!drawRects || drawRects.length === 0) return [visibleRange];
+  const ranges: CellRange[] = [];
+  for (const rect of drawRects) {
+    const range = skeleton.getVisibleRange(rect);
+    if (!range) continue;
+    const clipped = intersectCellRanges(range, visibleRange);
+    if (clipped) ranges.push(clipped);
+  }
+  return ranges;
+}
+
+function forEachCellInRanges(
+  skeleton: SheetSkeleton,
+  ranges: readonly CellRange[],
+  visit: (address: CellAddress) => void,
+): void {
+  if (ranges.length === 0) return;
+  const seen = ranges.length > 1 ? new Set<string>() : null;
+  for (const range of ranges) {
+    for (let row = range.startRow; row <= range.endRow; row++) {
+      if (skeleton.isRowHidden(row)) continue;
+      for (let column = range.startColumn; column <= range.endColumn; column++) {
+        if (skeleton.isColumnHidden(column)) continue;
+        if (seen) {
+          const key = `${row}:${column}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        visit({ row, column });
+      }
+    }
+  }
+}
+
 // ---------------- 网格层 ----------------
 
 export function drawGridLayer(options: PaneDrawOptions): void {
   const { context, skeleton, visibleRange, theme, pane, drawRects } = options;
   const background = { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height };
   context.fillStyle = theme.canvasBackground;
-  context.fillRect(background.x, background.y, background.width, background.height);
+  // During an incremental scroll the preserved bitmap remains valid. Filling
+  // the whole pane here would erase that bitmap before the exposed strip is
+  // redrawn, turning every drag frame back into a full repaint.
+  const backgrounds = drawRects && drawRects.length > 0 ? drawRects : [background];
+  for (const rect of backgrounds) context.fillRect(rect.x, rect.y, rect.width, rect.height);
   if (!visibleRange) return;
 
   // 网格线属于整张可见网格，而不是 occupied cells。先收集可见合并区域，
   // 再逐个空白/有值单元格绘制四条边，确保空白单元格仍保持完整网格。
   // 旧实现只在每一行/列的第一个单元格后 break，导致内容区只剩 A 列和首行的线。
-  const merges = collectVisibleMerges(options, visibleRange);
+  const drawRanges = resolveDrawRanges(skeleton, visibleRange, drawRects);
+  const merges = collectVisibleMerges(options, drawRanges);
   context.strokeStyle = theme.gridLine;
   context.lineWidth = 1;
   context.beginPath();
-  for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-    if (skeleton.isRowHidden(row)) continue;
-    for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-      if (skeleton.isColumnHidden(column)) continue;
-      const cell = options.cellProvider({ row, column });
-      if (cell?.merge) continue;
-      const x = skeleton.getColumnLeft(column);
-      const y = skeleton.getRowTop(row);
-      const width = skeleton.getColumnWidth(column);
-      const height = skeleton.getRowHeight(row);
-      const rect = { x, y, width, height };
-      if (!shouldDrawRect(drawRects, rect)) continue;
-      const right = x + width;
-      const bottom = y + height;
-      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
-      context.moveTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
-      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
-      context.moveTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
-      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
-    }
-  }
+  forEachCellInRanges(skeleton, drawRanges, ({ row, column }) => {
+    const cell = options.cellProvider({ row, column });
+    if (cell?.merge) return;
+    const x = skeleton.getColumnLeft(column);
+    const y = skeleton.getRowTop(row);
+    const width = skeleton.getColumnWidth(column);
+    const height = skeleton.getRowHeight(row);
+    const rect = { x, y, width, height };
+    if (!shouldDrawRect(drawRects, rect)) return;
+    const right = x + width;
+    const bottom = y + height;
+    context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+    context.moveTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+  });
 
   // 非锚点单元格被跳过后，合并区域的外框由这里一次性绘制；内部不生成线。
   for (const merge of merges.values()) {
@@ -108,7 +166,6 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   }
 
   context.stroke();
-  void background;
 }
 
 interface VisibleMerge {
@@ -118,23 +175,21 @@ interface VisibleMerge {
   endColumn: number;
 }
 
-function collectVisibleMerges(options: PaneDrawOptions, range: CellRange): Map<string, VisibleMerge> {
+function collectVisibleMerges(options: PaneDrawOptions, ranges: readonly CellRange[]): Map<string, VisibleMerge> {
   const merges = new Map<string, VisibleMerge>();
   const { cellProvider } = options;
-  for (let row = range.startRow; row <= range.endRow; row++) {
-    for (let column = range.startColumn; column <= range.endColumn; column++) {
-      const merge = cellProvider({ row, column })?.merge;
-      if (!merge) continue;
-      const value = {
-        startRow: merge.startRow,
-        endRow: merge.endRow,
-        startColumn: merge.startColumn,
-        endColumn: merge.endColumn,
-      };
-      const key = `${value.startRow}:${value.startColumn}:${value.endRow}:${value.endColumn}`;
-      merges.set(key, value);
-    }
-  }
+  forEachCellInRanges(options.skeleton, ranges, ({ row, column }) => {
+    const merge = cellProvider({ row, column })?.merge;
+    if (!merge) return;
+    const value = {
+      startRow: merge.startRow,
+      endRow: merge.endRow,
+      startColumn: merge.startColumn,
+      endColumn: merge.endColumn,
+    };
+    const key = `${value.startRow}:${value.startColumn}:${value.endRow}:${value.endColumn}`;
+    merges.set(key, value);
+  });
   return merges;
 }
 
@@ -145,18 +200,33 @@ export function drawCellLayer(options: PaneDrawOptions): void {
   if (!visibleRange) return;
   context.textBaseline = "middle";
 
-  for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-    if (skeleton.isRowHidden(row)) continue;
-    for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-      if (skeleton.isColumnHidden(column)) continue;
-      const address: CellAddress = { row, column };
+  const addresses: CellAddress[] = [];
+  const queued = new Set<string>();
+  const queue = (address: CellAddress) => {
+    const key = `${address.row}:${address.column}`;
+    if (queued.has(key)) return;
+    queued.add(key);
+    addresses.push(address);
+  };
+  forEachCellInRanges(skeleton, resolveDrawRanges(skeleton, visibleRange, drawRects), (address) => {
+    queue(address);
+    const cell = cellProvider(address);
+    if (cell?.merge && !cell.merge.isAnchor) {
+      queue({ row: cell.merge.startRow, column: cell.merge.startColumn });
+    }
+    if (cell?.alignmentSpan && !cell.alignmentSpan.isAnchor) {
+      queue({ row: address.row, column: cell.alignmentSpan.startColumn });
+    }
+  });
+
+  for (const address of addresses) {
+      const { row, column } = address;
       const rect: Rect = {
         x: skeleton.getColumnLeft(column),
         y: skeleton.getRowTop(row),
         width: skeleton.getColumnWidth(column),
         height: skeleton.getRowHeight(row),
       };
-      if (!shouldDrawRect(drawRects, rect)) continue;
       const cell = cellProvider(address);
       const merge = cell?.merge;
       const isAnchor = !merge || merge.isAnchor;
@@ -177,6 +247,8 @@ export function drawCellLayer(options: PaneDrawOptions): void {
             height: rect.height,
           }
         : spanRect;
+      const paintRect = merge?.isAnchor ? spanRect : alignmentSpan?.isAnchor ? contentRect : rect;
+      if (!shouldDrawRect(drawRects, paintRect)) continue;
 
       if (cell?.overlay?.colorScale || cell?.style?.background || (cell === undefined && false)) {
         // 背景(含色阶)
@@ -207,7 +279,6 @@ export function drawCellLayer(options: PaneDrawOptions): void {
         if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
-    }
   }
 }
 
@@ -468,14 +539,6 @@ export function hasMeasurableCellContent(
   return typeof displayValue === 'string' ? displayValue.length > 0 : true;
 }
 
-export function cellRenderFont(style: CellRenderData["style"], theme: RenderTheme): string {
-  const size = style?.fontSizePx ?? 13;
-  const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : '"Microsoft YaHei", "Segoe UI", sans-serif';
-  const weight = style?.bold ? "700" : "400";
-  const slant = style?.italic ? " italic" : "";
-  return slant + " " + weight + " " + size + "px " + family;
-}
-
 export interface AutoFitMeasurement {
   widthPx: number;
   heightPx: number;
@@ -490,41 +553,8 @@ export function measureCellAutoFit(
   reserveFilterButton = false,
 ): AutoFitMeasurement {
   const text = resolveDisplayText(cell);
-  const style = cell.style;
-  const padding = style?.padding ?? theme.cellPadding;
-  context.save();
-  context.font = cellRenderFont(style, theme);
-  const lines = text.split(/\r?\n/);
-  const rawWidth = Math.max(0, ...lines.map((line) => context.measureText(line).width));
-  const fontSizePx = style?.fontSizePx ?? 13;
-  const lineHeight = Math.max(fontSizePx * 1.25, 16);
-  const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
-  let width = rawWidth + padding * 2 + indent + (reserveFilterButton ? 18 : 0) + (style?.borders?.left ? 1 : 0) + (style?.borders?.right ? 1 : 0);
-  let lineCount = Math.max(1, lines.length);
-  if (style?.wrapText && availableWidthPx && availableWidthPx > padding * 2) {
-    lineCount = lines.reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / Math.max(1, availableWidthPx - padding * 2))), 0);
-    width = Math.min(width, availableWidthPx);
-  }
-  if (style?.shrinkToFit && availableWidthPx && availableWidthPx > padding * 2) width = Math.min(width, availableWidthPx);
-  let height = lineCount * lineHeight + padding * 2 + (style?.borders?.top ? 1 : 0) + (style?.borders?.bottom ? 1 : 0);
-  if (style?.textOrientation === 'stacked') {
-    width = Math.max(fontSizePx, ...lines.map((line) => context.measureText(line).width / Math.max(1, line.length))) + padding * 2 + indent;
-    height = Array.from(text).length * lineHeight + padding * 2;
-  }
-  const rotationDegrees = style?.textOrientation === 'rotateUp'
-    ? 90
-    : style?.textOrientation === 'rotateDown'
-      ? 180
-      : style?.textRotate ?? 0;
-  const rotation = Math.abs(rotationDegrees * Math.PI / 180);
-  if (rotation > 0) {
-    const rotatedWidth = Math.abs(Math.cos(rotation)) * width + Math.abs(Math.sin(rotation)) * height;
-    const rotatedHeight = Math.abs(Math.sin(rotation)) * width + Math.abs(Math.cos(rotation)) * height;
-    width = rotatedWidth;
-    height = rotatedHeight;
-  }
-  context.restore();
-  return { widthPx: Math.ceil(width), heightPx: Math.ceil(height) };
+  const layout = resolveCellTextLayout(context, cell, theme, text, availableWidthPx, reserveFilterButton);
+  return { widthPx: layout.widthPx, heightPx: layout.heightPx };
 }
 
 function drawCellValue(
@@ -550,28 +580,23 @@ function drawCellValue(
   const vAlign = style?.verticalAlignment ?? "middle";
 
   context.save();
-  context.font = cellRenderFont(style, theme);
+  const maxWidth = rect.width - padding * 2 - indent;
+  const textLayout = resolveCellTextLayout(context, cell, theme, text, rect.width);
+  context.font = textLayout.font;
   context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
 
   const wrap = Boolean(style?.wrapText);
-  const maxWidth = rect.width - padding * 2 - indent;
-  let measured = context.measureText(text).width;
-  if (style?.shrinkToFit && !wrap && maxWidth > 0 && measured > maxWidth) {
-    const currentSize = style.fontSizePx ?? 13;
-    const fittedSize = Math.max(4, currentSize * maxWidth / measured);
-    context.font = cellRenderFont({ ...style, fontSizePx: fittedSize }, theme);
-    measured = context.measureText(text).width;
-  }
+  const measured = textLayout.rawTextWidthPx;
 
   if (style?.textOrientation === 'stacked') {
-    drawStackedText(context, text, rect, padding + indent, vAlign);
+    drawStackedText(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, vAlign);
     context.restore();
     return;
   }
 
   if (wrap) {
-    drawWrapped(context, text, rect, padding + indent, hAlign, vAlign, maxWidth);
+    drawWrapped(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, hAlign, vAlign, maxWidth);
     context.restore();
     return;
   }
@@ -588,7 +613,7 @@ function drawCellValue(
   else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
   else x = rect.x + padding + indent;
 
-  const fontSize = style?.fontSizePx ?? 13;
+  const fontSize = textLayout.fontSizePx;
   let y = vAlign === 'top'
     ? rect.y + padding + fontSize / 2
     : vAlign === 'bottom'
@@ -668,30 +693,14 @@ function allowedOverflowWidth(
 
 function drawWrapped(
   context: CanvasRenderingContext2D,
-  text: string,
+  lines: readonly string[],
+  lineHeight: number,
   rect: Rect,
   padding: number,
   hAlign: import('@react-sheets/core-model').HorizontalAlignment,
   vAlign: import('@react-sheets/core-model').VerticalAlignment,
   maxWidth: number,
 ): void {
-  const hasCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text);
-  const tokens = hasCjk ? Array.from(text) : text.split(/\s+/);
-  const lineHeight = 16;
-  const lines: string[] = [];
-  let currentLine = "";
-  for (const token of tokens) {
-    const separator = hasCjk || !currentLine ? "" : " ";
-    const attempt = currentLine + separator + token;
-    if (context.measureText(attempt).width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = token;
-    } else {
-      currentLine = attempt;
-    }
-  }
-  if (currentLine) lines.push(currentLine);
-
   const textHeight = lines.length * lineHeight;
   const startY = vAlign === "top"
     ? rect.y + padding + lineHeight / 2
@@ -775,14 +784,13 @@ function drawDistributedText(
 
 function drawStackedText(
   context: CanvasRenderingContext2D,
-  text: string,
+  characters: readonly string[],
+  lineHeight: number,
   rect: Rect,
   padding: number,
   vAlign: import('@react-sheets/core-model').VerticalAlignment,
 ): void {
-  const characters = Array.from(text);
   if (characters.length === 0) return;
-  const lineHeight = 16;
   const contentHeight = characters.length * lineHeight;
   const startY = vAlign === 'top'
     ? rect.y + padding + lineHeight / 2

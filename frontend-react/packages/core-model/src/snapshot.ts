@@ -151,7 +151,7 @@ function migrateLegacyReview(sheet: Record<string, any>): void {
     if (identityOwner !== undefined && identityOwner !== key) throw new Error(`REVIEW_MIGRATION_CONFLICT: note ${note.id} belongs to ${identityOwner}`);
     if (review.notesById[note.id] && !sameReviewValue(review.notesById[note.id], note)) throw new Error(`REVIEW_MIGRATION_CONFLICT: note identity ${note.id} has different content`);
     review.notesByCell[key] = note.id;
-    review.notesById[note.id] = structuredClone(note);
+    review.notesById[note.id] = structuredClone(note) as ReviewStoreSnapshot['notesById'][string];
   };
   const putThread = (thread: Record<string, any>): void => {
     if (!thread || typeof thread !== 'object' || Array.isArray(thread) || typeof thread.id !== 'string' || !thread.id.trim()
@@ -164,7 +164,7 @@ function migrateLegacyReview(sheet: Record<string, any>): void {
       if (!sameReviewValue(current, thread)) throw new Error(`REVIEW_MIGRATION_CONFLICT: comment identity ${thread.id} has different content`);
       return;
     }
-    review.threadsById[thread.id] = structuredClone(thread);
+    review.threadsById[thread.id] = structuredClone(thread) as ReviewStoreSnapshot['threadsById'][string];
     const key = `${thread.row}:${thread.column}`;
     review.threadIdsByCell[key] ??= [];
     if (!review.threadIdsByCell[key]!.includes(thread.id)) review.threadIdsByCell[key]!.push(thread.id);
@@ -413,7 +413,9 @@ function validateReviewSnapshot(review: ReviewStoreSnapshot, sheetId: string): v
   }
   const indexedNotes = new Set<string>();
   for (const [key, id] of Object.entries(review.notesByCell)) {
-    const [row, column] = key.split(':').map(Number);
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
     if (!/^\d+:\d+$/.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
       || !noteIds.has(id) || indexedNotes.has(id)) throw new Error(`Review note index is invalid for ${sheetId}!${key}`);
     indexedNotes.add(id);
@@ -422,7 +424,9 @@ function validateReviewSnapshot(review: ReviewStoreSnapshot, sheetId: string): v
   const threadIds = new Set(Object.keys(review.threadsById));
   const indexedThreads = new Set<string>();
   for (const [key, ids] of Object.entries(review.threadIdsByCell)) {
-    const [row, column] = key.split(':').map(Number);
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
     if (!/^\d+:\d+$/.test(key) || !Number.isSafeInteger(row) || row < 0 || row > 1_048_575 || !Number.isSafeInteger(column) || column < 0 || column > 16_383
       || !Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(`Review thread index is invalid for ${sheetId}!${key}`);
     for (const id of ids) {

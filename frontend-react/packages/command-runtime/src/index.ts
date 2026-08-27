@@ -92,6 +92,12 @@ export interface OperationResult {
 
 export interface Command<P = unknown> {
   id: string;
+  /**
+   * Commands driven by view geometry may persist canonical local state while
+   * intentionally staying out of the user's edit history.  Rollback still
+   * uses the mutation inverse plan if execution fails.
+   */
+  history?: 'record' | 'none';
   execute(params: P, context: CommandContext): CommandResult;
 }
 
@@ -559,7 +565,7 @@ function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
   if (!direction || !isRecord(mutation.params)) return undefined;
   const at = mutation.params.at;
   const count = mutation.params.count;
-  if (!Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
+  if (typeof at !== 'number' || typeof count !== 'number' || !Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
   return { axis, at, count, direction, sheetId: mutation.sheetId };
 }
 
@@ -847,7 +853,7 @@ export class CommandRuntime {
       this.transactionDepth -= 1;
 
       if (isRootTransaction) {
-        if (this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
+        if (command.history !== 'none' && this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
           this.undoStack.push(this.activeEntry);
           if (this.undoStack.length > 200) this.undoStack.shift();
           this.redoStack.length = 0;

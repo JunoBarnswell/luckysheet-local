@@ -39,8 +39,8 @@ test.describe('workbook hub', () => {
 
   test('does not turn an unknown unauthenticated route into a blank local workbook', async ({ page }) => {
     await page.goto('/workbooks/not-a-local-workbook');
-  await expect(page.getByTestId('designer-shell')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: /云端身份尚未配置|需要云端登录/ })).toBeVisible();
+    await expect(page.getByTestId('designer-shell')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '内存会话已重置' })).toBeVisible();
   });
 });
 
@@ -54,7 +54,7 @@ test.describe('workbook hub desktop reference anchors', () => {
     const sidebar = await page.getByRole('navigation', { name: '工作簿导航' }).boundingBox();
     const title = await page.getByRole('heading', { name: '早上好' }).boundingBox();
     const firstCard = await page.getByRole('button', { name: '空白工作簿', exact: true }).boundingBox();
-    const banner = await page.getByText('工作簿可持久化存储在服务端，也可导入 / 导出 Excel 文件。', { exact: true }).locator('..').locator('..').boundingBox();
+    const banner = await page.getByText('当前本地工作簿仅保存在此页面的内存会话中，刷新或关闭页面后会清空；云端工作簿仍由服务端保存。', { exact: true }).locator('..').locator('..').boundingBox();
     expect(header).toMatchObject({ x: 0, y: 0, height: 58 });
     expect(sidebar).toMatchObject({ x: 0, y: 58, width: 168 });
     expect(title).toMatchObject({ x: 218, y: 88 });

@@ -1,18 +1,14 @@
 import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
+import type { AutoFitWorkerRequest } from './column-autofit-protocol';
 
 type AutoFitCell = { column: number; value: string; style?: CellRenderStyle; filterButton?: boolean };
-type Request =
-  | { kind: 'start'; taskId: string; columns: number[] }
-  | { kind: 'chunk'; taskId: string; cells: AutoFitCell[] }
-  | { kind: 'finish'; taskId: string }
-  | { kind: 'cancel'; taskId: string };
 
 const tasks = new Map<string, { maxima: Map<number, number> }>();
 const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1) : null;
 const context = canvas?.getContext('2d') ?? null;
 const workerScope = typeof self === 'undefined' ? undefined : self;
 
-if (workerScope) workerScope.onmessage = (event: MessageEvent<Request>) => {
+if (workerScope) workerScope.onmessage = (event: MessageEvent<AutoFitWorkerRequest>) => {
   const request = event.data;
   if (request.kind === 'start') {
     tasks.set(request.taskId, { maxima: new Map(request.columns.map((column) => [column, 8])) });
@@ -25,7 +21,15 @@ if (workerScope) workerScope.onmessage = (event: MessageEvent<Request>) => {
   const task = tasks.get(request.taskId);
   if (!task) return;
   if (request.kind === 'chunk') {
-    for (const cell of request.cells) {
+    const { block } = request;
+    for (let index = 0; index < block.values.length; index += 1) {
+      const styleIndex = block.styleIndexes[index] ?? 0;
+      const cell: AutoFitCell = {
+        column: block.columns[index] ?? 0,
+        value: block.values[index] ?? '',
+        style: styleIndex > 0 ? block.styles[styleIndex - 1] : undefined,
+        filterButton: block.filterButtons[index] === 1,
+      };
       if (!hasMeasurableCellContent(cell)) continue;
       const width = context
         ? measureCellAutoFit(context, { value: cell.value, displayValue: cell.value, style: cell.style }, DEFAULT_RENDER_THEME, undefined, cell.filterButton).widthPx

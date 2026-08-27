@@ -1,6 +1,7 @@
 import {
   createFormulaError,
   isFormulaError,
+  isReferenceValue,
   type FormulaError,
   type FormulaValue,
   type ScalarValue,
@@ -128,6 +129,7 @@ function matrixFrom(value: FormulaValue | undefined, label: string): Matrix | Fo
 
 function scalarFrom(value: FormulaValue, label: string): ScalarValue | FormulaError {
   if (isFormulaError(value)) return value;
+  if (isReferenceValue(value)) return createFormulaError('#VALUE!', `${label} contains an unresolved reference`);
   if (Array.isArray(value)) return createFormulaError('#VALUE!', `${label} contains a nested array`);
   if (typeof value === 'number' && !Number.isFinite(value)) {
     return createFormulaError('#VALUE!', `${label} contains a non-finite number`);

@@ -18,7 +18,7 @@ export const DEFAULT_WORKBOOK_COLLATION: WorkbookCollationContext = Object.freez
   accentSensitive: true,
   numericTextMode: 'lexical',
   blankOrder: 'last',
-  typeOrder: ['number', 'text', 'boolean', 'error', 'blank'],
+  typeOrder: ['number', 'text', 'boolean', 'error', 'blank'] as const,
   customLists: [],
 });
 

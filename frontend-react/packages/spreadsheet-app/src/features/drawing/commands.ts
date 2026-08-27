@@ -543,7 +543,7 @@ function executeConnectorAdd(params: DrawingConnectorAddParams, context: Command
   const next: DrawingConnectorAddParams = { sheetId: params.sheetId, drawing: canonical.drawing, payload: canonical.payload };
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
-    id: 'drawing.connector.add',
+    id: 'drawing.add',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: next,
@@ -785,16 +785,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     inversePolicy: { allowedMutationIds: ['drawing.remove'], minCount: 1, maxCount: 1 },
   },
     });
-  runtime.registry.registerMutation<DrawingConnectorAddParams>({
-    id: 'drawing.connector.add',
-    handler: (item, context) => addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload),
-    metadata: {
-      schema: { name: 'DrawingConnectorAddParams', validate: isConnectorAddParams },
-      permission: { capability: 'drawing.edit' },
-      affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.remove'], minCount: 1, maxCount: 1 },
-    },
-  });
   runtime.registry.registerMutation<DrawingRemoveParams>({
       id: 'drawing.remove',
       handler: (item, context) => {

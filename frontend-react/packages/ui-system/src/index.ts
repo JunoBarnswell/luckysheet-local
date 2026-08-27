@@ -1,4 +1,5 @@
 export { Button, type ButtonProps, type ButtonSize, type ButtonVariant } from './Button';
+export { AssetIcon, type AssetIconProps, type AssetIconSize } from './AssetIcon';
 export { DataTable, type DataTableColumn, type DataTableProps } from './DataTable';
 export { CheckToggle, type CheckToggleProps } from './CheckToggle';
 export { cn, type ClassValue } from './cn';
@@ -46,8 +47,17 @@ export { ColorPicker, type ColorPickerProps } from './ColorPicker';
 export { Select, type SelectOption, type SelectProps } from './Select';
 export { VirtualList, type VirtualListProps } from './VirtualList';
 export { ScrollBar, type ScrollBarProps } from './ScrollBar';
+export {
+  POINTER_GESTURE_OWNER_ATTRIBUTE,
+  claimPointerGesture,
+  ownsPointerGesture,
+  releasePointerGesture,
+  releasePointerGesturesForSurface,
+  resolvePointerGestureOwner,
+  type PointerGestureOwner,
+} from './pointer-gesture-owner';
 export { DesignerShell, type DesignerShellProps } from './DesignerShell';
-export { DESIGNER_GEOMETRY, type PeerCursor, type SaveState } from './shell-types';
+export { DESIGNER_GEOMETRY, RIBBON_DENSITY, RIBBON_DENSITY_CLASSES, type PeerCursor, type SaveState } from './shell-types';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
 export {
   RibbonEmptyState,

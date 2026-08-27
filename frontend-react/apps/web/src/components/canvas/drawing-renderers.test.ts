@@ -16,6 +16,7 @@ function sourceSnapshot(): CanvasSheetSnapshot {
     occupiedCellCount: 0,
     getCell: () => undefined,
     usedRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    dataRegions: [],
     drawings: [],
     drawingPayloads: new Map(),
     pivots: [],
@@ -47,7 +48,7 @@ function sourceSnapshot(): CanvasSheetSnapshot {
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     sheetTables: [],
-    previewRows: [],
+    forEachOccupiedCell: () => {},
   };
 }
 

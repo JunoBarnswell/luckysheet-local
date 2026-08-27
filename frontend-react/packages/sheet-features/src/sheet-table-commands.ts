@@ -355,17 +355,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             startRow: plan.totalRow,
             startColumn: plan.startColumn,
             values: plan.values.map((row) => row.map((value) => clearFormulaProvenance(value))),
-            entryIntent: {
-              kind: 'script',
-              target: {
-                sheetId: params.sheetId,
-                startRow: plan.totalRow,
-                endRow: plan.totalRow,
-                startColumn: plan.startColumn,
-                endColumn: plan.startColumn + Math.max(0, plan.values[0]?.length ?? 1) - 1,
-              },
-              validationDecision: { status: 'not-applicable' },
-            },
           },
           affectedRanges: [cellRange],
           inverse: cellSnapshots.map((entry) => ({

@@ -40,10 +40,14 @@ import type {
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
-import { DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError } from "@react-sheets/core-model";
+import {
+  DEFAULT_PIVOT_STYLE_OPTIONS,
+  formatPivotMember,
+  isPivotError,
+} from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -54,6 +58,7 @@ import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
+import { planSheetExtentGrowth } from './canvas/sheet-extent-growth';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
 
@@ -90,6 +95,7 @@ export interface SheetCanvasProps {
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
+  onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
   onCommitCell: (value: string) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
@@ -175,9 +181,11 @@ export function findPivotProjectionCell(
 ): { projection: PivotGridProjection; cell: PivotProjectionCell } | null {
   for (const projection of Object.values(sheet.pivotProjections)) {
     if (projection.sheetId !== sheet.id || projection.collision.status !== "clear") continue;
+    if (row < projection.occupiedRange.startRow || row > projection.occupiedRange.endRow
+      || column < projection.occupiedRange.startColumn || column > projection.occupiedRange.endColumn) continue;
     const relativeRow = row - projection.target.anchor.row;
     const relativeColumn = column - projection.target.anchor.column;
-    const cell = projection.cells.find((candidate) => candidate.row === relativeRow && candidate.column === relativeColumn);
+    const cell = findPivotProjectionCellAt(projection, relativeRow, relativeColumn);
     if (cell) return { projection, cell };
   }
   return null;
@@ -390,6 +398,7 @@ export function SheetCanvas({
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
+  onEnsureSheetExtent,
   onCommitCell,
   onBeginEdit,
   onCancelEdit,
@@ -463,8 +472,31 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
+  const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
 
   const zoomFactor = zoom / 100;
+
+  useEffect(() => {
+    const pending = requestedExtentRef.current;
+    if (pending.sheetId !== sheetId) {
+      requestedExtentRef.current = { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      return;
+    }
+    if (sheet.rowCount >= pending.rowCount && sheet.columnCount >= pending.columnCount) {
+      requestedExtentRef.current = { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+    }
+  }, [sheet.columnCount, sheet.rowCount, sheetId]);
+
+  const requestExtentGrowth = useCallback((axes: { rows?: boolean; columns?: boolean }) => {
+    const next = planSheetExtentGrowth(
+      { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount },
+      requestedExtentRef.current,
+      axes,
+    );
+    if (!next) return;
+    requestedExtentRef.current = next;
+    onEnsureSheetExtent(next.rowCount, next.columnCount);
+  }, [onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
 
   const skeleton = useMemo(
     () =>
@@ -568,6 +600,13 @@ export function SheetCanvas({
       .filter((cell) => (cell.kind === 'column-header' || cell.kind === 'filter') && Boolean(cell.fieldId))
       .map((cell) => ({ projection, cell }));
   }), [sheet.pivotProjections]);
+  const requiresViewportProjection = Boolean(
+    editingCell
+    || textBoxEdit
+    || pivotStatusProjections.length > 0
+    || sheet.kind === 'gantt-sheet'
+    || sheet.kind === 'report-sheet',
+  );
 
   // ---------- 浮动对象绘制器 ----------
 
@@ -648,6 +687,7 @@ export function SheetCanvas({
     onFormulaDraftChange,
     onJumpEdge,
     onMovePrimary,
+    onRequestExtentGrowth: requestExtentGrowth,
     onPivotContextHit,
     onPivotControlAction,
     onPivotExpansionToggle,
@@ -710,17 +750,17 @@ export function SheetCanvas({
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine || !requiresViewportProjection) return;
     const detach = engine.onViewportChanged(() => setScrollTick((tick) => tick + 1));
     return detach;
-  }, []);
+  }, [requiresViewportProjection]);
 
   // 选区变化 → 滚动至可见
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || canvasInteraction.dragRef.current) return;
-    engine.ensureVisible(selection.activeCell);
-  }, [selection.activeCell]);
+    engine.ensureVisible({ row: selection.activeCell.row, column: selection.activeCell.column });
+  }, [selection.activeCell.column, selection.activeCell.row, sheetId]);
 
   // Pointer, keyboard, drag-selection, and auto-scroll are implemented by useCanvasInteraction.
   // ---------- 右键菜单 ----------
@@ -986,46 +1026,30 @@ export function SheetCanvas({
             onPointerDown={canvasInteraction.handlePointerDown}
             onPointerMove={canvasInteraction.handlePointerMove}
             onPointerUp={canvasInteraction.handlePointerUp}
-            onPointerCancel={canvasInteraction.handlePointerUp}
+            onPointerCancel={canvasInteraction.handlePointerCancel}
+            onLostPointerCapture={canvasInteraction.handlePointerCancel}
             onDoubleClick={canvasInteraction.handleDoubleClick}
             onWheel={canvasInteraction.handleWheel}
             onKeyDown={canvasInteraction.handleKeyDown}
             onContextMenu={handleContextMenu}
           >
-            <CanvasRenderSurface
-              options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
-              onReady={(engine) => {
-                engineRef.current = engine;
-                setEngineReady(true);
-                engine.setCellProvider(cellProvider);
-                engine.setSkeleton(skeleton);
-                engine.setFloating(floatables, selectedFloatingId);
-                engine.setChrome(chromeState);
-              }}
-              className="absolute inset-0"
-            />
-            {engineReady && engineRef.current ? (() => {
-              const viewport = engineRef.current.viewport.getSnapshot();
-              const content = engineRef.current.skeleton.contentSize;
-              return (
-                <>
-                  <ScrollBar
-                    contentSize={content.width}
-                    offset={viewport.scrollX}
-                    onChange={(offset) => engineRef.current?.scrollTo(offset, viewport.scrollY)}
-                    orientation="horizontal"
-                    viewportSize={viewport.width}
-                  />
-                  <ScrollBar
-                    contentSize={content.height}
-                    offset={viewport.scrollY}
-                    onChange={(offset) => engineRef.current?.scrollTo(viewport.scrollX, offset)}
-                    orientation="vertical"
-                    viewportSize={viewport.height}
-                  />
-                </>
-              );
-            })() : null}
+            <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
+              <CanvasRenderSurface
+                options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
+                onReady={(engine) => {
+                  engineRef.current = engine;
+                  setEngineReady(true);
+                  engine.setCellProvider(cellProvider);
+                  engine.setSkeleton(skeleton);
+                  engine.setFloating(floatables, selectedFloatingId);
+                  engine.setChrome(chromeState);
+                }}
+                className="absolute inset-0"
+              />
+            </Box>
+            {engineReady && engineRef.current ? (
+              <SheetScrollBars engine={engineRef.current} />
+            ) : null}
             {engineReady ? pivotStatusProjections.map((projection) => (
               <PivotProjectionStatusNotice
                 key={`${projection.pivotId}:${projection.refresh.status}:${projection.refresh.error ?? ""}`}
@@ -1160,6 +1184,50 @@ function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | n
   if (cell.value === "TRUE") return true;
   if (cell.value === "FALSE") return false;
   return cell.value;
+}
+
+/**
+ * Keeps the high-frequency viewport subscription at the smallest React
+ * boundary.  The canvas engine owns scroll geometry; only the two scrollbar
+ * thumbs need to re-render on every rendered viewport change in a normal
+ * workbook.  Editing and specialised overlays subscribe separately above.
+ */
+function SheetScrollBars({
+  engine,
+}: {
+  engine: CanvasRenderEngine;
+}): React.ReactElement {
+  const [viewport, setViewport] = useState(() => engine.viewport.getSnapshot());
+  useEffect(() => {
+    setViewport(engine.viewport.getSnapshot());
+    return engine.onViewportChanged(() => setViewport(engine.viewport.getSnapshot()));
+  }, [engine]);
+
+  const content = engine.skeleton.contentSize;
+  return (
+    <>
+      <ScrollBar
+        contentSize={content.width}
+        offset={viewport.scrollX}
+        onChange={(offset) => {
+          const currentViewport = engine.viewport.getSnapshot();
+          engine.scrollTo(offset, currentViewport.scrollY);
+        }}
+        orientation="horizontal"
+        viewportSize={viewport.width}
+      />
+      <ScrollBar
+        contentSize={content.height}
+        offset={viewport.scrollY}
+        onChange={(offset) => {
+          const currentViewport = engine.viewport.getSnapshot();
+          engine.scrollTo(currentViewport.scrollX, offset);
+        }}
+        orientation="vertical"
+        viewportSize={viewport.height}
+      />
+    </>
+  );
 }
 
 function pivotProjectionStatusMessage(projection: PivotGridProjection, locale: Locale): string | null {

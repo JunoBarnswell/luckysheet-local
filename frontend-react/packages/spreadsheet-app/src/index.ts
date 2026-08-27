@@ -12,6 +12,7 @@ export {
   CommandDispatchError,
   type DefinedNameCommandInput,
   type UiSnapshot,
+  type SheetTabSnapshot,
 } from './workbook-session';
 export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
@@ -55,7 +56,7 @@ export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
   LocalWorkspaceStore,
-  getLocalWorkspaceStore,
+  MemoryWorkspaceStore,
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
@@ -66,12 +67,17 @@ export {
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
+  WorkspaceStorageError,
+  isWorkspaceStorageError,
+  WorkspaceMemoryCoordinator,
+  type WorkspacePersistenceState,
+  type WorkspacePersistenceMode,
   type PersistenceSnapshotMeta,
   type WorkspaceRecord,
   type WorkspaceRecordInput,
   type PendingOperationJournal,
   type LocalWorkspaceSummary,
-  type IndexedDbWorkspaceStoreOptions,
+  type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
   type NativePackageRecord,
@@ -138,13 +144,6 @@ export {
 } from './features/query';
 export type { QueryDefinition, LoadTarget, QueryStep } from './features/query/query-steps';
 export type { ConnectorKind, QueryResult, DataConnector } from './features/query';
-export {
-  runAutomationScript,
-  summarizeScriptResult,
-  SAMPLE_AUTOMATION_SCRIPT,
-  type AutomationSnapshot,
-} from './features/automation';
-export type { ScriptRunResult } from './features/automation';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
 export {
   runGoalSeek,
@@ -158,9 +157,9 @@ export {
   type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { buildPivotGroupedFilterMembers, computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, type PivotGroupedFilterMember } from './features/pivot/engine';
+export { buildPivotGroupedFilterMembers, computePivotResult, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, type PivotGroupedFilterMember } from './features/pivot/engine';
 export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
 export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';
-export type { CanvasSheetSnapshot, CanvasCellSnapshot, PreviewRowSnapshot } from './ui-snapshot';
+export type { CanvasSheetSnapshot, CanvasCellSnapshot } from './ui-snapshot';
 export type { AppPhase, FocusState, FocusTarget, InputMode, RibbonTabId, SidebarPanelId, SaveState, PeerCursor, UiSessionIntent } from './types';

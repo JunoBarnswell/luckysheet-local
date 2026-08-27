@@ -379,20 +379,14 @@ class Parser {
   }
 
   private parseReference(): FormulaReferenceNode {
-    const firstToken = this.advance();
+    const firstToken = this.peek();
     if (firstToken.kind === 'left-bracket') {
-      this.index -= 1;
       return this.parseExternalReference();
     }
-    let sheetId: string | undefined;
-    let cellToken = firstToken;
-    if (this.match('bang')) {
-      sheetId = firstToken.kind === 'string' ? firstToken.value ?? '' : firstToken.lexeme;
-      cellToken = this.expect('identifier', 'Expected cell reference after sheet name');
-    }
 
-    if (this.check('colon') && this.isSheetRangeQualifier(firstToken)) {
+    if (this.isSheetRangeQualifier(firstToken)) {
       this.advance();
+      this.expect('colon', 'Expected worksheet range separator');
       const endSheetToken = this.expectAny(['identifier', 'string'], 'Expected ending worksheet name');
       this.expect('bang', 'Expected separator after worksheet range');
       const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.check('colon'));
@@ -409,6 +403,15 @@ class Parser {
         span: { start: firstToken.span.start, end: reference.span.end },
       };
       return this.parseReferenceOperators(node);
+    }
+
+    let sheetId: string | undefined;
+    let cellToken = firstToken;
+    if (this.checkNext('bang')) {
+      this.advance();
+      this.expect('bang', 'Expected separator after sheet name');
+      sheetId = firstToken.kind === 'string' ? firstToken.value ?? '' : firstToken.lexeme;
+      cellToken = this.peek();
     }
 
     const start = this.parseReferenceEndpoint(cellToken, sheetId, this.check('colon'));
@@ -525,9 +528,9 @@ class Parser {
 
   private isSheetRangeQualifier(token: Token): boolean {
     return (token.kind === 'identifier' || token.kind === 'string')
-      && this.tokens[this.index]?.kind === 'colon'
-      && (this.tokens[this.index + 1]?.kind === 'identifier' || this.tokens[this.index + 1]?.kind === 'string')
-      && this.tokens[this.index + 2]?.kind === 'bang';
+      && this.tokens[this.index + 1]?.kind === 'colon'
+      && (this.tokens[this.index + 2]?.kind === 'identifier' || this.tokens[this.index + 2]?.kind === 'string')
+      && this.tokens[this.index + 3]?.kind === 'bang';
   }
 
   private expectAny(kinds: readonly TokenKind[], message: string): Token {

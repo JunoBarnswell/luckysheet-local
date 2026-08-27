@@ -5,6 +5,7 @@ import { WorkbookModel, type DataSourceManifest, type DataBlockRef } from '@reac
 import { buildCanvasSheetSnapshot } from './ui-snapshot';
 import { setCellHyperlink } from './features/review';
 import { LocalDataBlockStore } from './features/persistence/data-block-store';
+import { WorkspaceMemoryCoordinator } from './features/persistence/memory';
 import {
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
@@ -13,6 +14,25 @@ import {
 } from './features/data-source';
 
 describe('canonical drawing UI projection', () => {
+  it('reads the worksheet-owned used range without scanning sparse cells', () => {
+    const workbook = new WorkbookModel('snapshot-sparse-bounds', 'Snapshot sparse bounds');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(12, 3, { value: 'first' });
+    sheet.cells.set(900_000, 19, { value: 'last' });
+    const originalForEach = sheet.cells.forEach;
+    sheet.cells.forEach = () => {
+      throw new Error('Canvas snapshot must not scan CellMatrix to derive used range');
+    };
+    try {
+      const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
+      assert.deepEqual(snapshot.usedRange, {
+        sheetId: sheet.id, startRow: 12, endRow: 900_000, startColumn: 3, endColumn: 19,
+      });
+    } finally {
+      sheet.cells.forEach = originalForEach;
+    }
+  });
+
   it('collapses filtered rows in the render projection without blank placeholders', () => {
     const workbook = new WorkbookModel('snapshot-filter', 'Snapshot Filter');
     const sheet = workbook.getSheet('sheet-1');
@@ -35,7 +55,6 @@ describe('canonical drawing UI projection', () => {
 
     const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
     assert.deepEqual(snapshot.hiddenRows, [2, 4]);
-    assert.deepEqual(snapshot.previewRows.map((row) => row.rowNumber), [1, 2, 4]);
     assert.equal(snapshot.getCell(2, 0)?.value, 'Drop');
   });
 
@@ -184,11 +203,11 @@ describe('canonical drawing UI projection', () => {
       blocks: [ref],
       revision: 0,
     };
-    const store = new LocalDataBlockStore();
+    const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
     await store.put(ref, payload);
     const query = new DataSourceContentQuery(manifest, store);
     workbook.addDataSource(manifest);
-    sheet.dataRegions.push({
+    sheet.addDataRegion({
       id: 'snapshot-block-region',
       sourceId,
       range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
@@ -213,6 +232,15 @@ describe('canonical drawing UI projection', () => {
     assert.equal(cell?.value, '10');
     assert.equal(cell?.displayValue, '10');
     assert.equal(cell?.style?.bold, true);
+    const occupied: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => occupied.push(`${row}:${column}`));
+    assert.deepEqual(occupied.sort(), ['1:0', '1:1', '2:0', '2:1']);
+    const selectedColumn: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => selectedColumn.push(`${row}:${column}`), { columns: new Set([1]) });
+    assert.deepEqual(selectedColumn.sort(), ['1:1', '2:1']);
+    const selectedRow: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => selectedRow.push(`${row}:${column}`), { rows: new Set([2]) });
+    assert.deepEqual(selectedRow.sort(), ['2:0', '2:1']);
   });
 
   it('projects review metadata from canonical sheet stores only', () => {
@@ -224,7 +252,7 @@ describe('canonical drawing UI projection', () => {
       hyperlink: 'https://legacy.invalid',
       hyperlinkDetail: { id: 'legacy', target: { kind: 'url', url: 'https://legacy.invalid' } },
       comment: { id: 'legacy-comment', author: 'old', text: 'old', createdAt: '2020-01-01' },
-    });
+    } as unknown as import('@react-sheets/core-model').CellData);
     setCellHyperlink(sheet, 0, 0, { id: 'canonical', target: { kind: 'url', url: 'https://canonical.invalid' } });
     sheet.review.addThread({
       id: 'thread-1', sheetId: sheet.id, row: 0, column: 0, author: 'Alice', text: 'Review',

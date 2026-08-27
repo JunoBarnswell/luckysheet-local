@@ -4,6 +4,14 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload, type ImageDrawingPayload } from '@react-sheets/core-model';
 import { DrawingRuntime, registerDrawingFeature } from '../../index';
 
+const imageAsset = (assetId: string) => ({
+  schema: 'AssetRef' as const,
+  assetId,
+  contentHash: 'a'.repeat(64),
+  mimeType: 'image/png',
+  byteLength: 1,
+});
+
 describe('drawing feature', () => {
   it('adds, selects, moves, resizes, and reorders unified drawing objects', () => {
     const workbook = new WorkbookModel('drawing-test', 'Drawing');
@@ -22,7 +30,7 @@ describe('drawing feature', () => {
         transform: { x: 10, y: 20, width: 100, height: 80, rotation: 0 },
         zIndex: 1,
       },
-      payload: { kind: 'image', src: 'https://example.com/a.png', altText: 'Logo' },
+      payload: { kind: 'image', asset: imageAsset('asset-logo'), altText: 'Logo' },
     });
 
     runtime.execute('drawing.select', { sheetId: 'sheet-1', drawingIds: ['draw-1'] });
@@ -186,7 +194,7 @@ describe('drawing feature', () => {
     const sheetId = 'sheet-1';
     const style = { theme: 'light' as const, fill: '#fff', border: '#000', textColor: '#000', accentColor: '#2563eb' };
     const payloads: Array<{ kind: DrawingObject['kind']; payload: DrawingPayload }> = [
-      { kind: 'image', payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Image' } },
+      { kind: 'image', payload: { kind: 'image', asset: { schema: 'AssetRef', assetId: 'image-kind', contentHash: '0'.repeat(64), mimeType: 'image/png', byteLength: 1 }, altText: 'Image' } },
       { kind: 'shape', payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' } },
       { kind: 'textbox', payload: { kind: 'textbox', text: 'Text', textFrame: { fontFamily: 'Inter', fontSize: 14, bold: false, italic: false, underline: false, textColor: '#1f2937', horizontalAlignment: 'left', verticalAlignment: 'top', direction: 'horizontal', margin: { top: 8, right: 8, bottom: 8, left: 8 }, wrap: true, autofit: 'none' } } },
       { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [], elements: { hiddenData: 'show' } } },
@@ -234,7 +242,7 @@ describe('drawing feature', () => {
         transform: { x: 10, y: 10, width: 100, height: 80, rotation: 0 },
         zIndex: 1,
       },
-      payload: { kind: 'image', src: 'https://example.com/image.png', altText: 'Before' },
+      payload: { kind: 'image', asset: imageAsset('asset-image'), altText: 'Before' },
     });
     runtime.execute('drawing.image.altText', { sheetId: 'sheet-1', drawingId: 'draw-image', altText: 'Accessible image' });
     runtime.execute('drawing.image.crop', { sheetId: 'sheet-1', drawingId: 'draw-image', crop: { left: 0.1, top: 0.2, right: 0.1, bottom: 0 } });
@@ -295,7 +303,7 @@ describe('drawing feature', () => {
         transform: { x: 0, y: 0, width: 120, height: 80, rotation: 0 },
         zIndex: 1,
       },
-      payload: { kind: 'image', src: 'data:image/png;base64,AA==' },
+      payload: { kind: 'image', asset: imageAsset('asset-effects') },
     });
     runtime.clearHistory();
 

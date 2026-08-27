@@ -93,9 +93,10 @@ describe('WorkbookSession PivotTable integration', () => {
     app.undo();
     assert.equal(app.getUiSnapshot().sheets.some((sheet) => sheet.id === createdSheetId), false);
     app.redo();
-    const restoredSheet = app.getUiSnapshot().sheets.find((sheet) => sheet.id === createdSheetId);
-    assert.ok(restoredSheet);
-    assert.equal(restoredSheet.pivots[0]?.id, pivotId);
+    app.selectSheet(createdSheetId);
+    const restoredSnapshot = app.getUiSnapshot();
+    assert.equal(restoredSnapshot.selectedSheet.id, createdSheetId);
+    assert.equal(restoredSnapshot.selectedSheet.pivots[0]?.id, pivotId);
   });
 
   it('keeps the worksheet scope on a named-range source through create, undo, and redo', () => {

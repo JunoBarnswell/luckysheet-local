@@ -13,7 +13,6 @@ export type RibbonCatalogTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
@@ -31,7 +30,6 @@ export type RibbonCatalogTabId =
 
 export type RibbonGroupId =
   | 'workbook'
-  | 'scripts'
   | 'calculation'
   | 'functionLibrary'
   | 'formulaAudit'
@@ -89,10 +87,6 @@ export type RibbonCommandId =
   | 'importXlsx'
   | 'exportXlsxView'
   | 'importXlsxView'
-  | 'openAutomate'
-  | 'runSampleScript'
-  | 'startRecording'
-  | 'stopRecording'
   | 'calculateNow'
   | 'goalSeek'
   | 'sjsTable'
@@ -323,6 +317,8 @@ export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonComman
 export type RibbonDisplay = 'large' | 'medium' | 'small';
 
 export type RibbonIconName =
+  | 'arrow-down'
+  | 'arrow-up'
   | 'align-center'
   | 'align-left'
   | 'align-right'
@@ -343,17 +339,23 @@ export type RibbonIconName =
   | 'comma'
   | 'columns'
   | 'comment'
+  | 'database'
   | 'copy'
   | 'dollar-sign'
   | 'decimal-decrease'
   | 'decimal-increase'
   | 'filter'
+  | 'filter-clear'
   | 'fill-down'
   | 'fill-up'
   | 'fill-right'
   | 'fill-left'
+  | 'flip-horizontal'
+  | 'flip-vertical'
   | 'freeze'
   | 'function'
+  | 'group'
+  | 'group-columns'
   | 'form-control'
   | 'history'
   | 'italic'
@@ -361,6 +363,7 @@ export type RibbonIconName =
   | 'indent-increase'
   | 'layout'
   | 'link'
+  | 'locate'
   | 'lock'
   | 'merge-cells'
   | 'minimize'
@@ -371,17 +374,21 @@ export type RibbonIconName =
   | 'printer'
   | 'redo'
   | 'rows'
+  | 'remove-duplicates'
   | 'scissors'
   | 'search'
   | 'shape-square'
   | 'share'
   | 'sliders'
+  | 'sigma'
   | 'sort'
+  | 'split-columns'
   | 'sparkles'
   | 'sparkline'
   | 'star'
   | 'strikethrough'
   | 'table'
+  | 'table-plus'
   | 'table-sheet'
   | 'gantt-sheet'
   | 'report-sheet'
@@ -389,6 +396,10 @@ export type RibbonIconName =
   | 'trash'
   | 'type'
   | 'textbox'
+  | 'text-to-columns'
+  | 'transpose'
+  | 'ungroup'
+  | 'ungroup-columns'
   | 'underline'
   | 'undo'
   | 'wrap-text'
@@ -501,7 +512,6 @@ export interface RibbonCommandContext {
   activeSparkline?: { sheetId: string; sparklineId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
-  sampleAutomationScript: string;
 }
 
 export interface RibbonPivotActions {
@@ -573,22 +583,53 @@ export interface RibbonSurfaceDefinition {
 export type DesignerIconKey =
   | 'page-setup'
   | 'print-area'
+  | 'clear-print-area'
   | 'print-titles'
+  | 'print-title-rows'
+  | 'print-title-columns'
   | 'scale-to-fit'
   | 'gridlines'
   | 'headings'
   | 'calculate-now'
+  | 'auto-sum'
   | 'goal-seek'
   | 'calculation-mode'
   | 'formula-audit'
+  | 'trace-precedents'
+  | 'trace-dependents'
+  | 'remove-arrows'
   | 'show-formulas'
   | 'error-checking'
+  | 'evaluate-formula'
   | 'defined-names'
   | 'sort'
+  | 'sort-ascending'
+  | 'sort-descending'
+  | 'custom-sort'
   | 'filter'
+  | 'filter-selection'
+  | 'clear-filter'
   | 'data-tools'
+  | 'data-source'
+  | 'create-data-source'
+  | 'data-validation'
   | 'outline'
-  | 'find-transform';
+  | 'group-rows'
+  | 'ungroup-rows'
+  | 'group-columns'
+  | 'ungroup-columns'
+  | 'show-outline-level'
+  | 'subtotal'
+  | 'remove-duplicates'
+  | 'text-to-columns'
+  | 'find-transform'
+  | 'find-replace'
+  | 'go-to'
+  | 'transpose'
+  | 'flip-horizontal'
+  | 'flip-vertical'
+  | 'split-delimiter'
+  | 'function';
 
 export type RibbonLayoutTab = Extract<RibbonCatalogTabId, 'home' | 'insert' | 'pageLayout' | 'formulas' | 'data'>;
 
@@ -656,7 +697,6 @@ export interface RibbonControlDefinition {
 export const RIBBON_TEXT = {
   groups: {
     workbook: 'groups.workbook',
-    scripts: 'groups.scripts',
     calculation: 'groups.calculation',
     functionLibrary: 'groups.functionLibrary',
     formulaAudit: 'groups.formulaAudit',
@@ -714,10 +754,6 @@ export const RIBBON_TEXT = {
     importXlsx: 'commands.importXlsx',
     exportXlsxView: 'commands.exportXlsxView',
     importXlsxView: 'commands.importXlsxView',
-    openAutomate: 'commands.openAutomate',
-    runSampleScript: 'commands.runSampleScript',
-    startRecording: 'commands.startRecording',
-    stopRecording: 'commands.stopRecording',
     calculateNow: 'commands.calculateNow',
     goalSeek: 'commands.goalSeek',
     sjsTable: 'commands.sjsTable',
@@ -956,7 +992,6 @@ const group = (
 
 export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('workbook', 'file', 10),
-  group('scripts', 'automate', 70),
   group('calculation', 'formulas', 20),
   group('functionLibrary', 'formulas', 30),
   group('formulaAudit', 'formulas', 50),
@@ -981,6 +1016,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('insertControls', 'insert', 70),
   group('sortFilter', 'data', 10),
   group('dataTools', 'data', 20),
+  group('findTransform', 'data', 30),
   group('outline', 'data', 40),
   group('whatIf', 'data', 70),
   group('comments', 'review', 10),
@@ -1011,24 +1047,55 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
 /** The renderer consumes this table as the in-repository vector asset
  * selection. Surface specs never fall back to a tab-wide generic icon. */
 export const DESIGNER_ICON_TO_RIBBON_ICON: Readonly<Record<DesignerIconKey, RibbonIconName>> = {
+  function: 'function',
   'page-setup': 'printer',
   'print-area': 'layout',
+  'clear-print-area': 'x',
   'print-titles': 'rows',
+  'print-title-rows': 'rows',
+  'print-title-columns': 'columns',
   'scale-to-fit': 'layout',
   gridlines: 'layout',
   headings: 'rows',
   'calculate-now': 'calculator',
+  'auto-sum': 'sigma',
   'goal-seek': 'sliders',
   'calculation-mode': 'calculator',
   'formula-audit': 'search',
+  'trace-precedents': 'search',
+  'trace-dependents': 'search',
+  'remove-arrows': 'x',
   'show-formulas': 'function',
   'error-checking': 'check-circle',
+  'evaluate-formula': 'search',
   'defined-names': 'type',
   sort: 'sort',
+  'sort-ascending': 'arrow-up',
+  'sort-descending': 'arrow-down',
+  'custom-sort': 'sort',
   filter: 'filter',
+  'filter-selection': 'filter',
+  'clear-filter': 'filter-clear',
   'data-tools': 'table',
+  'data-source': 'database',
+  'create-data-source': 'table-plus',
+  'data-validation': 'check-circle',
   outline: 'rows',
+  'group-rows': 'group',
+  'ungroup-rows': 'ungroup',
+  'group-columns': 'group-columns',
+  'ungroup-columns': 'ungroup-columns',
+  'show-outline-level': 'rows',
+  subtotal: 'rows',
+  'remove-duplicates': 'remove-duplicates',
+  'text-to-columns': 'text-to-columns',
   'find-transform': 'sliders',
+  'find-replace': 'search',
+  'go-to': 'locate',
+  transpose: 'transpose',
+  'flip-horizontal': 'flip-horizontal',
+  'flip-vertical': 'flip-vertical',
+  'split-delimiter': 'split-columns',
 };
 
 const commandNode = (id: string, commandId: RibbonCommandId, icon: DesignerIconKey, size: 'large' | 'small' = 'small'): RibbonLayoutNode => ({ kind: 'command', id, commandId, icon, size });
@@ -1043,27 +1110,28 @@ const BASE_RIBBON_LAYOUT_SPECS: Readonly<Record<Extract<RibbonLayoutSpec['tab'],
   pageLayout: {
     tab: 'pageLayout',
     groups: [
-      groupSpec('pageSetup', 10, columnNode('pageSetup.primary', commandNode('pageSetup', 'pageSetup', 'page-setup', 'large'), stackNode('pageSetup.secondary', commandNode('setPrintArea', 'setPrintArea', 'print-area'), commandNode('clearPrintArea', 'clearPrintArea', 'print-area'))), columnNode('pageSetup.titles', commandNode('printTitleRows', 'printTitleRows', 'print-titles'), commandNode('printTitleColumns', 'printTitleColumns', 'print-titles'))),
+      groupSpec('pageSetup', 10, rowNode('pageSetup.layout', commandNode('pageSetup', 'pageSetup', 'page-setup', 'large'), columnNode('pageSetup.print', commandNode('setPrintArea', 'setPrintArea', 'print-area'), commandNode('clearPrintArea', 'clearPrintArea', 'clear-print-area')), columnNode('pageSetup.titles', commandNode('printTitleRows', 'printTitleRows', 'print-title-rows'), commandNode('printTitleColumns', 'printTitleColumns', 'print-title-columns')))),
       groupSpec('scaleToFit', 30, columnNode('scaleToFit.primary', commandNode('setScale100', 'setScale100', 'scale-to-fit', 'large'))),
-      groupSpec('sheetOptions', 50, columnNode('sheetOptions.view', stackNode('sheetOptions.gridlines', commandNode('viewGridlines', 'viewGridlines', 'gridlines'), commandNode('printGridlines', 'printGridlines', 'gridlines')), stackNode('sheetOptions.headings', commandNode('viewHeadings', 'viewHeadings', 'headings'), commandNode('printHeadings', 'printHeadings', 'headings')))),
+      groupSpec('sheetOptions', 50, rowNode('sheetOptions.layout', columnNode('sheetOptions.gridlines', commandNode('viewGridlines', 'viewGridlines', 'gridlines'), commandNode('printGridlines', 'printGridlines', 'gridlines')), columnNode('sheetOptions.headings', commandNode('viewHeadings', 'viewHeadings', 'headings'), commandNode('printHeadings', 'printHeadings', 'headings')))),
     ],
   },
   formulas: {
     tab: 'formulas',
     groups: [
-      groupSpec('calculation', 20, columnNode('calculation.primary', commandNode('calculateNow', 'calculateNow', 'calculate-now', 'large'), splitNode('calculation.mode', 'calculationAutomatic', 'calculation-mode', { commandId: 'calculationManual', icon: 'calculation-mode' }, { commandId: 'calculationPartial', icon: 'calculation-mode' }))),
-      groupSpec('functionLibrary', 30, columnNode('functionLibrary.primary', commandNode('functionWizard', 'functionWizard', 'function', 'large'), dropdownNode('functionLibrary.autoSum', 'autoSum', 'calculator', { commandId: 'autoSumAverage', icon: 'calculator' }, { commandId: 'autoSumCount', icon: 'calculator' }, { commandId: 'autoSumMax', icon: 'calculator' }, { commandId: 'autoSumMin', icon: 'calculator' }))),
-      groupSpec('formulaAudit', 50, columnNode('formulaAudit.audit', rowNode('formulaAudit.trace', commandNode('tracePrecedents', 'tracePrecedents', 'formula-audit'), commandNode('traceDependents', 'traceDependents', 'formula-audit')), rowNode('formulaAudit.state', commandNode('removeArrows', 'removeArrows', 'formula-audit'), commandNode('showFormulas', 'showFormulas', 'show-formulas')), rowNode('formulaAudit.validation', commandNode('errorChecking', 'errorChecking', 'error-checking'), commandNode('evaluateFormula', 'evaluateFormula', 'formula-audit')))),
+      groupSpec('calculation', 20, rowNode('calculation.layout', commandNode('calculateNow', 'calculateNow', 'calculate-now', 'large'), columnNode('calculation.options', splitNode('calculation.mode', 'calculationAutomatic', 'calculation-mode', { commandId: 'calculationManual', icon: 'calculation-mode' }, { commandId: 'calculationPartial', icon: 'calculation-mode' })))),
+      groupSpec('functionLibrary', 30, rowNode('functionLibrary.layout', commandNode('functionWizard', 'functionWizard', 'function', 'large'), columnNode('functionLibrary.options', dropdownNode('functionLibrary.autoSum', 'autoSum', 'auto-sum', { commandId: 'autoSumAverage', icon: 'auto-sum' }, { commandId: 'autoSumCount', icon: 'auto-sum' }, { commandId: 'autoSumMax', icon: 'auto-sum' }, { commandId: 'autoSumMin', icon: 'auto-sum' })))),
+      groupSpec('formulaAudit', 50, columnNode('formulaAudit.audit', rowNode('formulaAudit.trace', commandNode('tracePrecedents', 'tracePrecedents', 'trace-precedents'), commandNode('traceDependents', 'traceDependents', 'trace-dependents')), rowNode('formulaAudit.state', commandNode('removeArrows', 'removeArrows', 'remove-arrows'), commandNode('showFormulas', 'showFormulas', 'show-formulas')), rowNode('formulaAudit.validation', commandNode('errorChecking', 'errorChecking', 'error-checking'), commandNode('evaluateFormula', 'evaluateFormula', 'evaluate-formula')))),
       groupSpec('definedNames', 60, columnNode('definedNames.primary', commandNode('definedNames', 'definedNames', 'defined-names', 'large'))),
     ],
   },
   data: {
     tab: 'data',
     groups: [
-      groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort'), commandNode('sortDescending', 'sortDescending', 'sort')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'sort')))),
-      groupSpec('dataTools', 20, columnNode('dataTools.primary', commandNode('dataSource', 'dataSource', 'data-tools', 'large'), stackNode('dataTools.secondary', commandNode('createDataSource', 'createDataSource', 'data-tools'), commandNode('dataValidation', 'dataValidation', 'data-tools'), commandNode('filterSelection', 'filterSelection', 'filter'), commandNode('clearFilter', 'clearFilter', 'filter')))),
-      groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'outline'), commandNode('ungroupRows', 'ungroupRows', 'outline'), commandNode('showLevel1', 'showLevel1', 'outline')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'outline'), commandNode('ungroupColumns', 'ungroupColumns', 'outline'), commandNode('showLevel2', 'showLevel2', 'outline')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'outline'), commandNode('removeDuplicates', 'removeDuplicates', 'outline'), commandNode('textToColumns', 'textToColumns', 'outline'), commandNode('showLevel3', 'showLevel3', 'outline')))),
-      groupSpec('whatIf', 70, columnNode('whatIf.primary', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'), commandNode('sjsTable', 'sjsTable', 'function', 'large'))),
+      groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort-ascending'), commandNode('sortDescending', 'sortDescending', 'sort-descending')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'custom-sort')))),
+        groupSpec('dataTools', 20, rowNode('dataTools.layout', commandNode('dataSource', 'dataSource', 'data-source', 'large'), columnNode('dataTools.options', rowNode('dataTools.source', commandNode('createDataSource', 'createDataSource', 'create-data-source'), commandNode('dataValidation', 'dataValidation', 'data-validation')), rowNode('dataTools.filter', commandNode('filterSelection', 'filterSelection', 'filter-selection'), commandNode('clearFilter', 'clearFilter', 'clear-filter'))))),
+        groupSpec('findTransform', 30, columnNode('findTransform.primary', rowNode('findTransform.search', commandNode('findReplace', 'findReplace', 'find-replace'), commandNode('goTo', 'goTo', 'go-to')), rowNode('findTransform.transform', commandNode('transpose', 'transpose', 'transpose'), commandNode('flipHorizontal', 'flipHorizontal', 'flip-horizontal'), commandNode('flipVertical', 'flipVertical', 'flip-vertical'), commandNode('splitByDelimiter', 'splitByDelimiter', 'split-delimiter')))),
+      groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'group-rows'), commandNode('ungroupRows', 'ungroupRows', 'ungroup-rows'), commandNode('showLevel1', 'showLevel1', 'show-outline-level')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'group-columns'), commandNode('ungroupColumns', 'ungroupColumns', 'ungroup-columns'), commandNode('showLevel2', 'showLevel2', 'show-outline-level')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'subtotal'), commandNode('removeDuplicates', 'removeDuplicates', 'remove-duplicates'), commandNode('textToColumns', 'textToColumns', 'text-to-columns'), commandNode('showLevel3', 'showLevel3', 'show-outline-level')))),
+        groupSpec('whatIf', 70, rowNode('whatIf.layout', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'), commandNode('sjsTable', 'sjsTable', 'function', 'large'))),
     ],
   },
 };
@@ -1091,8 +1159,8 @@ const homeControl = (
 /** Single render catalogue for the Home tab. Components must not invent
  * command placements independently from this declaration. */
 export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo'),
-  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo'),
+  ribbonSurface('home', 'history.undo', 'history', 10, 'small', 'undo'),
+  ribbonSurface('home', 'history.redo', 'history', 20, 'small', 'redo'),
   ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste'),
   ribbonSurface('home', 'clipboard.cut', 'clipboard', 20, 'small', 'cut'),
   ribbonSurface('home', 'clipboard.copy', 'clipboard', 30, 'small', 'copy'),
@@ -1119,7 +1187,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.borders.none', 'font', 860, 'menu', 'borderNone', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
-  homeControl('alignment-menu', 'alignment', 10),
+  homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1134,9 +1202,9 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.indent-increase', 'alignment', 48, 'small', 'indentIncrease'),
   ribbonSurface('home', 'alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
   ribbonSurface('home', 'alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
-  ribbonSurface('home', 'alignment.shrink-to-fit', 'alignment', 51, 'small', 'shrinkToFit'),
-  ribbonSurface('home', 'alignment.vertical-justify', 'alignment', 52, 'small', 'alignVerticalJustify'),
-  ribbonSurface('home', 'alignment.vertical-distributed', 'alignment', 53, 'small', 'alignVerticalDistributed'),
+  ribbonSurface('home', 'alignment.shrink-to-fit', 'alignment', 51, 'menu', 'shrinkToFit', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.vertical-justify', 'alignment', 52, 'menu', 'alignVerticalJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.vertical-distributed', 'alignment', 53, 'menu', 'alignVerticalDistributed', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   homeControl('orientation-menu', 'alignment', 55),
   ribbonSurface('home', 'alignment.orientation-horizontal', 'alignment', 56, 'menu', 'orientationHorizontal', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.orientation-up', 'alignment', 57, 'menu', 'orientationRotateUp', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
@@ -1151,7 +1219,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
   ribbonSurface('home', 'number.comma', 'number', 40, 'small', 'numberFormatComma'),
-  ribbonSurface('home', 'number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
+  ribbonSurface('home', 'number.decimal', 'number', 50, 'menu', 'numberFormatDecimal', ['wide', 'compact', 'narrow'], undefined, 'control.number-format'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
   homeControl('cell-styles-menu', 'styles', 5),
@@ -1165,8 +1233,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'styles.cell-style.total', 'styles', 18, 'menu', 'cellStyleTotal', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat'),
   ribbonSurface('home', 'styles.table', 'styles', 30, 'tile', 'formatAsTable'),
-  ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'tile', 'formatCells'),
-  ribbonSurface('home', 'styles.validation', 'styles', 50, 'tile', 'dataValidation'),
+  ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'menu', 'formatCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-format-menu'),
+  ribbonSurface('home', 'styles.validation', 'styles', 50, 'menu', 'dataValidation', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.template', 'styles', 60, 'tile', 'cellTemplate'),
   ribbonSurface('home', 'styles.editor', 'styles', 70, 'tile', 'cellEditor'),
   homeControl('cells-insert-menu', 'cells', 10),
@@ -1192,20 +1260,21 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.autosum.count', 'editing', 602, 'menu', 'autoSumCount', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
   ribbonSurface('home', 'editing.autosum.max', 'editing', 603, 'menu', 'autoSumMax', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
   ribbonSurface('home', 'editing.autosum.min', 'editing', 604, 'menu', 'autoSumMin', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
-  ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
-  ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'small', 'fillUp'),
-  ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'small', 'fillRight'),
-  ribbonSurface('home', 'editing.fill-left', 'editing', 68, 'small', 'fillLeft'),
-  ribbonSurface('home', 'editing.fill-series', 'editing', 69, 'small', 'fillSeries'),
-  ribbonSurface('home', 'editing.sort', 'editing', 70, 'small', 'sortRange'),
-  ribbonSurface('home', 'editing.filter', 'editing', 80, 'small', 'filterSelection'),
+  ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'tile', 'fillDown'),
+  ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'menu', 'fillUp', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'menu', 'fillRight', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-left', 'editing', 68, 'menu', 'fillLeft', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-series', 'editing', 69, 'menu', 'fillSeries', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.sort', 'editing', 70, 'tile', 'sortRange'),
+  ribbonSurface('home', 'editing.filter', 'editing', 80, 'menu', 'filterSelection', ['wide', 'compact', 'narrow'], undefined, 'editing.sort'),
   homeControl('clear-menu', 'editing', 90),
   ribbonSurface('home', 'editing.clear-contents', 'editing', 91, 'menu', 'clearContents', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-formats', 'editing', 92, 'menu', 'clearFormats', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-all', 'editing', 93, 'menu', 'clearAll', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-comments-notes', 'editing', 94, 'menu', 'clearCommentsNotes', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
-  ribbonSurface('home', 'editing.find', 'editing', 100, 'small', 'findReplace'),
+  ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
+  ribbonSurface('home', 'editing.go-to', 'editing', 101, 'menu', 'goTo', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1249,22 +1318,126 @@ export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = 
 
 export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES, ...SHAPE_FORMAT_RIBBON_SURFACES];
 
-const surfaceNode = (surface: RibbonSurfaceDefinition): RibbonLayoutNode => ({ kind: 'surface', id: surface.id, surfaceId: surface.id });
-const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups: readonly RibbonGroupId[]): RibbonLayoutSpec => ({
-  tab,
-  groups: groups.map((groupId) => {
-    const group = RIBBON_GROUP_CATALOG.find((candidate) => candidate.id === groupId);
-    if (!group) throw new Error(`Unknown Ribbon group: ${groupId}`);
-    const surfaces = RIBBON_TAB_SURFACES.filter((surface) => surface.tab === tab && surface.group === groupId && !surface.menuId);
-    return groupSpec(groupId, group.priority, columnNode(`${groupId}.layout`, ...surfaces.map(surfaceNode)));
-  }),
+const homeSurfaceNode = (surfaceId: string): RibbonLayoutNode => ({ kind: 'surface', id: surfaceId, surfaceId });
+
+/**
+ * The Home tab has a denser, two-dimensional composition than the other
+ * tabs. Keep that composition in the catalog so the renderer cannot fall
+ * back to an order-only horizontal list. The proportions follow the
+ * SpreadJS Designer Home tab: large actions form the visual anchors while
+ * related secondary actions share compact rows or columns.
+ */
+const homeRibbonLayout = (): RibbonLayoutSpec => ({
+  tab: 'home',
+  groups: [
+    groupSpec('history', 10, rowNode('history.layout', homeSurfaceNode('history.undo'), homeSurfaceNode('history.redo'))),
+    groupSpec(
+      'clipboard',
+      20,
+      rowNode(
+        'clipboard.layout',
+        homeSurfaceNode('clipboard.paste'),
+        columnNode('clipboard.secondary', homeSurfaceNode('clipboard.cut'), homeSurfaceNode('clipboard.copy'), homeSurfaceNode('control.format-painter')),
+      ),
+    ),
+    groupSpec(
+      'font',
+      30,
+      columnNode(
+        'font.layout',
+        rowNode('font.controls', homeSurfaceNode('control.font-family'), homeSurfaceNode('control.font-size'), homeSurfaceNode('control.font-increase'), homeSurfaceNode('control.font-decrease')),
+        rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('font.strikethrough'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color')),
+      ),
+    ),
+    groupSpec(
+      'alignment',
+      40,
+      rowNode(
+        'alignment.layout',
+        columnNode(
+          'alignment.controls',
+          rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
+        ),
+        columnNode(
+          'alignment.wrap-merge',
+          homeSurfaceNode('alignment.wrap'),
+          homeSurfaceNode('control.merge-menu'),
+        ),
+        homeSurfaceNode('control.orientation-menu'),
+      ),
+    ),
+    groupSpec(
+      'number',
+      50,
+      columnNode(
+        'number.layout',
+        rowNode('number.format', homeSurfaceNode('control.number-format')),
+        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+      ),
+    ),
+    groupSpec(
+      'styles',
+      60,
+      rowNode('styles.actions', homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('control.cell-styles-menu')),
+    ),
+    groupSpec('cells', 70, rowNode('cells.actions', homeSurfaceNode('control.cells-insert-menu'), homeSurfaceNode('control.cells-delete-menu'), homeSurfaceNode('control.cells-format-menu'))),
+    groupSpec(
+      'editing',
+      80,
+      rowNode(
+        'editing.layout',
+        columnNode(
+          'editing.stack',
+          homeSurfaceNode('control.auto-sum-menu'),
+          homeSurfaceNode('editing.fill-down'),
+          homeSurfaceNode('control.clear-menu'),
+        ),
+        homeSurfaceNode('editing.sort'),
+        homeSurfaceNode('editing.find'),
+      ),
+    ),
+  ],
 });
 
 /** One layout tree drives all Designer ribbon tabs with the same group shell. */
 export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
   ...BASE_RIBBON_LAYOUT_SPECS,
-  home: surfaceLayout('home', ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing']),
-  insert: surfaceLayout('insert', ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls']),
+  home: homeRibbonLayout(),
+  insert: {
+    tab: 'insert',
+    groups: [
+      groupSpec(
+        'insertSheets',
+        10,
+        rowNode('insertSheets.layout', homeSurfaceNode('sheets.table-sheet'), homeSurfaceNode('sheets.gantt-sheet'), homeSurfaceNode('sheets.report-sheet')),
+      ),
+      groupSpec(
+        'insertTables',
+        20,
+        rowNode('insertTables.layout', homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.slicer')),
+      ),
+      groupSpec(
+        'insertCharts',
+        30,
+        rowNode('insertCharts.layout', homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.barcode'), homeSurfaceNode('charts.sparkline')),
+      ),
+      groupSpec('insertDataCharts', 40, rowNode('insertDataCharts.layout', homeSurfaceNode('data-charts.insert'))),
+      groupSpec(
+        'illustrations',
+        50,
+        rowNode(
+          'illustrations.layout',
+          homeSurfaceNode('illustrations.picture'),
+          homeSurfaceNode('illustrations.shape'),
+          homeSurfaceNode('illustrations.camera'),
+          homeSurfaceNode('illustrations.controls'),
+        ),
+      ),
+      groupSpec('insertLinks', 60, rowNode('insertLinks.layout', homeSurfaceNode('links.hyperlink'))),
+      groupSpec('insertControls', 70, rowNode('insertControls.layout', homeSurfaceNode('controls.checkbox'), homeSurfaceNode('controls.textbox'))),
+    ],
+  },
 };
 
 export function getRibbonSurfaces(
@@ -1455,10 +1628,6 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('exportXlsx', 'file', 'workbook', RIBBON_TEXT.commands.exportXlsx, (context) => context.actions.onExportXlsx()),
   callback('importXlsx', 'file', 'workbook', RIBBON_TEXT.commands.importXlsx, (context) => context.actions.onImportXlsx()),
 
-  intent('openAutomate', 'automate', 'scripts', RIBBON_TEXT.commands.openAutomate, () => ({ type: 'panel.open', panel: 'automate' })),
-  dynamicCommand('runSampleScript', 'automate', 'scripts', RIBBON_TEXT.commands.runSampleScript, (context) => ({ commandId: 'automation.run', params: { source: context.sampleAutomationScript } })),
-  command('startRecording', 'automate', 'scripts', 'automation.record.start', RIBBON_TEXT.commands.startRecording, undefined, {}),
-  command('stopRecording', 'automate', 'scripts', 'automation.record.stop', RIBBON_TEXT.commands.stopRecording, undefined, {}),
 
   callback('calculateNow', 'formulas', 'calculation', RIBBON_TEXT.commands.calculateNow, (context) => context.actions.onRecalculate(), 'calculator'),
   intent('goalSeek', 'data', 'whatIf', RIBBON_TEXT.commands.goalSeek, () => ({ type: 'panel.open', panel: 'extended' })),

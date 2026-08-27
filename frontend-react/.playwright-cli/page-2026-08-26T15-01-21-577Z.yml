@@ -1,0 +1,75 @@
+- application "Spreadsheet Designer" [ref=f8e11]:
+  - generic [ref=f8e13]:
+    - generic [ref=f8e14]:
+      - button "Open workbook menu" [ref=f8e17] [cursor=pointer]: 文件
+      - tablist "Workbook ribbon tabs" [ref=f8e18]:
+        - tab "开始" [ref=f8e19] [cursor=pointer]
+        - tab "插入" [ref=f8e20] [cursor=pointer]
+        - tab "页面布局" [ref=f8e21] [cursor=pointer]
+        - tab "公式" [active] [selected] [ref=f8e22] [cursor=pointer]
+        - tab "数据" [ref=f8e23] [cursor=pointer]
+        - tab "审阅" [ref=f8e24] [cursor=pointer]
+        - tab "视图" [ref=f8e25] [cursor=pointer]
+        - tab "设置" [ref=f8e26] [cursor=pointer]
+        - tab "自动化" [ref=f8e27] [cursor=pointer]
+      - generic [ref=f8e28]: 引擎已连接
+    - generic [ref=f8e372]:
+      - generic [ref=f8e373]:
+        - generic [ref=f8e375]:
+          - button "立即计算" [ref=f8e376] [cursor=pointer]
+          - generic [ref=f8e381]:
+            - button "自动计算" [ref=f8e382] [cursor=pointer]
+            - button "More options" [ref=f8e388] [cursor=pointer]
+        - generic [ref=f8e391]: 计算
+      - separator [ref=f8e392]
+      - generic [ref=f8e393]:
+        - generic [ref=f8e395]:
+          - button "插入函数" [ref=f8e396] [cursor=pointer]
+          - button "自动求和 =SUM()" [ref=f8e402] [cursor=pointer]
+        - generic [ref=f8e406]: 函数库
+      - separator [ref=f8e407]
+      - generic [ref=f8e408]:
+        - generic [ref=f8e410]:
+          - generic [ref=f8e411]:
+            - button "追踪引用单元格" [ref=f8e412] [cursor=pointer]
+            - button "追踪从属单元格" [ref=f8e416] [cursor=pointer]
+          - generic [ref=f8e420]:
+            - button "删除箭头" [ref=f8e421] [cursor=pointer]
+            - button "显示公式" [ref=f8e425] [cursor=pointer]
+          - generic [ref=f8e428]:
+            - button "错误检查" [ref=f8e429] [cursor=pointer]
+            - button "公式求值" [ref=f8e433] [cursor=pointer]
+        - generic [ref=f8e437]: 公式审核
+      - separator [ref=f8e438]
+      - generic [ref=f8e439]:
+        - button "名称管理器" [ref=f8e442] [cursor=pointer]
+        - generic [ref=f8e445]: 定义名称
+  - form "Formula bar" [ref=f8e296]:
+    - textbox "选中单元格" [ref=f8e298]: A1
+    - button "打开名称管理器" [ref=f8e299] [cursor=pointer]
+    - button "取消公式编辑" [ref=f8e304] [cursor=pointer]
+    - button "应用公式" [ref=f8e307] [cursor=pointer]
+    - button "插入函数向导" [ref=f8e310] [cursor=pointer]: fx
+    - textbox "公式输入" [ref=f8e315]:
+      - /placeholder: ""
+  - generic [ref=f8e316]:
+    - grid "Spreadsheet canvas" [ref=f8e323]:
+      - scrollbar "horizontal scrollbar" [ref=f8e325]
+      - scrollbar "vertical scrollbar" [ref=f8e327]
+    - navigation "Worksheets" [ref=f8e329]:
+      - navigation "工作表" [ref=f8e330]:
+        - generic [ref=f8e331]:
+          - button "向左滚动工作表" [ref=f8e332] [cursor=pointer]
+          - button "向右滚动工作表" [ref=f8e335] [cursor=pointer]
+          - button "工作表列表" [ref=f8e340] [cursor=pointer]
+          - tab "Sheet1" [selected] [ref=f8e347] [cursor=pointer]
+          - button "添加工作表" [ref=f8e349] [cursor=pointer]
+          - button "更多工作表操作" [ref=f8e354] [cursor=pointer]
+  - contentinfo [ref=f8e362]:
+    - generic "Workbook status bar" [ref=f8e363]:
+      - generic [ref=f8e364]: 就绪
+      - button "Open keyboard shortcuts" [ref=f8e365] [cursor=pointer]: 快捷键
+      - generic [ref=f8e366]:
+        - button "Zoom out" [ref=f8e367] [cursor=pointer]: −
+        - button "Zoom in" [ref=f8e370] [cursor=pointer]: +
+        - generic [ref=f8e371]: 100%

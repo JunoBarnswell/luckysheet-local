@@ -35,7 +35,8 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         DrillPlan plan = plan(root, mutation.sheetId(), params);
         List<RangeRef> ranges = new ArrayList<>(plan.sourceRanges());
         ranges.add(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
-        ranges.add(plan.targetRange());
+        // The target sheet is created by this same atomic mutation, so it has
+        // no pre-existing protection state to resolve during prepare.
         return ranges;
     }
 

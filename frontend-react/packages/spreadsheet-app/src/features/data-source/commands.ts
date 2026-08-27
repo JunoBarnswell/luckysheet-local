@@ -173,14 +173,14 @@ function applyRegionAdd(workbook: CommandContext['workbook'], region: SheetDataR
   const sheet = workbook.getSheet(region.range.sheetId);
   if (sheet.dataRegions.some((entry) => entry.id === region.id)) throw new Error(`Sheet data region already exists: ${region.id}`);
   workbook.getDataSource(region.sourceId);
-  sheet.dataRegions.push(structuredClone(region));
+  sheet.addDataRegion(region);
 }
 
 function applyRegionRemove(workbook: CommandContext['workbook'], sheetId: string, regionId: string): void {
   const sheet = workbook.getSheet(sheetId);
   const index = sheet.dataRegions.findIndex((entry) => entry.id === regionId);
   if (index < 0) throw new Error(`Unknown sheet data region: ${regionId}`);
-  sheet.dataRegions.splice(index, 1);
+  sheet.removeDataRegionAt(index);
 }
 
 function applyDataSourceMutation(workbook: CommandContext['workbook'], id: DataSourceMutationId, params: unknown, sheetId: string): void {

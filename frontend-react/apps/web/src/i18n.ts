@@ -28,7 +28,6 @@ export type MessageKey =
   | 'data'
   | 'review'
   | 'view'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'

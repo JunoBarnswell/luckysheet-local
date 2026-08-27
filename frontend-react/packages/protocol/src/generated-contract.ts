@@ -7,7 +7,7 @@ export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION
 export type ContractErrorCode = typeof CONTRACT_ERROR_CODES[number];
 export type MutationDurability = 'transient' | 'local' | 'remote';
 export type PermissionCapability = 'navigate' | 'edit-cell' | 'format' | 'structure' | 'drawing' | 'protect' | 'share' | 'comment' | 'restore' | 'query' | 'script';
-export type ProtectionAction = "none" | "format" | "insert-rows" | "insert-columns" | "delete-rows" | "delete-columns" | "sort" | "auto-filter" | "edit-objects" | "select-locked" | "select-unlocked";
+export type ProtectionAction = "none" | "edit-cell" | "format" | "insert-rows" | "insert-columns" | "delete-rows" | "delete-columns" | "sort" | "auto-filter" | "edit-objects" | "select-locked" | "select-unlocked";
 export interface PermissionPolicy {
   capability: PermissionCapability;
   protectionAction: ProtectionAction;
@@ -30,7 +30,8 @@ export interface MutationCapability {
   collaborationKind?: 'cell-value' | 'cell-style' | 'clear' | 'insert-rows' | 'delete-rows' | 'insert-columns' | 'delete-columns' | 'move-range' | 'sort' | 'merge' | 'table-resize' | 'drawing' | 'comment' | 'pivot-config' | 'unknown';
 }
 export const MUTATION_CAPABILITIES = {
-  "automation.recording.changed": { durability: "transient", remote: false, schema: "AutomationRecordingChanged", minRole: "editor", rebasePolicy: "none", javaReducer: false, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
+  "sheet.extent.grow": { durability: "remote", remote: true, schema: "SheetExtentGrow", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
+  "sheet.extent.restore": { durability: "local", remote: false, schema: "SheetExtentRestore", minRole: "viewer", rebasePolicy: "none", javaReducer: false, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
   "pivot.chart.create": { durability: "transient", remote: false, schema: "PivotChartCreate", minRole: "editor", rebasePolicy: "none", javaReducer: false, protectionAction: "edit-objects", checksProtection: true, affectedRangeMode: "declared", objectScope: "drawing", replacement: "drawing.add" },
   "sheet.add": { durability: "remote", remote: true, schema: "SheetAdd", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "sheet.remove": { durability: "remote", remote: true, schema: "SheetRemove", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
@@ -41,6 +42,7 @@ export const MUTATION_CAPABILITIES = {
   "hyperlink.remove": { durability: "remote", remote: true, schema: "HyperlinkRemove", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "column.defaultWidth.resize": { durability: "remote", remote: true, schema: "DefaultColumnWidthResizePx", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "columns.visibility": { durability: "remote", remote: true, schema: "ColumnsVisibility", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "rows.visibility": { durability: "remote", remote: true, schema: "RowsVisibility", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cellTemplate.set": { durability: "remote", remote: true, schema: "CellStyleTemplateSet", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cellTemplate.remove": { durability: "remote", remote: true, schema: "CellStyleTemplateRemove", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cell.editor.set": { durability: "remote", remote: true, schema: "CellEditorSet", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
@@ -59,6 +61,7 @@ export const MUTATION_CAPABILITIES = {
   "drawing.rename": { durability: "remote", remote: true, schema: "DrawingRename", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "edit-objects", checksProtection: true, affectedRangeMode: "declared", objectScope: "drawing", collaborationKind: "drawing" },
 } as const satisfies Record<string, MutationCapability>;
 export const COMMAND_PERMISSION_POLICIES = {
+  "sheet.extent.grow": { capability: "edit-cell", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "sheet.cell.set": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "sheet.cell.commitText": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "find.replace": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
@@ -154,9 +157,6 @@ export const COMMAND_PERMISSION_POLICIES = {
   "print.export": { capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "query.load": { capability: "query", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "query.refresh": { capability: "query", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
-  "automation.run": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
-  "automation.record.start": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
-  "automation.record.stop": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "extended.whatIf.goalSeek": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "extended.whatIf.scenario": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "formula.autosum": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
@@ -217,7 +217,6 @@ export const COMMAND_PERMISSION_PREFIXES = [
   { prefix: "print.", ...{ capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
   { prefix: "pageLayout.", ...{ capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
   { prefix: "query.", ...{ capability: "query", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
-  { prefix: "automation.", ...{ capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
   { prefix: "extended.whatIf.", ...{ capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
   { prefix: "sheet.protect.", ...{ capability: "protect", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
   { prefix: "formula.audit.", ...{ capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
@@ -227,7 +226,8 @@ export const COMMAND_PERMISSION_PREFIXES = [
   { prefix: "ui.history.", ...{ capability: "edit-cell", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" } },
 ] as const satisfies readonly (PermissionPolicy & { prefix: string })[];
 export const MUTATION_PERMISSION_POLICIES = {
-  "automation.recording.changed": { capability: "script", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
+  "sheet.extent.grow": { capability: "edit-cell", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
+  "sheet.extent.restore": { capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
   "banded.set": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cell.editor.set": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cell.restore": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
@@ -255,6 +255,7 @@ export const MUTATION_PERMISSION_POLICIES = {
   "columns.inserted.restore": { capability: "structure", protectionAction: "insert-columns", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "columns.unhidden.all": { capability: "structure", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "columns.visibility": { capability: "structure", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "rows.visibility": { capability: "structure", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "comment.add": { capability: "comment", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "comment.remove": { capability: "comment", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "comment.reply": { capability: "comment", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },

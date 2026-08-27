@@ -73,13 +73,14 @@ export function parseReplacementValue(text: string, inputContext: CellInputInter
     if (text.startsWith('=')) throw new Error(`Invalid replacement formula: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
-  if (parsed.formula !== undefined) return { kind: 'formula', value: null, formula: parsed.formula, numberFormatIntent: parsed.numberFormatIntent };
+  const formatIntent = parsed.numberFormatIntent.kind === 'set' ? { numberFormatIntent: parsed.numberFormatIntent } : {};
+  if (parsed.formula !== undefined) return { kind: 'formula', value: null, formula: parsed.formula, ...formatIntent };
   const upper = text.toUpperCase();
   if (REPLACEMENT_ERROR_CODES.has(upper) && parsed.value === text && !isTextInputContext(inputContext)) return { kind: 'error', value: null, code: upper as FormulaErrorCode };
-  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
-  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
+  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value, ...formatIntent };
+  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value, ...formatIntent };
   if (parsed.value === null) return { kind: 'empty', value: null };
-  return { kind: 'text', value: parsed.value, numberFormatIntent: parsed.numberFormatIntent };
+  return { kind: 'text', value: parsed.value, ...formatIntent };
 }
 
 function isTextInputContext(context: CellInputInterpretationContext): boolean {

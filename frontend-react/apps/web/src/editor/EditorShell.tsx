@@ -259,13 +259,14 @@ export function EditorShell({
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
-                allSheets={state.sheets}
+                allSheets={state.projectionSheets}
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
                 tables={state.tables}
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
+                onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
                 onCommitCell={(value) => session.commitFormula(value)}
                 onBeginEdit={(initialText) => session.beginEdit(initialText)}
                 onCancelEdit={session.cancelEdit.bind(session)}

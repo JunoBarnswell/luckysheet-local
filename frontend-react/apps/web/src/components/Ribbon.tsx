@@ -3,12 +3,12 @@ import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-oox
 import {
   Button,
   Icon,
+  Inline,
   RibbonShell,
   Text,
   type RibbonTabId,
 } from '@react-sheets/ui-system';
 import {
-  SAMPLE_AUTOMATION_SCRIPT,
   buildRibbonCommand,
   RIBBON_COMMAND_CATALOG,
   getRibbonGroupDefinition,
@@ -161,7 +161,9 @@ function CatalogButton({
   ribbonLayoutNodeId,
   ribbonSurfaceId,
   mixed = false,
+  iconNode,
   iconOverride,
+  trailingNode,
 }: {
   id: RibbonCommandId;
   context: RibbonCommandContext;
@@ -174,7 +176,9 @@ function CatalogButton({
   testId?: string;
   ribbonLayoutNodeId?: string;
   ribbonSurfaceId?: string;
+  iconNode?: React.ReactNode;
   iconOverride?: import('@react-sheets/ui-system').IconName;
+  trailingNode?: React.ReactNode;
   mixed?: boolean;
 }) {
   const locale = useContext(RibbonLocaleContext);
@@ -182,7 +186,9 @@ function CatalogButton({
   const definition = getRibbonCommandDefinition(id);
   const enabled = isRibbonCommandEnabled(definition, context);
   const label = labelOverride ?? translateRibbonText(locale, definition.labelKey);
-  const compactIcon = layout !== 'wide' && definition.display === 'small';
+  const isNarrow = layout === 'narrow';
+  const compactIcon = isNarrow && definition.display === 'small';
+  const compactTile = isNarrow && textBelow;
   const active = !mixed && Boolean(definition.active?.(context));
   const mixedLabel = mixed ? `${label} (${homeText(locale, 'mixed')})` : label;
   return (
@@ -196,7 +202,8 @@ function CatalogButton({
       data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
       disabled={!enabled}
-      icon={iconOverride ?? definition.icon}
+      icon={iconNode ? undefined : iconOverride ?? definition.icon}
+      iconNode={iconNode}
       iconOnly={iconOnly || compactIcon}
       onClick={() => {
         const result = buildRibbonCommand(id, context);
@@ -205,12 +212,12 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? '!h-[64px] !min-h-0 !w-[68px] flex-col gap-0 rounded-none px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[66px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
     >
-      {iconOnly || compactIcon ? null : label}
+      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{label}{trailingNode}</Inline> : label}
     </Button>
   );
 }
@@ -405,7 +412,6 @@ export function Ribbon({
     activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
-    sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
   };
   const executeCatalogResult = (result: RibbonCommandResult) => {
     if (result.type === 'command') onCommand(result.descriptor);
@@ -419,7 +425,10 @@ export function Ribbon({
       context={catalogContext}
       onExecute={executeCatalogResult}
       iconOnly={options.iconOnly}
+      iconNode={options.iconNode}
       iconOverride={options.iconOverride}
+      trailingNode={options.trailingNode}
+      labelOverride={options.labelOverride}
       ribbonLayoutNodeId={options.ribbonLayoutNodeId}
       textBelow={options.tile}
       className={options.className}

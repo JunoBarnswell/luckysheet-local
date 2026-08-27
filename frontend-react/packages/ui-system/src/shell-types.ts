@@ -3,15 +3,40 @@ import type { ReactNode } from 'react';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';
 
 export const DESIGNER_GEOMETRY = {
-  viewportWidth: 1280,
-  viewportHeight: 720,
-  ribbonHeight: 142,
-  formulaBarHeight: 37,
-  workspaceHeight: 519,
+  viewportWidth: 1920,
+  viewportHeight: 1080,
+  ribbonHeight: 133,
+  formulaBarHeight: 48,
+  workspaceHeight: 877,
   sheetTabsHeight: 29,
   statusBarHeight: 22,
-  ribbonTabHeight: 36,
-  ribbonContentHeight: 106,
+  ribbonTabHeight: 32,
+  ribbonContentHeight: 101,
+} as const;
+
+/**
+ * The compact Designer Ribbon is a product contract, not a per-tab styling
+ * preference.  Hosts and tab renderers consume these values through the
+ * shared geometry above; the named values make the control-height rules
+ * explicit for visual tests and future surfaces.
+ */
+export const RIBBON_DENSITY = {
+  shellHeight: 133,
+  tabStripHeight: 32,
+  commandAreaHeight: 101,
+  groupContentHeight: 93,
+  largeCommandHeight: 72,
+  groupCaptionHeight: 12,
+} as const;
+
+export const RIBBON_DENSITY_CLASSES = {
+  shell: 'h-[133px]',
+  tabStrip: 'h-[32px]',
+  commandArea: 'h-[101px]',
+  groupContent: 'h-[93px]',
+  groupControls: 'h-[70px]',
+  largeCommand: '!h-[72px]',
+  groupCaption: 'h-[12px] leading-[12px]',
 } as const;
 
 export interface PeerCursor {
@@ -30,7 +55,6 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
@@ -53,10 +77,9 @@ export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'pageLayout',
   'formulas',
   'data',
-  'review',
   'view',
+  'review',
   'settings',
-  'automate',
 ] as const;
 
 export type RibbonLayoutMode = 'wide' | 'compact' | 'narrow';

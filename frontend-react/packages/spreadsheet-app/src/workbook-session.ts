@@ -49,12 +49,20 @@ import type {
   HyperlinkTarget,
   AssetRef,
 } from '@react-sheets/core-model';
-import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
+import {
+  createDefaultTextBoxTextFrame,
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
+  protectionResolver,
+  resolveFilterCellValue,
+  SHEET_COLUMN_GROWTH_CHUNK,
+  SHEET_ROW_GROWTH_CHUNK,
+} from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './features/pivot/engine';
+import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition, pivotResultMatchesRevision } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -190,16 +198,6 @@ import {
   type QueryResultSnapshot,
   type QuerySessionEntry,
 } from './features/query';
-import {
-  createCommandRecorder,
-  runAutomationScriptAsync,
-  SAMPLE_AUTOMATION_SCRIPT,
-  summarizeScriptResult,
-  type AutomationSnapshot,
-} from './features/automation';
-import type { AutomationWorkerFactory } from './features/automation';
-import { CommandRecorder } from './features/automation/command-recorder';
-import type { ScriptRunResult } from './features/automation';
 import type {
   GoalSeekParams,
   GoalSeekResult,
@@ -256,15 +254,47 @@ export interface WorkbookSessionOptions {
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
-  automationWorkerFactory?: AutomationWorkerFactory;
   /** Workbook calendar and one fixed calculation-cycle clock basis. */
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   xlsxExecution?: 'worker' | 'inline-test';
 }
 
 export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
+
+type SheetProjectionDomain = 'content' | 'dimensions' | 'formulaResults' | 'dataRules' | 'drawings' | 'review' | 'structure';
+
+interface SheetProjectionRevision {
+  content: number;
+  dimensions: number;
+  formulaResults: number;
+  dataRules: number;
+  drawings: number;
+  review: number;
+  structure: number;
+}
+
+const PROJECTION_DOMAINS: readonly SheetProjectionDomain[] = [
+  'content', 'dimensions', 'formulaResults', 'dataRules', 'drawings', 'review', 'structure',
+];
+
+function createSheetProjectionRevision(): SheetProjectionRevision {
+  return { content: 0, dimensions: 0, formulaResults: 0, dataRules: 0, drawings: 0, review: 0, structure: 0 };
+}
+
+function projectionDomainsForMutation(mutation: MutationInfo): readonly SheetProjectionDomain[] {
+  const id = mutation.id;
+  if (id.startsWith('drawing.') || id.startsWith('shape.') || id.startsWith('chart.') || id.startsWith('image.') || id.startsWith('camera.') || id.startsWith('formControl.')) return ['drawings'];
+  if (id.startsWith('comment.') || id.startsWith('note.') || id.startsWith('hyperlink.')) return ['review'];
+  if (id.startsWith('sheet.rows.') || id.startsWith('sheet.columns.') || id.startsWith('sheet.cellShift.') || id === 'sheet.add' || id === 'sheet.delete' || id === 'sheet.restore' || id === 'sheet.rename' || id === 'sheet.move') return PROJECTION_DOMAINS;
+  if (id.startsWith('sheet.row.') || id.startsWith('sheet.column.') || id.startsWith('sheet.dimension.') || id.startsWith('sheet.visibility.') || id.startsWith('sheet.freeze.')) return ['dimensions'];
+  if (id.startsWith('filter.') || id.startsWith('sheetTable.') || id.startsWith('dataRegion.') || id.startsWith('dataSource.') || id.startsWith('validation.') || id.startsWith('conditionalFormat.') || id.startsWith('outline.')) return ['dataRules', 'content'];
+  if (id.startsWith('pivot.')) return ['content', 'formulaResults', 'dataRules'];
+  if (id.startsWith('formula.')) return ['content', 'formulaResults'];
+  return ['content'];
+}
 
 export class CommandDispatchError extends Error {
   constructor(
@@ -295,6 +325,15 @@ export type ClipboardExecutionOutcome = SystemClipboardWriteOutcome & {
   privatePayloadStored: boolean;
 };
 
+/** Lightweight worksheet chrome state. It deliberately excludes Canvas projection data. */
+export interface SheetTabSnapshot {
+  id: string;
+  name: string;
+  kind: SheetKind;
+  hidden: boolean;
+  tabColor?: string;
+}
+
 export interface UiSnapshot extends DesignerState {
   unitId: string;
   workbookName: string;
@@ -310,7 +349,10 @@ export interface UiSnapshot extends DesignerState {
   formulaDraft: string;
   editingCell: { row: number; column: number } | null;
   zoom: number;
-  sheets: CanvasSheetSnapshot[];
+  /** All workbook sheets as cheap tab metadata; never a Canvas projection list. */
+  sheets: SheetTabSnapshot[];
+  /** Active sheet plus the explicitly required cross-sheet render sources only. */
+  projectionSheets: CanvasSheetSnapshot[];
   selectedSheet: CanvasSheetSnapshot;
   selectedFloatingId: string | null;
   selectedDrawingIds: readonly string[];
@@ -349,9 +391,6 @@ export interface UiSnapshot extends DesignerState {
   lastQueryResult: QueryResultSnapshot | null;
   queryConnectors: readonly string[];
   loadedQueries: readonly QueryResultSnapshot[];
-  automationRecording: boolean;
-  recordedScript: string;
-  lastScriptResult: ScriptRunResult | null;
   lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
   formulaAudit: FormulaAuditProjection;
   version: number;
@@ -466,7 +505,6 @@ export class WorkbookSession {
   private readonly editSession = new EditSession();
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
-  private readonly automationWorkerFactory?: AutomationWorkerFactory;
   private readonly xlsxExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
   private readyCallback: Promise<void> | null = null;
@@ -524,11 +562,6 @@ export class WorkbookSession {
   private printSnapshot: PrintSnapshot | null = null;
   private querySessions = new Map<string, QuerySessionEntry>();
   private lastQueryResult: QueryResultSnapshot | null = null;
-  private readonly commandRecorder: CommandRecorder = createCommandRecorder();
-  private recorderDetach: (() => void) | null = null;
-  private automationRecording = false;
-  private recordedScript = '';
-  private lastScriptResult: ScriptRunResult | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
@@ -547,6 +580,14 @@ export class WorkbookSession {
     return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
   }
 
+  /** WorkbookSession is the single allocator for worksheet identity. */
+  private allocateSheetId(): string {
+    const existing = new Set(this.runtime.model.getSheets().map((sheet) => sheet.id));
+    let sequence = 1;
+    while (existing.has(`sheet-${sequence}`)) sequence += 1;
+    return `sheet-${sequence}`;
+  }
+
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
   private persistenceDispose: (() => void) | null = null;
@@ -562,11 +603,13 @@ export class WorkbookSession {
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
-  private projectionGeneration = 0;
-  private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
+  /** Only true workbook replacement increments this epoch; ordinary edits stay sheet/domain scoped. */
+  private workbookProjectionEpoch = 0;
+  private readonly sheetProjectionRevisions = new Map<string, SheetProjectionRevision>();
+  private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -580,6 +623,7 @@ export class WorkbookSession {
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
       canonicalReferenceDate,
+      collaborationUrl,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
@@ -588,7 +632,6 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
     this.onReady = onReady;
     this.permission.setOnline(!this.runtime.localOnly);
@@ -707,8 +750,10 @@ export class WorkbookSession {
       this.emit();
     };
     this.runtime.handlers.onMutationsApplied = () => {
-      this.refreshPivotsForTrigger({ kind: 'source-change', mutations: this.runtime.drainPivotMutations() });
-      this.projectionGeneration += 1;
+      const mutations = this.runtime.drainPivotMutations();
+      this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
+      if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
+      else this.invalidateFormulaResultProjections();
       this.persistenceMetaDirty = true;
       this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
@@ -719,6 +764,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onDataSourceContentChanged = (sourceId) => {
       this.refreshPivotsForTrigger({ kind: 'source-content-change', sourceId });
+      this.invalidateDataSourceProjection(sourceId);
       this.refresh();
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -774,11 +820,17 @@ export class WorkbookSession {
     this.persistenceDispose = startPersistenceSession(this.runtime);
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
+      const persisted = this.runtime.workspaceRecord;
+      if (persisted) {
+        this.hasPendingOperations = persisted.pending.operations.length > 0;
+        this.persistenceChecksum = persisted.checksum;
+        this.persistenceMetaDirty = false;
+      }
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
-        this.projectionGeneration += 1;
+        this.invalidateAllSheetProjections();
         this.emit();
       }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
@@ -804,8 +856,6 @@ export class WorkbookSession {
     this.disposed = true;
     this.started = false;
     this.lifecycleGeneration += 1;
-    this.recorderDetach?.();
-    this.recorderDetach = null;
     this.collabDispose?.();
     this.persistenceDispose?.();
     this.collabDispose = null;
@@ -981,6 +1031,100 @@ export class WorkbookSession {
     };
   }
 
+  /** A mutation has an explicit worksheet, range, and projection-domain impact. */
+  private invalidateSheetProjection(sheetId: string, domains: readonly SheetProjectionDomain[]): void {
+    if (!this.runtime.model.sheets.has(sheetId)) return;
+    const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
+    for (const domain of domains) revision[domain] += 1;
+    this.sheetProjectionRevisions.set(sheetId, revision);
+  }
+
+  private invalidateProjectionMutations(mutations: readonly MutationInfo[]): void {
+    for (const mutation of mutations) this.invalidateSheetProjection(mutation.sheetId, projectionDomainsForMutation(mutation));
+  }
+
+  /** Formula completion has no mutation payload; invalidate only the formula-result domain. */
+  private invalidateFormulaResultProjections(): void {
+    for (const sheet of this.runtime.model.getSheets()) this.invalidateSheetProjection(sheet.id, ['formulaResults']);
+  }
+
+  private invalidateDataSourceProjection(sourceId: string): void {
+    for (const sheet of this.runtime.model.getSheets()) {
+      if (sheet.dataRegions.some((region) => region.sourceId === sourceId)) this.invalidateSheetProjection(sheet.id, ['content', 'dataRules', 'formulaResults']);
+    }
+  }
+
+  private invalidateAllSheetProjections(): void {
+    this.workbookProjectionEpoch += 1;
+    this.sheetProjectionRevisions.clear();
+    this.sheetProjectionCache.clear();
+  }
+
+  private projectionRevisionForSheet(sheetId: string): string {
+    const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
+    return `${this.workbookProjectionEpoch}:${PROJECTION_DOMAINS.map((domain) => revision[domain]).join(':')}`;
+  }
+
+  private getCanvasProjection(sheet: WorksheetModel): CanvasSheetSnapshot {
+    const cached = this.sheetProjectionCache.get(sheet.id);
+    const revision = this.projectionRevisionForSheet(sheet.id);
+    if (cached?.revision === revision) return cached.snapshot;
+    const snapshot = buildCanvasSheetSnapshot(
+      this.runtime.model,
+      sheet,
+      this.runtime.formula,
+      true,
+      this.runtime.pivotResults,
+      this.runtime.dataContent,
+      this.nativePackage?.dateSystem ?? '1900',
+      this.runtime.pivotErrors,
+      this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
+    );
+    this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
+    return snapshot;
+  }
+
+  /**
+   * A Canvas snapshot is created only for the active sheet and data that its
+   * visible objects can read. Tab chrome gets a separate metadata projection.
+   */
+  private getActiveProjectionSheetIds(activeSheet: WorksheetModel): ReadonlySet<string> {
+    const ids = new Set<string>([activeSheet.id]);
+    const addRange = (range: RangeRef | undefined): void => {
+      if (range && this.runtime.model.sheets.has(range.sheetId)) ids.add(range.sheetId);
+    };
+    for (const sparkline of activeSheet.sparklines) addRange(sparkline.sourceRange);
+    for (const payload of activeSheet.drawingPayloads.values()) {
+      switch (payload.kind) {
+        case 'camera':
+          addRange(payload.sourceRange);
+          break;
+        case 'chart':
+          for (const range of payload.sourceRanges) addRange(range);
+          addRange(payload.categoryRange);
+          break;
+        case 'data-chart': {
+          const sourceRange = payload.source.kind === 'table'
+            ? this.runtime.model.dataModel.tables.get(payload.source.tableId)?.sourceRange
+            : payload.source.kind === 'report-sheet' ? payload.source.range : undefined;
+          addRange(sourceRange);
+          break;
+        }
+        case 'form-control':
+          if ('inputRange' in payload) addRange(payload.inputRange);
+          if ('cellLink' in payload && payload.cellLink) ids.add(payload.cellLink.sheetId);
+          break;
+        default:
+          break;
+      }
+    }
+    if (activeSheet.reportSheet) {
+      const tableId = activeSheet.reportSheet.tableId;
+      if (tableId) addRange(this.runtime.model.dataModel.tables.get(tableId)?.sourceRange);
+    }
+    return ids;
+  }
+
   getUiSnapshot = (): UiSnapshot => {
     if (this.cachedUiSnapshot && this.cachedUiSnapshotGeneration === this.snapshotGeneration) {
       return this.cachedUiSnapshot;
@@ -989,31 +1133,26 @@ export class WorkbookSession {
     for (const sheetId of this.sheetProjectionCache.keys()) {
       if (!activeSheetIds.has(sheetId)) this.sheetProjectionCache.delete(sheetId);
     }
-    const sheets = this.runtime.model.getSheets().map((sheet) => {
-      const cached = this.sheetProjectionCache.get(sheet.id);
-      if (cached?.generation === this.projectionGeneration) return cached.snapshot;
-      const snapshot = buildCanvasSheetSnapshot(
-        this.runtime.model,
-        sheet,
-        this.runtime.formula,
-        true,
-        this.runtime.pivotResults,
-        this.runtime.dataContent,
-        this.nativePackage?.dateSystem ?? '1900',
-        this.runtime.pivotErrors,
-        this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
-      );
-      this.sheetProjectionCache.set(sheet.id, { generation: this.projectionGeneration, snapshot });
-      return snapshot;
-    });
-    const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
+    const modelSheets = this.runtime.model.getSheets();
+    const activeModelSheet = this.runtime.model.getSheet(this.activeSheetId);
+    const requiredProjectionIds = this.getActiveProjectionSheetIds(activeModelSheet);
+    const projectionSheets = modelSheets
+      .filter((sheet) => requiredProjectionIds.has(sheet.id))
+      .map((sheet) => this.getCanvasProjection(sheet));
+    const selectedSheet = projectionSheets.find((sheet) => sheet.id === this.activeSheetId) ?? this.getCanvasProjection(activeModelSheet);
+    const sheets: SheetTabSnapshot[] = modelSheets.map((sheet) => ({
+      id: sheet.id,
+      name: sheet.name,
+      kind: sheet.kind,
+      hidden: sheet.hidden,
+      ...(sheet.tabColor ? { tabColor: sheet.tabColor } : {}),
+    }));
     const selection = this.selectionService.getState();
     const collaboration = this.getCollaborationSnapshot();
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
     const activeEdit = this.editSession.active;
-    const activeModelSheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
       activeModelSheet.protectionRules,
@@ -1045,6 +1184,7 @@ export class WorkbookSession {
       editingCell: this.editSession.editingCell,
       zoom: this.zoom,
       sheets,
+      projectionSheets,
       selectedSheet,
       selectedFloatingId: this.selectedFloatingId,
       selectedDrawingIds: [...this.selectedDrawingIds],
@@ -1107,9 +1247,6 @@ export class WorkbookSession {
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
-      automationRecording: this.automationRecording,
-      recordedScript: this.recordedScript,
-      lastScriptResult: this.lastScriptResult,
       lastWhatIfResult: this.lastWhatIfResult,
       formulaAudit: this.runtime.formulaAudit.getProjection(),
       version: this.version,
@@ -1449,7 +1586,7 @@ export class WorkbookSession {
       const updateParams = resolvedParams as { pivotId?: string };
       if (updateParams.pivotId) this.refreshPivotsForTrigger({ kind: 'layout-change', pivotId: updateParams.pivotId });
     }
-    if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
+    if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh' && commandId !== 'sheet.extent.grow') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
     }
     if (commandId === 'history.restore') {
@@ -1857,7 +1994,7 @@ export class WorkbookSession {
       if (!this.runtime.commands.undo()) break;
     }
     this.ensureActiveSheetSession();
-    this.projectionGeneration += 1;
+    this.invalidateAllSheetProjections();
     this.reconcileDrawingSessionState();
     this.syncDraftFromPrimary();
     this.notify(`Restored session history to step ${index + 1}`);
@@ -1883,7 +2020,7 @@ export class WorkbookSession {
     hydrateRuntime(this.runtime, response.snapshot);
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
-    this.projectionGeneration += 1;
+    this.invalidateAllSheetProjections();
     this.reconcileDrawingSessionState();
     this.clearHistoryPreview();
     this.notify(`Restored workbook to revision ${revision}`);
@@ -1995,7 +2132,7 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.undo()) {
       this.ensureActiveSheetSession();
-      this.projectionGeneration += 1;
+      this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Undo applied');
@@ -2011,7 +2148,7 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.redo()) {
       this.ensureActiveSheetSession();
-      this.projectionGeneration += 1;
+      this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Redo applied');
@@ -2413,11 +2550,34 @@ export class WorkbookSession {
   }
 
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const requestedRow = active.row + rowDelta;
+    const requestedColumn = active.column + columnDelta;
+    if (requestedRow >= sheet.rowCount || requestedColumn >= sheet.columnCount) {
+      this.ensureSheetExtent(
+        requestedRow >= sheet.rowCount ? sheet.rowCount + SHEET_ROW_GROWTH_CHUNK : sheet.rowCount,
+        requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount,
+      );
+    }
     this.selectionService.movePrimary(rowDelta, columnDelta, opts);
     if (!this.editSession.editingCell) {
       this.syncDraftFromPrimary();
     }
     this.emit();
+  }
+
+  /** Grow the sparse worksheet address space through the sole local-durable command. */
+  ensureSheetExtent(rowCount: number, columnCount: number): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const targetRowCount = Math.min(MAX_SHEET_ROW_COUNT, Math.max(sheet.rowCount, Math.trunc(rowCount)));
+    const targetColumnCount = Math.min(MAX_SHEET_COLUMN_COUNT, Math.max(sheet.columnCount, Math.trunc(columnCount)));
+    if (targetRowCount === sheet.rowCount && targetColumnCount === sheet.columnCount) return;
+    this.runCommand('sheet.extent.grow', {
+      sheetId: this.activeSheetId,
+      rowCount: targetRowCount,
+      columnCount: targetColumnCount,
+    });
   }
 
   jumpEdge(direction: 'up' | 'down' | 'left' | 'right', extend = false): void {
@@ -2761,7 +2921,7 @@ export class WorkbookSession {
 
   createAdvancedSheet(kind: Exclude<SheetKind, 'worksheet'>): void {
     const table = this.buildSelectionWorkbookTable(kind === 'gantt-sheet' ? 'gantt' : kind === 'report-sheet' ? 'report' : 'table');
-    const id = this.insertCoordinator.allocateObjectId('sheet');
+    const id = this.allocateSheetId();
     const name = kind === 'table-sheet' ? '集算表' : kind === 'gantt-sheet' ? '甘特表' : '报表';
     const cells: SheetSnapshot['cells'] = {};
     const setCell = (row: number, column: number, value: CellData['value'], style?: CellStyle) => {
@@ -3186,7 +3346,7 @@ export class WorkbookSession {
       sheetId: string;
     };
     if (params.destination.kind === 'new-sheet') {
-      targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
+      targetSheetId = this.allocateSheetId();
       targetPosition = { row: 0, column: 0 };
       const names = new Set(this.runtime.model.getSheets().map((sheet) => sheet.name.toLocaleLowerCase()));
       let suffix = 1;
@@ -3398,7 +3558,7 @@ export class WorkbookSession {
   }
   drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
     if (paths.length === 0) return;
-    const targetSheetId = this.insertCoordinator.allocateObjectId('sheet');
+    const targetSheetId = this.allocateSheetId();
     this.runCommand('pivot.drillDown', {
       sheetId: this.activeSheetId,
       pivotId,
@@ -3463,7 +3623,10 @@ export class WorkbookSession {
       // Refresh is a calculation boundary. Build the authoritative source
       // engine from the current model so an explicit refresh cannot observe a
       // formula worker generation that was queued by the preceding edit.
-      const result = computePivotResult(this.runtime.model, pivot);
+      const retained = getLastValidPivotResult(this.runtime.model, pivotId);
+      const result = pivotResultMatchesRevision(this.runtime.model, pivot, retained)
+        ? retained
+        : computePivotResult(this.runtime.model, pivot);
       const revision = getPivotRevisionKey(this.runtime.model, pivot, this.runtime.formula);
       result.sourceRevision = revision.sourceRevision;
       result.layoutRevision = revision.layoutRevision;
@@ -3483,8 +3646,9 @@ export class WorkbookSession {
     const refreshIds = pivotIdsToRefresh(this.runtime.model, pivots, trigger);
     for (const pivotId of refreshIds) this.recomputePivotResult(pivotId);
     if (refreshIds.length > 0) {
-      this.projectionGeneration += 1;
-      this.sheetProjectionCache.clear();
+      for (const pivot of pivots) {
+        if (refreshIds.includes(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
+      }
     }
   }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
@@ -4129,17 +4293,6 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         inputContext,
-        entryIntent: {
-          kind: 'paste',
-          target: {
-            sheetId: this.activeSheetId,
-            startRow: sel.activeCell.row,
-            endRow: sel.activeCell.row + Math.max(0, internal.sourceExtent.rows - 1),
-            startColumn: sel.activeCell.column,
-            endColumn: sel.activeCell.column + Math.max(0, internal.sourceExtent.columns - 1),
-          },
-          validationDecision: { status: 'not-applicable' },
-        },
         transfer: internal.transfer,
         spec,
       } });
@@ -4169,17 +4322,6 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
       clipboard: { ...clipboard, transfer: 'copy' },
       inputContext,
-      entryIntent: {
-        kind: 'paste',
-        target: {
-          sheetId: this.activeSheetId,
-          startRow: sel.activeCell.row,
-          endRow: sel.activeCell.row + Math.max(0, clipboard.sourceExtent.rows - 1),
-          startColumn: sel.activeCell.column,
-          endColumn: sel.activeCell.column + Math.max(0, clipboard.sourceExtent.columns - 1),
-        },
-        validationDecision: { status: 'not-applicable' },
-      },
       transfer: 'copy',
         spec,
       } });
@@ -4216,7 +4358,7 @@ export class WorkbookSession {
   }
 
   addSheet(): void {
-    const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    const id = this.allocateSheetId();
     this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
     this.selectSheet(id);
     this.refresh();
@@ -4231,7 +4373,7 @@ export class WorkbookSession {
   }
   duplicateSheet(sheetId: string): void {
     const source = this.runtime.model.getSheet(sheetId);
-    const newId = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    const newId = this.allocateSheetId();
     const newName = `${source.name} (2)`;
     this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
     this.selectSheet(newId);
@@ -4863,66 +5005,6 @@ export class WorkbookSession {
     };
   }
 
-  async runAutomationScript(source: string): Promise<void> {
-    if (!this.canExecute('automation.run')) {
-      this.notify('You do not have permission to run scripts');
-      return;
-    }
-    this.lastScriptResult = await runAutomationScriptAsync(this.runtime.model, this.runtime.commands, source, undefined, {
-      workerFactory: this.automationWorkerFactory,
-    });
-    this.panels = { ...this.panels, active: 'automate', open: true };
-    this.ribbonTab = 'automate';
-    this.notify(summarizeScriptResult(this.lastScriptResult));
-    this.refresh();
-  }
-
-  async runSampleAutomationScript(): Promise<void> {
-    await this.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
-  }
-
-  startAutomationRecording(): void {
-    if (!this.canExecute('automation.record.start')) {
-      this.notify('You do not have permission to record scripts');
-      return;
-    }
-    this.runCommand('automation.record.start', {});
-    this.recorderDetach?.();
-    this.commandRecorder.start();
-    this.recorderDetach = this.runtime.commands.onCommand(this.commandRecorder.createListener());
-    this.automationRecording = true;
-    this.recordedScript = '';
-    this.panels = { ...this.panels, active: 'automate', open: true };
-    this.ribbonTab = 'automate';
-    this.notify('Recording automation script');
-    this.emit();
-  }
-
-  stopAutomationRecording(): string {
-    if (!this.canExecute('automation.record.stop')) {
-      this.notify('You do not have permission to stop recording');
-      return this.recordedScript;
-    }
-    this.recorderDetach?.();
-    this.recorderDetach = null;
-    this.runCommand('automation.record.stop', {});
-    const statements = this.commandRecorder.stop();
-    this.automationRecording = false;
-    this.recordedScript = this.commandRecorder.toScript();
-    this.notify(`Recorded ${statements.length} statement(s)`);
-    this.emit();
-    return this.recordedScript;
-  }
-
-  getAutomationSnapshot(): AutomationSnapshot {
-    return {
-      recording: this.automationRecording,
-      recordedScript: this.recordedScript,
-      lastResult: this.lastScriptResult,
-      lastRunAt: this.lastScriptResult ? new Date().toISOString() : null,
-    };
-  }
-
   runGoalSeek(params: GoalSeekParams): GoalSeekResult {
     if (!this.canExecute('extended.whatIf.goalSeek')) {
       this.notify('You do not have permission to run Goal Seek');
@@ -5356,8 +5438,10 @@ export class WorkbookSession {
     const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
     const sourceId = nextId('data-source');
+    const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
+    if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
     const encoded = await encodeSheetDataRegion({
-      sheet,
+      sheet: sheetSnapshot,
       range: sourceRange,
       sourceId,
       sourceName: `${sheet.name} data source`,

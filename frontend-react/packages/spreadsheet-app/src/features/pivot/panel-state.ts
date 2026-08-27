@@ -12,7 +12,8 @@ import type {
   WorkbookModel,
 } from '@react-sheets/core-model';
 import { allowsMultiplePivotFilters, pivotFilterIdentity } from '@react-sheets/core-model';
-import { computePivotResult, getPivotFieldCatalog, getPivotSourceRanges, normalizePivotDefinition } from './engine';
+import { PIVOT_RESULT_TREE_SCHEMA } from '@react-sheets/core-model';
+import { getPivotFieldCatalog, getPivotSourceRanges, normalizePivotDefinition } from './engine';
 
 export interface PivotPanelState {
   pivotId: string;
@@ -35,13 +36,12 @@ function hasPivotHeaderData(workbook: WorkbookModel, pivot: PivotModel): boolean
 export function buildPivotPanelState(workbook: WorkbookModel, pivot: PivotModel): PivotPanelState {
   assertPivotDefinition(workbook, pivot);
   const definition = normalizePivotDefinition(workbook, pivot);
-  const result = computePivotResult(workbook, pivot);
   return {
     pivotId: definition.id,
     sheetId: definition.target.sheetId,
     fieldCatalog: definition.fieldCatalog,
     layout: structuredClone(definition.layout),
-    resultTreeSchema: result.schema,
+    resultTreeSchema: PIVOT_RESULT_TREE_SCHEMA,
   };
 }
 

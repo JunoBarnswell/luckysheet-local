@@ -5,14 +5,25 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   registerSheetCommands,
   formatTsv,
-  parseTsv,
-  parseClipboardPayload,
+  parseTsv as parseTsvWithContext,
+  parseClipboardPayload as parseClipboardPayloadWithContext,
   shiftFormula,
   FormulaRelocationError,
   copyRangeToClipboardData,
   clipboardRepresentations,
   createPasteSpecialSpec,
+  createCellSetMutationParams,
+  isCellSetMutationParams,
 } from './index';
+import type { CellInputInterpretationContext } from './text-input';
+
+const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
+  sourceKind: 'clipboard-text', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
+  referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
+};
+const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
+const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
+const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd', 'Commands');
@@ -57,6 +68,30 @@ test('sheet commands: cell.set, range.set, and undo/redo', () => {
   assert.equal(sheet.cells.get(1, 0), undefined);
   assert.equal(sheet.cells.get(2, 1), undefined);
   assert.equal(sheet.cells.get(0, 0)?.value, 'Title'); // untouched
+});
+
+test('cell.set authority matches canonical values independently of JSON object key order', () => {
+  const workbook = new WorkbookModel('unit-cell-write-authority', 'Cell authority');
+  const sheet = workbook.getSheet('sheet-1');
+  const params = createCellSetMutationParams(sheet, {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    value: { value: 'ordered', style: { bold: true, italic: false } },
+  }, 'external-sync');
+  const reordered = {
+    column: params.column,
+    row: params.row,
+    sheetId: params.sheetId,
+    value: { style: { italic: false, bold: true }, value: 'ordered' },
+    writeAuthority: {
+      validationDecision: params.writeAuthority.validationDecision,
+      candidate: { style: { italic: false, bold: true }, value: 'ordered' },
+      target: params.writeAuthority.target,
+      kind: params.writeAuthority.kind,
+    },
+  };
+  assert.equal(isCellSetMutationParams(reordered), true);
 });
 
 test('checkbox editor normalizes supported values atomically and restores exact cells', () => {
@@ -173,9 +208,9 @@ test('checkbox cell text commits stay Boolean and reject unsupported input', () 
   const sheet = workbook.getSheet('sheet-1');
   sheet.cells.set(0, 0, { value: false, editor: { kind: 'checkbox' } });
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, true);
-  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe' }), /Checkbox source value/);
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe', inputContext: DIRECT_INPUT_CONTEXT }), /Checkbox source value/);
   assert.equal(sheet.cells.get(0, 0)?.value, true);
 });
 
@@ -506,7 +541,7 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
   const parsed = parseClipboardPayload(payload);
-  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, 43]);
+  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, null]);
   assert.equal(parsed.occupiedCells[1]?.value.formula, '=A1+1');
   assert.equal(clipboardRepresentations(parsed).some((entry) => entry.mime === 'text/html'), true);
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
@@ -593,19 +628,19 @@ test('sheet.cell.commitText is the single raw-text input path', () => {
     displayValue: 'old',
   });
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: ' 42 ' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: ' 42 ', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, ' 42 ');
   assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
   assert.equal(sheet.cells.get(0, 0)?.styleId, 'style-1');
   assert.equal(sheet.cells.get(0, 0)?.displayValue, undefined);
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 + 1' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 + 1', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
   assert.equal(sheet.cells.get(0, 0)?.value, null);
   assert.equal(sheet.cells.get(0, 0)?.style?.background, '#fff');
 
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 +' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 +', inputContext: DIRECT_INPUT_CONTEXT }),
     /formula|expression|unexpected/i,
   );
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
@@ -623,11 +658,11 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
   registerSheetCommands(runtime);
   const sheet = workbook.getSheet(sheetId(workbook));
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '42' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '42', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, 42);
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 1, text: 'TRUE' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 1, text: 'TRUE', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 1)?.value, true);
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 2, text: ' true ' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 2, text: ' true ', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 2)?.value, ' true ');
 
   sheet.dataValidations.push({
@@ -639,7 +674,7 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
     alertStyle: 'stop',
   });
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 1, column: 0, text: 'Rejected' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 1, column: 0, text: 'Rejected', inputContext: DIRECT_INPUT_CONTEXT }),
     /允许的列表|validation/i,
   );
   assert.equal(sheet.cells.get(1, 0), undefined);
@@ -652,10 +687,10 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
     state: 'ok',
   });
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 1, text: 'blocked' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 1, text: 'blocked', inputContext: DIRECT_INPUT_CONTEXT }),
     /spill child/i,
   );
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 0, text: 'anchor' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 0, text: 'anchor', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 
@@ -931,6 +966,29 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
 
   runtime.undo();
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
+});
+
+test('sheet.extent.grow expands sparse bounds without polluting edit history and rejects unsupported limits', () => {
+  const workbook = new WorkbookModel('unit-extent-grow', 'Extent growth');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const mutations: string[] = [];
+  runtime.onMutation((mutation) => mutations.push(mutation.id));
+
+  runtime.execute('sheet.extent.grow', { sheetId: sheet.id, rowCount: 2_000, columnCount: 52 });
+
+  assert.equal(sheet.rowCount, 2_000);
+  assert.equal(sheet.columnCount, 52);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+  assert.deepEqual(mutations, ['sheet.extent.grow']);
+
+  assert.throws(
+    () => runtime.execute('sheet.extent.grow', { sheetId: sheet.id, rowCount: 1_048_577, columnCount: 52 }),
+    /Invalid sheet\.extent\.grow command payload/,
+  );
+  assert.equal(sheet.rowCount, 2_000);
+  assert.equal(sheet.columnCount, 52);
 });
 
 test('sheet.cells.insert undo restores the complete affected band', () => {

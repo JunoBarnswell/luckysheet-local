@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
+import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 import {
   buildRestoreParams,
   describeRevisionMutations,
@@ -47,7 +48,8 @@ describe('history replay', () => {
   });
 
   it('replays revision mutations onto a base snapshot', () => {
-    const baseSnapshot = new WorkbookModel('wb-1', 'Replay').snapshot();
+    const workbook = new WorkbookModel('wb-1', 'Replay');
+    const baseSnapshot = workbook.snapshot();
     const revisions: RevisionRecord[] = [{
       operationId: 'op-1',
       revision: 1,
@@ -66,7 +68,11 @@ describe('history replay', () => {
         mutations: [{
           id: 'cell.set',
           sheetId: 'sheet-1',
-          params: { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'restored' } },
+          params: createCellSetMutationParams(
+            workbook.getSheet('sheet-1'),
+            { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'restored' } },
+            'external-sync',
+          ),
           affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
         }],
       },

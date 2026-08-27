@@ -7,6 +7,7 @@ import type {
   TableScalar,
 } from '@react-sheets/core-model';
 import { LocalDataBlockStore } from '../persistence/data-block-store';
+import { WorkspaceMemoryCoordinator } from '../persistence/memory';
 import {
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
@@ -99,7 +100,7 @@ function pivot(source: string): PivotDefinition {
 test('reads a canonical data-source Pivot source with stable field ids and source row paths', async () => {
   const source = sourceId();
   const stored = await block(source, 'block-1', 0, [['East', 10], ['West', 20], ['East', 30], ['North', 40]]);
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   await store.put(stored.ref, stored.bytes);
   const query = new DataSourceContentQuery(manifest(source, [stored.ref], 4), store);
   const events: string[] = [];
@@ -129,7 +130,7 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
 test('returns explicit missing state instead of an empty source when a block is unavailable', async () => {
   const source = sourceId();
   const missing = await block(source, 'missing-block', 0, [['East', 10]]);
-  const query = new DataSourceContentQuery(manifest(source, [missing.ref], 1), new LocalDataBlockStore());
+  const query = new DataSourceContentQuery(manifest(source, [missing.ref], 1), new LocalDataBlockStore(new WorkspaceMemoryCoordinator()));
   const result = await readPivotBlockSource(pivot(source), query);
 
   assert.equal(result.status, 'missing');
@@ -143,7 +144,7 @@ test('returns explicit error state for source identity mismatch and non-data-sou
   const querySource = sourceId();
   const otherSource = sourceId();
   const stored = await block(querySource, 'block-1', 0, [['East', 10]]);
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   await store.put(stored.ref, stored.bytes);
   const query = new DataSourceContentQuery(manifest(querySource, [stored.ref], 1), store);
 
@@ -160,7 +161,7 @@ test('returns explicit error state for source identity mismatch and non-data-sou
 test('source row identity is required and never replaced with a fabricated empty result', async () => {
   const source = sourceId();
   const stored = await block(source, 'block-1', 0, [['East', 10]]);
-  const store = new LocalDataBlockStore();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   await store.put(stored.ref, stored.bytes);
   const sourceManifest = manifest(source, [stored.ref], 1);
   delete sourceManifest.sourceSheetId;

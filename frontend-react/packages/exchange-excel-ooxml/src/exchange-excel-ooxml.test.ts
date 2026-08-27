@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createPivotMemberKey, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
-import { scanSnapshotFeatures } from './feature-scan';
+import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
@@ -46,6 +46,25 @@ describe('exchange-excel-ooxml', () => {
     assert.ok(features.includes('cells'));
     assert.ok(features.includes('formulas'));
     assert.ok(features.includes('merges'));
+  });
+
+  it('reports a preserved Excel data-table formula even when OOXML has no formula body', () => {
+    const workbook = new WorkbookModel('wb-data-table-diagnostic', 'Data table diagnostic');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(4, 2, {
+      value: 42,
+      formulaMetadata: {
+        kind: 'dataTable', range: 'C5:D7', preservedOnly: true,
+        reason: 'Excel data-table formulas are preserved from the source package',
+      },
+    });
+    assert.deepEqual(scanFormulaPreserveIssues(workbook.snapshot()), [
+      {
+        level: 'C', severity: 'warning', feature: 'data-table-formula', location: 'Sheet1!C5',
+        message: 'Formula is preserved-only: Excel data-table formulas are preserved from the source package',
+        preserved: true, status: 'preserved-only', reason: 'Excel data-table formulas are preserved from the source package',
+      },
+    ]);
   });
 
   it('scans canonical drawing payloads instead of removed per-kind collections', () => {
@@ -1175,6 +1194,27 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.definedNameModels?.[0]?.scope, 'sheet');
   });
 
+  it('keeps OOXML cell types authoritative for numeric-looking text, numbers, and date-formatted serials', async () => {
+    const workbook = new WorkbookModel('wb-cell-types', 'Cell types');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: '260' });
+    sheet.cells.set(0, 1, { value: 260 });
+    sheet.cells.set(0, 2, { value: 45292, numberFormat: 'm/d/yy' });
+    const imported = await importXlsx({
+      fileName: 'cell-types.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'A' },
+    });
+    const cells = imported.snapshot.sheets[0]!.cells['0']!;
+    assert.equal(cells['0']?.value, '260');
+    assert.equal(typeof cells['0']?.value, 'string');
+    assert.equal(cells['1']?.value, 260);
+    assert.equal(typeof cells['1']?.value, 'number');
+    assert.equal(cells['2']?.value, '2024-01-01T00:00:00.000Z');
+    assert.equal(typeof cells['2']?.value, 'string');
+    assert.equal(cells['2']?.numberFormat, 'm/d/yy');
+  });
+
   it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
@@ -1226,6 +1266,26 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(sheet.conditionalFormats?.length, 1);
     assert.equal(sheet.dataValidations?.length, 1);
     assert.equal(sheet.autoFilter?.range.endColumn, 1);
+  });
+
+  it('normalizes Excel and WPS formula namespaces only for runtime and restores their source spelling on export', async () => {
+    const workbook = new WorkbookModel('wb-formula-namespace', 'Formula namespace');
+    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8('<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetFormatPr defaultRowHeight="15"/><sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>_xlfn.SUM(A1:A1)</f><v>1</v></c><c r="C1"><f>_xlfn._xlws.FILTER(A1:A1,A1:A1&gt;0)</f><v>1</v></c><c r="D1"><f>_xlfn.SINGLE(A1)</f><v>1</v></c></row></sheetData></worksheet>');
+    const imported = await importXlsx({ fileName: 'formula-namespace.xlsx', buffer: zipXlsxPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+    const sheet = imported.snapshot.sheets[0]!;
+    assert.equal(sheet.cells['0']?.['1']?.formula, '=SUM(A1:A1)');
+    assert.equal(sheet.cells['0']?.['1']?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
+    assert.equal(sheet.cells['0']?.['2']?.formula, '=FILTER(A1:A1,A1:A1>0)');
+    assert.equal(sheet.cells['0']?.['2']?.formulaMetadata?.sourceFormula, '=_xlfn._xlws.FILTER(A1:A1,A1:A1>0)');
+    assert.equal(sheet.cells['0']?.['3']?.formula, '=@(A1)');
+    assert.equal(sheet.cells['0']?.['3']?.formulaMetadata?.sourceFormula, '=_xlfn.SINGLE(A1)');
+
+    const exported = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(imported.snapshot));
+    const worksheet = strFromU8(exported.files['xl/worksheets/sheet1.xml']!);
+    assert.match(worksheet, /_xlfn\.SUM\(A1:A1\)/);
+    assert.match(worksheet, /_xlfn\._xlws\.FILTER\(A1:A1,A1:A1&gt;0\)/);
+    assert.match(worksheet, /_xlfn\.SINGLE\(A1\)/);
   });
 
   it('accepts supported dynamic AutoFilters and rejects unknown OOXML types', () => {

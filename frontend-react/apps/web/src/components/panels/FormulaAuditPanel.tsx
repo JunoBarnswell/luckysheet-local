@@ -195,7 +195,9 @@ export function formatFormulaAuditAddress(address: CellAddress): string {
 
 export function formatFormulaAuditDependency(dependency: FormulaDependency): string {
   if (dependency.kind === 'cell') return formatFormulaAuditAddress(dependency.address);
-  return `${formatFormulaAuditAddress(dependency.start)}:${formatFormulaAuditAddress(dependency.end)}`;
+  if (dependency.kind === 'range') return `${formatFormulaAuditAddress(dependency.start)}:${formatFormulaAuditAddress(dependency.end)}`;
+  if (dependency.kind === 'name') return dependency.name;
+  return dependency.reference.type;
 }
 
 export function resolveFormulaAuditPanelState(

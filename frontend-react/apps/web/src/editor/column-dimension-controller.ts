@@ -1,6 +1,7 @@
 import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
-import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
+import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
+import { autoFitBlockTransferables, createAutoFitBlock, type AutoFitCellInput } from './column-autofit-protocol';
 
 export interface ColumnWidthPreview {
   widthPx: number;
@@ -130,16 +131,19 @@ export class ColumnDimensionController {
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Canvas text measurement is unavailable');
       const heights: Array<{ row: number; heightPx: number }> = [];
-      for (const row of [...new Set(rows)]) {
+      const requestedRows = [...new Set(rows)].filter((row) => row >= 0 && row < sheet.rowCount);
+      const occupiedByRow = occupiedCellsByRow(sheet, new Set(requestedRows));
+      const mergeRows = new MultiColumnMergeSpatialIndex(sheet.merges).intervalsForRows(requestedRows);
+      const filterButtons = new Set(sheet.filterButtons.map((button) => `${button.row}:${button.column}`));
+      for (const row of requestedRows) {
         if (controller.signal.aborted) throw new DOMException('AutoFit cancelled', 'AbortError');
-        if (row < 0 || row >= sheet.rowCount) continue;
         let heightPx = 8;
-        for (let column = sheet.usedRange.startColumn; column <= sheet.usedRange.endColumn; column += 1) {
-          if (sheet.merges.some((merge) => merge.range.startRow !== merge.range.endRow && row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn)) continue;
+        for (const column of occupiedByRow.get(row) ?? []) {
+          if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
           const cell = sheet.getCell(row, column);
           if (!cell || !hasMeasurableCellContent(cell)) continue;
           const availableWidthPx = sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
-          heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, sheet.filterButtons.some((button) => button.row === row && button.column === column)).heightPx);
+          heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, filterButtons.has(`${row}:${column}`)).heightPx);
         }
         heights.push({ row, heightPx });
         if (heights.length % 250 === 0) await yieldToBrowser();
@@ -154,27 +158,28 @@ export class ColumnDimensionController {
     const sheet = this.getSheet();
     const bounded = columns.filter((column) => column >= 0 && column < sheet.columnCount);
     if (!bounded.length) return [];
-    if (typeof Worker !== 'undefined' && sheet.usedRange.endRow - sheet.usedRange.startRow > 5_000) return this.measureInWorker(sheet, bounded, signal);
+    const cells = occupiedCellsForColumns(sheet, new Set(bounded));
+    if (typeof Worker !== 'undefined' && cells.length > 5_000) return this.measureInWorker(sheet, bounded, cells, signal);
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     if (!context) throw new Error('Canvas text measurement is unavailable');
     const filterButtons = new Set(sheet.filterButtons.map((cell) => `${cell.row}:${cell.column}`));
     const maxima = new Map(bounded.map((column) => [column, 8]));
-    for (let row = sheet.usedRange.startRow; row <= sheet.usedRange.endRow; row += 1) {
+    const mergeRows = new MultiColumnMergeSpatialIndex(sheet.merges).intervalsForRows([...new Set(cells.map((cell) => cell.row))]);
+    for (let index = 0; index < cells.length; index += 1) {
       if (signal.aborted) throw new DOMException('AutoFit cancelled', 'AbortError');
-      for (const column of bounded) {
-        if (isMultiColumnMerge(sheet, row, column)) continue;
-        const cell = sheet.getCell(row, column);
-        if (!cell || !hasMeasurableCellContent(cell)) continue;
-        const width = measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, undefined, filterButtons.has(`${row}:${column}`)).widthPx;
-        maxima.set(column, Math.max(maxima.get(column) ?? 8, width));
-      }
-      if ((row - sheet.usedRange.startRow) % 1_000 === 0) await yieldToBrowser();
+      const { row, column } = cells[index]!;
+      if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
+      const cell = sheet.getCell(row, column);
+      if (!cell || !hasMeasurableCellContent(cell)) continue;
+      const width = measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, undefined, filterButtons.has(`${row}:${column}`)).widthPx;
+      maxima.set(column, Math.max(maxima.get(column) ?? 8, width));
+      if (index > 0 && index % 1_000 === 0) await yieldToBrowser();
     }
     return [...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.max(8, widthPx) }));
   }
 
-  private async measureInWorker(sheet: CanvasSheetSnapshot, columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
+  private async measureInWorker(sheet: CanvasSheetSnapshot, columns: number[], occupiedCells: readonly OccupiedCellAddress[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
     const worker = new Worker(new URL('./column-autofit-worker.ts', import.meta.url), { type: 'module' });
     const taskId = `autofit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const result = new Promise<Array<{ column: number; widthPx: number }>>((resolve, reject) => {
@@ -186,17 +191,18 @@ export class ColumnDimensionController {
     });
     worker.postMessage({ kind: 'start', taskId, columns });
     const filterButtons = new Set(sheet.filterButtons.map((cell) => `${cell.row}:${cell.column}`));
+    const mergeRows = new MultiColumnMergeSpatialIndex(sheet.merges).intervalsForRows([...new Set(occupiedCells.map((cell) => cell.row))]);
     try {
-      for (let startRow = sheet.usedRange.startRow; startRow <= sheet.usedRange.endRow; startRow += 1_000) {
+      for (let start = 0; start < occupiedCells.length; start += 1_000) {
         if (signal.aborted) throw new DOMException('AutoFit cancelled', 'AbortError');
-        const cells: Array<{ column: number; value: string; style?: CellRenderStyle; filterButton?: boolean }> = [];
-        const endRow = Math.min(sheet.usedRange.endRow, startRow + 999);
-        for (let row = startRow; row <= endRow; row += 1) for (const column of columns) {
-          if (isMultiColumnMerge(sheet, row, column)) continue;
+        const cells: AutoFitCellInput[] = [];
+        for (const { row, column } of occupiedCells.slice(start, start + 1_000)) {
+          if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
           const cell = sheet.getCell(row, column);
           if (cell && hasMeasurableCellContent(cell)) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, filterButton: filterButtons.has(`${row}:${column}`) });
         }
-        worker.postMessage({ kind: 'chunk', taskId, cells });
+        const block = createAutoFitBlock(cells);
+        worker.postMessage({ kind: 'chunk', taskId, block }, autoFitBlockTransferables(block));
         await yieldToBrowser();
       }
       worker.postMessage({ kind: 'finish', taskId });
@@ -207,10 +213,88 @@ export class ColumnDimensionController {
   }
 }
 
-function isMultiColumnMerge(sheet: CanvasSheetSnapshot, row: number, column: number): boolean {
-  return sheet.merges.some((merge) => merge.range.startColumn !== merge.range.endColumn
-    && row >= merge.range.startRow && row <= merge.range.endRow
-    && column >= merge.range.startColumn && column <= merge.range.endColumn);
+interface OccupiedCellAddress {
+  row: number;
+  column: number;
+}
+
+function occupiedCellsForColumns(sheet: CanvasSheetSnapshot, columns: ReadonlySet<number>): OccupiedCellAddress[] {
+  const cells: OccupiedCellAddress[] = [];
+  sheet.forEachOccupiedCell((row, column) => {
+    if (columns.has(column)) cells.push({ row, column });
+  }, { columns });
+  return cells;
+}
+
+function occupiedCellsByRow(sheet: CanvasSheetSnapshot, rows: ReadonlySet<number>): Map<number, number[]> {
+  const cells = new Map<number, number[]>();
+  sheet.forEachOccupiedCell((row, column) => {
+    if (!rows.has(row)) return;
+    const columns = cells.get(row) ?? [];
+    columns.push(column);
+    cells.set(row, columns);
+  }, { rows });
+  return cells;
+}
+
+interface MergeColumnInterval {
+  startColumn: number;
+  endColumn: number;
+}
+
+/**
+ * Sparse row sweep for AutoFit. It replaces the former requestedRows × merges
+ * filter loop, while keeping merge ownership in the snapshot contract.
+ */
+class MultiColumnMergeSpatialIndex {
+  private readonly merges: readonly CanvasSheetSnapshot['merges'][number][];
+
+  constructor(merges: readonly CanvasSheetSnapshot['merges'][number][]) {
+    this.merges = merges
+      .filter((merge) => merge.range.startColumn !== merge.range.endColumn)
+      .slice()
+      .sort((left, right) => left.range.startRow - right.range.startRow || left.range.endRow - right.range.endRow);
+  }
+
+  intervalsForRows(rows: readonly number[]): ReadonlyMap<number, readonly MergeColumnInterval[]> {
+    const result = new Map<number, readonly MergeColumnInterval[]>();
+    const orderedRows = [...new Set(rows)].sort((left, right) => left - right);
+    const active: CanvasSheetSnapshot['merges'][number][] = [];
+    let next = 0;
+    for (const row of orderedRows) {
+      while (next < this.merges.length && this.merges[next]!.range.startRow <= row) active.push(this.merges[next++]!);
+      const intervals = active
+        .filter((merge) => merge.range.endRow >= row)
+        .map((merge) => ({ startColumn: merge.range.startColumn, endColumn: merge.range.endColumn }))
+        .sort((left, right) => left.startColumn - right.startColumn || left.endColumn - right.endColumn);
+      if (intervals.length > 0) result.set(row, mergeIntervals(intervals));
+    }
+    return result;
+  }
+}
+
+function mergeIntervals(intervals: readonly MergeColumnInterval[]): readonly MergeColumnInterval[] {
+  const merged: MergeColumnInterval[] = [];
+  for (const interval of intervals) {
+    const previous = merged.at(-1);
+    if (previous && interval.startColumn <= previous.endColumn + 1) previous.endColumn = Math.max(previous.endColumn, interval.endColumn);
+    else merged.push({ ...interval });
+  }
+  return merged;
+}
+
+function isCoveredByMultiColumnMerge(intervals: readonly MergeColumnInterval[] | undefined, column: number): boolean {
+  if (!intervals) return false;
+  let low = 0;
+  let high = intervals.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const interval = intervals[middle]!;
+    if (column < interval.startColumn) high = middle - 1;
+    else if (column > interval.endColumn) low = middle + 1;
+    else return true;
+  }
+  return false;
 }
 
 function yieldToBrowser(): Promise<void> {

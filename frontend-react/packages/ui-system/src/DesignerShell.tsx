@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
 import { Box } from './layout';
 import type { DesignerShellProps } from './shell-types';
+import { RIBBON_DENSITY_CLASSES } from './shell-types';
 
 /**
  * Excel Designer shell geometry is a product contract, not a responsive guess:
- * ribbon 142px, formula bar 37px, workbook 519px, status bar 22px at 1280x720.
+ * ribbon 133px, formula bar 48px, workbook 877px, status bar 22px at 1920x1080.
  * Sheet tabs live inside the workbook region like the reference Designer.
  */
 export function DesignerShell({ children, floatingOverlay, formulaBar, isBusy, ribbon, sheetTabs, statusBar, workspacePhase }: DesignerShellProps): ReactNode {
@@ -18,10 +19,10 @@ export function DesignerShell({ children, floatingOverlay, formulaBar, isBusy, r
       data-workspace-phase={workspacePhase}
       role="application"
     >
-      <Box as="section" className="h-[142px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-ribbon">
+      <Box as="section" className={`${RIBBON_DENSITY_CLASSES.shell} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-ribbon">
         {ribbon}
       </Box>
-      <Box as="section" className="h-[37px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-formula-bar">
+      <Box as="section" className="h-[48px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-formula-bar">
         {formulaBar}
       </Box>
       <Box as="section" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white" data-testid="designer-workspace">

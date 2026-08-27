@@ -12,7 +12,8 @@ public final class GeneratedWorkbookContract {
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
-        Map.entry("automation.recording.changed", new MutationCapability("transient", false, "AutomationRecordingChanged", "editor", "none", false, "none", false, "none", "workbook")),
+        Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
+        Map.entry("sheet.extent.restore", new MutationCapability("local", false, "SheetExtentRestore", "viewer", "none", false, "none", false, "none", "worksheet")),
         Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false, "edit-objects", true, "declared", "drawing")),
         Map.entry("sheet.add", new MutationCapability("remote", true, "SheetAdd", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.remove", new MutationCapability("remote", true, "SheetRemove", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -23,6 +24,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("hyperlink.remove", new MutationCapability("remote", true, "HyperlinkRemove", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("column.defaultWidth.resize", new MutationCapability("remote", true, "DefaultColumnWidthResizePx", "editor", "exact", true, "format", true, "declared", "range")),
         Map.entry("columns.visibility", new MutationCapability("remote", true, "ColumnsVisibility", "editor", "range", true, "edit-cell", true, "declared", "range")),
+        Map.entry("rows.visibility", new MutationCapability("remote", true, "RowsVisibility", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("cellTemplate.set", new MutationCapability("remote", true, "CellStyleTemplateSet", "editor", "exact", true, "format", true, "declared", "range")),
         Map.entry("cellTemplate.remove", new MutationCapability("remote", true, "CellStyleTemplateRemove", "editor", "exact", true, "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new MutationCapability("remote", true, "CellEditorSet", "editor", "range", true, "format", true, "declared", "range")),
@@ -41,7 +43,8 @@ public final class GeneratedWorkbookContract {
         Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true, "edit-objects", true, "declared", "drawing"))
     );
     public static final Map<String, PermissionPolicy> MUTATION_PERMISSIONS = Map.ofEntries(
-        Map.entry("automation.recording.changed", new PermissionPolicy("script", "none", false, "none", "workbook")),
+        Map.entry("sheet.extent.grow", new PermissionPolicy("edit-cell", "none", false, "none", "worksheet")),
+        Map.entry("sheet.extent.restore", new PermissionPolicy("navigate", "none", false, "none", "worksheet")),
         Map.entry("banded.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
@@ -69,6 +72,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("columns.inserted.restore", new PermissionPolicy("structure", "insert-columns", true, "declared", "range")),
         Map.entry("columns.unhidden.all", new PermissionPolicy("structure", "edit-cell", true, "declared", "range")),
         Map.entry("columns.visibility", new PermissionPolicy("structure", "edit-cell", true, "declared", "range")),
+        Map.entry("rows.visibility", new PermissionPolicy("structure", "edit-cell", true, "declared", "range")),
         Map.entry("comment.add", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("comment.remove", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("comment.reply", new PermissionPolicy("comment", "none", false, "none", "workbook")),

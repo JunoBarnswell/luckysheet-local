@@ -18,7 +18,8 @@
     "INTERNAL_ERROR"
   ],
   "mutations": {
-    "automation.recording.changed": { "durability": "transient", "remote": false, "schema": "AutomationRecordingChanged", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false },
+    "sheet.extent.grow": { "durability": "remote", "remote": true, "schema": "SheetExtentGrow", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "sheet.extent.restore": { "durability": "local", "remote": false, "schema": "SheetExtentRestore", "minRole": "viewer", "rebasePolicy": "none", "javaReducer": false },
     "pivot.chart.create": { "durability": "transient", "remote": false, "schema": "PivotChartCreate", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false, "replacement": "drawing.add" },
     "sheet.add": { "durability": "remote", "remote": true, "schema": "SheetAdd", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "sheet.remove": { "durability": "remote", "remote": true, "schema": "SheetRemove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
@@ -29,6 +30,7 @@
     "hyperlink.remove": { "durability": "remote", "remote": true, "schema": "HyperlinkRemove", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
     "column.defaultWidth.resize": { "durability": "remote", "remote": true, "schema": "DefaultColumnWidthResizePx", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "columns.visibility": { "durability": "remote", "remote": true, "schema": "ColumnsVisibility", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
+    "rows.visibility": { "durability": "remote", "remote": true, "schema": "RowsVisibility", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
     "cellTemplate.set": { "durability": "remote", "remote": true, "schema": "CellStyleTemplateSet", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "cellTemplate.remove": { "durability": "remote", "remote": true, "schema": "CellStyleTemplateRemove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "cell.editor.set": { "durability": "remote", "remote": true, "schema": "CellEditorSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
@@ -60,6 +62,7 @@
       "select-unlocked": "selectUnlocked"
     },
     "commands": {
+      "sheet.extent.grow": { "capability": "edit-cell", "protectionAction": "none", "checksProtection": false },
       "sheet.cell.set": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cell.commitText": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "find.replace": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -155,9 +158,6 @@
       "print.export": { "capability": "navigate", "protectionAction": "none", "checksProtection": false },
       "query.load": { "capability": "query", "protectionAction": "none", "checksProtection": false },
       "query.refresh": { "capability": "query", "protectionAction": "none", "checksProtection": false },
-      "automation.run": { "capability": "script", "protectionAction": "none", "checksProtection": false },
-      "automation.record.start": { "capability": "script", "protectionAction": "none", "checksProtection": false },
-      "automation.record.stop": { "capability": "script", "protectionAction": "none", "checksProtection": false },
       "extended.whatIf.goalSeek": { "capability": "script", "protectionAction": "none", "checksProtection": false },
       "extended.whatIf.scenario": { "capability": "script", "protectionAction": "none", "checksProtection": false },
       "formula.autosum": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -218,7 +218,6 @@
       { "prefix": "print.", "capability": "navigate", "protectionAction": "none", "checksProtection": false },
       { "prefix": "pageLayout.", "capability": "navigate", "protectionAction": "none", "checksProtection": false },
       { "prefix": "query.", "capability": "query", "protectionAction": "none", "checksProtection": false },
-      { "prefix": "automation.", "capability": "script", "protectionAction": "none", "checksProtection": false },
       { "prefix": "extended.whatIf.", "capability": "script", "protectionAction": "none", "checksProtection": false },
       { "prefix": "sheet.protect.", "capability": "protect", "protectionAction": "none", "checksProtection": false },
       { "prefix": "formula.audit.", "capability": "navigate", "protectionAction": "none", "checksProtection": false },
@@ -228,7 +227,8 @@
       { "prefix": "ui.history.", "capability": "edit-cell", "protectionAction": "none", "checksProtection": false }
     ],
     "mutations": {
-      "automation.recording.changed": { "capability": "script", "protectionAction": "none", "checksProtection": false },
+      "sheet.extent.grow": { "capability": "edit-cell", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "worksheet" },
+      "sheet.extent.restore": { "capability": "navigate", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "worksheet" },
       "banded.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cell.editor.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cell.restore": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -256,6 +256,7 @@
       "columns.inserted.restore": { "capability": "structure", "protectionAction": "insert-columns", "checksProtection": true },
       "columns.unhidden.all": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
       "columns.visibility": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
+      "rows.visibility": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
       "comment.add": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.reply": { "capability": "comment", "protectionAction": "none", "checksProtection": false },

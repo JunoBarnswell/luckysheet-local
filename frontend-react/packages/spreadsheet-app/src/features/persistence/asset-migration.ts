@@ -47,6 +47,7 @@ function dataUrlToBlob(value: string): Blob {
   const match = /^data:(image\/[A-Za-z0-9.+-]{1,80})(;base64)?,(.*)$/s.exec(value);
   if (!match) throw new Error('ASSET_MIGRATION_INVALID_DATA_URL: image source is not a supported data URL');
   const [, mimeType, encoding, payload] = match;
+  if (!mimeType || payload === undefined) throw new Error('ASSET_MIGRATION_INVALID_DATA_URL: image source is incomplete');
   if (encoding) {
     const binary = atob(payload);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));

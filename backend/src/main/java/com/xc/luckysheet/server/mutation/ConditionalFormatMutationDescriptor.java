@@ -14,17 +14,9 @@ import java.util.Set;
 
 /** Canonical worksheet rule-order reducer shared by Home and contextual surfaces. */
 final class ConditionalFormatMutationDescriptor extends CanonicalJsonMutationDescriptor {
-    private final String mutationId;
-
     ConditionalFormatMutationDescriptor(String mutationId) {
         super(mutationId, WorkbookAclRole.EDITOR);
         if (!"cf.reorder".equals(mutationId)) throw new IllegalArgumentException("Unsupported conditional-format mutation: " + mutationId);
-        this.mutationId = mutationId;
-    }
-
-    @Override
-    public String id() {
-        return mutationId;
     }
 
     @Override

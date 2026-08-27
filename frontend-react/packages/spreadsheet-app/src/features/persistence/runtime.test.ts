@@ -3,13 +3,12 @@ import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { ApiRequestError } from '@react-sheets/protocol';
 import { createSpreadsheetRuntime, startCollaborationSession, startPersistenceSession } from '../../runtime';
-import { LocalWorkspaceStore } from './storage';
+import { WorkspacePersistence } from './storage';
 
 describe('local workspace runtime persistence', () => {
   it('restores local-only workspaces without invoking API or collaboration transport', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
-      persistence: { databaseName: 'runtime-local-only-test' },
     });
     let apiCalls = 0;
     runtime.api = {
@@ -32,19 +31,26 @@ describe('local workspace runtime persistence', () => {
   it('checkpoints the canonical snapshot after each root transaction', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
-      persistence: { databaseName: 'runtime-checkpoint-test' },
     });
     const dispose = startPersistenceSession(runtime);
     await runtime.persistenceReady;
     const before = runtime.localRevision;
     runtime.collaboration = null;
+    const target = { sheetId: runtime.model.primarySheetId, row: 0, column: 0 };
+    const value = { value: 'checkpointed' };
     runtime.commands.execute('sheet.cell.set', {
       sheetId: runtime.model.primarySheetId,
       row: 0,
       column: 0,
-      value: { value: 'checkpointed' },
+      value,
+      entryIntent: {
+        kind: 'direct-entry',
+        target,
+        candidate: value,
+        validationDecision: { status: 'accepted' },
+      },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await runtime.checkpointWorkspace(false);
     dispose();
     assert.equal(runtime.localRevision, before + 1);
     assert.equal(runtime.workspaceRecord?.snapshot.schema, 'WorkbookSnapshot');
@@ -52,9 +58,9 @@ describe('local workspace runtime persistence', () => {
   });
 
   it('uses a stored local-only record before any network path', async () => {
-    const databaseName = 'runtime-local-first-test';
+    const persistence = new WorkspacePersistence();
     const snapshot = new WorkbookModel('wb-server-default', 'Stored locally').snapshot();
-    const store = new LocalWorkspaceStore({ databaseName });
+    const store = persistence.store;
     await store.create({
       unitId: snapshot.unitId,
       snapshot,
@@ -64,7 +70,7 @@ describe('local workspace runtime persistence', () => {
       operations: [],
       nextClientSequence: 0,
     });
-    const runtime = createSpreadsheetRuntime({ persistence: { databaseName } });
+    const runtime = createSpreadsheetRuntime({ workspacePersistence: persistence });
     let apiCalls = 0;
     runtime.api = {
       getSnapshot: async () => { apiCalls += 1; throw new Error('API must not be called'); },
@@ -82,7 +88,6 @@ describe('local workspace runtime persistence', () => {
   it('starts a usable local workbook when the connected backend returns a server error', async () => {
     const runtime = createSpreadsheetRuntime({
       authTokenProvider: () => 'verified-host-token',
-      persistence: { databaseName: 'runtime-backend-error-test' },
     });
     const phases: string[] = [];
     const saveStates: string[] = [];

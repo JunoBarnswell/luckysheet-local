@@ -226,6 +226,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
+    calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
     dataModel: { sources: [], tables: [], relationships: [], views: [] },
     sheets: [{
       kind: 'worksheet', id: 'sheet-1',

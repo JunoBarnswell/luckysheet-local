@@ -89,7 +89,7 @@ class WorkbookCatalogServiceTest {
                 "actor", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
                 WorkbookLifecycle.ACTIVE, null);
         JsonNode snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":5,"unitId":"source-1","name":"Source","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"printDocuments":[{"schema":"PrintDocument","unitId":"source-1","sheetId":"sheet-1"}],"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{}}]}
+                {"schema":"WorkbookSnapshot","version":8,"unitId":"source-1","name":"Source","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"printDocuments":[{"schema":"PrintDocument","unitId":"source-1","sheetId":"sheet-1"}],"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
                 """);
         when(workbooks.findById("source-1")).thenReturn(Optional.of(source));
         when(workbooks.existsById(any())).thenReturn(false);

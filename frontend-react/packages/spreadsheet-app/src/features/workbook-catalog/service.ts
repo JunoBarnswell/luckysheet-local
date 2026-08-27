@@ -214,11 +214,10 @@ function assertRole(record: WorkspaceRecord, action: string, allowed: readonly W
 }
 
 function renameSnapshot(snapshot: WorkbookSnapshot, name: string): WorkbookSnapshot {
-  const next = clone(snapshot);
-  next.name = name.trim();
-  if (!next.name) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
-  if (next.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-  return next;
+  const nextName = name.trim();
+  if (!nextName) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
+  if (nextName.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
+  return { ...snapshot, name: nextName };
 }
 
 function newOperationId(): string {
@@ -227,10 +226,11 @@ function newOperationId(): string {
 }
 
 function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
-  const next = clone(snapshot);
-  next.unitId = unitId;
-  next.printDocuments = (next.printDocuments ?? []).map((document) => ({ ...document, unitId }));
-  return next;
+  return {
+    ...snapshot,
+    unitId,
+    printDocuments: (snapshot.printDocuments ?? []).map((document) => ({ ...document, unitId })),
+  };
 }
 
 export class WorkbookCatalogService {
@@ -353,14 +353,14 @@ export class WorkbookCatalogService {
     if (!record) throw new WorkbookCatalogError('not-found', `Workbook session was not persisted: ${resolution.unitId}`);
     if (record.metadata.lifecycle === 'trashed') throw new WorkbookCatalogError('not-found', `Workbook is in trash: ${resolution.unitId}`);
     const openedAt = this.now().toISOString();
-    record = await this.persistence.updateUserState(resolution.unitId, { lastOpenedAt: openedAt });
+    record = await this.persistence.updateUserState(resolution.unitId, { lastOpenedAt: openedAt }, record.storageRevision);
     if (resolution.mode === 'remote' && this.canUseRemote()) {
       try {
         const remoteState = await this.requireRemote().getWorkbookUserState(resolution.unitId);
         record = await this.persistence.updateUserState(resolution.unitId, {
           ...userStateFromRemote(remoteState),
           lastOpenedAt: openedAt,
-        });
+        }, record.storageRevision);
         await this.requireRemote().putWorkbookUserState(resolution.unitId, userStateToRemote(record.userState));
       } catch (error) {
         if (!isRemoteUnavailable(error)
@@ -583,7 +583,7 @@ export class WorkbookCatalogService {
       throw new WorkbookCatalogError('permission-denied', 'Editors may move a workbook only inside its current space');
     }
     if (this.canUseRemote()) await this.requireRemote().updateWorkbook(unitId, { spaceId: input.spaceId, folderId: input.folderId });
-    const saved = await this.persistence.updateMetadata(unitId, { spaceId: input.spaceId ?? undefined, folderId: input.folderId ?? undefined });
+    const saved = await this.persistence.updateMetadata(unitId, { spaceId: input.spaceId ?? undefined, folderId: input.folderId ?? undefined }, record.storageRevision);
     return localEntry(saved, this.canUseRemote());
   }
 
@@ -611,7 +611,7 @@ export class WorkbookCatalogService {
     if (!current) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
     assertRole(current, 'move to trash', ['owner']);
     if (this.canUseRemote()) await this.requireRemote().moveToTrash(unitId);
-    const record = await this.persistence.moveToTrash(unitId, this.now().toISOString());
+    const record = await this.persistence.moveToTrash(unitId, this.now().toISOString(), current.storageRevision);
     return localEntry(record, this.canUseRemote());
   }
 
@@ -620,7 +620,7 @@ export class WorkbookCatalogService {
     if (!current) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
     assertRole(current, 'restore', ['owner']);
     if (this.canUseRemote()) await this.requireRemote().restoreFromTrash(unitId);
-    const record = await this.persistence.restore(unitId);
+    const record = await this.persistence.restore(unitId, current.storageRevision);
     return localEntry(record, this.canUseRemote());
   }
 
@@ -638,7 +638,7 @@ export class WorkbookCatalogService {
     if (this.canUseRemote()) {
       await this.requireRemote().putWorkbookUserState(unitId, { ...userStateToRemote({ ...record.userState, favorite }), favorite });
     }
-    const saved = await this.persistence.updateUserState(unitId, { favorite });
+    const saved = await this.persistence.updateUserState(unitId, { favorite }, record.storageRevision);
     return localEntry(saved, this.canUseRemote());
   }
 

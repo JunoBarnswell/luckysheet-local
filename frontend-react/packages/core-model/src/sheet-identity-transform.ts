@@ -8,11 +8,11 @@ import type {
   SheetId,
   WorksheetModel,
   WorkbookModel,
-} from './index';
-import type {
   AutoFilterModel,
   ConditionalFormatRule,
   DataValidationRule,
+} from './index';
+import type {
   DrawingPayload,
   DefinedNameModel,
   HyperlinkTarget,
@@ -111,7 +111,7 @@ function transformDefinedNames(workbook: WorkbookModel, oldName: string, newName
   }));
 }
 
-function rewriteRuleFormulas(rule: ConditionalFormatRule | DataValidationRule, oldName: string, newName: string): typeof rule {
+function rewriteRuleFormulas<T extends ConditionalFormatRule | DataValidationRule>(rule: T, oldName: string, newName: string): T {
   const next = structuredClone(rule);
   if ('value1' in next && typeof next.value1 === 'string') next.value1 = mapFormula(next.value1, oldName, newName, `${next.id}.value1`);
   if ('value2' in next && typeof next.value2 === 'string') next.value2 = mapFormula(next.value2, oldName, newName, `${next.id}.value2`);
@@ -120,7 +120,7 @@ function rewriteRuleFormulas(rule: ConditionalFormatRule | DataValidationRule, o
   if ('listSource' in next && next.listSource?.kind === 'formula') {
     next.listSource = { ...next.listSource, formula: mapFormula(next.listSource.formula, oldName, newName, `${next.id}.listSource`) };
   }
-  return next;
+  return next as T;
 }
 
 function remapHyperlinkTarget(target: HyperlinkTarget, sourceSheetId: SheetId, targetSheetId: SheetId): HyperlinkTarget {
@@ -175,7 +175,7 @@ function remapDrawingPayload(
         : { ...next.source, tableId: tableIds.get(next.source.tableId) ?? next.source.tableId };
       break;
     case 'form-control':
-      if (next.cellLink) next.cellLink = { ...next.cellLink, sheetId: mapSheetId(next.cellLink.sheetId, sourceSheetId, targetSheetId) };
+      if ('cellLink' in next && next.cellLink) next.cellLink = { ...next.cellLink, sheetId: mapSheetId(next.cellLink.sheetId, sourceSheetId, targetSheetId) };
       if ('inputRange' in next) next.inputRange = mapRange(next.inputRange, sourceSheetId, targetSheetId);
       break;
     case 'slicer':
@@ -231,7 +231,7 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
     return allocated;
   };
 
-  copy.dataRegions.splice(0, copy.dataRegions.length, ...copy.dataRegions.map((region) => ({ ...region, range: mapRange(region.range, source.id, targetSheetId) })));
+  copy.replaceDataRegions(copy.dataRegions.map((region) => ({ ...region, range: mapRange(region.range, source.id, targetSheetId) })));
   copy.merges.splice(0, copy.merges.length, ...copy.merges.map((merge) => ({ ...merge, range: mapRange(merge.range, source.id, targetSheetId) })));
   copy.pivots.splice(0, copy.pivots.length, ...copy.pivots.map((pivot) => remapPivot(pivot, source.id, targetSheetId, pivotIds.get(pivot.id)!, tableIds)));
   copy.sparklines.splice(0, copy.sparklines.length, ...copy.sparklines.map((sparkline) => ({ ...sparkline, id: sparklineIds.get(sparkline.id)!, sheetId: targetSheetId, sourceRange: mapRange(sparkline.sourceRange, source.id, targetSheetId), groupId: sparkline.groupId ? sparklineGroupIds.get(sparkline.groupId) : undefined })));
@@ -274,7 +274,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
         'value2' in rule && typeof rule.value2 === 'string' ? rule.value2 : undefined,
         'formula1' in rule ? rule.formula1 : undefined,
         'formula2' in rule ? rule.formula2 : undefined,
-        rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined,
+        'listSource' in rule && rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined,
       ]) if (formula && formulaReferencesSheet(formula, sourceName, `${rule.id}.formula`, sheet.id)) invalidations.push({ participant: 'range-rule-formula', ownerSheetId: sheet.id, reference: formula, reason: 'deleted-sheet-reference' });
     }
     const ranges: Array<{ participant: string; range: RangeRef }> = [
@@ -347,28 +347,28 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
       apply: () => {
         const copy = cloneWorksheetWithIdentity(workbook, source, targetSheetId, targetName);
         workbook.sheets.set(targetSheetId, copy);
-        const scopedNames = workbook.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sourceSheetId).map((entry) => ({ ...structuredClone(entry), sheetId: targetSheetId, formula: mapFormula(entry.formula, source.name, targetName, `defined-name:${entry.name}`) }));
+        const scopedNames = workbook.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === source.id).map((entry) => ({ ...structuredClone(entry), sheetId: targetSheetId, formula: mapFormula(entry.formula, source.name, targetName, `defined-name:${entry.name}`) }));
         workbook.definedNameModels.push(...scopedNames);
-        const printDocument = workbook.printDocuments.get(sourceSheetId);
-        if (printDocument) workbook.printDocuments.set(targetSheetId, { ...structuredClone(printDocument), sheetId: targetSheetId, printAreas: printDocument.printAreas.map((area) => ({ ...area, sheetId: targetSheetId, range: mapRange(area.range, sourceSheetId, targetSheetId) })), pageBreaks: printDocument.pageBreaks.map((item) => ({ ...item, sheetId: targetSheetId })) });
-        const sourceIndex = workbook.sheetOrder.indexOf(sourceSheetId);
+        const printDocument = workbook.printDocuments.get(source.id);
+        if (printDocument) workbook.printDocuments.set(targetSheetId, { ...structuredClone(printDocument), sheetId: targetSheetId, printAreas: printDocument.printAreas.map((area) => ({ ...area, sheetId: targetSheetId, range: mapRange(area.range, source.id, targetSheetId) })), pageBreaks: printDocument.pageBreaks.map((item) => ({ ...item, sheetId: targetSheetId })) });
+        const sourceIndex = workbook.sheetOrder.indexOf(source.id);
         workbook.sheetOrder.splice(sourceIndex + 1, 0, targetSheetId);
       },
     };
   }
-  const invalidations = collectDeletedSheetReferences(workbook, sourceSheetId, source.name);
-  if (invalidations.length > 0) throw new SheetIdentityTransformError(`Cannot delete sheet ${sourceSheetId}; external references must be resolved first`, invalidations);
+  const invalidations = collectDeletedSheetReferences(workbook, source.id, source.name);
+  if (invalidations.length > 0) throw new SheetIdentityTransformError(`Cannot delete sheet ${source.id}; external references must be resolved first`, invalidations);
   return {
     spec,
     invalidations: [],
     apply: () => {
       if (workbook.sheets.size <= 1) throw new SheetIdentityTransformError('A workbook must keep at least one worksheet');
-      workbook.sheets.delete(sourceSheetId);
-      workbook.sheetOrder = workbook.sheetOrder.filter((id) => id !== sourceSheetId);
-      workbook.printDocuments.delete(sourceSheetId);
+      workbook.sheets.delete(source.id);
+      workbook.sheetOrder = workbook.sheetOrder.filter((id) => id !== source.id);
+      workbook.printDocuments.delete(source.id);
       for (let index = workbook.definedNameModels.length - 1; index >= 0; index -= 1) {
         const entry = workbook.definedNameModels[index];
-        if (entry?.scope === 'sheet' && entry.sheetId === sourceSheetId) workbook.definedNameModels.splice(index, 1);
+        if (entry?.scope === 'sheet' && entry.sheetId === source.id) workbook.definedNameModels.splice(index, 1);
       }
     },
   };

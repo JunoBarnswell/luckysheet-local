@@ -73,7 +73,7 @@ function removeCurrentBinding(context: CommandContext, sourceId: string): void {
       const region = sheet.dataRegions[index]!;
       if (region.sourceId !== sourceId) continue;
       clearRegionCells(context, region.range);
-      sheet.dataRegions.splice(index, 1);
+      sheet.removeDataRegionAt(index);
     }
   }
   for (const table of context.workbook.dataModel.tables.values()) {
@@ -116,14 +116,14 @@ function applyBinding(context: CommandContext, binding: QueryLoadBinding | null,
     sheet.ensureRangeExtent(binding.region.range.startRow, binding.region.range.endRow, binding.region.range.startColumn, binding.region.range.endColumn);
   }
   clearRegionCells(context, binding.region.range);
-  sheet.dataRegions.push(structuredClone(binding.region));
+  sheet.addDataRegion(binding.region);
   writeHeader(context, binding.header, binding);
 }
 
 function applyQueryLoad(context: CommandContext, payload: QueryLoadMutationPayload): void {
   if (!isQueryLoadPayload(payload)) throw new Error('Invalid block-backed query load mutation payload');
   const normalizedSource = payload.source ? normalizeDataSourceManifest(structuredClone(payload.source)) : null;
-  if (payload.binding && !normalizedSource) throw new Error(`Query load binding has no source manifest: ${payload.sourceId}`);
+  if (payload.binding?.kind === 'sheet-region' && !normalizedSource) throw new Error(`Query load sheet binding has no source manifest: ${payload.sourceId}`);
   if (normalizedSource && payload.binding?.kind === 'sheet-region') {
     const regionWidth = payload.binding.region.range.endColumn - payload.binding.region.range.startColumn + 1;
     if (payload.binding.region.sourceId !== payload.sourceId

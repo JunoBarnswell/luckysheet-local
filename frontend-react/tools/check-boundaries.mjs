@@ -16,6 +16,9 @@ const forbiddenTokens = [
   'useWorkspaceState',
   'toSheetView',
   'handleRibbonAction',
+  'automation.',
+  "'automate'",
+  '"automate"',
 ];
 
 const forbiddenArchitectureNames = [
@@ -175,7 +178,7 @@ const declaredDependencies = new Map();
 for (const file of files) {
   const source = await readFile(file, 'utf8');
   const relPath = relative(root, file).replaceAll('\\', '/');
-  const skipForbiddenTokens = relPath.includes('features/automation/') || isTestFile(relPath);
+  const skipForbiddenTokens = isTestFile(relPath);
 
   if (!skipForbiddenTokens) {
     for (const token of forbiddenTokens) {

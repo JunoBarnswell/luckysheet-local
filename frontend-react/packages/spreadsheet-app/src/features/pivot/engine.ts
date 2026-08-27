@@ -90,6 +90,7 @@ type SourceField = PivotSourceFieldInput;
 interface AxisGroup {
   values: PivotScalar[];
   rows: SourceRow[];
+  rowSet: Set<SourceRow>;
 }
 
 export interface PivotResultTable {
@@ -125,6 +126,8 @@ export interface PivotProjectionOptions {
   refreshAuthorized?: boolean;
   /** Explicit refresh failure retained alongside the last-valid projection. */
   refreshError?: string;
+  /** Already-normalized command preflight definition; never persisted. */
+  canonicalDefinition?: PivotDefinition;
 }
 
 interface LastValidPivotProjection {
@@ -629,6 +632,27 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   return table;
 }
 
+function pivotSourceCalculator(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): FormulaEngine | undefined {
+  if (formula) return formula;
+  const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') return undefined;
+  if (source.kind === 'named-range') return createPivotFormulaEngine(workbook);
+  const ranges = sourceRanges(workbook, pivot);
+  let requiresFormula = false;
+  for (const range of ranges) {
+    workbook.getSheet(range.sheetId).cells.forEachInRange(
+      range.startRow,
+      range.endRow,
+      range.startColumn,
+      range.endColumn,
+      (cell) => {
+        if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) requiresFormula = true;
+      },
+    );
+  }
+  return requiresFormula ? createPivotFormulaEngine(workbook) : undefined;
+}
+
 export function canonicalPivotMembers(values: readonly PivotScalar[]): PivotScalar[] {
   const members = [...new Map(values.map((value) => {
     // Empty text and null are one semantic blank member. Keep typed values
@@ -934,10 +958,8 @@ function appendCalculatedItemMembers(catalog: PivotFieldCatalog, calculatedItems
   }
 }
 
-/** Canonicalize field catalog values against the live source. Calculation has one model shape. */
-export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotDefinition {
+function normalizePivotDefinitionWithCalculator(workbook: WorkbookModel, pivot: PivotModel, calculator: FormulaEngine | undefined): PivotDefinition {
   const source = getPivotSource(pivot);
-  const calculator = source.kind === 'data-source' ? formula : (formula ?? createPivotFormulaEngine(workbook));
   const fieldCatalog = source.kind === 'data-source'
     ? getPivotFieldCatalog(workbook, pivot)
     : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
@@ -966,6 +988,11 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
   };
 }
 
+/** Canonicalize field catalog values against the live source. Calculation has one model shape. */
+export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotDefinition {
+  return normalizePivotDefinitionWithCalculator(workbook, pivot, pivotSourceCalculator(workbook, pivot, formula));
+}
+
 export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotFieldCatalog {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
@@ -981,7 +1008,7 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel,
       })),
     };
   }
-  const calculator = formula ?? createPivotFormulaEngine(workbook);
+  const calculator = pivotSourceCalculator(workbook, pivot, formula);
   return normalizeFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
 }
 
@@ -1377,28 +1404,46 @@ function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldData
 
 /** Every aggregate has its own semantics; no operation falls through to sum. */
 export function aggregatePivotValues(rows: ReadonlyArray<{ values: Record<string, PivotScalar> }>, fieldId: string, operation: PivotAggregateFunction): PivotScalar {
+  if (operation === 'count') {
+    let count = 0;
+    for (const row of rows) {
+      const raw = row.values[fieldId] ?? null;
+      if (raw != null && raw !== '') count += 1;
+    }
+    return count;
+  }
+  if (operation === 'distinct-count') {
+    const members = new Set<string>();
+    for (const row of rows) {
+      const raw = row.values[fieldId] ?? null;
+      if (raw != null && raw !== '') members.add(pivotMemberKey(createPivotMemberKey(raw)));
+    }
+    return members.size;
+  }
   const numbers: number[] = [];
-  const members = new Set<string>();
-  const errors: Extract<PivotScalar, { kind: 'error' }>[] = [];
-  let nonBlank = 0;
+  let firstError: Extract<PivotScalar, { kind: 'error' }> | undefined;
+  let sum = 0;
+  let product = 1;
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = Number.NEGATIVE_INFINITY;
   for (const row of rows) {
     const raw = row.values[fieldId] ?? null;
-    if (raw != null && raw !== '') nonBlank += 1;
-    if (isPivotError(raw)) errors.push(raw);
-    if (raw != null && raw !== '') members.add(pivotMemberKey(createPivotMemberKey(raw)));
+    if (!firstError && isPivotError(raw)) firstError = raw;
     const number = pivotNumericValue(raw);
-    if (number != null) numbers.push(number);
+    if (number == null) continue;
+    numbers.push(number);
+    sum += number;
+    product *= number;
+    minimum = Math.min(minimum, number);
+    maximum = Math.max(maximum, number);
   }
-  const firstError = errors[0];
   switch (operation) {
-    case 'count': return nonBlank;
     case 'count-numbers': return numbers.length;
-    case 'sum': return firstError ?? numbers.reduce((sum, value) => sum + value, 0);
-    case 'average': return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null);
-    case 'min': return firstError ?? (numbers.length ? Math.min(...numbers) : null);
-    case 'max': return firstError ?? (numbers.length ? Math.max(...numbers) : null);
-    case 'product': return firstError ?? (numbers.length ? numbers.reduce((product, value) => product * value, 1) : null);
-    case 'distinct-count': return members.size;
+    case 'sum': return firstError ?? sum;
+    case 'average': return firstError ?? (numbers.length ? sum / numbers.length : null);
+    case 'min': return firstError ?? (numbers.length ? minimum : null);
+    case 'max': return firstError ?? (numbers.length ? maximum : null);
+    case 'product': return firstError ?? (numbers.length ? product : null);
     case 'stdev': {
       if (firstError) return firstError;
       if (numbers.length < 2) return null;
@@ -1515,8 +1560,9 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   for (const row of rows) {
     const values = placements.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group));
     const key = JSON.stringify(values.map(createPivotMemberKey));
-    const group = map.get(key) ?? { values, rows: [] };
+    const group = map.get(key) ?? { values, rows: [], rowSet: new Set<SourceRow>() };
     group.rows.push(row);
+    group.rowSet.add(row);
     map.set(key, group);
   }
   const placement = placements[placements.length - 1];
@@ -1908,8 +1954,12 @@ function resultValue(rows: ReadonlyArray<SourceRow>, value: PivotResultValueFiel
 
 function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator): PivotResultCell[] {
   return columns.map((column, columnIndex) => {
-    const nodeRows = new Set(rows);
-    const columnRows = column.rows.filter((candidate) => nodeRows.has(candidate));
+    const columnRows = rows.length <= column.rows.length
+      ? rows.filter((candidate) => column.rowSet.has(candidate))
+      : (() => {
+          const nodeRows = new Set(rows);
+          return column.rows.filter((candidate) => nodeRows.has(candidate));
+        })();
     return {
       id: `${nodePath.join('/') || 'root'}|column:${columnIndex}`,
       nodePath,
@@ -2223,7 +2273,9 @@ function computePivotResultFromTable(
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
-  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields) : [{ values: [], rows: filtered }];
+  const columns = definition.layout.columns.length
+    ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields)
+    : [{ values: [], rows: filtered, rowSet: new Set(filtered) }];
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
@@ -2258,14 +2310,20 @@ function computePivotResultFromTable(
 }
 
 function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
-  const calculator = pivot.source.kind === 'data-source' ? formula : (formula ?? createPivotFormulaEngine(workbook));
-  const definition = normalizePivotDefinition(workbook, pivot, calculator);
-  const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog, calculator);
+  const calculator = pivotSourceCalculator(workbook, pivot, formula);
+  const definition = normalizePivotDefinitionWithCalculator(workbook, pivot, calculator);
+  const rawTable = sourceTable(workbook, definition, definition.fieldCatalog, calculator);
   return computePivotResultFromTable(workbook, pivot, definition, rawTable, undefined, calculator);
 }
 
+export function computePivotResultFromDefinition(workbook: WorkbookModel, definition: PivotDefinition, formula?: FormulaEngine): PivotResultTree {
+  const calculator = pivotSourceCalculator(workbook, definition, formula);
+  const rawTable = sourceTable(workbook, definition, definition.fieldCatalog, calculator);
+  return computePivotResultFromTable(workbook, definition, definition, rawTable, undefined, calculator);
+}
+
 export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
-  return structuredClone(computePivotResultUncached(workbook, pivot, formula));
+  return computePivotResultUncached(workbook, pivot, formula);
 }
 
 /** Apply the normal Pivot calculation pipeline to asynchronously loaded block data. */
@@ -2401,6 +2459,11 @@ function occupiedRangeForDefinition(definition: PivotDefinition, tree?: PivotRes
     row += 1;
   }
   return projectionRange(definition.target, Math.max(row, 1), Math.max(valueColumnCount + rowHeaderCount, 1));
+}
+
+/** Resolve the complete derived footprint from an already canonical definition. */
+export function getPivotOccupiedRange(definition: PivotDefinition, tree?: PivotResultTree): RangeRef {
+  return occupiedRangeForDefinition(definition, tree);
 }
 
 function resolvePivotFootprint(workbook: WorkbookModel, pivot: PivotModel): PivotFootprint | undefined {
@@ -2557,7 +2620,7 @@ function buildPivotGridProjectionCandidate(
   cachedResult?: PivotResultTree,
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
-  const definition = normalizePivotDefinition(workbook, pivot, options.formula);
+  const definition = options.canonicalDefinition ?? normalizePivotDefinition(workbook, pivot, options.formula);
   const target = definition.target;
   const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
   let tree: PivotResultTree | undefined = cachedResult;
@@ -2755,7 +2818,12 @@ export function buildPivotGridProjection(
 
   if (candidate.collision.status === 'clear' && candidateTree && candidate.refresh.status === 'ready') {
     const nextCache = cache ?? new Map<string, LastValidPivotProjection>();
-    nextCache.set(pivot.id, { projection: structuredClone(candidate), result: structuredClone(candidateTree) });
+    const current = nextCache.get(pivot.id);
+    const currentMatches = current
+      && current.result.sourceRevision === candidateTree.sourceRevision
+      && current.result.layoutRevision === candidateTree.layoutRevision
+      && current.result.filterRevision === candidateTree.filterRevision;
+    if (!currentMatches) nextCache.set(pivot.id, { projection: structuredClone(candidate), result: structuredClone(candidateTree) });
     if (!cache) lastValidPivotProjections.set(workbook, nextCache);
     return candidate;
   }
@@ -2792,7 +2860,7 @@ export function buildPivotGridProjection(
 }
 
 export function hitTestPivotProjection(projection: PivotGridProjection, row: number, column: number): PivotHitTest {
-  const cell = projection.cells.find((candidate) => candidate.row === row && candidate.column === column);
+  const cell = findPivotProjectionCellAt(projection, row, column);
   if (!cell) return { kind: 'none', pivotId: projection.pivotId, row, column };
   return {
     kind: cell.kind === 'expand-toggle' ? 'expand-toggle' : cell.kind === 'filter' ? 'filter' : cell.kind.includes('header') ? 'header' : 'cell',
@@ -2803,6 +2871,25 @@ export function hitTestPivotProjection(projection: PivotGridProjection, row: num
     nodeId: cell.nodeId,
     sourceRowPaths: cell.sourceRowPaths,
   };
+}
+
+/**
+ * Pivot projection cells are emitted in row-major order. Canvas rendering and
+ * pointer hit-testing must query that canonical order logarithmically instead
+ * of rescanning the complete derived grid for every visible worksheet cell.
+ */
+export function findPivotProjectionCellAt(projection: PivotGridProjection, row: number, column: number): PivotProjectionCell | undefined {
+  let low = 0;
+  let high = projection.cells.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = projection.cells[middle]!;
+    const order = candidate.row - row || candidate.column - column;
+    if (order === 0) return candidate;
+    if (order < 0) low = middle + 1;
+    else high = middle - 1;
+  }
+  return undefined;
 }
 
 export function resolvePivotContextHit(projection: PivotGridProjection, row: number, column: number): ContextHit {

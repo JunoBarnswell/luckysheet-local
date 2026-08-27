@@ -9,7 +9,7 @@ import type {
   WorkbookResolution,
 } from './types';
 
-export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input';
+export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'memory-session-reset' | 'invalid-input';
 
 export class WorkbookResolutionError extends Error {
   readonly code: WorkbookResolutionErrorCode;
@@ -19,6 +19,18 @@ export class WorkbookResolutionError extends Error {
     this.name = 'WorkbookResolutionError';
     this.code = code;
   }
+}
+
+export function isWorkbookResolutionError(error: unknown): error is WorkbookResolutionError {
+  if (error instanceof WorkbookResolutionError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { name?: unknown; code?: unknown };
+  return candidate.name === 'WorkbookResolutionError'
+    && (candidate.code === 'not-found'
+      || candidate.code === 'permission-denied'
+      || candidate.code === 'remote-unavailable'
+      || candidate.code === 'memory-session-reset'
+      || candidate.code === 'invalid-input');
 }
 
 export interface WorkbookResolverOptions {
@@ -56,6 +68,7 @@ function assertUnitId(unitId: string): string {
 }
 
 function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): WorkbookResolution {
+  const localRecord = clone(record);
   return {
     schema: 'WorkbookResolution',
     unitId: record.unitId,
@@ -66,10 +79,10 @@ function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): Wo
       location: record.metadata.location,
       syncMode: record.syncMode,
     },
-    snapshot: clone(record.snapshot),
+    snapshot: localRecord.snapshot,
     revision: record.serverRevision,
     access: null,
-    localRecord: clone(record),
+    localRecord,
   };
 }
 
@@ -108,7 +121,10 @@ export class WorkbookResolver {
 
     if (!this.canUseRemote()) {
       if (localRecord) return localResolution(localRecord, 'offline');
-      throw new WorkbookResolutionError('permission-denied', `Workbook requires cloud access: ${normalized}`);
+      throw new WorkbookResolutionError(
+        'memory-session-reset',
+        `The page memory session no longer contains workbook: ${normalized}`,
+      );
     }
 
     try {

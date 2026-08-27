@@ -6,6 +6,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const webOutputDirectory = path.resolve(projectRoot, 'dist/web');
+const offlineShellSource = path.resolve(projectRoot, 'apps/web/public/sw.js');
 
 async function listOutputAssets(directory: string, relative = ''): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -15,7 +16,7 @@ async function listOutputAssets(directory: string, relative = ''): Promise<strin
     const nextPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       paths.push(...await listOutputAssets(nextPath, nextRelative));
-    } else if (/\.(?:css|js|mjs|wasm|woff2?|ttf|otf)$/i.test(entry.name)) {
+    } else if (/\.(?:css|js|mjs|wasm|woff2?|ttf|otf|svg)$/i.test(entry.name)) {
       paths.push(`/${nextRelative}`);
     }
   }
@@ -29,7 +30,11 @@ function offlineShellManifestPlugin() {
       const assets = await listOutputAssets(webOutputDirectory);
       const shellUrls = ['/', '/index.html', '/manifest.webmanifest', ...assets.sort()];
       const workerPath = path.join(webOutputDirectory, 'sw.js');
-      const source = await readFile(workerPath, 'utf8');
+      // Vite keeps an out-of-root output directory between some development
+      // builds. Always render from the tracked shell template instead of a
+      // previously generated manifest, otherwise a second package build has
+      // no placeholder left to replace.
+      const source = await readFile(offlineShellSource, 'utf8');
       const next = source.replace(
         /const SHELL_URLS = \[[^;]+\];/,
         `const SHELL_URLS = ${JSON.stringify(shellUrls)};`,

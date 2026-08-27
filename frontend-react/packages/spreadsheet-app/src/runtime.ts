@@ -32,8 +32,9 @@ import {
   DataBlockSynchronizer,
   LocalAssetStore,
   type AssetStore,
-  type IndexedDbWorkspaceStoreOptions,
+  type WorkspacePersistenceOptions,
   type WorkspaceRecord,
+  WorkspaceStorageError,
 } from './features/persistence';
 import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
 import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
@@ -60,12 +61,15 @@ export interface SpreadsheetRuntime {
   formulaAudit: FormulaAuditController;
   dateSystem: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
   model: WorkbookModel;
   commands: CommandRuntime;
   drawing: DrawingRuntime;
   remoteConnected: boolean;
   remoteRevision: number;
   pendingMutations: MutationInfo[];
+  /** Local-durable geometry changed without producing a remote operation. */
+  pendingLocalCheckpoint: boolean;
   /** Mutation facts are drained by the refresh coordinator after each apply. */
   pendingPivotMutations: MutationInfo[];
   drainPivotMutations: () => MutationInfo[];
@@ -97,7 +101,7 @@ export interface SpreadsheetRuntime {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   resolution?: WorkbookResolution;
-  /** Runtime lifecycle is explicit so late Worker/IndexedDB callbacks cannot
+  /** Runtime lifecycle is explicit so late Worker callbacks cannot
    * publish into a disposed session. */
   disposed: boolean;
 }
@@ -126,12 +130,13 @@ export function createSpreadsheetRuntime(options: {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   localOnly?: boolean;
-  persistence?: IndexedDbWorkspaceStoreOptions;
+  persistence?: WorkspacePersistenceOptions;
   workspacePersistence?: WorkspacePersistence;
   assetStore?: AssetStore;
   resolution?: WorkbookResolution;
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
 } = {}): SpreadsheetRuntime {
   const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
   if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
@@ -163,7 +168,7 @@ export function createSpreadsheetRuntime(options: {
     unitId: () => runtime.model.unitId,
     isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
   });
-  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, options.persistence);
+  const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, workspacePersistence.coordinator);
   runtime = {
     api,
     formula: formula as FormulaEngine,
@@ -171,12 +176,14 @@ export function createSpreadsheetRuntime(options: {
     formulaAudit,
     dateSystem,
     canonicalReferenceDate,
+    collaborationUrl: options.collaborationUrl,
     model,
     commands,
     drawing,
     remoteConnected: false,
     remoteRevision: 0,
     pendingMutations: [],
+    pendingLocalCheckpoint: false,
     pendingPivotMutations: [],
     drainPivotMutations: () => {
       const pending = runtime.pendingPivotMutations;
@@ -215,7 +222,7 @@ export function createSpreadsheetRuntime(options: {
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   // The offline journal records operation intent and its client sequence.
-  // The same IndexedDB transaction also checkpoints the canonical local
+  // The same memory transaction also checkpoints the canonical local
   // workbook snapshot, so a closed browser can resume without any service.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     loadPending: () => {
@@ -226,10 +233,20 @@ export function createSpreadsheetRuntime(options: {
     },
     persistPending: (operations, nextClientSequence) => {
       operationJournal.write(runtime.model.unitId, operations, nextClientSequence);
-      runtime.handlers.onWorkspacePersisted?.();
+      void enqueuePersistenceWrite(runtime, async () => {
+        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
+        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
+          runtime.model.unitId,
+          operations,
+          nextClientSequence,
+          current?.storageRevision,
+        );
+        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
+        runtime.handlers.onWorkspacePersisted?.();
+      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
     },
   });
-  runtime.checkpointWorkspace = () => checkpointWorkspace(runtime);
+  runtime.checkpointWorkspace = (advanceLocalRevision = true) => checkpointWorkspace(runtime, advanceLocalRevision);
   installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;
@@ -348,7 +365,7 @@ function synchronizeManualCellMutation(engine: FormulaEngine, workbook: Workbook
  * is intentionally scheduled separately through FormulaEngine.recalculateAsync
  * so browser calculation stays in its Worker.
  */
-function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void {
+function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): number {
   const mode = engine.getRecalculationMode();
   engine.cancelCalculation();
   engine.reset();
@@ -356,14 +373,29 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void
   engine.setDefinedNameModels(workbook.definedNameModels);
   configureWorkbookSpillEnvironments(engine, workbook);
   syncWorkbookSheetTables(engine, workbook);
+  let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
+      if (cell.formula === undefined || cell.formulaMetadata?.preservedOnly) return;
       const address = { sheetId: sheet.id, row, column };
-      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
-      else if (cell.value != null) engine.setValue(address, cell.value as never);
+      formulaCount += 1;
+      engine.setFormula(address, cell.formula);
     });
   }
+  // A value-only workbook has no formula dependency graph. Keeping tens of
+  // thousands of ordinary cells in FormulaEngine duplicates CellMatrix and
+  // makes XLSX open proportional to every imported value for no calculation
+  // benefit. Formula workbooks retain the complete existing input contract.
+  if (formulaCount > 0) {
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEach((cell, row, column) => {
+        if (cell.formula !== undefined || cell.value == null) return;
+        engine.setValue({ sheetId: sheet.id, row, column }, cell.value as never);
+      });
+    }
+  }
   engine.setRecalculationMode(mode);
+  return formulaCount;
 }
 
 interface FormulaQueueState {
@@ -411,7 +443,11 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       state.force = false;
       const engine = runtime.formula;
       const workbook = runtime.model;
-      loadFormulaInputs(engine, workbook);
+      const formulaCount = loadFormulaInputs(engine, workbook);
+      if (formulaCount === 0) {
+        runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
+        return;
+      }
       if (engine.getRecalculationMode() !== 'automatic' && !forceCalculation) {
         if (!runtime.disposed && epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
           runtime.handlers.onMutationsApplied?.();
@@ -466,6 +502,14 @@ function assertNoSpillChildWrite(
 }
 
 const checkpointChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+const persistenceWriteChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+
+function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
+  const previous = persistenceWriteChains.get(runtime) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  persistenceWriteChains.set(runtime, next.then(() => undefined, () => undefined));
+  return next;
+}
 
 function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
@@ -485,7 +529,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   const previous = checkpointChains.get(runtime) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
-    .then(async () => {
+    .then(() => enqueuePersistenceWrite(runtime, async () => {
       if (runtime.disposed) return;
       const record = await runtime.workspacePersistence.checkpoint(
         snapshot,
@@ -504,7 +548,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
       ]));
       if (runtime.disposed) return;
       runtime.handlers.onWorkspacePersisted?.();
-    });
+    }));
   checkpointChains.set(runtime, next);
   return next;
 }
@@ -571,7 +615,12 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
       if (source !== 'command') return;
-      if (mutationCapability(mutation.id)?.durability === 'transient') return;
+      const durability = mutationCapability(mutation.id)?.durability;
+      if (durability === 'transient') return;
+      if (durability === 'local') {
+        runtime.pendingLocalCheckpoint = true;
+        return;
+      }
       runtime.pendingMutations.push({
         id: mutation.id,
         unitId: mutation.unitId,
@@ -588,17 +637,21 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (runtime.commands.activeDepth > 0) return;
       const batch = runtime.pendingMutations;
       runtime.pendingMutations = [];
-      if (batch.length === 0) return;
+      const localCheckpoint = runtime.pendingLocalCheckpoint;
+      runtime.pendingLocalCheckpoint = false;
+      if (batch.length === 0 && !localCheckpoint) return;
       runtime.handlers.onMutationsApplied?.();
-      const history = runtime.commands.getUndoEntries().at(-1);
+      const history = runtime.commands.getUndoEntries().find((entry) => entry.operationId === result.operationId);
       if (history) {
         runtime.collaboration?.recordLocalUndo({
           operationId: result.operationId,
           undoMutations: history.inversePlan,
         });
       }
-      if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
-      else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
+      if (batch.length > 0) {
+        if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
+        else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
+      }
       void runtime.checkpointWorkspace();
     }),
   );
@@ -632,6 +685,7 @@ function detachCoreListeners(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.detachers) detach();
   runtime.detachers = [];
   runtime.pendingMutations = [];
+  runtime.pendingLocalCheckpoint = false;
   runtime.pendingPivotMutations = [];
 }
 
@@ -654,7 +708,17 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
     },
     persistPending: (operations, sequence) => {
       runtime.operationJournal.write(runtime.model.unitId, operations, sequence);
-      runtime.handlers.onWorkspacePersisted?.();
+      void enqueuePersistenceWrite(runtime, async () => {
+        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
+        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
+          runtime.model.unitId,
+          operations,
+          sequence,
+          current?.storageRevision,
+        );
+        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
+        runtime.handlers.onWorkspacePersisted?.();
+      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
     },
   });
   runtime.collaboration.setRevision(runtime.remoteRevision);
@@ -860,7 +924,11 @@ export function startCollaborationSession(
     runtime.collaboration.setRevision(runtime.remoteRevision);
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const client = new CollabSocketClient(protocol + '://' + window.location.host + '/ws', {
+    const parsedCollaborationUrl = new URL(runtime.collaborationUrl ?? (protocol + '://' + window.location.host + '/ws'));
+    if (!['ws:', 'wss:'].includes(parsedCollaborationUrl.protocol) || parsedCollaborationUrl.username || parsedCollaborationUrl.password) {
+      throw new Error('Collaboration URL must be an uncredentialed ws:// or wss:// URL');
+    }
+    const client = new CollabSocketClient(parsedCollaborationUrl.toString(), {
       authTokenProvider,
       shareTokenProvider,
     });
@@ -982,7 +1050,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   let resolvedRemote: SnapshotResponse | null = null;
   if (resolution) {
     if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
-    localRecord = resolution.localRecord ? structuredClone(resolution.localRecord) : null;
+    localRecord = resolution.localRecord ?? null;
     if (localRecord) runtime.operationJournal.hydrate(localRecord);
     if (resolution.mode === 'remote') {
       runtime.localOnly = false;
@@ -1004,8 +1072,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         const first = summaries[0];
         if (first) localRecord = await runtime.workspacePersistence.load(first.unitId, runtime.assetStore);
       }
-    } catch {
-      runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+    } catch (error) {
+      publishPersistenceFailure(runtime, error);
+      return;
     }
   }
 
@@ -1025,7 +1094,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       });
       replaceCollaborationSession(runtime, localRecord);
       if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
-      runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+      runtime.handlers.onNotice?.('Workbook restored from the current memory session');
     }
   }
 
@@ -1036,12 +1105,18 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     // though the workbook remains local-only. Recreate the journal owner
     // before the first post-remount command so edits remain durable.
     if (!runtime.collaboration) replaceCollaborationSession(runtime, localRecord);
-    const checkpointed = await checkpointStartupLocally(runtime);
+    if (!runtime.workspaceRecord) {
+      try {
+        await checkpointStartupLocally(runtime);
+      } catch (error) {
+        publishPersistenceFailure(runtime, error);
+        return;
+      }
+    }
     if (isActive()) {
-      runtime.handlers.onSaveState?.(checkpointed ? (runtime.remoteSyncRequested ? 'offline' : 'saved') : 'error');
+      runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-      runtime.handlers.onMutationsApplied?.();
     }
     return;
   }
@@ -1078,7 +1153,6 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       runtime.handlers.onNotice?.('Workbook restored from server');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-      runtime.handlers.onMutationsApplied?.();
       runtime.handlers.onWorkspacePersisted?.();
     }
   } catch (error) {
@@ -1101,43 +1175,48 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.remoteConnected = false;
     runtime.remoteSyncRequested = true;
     runtime.handlers.onAccessRole?.(null);
-    const checkpointed = await checkpointStartupLocally(runtime);
+    try {
+      await checkpointStartupLocally(runtime);
+    } catch (persistenceError) {
+      publishPersistenceFailure(runtime, persistenceError);
+      return;
+    }
     if (isActive()) {
-      runtime.handlers.onSaveState?.(checkpointed ? 'offline' : 'error');
-      runtime.handlers.onNotice?.('Server unavailable; using local IndexedDB workspace');
+      runtime.handlers.onSaveState?.('offline');
+      runtime.handlers.onNotice?.('Server unavailable; using the current memory workspace');
       runtime.handlers.onPhaseChange?.('ready');
-      runtime.handlers.onMutationsApplied?.();
     }
   }
 }
 
-/**
- * Startup may continue with an in-memory local workbook when IndexedDB is
- * unavailable. A server failure must never become a blank or permanently
- * loading frontend merely because local persistence also reports an error.
- */
-async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<boolean> {
-  try {
-    const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
-      runtime.model.snapshot(),
-      runtime.localRevision,
-      runtime.remoteRevision,
-      offlineResolution?.binding.syncMode ?? 'local-only',
-      undefined,
-      offlineResolution ? {
-        location: offlineResolution.binding.location,
-        lifecycle: offlineResolution.lifecycle,
-        source: runtime.workspaceRecord?.metadata.source ?? 'native',
-        role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
-      } : undefined,
-    );
-    return true;
-  } catch (error) {
-    runtime.workspaceRecord = null;
-    runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local workspace persistence is unavailable');
-    return false;
+async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<void> {
+  const offlineResolution = runtime.resolution?.mode === 'offline' ? runtime.resolution : null;
+  runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+    runtime.model.snapshot(),
+    runtime.localRevision,
+    runtime.remoteRevision,
+    offlineResolution?.binding.syncMode ?? 'local-only',
+    undefined,
+    offlineResolution ? {
+      location: offlineResolution.binding.location,
+      lifecycle: offlineResolution.lifecycle,
+      source: runtime.workspaceRecord?.metadata.source ?? 'native',
+      role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
+    } : undefined,
+  );
+}
+
+function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {
+  runtime.workspaceRecord = null;
+  runtime.remoteConnected = false;
+  runtime.handlers.onAccessRole?.(null);
+  runtime.handlers.onSaveState?.('error');
+  runtime.handlers.onPhaseChange?.('error');
+  if (error instanceof WorkspaceStorageError) {
+    runtime.handlers.onNotice?.(`${error.code}: ${error.message} ${error.recovery}`);
+    return;
   }
+  runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'STORAGE_TRANSACTION_FAILED: 本地工作簿持久化失败。');
 }
 
 function isAuthoritativeRemoteFailure(error: unknown): boolean {
