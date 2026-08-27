@@ -12,7 +12,9 @@
 
 ## Ribbon 语义映射
 
-实现使用项目的 `AssetIcon` 入口；每个 asset 的命名应保持 Fluent 的字面隐喻，不以业务命令名称创造第二套图标语义。尺寸按 Ribbon 控件落点固定为：大按钮 24 px、小按钮 16 px、菜单项 16 px、状态 modifier 12 px。图标颜色继承 currentColor，选中状态切换 Fluent filled 变体或由控件的 selected token 表达。
+实现使用项目的 `AssetIcon` 入口；每个 asset 的命名应保持 Fluent 的字面隐喻，不以业务命令名称创造第二套图标语义。尺寸按 Ribbon 控件落点固定为：大按钮 24 px、小按钮 16 px、菜单项 16 px、状态 modifier 12 px。图标颜色继承 currentColor，选中状态切换 Fluent filled 变体或由控件的 selected token 表达。官方 regular SVG 已 vendor 到 `apps/web/public/icons/fluent/`，不依赖运行时远程加载。
+
+当前使用的 official assets 覆盖表格、表单、图片、形状、图标、3D cube、SmartArt flowchart、截图、筛选器、时间线、链接、评论、签名，以及 HOME 的剪贴板/字体/对齐/合并/换行/搜索图标。
 
 ### HOME
 
