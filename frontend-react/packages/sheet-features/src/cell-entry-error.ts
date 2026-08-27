@@ -16,7 +16,6 @@ export interface CellEntryFailure {
   alertStyle?: 'stop' | 'warning' | 'information';
   title?: string;
 }
-
 export class CellEntryError extends Error implements CellEntryFailure {
   readonly code: CellEntryErrorCode;
   readonly sheetId: string;
@@ -42,4 +41,3 @@ export class CellEntryError extends Error implements CellEntryFailure {
 export function isCellEntryError(value: unknown): value is CellEntryError {
   return value instanceof CellEntryError;
 }
-

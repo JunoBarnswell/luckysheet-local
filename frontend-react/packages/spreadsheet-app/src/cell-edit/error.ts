@@ -28,8 +28,6 @@ export class CellEditError extends Error implements CellEditFailure {
     };
   }
 }
-
 export function isCellEditError(value: unknown): value is CellEditError {
   return value instanceof CellEditError;
 }
-

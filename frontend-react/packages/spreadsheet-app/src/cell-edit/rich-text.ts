@@ -20,7 +20,6 @@ export function richTextSelectionHasFlag(draft: CellEditDraft, caret: CellEditCa
   }
   return found;
 }
-
 export function richTextSelectionStyle(draft: CellEditDraft, caret: CellEditCaret): Partial<RichTextRunStyle> {
   if (draft.kind !== 'rich-text') return {};
   const start = Math.min(caret.start, caret.end);
@@ -42,4 +41,3 @@ export function richTextSelectionStyle(draft: CellEditDraft, caret: CellEditCare
   }
   return result;
 }
-

@@ -10,7 +10,6 @@ export interface KeyboardGestureSource {
   repeat: boolean;
   nativeEvent: { isComposing?: boolean };
 }
-
 /** DOM normalization only. Editing semantics remain in CellEditDomain. */
 export function toCanonicalKeyGesture(event: KeyboardGestureSource): CanonicalKeyGesture {
   return {
@@ -24,4 +23,3 @@ export function toCanonicalKeyGesture(event: KeyboardGestureSource): CanonicalKe
     composing: Boolean(event.nativeEvent.isComposing),
   };
 }
-
