@@ -16,6 +16,11 @@ export interface SheetSkeletonOptions {
   zoom?: number;
 }
 
+export interface DimensionBoundaryHit {
+  index: number;
+  deltaPx: number;
+}
+
 function normalizeCount(value: number): number {
   if (!Number.isFinite(value)) throw new Error("Sheet dimensions must be finite");
   return Math.max(0, Math.trunc(value));
@@ -405,6 +410,30 @@ export class SheetSkeleton {
     }
     const visibleIndex = this.findIndexAt(contentOffsetX, this.visibleColumnLefts, this.totalWidth);
     return visibleIndex < 0 ? -1 : (this.visibleColumnModels[visibleIndex] ?? -1);
+  }
+
+  /**
+   * Resolves the nearest visible column boundary independently from the cell
+   * under the pointer. This keeps 1-8px columns targetable when adjacent hit
+   * areas overlap; the returned index always owns the boundary on its right.
+   */
+  findNearestColumnBoundary(contentOffsetX: number, tolerancePx: number): DimensionBoundaryHit | null {
+    if (!Number.isFinite(contentOffsetX) || !Number.isFinite(tolerancePx) || tolerancePx < 0
+      || this.visibleColumnCount === 0 || contentOffsetX < 0 || contentOffsetX > this.totalWidth) return null;
+    const sample = Math.min(Math.max(0, contentOffsetX), Math.max(0, this.totalWidth - 1e-7));
+    const column = this.findColumnAt(sample);
+    if (column < 0) return null;
+    const candidates: Array<{ index: number; position: number }> = [{
+      index: column,
+      position: this.getColumnLeft(column) + this.getColumnWidth(column),
+    }];
+    let previous = column - 1;
+    while (previous >= 0 && this.isColumnHidden(previous)) previous -= 1;
+    if (previous >= 0) candidates.push({ index: previous, position: this.getColumnLeft(column) });
+    const nearest = candidates
+      .map((candidate) => ({ index: candidate.index, deltaPx: candidate.position - contentOffsetX }))
+      .sort((left, right) => Math.abs(left.deltaPx) - Math.abs(right.deltaPx) || left.index - right.index)[0];
+    return nearest && Math.abs(nearest.deltaPx) <= tolerancePx ? nearest : null;
   }
 
   setRowHeight(modelRow: number, heightPx: number, zoom = this.zoom): void {

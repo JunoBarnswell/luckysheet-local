@@ -353,9 +353,10 @@ export class CanvasRenderEngine {
       const contentX = local.x - pane.screenRect.x + pane.contentOrigin.x;
       const column = this.skeletonModel.findColumnAt(contentX);
       if (column < 0) return null;
-      const boundary = this.skeletonModel.getColumnLeft(column) + this.skeletonModel.getColumnWidth(column) - contentX;
-      const resizeBoundaryPx = Math.abs(boundary) <= RESIZE_HIT_TOLERANCE_PX ? boundary : undefined;
-      return { kind: "col", index: column, resizeBoundaryPx };
+      const boundary = this.skeletonModel.findNearestColumnBoundary(contentX, RESIZE_HIT_TOLERANCE_PX);
+      return boundary
+        ? { kind: "col", index: boundary.index, resizeBoundaryPx: boundary.deltaPx }
+        : { kind: "col", index: column };
     }
     if (local.x < origin.x && local.y >= origin.y) {
       const pane = this.paneAtLocalPoint({ x: origin.x + 1, y: local.y });

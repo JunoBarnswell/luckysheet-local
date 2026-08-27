@@ -285,6 +285,18 @@ test('SheetSkeleton handles custom dimensions and coordinate lookups accurately'
   assert.deepEqual(customSkeleton.getCellAtPoint({ x: 160, y: 50 }), { row: 1, column: 1 });
 });
 
+test('nearest column boundary remains stable for adjacent narrow columns', () => {
+  const narrow = new SheetSkeleton({
+    rowCount: 2,
+    columnCount: 4,
+    defaultRowHeight: 20,
+    defaultColumnWidth: 3,
+  });
+  assert.deepEqual(narrow.findNearestColumnBoundary(4.2, 4), { index: 0, deltaPx: -1.2000000000000002 });
+  assert.deepEqual(narrow.findNearestColumnBoundary(4.8, 4), { index: 1, deltaPx: 1.2000000000000002 });
+  assert.deepEqual(narrow.findNearestColumnBoundary(11.5, 4), { index: 3, deltaPx: 0.5 });
+});
+
 test('SheetSkeleton virtualizes very large uniform dimensions without dense arrays', () => {
   const largeSkeleton = new SheetSkeleton({
     rowCount: 1_000_000,
