@@ -1,5 +1,6 @@
 import type {
   PivotAggregateFunction,
+  PivotFieldCatalog,
   PivotFieldPlacement,
   PivotFilter,
   PivotGroup,
@@ -13,12 +14,12 @@ import type {
 } from '@react-sheets/core-model';
 import { allowsMultiplePivotFilters, pivotFilterIdentity } from '@react-sheets/core-model';
 import { PIVOT_RESULT_TREE_SCHEMA } from '@react-sheets/core-model';
-import { getPivotFieldCatalog, getPivotSourceRanges, normalizePivotDefinition } from './engine';
+import { getPivotSourceRanges, normalizePivotDefinitionFromCatalog } from './engine';
 
 export interface PivotPanelState {
   pivotId: string;
   sheetId: string;
-  fieldCatalog: ReturnType<typeof getPivotFieldCatalog>;
+  fieldCatalog: PivotFieldCatalog;
   layout: PivotLayout;
   resultTreeSchema: string;
 }
@@ -35,7 +36,7 @@ function hasPivotHeaderData(workbook: WorkbookModel, pivot: PivotModel): boolean
 
 export function buildPivotPanelState(workbook: WorkbookModel, pivot: PivotModel): PivotPanelState {
   assertPivotDefinition(workbook, pivot);
-  const definition = normalizePivotDefinition(workbook, pivot);
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
   return {
     pivotId: definition.id,
     sheetId: definition.target.sheetId,
@@ -46,13 +47,14 @@ export function buildPivotPanelState(workbook: WorkbookModel, pivot: PivotModel)
 }
 
 export function listAvailablePivotFields(workbook: WorkbookModel, pivot: PivotModel): string[] {
-  return getPivotFieldCatalog(workbook, pivot).fields.map((field) => field.fieldId);
+  assertPivotDefinition(workbook, pivot);
+  return pivot.fieldCatalog.fields.map((field) => field.fieldId);
 }
 
 /** Validate a field reference against the live source before a command mutates the model. */
 export function assertPivotField(workbook: WorkbookModel, pivot: PivotModel, fieldId: string): void {
   if (!hasPivotHeaderData(workbook, pivot)) return;
-  const catalog = getPivotFieldCatalog(workbook, pivot);
+  const catalog = pivot.fieldCatalog;
   const names = new Set(catalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
   for (const calculated of pivot.layout.calculatedFields ?? []) names.add(calculated.fieldId);
   if (!names.has(fieldId)) throw new Error(`Unknown pivot field: ${fieldId}`);
@@ -61,7 +63,7 @@ export function assertPivotField(workbook: WorkbookModel, pivot: PivotModel, fie
 /** Fail closed for malformed definitions instead of producing an empty pivot silently. */
 export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel): void {
   if (!pivot.id.trim()) throw new Error('Pivot id is required');
-  const definition = normalizePivotDefinition(workbook, pivot);
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
   workbook.getSheet(definition.target.sheetId);
   if (!Number.isSafeInteger(definition.target.anchor.row) || definition.target.anchor.row < 0 || !Number.isSafeInteger(definition.target.anchor.column) || definition.target.anchor.column < 0) throw new Error('Pivot target anchor is invalid');
   const ranges = getPivotSourceRanges(workbook, pivot);

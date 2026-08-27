@@ -1,5 +1,5 @@
-import { formatPivotMember, type PivotModel, type PivotScalar, type WorkbookModel } from '@react-sheets/core-model';
-import { computePivotResult, normalizePivotDefinition } from './engine';
+import { formatPivotMember, type PivotModel, type PivotResultTree, type PivotScalar } from '@react-sheets/core-model';
+import { normalizePivotDefinitionFromCatalog } from './engine';
 
 export interface PivotWriteResult {
   targetStartRow: number;
@@ -12,9 +12,8 @@ export interface PivotWriteResult {
  * buildPivotGridProjection and never calls this function or writes its values
  * into WorksheetModel.cells.
  */
-export function buildPivotWriteback(pivot: PivotModel, workbook: WorkbookModel): PivotWriteResult {
-  const definition = normalizePivotDefinition(workbook, pivot);
-  const tree = computePivotResult(workbook, pivot);
+export function buildPivotWriteback(pivot: PivotModel, tree: PivotResultTree): PivotWriteResult {
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
   const values = definition.layout.values;
   const output: Array<Array<{ value: PivotScalar }>> = [];
   output.push([

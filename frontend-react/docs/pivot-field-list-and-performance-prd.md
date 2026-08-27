@@ -32,6 +32,42 @@ worksheet cells
 
 这会产生大量短命对象、重复字符串键、重复 member key 编码和完整笛卡尔矩阵。React 侧即使减少 render，也无法消除计算和 GC 长任务。
 
+### 真实附件基线（2026-08-27）
+
+强制验收文件为 `C:\Users\kuo13\Downloads\OCR结果.xlsx`：
+
+- `Sheet1!A1:W4059`，23 列、4,059 行、93,357 个 OOXML cell records。
+- 文件内全部单元格均为 shared-string `t="s"`，style `0`，number format `General`；原生 XLSX 导入不得把 `4.60`、`260` 或 `22/07/2026` 按内容猜测为 number/date。
+- 内置浏览器导入完成约 1.36 秒，边界单元格 `W4059` 可达且值正确。
+- 同一范围创建 PivotTable 的现有交互曾超过 55 秒仍未形成字段目录；失败没有 console error，也没有 typed UI error。该行为同时违反交互预算和 fail-close。
+
+OCR 内容类型修复若未来启用，只能是用户显式选择 schema 后运行的一次性数据清洗事务。它不属于 XLSX import、PivotSourceIndex 或 Pivot worker，且不得成为 native OOXML 的 fallback reader。
+
+## 状态与所有权
+
+| 状态 | 唯一所有者 | 生命周期 | 禁止事项 |
+| --- | --- | --- | --- |
+| `PivotDefinition` | `WorkbookModel` | history / persistence / collaboration | 不保存 worker 状态、source buffers 或派生结果 |
+| `PivotSourceIndex` | workbook + canonical source revision cache | source revision | 不复制到 React state，不按 layout 重建 |
+| `PivotTaskState` | `WorkbookSession` | task generation | 不持久化，不用 notice 冒充 error state |
+| `PivotResultTree` | session result publication | source/layout/filter revision tuple | stale generation 不得发布 |
+| `PivotGridProjection` | render projection cache | result revision + viewport | Canvas 不得触发 source scan 或聚合 |
+
+创建/更新数据流必须为：
+
+```text
+UI intent
+  -> validate source/destination
+  -> acquire revision-owned PivotSourceIndex
+  -> submit PivotTaskRequest
+  -> worker validate + aggregate + physical pivot
+  -> revision/generation match
+  -> one canonical command transaction
+  -> publish result/projection
+```
+
+失败发生在 canonical command 之前时，不得创建 worksheet、PivotDefinition 或 history entry；失败发生在已有 Pivot 刷新时，保留 last-valid result，并发布 typed task error。
+
 ## 已落地的第一阶段所有权
 
 - Field List 默认使用官方 stacked 布局。
@@ -131,6 +167,34 @@ main thread
 - 结果通过 transferable buffers 返回，不结构化克隆完整 row objects。
 - 不保留 synchronous fallback runtime；测试宿主使用同一个 task evaluator 的 inline port。
 
+### `PivotTaskError` 合同
+
+任务失败必须至少包含：
+
+```ts
+interface PivotTaskError {
+  code:
+    | 'PIVOT_SOURCE_INVALID'
+    | 'PIVOT_SOURCE_UNAVAILABLE'
+    | 'PIVOT_MEMBER_LIMIT_EXCEEDED'
+    | 'PIVOT_TARGET_COLLISION'
+    | 'PIVOT_TARGET_BOUNDS_EXCEEDED'
+    | 'PIVOT_RESULT_LIMIT_EXCEEDED'
+    | 'PIVOT_TASK_CANCELLED'
+    | 'PIVOT_TASK_TIMEOUT'
+    | 'PIVOT_TASK_PROTOCOL_ERROR'
+    | 'PIVOT_PERMISSION_DENIED'
+    | 'PIVOT_TASK_FAILED';
+  message: string;
+  pivotId: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  recovery: 'fix-source' | 'change-layout' | 'change-target' | 'retry';
+}
+```
+
+UI 必须显示该失败；console/network 只用于诊断，不是产品错误通道。异常不得被 catch 后转换成 `undefined` 或仅写入瞬时 notice。
+
 DuckDB-Wasm Worker/Arrow 依据：https://www.vldb.org/pvldb/vol15/p3574-kohn.pdf
 
 ## 内存合同
@@ -146,8 +210,12 @@ DuckDB-Wasm Worker/Arrow 依据：https://www.vldb.org/pvldb/vol15/p3574-kohn.pd
 
 ### 4,059 × 23 OCR workbook
 
-- 勾选/移动字段（deferred）：主线程响应 < 50ms。
-- 点击 Update：主线程单任务 < 50ms；Worker 完成 < 500ms。
+- XLSX import：P95 < 2,000ms。
+- 首次 source index + field catalog：P95 < 300ms；任何连续主线程 task < 50ms。
+- 创建空布局 PivotTable：P95 < 500ms，并形成 worksheet、Field List 和可观察 task state。
+- 勾选/移动字段（deferred）：P95 < 50ms。
+- 点击 Update：主线程提交 < 50ms；Worker 完成 P95 < 500ms。
+- source revision 未变化时，第二次字段目录读取 P95 < 10ms。
 - source index 复用后的第二次布局计算不得重新遍历 93,357 个 worksheet cells。
 
 ### 100,000 × 20 dense workbook
@@ -156,6 +224,7 @@ DuckDB-Wasm Worker/Arrow 依据：https://www.vldb.org/pvldb/vol15/p3574-kohn.pd
 - Pivot task 不在主线程执行聚合。
 - source index 与 aggregate peak memory < 等价 row-object runtime 的 35%。
 - 取消旧任务并发布新布局结果 < 2s。
+- Worker timeout、message error 或 revision mismatch 必须产生 typed failure，不得同步回退到主线程。
 
 ### 高基数与拒绝路径
 

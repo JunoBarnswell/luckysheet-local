@@ -92,11 +92,12 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const [delayUpdate, setDelayUpdate] = useState(() => pivot ? shouldDeferPivotLayoutUpdates(pivot) : false);
   const [draft, setDraft] = useState<PivotLayout | null>(pivot ? cloneLayout(pivot.layout) : null);
   const [dirty, setDirty] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [fieldPaneLayout, setFieldPaneLayout] = useState<PivotFieldPaneLayout>(DEFAULT_PIVOT_FIELD_PANE_LAYOUT);
   const [fieldPaneSplit, setFieldPaneSplit] = useState(45);
   useEffect(() => { setDraft(pivot ? cloneLayout(pivot.layout) : null); setDelayUpdate(pivot ? shouldDeferPivotLayoutUpdates(pivot) : false); setDirty(false); }, [pivot?.id]);
   const layout = delayUpdate && draft ? draft : pivot?.layout;
-  const disabled = Boolean(state?.disabled || state?.loading || state?.error || !pivot || !layout);
+  const disabled = Boolean(state?.disabled || !pivot || !layout || applying);
 
   const filters = layout?.filters.filter((field) => field.scope !== 'field').map((field) => field.fieldId) ?? [];
   const columns = layout?.columns.map((field) => field.fieldId) ?? [];
@@ -133,20 +134,27 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
     window.addEventListener('pointerup', stop, { once: true });
   };
 
-  if (state?.loading) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="loading" description={pivotText(locale, 'loading')} /></Panel>;
-  if (state?.error) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="error" description={state.error || pivotText(locale, 'error')} /></Panel>;
+  if (state?.loading && !pivot) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="loading" description={pivotText(locale, 'loading')} /></Panel>;
+  if (state?.error && !pivot) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="error" description={state.error || pivotText(locale, 'error')} /></Panel>;
   if (!pivot || !layout || state?.empty || fields.length === 0) return <Panel className="h-full border-0 shadow-none"><StatePanel kind={state?.disabled ? 'disabled' : 'empty'} description={state?.emptyMessage ?? pivotText(locale, 'empty')} /></Panel>;
 
   const applyLayout = (next: PivotLayout) => {
     if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); }
-    else callbacks?.onLayoutReplace(next);
+    else void callbacks?.onLayoutReplace(next);
   };
-  const applyDraft = () => {
-    if (draft) callbacks?.onLayoutReplace(draft);
-    setDirty(false);
+  const applyDraft = async (): Promise<boolean> => {
+    if (!draft || applying) return false;
+    setApplying(true);
+    try {
+      const accepted = await callbacks?.onLayoutReplace(draft);
+      if (accepted !== false) setDirty(false);
+      return accepted !== false;
+    } finally {
+      setApplying(false);
+    }
   };
-  const toggleDeferredUpdate = (enabled: boolean) => {
-    if (!enabled && dirty) applyDraft();
+  const toggleDeferredUpdate = async (enabled: boolean) => {
+    if (!enabled && dirty && !await applyDraft()) return;
     setDelayUpdate(enabled);
     setDraft(enabled ? cloneLayout(pivot.layout) : null);
     if (enabled) setDirty(false);
@@ -198,6 +206,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         <Text size="lg" weight="bold">{pivotText(locale, 'fieldsTitle')}</Text>
         <Inline gap="sm"><Box className="rounded-full border-2 border-[#a529ff] px-3 py-0.5 text-[#8b20e8]"><Text size="sm" weight="bold">AI</Text></Box>{onClose ? <Button aria-label={pivotText(locale, 'close')} icon="x" iconOnly size="sm" variant="ghost" onClick={onClose} /> : null}</Inline>
       </Inline>
+      {state?.error ? <Box as="section" role="alert" className="mx-4 mb-2 shrink-0 rounded border border-red-300 bg-red-50 px-3 py-2"><Text size="xs" className="text-red-700">{state.error}</Text></Box> : null}
       <Stack gap="sm" className="min-h-0 flex-1 overflow-hidden px-4 pb-2">
         <Inline gap="sm" className="h-9 shrink-0 justify-between border-b border-slate-100 pb-1">
           <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost" icon="chevron-down" className="justify-start px-1">{pivotText(locale, 'formatAndOptions')}</Button>}><PivotFormatOptions locale={locale} disabled={disabled} presentation={pivot.presentation} refreshPolicy={pivot.refreshPolicy} onPresentationChange={callbacks?.onPresentationChange} onDisplayOptionsChange={callbacks?.onDisplayOptionsChange} onRefreshPolicyChange={callbacks?.onRefreshPolicyChange} /></DropdownMenu>
@@ -235,8 +244,8 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
           ) : null}
         </Box>
         <Inline gap="sm" className="h-11 shrink-0 justify-between border-t border-[#d0d0d0] bg-white pt-1">
-          <Stack gap="none" className="min-w-0"><CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => toggleDeferredUpdate(event.target.checked)} />{delayUpdate && dirty ? <Text size="xs" tone="subtle" className="truncate text-amber-700">{pivotText(locale, 'pendingLayout')}</Text> : null}</Stack>
-          <Button size="sm" variant={dirty ? 'primary' : 'outline'} disabled={!delayUpdate || !dirty} onClick={applyDraft}>{pivotText(locale, 'update')}</Button>
+          <Stack gap="none" className="min-w-0"><CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => { void toggleDeferredUpdate(event.target.checked); }} />{delayUpdate && dirty ? <Text size="xs" tone="subtle" className="truncate text-amber-700">{applying ? pivotText(locale, 'applyingLayout') : pivotText(locale, 'pendingLayout')}</Text> : null}</Stack>
+          <Button size="sm" variant={dirty ? 'primary' : 'outline'} disabled={!delayUpdate || !dirty || applying} onClick={() => { void applyDraft(); }}>{applying ? pivotText(locale, 'applyingLayout') : pivotText(locale, 'update')}</Button>
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">

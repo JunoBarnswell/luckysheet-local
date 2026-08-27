@@ -59,7 +59,7 @@ export interface EditorCommandController {
   buildFilterSelectionCommand: () => CommandDescriptor;
   buildClearFilterCommand: () => CommandDescriptor;
   buildSortDescriptor: (ascending: boolean) => CommandDescriptor | undefined;
-  createPivotFromDialog: (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => void;
+  createPivotFromDialog: (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => Promise<void>;
   executeShortcut: (id: string) => boolean;
   selectPanel: (panel: SidebarPanelId) => void;
   applySelection: (selection: SelectionState) => void;
@@ -241,14 +241,15 @@ export function useEditorCommandController({
     locale,
   }), [currentDataRange, locale, sheetNames, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.version]);
 
-  const createPivotFromDialog = (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
+  const createPivotFromDialog = async (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
     const source = pivotSourceOptions.find((option) => option.id === request.sourceId)?.source;
     if (!source) {
       session.notify(pivotText(locale, 'invalidSource'));
       return;
     }
     if (request.destination === "new-sheet") {
-      if (session.createPivotTable({ source, destination: { kind: "new-sheet" } })) session.closeCreatePivotDialog();
+      const outcome = await session.createPivotTable({ source, destination: { kind: "new-sheet" } });
+      if (outcome.status === 'created') session.closeCreatePivotDialog();
       return;
     }
     const target = parseRangeInput(request.targetReference ?? "", state.activeSheetId);
@@ -256,13 +257,16 @@ export function useEditorCommandController({
       session.notify(pivotText(locale, 'invalidDestination'));
       return;
     }
-    if (session.createPivotTable({ source, destination: { kind: "existing-sheet", sheetId: state.activeSheetId, anchor: { row: target.startRow, column: target.startColumn } } })) session.closeCreatePivotDialog();
+    const outcome = await session.createPivotTable({ source, destination: { kind: "existing-sheet", sheetId: state.activeSheetId, anchor: { row: target.startRow, column: target.startColumn } } });
+    if (outcome.status === 'created') session.closeCreatePivotDialog();
   };
 
   const updatePivotLayout = (nextLayout: PivotLayout) => {
-    if (!activePivot) return;
-    dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, layout: nextLayout } });
-    session.notify(pivotText(locale, 'layoutUpdated'));
+    if (!activePivot) return Promise.resolve(false);
+    return session.updatePivotLayout(activePivot.id, nextLayout).then((outcome) => {
+      if (outcome.status === 'updated') session.notify(pivotText(locale, 'layoutUpdated'));
+      return outcome.status === 'updated';
+    });
   };
   const setPivotReportLayout = (reportLayout: PivotLayout['reportLayout']) => {
     if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), reportLayout });
@@ -334,22 +338,18 @@ export function useEditorCommandController({
     onGroupChange: (fieldId, group) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, group } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, group } : field) }); },
     onSubtotalChange: (fieldId, subtotal) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field) }); },
     onSubtotalLocationChange: (subtotalLocation) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), subtotalLocation }); },
-    onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
-    onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
+    onLayoutReplace: (layout) => activePivot ? updatePivotLayout(cloneLayout(layout)) : false,
+    onPresentationChange: (presentation) => { if (activePivot) void session.updatePivotConfiguration(activePivot.id, { presentation: structuredClone(presentation) }); },
     onDisplayOptionsChange: (displayOptions: PivotDisplayOptions) => {
       if (!activePivot) return;
       const current = activePivot.presentation;
-      dispatchCommand({ commandId: 'pivot.update', params: {
-        sheetId: activePivotSheetId,
-        pivotId: activePivot.id,
-        presentation: {
+      void session.updatePivotConfiguration(activePivot.id, { presentation: {
           ...(current?.styleName ? { styleName: current.styleName } : {}),
           styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(current?.styleOptions ?? {}) },
           displayOptions: structuredClone(displayOptions),
-        },
-      } });
+        } });
     },
-    onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, refreshPolicy: structuredClone(refreshPolicy) } }); },
+    onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) void session.updatePivotConfiguration(activePivot.id, { refreshPolicy: structuredClone(refreshPolicy) }); },
     onTimelineRemove: removePivotTimeline,
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
@@ -366,7 +366,13 @@ export function useEditorCommandController({
     onLayoutChange: setPivotReportLayout,
   };
 
-  const pivotPanelState: PivotPanelState = { disabled: state.phase !== "ready", loading: state.phase === "loading", error: state.phase === "error" ? pivotText(locale, 'error') : undefined, empty: pivotFields.length === 0 };
+  const activePivotTask = activePivot ? state.pivotTaskStates[activePivot.id] : undefined;
+  const pivotPanelState: PivotPanelState = {
+    disabled: state.phase !== "ready",
+    loading: state.phase === "loading" || activePivotTask?.status === 'running',
+    error: activePivotTask?.status === 'failed' ? `${activePivotTask.error.code}: ${activePivotTask.error.message}` : state.phase === "error" ? pivotText(locale, 'error') : undefined,
+    empty: pivotFields.length === 0,
+  };
 
   const applyPivotHeaderFilter = (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => {
     const targetPivot = state.selectedSheet.pivots.find((candidate) => candidate.id === pivotId);
@@ -376,7 +382,7 @@ export function useEditorCommandController({
     if (filter) layout.filters.push(structuredClone(filter));
     layout.rows = layout.rows.map((placement) => placement.fieldId === fieldId ? { ...placement, sort } : placement);
     layout.columns = layout.columns.map((placement) => placement.fieldId === fieldId ? { ...placement, sort } : placement);
-    dispatchCommand({ commandId: 'pivot.update', params: { sheetId: targetPivot.target.sheetId, pivotId, layout } });
+    void session.updatePivotLayout(pivotId, layout);
   };
 
   const executeShortcut = (id: string): boolean => {

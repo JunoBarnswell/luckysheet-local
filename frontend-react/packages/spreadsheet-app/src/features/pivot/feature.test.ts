@@ -9,6 +9,7 @@ import { buildPivotModel } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './engine';
 import { buildPivotWriteback } from './writeback';
+import { buildPivotCalculationProof } from './commands';
 import { clearPivotFilterFamily, clearPivotFiltersForField, setPivotColumnGrandTotals, setPivotRowGrandTotals, upsertPivotFilter } from './panel-state';
 
 function seedCrossSheetWorkbook(): WorkbookModel {
@@ -93,6 +94,16 @@ function sameSheetRelationalPivot(): { workbook: WorkbookModel; pivot: NonNullab
   return { workbook, pivot };
 }
 
+function executePivotCreate(runtime: CommandRuntime, workbook: WorkbookModel, pivot: NonNullable<ReturnType<typeof buildPivotModel>>) {
+  const canonical = normalizePivotDefinition(workbook, pivot);
+  const result = computePivotResult(workbook, canonical);
+  return runtime.execute('pivot.create', {
+    pivot: canonical,
+    destination: { kind: 'existing-sheet', sheetId: canonical.target.sheetId },
+    calculationProof: buildPivotCalculationProof(workbook, canonical, result),
+  });
+}
+
 describe('pivot feature contract', () => {
   it('creates a new destination worksheet and PivotTable in one reversible transaction', () => {
     const workbook = seedCrossSheetWorkbook();
@@ -107,6 +118,7 @@ describe('pivot feature contract', () => {
     const result = runtime.execute('pivot.create', {
       pivot,
       destination: { kind: 'new-sheet', sheetId: 'pivot-sheet', name: 'Pivot Output' },
+      calculationProof: buildPivotCalculationProof(workbook, pivot, computePivotResult(workbook, pivot)),
     });
     assert.equal(result.mutationCount, 2);
     assert.equal(runtime.getUndoEntries().length, 1);
@@ -133,6 +145,7 @@ describe('pivot feature contract', () => {
     assert.throws(() => runtime.execute('pivot.create', {
       pivot,
       destination: { kind: 'new-sheet', sheetId: 'pivot-invalid-sheet', name: 'Pivot Invalid' },
+      calculationProof: buildPivotCalculationProof(workbook, pivot, computePivotResult(workbook, pivot)),
     }), /duplicated/);
     assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.getUndoEntries().length, 0);
@@ -150,9 +163,9 @@ describe('pivot feature contract', () => {
     assert.ok(first && second);
     first.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
     second.target = { sheetId: sheet.id, anchor: { row: 7, column: 0 } };
-    runtime.execute('pivot.add', first);
+    executePivotCreate(runtime, workbook, first);
     const before = snapshotWithStableCollectionOrder(workbook);
-    assert.throws(() => runtime.execute('pivot.add', second), /Pivot target collision:.*pivot/);
+    assert.throws(() => executePivotCreate(runtime, workbook, second), /Pivot target collision:.*pivot/);
     assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.getUndoEntries().length, 1);
   });
@@ -173,6 +186,7 @@ describe('pivot feature contract', () => {
     assert.throws(() => runtime.execute('pivot.create', {
       pivot,
       destination: { kind: 'new-sheet', sheetId: 'pivot-failure-sheet', name: 'Pivot Failure' },
+      calculationProof: buildPivotCalculationProof(workbook, pivot, computePivotResult(workbook, pivot)),
     }), /Injected pivot create failure/);
     assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.getUndoEntries().length, 0);
@@ -196,7 +210,7 @@ describe('pivot feature contract', () => {
     assert.ok(pivot);
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
-    runtime.execute('pivot.add', pivot);
+    executePivotCreate(runtime, workbook, pivot);
     runtime.execute('pivot.drillDown', {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
@@ -225,8 +239,8 @@ describe('pivot feature contract', () => {
     const runtime = new CommandRuntime(workbook);
     registerDrawingFeature(runtime);
     registerPivotFeature(runtime);
-    runtime.execute('pivot.add', pivot);
-    runtime.execute('pivot.add', connectedPivot);
+    executePivotCreate(runtime, workbook, pivot);
+    executePivotCreate(runtime, workbook, connectedPivot);
 
     const chart = pivotChartDrawing(pivot.id);
     const slicer = buildPivotSlicerDrawing({
@@ -309,7 +323,7 @@ describe('pivot feature contract', () => {
     const { workbook, pivot } = sameSheetRelationalPivot();
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
-    runtime.execute('pivot.add', pivot);
+    executePivotCreate(runtime, workbook, pivot);
     const result = computePivotResult(workbook, workbook.getSheet('sheet-1').pivots[0]!);
     const east = result.rows.find((node) => node.label === 'East')?.values[0];
     assert.ok(east);
@@ -347,7 +361,7 @@ describe('pivot feature contract', () => {
     pivot.source.relationships[0]!.join = 'inner';
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
-    runtime.execute('pivot.add', pivot);
+    executePivotCreate(runtime, workbook, pivot);
     assert.throws(() => runtime.execute('pivot.drillDown', {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
@@ -363,7 +377,7 @@ describe('pivot feature contract', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = pivotDefinition();
     assert.ok(pivot);
-    const result = buildPivotWriteback(pivot, workbook);
+    const result = buildPivotWriteback(pivot, computePivotResult(workbook, pivot));
     assert.equal(result.values.at(-1)?.[1]?.value, 30);
   });
 
@@ -424,7 +438,7 @@ describe('pivot feature contract', () => {
     const pivot = pivotDefinition();
     assert.ok(pivot);
     pivot.layout.rows = [{ fieldId: 'Missing' }];
-    assert.throws(() => runtime.execute('pivot.add', pivot), /Unknown pivot field: Missing/);
+    assert.throws(() => executePivotCreate(runtime, workbook, pivot), /Unknown pivot field: Missing/);
     assert.equal(workbook.getSheet('sheet-1').pivots.length, 0);
   });
 

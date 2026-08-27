@@ -57,12 +57,13 @@ import {
   resolveFilterCellValue,
   SHEET_COLUMN_GROWTH_CHUNK,
   SHEET_ROW_GROWTH_CHUNK,
+  pivotSourceIdentity,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition, pivotResultMatchesRevision } from './features/pivot/engine';
+import { buildPivotGridProjection, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -136,8 +137,16 @@ import {
   resolveDrawingMoveTransform,
 } from './features/drawing';
 import {
+  buildPivotCalculationProof,
   buildPivotModel,
+  createPivotCalculateRequest,
+  createBrowserPivotTaskPort,
+  createPivotSourceRegisterRequest,
+  createPivotSourceReleaseRequest,
+  InlinePivotTaskPort,
   readPivotBlockSource,
+  type PivotTaskError,
+  type PivotTaskPort,
 } from './features/pivot';
 import {
   buildPivotSlicerDrawing,
@@ -260,6 +269,9 @@ export interface WorkbookSessionOptions {
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   xlsxExecution?: 'worker' | 'inline-test';
+  /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
+  pivotTaskPort?: PivotTaskPort;
+  pivotExecution?: 'worker' | 'inline-test';
 }
 
 export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
@@ -340,6 +352,8 @@ export interface UiSnapshot extends DesignerState {
   phase: AppPhase;
   saveState: SaveState;
   notice: string;
+  pivotCreateTask: PivotCreateTaskState;
+  pivotTaskStates: Readonly<Record<string, PivotTaskState>>;
   selection: SelectionState;
   homeRibbon: HomeRibbonState;
   activeCell: string;
@@ -458,6 +472,33 @@ export interface CreatePivotTableParams {
   destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
 }
 
+export type PivotCreateOutcome =
+  | { status: 'created'; pivotId: string }
+  | { status: 'rejected'; error: PivotTaskError };
+
+export type PivotUpdateOutcome =
+  | { status: 'updated'; pivotId: string }
+  | { status: 'rejected'; error: PivotTaskError };
+
+export type PivotCreateTaskState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'failed'; error: PivotTaskError };
+
+export type PivotTaskState =
+  | { status: 'idle' }
+  | { status: 'running'; taskId: string }
+  | { status: 'failed'; error: PivotTaskError };
+
+class PivotTaskExecutionError extends Error {
+  constructor(readonly taskError: PivotTaskError) {
+    super(taskError.message);
+    this.name = 'PivotTaskExecutionError';
+  }
+}
+
+const MAX_REGISTERED_PIVOT_SOURCES = 8;
+
 export interface DefinedNameCommandInput {
   name: string;
   formula: string;
@@ -512,6 +553,7 @@ export class WorkbookSession {
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
   private notice = 'Workbook engine ready';
+  private pivotCreateTask: PivotCreateTaskState = { status: 'idle' };
   private version = 0;
   private activeSheetId: string;
   private panels: PanelState = { active: 'inspector', open: false, dock: 'right' };
@@ -565,6 +607,11 @@ export class WorkbookSession {
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
+  private readonly pivotTaskPort: PivotTaskPort;
+  private readonly registeredPivotSources = new Map<string, string>();
+  private readonly activePivotTasks = new Map<string, string>();
+  private readonly pendingPivotCommitResults = new Map<string, import('@react-sheets/core-model').PivotResultTree>();
+  private pivotCreateAbort: AbortController | null = null;
   private pivotOpenRefreshStarted = false;
   private readonly insertCoordinator = new InsertCoordinator(nextId);
   private readonly assetUrls = new Map<string, string>();
@@ -609,7 +656,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -633,6 +680,9 @@ export class WorkbookSession {
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
     this.xlsxExecution = xlsxExecution;
+    const resolvedPivotTaskPort = pivotTaskPort ?? (pivotExecution === 'worker' ? createBrowserPivotTaskPort() : new InlinePivotTaskPort());
+    if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
+    this.pivotTaskPort = resolvedPivotTaskPort;
     this.onReady = onReady;
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
@@ -862,6 +912,12 @@ export class WorkbookSession {
     this.persistenceDispose = null;
     for (const url of this.assetUrls.values()) URL.revokeObjectURL(url);
     this.assetUrls.clear();
+    this.pivotTaskPort.dispose();
+    this.activePivotTasks.clear();
+    this.registeredPivotSources.clear();
+    this.pendingPivotCommitResults.clear();
+    this.pivotCreateAbort?.abort();
+    this.pivotCreateAbort = null;
     disposeSpreadsheetRuntime(this.runtime);
     this.sheetProjectionCache.clear();
     this.cachedUiSnapshot = null;
@@ -1174,6 +1230,16 @@ export class WorkbookSession {
       phase: this.phase,
       saveState: this.saveState,
       notice: this.notice,
+      pivotCreateTask: structuredClone(this.pivotCreateTask),
+      pivotTaskStates: Object.fromEntries(modelSheets.flatMap((sheet) => sheet.pivots.map((pivot) => {
+        const taskId = this.activePivotTasks.get(pivot.id);
+        const error = this.runtime.pivotErrors[pivot.id];
+        return [pivot.id, taskId
+          ? { status: 'running' as const, taskId }
+          : error
+            ? { status: 'failed' as const, error: structuredClone(error) }
+            : { status: 'idle' as const }];
+      }))),
       selection,
       homeRibbon,
       activeCell: this.selectionService.activeCell,
@@ -1576,15 +1642,33 @@ export class WorkbookSession {
     if (commandId === 'pivot.refresh') {
       const refreshParams = resolvedParams as { pivotId?: string };
       if (refreshParams.pivotId) this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: refreshParams.pivotId });
-    } else if (commandId === 'pivot.add') {
-      const pivot = resolvedParams as PivotModel;
-      this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: pivot.id });
     } else if (commandId === 'pivot.create') {
       const pivot = (resolvedParams as CreatePivotTableParams & { pivot?: PivotModel }).pivot;
-      if (pivot) this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: pivot.id });
-    } else if (commandId === 'pivot.update' || commandId.startsWith('pivot.set') || commandId.startsWith('pivot.expansion.')) {
+      if (pivot) {
+        const preparedResult = this.pendingPivotCommitResults.get(pivot.id);
+        if (preparedResult) {
+          this.pendingPivotCommitResults.delete(pivot.id);
+          this.runtime.pivotResults[pivot.id] = preparedResult;
+          delete this.runtime.pivotErrors[pivot.id];
+        } else if (!pivotResultMatchesRevision(this.runtime.model, pivot, this.runtime.pivotResults[pivot.id], this.runtime.formula)) {
+          this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: pivot.id });
+        }
+      }
+    } else if (commandId === 'pivot.update') {
       const updateParams = resolvedParams as { pivotId?: string };
-      if (updateParams.pivotId) this.refreshPivotsForTrigger({ kind: 'layout-change', pivotId: updateParams.pivotId });
+      if (updateParams.pivotId) {
+        const preparedResult = this.pendingPivotCommitResults.get(updateParams.pivotId);
+        if (preparedResult) {
+          this.pendingPivotCommitResults.delete(updateParams.pivotId);
+          this.runtime.pivotResults[updateParams.pivotId] = preparedResult;
+          delete this.runtime.pivotErrors[updateParams.pivotId];
+        } else {
+          const updatedPivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === updateParams.pivotId);
+          if (updatedPivot && !pivotResultMatchesRevision(this.runtime.model, updatedPivot, this.runtime.pivotResults[updateParams.pivotId], this.runtime.formula)) {
+            this.refreshPivotsForTrigger({ kind: 'layout-change', pivotId: updateParams.pivotId });
+          }
+        }
+      }
     }
     if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh' && commandId !== 'sheet.extent.grow') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
@@ -2041,7 +2125,7 @@ export class WorkbookSession {
           description: `Revision ${revision}`,
         };
       this.historyPreview?.dispose();
-      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot);
+      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot, this.pivotTaskPort);
       this.notify(`Previewing revision #${revision}`);
       this.emit();
       return this.historyPreview;
@@ -2276,7 +2360,9 @@ export class WorkbookSession {
     this.emit();
   };
   closeCreatePivotDialog = (): void => {
+    this.pivotCreateAbort?.abort();
     if (this.dialogs.active === 'create-pivot') this.dialogs = { ...this.dialogs, active: null };
+    this.pivotCreateTask = { status: 'idle' };
     this.setFocusState('grid', 'grid');
     this.emit();
   };
@@ -3296,43 +3382,168 @@ export class WorkbookSession {
     this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
     this.refresh();
   }
-  addPivot(pivot: PivotModel): void {
-    this.commitInsertMutation({
-      kind: 'pivot',
-      commandId: 'pivot.add',
-      sheetId: pivot.target.sheetId,
-      params: { ...pivot },
-      createdObjectIds: [pivot.id],
-    }, () => {
-      this.setActivePivotContext(pivot.id, pivot.target.sheetId);
-      this.notify(`Pivot ${pivot.id} added`);
-      this.refresh();
-    });
-  }
-  insertPivotFromSelection(): string | undefined {
-    const descriptor = this.buildPivotFromSelectionDescriptor();
-    const pivot = descriptor?.params as PivotModel | undefined;
-    if (!pivot) {
-      this.notify('Select a data range with category and value fields');
-      return undefined;
+  async addPivot(pivot: PivotModel): Promise<PivotCreateOutcome> {
+    try {
+      const calculated = await this.calculatePivotTask(structuredClone(pivot));
+      this.pendingPivotCommitResults.set(pivot.id, calculated.result);
+      try {
+        this.commitInsertMutation({
+          kind: 'pivot',
+          commandId: 'pivot.create',
+          sheetId: pivot.target.sheetId,
+          params: { pivot: structuredClone(pivot), destination: { kind: 'existing-sheet', sheetId: pivot.target.sheetId }, calculationProof: calculated.calculationProof },
+          createdObjectIds: [pivot.id],
+        }, () => {
+          this.setActivePivotContext(pivot.id, pivot.target.sheetId);
+          this.notify(`Pivot ${pivot.id} added`);
+          this.refresh();
+        });
+      } catch (error) {
+        this.pendingPivotCommitResults.delete(pivot.id);
+        throw error;
+      }
+      return { status: 'created', pivotId: pivot.id };
+    } catch (error) {
+      const taskError = error instanceof PivotTaskExecutionError
+        ? error.taskError
+        : this.pivotTaskError(pivot, 'PIVOT_TASK_FAILED', error instanceof Error ? error.message : `PivotTable create failed: ${pivot.id}`, 'retry');
+      return { status: 'rejected', error: taskError };
     }
-    this.addPivot(pivot);
-    return pivot.id;
   }
-
-  buildPivotFromSelectionDescriptor(): CommandDescriptor | undefined {
+  async insertPivotFromSelection(): Promise<PivotCreateOutcome> {
     const range = normalizeRangeRef(this.getCurrentRegion());
     const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, this.insertCoordinator.allocateObjectId('pivot'), range);
-    return pivot ? { commandId: 'pivot.add', params: pivot } : undefined;
+    if (!pivot) {
+      const message = 'Select a data range with category and value fields';
+      this.notify(message);
+      return { status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message, pivotId: 'unbound', sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } };
+    }
+    return this.addPivot(pivot);
   }
 
-  createPivotTable(params: CreatePivotTableParams): string | undefined {
+  private pivotTaskError(
+    pivot: PivotModel,
+    code: PivotTaskError['code'],
+    message: string,
+    recovery: PivotTaskError['recovery'],
+    sourceRevision = 'unknown',
+  ): PivotTaskError {
+    return { code, message, pivotId: pivot.id, sourceIdentity: `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`, sourceRevision, recovery };
+  }
+
+  private async rememberRegisteredPivotSource(pivot: PivotModel, sourceIdentity: string, sourceRevision: string, generation: number): Promise<void> {
+    this.registeredPivotSources.delete(sourceIdentity);
+    this.registeredPivotSources.set(sourceIdentity, sourceRevision);
+    if (this.registeredPivotSources.size <= MAX_REGISTERED_PIVOT_SOURCES) return;
+    const active = new Set(this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots.map((entry) => `${this.runtime.model.unitId}:${pivotSourceIdentity(entry.source)}`)));
+    const evict = [...this.registeredPivotSources.keys()].find((identity) => identity !== sourceIdentity && !active.has(identity));
+    if (!evict) {
+      this.registeredPivotSources.delete(sourceIdentity);
+      await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-release:${generation}`, generation, sourceIdentity, sourceRevision));
+      throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Pivot source cache exceeds ${String(MAX_REGISTERED_PIVOT_SOURCES)} active sources`, 'fix-source', sourceRevision));
+    }
+    const evictRevision = this.registeredPivotSources.get(evict)!;
+    this.registeredPivotSources.delete(evict);
+    const released = await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-evict:${generation}`, generation, evict, evictRevision));
+    if (released.status === 'failed') throw new PivotTaskExecutionError(released.error);
+  }
+
+  private async prepareRegisteredPivotTask(pivot: PivotModel, generation: number) {
+    const sourceIdentity = `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`;
+    if (pivot.source.kind === 'data-source') {
+      const sourceId = pivot.source.dataSourceId;
+      const query = this.runtime.dataContent.get(sourceId);
+      const region = this.runtime.model.getSheets()
+        .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
+        .find(({ entry }) => entry.sourceId === sourceId);
+      if (!query || !region) throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', `PivotTable source ${sourceId} is unavailable`, 'fix-source'));
+      const loaded = await readPivotBlockSource(normalizePivotDefinitionFromCatalog(pivot), query, {
+        sourceSheetId: region.sheet.id,
+        sourceRowStart: region.entry.headerRow + 1,
+      });
+      if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
+      const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
+      descriptor.revisions.sourceRevision = `${loaded.state.sourceId}:${loaded.sourceRevision}`;
+      if (this.registeredPivotSources.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
+        const taskId = `${pivot.id}:source:${generation}`;
+        const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source));
+        if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
+          ? registration.error
+          : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', descriptor.revisions.sourceRevision));
+        await this.rememberRegisteredPivotSource(pivot, sourceIdentity, descriptor.revisions.sourceRevision, generation);
+      }
+      return { sourceIdentity, descriptor };
+    }
+    const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
+    if (this.registeredPivotSources.get(sourceIdentity) === descriptor.revisions.sourceRevision) return { sourceIdentity, descriptor };
+    const prepared = await preparePivotTaskInputAsync(this.runtime.model, pivot, this.runtime.formula);
+    const taskId = `${pivot.id}:source:${generation}`;
+    const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source));
+    if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
+      ? registration.error
+      : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', prepared.revisions.sourceRevision));
+    await this.rememberRegisteredPivotSource(pivot, sourceIdentity, prepared.revisions.sourceRevision, generation);
+    return { sourceIdentity, descriptor: { definition: prepared.definition, controls: prepared.controls, revisions: prepared.revisions, targetBounds: prepared.targetBounds } };
+  }
+
+  private async calculatePivotTask(pivot: PivotModel): Promise<{ result: import('@react-sheets/core-model').PivotResultTree; calculationProof: ReturnType<typeof buildPivotCalculationProof> }> {
+    const generation = (this.pivotTaskGeneration.get(pivot.id) ?? 0) + 1;
+    this.pivotTaskGeneration.set(pivot.id, generation);
+    const previousTaskId = this.activePivotTasks.get(pivot.id);
+    if (previousTaskId) this.pivotTaskPort.cancel(previousTaskId);
+    const taskId = `${pivot.id}:calculate:${generation}`;
+    this.activePivotTasks.set(pivot.id, taskId);
+    delete this.runtime.pivotErrors[pivot.id];
+    this.refresh();
+    let prepared: Awaited<ReturnType<WorkbookSession['prepareRegisteredPivotTask']>>;
+    try {
+      prepared = await this.prepareRegisteredPivotTask(pivot, generation);
+    } catch (error) {
+      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+      throw error;
+    }
+    const { sourceIdentity, descriptor } = prepared;
+    if (this.pivotTaskGeneration.get(pivot.id) !== generation) {
+      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+      throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was superseded by a newer generation', 'retry', descriptor.revisions.sourceRevision));
+    }
+    const task = await this.pivotTaskPort.submit(createPivotCalculateRequest(taskId, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
+    if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+    if (this.pivotTaskGeneration.get(pivot.id) !== generation || task.status === 'cancelled') {
+      throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was cancelled', 'retry', descriptor.revisions.sourceRevision));
+    }
+    if (task.status !== 'completed') throw new PivotTaskExecutionError(task.status === 'failed'
+      ? task.error
+      : this.pivotTaskError(pivot, 'PIVOT_TASK_PROTOCOL_ERROR', 'Pivot worker returned an invalid task state', 'retry', descriptor.revisions.sourceRevision));
+    return { result: task.result, calculationProof: buildPivotCalculationProof(this.runtime.model, descriptor.definition, task.result) };
+  }
+
+  async createPivotTable(params: CreatePivotTableParams): Promise<PivotCreateOutcome> {
+    this.pivotCreateAbort?.abort();
+    const createAbort = new AbortController();
+    this.pivotCreateAbort = createAbort;
+    this.pivotCreateTask = { status: 'running' };
+    this.refresh();
     const selectedRegion = normalizeRangeRef(this.getCurrentRegion());
     const sourceRegion = params.source?.kind === 'worksheet-range' ? normalizeRangeRef(params.source.range) : selectedRegion;
     if ((!params.source || params.source.kind === 'worksheet-range')
       && (sourceRegion.endRow <= sourceRegion.startRow || sourceRegion.endColumn < sourceRegion.startColumn)) {
-      this.notify('Select a tabular source range with a header row before creating a PivotTable');
-      return undefined;
+      const message = 'Select a tabular source range with a header row before creating a PivotTable';
+      const error: PivotTaskError = { code: 'PIVOT_SOURCE_INVALID', message, pivotId: 'unbound', sourceIdentity: 'unbound', sourceRevision: 'unknown', recovery: 'fix-source' };
+      this.pivotCreateTask = { status: 'failed', error };
+      if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
+      this.notify(message);
+      return { status: 'rejected', error };
+    }
+    try {
+      this.assertPermission('pivot.create', { source: params.source ?? { kind: 'worksheet-range', range: sourceRegion }, destination: params.destination });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Permission denied';
+      const rejected: PivotTaskError = { code: 'PIVOT_PERMISSION_DENIED', message, pivotId: 'unbound', sourceIdentity: 'unbound', sourceRevision: 'unknown', recovery: 'retry' };
+      this.pivotCreateTask = { status: 'failed', error: rejected };
+      if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
+      this.notify(message);
+      return { status: 'rejected', error: rejected };
     }
     const pivotId = this.insertCoordinator.allocateObjectId('pivot');
     let targetSheetId: string;
@@ -3359,6 +3570,7 @@ export class WorkbookSession {
       destination = { kind: 'existing-sheet', sheetId: targetSheetId };
     }
 
+    let pendingPivot: PivotModel | undefined;
     try {
       const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
         && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
@@ -3389,12 +3601,24 @@ export class WorkbookSession {
           expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
         },
       };
-      const pivot: PivotModel = { ...pivotDraft, fieldCatalog: buildPivotFieldCatalog(this.runtime.model, pivotDraft) };
+      const sourceIdentity = pivotSourceIdentity(pivotDraft.source);
+      const sourceRevision = getPivotRevisionKey(this.runtime.model, pivotDraft, this.runtime.formula).sourceRevision;
+      const revisionPeer = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => pivotSourceIdentity(entry.source) === sourceIdentity
+        && getPivotRevisionKey(this.runtime.model, entry, this.runtime.formula).sourceRevision === sourceRevision);
+      const fieldCatalog = revisionPeer
+        ? structuredClone(revisionPeer.fieldCatalog)
+        : (await preparePivotTaskInputAsync(this.runtime.model, pivotDraft, this.runtime.formula, { signal: createAbort.signal })).definition.fieldCatalog;
+      const pivot: PivotModel = { ...pivotDraft, fieldCatalog };
+      pendingPivot = pivot;
+      const generation = (this.pivotTaskGeneration.get(pivot.id) ?? 0) + 1;
+      this.pivotTaskGeneration.set(pivot.id, generation);
+      await this.prepareRegisteredPivotTask(pivot, generation);
+      const calculationProof = buildPivotCalculationProof(this.runtime.model, pivot);
       this.commitInsertMutation({
         kind: 'pivot',
         commandId: 'pivot.create',
         sheetId: targetSheetId,
-        params: { pivot, destination },
+        params: { pivot, destination, calculationProof },
         createdObjectIds: [pivotId, ...(destination.kind === 'new-sheet' ? [targetSheetId] : [])],
       }, () => {
         this.activeSheetId = targetSheetId;
@@ -3402,25 +3626,114 @@ export class WorkbookSession {
         this.setActivePivotContext(pivotId, targetSheetId);
         this.refresh();
       });
-      return pivotId;
+      this.pivotCreateTask = { status: 'idle' };
+      if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
+      return { status: 'created', pivotId };
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'Could not create PivotTable');
-      return undefined;
+      const taskError = error instanceof PivotTaskExecutionError
+        ? error.taskError
+        : error instanceof DOMException && error.name === 'AbortError'
+          ? pendingPivot
+            ? this.pivotTaskError(pendingPivot, 'PIVOT_TASK_CANCELLED', error.message, 'retry')
+            : { code: 'PIVOT_TASK_CANCELLED' as const, message: error.message, pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'retry' as const }
+        : pendingPivot
+          ? this.pivotTaskError(pendingPivot, 'PIVOT_TASK_FAILED', error instanceof Error ? error.message : 'Could not create PivotTable', 'retry')
+          : { code: 'PIVOT_TASK_FAILED' as const, message: error instanceof Error ? error.message : 'Could not create PivotTable', pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'retry' as const };
+      if (taskError.code === 'PIVOT_TASK_CANCELLED') {
+        this.pivotCreateTask = { status: 'idle' };
+        if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
+        this.refresh();
+        return { status: 'rejected', error: taskError };
+      }
+      this.notify(taskError.message);
+      this.pivotCreateTask = { status: 'failed', error: taskError };
+      if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
+      this.refresh();
+      return { status: 'rejected', error: taskError };
     }
   }
-  updatePivotLayout(pivotId: string, layout: PivotLayout): void {
-    this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, layout });
+  updatePivotLayout(pivotId: string, layout: PivotLayout): Promise<PivotUpdateOutcome> {
+    return this.updatePivotConfiguration(pivotId, { layout });
   }
-  updatePivotConfiguration(
+  async updatePivotConfiguration(
     pivotId: string,
-    patch: Parameters<WorkbookSession['updatePivotLayout']>[1] extends PivotLayout
-      ? { source?: PivotDefinition['source']; target?: PivotDefinition['target']; fieldCatalog?: PivotDefinition['fieldCatalog']; refreshPolicy?: PivotDefinition['refreshPolicy']; nativeMetadata?: PivotDefinition['nativeMetadata']; presentation?: PivotDefinition['presentation']; layout?: PivotLayout }
-      : never,
-  ): void {
-    this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
+    patch: { source?: PivotDefinition['source']; target?: PivotDefinition['target']; fieldCatalog?: PivotDefinition['fieldCatalog']; refreshPolicy?: PivotDefinition['refreshPolicy']; nativeMetadata?: PivotDefinition['nativeMetadata']; presentation?: PivotDefinition['presentation']; layout?: PivotLayout },
+  ): Promise<PivotUpdateOutcome> {
+    const current = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!current) {
+      const error: PivotTaskError = { code: 'PIVOT_SOURCE_INVALID', message: `Unknown PivotTable: ${pivotId}`, pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' };
+      return { status: 'rejected', error };
+    }
+    const candidate: PivotModel = {
+      ...structuredClone(current),
+      ...structuredClone(patch),
+      id: current.id,
+      schema: 'PivotDefinition',
+    };
+    try {
+      let previousResult = this.runtime.pivotResults[pivotId];
+      if (!pivotResultMatchesRevision(this.runtime.model, current, previousResult, this.runtime.formula)
+        && (current.layout.rows.length > 0 || current.layout.columns.length > 0 || current.layout.values.length > 0)) {
+        previousResult = (await this.calculatePivotTask(structuredClone(current))).result;
+      }
+      const previousCalculationProof = buildPivotCalculationProof(this.runtime.model, current, previousResult);
+      const calculated = await this.calculatePivotTask(candidate);
+      this.pendingPivotCommitResults.set(pivotId, calculated.result);
+      try {
+        this.runCommand('pivot.update', {
+          sheetId: current.target.sheetId,
+          pivotId,
+          ...structuredClone(patch),
+          calculationProof: calculated.calculationProof,
+          previousCalculationProof,
+        });
+      } catch (error) {
+        this.pendingPivotCommitResults.delete(pivotId);
+        throw error;
+      }
+      return { status: 'updated', pivotId };
+    } catch (error) {
+      const taskError = error instanceof PivotTaskExecutionError
+        ? error.taskError
+        : this.pivotTaskError(current, 'PIVOT_TASK_FAILED', error instanceof Error ? error.message : `PivotTable update failed: ${pivotId}`, 'retry');
+      if (taskError.code !== 'PIVOT_TASK_CANCELLED') {
+        this.runtime.pivotErrors[pivotId] = taskError;
+        this.notify(`${taskError.code}: ${taskError.message}`);
+        this.refresh();
+      }
+      return { status: 'rejected', error: taskError };
+    }
   }
-  setPivotAggregate(pivotId: string, valueId: string, summarizeBy: PivotAggregateFunction): void {
-    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, valueId, summarizeBy });
+  setPivotAggregate(pivotId: string, valueId: string, summarizeBy: PivotAggregateFunction): Promise<PivotUpdateOutcome> {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot) return Promise.resolve({ status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message: `Unknown PivotTable: ${pivotId}`, pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } });
+    return this.updatePivotLayout(pivotId, {
+      ...structuredClone(pivot.layout),
+      values: pivot.layout.values.map((value) => value.valueId === valueId ? { ...value, summarizeBy } : value),
+    });
+  }
+
+  async togglePivotExpansion(pivotId: string, nodeId: string): Promise<PivotUpdateOutcome> {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot) return { status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message: `Unknown PivotTable: ${pivotId}`, pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } };
+    let result = this.runtime.pivotResults[pivotId];
+    if (!pivotResultMatchesRevision(this.runtime.model, pivot, result, this.runtime.formula)) result = (await this.calculatePivotTask(structuredClone(pivot))).result;
+    const known = new Set<string>();
+    const collect = (nodes: readonly import('@react-sheets/core-model').PivotResultNode[]) => nodes.forEach((node) => {
+      if (node.nodeId) known.add(node.nodeId);
+      collect(node.children);
+    });
+    collect(result.rows);
+    if (!known.has(nodeId)) return { status: 'rejected', error: this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Unknown Pivot expansion node: ${nodeId}`, 'change-layout', result.sourceRevision) };
+    const expansion = structuredClone(pivot.layout.expansion ?? { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true });
+    const collapsed = new Set(expansion.collapsedNodeIds);
+    const expanded = new Set(expansion.expandedNodeIds);
+    if (collapsed.delete(nodeId)) expanded.add(nodeId);
+    else {
+      collapsed.add(nodeId);
+      expanded.delete(nodeId);
+    }
+    return this.updatePivotLayout(pivotId, { ...structuredClone(pivot.layout), expansion: { ...expansion, collapsedNodeIds: [...collapsed], expandedNodeIds: [...expanded] } });
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
@@ -3575,68 +3888,33 @@ export class WorkbookSession {
     const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
     if (!pivot || !owner) {
+      const taskId = this.activePivotTasks.get(pivotId);
+      if (taskId) this.pivotTaskPort.cancel(taskId);
+      this.activePivotTasks.delete(pivotId);
       delete this.runtime.pivotResults[pivotId];
+      delete this.runtime.pivotErrors[pivotId];
       return;
     }
-    if (pivot.source.kind === 'data-source') {
-      const sourceId = pivot.source.dataSourceId;
-      const query = this.runtime.dataContent.get(sourceId);
-      const region = this.runtime.model.getSheets()
-        .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
-        .find(({ entry }) => entry.sourceId === sourceId);
-      if (!query || !region) {
-        delete this.runtime.pivotResults[pivotId];
-        this.runtime.pivotErrors[pivotId] = `PivotTable source ${sourceId} is unavailable`;
-        this.notify(`PivotTable source ${sourceId} is unavailable`);
-        return;
-      }
-      const taskRevision = (this.pivotTaskGeneration.get(pivotId) ?? 0) + 1;
-      this.pivotTaskGeneration.set(pivotId, taskRevision);
-      void readPivotBlockSource(normalizePivotDefinition(this.runtime.model, pivot, this.runtime.formula), query, {
-        sourceSheetId: region.sheet.id,
-        sourceRowStart: region.entry.headerRow + 1,
-      }).then((result) => {
-        if (this.pivotTaskGeneration.get(pivotId) !== taskRevision || result.status !== 'ready') {
-          if (result.status !== 'ready') {
-            this.runtime.pivotErrors[pivotId] = result.error;
-            this.notify(result.error);
-          }
-          return;
-        }
-        this.runtime.pivotResults[pivotId] = computePivotResultFromBlockSource(
-          this.runtime.model,
-          pivot,
-          result.source,
-          `${result.state.sourceId}:${result.sourceRevision}`,
-        );
-        delete this.runtime.pivotErrors[pivotId];
-        this.refresh();
-      }).catch((error) => {
-        if (this.pivotTaskGeneration.get(pivotId) === taskRevision) {
-          this.runtime.pivotErrors[pivotId] = error instanceof Error ? error.message : 'PivotTable source failed to load';
-          this.notify(this.runtime.pivotErrors[pivotId]);
-        }
-      });
+    const retained = getLastValidPivotResult(this.runtime.model, pivotId);
+    if (pivotResultMatchesRevision(this.runtime.model, pivot, retained, this.runtime.formula)) {
+      this.runtime.pivotResults[pivotId] = retained;
+      delete this.runtime.pivotErrors[pivotId];
       return;
     }
-    try {
-      // Refresh is a calculation boundary. Build the authoritative source
-      // engine from the current model so an explicit refresh cannot observe a
-      // formula worker generation that was queued by the preceding edit.
-      const retained = getLastValidPivotResult(this.runtime.model, pivotId);
-      const result = pivotResultMatchesRevision(this.runtime.model, pivot, retained)
-        ? retained
-        : computePivotResult(this.runtime.model, pivot);
-      const revision = getPivotRevisionKey(this.runtime.model, pivot, this.runtime.formula);
-      result.sourceRevision = revision.sourceRevision;
-      result.layoutRevision = revision.layoutRevision;
-      result.filterRevision = revision.filterRevision;
+    void this.calculatePivotTask(structuredClone(pivot)).then(({ result }) => {
       this.runtime.pivotResults[pivotId] = result;
       delete this.runtime.pivotErrors[pivotId];
-    } catch (error) {
-      delete this.runtime.pivotResults[pivotId];
-      this.runtime.pivotErrors[pivotId] = error instanceof Error ? error.message : `PivotTable refresh failed: ${pivotId}`;
-    }
+      this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
+      this.refresh();
+    }).catch((error: unknown) => {
+      const taskError = error instanceof PivotTaskExecutionError
+        ? error.taskError
+        : this.pivotTaskError(pivot, 'PIVOT_TASK_FAILED', error instanceof Error ? error.message : `PivotTable refresh failed: ${pivotId}`, 'retry');
+      if (taskError.code === 'PIVOT_TASK_CANCELLED') return;
+      this.runtime.pivotErrors[pivotId] = taskError;
+      this.notify(`${taskError.code}: ${taskError.message}`);
+      this.refresh();
+    });
   }
   private refreshPivotsForTrigger(trigger: PivotRefreshTrigger): void {
     const pivots = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots);
@@ -3644,7 +3922,14 @@ export class WorkbookSession {
     for (const pivotId of Object.keys(this.runtime.pivotResults)) if (!activeIds.has(pivotId)) delete this.runtime.pivotResults[pivotId];
     for (const pivotId of Object.keys(this.runtime.pivotErrors)) if (!activeIds.has(pivotId)) delete this.runtime.pivotErrors[pivotId];
     const refreshIds = pivotIdsToRefresh(this.runtime.model, pivots, trigger);
-    for (const pivotId of refreshIds) this.recomputePivotResult(pivotId);
+    for (const pivotId of refreshIds) {
+      const prepared = this.pendingPivotCommitResults.get(pivotId);
+      if (prepared) {
+        this.pendingPivotCommitResults.delete(pivotId);
+        this.runtime.pivotResults[pivotId] = prepared;
+        delete this.runtime.pivotErrors[pivotId];
+      } else this.recomputePivotResult(pivotId);
+    }
     if (refreshIds.length > 0) {
       for (const pivot of pivots) {
         if (refreshIds.includes(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
@@ -4588,6 +4873,10 @@ export class WorkbookSession {
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
       layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact', calculatedFields: [], calculatedItems: [], expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
     };
+    const sourceRevision = getPivotRevisionKey(this.runtime.model, pivot, this.runtime.formula).sourceRevision;
+    const revisionPeer = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => pivotSourceIdentity(entry.source) === pivotSourceIdentity(pivot.source)
+      && getPivotRevisionKey(this.runtime.model, entry, this.runtime.formula).sourceRevision === sourceRevision);
+    if (revisionPeer) return structuredClone(revisionPeer.fieldCatalog.fields);
     return buildPivotFieldCatalog(this.runtime.model, pivot).fields;
   }
 

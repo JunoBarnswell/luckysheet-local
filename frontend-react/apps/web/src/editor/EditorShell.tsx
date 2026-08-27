@@ -255,7 +255,7 @@ export function EditorShell({
                   ];
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}
-                onPivotExpansionToggle={(pivotId, nodeId) => dispatchCommand({ commandId: 'pivot.expansion.toggle', params: { sheetId: state.activeSheetId, pivotId, nodeId } })}
+                onPivotExpansionToggle={(pivotId, nodeId) => { void session.togglePivotExpansion(pivotId, nodeId); }}
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}

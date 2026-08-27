@@ -294,6 +294,7 @@
       "note.visibility": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "outline.set": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "pivot.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
+      "pivot.create": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "pivot.chart.create": { "capability": "drawing", "protectionAction": "edit-objects", "checksProtection": true },
       "pivot.drilldown.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "pivot.drilldown.remove": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
