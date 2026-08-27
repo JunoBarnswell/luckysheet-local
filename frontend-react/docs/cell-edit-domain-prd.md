@@ -163,7 +163,7 @@ DOM Keyboard / Pointer / IME / FormulaBar / Cell Control
 普通 raw text 的提交链固定为：
 
 ```text
-CellEditorAdapter.toCommitPayload(raw text)
+CellEditorBehavior.toCommitPayload(raw text)
   -> CellInputInterpretationContext
   -> sheet.cell.commitText
   -> interpretCellInput
@@ -237,12 +237,12 @@ IME composition
   > worksheet shortcut/navigation
 ```
 
-## 9. CellEditorAdapterRegistry
+## 9. CellEditorRegistry
 
 Registry 是 editor kind 的唯一运行时分派点：
 
 ```ts
-interface CellEditorAdapter<TDraft extends CellDraft = CellDraft> {
+interface CellEditorBehavior<TDraft extends CellDraft = CellDraft> {
   readonly kind: CellEditorKind;
   canEnter(context: CellEditorContext): CellEditorEntryDecision;
   createDraft(context: CellEditorContext): TDraft;
@@ -442,7 +442,7 @@ commit
 
 ### B. Adapter 与提交
 
-- [ ] B1. 建立 `CellEditorAdapterRegistry`，注册 Text/Number/DateTime/List/ComboBox/Checkbox/Mask/Formula/RichText。
+- [ ] B1. 建立 `CellEditorRegistry`，注册 Text/Number/DateTime/List/ComboBox/Checkbox/Mask/Formula/RichText behavior。
 - [ ] B2. Text/Number/DateTime 最终调用唯一 `sheet.cell.commitText`。
 - [ ] B3. Formula adapter 使用 tolerant editing + strict commit parse。
 - [ ] B4. 新建 Ctrl+Enter 原子 range commit command，完成全目标 preflight 和单 history transaction。

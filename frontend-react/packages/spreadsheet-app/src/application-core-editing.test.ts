@@ -413,6 +413,37 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.revision, modelRevision);
   });
 
+  it('grouped worksheets commit the same cell through one semantic history transaction', () => {
+    const app = new WorkbookSession();
+    const firstSheetId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'sheet-grouped-2', name: 'Grouped 2' });
+    app.selectSheet(firstSheetId);
+    app.selectSheet('sheet-grouped-2', { toggleGroup: true });
+    assert.deepEqual(new Set(app.getUiSnapshot().groupedSheetIds), new Set([firstSheetId, 'sheet-grouped-2']));
+    const historyDepth = app['runtime'].commands.getUndoEntries().length;
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', initialText: 'grouped-value' });
+    app.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+    assert.equal(app['runtime'].model.getSheet(firstSheetId).cells.get(0, 0)?.value, 'grouped-value');
+    assert.equal(app['runtime'].model.getSheet('sheet-grouped-2').cells.get(0, 0)?.value, 'grouped-value');
+    assert.equal(app['runtime'].commands.getUndoEntries().length, historyDepth + 1);
+    app.undo();
+    assert.equal(app['runtime'].model.getSheet(firstSheetId).cells.get(0, 0), undefined);
+    assert.equal(app['runtime'].model.getSheet('sheet-grouped-2').cells.get(0, 0), undefined);
+  });
+
+  it('fails closed when the canonical target changes during an active draft', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'base' } });
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'f2' });
+    app.cellEdit.dispatch({ type: 'text.replace', text: 'local draft', caret: { start: 11, end: 11 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'remote value' } });
+    const commit = app.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+    assert.equal(commit.failure?.code, 'CELL_EDIT_REVISION_CONFLICT');
+    assert.equal(app.cellEdit.getSnapshot().session?.draft.text, 'local draft');
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0)?.value, 'remote value');
+  });
+
   it('cell insert down preserves the selected data and shifts the following band', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

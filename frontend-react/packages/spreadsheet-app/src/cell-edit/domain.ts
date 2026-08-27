@@ -148,20 +148,21 @@ function moveListIndex(length: number, activeIndex: number, delta: number): numb
 }
 
 function isFormulaSession(session: CellEditSession): boolean {
-  return session.adapterKind === 'formula' || textOf(session.draft).startsWith('=');
+  return session.editorKind === 'formula' || textOf(session.draft).startsWith('=');
 }
 
 function commitRequest(session: CellEditSession, moveAfter: CellEditCommitRequest['moveAfter'], toSelection: boolean, validationConfirmation = false): CellEditCommitRequest {
   return {
     target: session.target,
     draft: cloneDraft(session.draft),
-    adapterKind: session.adapterKind,
+    editorKind: session.editorKind,
     moveAfter,
     toSelection,
     validationConfirmation,
     baseCellFingerprint: session.baseCellFingerprint,
     originalSelection: structuredClone(session.originalSelection),
     groupedSheetIds: [...session.groupedSheetIds],
+    source: session.source,
   };
 }
 
@@ -255,9 +256,9 @@ function formatRichText(draft: Extract<CellEditDraft, { kind: 'rich-text' }>, ca
 const MAX_DRAFT_HISTORY_BYTES = 4 * 1024 * 1024;
 type DraftHistoryEntry =
   | { kind: 'plain-replace'; start: number; deleted: string; inserted: string; beforeCaret: CellEditCaret; afterCaret: CellEditCaret; bytes: number }
-  | { kind: 'snapshot'; beforeDraft: CellEditDraft; afterDraft: CellEditDraft; beforeCaret: CellEditCaret; afterCaret: CellEditCaret; beforeAdapterKind: CellEditSession['adapterKind']; afterAdapterKind: CellEditSession['adapterKind']; beforeSurface: CellEditSession['editorSurface']; afterSurface: CellEditSession['editorSurface']; bytes: number };
+  | { kind: 'snapshot'; beforeDraft: CellEditDraft; afterDraft: CellEditDraft; beforeCaret: CellEditCaret; afterCaret: CellEditCaret; beforeEditorKind: CellEditSession['editorKind']; afterEditorKind: CellEditSession['editorKind']; beforeSurface: CellEditSession['editorSurface']; afterSurface: CellEditSession['editorSurface']; bytes: number };
 interface DraftHistoryState { undo: DraftHistoryEntry[]; redo: DraftHistoryEntry[]; retainedBytes: number; droppedEntries: number; }
-interface DraftGestureBase { draft: CellEditDraft; caret: CellEditCaret; adapterKind: CellEditSession['adapterKind']; editorSurface: CellEditSession['editorSurface']; }
+interface DraftGestureBase { draft: CellEditDraft; caret: CellEditCaret; editorKind: CellEditSession['editorKind']; editorSurface: CellEditSession['editorSurface']; }
 
 function draftBytes(draft: CellEditDraft): number {
   return draft.text.length * 2 + (draft.kind === 'rich-text' ? JSON.stringify(draft.runs).length * 2 : 0) + 64;
@@ -284,8 +285,8 @@ function snapshotHistoryEntry(previous: CellEditSession, next: CellEditSession):
     afterDraft,
     beforeCaret: structuredClone(previous.caret),
     afterCaret: structuredClone(next.caret),
-    beforeAdapterKind: previous.adapterKind,
-    afterAdapterKind: next.adapterKind,
+    beforeEditorKind: previous.editorKind,
+    afterEditorKind: next.editorKind,
     beforeSurface: structuredClone(previous.editorSurface),
     afterSurface: structuredClone(next.editorSurface),
     bytes: draftBytes(beforeDraft) + draftBytes(afterDraft) + 128,
@@ -297,8 +298,8 @@ function sameDraft(left: CellEditDraft, right: CellEditDraft): boolean {
 }
 
 function recordDraftHistory(history: DraftHistoryState, previous: CellEditSession, next: CellEditSession): CellEditSession {
-  if (sameDraft(previous.draft, next.draft) && previous.adapterKind === next.adapterKind) return next;
-  const entry = previous.draft.kind === 'plain' && next.draft.kind === 'plain' && previous.adapterKind === next.adapterKind
+  if (sameDraft(previous.draft, next.draft) && previous.editorKind === next.editorKind) return next;
+  const entry = previous.draft.kind === 'plain' && next.draft.kind === 'plain' && previous.editorKind === next.editorKind
     ? plainHistoryEntry(previous, next)
     : snapshotHistoryEntry(previous, next);
   for (const redo of history.redo) history.retainedBytes -= redo.bytes;
@@ -331,7 +332,7 @@ function applyHistoryEntry(session: CellEditSession, entry: DraftHistoryEntry, d
     ...session,
     draft: cloneDraft(direction === 'undo' ? entry.beforeDraft : entry.afterDraft),
     caret: structuredClone(direction === 'undo' ? entry.beforeCaret : entry.afterCaret),
-    adapterKind: direction === 'undo' ? entry.beforeAdapterKind : entry.afterAdapterKind,
+    editorKind: direction === 'undo' ? entry.beforeEditorKind : entry.afterEditorKind,
     editorSurface: structuredClone(direction === 'undo' ? entry.beforeSurface : entry.afterSurface),
     overlay: { kind: 'none' },
     validation: { kind: 'idle' },
@@ -373,7 +374,7 @@ export class CellEditDomain {
         source: intent.entry.source,
         status,
         surface: intent.entry.surface,
-        adapterKind: intent.entry.adapterKind,
+        editorKind: intent.entry.editorKind,
         editorSurface: structuredClone(intent.entry.editorSurface),
         draft,
         baselineDraft: cloneDraft(intent.entry.beforeInitialDraft ?? intent.entry.initialDraft),
@@ -447,7 +448,7 @@ export class CellEditDomain {
       }
       case 'composition.start':
         if (session.composition.active) return this.result(true, [], false);
-        this.compositionBase = { draft: cloneDraft(session.draft), caret: structuredClone(session.caret), adapterKind: session.adapterKind, editorSurface: structuredClone(session.editorSurface) };
+        this.compositionBase = { draft: cloneDraft(session.draft), caret: structuredClone(session.caret), editorKind: session.editorKind, editorSurface: structuredClone(session.editorSurface) };
         this.publish({ ...session, composition: { active: true, text: '' } });
         return this.result(true);
       case 'composition.update':
@@ -463,7 +464,7 @@ export class CellEditDomain {
           dirty: true,
         };
         const base = this.compositionBase
-          ? { ...session, draft: cloneDraft(this.compositionBase.draft), caret: structuredClone(this.compositionBase.caret), adapterKind: this.compositionBase.adapterKind, editorSurface: structuredClone(this.compositionBase.editorSurface), composition: { active: false, text: '' } }
+          ? { ...session, draft: cloneDraft(this.compositionBase.draft), caret: structuredClone(this.compositionBase.caret), editorKind: this.compositionBase.editorKind, editorSurface: structuredClone(this.compositionBase.editorSurface), composition: { active: false, text: '' } }
           : session;
         this.compositionBase = null;
         const recorded = recordDraftHistory(this.history, base, next);
@@ -516,11 +517,11 @@ export class CellEditDomain {
         return this.result(true);
       case 'reference.gesture.begin':
         if (this.referenceGestureBase) return this.result(true);
-        this.referenceGestureBase = { draft: cloneDraft(session.draft), caret: structuredClone(session.caret), adapterKind: session.adapterKind, editorSurface: structuredClone(session.editorSurface) };
+        this.referenceGestureBase = { draft: cloneDraft(session.draft), caret: structuredClone(session.caret), editorKind: session.editorKind, editorSurface: structuredClone(session.editorSurface) };
         return this.result(true);
       case 'reference.gesture.end': {
         if (!this.referenceGestureBase) return this.result(true);
-        const base = { ...session, draft: cloneDraft(this.referenceGestureBase.draft), caret: structuredClone(this.referenceGestureBase.caret), adapterKind: this.referenceGestureBase.adapterKind, editorSurface: structuredClone(this.referenceGestureBase.editorSurface) };
+        const base = { ...session, draft: cloneDraft(this.referenceGestureBase.draft), caret: structuredClone(this.referenceGestureBase.caret), editorKind: this.referenceGestureBase.editorKind, editorSurface: structuredClone(this.referenceGestureBase.editorSurface) };
         this.referenceGestureBase = null;
         const next = recordDraftHistory(this.history, base, session);
         this.publish(next);
@@ -528,7 +529,7 @@ export class CellEditDomain {
       }
       case 'reference.gesture.cancel':
         if (!this.referenceGestureBase) return this.result(true);
-        this.publish({ ...session, draft: cloneDraft(this.referenceGestureBase.draft), caret: structuredClone(this.referenceGestureBase.caret), adapterKind: this.referenceGestureBase.adapterKind, editorSurface: structuredClone(this.referenceGestureBase.editorSurface) });
+        this.publish({ ...session, draft: cloneDraft(this.referenceGestureBase.draft), caret: structuredClone(this.referenceGestureBase.caret), editorKind: this.referenceGestureBase.editorKind, editorSurface: structuredClone(this.referenceGestureBase.editorSurface) });
         this.referenceGestureBase = null;
         return this.result(true);
       case 'reference.toggle-absolute': {
@@ -614,7 +615,7 @@ export class CellEditDomain {
           ? session.draft
           : { kind: 'rich-text' as const, text: session.draft.text, runs: session.draft.text ? [{ text: session.draft.text }] : [] };
         const draft = formatRichText(richDraft, session.caret, intent.style);
-        const next = { ...session, adapterKind: 'rich-text' as const, editorSurface: { kind: 'rich-text' as const, inputMode: 'text' as const, multiline: true }, draft, dirty: true };
+        const next = { ...session, editorKind: 'rich-text' as const, editorSurface: { kind: 'rich-text' as const, inputMode: 'text' as const, multiline: true }, draft, dirty: true };
         const recorded = recordDraftHistory(this.history, session, next);
         this.publish(recorded);
         return this.changed(recorded);
@@ -708,9 +709,21 @@ export class CellEditDomain {
     if (gesture.key === 'Enter' && gesture.alt) return this.dispatch({ type: 'text.insert', text: '\n' });
 
     if (gesture.key === 'Tab' && session.overlay.kind === 'autocomplete') return this.dispatch({ type: 'autocomplete.accept' });
+    if (session.overlay.kind === 'autocomplete') {
+      if (gesture.key === 'ArrowUp') return this.dispatch({ type: 'autocomplete.move', delta: -1 });
+      if (gesture.key === 'ArrowDown') return this.dispatch({ type: 'autocomplete.move', delta: 1 });
+      if (gesture.key === 'Home') return this.dispatch({ type: 'autocomplete.move', delta: -session.overlay.activeIndex });
+      if (gesture.key === 'End') return this.dispatch({ type: 'autocomplete.move', delta: session.overlay.candidates.length - 1 - session.overlay.activeIndex });
+      if (gesture.key === 'PageUp') return this.dispatch({ type: 'autocomplete.move', delta: -10 });
+      if (gesture.key === 'PageDown') return this.dispatch({ type: 'autocomplete.move', delta: 10 });
+    }
     if (session.overlay.kind === 'editor-list') {
       if (gesture.key === 'ArrowUp') return this.dispatch({ type: 'editor-list.move', delta: -1 });
       if (gesture.key === 'ArrowDown') return this.dispatch({ type: 'editor-list.move', delta: 1 });
+      if (gesture.key === 'Home') return this.dispatch({ type: 'editor-list.move', delta: -session.overlay.activeIndex });
+      if (gesture.key === 'End') return this.dispatch({ type: 'editor-list.move', delta: session.overlay.items.length - 1 - session.overlay.activeIndex });
+      if (gesture.key === 'PageUp') return this.dispatch({ type: 'editor-list.move', delta: -10 });
+      if (gesture.key === 'PageDown') return this.dispatch({ type: 'editor-list.move', delta: 10 });
       if (gesture.key === 'Enter' || gesture.key === 'Tab') return this.dispatch({ type: 'editor-list.accept' });
     }
 

@@ -88,7 +88,7 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret }:
         style={editorStyle}
         aria-label="Cell editor"
         inputMode={editorSurface.inputMode ?? 'text'}
-        autoCapitalize={cellEdit.getSnapshot().session?.adapterKind === 'formula' ? 'off' : undefined}
+        autoCapitalize={editorSurface.autoCapitalize}
         data-pointer-gesture-owner="cell-editor"
         className="h-full min-h-0 w-full resize-none overflow-hidden rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0"
         value={draft.text}

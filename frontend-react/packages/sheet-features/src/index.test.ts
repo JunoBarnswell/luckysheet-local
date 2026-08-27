@@ -58,6 +58,18 @@ test('multi-cell text commit preflights every validation and leaves zero partial
   assert.equal(runtime.getUndoEntries().length, history);
 });
 
+test('warning validation exposes a typed confirmation boundary and commits only after confirmation', () => {
+  const workbook = new WorkbookModel('unit-cell-edit-warning', 'Warning Entry');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.dataValidations.push({ id: 'whole-warning', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', operator: 'greaterThan', formula1: '10', alertStyle: 'warning', errorTitle: 'Below minimum', errorMessage: 'Confirm this value' });
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '5', inputContext: DIRECT_INPUT_CONTEXT }), (error) => error instanceof CellEntryError && error.code === 'CELL_ENTRY_CONFIRMATION_REQUIRED' && error.alertStyle === 'warning' && error.title === 'Below minimum');
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '5', inputContext: DIRECT_INPUT_CONTEXT, validationConfirmation: true });
+  assert.equal(sheet.cells.get(0, 0)?.value, 5);
+});
+
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd', 'Commands');
   const runtime = new CommandRuntime(workbook);
@@ -230,8 +242,38 @@ test('checkbox.toggle flips canonical ranges as one undoable operation and rejec
   assert.throws(() => runtime.execute('checkbox.toggle', {
     sheetId: sheet.id,
     ranges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 2 }],
-  }), /canonical Boolean checkbox/);
+  }), /canonical checkbox/);
   assert.deepEqual(sheet.cells.get(2, 0), before);
+});
+
+test('checkbox editor preserves configured values and cycles three states through one protocol', () => {
+  const workbook = new WorkbookModel('unit-checkbox-custom-values', 'Checkbox Custom Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const editor = { kind: 'checkbox' as const, trueValue: 'yes', falseValue: 'no', indeterminateValue: 'mixed', threeState: true };
+  sheet.cells.set(4, 0, { value: false });
+  sheet.cells.set(4, 1, { value: null });
+  sheet.cells.set(4, 2, { value: 'yes' });
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 2 }],
+    editor,
+  });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['no', 'mixed', 'yes']);
+
+  const target = [{ sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 2 }];
+  runtime.execute('checkbox.toggle', { sheetId: sheet.id, ranges: target });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['yes', 'no', 'mixed']);
+  runtime.execute('checkbox.toggle', { sheetId: sheet.id, ranges: target });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['mixed', 'yes', 'no']);
+
+  assert.throws(() => runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: target,
+    editor: { kind: 'checkbox', trueValue: 'same', falseValue: 'same' },
+  }), /Invalid cell editor configuration/);
 });
 
 test('checkbox cell text commits stay Boolean and reject unsupported input', () => {

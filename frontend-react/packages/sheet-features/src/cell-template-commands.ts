@@ -1,12 +1,12 @@
 import type {
   CellData,
   CellEditorConfig,
+  CheckboxCellEditorConfig,
   CellStyleTemplate,
   DataValidationRule,
   RangeRef,
 } from '@react-sheets/core-model';
-import { isCellEditorConfig } from '@react-sheets/core-model';
-import { clearFormulaProvenance } from '@react-sheets/core-model';
+import { clearFormulaProvenance, isCellEditorConfig, nextCheckboxValue, normalizeCheckboxValue } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import { createCellSetMutationParams } from './cell-write-authority';
 
@@ -90,20 +90,11 @@ function isCheckboxToggleParams(value: unknown): value is CheckboxToggleParams {
     && Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange);
 }
 
-/** Normalize the only values that can become an in-cell checkbox Boolean. */
-export function normalizeCheckboxCellValue(cell: CellData | undefined): boolean {
-  if (!cell) return false;
+/** Normalize a source cell into the configured canonical checkbox value protocol. */
+export function normalizeCheckboxCellValue(cell: CellData | undefined, editor: CheckboxCellEditorConfig = { kind: 'checkbox' }): CellData['value'] {
+  if (!cell) return normalizeCheckboxValue(editor, null);
   if (cell.formula !== undefined) throw new Error('Checkbox cannot be applied to a formula cell');
-  const value = cell.value;
-  if (typeof value === 'boolean') return value;
-  if (value === null) return false;
-  if (typeof value === 'number' && (value === 0 || value === 1)) return value === 1;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toUpperCase();
-    if (normalized === 'TRUE') return true;
-    if (normalized === 'FALSE') return false;
-  }
-  throw new Error('Checkbox source value must be blank, Boolean, 0/1, TRUE, or FALSE');
+  return normalizeCheckboxValue(editor, cell.value);
 }
 
 function assertRangesWithinSheet(sheet: ReturnType<CommandContext['workbook']['getSheet']>, ranges: readonly RangeRef[]): void {
@@ -159,7 +150,7 @@ function applyEditorMutation(params: CellEditorSetParams, context: CommandContex
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
         const current = structuredClone(sheet.cells.get(row, column) ?? { value: null as CellData['value'] });
-        if (params.editor?.kind === 'checkbox') current.value = normalizeCheckboxCellValue(current);
+        if (params.editor?.kind === 'checkbox') current.value = normalizeCheckboxCellValue(current, params.editor);
         if (params.editor) current.editor = structuredClone(params.editor);
         else delete current.editor;
         sheet.cells.set(row, column, current);
@@ -248,7 +239,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
       if (params.editor?.kind === 'checkbox') {
         for (const range of ranges) {
           for (let row = range.startRow; row <= range.endRow; row += 1) {
-            for (let column = range.startColumn; column <= range.endColumn; column += 1) normalizeCheckboxCellValue(sheet.cells.get(row, column));
+            for (let column = range.startColumn; column <= range.endColumn; column += 1) normalizeCheckboxCellValue(sheet.cells.get(row, column), params.editor);
           }
         }
       }
@@ -295,8 +286,8 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
             if (seen.has(key)) continue;
             seen.add(key);
             const previous = structuredClone(sheet.cells.get(row, column));
-            if (!previous?.editor || previous.editor.kind !== 'checkbox' || typeof previous.value !== 'boolean') throw new Error(`Cell ${row},${column} is not a canonical Boolean checkbox`);
-            entries.push({ row, column, previous, next: { ...previous, value: !previous.value } });
+            if (!previous?.editor || previous.editor.kind !== 'checkbox') throw new Error(`Cell ${row},${column} is not a canonical checkbox`);
+            entries.push({ row, column, previous, next: { ...previous, value: nextCheckboxValue(previous.editor, previous.value) } });
           }
         }
       }

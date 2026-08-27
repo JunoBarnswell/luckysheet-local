@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CellEditDomain } from './domain';
 import { rewriteAbsoluteReferenceAtCaret } from './formula-edit';
-import { createCellEditorAdapterRegistry } from './builtin-adapters';
+import { createCellEditorRegistry } from './builtin-editors';
 import { CellEditError } from './error';
 import type { CellEditEntryContext, CellEditIntent } from './contracts';
 
 function entry(overrides: Partial<CellEditEntryContext> = {}): CellEditEntryContext {
   return {
     target: { display: { sheetId: 'sheet-1', row: 1, column: 1 }, canonical: { sheetId: 'sheet-1', row: 1, column: 1 } },
-    source: 'f2', surface: 'grid', adapterKind: 'text', editorSurface: { kind: 'text', inputMode: 'text', multiline: true },
+    source: 'f2', surface: 'grid', editorKind: 'text', editorSurface: { kind: 'text', inputMode: 'text', multiline: true },
     initialDraft: { kind: 'plain', text: 'old' }, caret: { start: 3, end: 3 },
     originalSelection: { unitId: 'unit-1', sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }], primaryRangeIndex: 0, activeCell: { row: 1, column: 1 }, anchorCell: { row: 1, column: 1 }, selectionKind: 'cells', mode: 'normal' },
     originalCell: { value: 'old' }, baseCellFingerprint: '{"value":"old"}', enterMove: 'down', groupedSheetIds: ['sheet-1'], ...overrides,
@@ -52,7 +52,7 @@ test('Alt+Enter inserts a newline while Ctrl+Enter requests one atomic selection
 
 test('formula status toggles Edit and Point and F4 follows the Excel absolute cycle', () => {
   const domain = new CellEditDomain();
-  begin(domain, { adapterKind: 'formula', initialDraft: { kind: 'plain', text: '=A1' }, caret: { start: 1, end: 3 } });
+  begin(domain, { editorKind: 'formula', initialDraft: { kind: 'plain', text: '=A1' }, caret: { start: 1, end: 3 } });
   key(domain, { key: 'F2', code: 'F2' });
   assert.equal(domain.getSnapshot().status, 'point');
   key(domain, { key: 'F2', code: 'F2' });
@@ -81,7 +81,7 @@ test('IME composition is one draft history action and composing keys keep browse
 
 test('reference pointer gesture coalesces repeated rewrites into one draft undo action', () => {
   const domain = new CellEditDomain();
-  begin(domain, { adapterKind: 'formula', initialDraft: { kind: 'plain', text: '=A1' }, caret: { start: 1, end: 3 } });
+  begin(domain, { editorKind: 'formula', initialDraft: { kind: 'plain', text: '=A1' }, caret: { start: 1, end: 3 } });
   domain.dispatch({ type: 'reference.gesture.begin' });
   domain.dispatch({ type: 'reference.insert', referenceText: 'B2', selection: { id: 'r1', sheetId: 'sheet-1', range: { sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, tokenSpan: { start: 1, end: 3 }, colorIndex: 0, operation: 'move' } });
   domain.dispatch({ type: 'caret.set', caret: { start: 1, end: 3 } });
@@ -114,19 +114,25 @@ test('partial character formatting creates canonical rich text and is undoable',
 });
 
 test('editor registry dispatches number, mask, ComboBox and custom contracts without UI kind branches', () => {
-  const registry = createCellEditorAdapterRegistry();
+  const registry = createCellEditorRegistry();
   assert.deepEqual(registry.listKinds(), ['text', 'number', 'datetime', 'validation-list', 'combo-box', 'checkbox', 'mask', 'formula', 'rich-text']);
   const inputContext = { sourceKind: 'direct-entry' as const, cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900' as const, referenceDate: { year: 2026, month: 8, day: 28, hour: 0, minute: 0, second: 0, millisecond: 0 } };
   const target = entry().target;
+  const source = 'f2' as const;
   const number = registry.get('number');
-  assert.deepEqual(number.validate({ kind: 'plain', text: '42.5' }, { target, cell: null, inputContext }), { valid: true });
-  assert.equal(number.validate({ kind: 'plain', text: 'abc' }, { target, cell: null, inputContext }).valid, false);
+  assert.deepEqual(number.validate({ kind: 'plain', text: '42.5' }, { target, source, cell: null, inputContext }), { valid: true });
+  assert.equal(number.validate({ kind: 'plain', text: 'abc' }, { target, source, cell: null, inputContext }).valid, false);
   const mask = registry.get('mask');
-  assert.equal(mask.validate({ kind: 'plain', text: '12-AB' }, { target, cell: null, inputContext, config: { kind: 'mask', mask: '##-AA' } }).valid, true);
+  assert.equal(mask.validate({ kind: 'plain', text: '12-AB' }, { target, source, cell: { value: null, editor: { kind: 'mask', mask: '##-AA' } }, inputContext }).valid, true);
   const combo = registry.get('combo-box');
-  const payload = combo.toCommitPayload({ kind: 'plain', text: 'Approved' }, { target, cell: null, inputContext, config: { kind: 'combo-box', items: [{ label: 'Approved', value: 1 }], editable: false } });
+  const payload = combo.toCommitPayload({ kind: 'plain', text: 'Approved' }, { target, source, cell: { value: null, editor: { kind: 'combo-box', items: [{ label: 'Approved', value: 1 }], editable: false } }, inputContext });
   assert.deepEqual(payload, { kind: 'typed-value', value: 1 });
+  const checkbox = registry.get('checkbox');
+  const checkboxContext = { target, source, cell: { value: 'mixed', editor: { kind: 'checkbox' as const, trueValue: 'yes', falseValue: 'no', indeterminateValue: 'mixed', threeState: true } }, inputContext };
+  assert.deepEqual(checkbox.createDraft(checkboxContext), { kind: 'plain', text: 'INDETERMINATE' });
+  assert.deepEqual(checkbox.toCommitPayload({ kind: 'plain', text: 'TRUE' }, checkboxContext), { kind: 'typed-value', value: 'yes' });
+  assert.deepEqual(checkbox.controlActionForKey?.({ key: ' ', code: 'Space', alt: false, ctrl: false, meta: false, shift: false, repeat: false, composing: false }, checkboxContext), { kind: 'toggle' });
   registry.register({ kind: 'custom:rating', surface: { kind: 'custom', inputMode: 'numeric', multiline: false }, canEnter: () => ({ allowed: true }), createDraft: () => ({ kind: 'plain', text: '3' }), reduce: (_intent, draft) => draft, ownsKey: () => true, validate: () => ({ valid: true }), toCommitPayload: (draft) => ({ kind: 'raw-text', text: draft.text }) });
-  assert.equal(registry.resolve({ target, cell: { value: 3, editor: { kind: 'custom', adapterId: 'rating' } }, inputContext }).kind, 'custom:rating');
-  assert.throws(() => registry.get('custom:missing'), (error) => error instanceof CellEditError && error.code === 'CELL_EDIT_ADAPTER_NOT_FOUND');
+  assert.equal(registry.resolve({ target, source, cell: { value: 3, editor: { kind: 'custom', editorId: 'rating' } }, inputContext }).kind, 'custom:rating');
+  assert.throws(() => registry.get('custom:missing'), (error) => error instanceof CellEditError && error.code === 'CELL_EDIT_EDITOR_NOT_FOUND');
 });

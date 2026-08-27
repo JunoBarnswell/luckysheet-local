@@ -111,8 +111,7 @@ import {
   FormulaAutocompleteIndex,
   ColumnValueAutocompleteIndex,
   parseFormulaReferences,
-  createCellEditorAdapterRegistry,
-  type CellEditAdapterKind,
+  createCellEditorRegistry,
   type CellEditBeginRequest,
   type CellEditCommitRequest,
   type CellEditCommitPayload,
@@ -128,7 +127,7 @@ import {
   type CellEditMoveAfter,
   type CellEditUserIntent,
   type CellEditorContext,
-  type CellEditorAdapter,
+  type CellEditorBehavior,
 } from './cell-edit';
 import {
   buildCollaborationSnapshot,
@@ -570,7 +569,7 @@ export class WorkbookSession {
   private readonly cellResolver: WorkbookCellResolver;
   private readonly permission: PermissionService;
   private readonly cellEditDomain = new CellEditDomain();
-  private readonly cellEditorAdapters = createCellEditorAdapterRegistry();
+  private readonly cellEditorRegistry = createCellEditorRegistry();
   private readonly formulaAutocomplete = new FormulaAutocompleteIndex();
   private formulaAutocompleteAbort: AbortController | null = null;
   private formulaAutocompleteRevision = 0;
@@ -1672,9 +1671,9 @@ export class WorkbookSession {
     this.runCommand('workbook.editing.options.set', options);
   }
 
-  registerCellEditorAdapter(adapter: CellEditorAdapter): void {
-    if (!adapter.kind.startsWith('custom:')) throw new Error('Only custom CellEditorAdapter registrations are accepted at the workbook boundary');
-    this.cellEditorAdapters.register(adapter);
+  registerCellEditorBehavior(behavior: CellEditorBehavior): void {
+    if (!behavior.kind.startsWith('custom:')) throw new Error('Only custom CellEditorBehavior registrations are accepted at the workbook boundary');
+    this.cellEditorRegistry.register(behavior);
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
@@ -2441,7 +2440,53 @@ export class WorkbookSession {
         return { handled: true, preventDefault: true, status: this.cellEditDomain.getSnapshot().status, effects: [], failure };
       }
     }
+    if (intent.type === 'control.pointer') return this.dispatchCellControlPointer(intent);
+    if (intent.type === 'control.keyboard') return this.dispatchCellControlKeyboard(intent);
     return this.executeCellEditEffects(this.cellEditDomain.dispatch(intent as CellEditIntent));
+  }
+
+  private cellControlResult(handled: boolean): CellEditDispatchResult {
+    return { handled, preventDefault: handled, status: this.cellEditDomain.getSnapshot().status, effects: [] };
+  }
+
+  private dispatchCellControlPointer(intent: Extract<CellEditUserIntent, { type: 'control.pointer' }>): CellEditDispatchResult {
+    if (this.cellEditDomain.getSnapshot().session) return this.cellControlResult(false);
+    const displaySheet = this.runtime.model.getSheet(intent.sheetId);
+    const displayTarget = resolveSelectionTarget({ rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] }, { row: intent.row, column: intent.column }, 'cells', displaySheet.id);
+    const canonical = this.resolveCanonicalCellTarget(displaySheet.id, displayTarget.cell.row, displayTarget.cell.column);
+    const sheet = this.runtime.model.getSheet(canonical.sheetId);
+    const cell = this.readResolvedCell(sheet, canonical.row, canonical.column);
+    const target = { display: { sheetId: displaySheet.id, ...displayTarget.cell }, canonical, ...(displayTarget.range.startRow !== displayTarget.range.endRow || displayTarget.range.startColumn !== displayTarget.range.endColumn ? { mergedRange: displayTarget.range } : {}) };
+    const context: CellEditorContext = { target, source: 'cell-control', cell: cell ? structuredClone(cell) : null, inputContext: this.createInputContext('direct-entry', cell) };
+    const behavior = this.cellEditorRegistry.resolve(context);
+    const hit = behavior.hitTestControl?.(intent.point, intent.rect, context) ?? null;
+    if (!hit) return this.cellControlResult(false);
+    const displayRange = { sheetId: displaySheet.id, startRow: displayTarget.cell.row, endRow: displayTarget.cell.row, startColumn: displayTarget.cell.column, endColumn: displayTarget.cell.column };
+    if (intent.additive) this.selectionService.selectRange(displayRange, 'add', displayTarget.cell);
+    else if (intent.extend) this.selectionService.selectRange(displayRange, 'extend', displayTarget.cell);
+    else this.selectionService.selectCellAt(displayTarget.cell.row, displayTarget.cell.column);
+    if (hit.kind === 'toggle') this.runCommand('checkbox.toggle', { sheetId: canonical.sheetId, ranges: [{ sheetId: canonical.sheetId, startRow: canonical.row, endRow: canonical.row, startColumn: canonical.column, endColumn: canonical.column }] });
+    else this.cellEdit.dispatch({ type: 'begin.request', source: 'cell-control', surface: 'grid' });
+    return this.cellControlResult(true);
+  }
+
+  private dispatchCellControlKeyboard(intent: Extract<CellEditUserIntent, { type: 'control.keyboard' }>): CellEditDispatchResult {
+    if (this.cellEditDomain.getSnapshot().session || intent.gesture.key !== ' ' || intent.gesture.ctrl || intent.gesture.meta || intent.gesture.alt) return this.cellControlResult(false);
+    const selection = this.selectionService.getState();
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    for (const range of selection.ranges) {
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          const cell = this.readResolvedCell(sheet, row, column);
+          const target = { display: { sheetId: sheet.id, row, column }, canonical: { sheetId: sheet.id, row, column } };
+          const context: CellEditorContext = { target, source: 'cell-control', cell: cell ? structuredClone(cell) : null, inputContext: this.createInputContext('direct-entry', cell) };
+          const action = this.cellEditorRegistry.resolve(context).controlActionForKey?.(intent.gesture, context) ?? null;
+          if (action?.kind !== 'toggle') return this.cellControlResult(false);
+        }
+      }
+    }
+    this.runCommand('checkbox.toggle', { sheetId: sheet.id, ranges: selection.ranges });
+    return this.cellControlResult(true);
   }
 
   private beginCellEdit(request: CellEditBeginRequest): CellEditDispatchResult {
@@ -2495,33 +2540,27 @@ export class WorkbookSession {
     const listValues = rule ? validationList(rule, canonicalSheet) : undefined;
     const editorContext: CellEditorContext = {
       target,
+      source: request.source,
       cell: cell ? structuredClone(cell) : null,
       inputContext: this.createInputContext('direct-entry', cell),
-      ...(cell?.editor ? { config: structuredClone(cell.editor) } : {}),
       ...(listValues ? { validationValues: listValues } : {}),
     };
-    const adapter = request.initialText?.startsWith('=') && cell?.editor?.kind !== 'text'
-      ? this.cellEditorAdapters.get('formula')
-      : !cell?.editor && listValues
-        ? this.cellEditorAdapters.get('validation-list')
-        : this.cellEditorAdapters.resolve(editorContext);
-    const entryDecision = adapter.canEnter(editorContext);
+    const behavior = this.cellEditorRegistry.resolve({ ...editorContext, ...(request.initialText === undefined ? {} : { initialText: request.initialText }) });
+    const entryDecision = behavior.canEnter(editorContext);
     if (!entryDecision.allowed) {
       throw new CellEditError({ code: entryDecision.code, message: entryDecision.message, target: canonicalAddress, recovery: entryDecision.recovery });
     }
-    const beforeInitialDraft = adapter.createDraft(editorContext);
+    const beforeInitialDraft = behavior.createDraft(editorContext);
     const initialDraft = request.initialText === undefined
       ? beforeInitialDraft
-      : adapter.kind === 'rich-text'
-        ? { kind: 'rich-text' as const, text: request.initialText, runs: request.initialText ? [{ text: request.initialText }] : [] }
-        : { kind: 'plain' as const, text: request.initialText };
+      : behavior.createDraft({ ...editorContext, initialText: request.initialText });
     const referenceSelections = this.resolveFormulaReferenceSelections(initialDraft.text, target.display.sheetId, target.display.row);
     const entry: CellEditEntryContext = {
       target,
       source: request.source,
       surface: request.surface ?? (request.source === 'formula-bar' ? 'formula-bar' : 'grid'),
-      adapterKind: adapter.kind,
-      editorSurface: structuredClone(adapter.surface),
+      editorKind: behavior.kind,
+      editorSurface: structuredClone(behavior.surface),
       initialDraft,
       ...(request.initialText === undefined ? {} : { beforeInitialDraft }),
       caret: request.caret ?? { start: initialDraft.text.length, end: initialDraft.text.length },
@@ -2535,11 +2574,7 @@ export class WorkbookSession {
     };
     const begun = this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'begin', entry }));
     if (request.source === 'cell-control' || request.source === 'double-click') {
-      const items = adapter.kind === 'validation-list'
-        ? listValues?.map((value) => ({ label: value, text: value }))
-        : cell?.editor?.kind === 'combo-box'
-          ? cell.editor.items.map((item) => ({ label: item.label ?? String(item.value ?? ''), text: String(item.value ?? '') }))
-          : undefined;
+      const items = behavior.listItems?.(editorContext);
       if (items && items.length > 0) return this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'editor-list.open', items }));
     }
     return begun;
@@ -2611,19 +2646,19 @@ export class WorkbookSession {
 
       const rule = findValidationRule(currentSheet, request.target.canonical.row, request.target.canonical.column);
       const listValues = rule ? validationList(rule, currentSheet) : undefined;
-      const adapter = this.cellEditorAdapters.get(request.adapterKind);
-      const adapterContext: CellEditorContext = {
+      const behavior = this.cellEditorRegistry.get(request.editorKind);
+      const behaviorContext: CellEditorContext = {
         target: request.target,
+        source: request.source,
         cell: currentCell ? structuredClone(currentCell) : null,
         inputContext: this.createInputContext('direct-entry', currentCell),
-        ...(currentCell?.editor ? { config: structuredClone(currentCell.editor) } : {}),
         ...(listValues ? { validationValues: listValues } : {}),
       };
-      const validation = adapter.validate(request.draft, adapterContext);
+      const validation = behavior.validate(request.draft, behaviorContext);
       if (!validation.valid) {
         throw new CellEditError({ code: validation.code, message: validation.message, target: request.target.canonical, recovery: validation.recovery });
       }
-      const payload = adapter.toCommitPayload(request.draft, adapterContext);
+      const payload = behavior.toCommitPayload(request.draft, behaviorContext);
       const groupedSheetIds = request.groupedSheetIds.filter((sheetId) => this.runtime.model.sheets.has(sheetId));
       if (request.toSelection || groupedSheetIds.length > 1) {
         const baseRanges = request.toSelection
@@ -2881,9 +2916,15 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(session.target.canonical.sheetId);
     const cell = this.readResolvedCell(sheet, session.target.canonical.row, session.target.canonical.column);
     const rule = findValidationRule(sheet, session.target.canonical.row, session.target.canonical.column);
-    const items = cell?.editor?.kind === 'combo-box'
-      ? cell.editor.items.map((item) => ({ label: item.label ?? String(item.value ?? ''), text: String(item.value ?? '') }))
-      : rule ? validationList(rule, sheet)?.map((value) => ({ label: value, text: value })) : undefined;
+    const validationValues = rule ? validationList(rule, sheet) : undefined;
+    const context: CellEditorContext = {
+      target: session.target,
+      source: session.source,
+      cell: cell ? structuredClone(cell) : null,
+      inputContext: this.createInputContext('direct-entry', cell),
+      ...(validationValues ? { validationValues } : {}),
+    };
+    const items = this.cellEditorRegistry.get(session.editorKind).listItems?.(context);
     if (items && items.length > 0) this.cellEditDomain.dispatch({ type: 'editor-list.open', items });
   }
 
@@ -2903,7 +2944,7 @@ export class WorkbookSession {
 
   private valueAutocompleteSource() {
     const session = this.cellEditDomain.getSnapshot().session;
-    if (!session || session.adapterKind !== 'text' || session.source !== 'direct-typing' || session.draft.kind !== 'plain') return null;
+    if (!session || !this.cellEditorRegistry.get(session.editorKind).valueAutocomplete || session.source !== 'direct-typing' || session.draft.kind !== 'plain') return null;
     const sheet = this.runtime.model.getSheet(session.target.display.sheetId);
     return {
       key: `${sheet.id}:${session.target.display.column}`,

@@ -4,9 +4,9 @@ import type { SelectionSnapshot } from '../selection-service';
 export type CellEditorStatus = 'ready' | 'enter' | 'edit' | 'point';
 export type CellEditSurface = 'grid' | 'formula-bar' | 'formula-panel';
 export type CellEditSource = 'direct-typing' | 'double-click' | 'f2' | 'formula-bar' | 'function-insert' | 'cell-control';
-export type BuiltinCellEditAdapterKind = 'text' | 'number' | 'datetime' | 'validation-list' | 'combo-box' | 'checkbox' | 'mask' | 'formula' | 'rich-text';
-export type CellEditAdapterKind = BuiltinCellEditAdapterKind | `custom:${string}`;
-export interface CellEditorSurfaceDescriptor { kind: 'text' | 'rich-text' | 'list' | 'checkbox' | 'custom'; inputMode?: 'text' | 'decimal' | 'numeric'; multiline: boolean; }
+export type BuiltinCellEditorKind = 'text' | 'number' | 'datetime' | 'validation-list' | 'combo-box' | 'checkbox' | 'mask' | 'formula' | 'rich-text';
+export type CellEditorRuntimeKind = BuiltinCellEditorKind | `custom:${string}`;
+export interface CellEditorSurfaceDescriptor { kind: 'text' | 'rich-text' | 'list' | 'checkbox' | 'custom'; inputMode?: 'text' | 'decimal' | 'numeric'; multiline: boolean; autoCapitalize?: 'off'; }
 
 export interface CellEditAddress {
   sheetId: SheetId;
@@ -56,6 +56,8 @@ export interface FormulaAutocompleteCandidate {
   detail?: string;
 }
 export interface CellEditorListItem { label: string; text: string; }
+export interface CellControlPointerIntent { type: 'control.pointer'; sheetId: SheetId; row: number; column: number; point: { x: number; y: number }; rect: { width: number; height: number }; additive: boolean; extend: boolean; }
+export interface CellControlKeyboardIntent { type: 'control.keyboard'; gesture: CanonicalKeyGesture; }
 
 export type CellEditOverlayState =
   | { kind: 'none' }
@@ -76,7 +78,7 @@ export interface CellEditSession {
   source: CellEditSource;
   status: Exclude<CellEditorStatus, 'ready'>;
   surface: CellEditSurface;
-  adapterKind: CellEditAdapterKind;
+  editorKind: CellEditorRuntimeKind;
   editorSurface: CellEditorSurfaceDescriptor;
   draft: CellEditDraft;
   baselineDraft: CellEditDraft;
@@ -106,7 +108,7 @@ export interface CellEditEntryContext {
   target: CanonicalCellEditTarget;
   source: CellEditSource;
   surface: CellEditSurface;
-  adapterKind: CellEditAdapterKind;
+  editorKind: CellEditorRuntimeKind;
   editorSurface: CellEditorSurfaceDescriptor;
   initialDraft: CellEditDraft;
   beforeInitialDraft?: CellEditDraft;
@@ -134,13 +136,14 @@ export type CellEditMoveAfter = 'down' | 'up' | 'left' | 'right' | 'none';
 export interface CellEditCommitRequest {
   target: CanonicalCellEditTarget;
   draft: CellEditDraft;
-  adapterKind: CellEditAdapterKind;
+  editorKind: CellEditorRuntimeKind;
   moveAfter: CellEditMoveAfter;
   toSelection: boolean;
   validationConfirmation: boolean;
   baseCellFingerprint: string;
   originalSelection: SelectionSnapshot;
   groupedSheetIds: readonly SheetId[];
+  source: CellEditSource;
 }
 
 export interface CanonicalKeyGesture {
@@ -198,6 +201,8 @@ export type CellEditIntent =
 
 export type CellEditUserIntent =
   | CellEditBeginRequest
+  | CellControlPointerIntent
+  | CellControlKeyboardIntent
   | Exclude<CellEditIntent, { type: 'begin' | 'commit.succeeded' | 'commit.failed' }>;
 
 export type CellEditEffect =
@@ -254,5 +259,5 @@ export type CellEditErrorCode =
   | 'CELL_EDIT_VALIDATION_BLOCKED'
   | 'CELL_EDIT_CONFIRMATION_REQUIRED'
   | 'CELL_EDIT_INVALID_FORMULA'
-  | 'CELL_EDIT_ADAPTER_NOT_FOUND'
+  | 'CELL_EDIT_EDITOR_NOT_FOUND'
   | 'CELL_EDIT_COMMIT_REJECTED';

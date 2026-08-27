@@ -131,7 +131,6 @@ export interface CanvasInteractionOptions {
   onFillRange: (target: CanvasFillPreview) => void;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
-  onToggleCheckbox: (ranges: RangeRef[]) => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onTextBoxPlacementCommit: (bounds: Rect) => void;
   onCancelTextBoxPlacement: () => void;
@@ -207,7 +206,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onTextBoxPlacementCommit,
     onCancelTextBoxPlacement,
     onBeginTextBoxEdit,
-    onToggleCheckbox,
     onJumpEdge,
     onMovePrimary,
     onRequestExtentGrowth,
@@ -596,34 +594,11 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       }
     }
     const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
-    const checkboxRect = skeleton.getCellRect(cell.row, cell.column);
+    const controlRect = skeleton.getCellRect(cell.row, cell.column);
     const contentPoint = engine.localToContent(local);
-    const checkboxSize = checkboxRect ? Math.min(14, Math.max(10, checkboxRect.height - 8)) : 0;
-    const checkboxHit = Boolean(checkboxRect && sheet.getCell(cell.row, cell.column)?.editor?.kind === 'checkbox'
-      && contentPoint.x >= checkboxRect.x + 2
-      && contentPoint.x <= checkboxRect.x + 6 + checkboxSize
-      && contentPoint.y >= checkboxRect.y + (checkboxRect.height - checkboxSize) / 2 - 2
-      && contentPoint.y <= checkboxRect.y + (checkboxRect.height + checkboxSize) / 2 + 2);
-    if (checkboxHit) {
-      const checkboxRange = { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column };
-      const additive = event.ctrlKey || event.metaKey;
-      const extend = event.shiftKey && !additive;
-      if (additive) {
-        onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, additive: true, expandedRange: checkboxRange }, sheetId));
-      } else if (extend) {
-        const range = {
-          ...checkboxRange,
-          startRow: Math.min(selection.anchorCell.row, cell.row),
-          endRow: Math.max(selection.anchorCell.row, cell.row),
-          startColumn: Math.min(selection.anchorCell.column, cell.column),
-          endColumn: Math.max(selection.anchorCell.column, cell.column),
-        };
-        onSelectionChange(selectionFromGesture(selection, { origin: selection.anchorCell, target: { row: cell.row, column: cell.column }, expandedRange: range }, sheetId));
-      } else {
-        onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: checkboxRange }, sheetId));
-      }
-      onToggleCheckbox([checkboxRange]);
-      return;
+    if (controlRect) {
+      const control = cellEdit.dispatch({ type: 'control.pointer', sheetId, row: cell.row, column: cell.column, point: { x: contentPoint.x - controlRect.x, y: contentPoint.y - controlRect.y }, rect: { width: controlRect.width, height: controlRect.height }, additive: event.ctrlKey || event.metaKey, extend: event.shiftKey && !(event.ctrlKey || event.metaKey) });
+      if (control.handled) return;
     }
     const filterButton = sheet.filterButtons.find((button) => button.row === hitCell.row && button.column === hitCell.column);
     if (filterButton) {
@@ -656,7 +631,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [cellEdit, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
+  }, [cellEdit, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;
@@ -895,12 +870,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
-    const editor = sheet.getCell(cell.row, cell.column)?.editor;
-    if (editor?.kind === 'checkbox') {
-      // Checkbox activation is owned by the glyph pointer and Spacebar. A
-      // double-click never re-enters the generic text editor.
-      return;
-    }
     const sourceCell = sheet.getCell(cell.row, cell.column);
     const text = sourceCell?.formula ?? (sourceCell?.value == null ? '' : String(sourceCell.value));
     const caretOffset = engine.textCaretAtLocalPoint(local, cell, text);
@@ -953,14 +922,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     if (shortcut && onShortcut?.(shortcut.id)) { event.preventDefault(); return; }
-    const checkboxRanges = selection.ranges.filter((range) => {
-      for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        if (sheet.getCell(row, column)?.editor?.kind !== 'checkbox') return false;
-      }
-      return true;
-    });
-    const checkboxSelection = checkboxRanges.length === selection.ranges.length && checkboxRanges.length > 0;
-    if (key === ' ' && checkboxSelection) { event.preventDefault(); onToggleCheckbox(selection.ranges); return; }
+    const control = cellEdit.dispatch({ type: 'control.keyboard', gesture: toCanonicalKeyGesture(event) });
+    if (control.handled) { if (control.preventDefault) event.preventDefault(); return; }
     if (key === 'F2') {
       event.preventDefault();
       cellEdit.dispatch({ type: 'begin.request', source: 'f2', surface: 'grid' });
@@ -981,7 +944,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const activePivotCell = activePivotContextHit ? findPivotProjectionCell(sheet, selection.activeCell.row, selection.activeCell.column)?.cell : undefined;
       const activePivotProjection = activePivotContextHit ? findPivotProjectionCell(sheet, selection.activeCell.row, selection.activeCell.column)?.projection : undefined;
       if (activePivotCell?.kind === 'expand-toggle' && activePivotCell.nodeId && activePivotProjection) onPivotExpansionToggle(activePivotProjection.pivotId, activePivotCell.nodeId);
-      else if (checkboxSelection) onMovePrimary(1, 0);
       else if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
       else onMovePrimary(event.shiftKey ? -1 : 1, 0);
       return;
@@ -1007,7 +969,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       }
       else cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', surface: 'grid', initialText: key });
     }
-  }, [canRepeat, cellEdit, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, findPivotProjectionCell, formatPainterActive, onBeginTextBoxEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onExitDrawingSelectionMode, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleCheckbox, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, cellEdit, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, findPivotProjectionCell, formatPainterActive, onBeginTextBoxEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onExitDrawingSelectionMode, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onShortcut, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

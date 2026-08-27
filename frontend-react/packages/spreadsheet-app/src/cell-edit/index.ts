@@ -1,5 +1,5 @@
-export * from './adapter-registry';
-export * from './builtin-adapters';
+export * from './editor-registry';
+export * from './builtin-editors';
 export * from './contracts';
 export * from './domain';
 export * from './error';

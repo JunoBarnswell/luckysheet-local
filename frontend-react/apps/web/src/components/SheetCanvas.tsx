@@ -645,7 +645,6 @@ export function SheetCanvas({
     onCancelTextBoxPlacement: () => onCancelTextBoxPlacement?.(),
     onBeginTextBoxEdit: (drawingId, initialText) => onBeginTextBoxEdit?.(drawingId, initialText),
     onFloatingSelect,
-    onToggleCheckbox: (ranges) => onCommand({ commandId: 'checkbox.toggle', params: { sheetId, ranges } }),
     onJumpEdge,
     onMovePrimary,
     onRequestExtentGrowth: requestExtentGrowth,

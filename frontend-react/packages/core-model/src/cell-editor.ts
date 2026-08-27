@@ -47,9 +47,64 @@ export interface CheckboxCellEditorConfig extends CellEditorBaseConfig {
   threeState?: boolean;
 }
 
+export type CheckboxCellState = 'checked' | 'unchecked' | 'indeterminate';
+
+function checkboxStateValues(editor: CheckboxCellEditorConfig): Record<CheckboxCellState, CellEditorScalar> {
+  return {
+    checked: editor.trueValue === undefined ? true : editor.trueValue,
+    unchecked: editor.falseValue === undefined ? false : editor.falseValue,
+    indeterminate: editor.indeterminateValue === undefined ? null : editor.indeterminateValue,
+  };
+}
+
+export function isUnambiguousCheckboxEditor(editor: CheckboxCellEditorConfig): boolean {
+  const values = checkboxStateValues(editor);
+  if (Object.is(values.checked, values.unchecked)) return false;
+  return !editor.threeState
+    || (!Object.is(values.indeterminate, values.checked) && !Object.is(values.indeterminate, values.unchecked));
+}
+
+export function checkboxValueForState(editor: CheckboxCellEditorConfig, state: CheckboxCellState): CellEditorScalar {
+  if (state === 'indeterminate' && !editor.threeState) throw new Error('Two-state checkbox has no indeterminate value');
+  if (!isUnambiguousCheckboxEditor(editor)) throw new Error('Checkbox state values must be distinct');
+  return checkboxStateValues(editor)[state];
+}
+
+export function checkboxStateFromValue(editor: CheckboxCellEditorConfig, value: CellEditorScalar): CheckboxCellState | null {
+  if (!isUnambiguousCheckboxEditor(editor)) throw new Error('Checkbox state values must be distinct');
+  const values = checkboxStateValues(editor);
+  if (Object.is(value, values.checked)) return 'checked';
+  if (Object.is(value, values.unchecked)) return 'unchecked';
+  if (editor.threeState && Object.is(value, values.indeterminate)) return 'indeterminate';
+  return null;
+}
+
+export function normalizeCheckboxValue(editor: CheckboxCellEditorConfig, value: CellEditorScalar): CellEditorScalar {
+  const configuredState = checkboxStateFromValue(editor, value);
+  if (configuredState) return checkboxValueForState(editor, configuredState);
+  if (value === null) return checkboxValueForState(editor, editor.threeState ? 'indeterminate' : 'unchecked');
+  if (typeof value === 'boolean') return checkboxValueForState(editor, value ? 'checked' : 'unchecked');
+  if (typeof value === 'number' && (value === 0 || value === 1)) return checkboxValueForState(editor, value === 1 ? 'checked' : 'unchecked');
+  if (typeof value === 'string') {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === 'TRUE') return checkboxValueForState(editor, 'checked');
+    if (normalized === 'FALSE') return checkboxValueForState(editor, 'unchecked');
+    if (normalized === 'INDETERMINATE' && editor.threeState) return checkboxValueForState(editor, 'indeterminate');
+  }
+  throw new Error('Checkbox source value must match a configured state, blank, Boolean, 0/1, TRUE, FALSE, or INDETERMINATE');
+}
+
+export function nextCheckboxValue(editor: CheckboxCellEditorConfig, value: CellEditorScalar): CellEditorScalar {
+  const state = checkboxStateFromValue(editor, value);
+  if (!state) throw new Error('Checkbox cell value does not match its configured states');
+  if (state === 'unchecked') return checkboxValueForState(editor, 'checked');
+  if (state === 'checked') return checkboxValueForState(editor, editor.threeState ? 'indeterminate' : 'unchecked');
+  return checkboxValueForState(editor, 'unchecked');
+}
+
 export interface MaskCellEditorConfig extends CellEditorBaseConfig {
   kind: 'mask';
-  /** Canonical mask grammar, interpreted only by MaskEditorAdapter. */
+  /** Canonical mask grammar, interpreted only by MaskEditorBehavior. */
   mask: string;
   promptCharacter?: string;
 }
@@ -67,7 +122,7 @@ export type CellEditorOptionValue = null | boolean | number | string | CellEdito
 
 export interface CustomCellEditorConfig extends CellEditorBaseConfig {
   kind: 'custom';
-  adapterId: string;
+  editorId: string;
   options?: { [key: string]: CellEditorOptionValue };
 }
 
@@ -103,7 +158,7 @@ export function isCellEditorConfig(value: unknown): value is CellEditorConfig {
     case 'formula':
       return editor.allowInvalidFormula === undefined || typeof editor.allowInvalidFormula === 'boolean';
     case 'custom':
-      return typeof editor.adapterId === 'string' && editor.adapterId.trim().length > 0 && (editor.options === undefined || isEditorOptionValue(editor.options));
+      return typeof editor.editorId === 'string' && editor.editorId.trim().length > 0 && (editor.options === undefined || isEditorOptionValue(editor.options));
     case 'combo-box':
       return typeof editor.editable === 'boolean' && Array.isArray(editor.items) && editor.items.every((item) => {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
@@ -112,8 +167,9 @@ export function isCellEditorConfig(value: unknown): value is CellEditorConfig {
         return scalar && (candidate.label === undefined || typeof candidate.label === 'string');
       });
     case 'checkbox':
-      return ['trueValue', 'falseValue', 'indeterminateValue'].every((key) => editor[key] === undefined || editor[key] === null || ['string', 'number', 'boolean'].includes(typeof editor[key]))
-        && (editor.threeState === undefined || typeof editor.threeState === 'boolean');
+      if (!['trueValue', 'falseValue', 'indeterminateValue'].every((key) => editor[key] === undefined || editor[key] === null || ['string', 'number', 'boolean'].includes(typeof editor[key]))
+        || (editor.threeState !== undefined && typeof editor.threeState !== 'boolean')) return false;
+      return isUnambiguousCheckboxEditor(editor as unknown as CheckboxCellEditorConfig);
     case 'mask':
       return typeof editor.mask === 'string' && editor.mask.length > 0
         && (editor.promptCharacter === undefined || (typeof editor.promptCharacter === 'string' && [...editor.promptCharacter].length === 1));

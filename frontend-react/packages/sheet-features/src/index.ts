@@ -344,6 +344,7 @@ function prepareCellEntry(
     });
   }
   const sheet = context.workbook.getSheet(params.sheetId);
+  assertCanonicalCheckboxCell(next);
   for (const spill of sheet.spillRanges) {
     if (isSpillChild(spill, params.row, params.column)) {
       throw new CellEntryError({
@@ -837,7 +838,8 @@ function restoreCell(
 
 function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
   if (cell?.editor?.kind !== 'checkbox') return;
-  normalizeCheckboxCellValue(cell);
+  const normalized = normalizeCheckboxCellValue(cell, cell.editor);
+  if (!Object.is(normalized, cell.value)) throw new Error('Checkbox cell value must match one configured canonical state');
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
@@ -1352,7 +1354,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous = sheet.cells.get(params.row, params.column);
       const next = buildCellFromText(params.text, previous, params.inputContext, params.style);
-      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
+      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
       return commitCellEntry(params, next, context);
     },
   });
@@ -1437,7 +1439,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const sheet = context.workbook.getSheet(target.sheetId);
         const previous = sheet.cells.get(target.row, target.column);
         const next = buildCellFromText(params.text, previous, target.inputContext, target.style);
-        if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
+        if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
         return prepareCellEntry({ ...target, validationConfirmation: params.validationConfirmation }, next, context);
       });
       for (const entry of prepared) applyPreparedCellEntry(entry, context);

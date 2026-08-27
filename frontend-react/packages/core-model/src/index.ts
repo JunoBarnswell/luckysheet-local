@@ -33,7 +33,20 @@ import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
 import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, type AssetRef } from './asset';
-export { isCellEditorConfig, type CellEditorConfig, type CellEditorKind, type CellEditorOptionValue, type CellEditorScalar } from './cell-editor';
+export {
+  checkboxStateFromValue,
+  checkboxValueForState,
+  isCellEditorConfig,
+  isUnambiguousCheckboxEditor,
+  nextCheckboxValue,
+  normalizeCheckboxValue,
+  type CellEditorConfig,
+  type CellEditorKind,
+  type CellEditorOptionValue,
+  type CellEditorScalar,
+  type CheckboxCellEditorConfig,
+  type CheckboxCellState,
+} from './cell-editor';
 export { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, normalizeWorkbookEditingOptions, type WorkbookEditingOptions, type WorkbookEnterDirection } from './editing-options';
 import {
   normalizePrintDocumentSnapshot,

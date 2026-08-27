@@ -8,7 +8,7 @@ import type { CellEditEntryContext } from './contracts';
 function entry(text = ''): CellEditEntryContext {
   return {
     target: { display: { sheetId: 'sheet-1', row: 0, column: 0 }, canonical: { sheetId: 'sheet-1', row: 0, column: 0 } },
-    source: 'f2', surface: 'grid', adapterKind: 'text', editorSurface: { kind: 'text', inputMode: 'text', multiline: true },
+    source: 'f2', surface: 'grid', editorKind: 'text', editorSurface: { kind: 'text', inputMode: 'text', multiline: true },
     initialDraft: { kind: 'plain', text }, caret: { start: text.length, end: text.length },
     originalSelection: { unitId: 'unit-1', sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], primaryRangeIndex: 0, activeCell: { row: 0, column: 0 }, anchorCell: { row: 0, column: 0 } },
     originalCell: text ? { value: text } : null, baseCellFingerprint: text ? JSON.stringify({ value: text }) : 'null', enterMove: 'down', groupedSheetIds: ['sheet-1'],
@@ -68,7 +68,7 @@ test('100k same-column AutoComplete builds incrementally and queries below 4ms p
   const durations: number[] = [];
   for (let value = 0; value < 1_000; value += 1) {
     const queryStarted = performance.now();
-    const candidate = index.query('sheet-1:0', 1, `Item ${String(value).padStart(3, '0')}`);
+    const candidate = index.query('sheet-1:0', 1, `Item ${String(value % 100).padStart(3, '0')}`);
     durations.push(performance.now() - queryStarted);
     assert.ok(candidate);
   }

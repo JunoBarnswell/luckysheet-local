@@ -1,4 +1,4 @@
-import type { HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
+import type { CellEditorConfig, HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
 
 export type LayerId = string;
 
@@ -92,7 +92,7 @@ export interface CellRenderData {
   formula?: string;
   displayValue?: string;
   style?: CellRenderStyle;
-  editor?: { kind: 'text' | 'number' | 'datetime' | 'validation-list' | 'combo-box' | 'checkbox' | 'mask' | 'formula' | 'rich-text' | 'custom' };
+  editor?: CellEditorConfig;
   presentation?: import('@react-sheets/core-model').CellPresentation;
   error?: string;
   merge?: MergeInfo;

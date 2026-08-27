@@ -1,21 +1,21 @@
-import type { CellData, RichTextRun } from '@react-sheets/core-model';
+import { checkboxStateFromValue, checkboxValueForState, type CellData, type RichTextRun } from '@react-sheets/core-model';
 import { parseFormula } from '@react-sheets/formula-engine';
 import { interpretCellInput } from '@react-sheets/sheet-features';
 import type {
   CellEditCommitPayload,
-  CellEditorAdapter,
+  CellEditorBehavior,
   CellEditorContext,
   CellEditorValidationResult,
-} from './adapter-registry';
-import { CellEditorAdapterRegistry } from './adapter-registry';
-import type { CellEditAdapterKind, CellEditDraft, CellEditIntent } from './contracts';
+} from './editor-registry';
+import { CellEditorRegistry } from './editor-registry';
+import type { CellEditDraft, CellEditIntent, CellEditorRuntimeKind } from './contracts';
 
 function cellText(cell: CellData | null): string {
   return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
 }
 
 function plainDraft(context: CellEditorContext): CellEditDraft {
-  return { kind: 'plain', text: cellText(context.cell) };
+  return { kind: 'plain', text: context.initialText ?? cellText(context.cell) };
 }
 
 function unchanged(_intent: CellEditIntent, draft: CellEditDraft): CellEditDraft {
@@ -34,9 +34,10 @@ function rawText(draft: CellEditDraft): CellEditCommitPayload {
   return { kind: 'raw-text', text: draft.text };
 }
 
-function plainAdapter(kind: CellEditAdapterKind): CellEditorAdapter {
+function plainBehavior(kind: CellEditorRuntimeKind): CellEditorBehavior {
   return {
     kind,
+    ...(kind === 'text' ? { valueAutocomplete: true } : {}),
     surface: { kind: kind === 'rich-text' ? 'rich-text' : kind === 'validation-list' || kind === 'combo-box' ? 'list' : kind === 'checkbox' ? 'checkbox' : 'text', inputMode: kind === 'number' ? 'decimal' : kind === 'datetime' ? 'numeric' : 'text', multiline: kind === 'text' || kind === 'rich-text' },
     canEnter: allowed,
     createDraft: plainDraft,
@@ -47,8 +48,8 @@ function plainAdapter(kind: CellEditAdapterKind): CellEditorAdapter {
   };
 }
 
-const numberAdapter: CellEditorAdapter = {
-  ...plainAdapter('number'),
+const numberBehavior: CellEditorBehavior = {
+  ...plainBehavior('number'),
   validate: (draft, context) => {
     const interpreted = interpretCellInput(draft.text, context.inputContext);
     return interpreted.valueType === 'number' || interpreted.valueType === 'empty'
@@ -57,8 +58,8 @@ const numberAdapter: CellEditorAdapter = {
   },
 };
 
-const dateTimeAdapter: CellEditorAdapter = {
-  ...plainAdapter('datetime'),
+const dateTimeBehavior: CellEditorBehavior = {
+  ...plainBehavior('datetime'),
   validate: (draft, context) => {
     const interpreted = interpretCellInput(draft.text, context.inputContext);
     return interpreted.valueType === 'number' || interpreted.valueType === 'empty'
@@ -67,8 +68,9 @@ const dateTimeAdapter: CellEditorAdapter = {
   },
 };
 
-const validationListAdapter: CellEditorAdapter = {
-  ...plainAdapter('validation-list'),
+const validationListBehavior: CellEditorBehavior = {
+  ...plainBehavior('validation-list'),
+  listItems: (context) => context.validationValues?.map((value) => ({ label: value, text: value })) ?? [],
   validate: (draft, context) => {
     const values = context.validationValues;
     if (!values || values.length === 0) {
@@ -85,21 +87,24 @@ const validationListAdapter: CellEditorAdapter = {
   },
 };
 
-const comboBoxAdapter: CellEditorAdapter = {
-  ...plainAdapter('combo-box'),
+const comboBoxBehavior: CellEditorBehavior = {
+  ...plainBehavior('combo-box'),
+  listItems: (context) => context.cell?.editor?.kind === 'combo-box'
+    ? context.cell.editor.items.map((item) => ({ label: item.label ?? String(item.value ?? ''), text: String(item.value ?? '') }))
+    : [],
   validate: (draft, context) => {
-    if (context.config?.kind !== 'combo-box') {
+    if (context.cell?.editor?.kind !== 'combo-box') {
       return { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'ComboBox editor configuration is missing.', recovery: 'Apply a valid ComboBox editor configuration.' };
     }
-    if (context.config.editable) return valid();
-    const accepted = context.config.items.some((item) => String(item.value ?? '') === draft.text || item.label === draft.text);
+    if (context.cell.editor.editable) return valid();
+    const accepted = context.cell.editor.items.some((item) => String(item.value ?? '') === draft.text || item.label === draft.text);
     return accepted
       ? valid()
       : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'The value is not present in the non-editable ComboBox.', recovery: 'Choose a configured ComboBox item.' };
   },
   toCommitPayload: (draft, context) => {
-    if (context.config?.kind !== 'combo-box') return rawText(draft);
-    const item = context.config.items.find((candidate) => String(candidate.value ?? '') === draft.text || candidate.label === draft.text);
+    if (context.cell?.editor?.kind !== 'combo-box') return rawText(draft);
+    const item = context.cell.editor.items.find((candidate) => String(candidate.value ?? '') === draft.text || candidate.label === draft.text);
     return item ? { kind: 'typed-value', value: structuredClone(item.value) } : rawText(draft);
   },
 };
@@ -126,20 +131,21 @@ function matchesMask(text: string, mask: string): boolean {
   return inputIndex === input.length;
 }
 
-const maskAdapter: CellEditorAdapter = {
-  ...plainAdapter('mask'),
+const maskBehavior: CellEditorBehavior = {
+  ...plainBehavior('mask'),
   validate: (draft, context) => {
-    if (context.config?.kind !== 'mask') {
+    if (context.cell?.editor?.kind !== 'mask') {
       return { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'Mask editor configuration is missing.', recovery: 'Apply a valid mask editor configuration.' };
     }
-    return matchesMask(draft.text, context.config.mask)
+    return matchesMask(draft.text, context.cell.editor.mask)
       ? valid()
-      : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: `The value does not match mask ${context.config.mask}.`, recovery: 'Enter a value matching the complete mask.' };
+      : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: `The value does not match mask ${context.cell.editor.mask}.`, recovery: 'Enter a value matching the complete mask.' };
   },
 };
 
-const formulaAdapter: CellEditorAdapter = {
-  ...plainAdapter('formula'),
+const formulaBehavior: CellEditorBehavior = {
+  ...plainBehavior('formula'),
+  surface: { kind: 'text', inputMode: 'text', multiline: false, autoCapitalize: 'off' },
   validate: (draft, context): CellEditorValidationResult => {
     if (!draft.text.startsWith('=')) {
       return { valid: false, code: 'CELL_EDIT_INVALID_FORMULA', message: 'Formula editor input must start with =.', recovery: 'Enter a formula beginning with =.' };
@@ -148,37 +154,42 @@ const formulaAdapter: CellEditorAdapter = {
       parseFormula(draft.text);
       return valid();
     } catch (cause) {
-      if (context.config?.kind === 'formula' && context.config.allowInvalidFormula) return valid();
+      if (context.cell?.editor?.kind === 'formula' && context.cell.editor.allowInvalidFormula) return valid();
       return { valid: false, code: 'CELL_EDIT_INVALID_FORMULA', message: cause instanceof Error ? cause.message : 'Formula is invalid.', recovery: 'Correct the formula syntax before committing.' };
     }
   },
 };
 
-const checkboxAdapter: CellEditorAdapter = {
+const checkboxBehavior: CellEditorBehavior = {
   kind: 'checkbox',
   surface: { kind: 'checkbox', inputMode: 'text', multiline: false },
-  canEnter: allowed,
+  canEnter: (context) => context.source === 'double-click'
+    ? { allowed: false, code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'Checkbox double-click is owned by the cell control.', recovery: 'Use the checkbox glyph, Spacebar, or F2 for explicit value editing.' }
+    : allowed(),
   createDraft: (context) => {
-    const config = context.config?.kind === 'checkbox' ? context.config : undefined;
-    const value = context.cell?.value ?? null;
-    if (config?.threeState && config.indeterminateValue !== undefined && Object.is(value, config.indeterminateValue)) return { kind: 'plain', text: 'INDETERMINATE' };
-    const checked = config?.trueValue !== undefined ? Object.is(value, config.trueValue) : value === true;
-    return { kind: 'plain', text: checked ? 'TRUE' : 'FALSE' };
+    if (context.initialText !== undefined) return { kind: 'plain', text: context.initialText };
+    const config = context.cell?.editor?.kind === 'checkbox' ? context.cell.editor : undefined;
+    if (!config) throw new Error('Checkbox behavior requires a checkbox editor configuration');
+    const state = checkboxStateFromValue(config, context.cell?.value ?? null);
+    if (!state) throw new Error('Checkbox cell value does not match its configured states');
+    return { kind: 'plain', text: state === 'indeterminate' ? 'INDETERMINATE' : state === 'checked' ? 'TRUE' : 'FALSE' };
   },
   reduce: unchanged,
   ownsKey: () => true,
-  validate: (draft, context) => /^(true|false)$/i.test(draft.text) || (context.config?.kind === 'checkbox' && context.config.threeState && /^indeterminate$/i.test(draft.text))
+  validate: (draft, context) => /^(true|false)$/i.test(draft.text) || (context.cell?.editor?.kind === 'checkbox' && context.cell.editor.threeState && /^indeterminate$/i.test(draft.text))
     ? valid()
     : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'Checkbox editor accepts TRUE, FALSE, or the configured indeterminate state.', recovery: 'Toggle the checkbox or enter a supported state.' },
   toCommitPayload: (draft, context) => {
-    const config = context.config?.kind === 'checkbox' ? context.config : undefined;
-    const value = /^indeterminate$/i.test(draft.text)
-      ? config?.indeterminateValue ?? null
-      : /^true$/i.test(draft.text)
-        ? config?.trueValue ?? true
-        : config?.falseValue ?? false;
+    const config = context.cell?.editor?.kind === 'checkbox' ? context.cell.editor : undefined;
+    if (!config) throw new Error('Checkbox behavior requires a checkbox editor configuration');
+    const value = checkboxValueForState(config, /^indeterminate$/i.test(draft.text) ? 'indeterminate' : /^true$/i.test(draft.text) ? 'checked' : 'unchecked');
     return { kind: 'typed-value', value };
   },
+  hitTestControl: (point, rect) => {
+    const size = Math.min(14, Math.max(10, rect.height - 8));
+    return point.x >= 2 && point.x <= 6 + size && point.y >= (rect.height - size) / 2 - 2 && point.y <= (rect.height + size) / 2 + 2 ? { kind: 'toggle' } : null;
+  },
+  controlActionForKey: (gesture) => gesture.key === ' ' && !gesture.ctrl && !gesture.meta && !gesture.alt ? { kind: 'toggle' } : null,
 };
 
 function richTextRuns(cell: CellData | null): RichTextRun[] {
@@ -187,33 +198,35 @@ function richTextRuns(cell: CellData | null): RichTextRun[] {
   return text ? [{ text }] : [];
 }
 
-const richTextAdapter: CellEditorAdapter = {
+const richTextBehavior: CellEditorBehavior = {
   kind: 'rich-text',
   surface: { kind: 'rich-text', inputMode: 'text', multiline: true },
   canEnter: (context) => context.cell?.formula
     ? { allowed: false, code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'Formula cells cannot enter rich-text editing.', recovery: 'Remove the formula before applying rich-text runs.' }
     : allowed(),
-  createDraft: (context) => ({ kind: 'rich-text', text: cellText(context.cell), runs: richTextRuns(context.cell) }),
+  createDraft: (context) => context.initialText === undefined
+    ? { kind: 'rich-text', text: cellText(context.cell), runs: richTextRuns(context.cell) }
+    : { kind: 'rich-text', text: context.initialText, runs: context.initialText ? [{ text: context.initialText }] : [] },
   reduce: unchanged,
   ownsKey: () => false,
   validate: (draft) => draft.kind === 'rich-text'
     ? valid()
-    : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'Rich-text editor requires a rich-text draft.', recovery: 'Re-enter the target through RichTextEditorAdapter.' },
+    : { valid: false, code: 'CELL_EDIT_COMMIT_REJECTED', message: 'Rich-text editor requires a rich-text draft.', recovery: 'Re-enter the target through RichTextEditorBehavior.' },
   toCommitPayload: (draft) => draft.kind === 'rich-text'
     ? { kind: 'rich-text', text: draft.text, runs: structuredClone(draft.runs) }
     : { kind: 'rich-text', text: draft.text, runs: [{ text: draft.text }] },
 };
 
-export function createCellEditorAdapterRegistry(): CellEditorAdapterRegistry {
-  const registry = new CellEditorAdapterRegistry();
-  registry.register(plainAdapter('text'));
-  registry.register(numberAdapter);
-  registry.register(dateTimeAdapter);
-  registry.register(validationListAdapter);
-  registry.register(comboBoxAdapter);
-  registry.register(checkboxAdapter);
-  registry.register(maskAdapter);
-  registry.register(formulaAdapter);
-  registry.register(richTextAdapter);
+export function createCellEditorRegistry(): CellEditorRegistry {
+  const registry = new CellEditorRegistry();
+  registry.register(plainBehavior('text'));
+  registry.register(numberBehavior);
+  registry.register(dateTimeBehavior);
+  registry.register(validationListBehavior);
+  registry.register(comboBoxBehavior);
+  registry.register(checkboxBehavior);
+  registry.register(maskBehavior);
+  registry.register(formulaBehavior);
+  registry.register(richTextBehavior);
   return registry;
 }
