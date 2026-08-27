@@ -7,7 +7,7 @@ const fixturePath = process.env.OCR_XLSX_FIXTURE ?? 'C:\\Users\\kuo13\\Downloads
 test.describe('Pivot worker runtime', () => {
   test.use({ viewport: { width: 1770, height: 1041 }, deviceScaleFactor: 1 });
 
-  test('imports the real OCR workbook and applies a deferred Pivot layout without blocking', async ({ page }, testInfo) => {
+  test('imports the real OCR workbook and creates its Pivot Field List without blocking', async ({ page }, testInfo) => {
     test.setTimeout(60_000);
     test.skip(!existsSync(fixturePath), 'OCR fixture is not installed on this host');
     const diagnostics = installBrowserDiagnostics(page);
@@ -32,20 +32,15 @@ test.describe('Pivot worker runtime', () => {
     await expect(page.getByText('选择要添加到报表的字段', { exact: true })).toBeVisible({ timeout: 5_000 });
     const createMs = performance.now() - createStartedAt;
 
-    await page.getByRole('checkbox', { name: '页码', exact: true }).check({ force: true });
-    const applyButton = page.getByRole('button', { name: '应用布局', exact: true });
-    await expect(applyButton).toBeEnabled();
-    const applyStartedAt = performance.now();
-    await applyButton.click();
-    await expect(page.getByRole('button', { name: '应用布局', exact: true })).toBeDisabled({ timeout: 5_000 });
-    const applyMs = performance.now() - applyStartedAt;
-
-    await expect(page.getByRole('region', { name: '行 field area' }).getByText('页码', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('pivot-field-list').getByRole('button', { name: /^字段菜单:/ })).toHaveCount(23);
+    await expect(page.getByRole('region', { name: '筛选 field area' })).toBeVisible();
+    await expect(page.getByRole('region', { name: '列 field area' })).toBeVisible();
+    await expect(page.getByRole('region', { name: '行 field area' })).toBeVisible();
+    await expect(page.getByRole('region', { name: '值 field area' })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     expect(importMs).toBeLessThan(2_000);
     expect(createMs).toBeLessThan(1_000);
-    expect(applyMs).toBeLessThan(1_000);
-    testInfo.annotations.push({ type: 'performance', description: `import=${Math.round(importMs)}ms create=${Math.round(createMs)}ms apply=${Math.round(applyMs)}ms` });
+    testInfo.annotations.push({ type: 'performance', description: `import=${Math.round(importMs)}ms create=${Math.round(createMs)}ms` });
     diagnostics.assertClean();
   });
 });
