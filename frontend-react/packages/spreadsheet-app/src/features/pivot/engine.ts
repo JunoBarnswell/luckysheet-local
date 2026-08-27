@@ -574,7 +574,7 @@ function joinSourceTables(current: SourceTable, attached: SourceTable, currentFi
   return { fields: [...current.fields, ...attached.fields], rows };
 }
 
-function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+function buildSourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
     throw new Error(`Block-backed data source ${source.dataSourceId} requires asynchronous Pivot computation`);
@@ -632,6 +632,29 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   return table;
 }
 
+interface PivotSourceTableCacheEntry {
+  revision: string;
+  table: SourceTable;
+}
+
+const pivotSourceTableCaches = new WeakMap<WorkbookModel, Map<string, PivotSourceTableCacheEntry>>();
+const MAX_PIVOT_SOURCE_CACHE_ENTRIES = 8;
+
+function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+  if (pivot.source.kind === 'data-source') return buildSourceTable(workbook, pivot, catalog, formula);
+  const cacheKey = fingerprint(canonicalPivotSource(pivot.source));
+  const revision = sourceRevision(workbook, pivot, formula);
+  const cache = pivotSourceTableCaches.get(workbook) ?? new Map<string, PivotSourceTableCacheEntry>();
+  const current = cache.get(cacheKey);
+  if (current?.revision === revision) return current.table;
+  const table = buildSourceTable(workbook, pivot, catalog, formula);
+  cache.delete(cacheKey);
+  cache.set(cacheKey, { revision, table });
+  while (cache.size > MAX_PIVOT_SOURCE_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
+  if (!pivotSourceTableCaches.has(workbook)) pivotSourceTableCaches.set(workbook, cache);
+  return table;
+}
+
 function pivotSourceCalculator(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): FormulaEngine | undefined {
   if (formula) return formula;
   const source = getPivotSource(pivot);
@@ -675,6 +698,22 @@ function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotF
     return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: members };
   });
   return { schema: 'PivotFieldCatalog', fields };
+}
+
+interface PivotFieldCatalogCacheEntry {
+  identity: string;
+  catalog: PivotFieldCatalog;
+}
+
+const pivotFieldCatalogCache = new WeakMap<SourceTable, PivotFieldCatalogCacheEntry>();
+
+function normalizedFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
+  const identity = fingerprint((persisted?.fields ?? []).map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })));
+  const cached = pivotFieldCatalogCache.get(sourceTableValue);
+  if (cached?.identity === identity) return structuredClone(cached.catalog);
+  const catalog = normalizeFieldCatalog(sourceTableValue, persisted);
+  pivotFieldCatalogCache.set(sourceTableValue, { identity, catalog: structuredClone(catalog) });
+  return catalog;
 }
 
 function resolveFieldId(reference: string | undefined, catalog: PivotFieldCatalog): string | undefined {
@@ -962,7 +1001,7 @@ function normalizePivotDefinitionWithCalculator(workbook: WorkbookModel, pivot: 
   const source = getPivotSource(pivot);
   const fieldCatalog = source.kind === 'data-source'
     ? getPivotFieldCatalog(workbook, pivot)
-    : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
+    : normalizedFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
   const calculatedFields = (pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name }));
   for (const calculated of calculatedFields) {
     if (!fieldCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
@@ -1009,7 +1048,7 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel,
     };
   }
   const calculator = pivotSourceCalculator(workbook, pivot, formula);
-  return normalizeFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
+  return normalizedFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
 }
 
 function formulaScalar(value: FormulaValue): PivotScalar | null {

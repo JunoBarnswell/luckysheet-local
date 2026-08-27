@@ -42,8 +42,19 @@ export type {
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
+export const PIVOT_FIELD_AREAS: readonly PivotFieldArea[] = ['filters', 'columns', 'rows', 'values'];
 export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
 export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
+export const DEFAULT_PIVOT_FIELD_PANE_LAYOUT: PivotFieldPaneLayout = 'stacked';
+export const PIVOT_LIVE_LAYOUT_CELL_LIMIT = 50_000;
+export function shouldDeferPivotLayoutUpdates(pivot: Pick<PivotModel, 'source'>): boolean {
+  if (pivot.source.kind === 'data-source') return true;
+  const ranges = pivot.source.kind === 'worksheet-range'
+    ? [pivot.source.range]
+    : pivot.source.kind === 'worksheet-ranges' ? pivot.source.ranges.map((entry) => entry.range) : [];
+  const cellCount = ranges.reduce((count, range) => count + (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1), 0);
+  return cellCount > PIVOT_LIVE_LAYOUT_CELL_LIMIT;
+}
 export function defaultPivotFieldArea(field: Pick<PivotFieldDefinition, 'dataType'>): PivotFieldArea {
   if (field.dataType === 'number') return 'values';
   if (field.dataType === 'date') return 'columns';

@@ -202,6 +202,7 @@ function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldP
 
 export function PivotFieldArea({ area, baseFields = [], className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
+  const [dragActive, setDragActive] = useState(false);
   const items: AreaItem[] = fieldIds.map((placementId, index) => {
     const value = area === 'values' ? valueFields.find((entry) => entry.valueId === placementId) : undefined;
     const fieldId = value?.fieldId ?? placementId;
@@ -216,17 +217,20 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
     };
   });
   return (
-    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex min-h-0 min-w-0 flex-1 flex-col border-[#bdbdbd] bg-white ${className ?? ''}`}>
-      <Inline gap="xs" className="h-8 shrink-0 px-2">
+    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-[#bdbdbd] bg-white ${dragActive ? 'border-accent bg-blue-50/40' : ''} ${className ?? ''}`}>
+      <Inline gap="xs" className="h-8 shrink-0 border-b border-[#dedede] bg-[#fafafa] px-2">
         <Icon name={icons[area]} size="xs" className="text-accent" />
         <Text size="sm" weight="medium">{pivotText(locale, area)}</Text>
+        <Text size="xs" tone="subtle" className="ml-auto tabular-nums">{items.length}</Text>
       </Inline>
       <FieldDropZone<AreaItem>
         disabled={disabled}
         emptyLabel={pivotText(locale, 'dragFieldsHere')}
-        className="min-h-20 flex-1 overflow-auto rounded-none border-0 bg-white p-1"
+        className="min-h-0 flex-1 overflow-auto rounded-none border-0 bg-white p-1"
         items={items}
-        onDropItem={onDrop}
+        onDragEnter={() => setDragActive(true)}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }}
+        onDropItem={(event, index) => { setDragActive(false); onDrop(event, index); }}
         renderItem={(field) => (
           <Inline
             draggable={!disabled}

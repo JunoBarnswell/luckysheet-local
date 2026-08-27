@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { buildPivotGridProjection, computePivotResult, detectPivotCollision, findPivotProjectionCellAt, getPivotOccupiedRange, normalizePivotDefinition } from './engine';
+import { buildPivotGridProjection, computePivotResult, detectPivotCollision, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotOccupiedRange, normalizePivotDefinition } from './engine';
 import { buildPivotModel } from './helpers';
 
 const ROW_COUNT = 4_058;
@@ -67,4 +67,17 @@ it('rejects an oversized attachment-scale Pivot from its footprint before materi
   const finishedAt = performance.now();
   assert.equal(collision.reasons.includes('worksheet-bounds'), true);
   assert.ok(finishedAt - startedAt < 1_000, `oversized Pivot rejection exceeded 1000ms: ${Math.round(finishedAt - startedAt)}ms`);
+});
+
+it('reuses one revision-owned source index and field catalog across repeated Field List edits', () => {
+  const workbook = attachmentScaleWorkbook();
+  const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-source-cache', { sheetId: 'sheet-1', startRow: 0, endRow: ROW_COUNT, startColumn: 0, endColumn: COLUMN_COUNT - 1 });
+  assert.ok(pivot);
+  const startedAt = performance.now();
+  for (let iteration = 0; iteration < 20; iteration += 1) {
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    assert.equal(catalog.fields.length, COLUMN_COUNT);
+  }
+  const finishedAt = performance.now();
+  assert.ok(finishedAt - startedAt < 300, `20 cached field-catalog reads exceeded 300ms: ${Math.round(finishedAt - startedAt)}ms`);
 });
