@@ -16,32 +16,20 @@ import {
   type ViewportSnapshot,
 } from './types';
 
-export type LayerRenderMode = 'none' | 'full' | 'dirty' | 'scroll';
+export type LayerRenderMode = 'none' | 'full' | 'dirty';
 
 export interface ScrollDeltaPlan {
   delta: Point;
   dx: number;
   dy: number;
   hasDelta: boolean;
-  isSmall: boolean;
-  canBlit: boolean;
-  source: Rect | null;
-  destination: Rect | null;
-  copySource: Rect | null;
-  copyDestination: Rect | null;
   /**
-   * One bitmap copy per scrollable pane.  A frozen worksheet cannot be
-   * represented by a single canvas-wide translation: top/right and
-   * bottom/left panes each scroll along only one axis.
+   * Full screen-space rectangles of panes whose content origin changed.
+   * Scrolling always clears and redraws these visible panes. Reusing pixels
+   * from the same canvas is intentionally unsupported because repeated
+   * overlapping copies accumulate stale glyphs during continuous scrolling.
    */
-  blits: ScrollBlit[];
-  exposedRects: Rect[];
-}
-
-export interface ScrollBlit {
-  paneId: PaneId;
-  source: Rect;
-  destination: Rect;
+  redrawRects: Rect[];
 }
 
 export interface LayerRenderPlan {
@@ -51,7 +39,7 @@ export interface LayerRenderPlan {
   drawRects: Rect[];
 }
 
-export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'scroll-redraw' | 'mixed' | 'scroll' | 'dirty' | 'idle';
+export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'scroll-redraw' | 'mixed' | 'dirty' | 'idle';
 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
@@ -62,7 +50,6 @@ export interface RenderPlan {
   dirtyRanges: CellRange[];
   dirtyRects: Rect[];
   scrollDelta: ScrollDeltaPlan;
-  scroll: ScrollDeltaPlan;
   fullRedraw: boolean;
   reason: RenderPlanReason;
   layers: LayerRenderPlan[];
@@ -240,29 +227,8 @@ function emptyScrollDelta(): ScrollDeltaPlan {
     dx: 0,
     dy: 0,
     hasDelta: false,
-    isSmall: false,
-    canBlit: false,
-    source: null,
-    destination: null,
-    copySource: null,
-    copyDestination: null,
-    blits: [],
-    exposedRects: [],
+    redrawRects: [],
   };
-}
-
-export function getScrollExposedRects(viewport: SizeLike, dx: number, dy: number): Rect[] {
-  const exposed: Rect[] = [];
-  if (dy > 0) exposed.push({ x: 0, y: viewport.height - dy, width: viewport.width, height: dy });
-  if (dy < 0) exposed.push({ x: 0, y: 0, width: viewport.width, height: -dy });
-  if (dx > 0) exposed.push({ x: viewport.width - dx, y: 0, width: dx, height: viewport.height });
-  if (dx < 0) exposed.push({ x: 0, y: 0, width: -dx, height: viewport.height });
-  return exposed.filter((rect) => rect.width > 0 && rect.height > 0);
-}
-
-interface SizeLike {
-  width: number;
-  height: number;
 }
 
 export function calculateScrollDelta(
@@ -273,68 +239,12 @@ export function calculateScrollDelta(
   const dx = nextViewport.scrollX - previousViewport.scrollX;
   const dy = nextViewport.scrollY - previousViewport.scrollY;
   const hasDelta = dx !== 0 || dy !== 0;
-  const sameSize = previousViewport.width === nextViewport.width
-    && previousViewport.height === nextViewport.height;
-  const isSmall = sameSize
-    && nextViewport.width > 0
-    && nextViewport.height > 0
-    && Math.abs(dx) < nextViewport.width
-    && Math.abs(dy) < nextViewport.height;
-  // Repeatedly resampling text at fractional device-pixel offsets leaves
-  // visible trails on a canvas.  Thumb dragging commonly produces fractional
-  // logical offsets, so bitmap reuse is safe only when both axes land exactly
-  // on device pixels.  Non-aligned scrolling redraws the affected pane.
-  const devicePixelRatio = nextViewport.devicePixelRatio;
-  const isDevicePixelAligned = (value: number) => {
-    const scaled = value * devicePixelRatio;
-    return Math.abs(scaled - Math.round(scaled)) <= 1e-6;
-  };
-  const canBlit = hasDelta && isSmall && isDevicePixelAligned(dx) && isDevicePixelAligned(dy);
-  if (!canBlit) {
-    return {
-      delta: { x: dx, y: dy },
-      dx,
-      dy,
-      hasDelta,
-      isSmall,
-      canBlit: false,
-      source: null,
-      destination: null,
-      copySource: null,
-      copyDestination: null,
-      blits: [],
-      exposedRects: [],
-    };
-  }
-
-  const copyWidth = nextViewport.width - Math.abs(dx);
-  const copyHeight = nextViewport.height - Math.abs(dy);
-  const source = {
-    x: Math.max(dx, 0),
-    y: Math.max(dy, 0),
-    width: copyWidth,
-    height: copyHeight,
-  };
-  const destination = {
-    x: Math.max(-dx, 0),
-    y: Math.max(-dy, 0),
-    width: copyWidth,
-    height: copyHeight,
-  };
-  const exposedRects = getScrollExposedRects(nextViewport, dx, dy);
   return {
     delta: { x: dx, y: dy },
     dx,
     dy,
     hasDelta,
-    isSmall,
-    canBlit,
-    source,
-    destination,
-    copySource: source,
-    copyDestination: destination,
-    blits: [{ paneId: 'main', source, destination }],
-    exposedRects,
+    redrawRects: [],
   };
 }
 
@@ -345,54 +255,29 @@ export function calculateScrollDelta(
  */
 function resolvePaneScrollDelta(base: ScrollDeltaPlan, panes: readonly RenderPane[]): ScrollDeltaPlan {
   if (!base.hasDelta) return base;
-  const blits: ScrollBlit[] = [];
-  const exposedRects: Rect[] = [];
-  let requiresPaneRedraw = false;
+  const redrawRects: Rect[] = [];
   for (const pane of panes) {
     const dx = pane.id === 'topLeft' || pane.id === 'bottomLeft' ? 0 : base.dx;
     const dy = pane.id === 'topLeft' || pane.id === 'topRight' ? 0 : base.dy;
     if (dx === 0 && dy === 0) continue;
-    const canBlit = base.canBlit
-      && Math.abs(dx) < pane.screenRect.width
-      && Math.abs(dy) < pane.screenRect.height;
-    if (!canBlit) {
-      // A thumb jump can move by several viewports, and a fractional device-
-      // pixel delta cannot be resampled without leaving text trails. Redraw
-      // only the affected visible pane in either case.
-      exposedRects.push({ ...pane.screenRect });
-      requiresPaneRedraw = true;
-      continue;
-    }
-    const source = {
-      x: pane.screenRect.x + Math.max(dx, 0),
-      y: pane.screenRect.y + Math.max(dy, 0),
-      width: pane.screenRect.width - Math.abs(dx),
-      height: pane.screenRect.height - Math.abs(dy),
-    };
-    const destination = {
-      x: pane.screenRect.x + Math.max(-dx, 0),
-      y: pane.screenRect.y + Math.max(-dy, 0),
-      width: source.width,
-      height: source.height,
-    };
-    blits.push({ paneId: pane.id, source, destination });
-    if (dy > 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y + pane.screenRect.height - dy, width: pane.screenRect.width, height: dy });
-    if (dy < 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y, width: pane.screenRect.width, height: -dy });
-    if (dx > 0) exposedRects.push({ x: pane.screenRect.x + pane.screenRect.width - dx, y: pane.screenRect.y, width: dx, height: pane.screenRect.height });
-    if (dx < 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y, width: -dx, height: pane.screenRect.height });
+    redrawRects.push({ ...pane.screenRect });
   }
-  const primary = blits[0];
   return {
     ...base,
-    isSmall: !requiresPaneRedraw,
-    canBlit: blits.length > 0,
-    source: primary?.source ?? null,
-    destination: primary?.destination ?? null,
-    copySource: primary?.source ?? null,
-    copyDestination: primary?.destination ?? null,
-    blits,
-    exposedRects: mergeRects(exposedRects),
+    redrawRects,
   };
+}
+
+function combineScrollRedrawRects(scrollRects: readonly Rect[], dirtyRects: readonly Rect[]): Rect[] {
+  const redrawRects = scrollRects.map((rect) => ({ ...rect }));
+  for (const dirtyRect of dirtyRects) {
+    const coveredByScrolledPane = scrollRects.some((paneRect) => dirtyRect.x >= paneRect.x
+      && dirtyRect.y >= paneRect.y
+      && dirtyRect.x + dirtyRect.width <= paneRect.x + paneRect.width
+      && dirtyRect.y + dirtyRect.height <= paneRect.y + paneRect.height);
+    if (!coveredByScrolledPane) redrawRects.push({ ...dirtyRect });
+  }
+  return redrawRects;
 }
 
 export function rangeToViewportRect(
@@ -420,7 +305,6 @@ function calculateReason(
   forceFull: boolean,
   resized: boolean,
   redrawScroll: boolean,
-  hasScroll: boolean,
   hasDirtyRects: boolean,
 ): RenderPlanReason {
   if (!hasPrevious) return 'initial';
@@ -428,8 +312,6 @@ function calculateReason(
   if (resized) return 'resize';
   if (redrawScroll && hasDirtyRects) return 'mixed';
   if (redrawScroll) return 'scroll-redraw';
-  if (hasScroll && hasDirtyRects) return 'mixed';
-  if (hasScroll) return 'scroll';
   if (hasDirtyRects) return 'dirty';
   return 'idle';
 }
@@ -448,17 +330,15 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
       .filter((rect): rect is Rect => rect !== null),
   );
   const resized = viewportChanged(previousViewport, input.viewport);
-  const redrawScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
-  // A large scrollbar jump redraws the current pane rectangle through the
-  // scroll plan.  It must not clear and redraw the whole canvas, because that
-  // includes headers, frozen panes, and unrelated canvas layers.
+  const redrawScroll = scrollDelta.hasDelta;
+  // Scrolling redraws only panes whose content origin changed. It must not
+  // clear the whole canvas, because that includes headers and frozen panes.
   const fullRedraw = input.forceFull === true || !hasPrevious || resized;
   const reason = calculateReason(
     hasPrevious,
     input.forceFull === true,
     resized,
     redrawScroll,
-    scrollDelta.hasDelta,
     dirtyRects.length > 0,
   );
 
@@ -469,8 +349,8 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
       if (definition.scrollable === false) {
         return { layerId: definition.id, mode: 'full', clearRects: [], drawRects: [] };
       }
-      const redrawRects = mergeRects([...scrollDelta.exposedRects, ...dirtyRects]);
-      return { layerId: definition.id, mode: 'scroll', clearRects: redrawRects, drawRects: redrawRects };
+      const redrawRects = combineScrollRedrawRects(scrollDelta.redrawRects, dirtyRects);
+      return { layerId: definition.id, mode: 'dirty', clearRects: redrawRects, drawRects: redrawRects };
     }
     if (dirtyRects.length > 0) {
       return { layerId: definition.id, mode: 'dirty', clearRects: dirtyRects, drawRects: dirtyRects };
@@ -489,7 +369,6 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     dirtyRanges,
     dirtyRects,
     scrollDelta,
-    scroll: scrollDelta,
     fullRedraw,
     reason,
     layers,
@@ -497,4 +376,3 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
 }
 
 export const createRenderPlan = calculateRenderPlan;
-export const calculateSmallScrollDelta = calculateScrollDelta;

@@ -37,6 +37,11 @@ import {
   resolvePointerGestureOwner,
 } from "@react-sheets/ui-system";
 import type { PivotControlAction } from "./drawing-renderers";
+import {
+  beginDimensionResizeGesture,
+  updateDimensionResizeGesture,
+  type DimensionResizeGesture,
+} from "./dimension-resize-gesture";
 
 export interface CanvasFillPreview {
   startRow: number;
@@ -74,8 +79,7 @@ interface DragState {
   currentColumn: number;
   additive: boolean;
   extend: boolean;
-  resizeStartSize: number;
-  resizeIndex: number;
+  dimensionResize?: DimensionResizeGesture;
   floating?: {
     id: string;
     kind: "chart" | "shape" | "image" | "pivot-control";
@@ -443,8 +447,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         currentColumn: 0,
         additive: false,
         extend: false,
-        resizeStartSize: 0,
-        resizeIndex: 0,
         textBox: { startContent: content },
       };
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -477,8 +479,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           currentColumn: 0,
           additive: false,
           extend: false,
-          resizeStartSize: 0,
-          resizeIndex: 0,
           floating: {
             id: floatingHit.id,
             kind: floatingHit.kind,
@@ -514,8 +514,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           currentColumn: 0,
           additive: false,
           extend: false,
-          resizeStartSize: headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index),
-          resizeIndex: headerHit.index,
+          dimensionResize: beginDimensionResizeGesture({
+            axis: headerHit.kind === "col" ? "column" : "row",
+            boundaryIndex: headerHit.index,
+            startModelSizePx: (headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index)) / (zoom / 100),
+            startPointerScreenPx: headerHit.kind === "col" ? local.x : local.y,
+            zoomScale: zoom / 100,
+            minimumModelSizePx: headerHit.kind === "col" ? 1 : 18,
+          }),
         };
         (event.target as Element).setPointerCapture?.(event.pointerId);
         return;
@@ -556,8 +562,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         currentColumn: headerHit.kind === "col" ? headerHit.index : 0,
         additive,
         extend: false,
-        resizeStartSize: 0,
-        resizeIndex: 0,
         floating: { id: headerHit.kind, kind: "shape", handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
       };
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -582,8 +586,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             currentColumn: primaryRange.endColumn,
             additive: false,
             extend: false,
-            resizeStartSize: 0,
-            resizeIndex: 0,
           };
           (event.target as Element).setPointerCapture?.(event.pointerId);
           return;
@@ -657,8 +659,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       currentColumn: cell.column,
       additive,
       extend,
-      resizeStartSize: 0,
-      resizeIndex: 0,
     };
     if (!additive && !extend) {
       onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
@@ -685,15 +685,18 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (drag.kind === "col-resize" || drag.kind === "row-resize") {
       setFillPreview(null);
       stopAutoScroll();
-      const content = engine.localToContent(local);
-      const boundary = drag.kind === "col-resize" ? skeleton.getColumnLeft(drag.resizeIndex) : skeleton.getRowTop(drag.resizeIndex);
-      const size = Math.max(24, (drag.kind === "col-resize" ? content.x : content.y) - boundary);
-      const modelSizePx = Math.round(size / (zoom / 100));
+      if (!drag.dimensionResize) throw new Error('Dimension resize drag is missing its canonical gesture');
+      drag.dimensionResize = updateDimensionResizeGesture(
+        drag.dimensionResize,
+        drag.kind === "col-resize" ? local.x : local.y,
+      );
+      const modelSizePx = drag.dimensionResize.currentModelSizePx;
+      const size = modelSizePx * drag.dimensionResize.zoomScale;
       const columnPreview = drag.kind === 'col-resize' ? formatColumnWidthPreview(modelSizePx) : undefined;
       const label = drag.kind === 'col-resize'
         ? `${columnPreview!.excelWidth.toFixed(2)} chars (${columnPreview!.widthPx}px)`
         : `${modelSizePx}px`;
-      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size, label } });
+      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.dimensionResize.axis, index: drag.dimensionResize.boundaryIndex, sizePx: size, label } });
       return;
     }
     if (drag.kind === "floating-move" && drag.floating) {
@@ -778,15 +781,13 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
     stopAutoScroll();
     if (drag.kind === "col-resize") {
-      const content = engine.localToContent(localPointOf(event));
-      const width = Math.max(24, content.x - skeleton.getColumnLeft(drag.resizeIndex));
-      onResizeColumn(drag.resizeIndex, Math.round(width / (zoom / 100)));
+      if (!drag.dimensionResize) throw new Error('Column resize drag is missing its canonical gesture');
+      onResizeColumn(drag.dimensionResize.boundaryIndex, drag.dimensionResize.currentModelSizePx);
       return;
     }
     if (drag.kind === "row-resize") {
-      const content = engine.localToContent(localPointOf(event));
-      const height = Math.max(18, content.y - skeleton.getRowTop(drag.resizeIndex));
-      onResizeRow(drag.resizeIndex, Math.round(height / (zoom / 100)));
+      if (!drag.dimensionResize) throw new Error('Row resize drag is missing its canonical gesture');
+      onResizeRow(drag.dimensionResize.boundaryIndex, drag.dimensionResize.currentModelSizePx);
       return;
     }
     if (drag.kind === "textbox-placement" && drag.textBox) {

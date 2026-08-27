@@ -528,7 +528,6 @@ export class CanvasRenderEngine {
         this.drawLayer(layerPlan.layerId, plan);
         continue;
       }
-      if (layerPlan.mode === "scroll") layer.blit(plan.scrollDelta);
       layer.clear(layerPlan.clearRects);
       this.drawLayer(layerPlan.layerId, plan, layerPlan.drawRects);
     }

@@ -1,4 +1,3 @@
-import type { ScrollDeltaPlan } from './render-plan';
 import type { LayerDefinition, Rect, Size } from './types';
 
 export class Layer {
@@ -98,27 +97,6 @@ export class Layer {
           rect.height * this.pixelRatio,
         );
       }
-    }
-    context.restore();
-  }
-
-  blit(scrollDelta: ScrollDeltaPlan): void {
-    const context = this.context;
-    if (!context || !this.canvas || !scrollDelta.canBlit) return;
-    context.save();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    for (const { source, destination } of scrollDelta.blits) {
-      context.drawImage(
-        this.canvas,
-        source.x * this.pixelRatio,
-        source.y * this.pixelRatio,
-        source.width * this.pixelRatio,
-        source.height * this.pixelRatio,
-        destination.x * this.pixelRatio,
-        destination.y * this.pixelRatio,
-        destination.width * this.pixelRatio,
-        destination.height * this.pixelRatio,
-      );
     }
     context.restore();
   }

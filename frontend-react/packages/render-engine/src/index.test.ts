@@ -73,22 +73,20 @@ test('DirtyRangeSet normalizes, merges, and returns defensive copies', () => {
   ]);
 });
 
-test('small scroll delta produces a reusable copy and exposed strips', () => {
+test('scroll delta records movement without exposing bitmap reuse state', () => {
   const plan = calculateScrollDelta(viewport(), viewport({ scrollX: 12, scrollY: 8 }));
-  assert.equal(plan.canBlit, true);
-  assert.deepEqual(plan.source, { x: 12, y: 8, width: 228, height: 92 });
-  assert.deepEqual(plan.destination, { x: 0, y: 0, width: 228, height: 92 });
-  assert.deepEqual(plan.exposedRects, [
-    { x: 0, y: 92, width: 240, height: 8 },
-    { x: 228, y: 0, width: 12, height: 100 },
-  ]);
-  assert.equal(calculateScrollDelta(viewport(), viewport({ scrollX: 240 })).canBlit, false);
+  assert.deepEqual(plan, {
+    delta: { x: 12, y: 8 },
+    dx: 12,
+    dy: 8,
+    hasDelta: true,
+    redrawRects: [],
+  });
 });
 
-test('fractional device-pixel scroll redraws the pane instead of resampling text', () => {
+test('fractional device-pixel scroll redraws the affected pane', () => {
   const fractional = calculateScrollDelta(viewport(), viewport({ scrollY: 8.5 }));
-  assert.equal(fractional.isSmall, true);
-  assert.equal(fractional.canBlit, false);
+  assert.equal(fractional.hasDelta, true);
 
   const plan = calculateRenderPlan({
     skeleton,
@@ -97,19 +95,25 @@ test('fractional device-pixel scroll redraws the pane instead of resampling text
     headerOffset: defaultHeaderOffset(),
   });
   assert.equal(plan.reason, 'scroll-redraw');
-  assert.deepEqual(plan.scrollDelta.blits, []);
+  assert.deepEqual(plan.scrollDelta.redrawRects, [
+    { x: 39, y: 20, width: 201, height: 80 },
+  ]);
   assert.deepEqual(plan.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [
     { x: 39, y: 20, width: 201, height: 80 },
   ]);
 });
 
-test('fractional logical scroll may blit when it is aligned to the device pixel grid', () => {
+test('device-pixel-aligned scroll still redraws instead of reusing canvas pixels', () => {
   const highDpiViewport = viewport({ devicePixelRatio: 1.25 });
-  const aligned = calculateScrollDelta(highDpiViewport, {
-    ...highDpiViewport,
-    scrollY: 0.8,
+  const aligned = calculateRenderPlan({
+    skeleton,
+    previousViewport: highDpiViewport,
+    viewport: { ...highDpiViewport, scrollY: 0.8 },
+    headerOffset: defaultHeaderOffset(),
   });
-  assert.equal(aligned.canBlit, true);
+  assert.equal(aligned.reason, 'scroll-redraw');
+  assert.equal(aligned.layers[0]?.mode, 'dirty');
+  assert.deepEqual(aligned.scrollDelta.redrawRects, [{ x: 39, y: 20, width: 201, height: 80 }]);
 });
 
 test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', () => {
@@ -139,13 +143,13 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
     viewport: viewport({ scrollX: 10 }),
     previousViewport: viewport(),
   });
-  assert.equal(scroll.layers[0]?.mode, 'scroll');
-  assert.equal(scroll.layers[1]?.mode, 'scroll');
-  assert.equal(scroll.layers[2]?.mode, 'scroll');
+  assert.equal(scroll.layers[0]?.mode, 'dirty');
+  assert.equal(scroll.layers[1]?.mode, 'dirty');
+  assert.equal(scroll.layers[2]?.mode, 'dirty');
   assert.equal(scroll.layers[3]?.mode, 'full');
 });
 
-test('RenderPlan scroll blits scrollable layers even with header offset', () => {
+test('RenderPlan redraws scrollable panes while preserving header offset', () => {
   const scroll = calculateRenderPlan({
     skeleton,
     viewport: viewport({ scrollX: 10 }),
@@ -153,7 +157,7 @@ test('RenderPlan scroll blits scrollable layers even with header offset', () => 
     headerOffset: defaultHeaderOffset(),
   });
   assert.equal(scroll.fullRedraw, false);
-  assert.equal(scroll.layers[0]?.mode, 'scroll');
+  assert.equal(scroll.layers[0]?.mode, 'dirty');
   assert.equal(scroll.layers[4]?.mode, 'full');
 });
 
@@ -179,7 +183,7 @@ test('CanvasRenderEngine invalidateChrome only marks chrome layer', () => {
   engine.dispose();
 });
 
-test('RenderPlan uses scroll blit on grid layers even with header offset', () => {
+test('RenderPlan redraws grid layers without canvas self-copy', () => {
   const scroll = calculateRenderPlan({
     skeleton,
     viewport: viewport({ scrollX: 10 }),
@@ -187,7 +191,7 @@ test('RenderPlan uses scroll blit on grid layers even with header offset', () =>
     headerOffset: defaultHeaderOffset(),
   });
   assert.equal(scroll.fullRedraw, false);
-  assert.equal(scroll.layers[0]?.mode, 'scroll');
+  assert.equal(scroll.layers[0]?.mode, 'dirty');
   assert.equal(scroll.layers[4]?.mode, 'full');
 });
 
@@ -210,7 +214,8 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
   assert.equal(initial.fullRedraw, true);
   engine.scrollTo(10, 0);
   const scrolled = engine.render();
-  assert.equal(scrolled.scrollDelta.canBlit, true);
+  assert.equal(scrolled.reason, 'scroll-redraw');
+  assert.deepEqual(scrolled.scrollDelta.redrawRects, [{ x: 39, y: 20, width: 201, height: 80 }]);
   engine.invalidate([{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }]);
   const dirty = engine.render();
   assert.equal(dirty.layers[0]?.mode, 'dirty');
@@ -218,15 +223,17 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
   assert.throws(() => engine.render(), /disposed/);
 });
 
-test('CanvasRenderEngine redraws only exposed scroll strips without clearing the canvas', () => {
+test('CanvasRenderEngine clears and redraws the visible pane on every scroll', () => {
   const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
   const initial = engine.render();
   assert.equal(initial.fullRedraw, true);
   engine.scrollTo(0, 40);
   const scrolled = engine.render();
-  assert.equal(scrolled.scrollDelta.canBlit, true);
   assert.equal(scrolled.fullRedraw, false);
-  assert.equal(scrolled.layers.find((layer) => layer.layerId === 'grid')?.mode, 'scroll');
+  assert.equal(scrolled.layers.find((layer) => layer.layerId === 'grid')?.mode, 'dirty');
+  assert.deepEqual(scrolled.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [
+    { x: 39, y: 20, width: 201, height: 80 },
+  ]);
   assert.equal(scrolled.layers.find((layer) => layer.layerId === 'chrome')?.mode, 'full');
   engine.dispose();
 });
@@ -240,11 +247,15 @@ test('RenderPlan keeps frozen panes disjoint while scrolling only their movable 
     headerOffset: defaultHeaderOffset(),
   });
   assert.equal(frozen.fullRedraw, false);
-  assert.deepEqual(frozen.scrollDelta.blits.map((entry) => entry.paneId), ['topRight', 'bottomLeft', 'main']);
-  assert.ok(frozen.scrollDelta.exposedRects.every((rect) => rect.x >= 39 && rect.y >= 20));
+  assert.deepEqual(frozen.scrollDelta.redrawRects, [
+    { x: 119, y: 20, width: 121, height: 20 },
+    { x: 39, y: 40, width: 80, height: 60 },
+    { x: 119, y: 40, width: 121, height: 60 },
+  ]);
+  assert.ok(frozen.scrollDelta.redrawRects.every((rect) => rect.x >= 39 && rect.y >= 20));
 });
 
-test('RenderPlan redraws a non-blittable scrollbar jump inside the current pane only', () => {
+test('RenderPlan redraws a scrollbar jump inside the current pane only', () => {
   const jumped = calculateRenderPlan({
     skeleton,
     viewport: viewport({ scrollY: 400 }),
@@ -253,7 +264,6 @@ test('RenderPlan redraws a non-blittable scrollbar jump inside the current pane 
   });
   assert.equal(jumped.fullRedraw, false);
   assert.equal(jumped.reason, 'scroll-redraw');
-  assert.equal(jumped.scrollDelta.canBlit, false);
   assert.deepEqual(jumped.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [{ x: 39, y: 20, width: 201, height: 80 }]);
 });
 
@@ -333,7 +343,7 @@ test('scroll planning stays inside one frame for 100k and 1m logical rows', () =
       const plan = calculateRenderPlan({ skeleton: largeSkeleton, viewport: next, previousViewport: previous, headerOffset: defaultHeaderOffset() });
       samples.push(performance.now() - started);
       assert.ok(plan.visibleRange && plan.visibleRange.endRow < rowCount);
-      assert.ok(plan.layers.some((layer) => layer.layerId === 'grid' && layer.mode === 'scroll'));
+      assert.ok(plan.layers.some((layer) => layer.layerId === 'grid' && layer.mode === 'dirty'));
       previous = next;
     }
     assert.ok(percentile95(samples) <= 16.7, `${rowCount} rows p95 must stay inside a 60fps frame, got ${percentile95(samples).toFixed(3)}ms`);
