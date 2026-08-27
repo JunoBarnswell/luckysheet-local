@@ -131,7 +131,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
     return [];
   };
 
-  const renderSurface = (surface: RibbonSurfaceDefinition, mode: 'wide' | 'menu'): React.ReactNode => {
+  const renderSurface = (surface: RibbonSurfaceDefinition, mode: RibbonLayoutState['mode'] | 'menu'): React.ReactNode => {
     if (!surface.commandId) return null;
 
     // SpreadJS parity: chartBuilder in wide mode → 2×4 icon grid instead of dropdown tile.
