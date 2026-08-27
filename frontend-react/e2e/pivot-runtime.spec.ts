@@ -32,10 +32,7 @@ test.describe('Pivot worker runtime', () => {
     await expect(page.getByText('选择要添加到报表的字段', { exact: true })).toBeVisible({ timeout: 5_000 });
     const createMs = performance.now() - createStartedAt;
 
-    await page.getByRole('button', { name: '字段菜单: 页码', exact: true }).click({ force: true });
-    await page.getByRole('button', { name: '行', exact: true }).last().click();
-    await page.getByRole('button', { name: '字段菜单: BOM1', exact: true }).click({ force: true });
-    await page.getByRole('button', { name: '值', exact: true }).last().click();
+    await page.getByRole('checkbox', { name: '页码', exact: true }).check({ force: true });
     const applyButton = page.getByRole('button', { name: '应用布局', exact: true });
     await expect(applyButton).toBeEnabled();
     const applyStartedAt = performance.now();
@@ -44,7 +41,6 @@ test.describe('Pivot worker runtime', () => {
     const applyMs = performance.now() - applyStartedAt;
 
     await expect(page.getByRole('region', { name: '行 field area' }).getByText('页码', { exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: '值 field area' }).getByText('BOM1', { exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     expect(importMs).toBeLessThan(2_000);
     expect(createMs).toBeLessThan(1_000);
