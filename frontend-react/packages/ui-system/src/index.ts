@@ -46,6 +46,15 @@ export { ColorPicker, type ColorPickerProps } from './ColorPicker';
 export { Select, type SelectOption, type SelectProps } from './Select';
 export { VirtualList, type VirtualListProps } from './VirtualList';
 export { ScrollBar, type ScrollBarProps } from './ScrollBar';
+export {
+  POINTER_GESTURE_OWNER_ATTRIBUTE,
+  claimPointerGesture,
+  ownsPointerGesture,
+  releasePointerGesture,
+  releasePointerGesturesForSurface,
+  resolvePointerGestureOwner,
+  type PointerGestureOwner,
+} from './pointer-gesture-owner';
 export { DesignerShell, type DesignerShellProps } from './DesignerShell';
 export { DESIGNER_GEOMETRY, RIBBON_DENSITY, type PeerCursor, type SaveState } from './shell-types';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';

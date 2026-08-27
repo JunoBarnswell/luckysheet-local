@@ -59,6 +59,25 @@ async function dragCells(page: Page, canvas: ReturnType<Page['getByTestId']>, fr
   return box;
 }
 
+async function dragScrollbar(page: Page, orientation: 'horizontal' | 'vertical') {
+  const scrollbar = page.getByRole('scrollbar', { name: `${orientation} scrollbar` });
+  await expect(scrollbar).toBeVisible();
+  const track = await scrollbar.boundingBox();
+  const thumb = await scrollbar.locator(':scope > div').first().boundingBox();
+  if (!track || !thumb) throw new Error(`${orientation} scrollbar has no geometry`);
+  const before = Number(await scrollbar.getAttribute('aria-valuenow'));
+  const start = { x: thumb.x + thumb.width / 2, y: thumb.y + thumb.height / 2 };
+  const end = orientation === 'horizontal'
+    ? { x: track.x + track.width * 0.65, y: start.y }
+    : { x: start.x, y: track.y + track.height * 0.65 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => Number(await scrollbar.getAttribute('aria-valuenow'))).not.toBe(before);
+  return scrollbar;
+}
+
 test.describe('spreadsheet baseline', () => {
   test('Designer Demo shell exposes the fixed 1280x720 geometry and real palette entry', async ({ page }) => {
     await waitForDesignerDemo(page);
@@ -94,6 +113,31 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('name-box')).toHaveValue('A1');
     await page.keyboard.press('ArrowRight');
     await expect(page.getByTestId('name-box')).toHaveValue('B1');
+  });
+
+  test('horizontal and vertical scrollbar gestures never enter worksheet selection', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await expect(page.getByTestId('name-box')).toHaveValue('A1');
+    const selectionIdentity = async () => ({
+      row: await canvas.getAttribute('aria-rowindex'),
+      column: await canvas.getAttribute('aria-colindex'),
+      name: await page.getByTestId('name-box').inputValue(),
+    });
+    const before = await selectionIdentity();
+
+    const vertical = await dragScrollbar(page, 'vertical');
+    expect(await selectionIdentity()).toEqual(before);
+    const verticalBeforeHorizontal = Number(await vertical.getAttribute('aria-valuenow'));
+    await dragScrollbar(page, 'horizontal');
+    expect(await selectionIdentity()).toEqual(before);
+    await expect.poll(async () => Number(await vertical.getAttribute('aria-valuenow'))).toBe(verticalBeforeHorizontal);
+
+    const verticalBeforeKey = Number(await vertical.getAttribute('aria-valuenow'));
+    await vertical.focus();
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => Number(await vertical.getAttribute('aria-valuenow'))).not.toBe(verticalBeforeKey);
+    expect(await selectionIdentity()).toEqual(before);
   });
 
   test('keyboard navigation moves the active cell', async ({ page }) => {

@@ -764,8 +764,8 @@ export function SheetCanvas({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || canvasInteraction.dragRef.current) return;
-    engine.ensureVisible(selection.activeCell);
-  }, [selection.activeCell]);
+    engine.ensureVisible({ row: selection.activeCell.row, column: selection.activeCell.column });
+  }, [selection.activeCell.column, selection.activeCell.row, sheetId]);
 
   // Pointer, keyboard, drag-selection, and auto-scroll are implemented by useCanvasInteraction.
   // ---------- 右键菜单 ----------
@@ -1031,24 +1031,27 @@ export function SheetCanvas({
             onPointerDown={canvasInteraction.handlePointerDown}
             onPointerMove={canvasInteraction.handlePointerMove}
             onPointerUp={canvasInteraction.handlePointerUp}
-            onPointerCancel={canvasInteraction.handlePointerUp}
+            onPointerCancel={canvasInteraction.handlePointerCancel}
+            onLostPointerCapture={canvasInteraction.handlePointerCancel}
             onDoubleClick={canvasInteraction.handleDoubleClick}
             onWheel={canvasInteraction.handleWheel}
             onKeyDown={canvasInteraction.handleKeyDown}
             onContextMenu={handleContextMenu}
           >
-            <CanvasRenderSurface
-              options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
-              onReady={(engine) => {
-                engineRef.current = engine;
-                setEngineReady(true);
-                engine.setCellProvider(cellProvider);
-                engine.setSkeleton(skeleton);
-                engine.setFloating(floatables, selectedFloatingId);
-                engine.setChrome(chromeState);
-              }}
-              className="absolute inset-0"
-            />
+            <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
+              <CanvasRenderSurface
+                options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
+                onReady={(engine) => {
+                  engineRef.current = engine;
+                  setEngineReady(true);
+                  engine.setCellProvider(cellProvider);
+                  engine.setSkeleton(skeleton);
+                  engine.setFloating(floatables, selectedFloatingId);
+                  engine.setChrome(chromeState);
+                }}
+                className="absolute inset-0"
+              />
+            </Box>
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} onRequestExtentGrowth={requestExtentGrowth} />
             ) : null}

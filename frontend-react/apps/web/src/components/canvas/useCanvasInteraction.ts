@@ -29,6 +29,13 @@ import {
   type SelectionGesture,
   type SelectionState,
 } from "@react-sheets/spreadsheet-app";
+import {
+  claimPointerGesture,
+  ownsPointerGesture,
+  releasePointerGesture,
+  releasePointerGesturesForSurface,
+  resolvePointerGestureOwner,
+} from "@react-sheets/ui-system";
 import type { PivotControlAction } from "./drawing-renderers";
 
 export interface CanvasFillPreview {
@@ -394,20 +401,24 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
 
   useEffect(() => () => {
     stopAutoScroll();
+    const host = containerRef.current;
+    if (host) releasePointerGesturesForSurface(host.ownerDocument, host);
     if (transientSelectionFrameRef.current === null) return;
     if (typeof window !== "undefined") window.cancelAnimationFrame(transientSelectionFrameRef.current);
     transientSelectionFrameRef.current = null;
-  }, [stopAutoScroll]);
+  }, [containerRef, stopAutoScroll]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent) => {
     if (phase !== "ready") return;
     if (event.button === 2) return;
-    if ((event.target as Element).closest('[aria-label="Cell editor"]')) return;
+    if (resolvePointerGestureOwner(event.target) !== "worksheet") return;
     stopAutoScroll();
     setFillPreview(null);
     const engine = engineRef.current;
     const host = containerRef.current;
     if (!engine || !host) return;
+    if (!claimPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    host.setPointerCapture(event.pointerId);
     host.focus();
     if (editingCell || editingActiveRef.current) {
       editingActiveRef.current = false;
@@ -661,12 +672,16 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const local = localPointOf(event);
     const drag = dragRef.current;
     if (!drag) {
+      if (resolvePointerGestureOwner(event.target) !== "worksheet") return;
       stopAutoScroll();
       const headerHit = engine.headerHitAtLocal(local);
       const host = containerRef.current;
       if (host) host.style.cursor = headerHit?.resizeBoundaryPx !== undefined ? (headerHit.kind === "col" ? "col-resize" : "row-resize") : "default";
       return;
     }
+    const host = containerRef.current;
+    if (!host || drag.pointerId !== event.pointerId
+      || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
     if (drag.kind === "col-resize" || drag.kind === "row-resize") {
       setFillPreview(null);
       stopAutoScroll();
@@ -749,11 +764,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
   }, [chromeState, containerRef, engineRef, formatColumnWidthPreview, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent) => {
+    const host = containerRef.current;
+    if (!host || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    releasePointerGesture(host.ownerDocument, event.pointerId, "worksheet", host);
     const drag = dragRef.current;
     dragRef.current = null;
     const engine = engineRef.current;
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
     if (!drag || !engine) return;
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
     if (drag.kind === "select" || drag.kind === "fill") {
       const finalCell = resolveDragCell(engine, sheet, localPointOf(event), drag);
       if (finalCell) onPivotContextHit?.(onPivotResolve(sheet, finalCell.row, finalCell.column));
@@ -822,7 +840,18 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       clearTransientSelection();
       onSelectionChange(nextSelection);
     }
-  }, [clearTransientSelection, engineRef, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onPivotResolve, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
+  }, [clearTransientSelection, containerRef, engineRef, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onPivotResolve, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
+
+  const handlePointerCancel = useCallback((event: React.PointerEvent) => {
+    const host = containerRef.current;
+    if (!host || !ownsPointerGesture(host.ownerDocument, event.pointerId, "worksheet", host)) return;
+    releasePointerGesture(host.ownerDocument, event.pointerId, "worksheet", host);
+    dragRef.current = null;
+    stopAutoScroll();
+    setFillPreview(null);
+    clearTransientSelection();
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
+  }, [clearTransientSelection, containerRef, setFillPreview, stopAutoScroll]);
 
   const handleDoubleClick = useCallback((event: React.PointerEvent | React.MouseEvent) => {
     const engine = engineRef.current;
@@ -998,6 +1027,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     handleKeyDown,
     handlePointerDown,
     handlePointerMove,
+    handlePointerCancel,
     handlePointerUp,
     handleWheel,
     localPointOf,

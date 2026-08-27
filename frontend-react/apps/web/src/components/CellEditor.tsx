@@ -57,6 +57,7 @@ export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCance
         ref={textareaRef}
         style={editorStyle}
         aria-label="Cell editor"
+        data-pointer-gesture-owner="cell-editor"
         className="h-full min-h-0 w-full resize-none overflow-hidden rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0"
         value={initialText}
         onCompositionStart={() => onCompositionStart?.()}
