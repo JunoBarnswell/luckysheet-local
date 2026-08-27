@@ -5,13 +5,13 @@ export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' 
 export const DESIGNER_GEOMETRY = {
   viewportWidth: 1920,
   viewportHeight: 1080,
-  ribbonHeight: 118,
+  ribbonHeight: 133,
   formulaBarHeight: 48,
-  workspaceHeight: 892,
+  workspaceHeight: 877,
   sheetTabsHeight: 29,
   statusBarHeight: 22,
   ribbonTabHeight: 32,
-  ribbonContentHeight: 86,
+  ribbonContentHeight: 101,
 } as const;
 
 /**
@@ -21,11 +21,11 @@ export const DESIGNER_GEOMETRY = {
  * explicit for visual tests and future surfaces.
  */
 export const RIBBON_DENSITY = {
-  shellHeight: 118,
+  shellHeight: 133,
   tabStripHeight: 32,
-  commandAreaHeight: 86,
-  groupControlHeight: 56,
-  groupCaptionHeight: 14,
+  commandAreaHeight: 101,
+  groupControlHeight: 70,
+  groupCaptionHeight: 12,
 } as const;
 
 export interface PeerCursor {

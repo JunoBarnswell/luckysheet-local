@@ -78,7 +78,19 @@ const DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, st
   ...WIDE_RIBBON_GROUP_WIDTH_CLASSES,
 };
 
-export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0): string {
+const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
+  history: 'w-[64px]',
+  clipboard: 'w-[118px]',
+  font: 'w-[205px]',
+  alignment: 'w-[211px]',
+  number: 'w-[120px]',
+  styles: 'w-[266px]',
+  cells: 'w-[158px]',
+  editing: 'w-[222px]',
+};
+
+export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
+  if (tab === 'home' && mode !== 'narrow') return HOME_RIBBON_GROUP_WIDTH_CLASSES[groupId] ?? 'min-w-[72px] flex-1';
   const widths = mode === 'wide'
     ? WIDE_RIBBON_GROUP_WIDTH_CLASSES
     : width >= 1440 ? DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES : COMPACT_RIBBON_GROUP_WIDTH_CLASSES;
@@ -155,16 +167,16 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
   return (
-    <Inline gap="none" className="h-[86px] w-full min-w-0 flex-nowrap items-start overflow-hidden" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" className="h-[101px] w-full min-w-0 flex-nowrap items-start overflow-hidden px-3 py-1" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {spec.groups.map((group, index) => {
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
         const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
         return (
           <React.Fragment key={group.id}>
-            {index > 0 ? <Divider orientation="vertical" className="h-[82px]" /> : null}
-            <Stack data-ribbon-group={group.id} gap="none" className={`h-[86px] min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width)}`}>
-              <Inline gap="none" className="h-[72px] min-h-0 flex-nowrap items-center justify-center content-center pt-1">{content}</Inline>
-              <Text size="xs" tone="subtle" className="h-[14px] shrink-0 truncate text-center text-[10px] font-medium leading-[14px] text-[#5b555a] select-none">{groupLabel}</Text>
+            {index > 0 ? <Divider orientation="vertical" className="mx-2 h-[76px] shrink-0" /> : null}
+            <Stack data-ribbon-group={group.id} gap="none" className={`h-[93px] min-w-0 shrink-0 justify-between overflow-visible px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+              <Inline gap="none" className="h-[70px] min-h-0 flex-nowrap items-center justify-center content-center">{content}</Inline>
+              <Text size="xs" tone="subtle" className="h-[12px] shrink-0 truncate text-center text-[10px] font-normal leading-[12px] text-[#999] select-none">{groupLabel}</Text>
             </Stack>
           </React.Fragment>
         );

@@ -464,18 +464,12 @@ export class CanvasRenderEngine {
   render(): RenderPlan {
     this.assertActive();
     const viewport = this.viewport.getSnapshot();
-    const scrolling = this.previousViewport !== null
-      && (this.previousViewport.scrollX !== viewport.scrollX || this.previousViewport.scrollY !== viewport.scrollY);
     const plan = calculateRenderPlan({
       skeleton: this.skeletonModel,
       viewport,
       previousViewport: this.previousViewport,
       dirtyRanges: this.dirtyRanges.toArray(),
-      // The scroll-blit path can copy stale/transparent pixels when the
-      // visible range crosses virtual rows, zoomed geometry, or pane edges.
-      // Keep the delta calculation for diagnostics, but redraw every visible
-      // pane for an actual engine scroll so the grid can never become white.
-      forceFull: this.forceFullRedraw || scrolling,
+      forceFull: this.forceFullRedraw,
       chromeDirty: this.chromeDirty,
       layers: this.layerDefinitions,
       pane: this.paneLayout,
@@ -613,10 +607,19 @@ export class CanvasRenderEngine {
 /** 屏幕坐标矩形 → 该窗格内容坐标矩形 */
 function convertDrawRectsForPane(rects: readonly Rect[] | undefined, pane: RenderPane): Rect[] | undefined {
   if (!rects) return undefined;
-  return rects.map((rect) => ({
-    x: rect.x - pane.screenRect.x + pane.contentOrigin.x,
-    y: rect.y - pane.screenRect.y + pane.contentOrigin.y,
-    width: rect.width,
-    height: rect.height,
-  }));
+  const converted: Rect[] = [];
+  for (const rect of rects) {
+    const left = Math.max(rect.x, pane.screenRect.x);
+    const top = Math.max(rect.y, pane.screenRect.y);
+    const right = Math.min(rect.x + rect.width, pane.screenRect.x + pane.screenRect.width);
+    const bottom = Math.min(rect.y + rect.height, pane.screenRect.y + pane.screenRect.height);
+    if (right <= left || bottom <= top) continue;
+    converted.push({
+      x: left - pane.screenRect.x + pane.contentOrigin.x,
+      y: top - pane.screenRect.y + pane.contentOrigin.y,
+      width: right - left,
+      height: bottom - top,
+    });
+  }
+  return converted;
 }

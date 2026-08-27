@@ -96,10 +96,11 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
   }
 }
 
-const HOME_COMPACT_ACTION_CLASS = '!h-7 !min-h-0 !w-7 !rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5';
+const HOME_COMPACT_ACTION_CLASS = '!h-6 !min-h-0 !w-6 !rounded-[4px] px-0 [&>svg]:!h-4 [&>svg]:!w-4';
+const HOME_HISTORY_ACTION_CLASS = '!h-7 !min-h-0 !w-7 !rounded-[4px] px-0 [&>svg]:!h-5 [&>svg]:!w-5';
 
 function HomeTile({ children, className, compact = false, ...props }: React.ComponentProps<typeof Button> & { compact?: boolean }) {
-  return <Button {...props} className={`${compact ? '!h-6 !min-h-0 !w-6 px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[56px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden px-1 text-[10px] leading-3 text-center !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0'} rounded-none ${className ?? ''}`}>{compact ? null : children}</Button>;
+  return <Button {...props} className={`${compact ? '!h-6 !min-h-0 !w-6 px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[72px] !min-h-0 min-w-[38px] max-w-[98px] flex-col gap-1 overflow-hidden rounded-[4px] px-2 text-[12px] leading-[14px] text-center !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>svg]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
 }
 
 /** HOME visual composition. Surface identity and responsive membership come only from the catalog. */
@@ -166,9 +167,9 @@ export function HomeRibbon({
     if (surface.controlId) return renderControl(surface.controlId, mode, surface.id);
     if (!surface.commandId) return null;
     if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
-    if (surface.id.startsWith('history.')) return renderCommand(surface.commandId, { iconOnly: true, className: HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
+    if (surface.id.startsWith('history.')) return renderCommand(surface.commandId, { iconOnly: true, className: HOME_HISTORY_ACTION_CLASS, ribbonSurfaceId: surface.id });
     const tile = surface.appearance === 'large' || surface.appearance === 'tile';
-    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? undefined : HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
+    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? '!h-[72px] !min-h-0 rounded-[4px] [&>svg]:!h-8 [&>svg]:!w-8' : HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
   };
 
   const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu', surfaceId: string): React.ReactNode => {

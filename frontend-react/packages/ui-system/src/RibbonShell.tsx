@@ -85,7 +85,7 @@ export function RibbonShell({
   }, []);
 
   return (
-    <Tabs ref={rootRef} className="h-[118px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-ribbon-height={RIBBON_DENSITY.shellHeight} data-testid="ribbon-shell">
+    <Tabs ref={rootRef} className="h-[133px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-ribbon-height={RIBBON_DENSITY.shellHeight} data-testid="ribbon-shell">
       <Inline gap="none" className="h-[32px] min-w-0 flex-nowrap px-2">
         {onFileEntry ? (
           <DropdownMenu
@@ -128,7 +128,7 @@ export function RibbonShell({
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[86px] overflow-hidden border-t-0 bg-white px-0 py-0">
+      <Box className="h-[101px] overflow-hidden border-t-0 bg-white px-0 py-0">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

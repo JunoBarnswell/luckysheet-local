@@ -4,7 +4,7 @@ import type { DesignerShellProps } from './shell-types';
 
 /**
  * Excel Designer shell geometry is a product contract, not a responsive guess:
- * ribbon 118px, formula bar 48px, workbook 892px, status bar 22px at 1920x1080.
+ * ribbon 133px, formula bar 48px, workbook 877px, status bar 22px at 1920x1080.
  * Sheet tabs live inside the workbook region like the reference Designer.
  */
 export function DesignerShell({ children, floatingOverlay, formulaBar, isBusy, ribbon, sheetTabs, statusBar, workspacePhase }: DesignerShellProps): ReactNode {
@@ -18,7 +18,7 @@ export function DesignerShell({ children, floatingOverlay, formulaBar, isBusy, r
       data-workspace-phase={workspacePhase}
       role="application"
     >
-      <Box as="section" className="h-[118px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-ribbon">
+      <Box as="section" className="h-[133px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-ribbon">
         {ribbon}
       </Box>
       <Box as="section" className="h-[48px] shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white" data-testid="designer-formula-bar">

@@ -40,6 +40,11 @@ function viewport(overrides: Partial<ReturnType<Viewport['getSnapshot']>> = {}) 
   };
 }
 
+function percentile95(samples: readonly number[]): number {
+  const ordered = [...samples].sort((left, right) => left - right);
+  return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * 0.95) - 1)] ?? 0;
+}
+
 test('SheetSkeleton calculates variable cell geometry and visible ranges', () => {
   assert.deepEqual(skeleton.getCellRect(2, 1), { x: 80, y: 40, width: 120, height: 30 });
   assert.deepEqual(skeleton.getVisibleRange({ x: 70, y: 35, width: 140, height: 40 }), {
@@ -186,16 +191,43 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
   assert.throws(() => engine.render(), /disposed/);
 });
 
-test('CanvasRenderEngine fully redraws visible panes after scroll to avoid stale white regions', () => {
+test('CanvasRenderEngine redraws only exposed scroll strips without clearing the canvas', () => {
   const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
   const initial = engine.render();
   assert.equal(initial.fullRedraw, true);
   engine.scrollTo(0, 40);
   const scrolled = engine.render();
   assert.equal(scrolled.scrollDelta.canBlit, true);
-  assert.equal(scrolled.fullRedraw, true);
-  assert.ok(scrolled.layers.every((layer) => layer.mode === 'full'));
+  assert.equal(scrolled.fullRedraw, false);
+  assert.equal(scrolled.layers.find((layer) => layer.layerId === 'grid')?.mode, 'scroll');
+  assert.equal(scrolled.layers.find((layer) => layer.layerId === 'chrome')?.mode, 'full');
   engine.dispose();
+});
+
+test('RenderPlan keeps frozen panes disjoint while scrolling only their movable axes', () => {
+  const frozen = calculateRenderPlan({
+    skeleton,
+    viewport: viewport({ scrollX: 10, scrollY: 8 }),
+    previousViewport: viewport(),
+    pane: { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 0, startColumn: 0, state: 'frozen' },
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(frozen.fullRedraw, false);
+  assert.deepEqual(frozen.scrollDelta.blits.map((entry) => entry.paneId), ['topRight', 'bottomLeft', 'main']);
+  assert.ok(frozen.scrollDelta.exposedRects.every((rect) => rect.x >= 39 && rect.y >= 20));
+});
+
+test('RenderPlan redraws a large scrollbar jump inside the current pane only', () => {
+  const jumped = calculateRenderPlan({
+    skeleton,
+    viewport: viewport({ scrollY: 400 }),
+    previousViewport: viewport(),
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(jumped.fullRedraw, false);
+  assert.equal(jumped.reason, 'large-scroll');
+  assert.equal(jumped.scrollDelta.canBlit, false);
+  assert.deepEqual(jumped.layers.find((layer) => layer.layerId === 'grid')?.clearRects, [{ x: 39, y: 20, width: 201, height: 80 }]);
 });
 
 test('SheetSkeleton handles custom dimensions and coordinate lookups accurately', () => {
@@ -246,6 +278,29 @@ test('SheetSkeleton virtualizes very large uniform dimensions without dense arra
   assert.equal(largeSkeleton.getVisibleRowModels().length, 0);
 });
 
+test('scroll planning stays inside one frame for 100k and 1m logical rows', () => {
+  for (const rowCount of [100_000, 1_000_000]) {
+    const largeSkeleton = new SheetSkeleton({
+      rowCount,
+      columnCount: 20,
+      defaultRowHeight: 20,
+      defaultColumnWidth: 80,
+    });
+    const samples: number[] = [];
+    let previous = { width: 1440, height: 760, scrollX: 0, scrollY: 0, devicePixelRatio: 1 };
+    for (let index = 1; index <= 120; index += 1) {
+      const next = { ...previous, scrollY: (largeSkeleton.totalHeight - previous.height) * (index / 121) };
+      const started = performance.now();
+      const plan = calculateRenderPlan({ skeleton: largeSkeleton, viewport: next, previousViewport: previous, headerOffset: defaultHeaderOffset() });
+      samples.push(performance.now() - started);
+      assert.ok(plan.visibleRange && plan.visibleRange.endRow < rowCount);
+      assert.ok(plan.layers.some((layer) => layer.layerId === 'grid' && layer.mode === 'scroll'));
+      previous = next;
+    }
+    assert.ok(percentile95(samples) <= 16.7, `${rowCount} rows p95 must stay inside a 60fps frame, got ${percentile95(samples).toFixed(3)}ms`);
+  }
+});
+
 test('hidden rows collapse layout geometry without losing model row identity', () => {
   const hiddenSkeleton = new SheetSkeleton({ rowCount: 6, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50, hiddenRows: new Set([2, 4]) });
   assert.equal(hiddenSkeleton.getRowHeight(2), 0);
@@ -258,6 +313,7 @@ test('hidden rows collapse layout geometry without losing model row identity', (
 function recordingContext() {
   const textCalls: Array<{ text: string; x: number; y: number }> = [];
   const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
+  const fillCalls: Array<{ x: number; y: number; width: number; height: number }> = [];
   const textAlignValues: CanvasTextAlign[] = [];
   let current: [number, number] = [0, 0];
   let currentTextAlign: CanvasTextAlign = 'left';
@@ -273,7 +329,7 @@ function recordingContext() {
     },
     stroke() {},
     fill() {},
-    fillRect() {},
+    fillRect(x: number, y: number, width: number, height: number) { fillCalls.push({ x, y, width, height }); },
     strokeRect() {},
     fillText(text: string, x: number, y: number) { textCalls.push({ text, x, y }); },
     measureText() { return { width: 8 }; },
@@ -295,7 +351,7 @@ function recordingContext() {
     get textAlign() { return currentTextAlign; },
     set textAlign(value: CanvasTextAlign) { currentTextAlign = value; textAlignValues.push(value); },
   } as unknown as CanvasRenderingContext2D;
-  return { context, textCalls, lineCalls, textAlignValues };
+  return { context, textCalls, lineCalls, fillCalls, textAlignValues };
 }
 
 function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
@@ -398,6 +454,22 @@ test('blank cells retain complete horizontal and vertical grid boundaries', () =
   for (const x of [0.5, 50.5, 100.5, 150.5]) {
     for (const segment of ['0.5-20.5', '20.5-40.5', '40.5-60.5']) assert.ok(vertical.has(`${x}:${segment}`));
   }
+});
+
+test('incremental grid redraw fills only the exposed content strip', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };
+  const { context, fillCalls } = recordingContext();
+  drawGridLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: () => undefined,
+    theme: DEFAULT_RENDER_THEME,
+    drawRects: [{ x: 100, y: 40, width: 50, height: 20 }],
+  });
+  assert.deepEqual(fillCalls, [{ x: 100, y: 40, width: 50, height: 20 }]);
 });
 
 test('merged blank cells suppress only their internal grid boundaries', () => {

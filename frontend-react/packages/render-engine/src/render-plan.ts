@@ -29,7 +29,19 @@ export interface ScrollDeltaPlan {
   destination: Rect | null;
   copySource: Rect | null;
   copyDestination: Rect | null;
+  /**
+   * One bitmap copy per scrollable pane.  A frozen worksheet cannot be
+   * represented by a single canvas-wide translation: top/right and
+   * bottom/left panes each scroll along only one axis.
+   */
+  blits: ScrollBlit[];
   exposedRects: Rect[];
+}
+
+export interface ScrollBlit {
+  paneId: PaneId;
+  source: Rect;
+  destination: Rect;
 }
 
 export interface LayerRenderPlan {
@@ -234,6 +246,7 @@ function emptyScrollDelta(): ScrollDeltaPlan {
     destination: null,
     copySource: null,
     copyDestination: null,
+    blits: [],
     exposedRects: [],
   };
 }
@@ -280,6 +293,7 @@ export function calculateScrollDelta(
       destination: null,
       copySource: null,
       copyDestination: null,
+      blits: [],
       exposedRects: [],
     };
   }
@@ -310,7 +324,62 @@ export function calculateScrollDelta(
     destination,
     copySource: source,
     copyDestination: destination,
+    blits: [{ paneId: 'main', source, destination }],
     exposedRects,
+  };
+}
+
+/**
+ * Resolves the viewport delta into disjoint screen-space pane operations.
+ * PaneMap is deliberately the only coordinate authority here: this prevents
+ * frozen headers and panes from being translated as part of the main grid.
+ */
+function resolvePaneScrollDelta(base: ScrollDeltaPlan, panes: readonly RenderPane[]): ScrollDeltaPlan {
+  if (!base.hasDelta) return base;
+  const blits: ScrollBlit[] = [];
+  const exposedRects: Rect[] = [];
+  let hasLargePane = false;
+  for (const pane of panes) {
+    const dx = pane.id === 'topLeft' || pane.id === 'bottomLeft' ? 0 : base.dx;
+    const dy = pane.id === 'topLeft' || pane.id === 'topRight' ? 0 : base.dy;
+    if (dx === 0 && dy === 0) continue;
+    const canBlit = Math.abs(dx) < pane.screenRect.width && Math.abs(dy) < pane.screenRect.height;
+    if (!canBlit) {
+      // A thumb jump can move by several viewports.  Redraw only the visible
+      // pane, not the entire canvas or the inactive worksheet projection.
+      exposedRects.push({ ...pane.screenRect });
+      hasLargePane = true;
+      continue;
+    }
+    const source = {
+      x: pane.screenRect.x + Math.max(dx, 0),
+      y: pane.screenRect.y + Math.max(dy, 0),
+      width: pane.screenRect.width - Math.abs(dx),
+      height: pane.screenRect.height - Math.abs(dy),
+    };
+    const destination = {
+      x: pane.screenRect.x + Math.max(-dx, 0),
+      y: pane.screenRect.y + Math.max(-dy, 0),
+      width: source.width,
+      height: source.height,
+    };
+    blits.push({ paneId: pane.id, source, destination });
+    if (dy > 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y + pane.screenRect.height - dy, width: pane.screenRect.width, height: dy });
+    if (dy < 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y, width: pane.screenRect.width, height: -dy });
+    if (dx > 0) exposedRects.push({ x: pane.screenRect.x + pane.screenRect.width - dx, y: pane.screenRect.y, width: dx, height: pane.screenRect.height });
+    if (dx < 0) exposedRects.push({ x: pane.screenRect.x, y: pane.screenRect.y, width: -dx, height: pane.screenRect.height });
+  }
+  const primary = blits[0];
+  return {
+    ...base,
+    isSmall: !hasLargePane,
+    canBlit: blits.length > 0,
+    source: primary?.source ?? null,
+    destination: primary?.destination ?? null,
+    copySource: primary?.source ?? null,
+    copyDestination: primary?.destination ?? null,
+    blits,
+    exposedRects: mergeRects(exposedRects),
   };
 }
 
@@ -356,7 +425,10 @@ function calculateReason(
 export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   const previousViewport = input.previousViewport ?? null;
   const hasPrevious = previousViewport !== null;
-  const scrollDelta = calculateScrollDelta(previousViewport, input.viewport);
+  const baseScrollDelta = calculateScrollDelta(previousViewport, input.viewport);
+  const paneMap = computePaneMap(input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
+  const panes = [...paneMap.panes];
+  const scrollDelta = resolvePaneScrollDelta(baseScrollDelta, panes);
   const dirtyRanges = mergeCellRanges(input.dirtyRanges ?? []);
   const dirtyRects = mergeRects(
     dirtyRanges
@@ -365,7 +437,10 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   );
   const resized = viewportChanged(previousViewport, input.viewport);
   const largeScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
-  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll;
+  // A large scrollbar jump redraws the current pane rectangle through the
+  // scroll plan.  It must not clear and redraw the whole canvas, because that
+  // includes headers, frozen panes, and unrelated canvas layers.
+  const fullRedraw = input.forceFull === true || !hasPrevious || resized;
   const reason = calculateReason(
     hasPrevious,
     input.forceFull === true,
@@ -393,9 +468,6 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     }
     return { layerId: definition.id, mode: 'none', clearRects: [], drawRects: [] };
   });
-
-  const paneMap = computePaneMap(input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
-  const panes = [...paneMap.panes];
 
   return {
     viewport: { ...input.viewport },

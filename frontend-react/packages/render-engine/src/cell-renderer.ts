@@ -54,7 +54,11 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   const { context, skeleton, visibleRange, theme, pane, drawRects } = options;
   const background = { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height };
   context.fillStyle = theme.canvasBackground;
-  context.fillRect(background.x, background.y, background.width, background.height);
+  // During an incremental scroll the preserved bitmap remains valid. Filling
+  // the whole pane here would erase that bitmap before the exposed strip is
+  // redrawn, turning every drag frame back into a full repaint.
+  const backgrounds = drawRects && drawRects.length > 0 ? drawRects : [background];
+  for (const rect of backgrounds) context.fillRect(rect.x, rect.y, rect.width, rect.height);
   if (!visibleRange) return;
 
   // 网格线属于整张可见网格，而不是 occupied cells。先收集可见合并区域，
@@ -111,7 +115,6 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   }
 
   context.stroke();
-  void background;
 }
 
 interface VisibleMerge {

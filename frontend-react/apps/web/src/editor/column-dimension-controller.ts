@@ -1,6 +1,7 @@
 import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
-import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
+import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
+import { autoFitBlockTransferables, createAutoFitBlock, type AutoFitCellInput } from './column-autofit-protocol';
 
 export interface ColumnWidthPreview {
   widthPx: number;
@@ -194,13 +195,14 @@ export class ColumnDimensionController {
     try {
       for (let start = 0; start < occupiedCells.length; start += 1_000) {
         if (signal.aborted) throw new DOMException('AutoFit cancelled', 'AbortError');
-        const cells: Array<{ column: number; value: string; style?: CellRenderStyle; filterButton?: boolean }> = [];
+        const cells: AutoFitCellInput[] = [];
         for (const { row, column } of occupiedCells.slice(start, start + 1_000)) {
           if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
           const cell = sheet.getCell(row, column);
           if (cell && hasMeasurableCellContent(cell)) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, filterButton: filterButtons.has(`${row}:${column}`) });
         }
-        worker.postMessage({ kind: 'chunk', taskId, cells });
+        const block = createAutoFitBlock(cells);
+        worker.postMessage({ kind: 'chunk', taskId, block }, autoFitBlockTransferables(block));
         await yieldToBrowser();
       }
       worker.postMessage({ kind: 'finish', taskId });
