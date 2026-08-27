@@ -1,7 +1,8 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from './Button';
 import { Box, Inline } from './layout';
 import { TextInput } from './TextInput';
+import { Textarea } from './Textarea';
 
 export interface FormulaBarLabels {
   selectedCell: string;
@@ -18,16 +19,17 @@ export interface FormulaBarProps {
   cellName: string;
   disabled: boolean;
   formula: string;
+  caret?: { start: number; end: number };
   labels: FormulaBarLabels;
   onCancel: () => void;
   onFocusFormula?: () => void;
+  onFormulaKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onChange: (value: string) => void;
   onCommit: () => void;
-  composing?: boolean;
   onCaretChange?: (start: number, end: number) => void;
-  onCompositionStart?: () => void;
-  onCompositionUpdate?: (text: string) => void;
-  onCompositionEnd?: () => void;
+  onCompositionStart?: (value: string, start: number, end: number) => void;
+  onCompositionUpdate?: (value: string, start: number, end: number) => void;
+  onCompositionEnd?: (value: string, start: number, end: number) => void;
   onNameBoxCommit?: (value: string) => void;
   onOpenNameManager?: () => void;
   onOpenWizard?: () => void;
@@ -37,25 +39,35 @@ export function FormulaBar({
   cellName,
   disabled,
   formula,
+  caret,
   labels,
   onCancel,
   onChange,
   onCommit,
-  composing = false,
   onCaretChange,
   onCompositionStart,
   onCompositionUpdate,
   onCompositionEnd,
   onFocusFormula,
+  onFormulaKeyDown,
   onNameBoxCommit,
   onOpenNameManager,
   onOpenWizard,
 }: FormulaBarProps) {
   const [nameDraft, setNameDraft] = useState(cellName);
+  const formulaInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     setNameDraft(cellName);
   }, [cellName]);
+
+  useLayoutEffect(() => {
+    const input = formulaInputRef.current;
+    if (!input || !caret || input.ownerDocument.activeElement !== input) return;
+    const start = Math.max(0, Math.min(input.value.length, caret.start));
+    const end = Math.max(0, Math.min(input.value.length, caret.end));
+    input.setSelectionRange(start, end);
+  }, [caret?.start, caret?.end, formula]);
 
   const handleSubmit = (event: FormEvent<HTMLElement>) => {
     event.preventDefault();
@@ -67,17 +79,6 @@ export function FormulaBar({
     const next = nameDraft.trim();
     if (next && next !== cellName) onNameBoxCommit(next);
     else setNameDraft(cellName);
-  };
-
-  const handleFormulaKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.nativeEvent.isComposing || composing) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onCancel();
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      onCommit();
-    }
   };
 
   const handleNameKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -143,22 +144,22 @@ export function FormulaBar({
       />
       <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[37px] !min-h-0 !w-10 rounded-none text-[#2572bc]">fx</Button>
       <Inline gap="none" className="min-w-0 flex-1">
-        <TextInput
+        <Textarea
+          ref={formulaInputRef}
           aria-label={labels.formulaInput}
-          containerClassName="min-w-0 flex-1"
-          className="!h-[37px] !min-h-0 !w-full rounded-[3px] border-[#d9d9d9] px-2 font-sans text-[13px]"
+          className="!h-[37px] !min-h-0 !w-full resize-none overflow-auto rounded-[3px] border-[#d9d9d9] px-2 py-2 font-sans text-[13px] leading-5"
           data-testid="formula-input"
           disabled={disabled}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
             onChange(event.target.value);
             onCaretChange?.(event.target.selectionStart ?? event.target.value.length, event.target.selectionEnd ?? event.target.value.length);
           }}
           onFocus={onFocusFormula}
           onSelect={(event) => onCaretChange?.(event.currentTarget.selectionStart ?? 0, event.currentTarget.selectionEnd ?? 0)}
-          onCompositionStart={onCompositionStart}
-          onCompositionUpdate={(event) => onCompositionUpdate?.(event.currentTarget.value)}
-          onCompositionEnd={onCompositionEnd}
-          onKeyDown={handleFormulaKeyDown}
+          onCompositionStart={(event) => onCompositionStart?.(event.currentTarget.value, event.currentTarget.selectionStart ?? 0, event.currentTarget.selectionEnd ?? 0)}
+          onCompositionUpdate={(event) => onCompositionUpdate?.(event.currentTarget.value, event.currentTarget.selectionStart ?? 0, event.currentTarget.selectionEnd ?? 0)}
+          onCompositionEnd={(event) => onCompositionEnd?.(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length, event.currentTarget.selectionEnd ?? event.currentTarget.value.length)}
+          onKeyDown={onFormulaKeyDown}
           placeholder=""
           value={formula}
         />

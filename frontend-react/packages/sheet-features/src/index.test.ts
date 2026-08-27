@@ -16,6 +16,7 @@ import {
   isCellSetMutationParams,
 } from './index';
 import type { CellInputInterpretationContext } from './text-input';
+import { CellEntryError } from './cell-entry-error';
 
 const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
   sourceKind: 'clipboard-text', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
@@ -24,6 +25,38 @@ const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
 const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
 const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
 const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
+
+test('fixed-decimal direct entry uses the canonical interpreter and explicit decimals override it', () => {
+  const workbook = new WorkbookModel('unit-fixed-decimal', 'Fixed Decimal');
+  workbook.setEditingOptions({ ...workbook.editingOptions, fixedDecimalPlaces: 2 });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheetId = workbook.primarySheetId;
+  const context: CellInputInterpretationContext = { ...DIRECT_INPUT_CONTEXT, inputOptions: { fixedDecimalPlaces: 2 } };
+  runtime.execute('sheet.cell.commitText', { sheetId, row: 0, column: 0, text: '1234', inputContext: context });
+  runtime.execute('sheet.cell.commitText', { sheetId, row: 0, column: 1, text: '12.34', inputContext: context });
+  assert.equal(workbook.getSheet(sheetId).cells.get(0, 0)?.value, 12.34);
+  assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 12.34);
+});
+
+test('multi-cell text commit preflights every validation and leaves zero partial writes on rejection', () => {
+  const workbook = new WorkbookModel('unit-cell-edit-atomic', 'Atomic Entry');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.dataValidations.push({ id: 'whole-stop', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }], type: 'whole', operator: 'greaterThan', formula1: '10', alertStyle: 'stop' });
+  const history = runtime.getUndoEntries().length;
+  assert.throws(() => runtime.execute('sheet.cells.commitText', {
+    text: '5',
+    targets: [
+      { sheetId: sheet.id, row: 0, column: 0, inputContext: DIRECT_INPUT_CONTEXT },
+      { sheetId: sheet.id, row: 0, column: 1, inputContext: DIRECT_INPUT_CONTEXT },
+    ],
+  }), (error) => error instanceof CellEntryError && error.code === 'CELL_ENTRY_VALIDATION_BLOCKED');
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  assert.equal(sheet.cells.get(0, 1), undefined);
+  assert.equal(runtime.getUndoEntries().length, history);
+});
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd', 'Commands');

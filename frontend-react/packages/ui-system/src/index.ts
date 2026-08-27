@@ -59,6 +59,7 @@ export {
 export { DesignerShell, type DesignerShellProps } from './DesignerShell';
 export { DESIGNER_GEOMETRY, RIBBON_DENSITY, RIBBON_DENSITY_CLASSES, type PeerCursor, type SaveState } from './shell-types';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
+export { RichTextInput, type RichTextInputProps, type RichTextInputRun } from './RichTextInput';
 export {
   RibbonEmptyState,
   RibbonShell,

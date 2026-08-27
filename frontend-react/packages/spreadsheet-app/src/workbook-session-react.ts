@@ -1,9 +1,14 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { WorkbookSession, type WorkbookSessionOptions, type UiSnapshot } from './workbook-session';
+import type { CellEditController, CellEditSnapshot } from './cell-edit';
 
 export interface UseWorkbookSessionResult {
   session: WorkbookSession;
   snapshot: UiSnapshot;
+}
+
+export function useCellEdit(controller: CellEditController): CellEditSnapshot {
+  return useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
 }
 
 /**

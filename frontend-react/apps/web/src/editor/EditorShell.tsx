@@ -83,21 +83,11 @@ export function EditorShell({
         formulaBar={(
           <FormulaBar
             cellName={state.activeCell}
+            cellEdit={session.cellEdit}
             disabled={isBusy}
-            formula={state.editSession?.draftText ?? state.formulaDraft}
-            composing={state.editSession?.composition.active ?? false}
+            readyFormula={state.formulaDraft}
             locale={locale}
-            onBeginEdit={() => {
-              const started = state.editSession ? true : session.beginEdit(undefined, 'formulaBar');
-              if (started) session.setFocusState('formula-edit', 'formula-bar');
-            }}
-            onCancel={session.cancelEdit.bind(session)}
-            onChange={session.setFormulaDraft.bind(session)}
-            onCaretChange={session.setEditCaret.bind(session)}
-            onCompositionStart={session.beginEditComposition.bind(session)}
-            onCompositionUpdate={session.updateEditComposition.bind(session)}
-            onCompositionEnd={session.endEditComposition.bind(session)}
-            onCommit={() => { if (state.editSession) session.commitEdit("down"); else session.commitFormula(); }}
+            onCommitReady={() => session.commitFormula()}
             onNameBoxCommit={(value) => session.selectAddress(value)}
             onOpenNameManager={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
             onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
@@ -126,10 +116,11 @@ export function EditorShell({
         sheetTabs={(
           <SheetTabs
             activeSheetId={state.activeSheetId}
+            groupedSheetIds={state.groupedSheetIds}
             locale={locale}
             disabled={isBusy}
             onAdd={session.addSheet.bind(session)}
-            onSelect={session.selectSheet.bind(session)}
+            onSelect={(sheetId, options) => session.selectSheet(sheetId, options)}
             onRenameSheet={session.renameSheet.bind(session)}
             onDeleteSheet={session.deleteSheet.bind(session)}
             onDuplicateSheet={session.duplicateSheet.bind(session)}
@@ -146,6 +137,7 @@ export function EditorShell({
         statusBar={(
           <StatusBar
             activeCell={state.activeCell}
+            cellEdit={session.cellEdit}
             locale={locale}
             onOpenShortcuts={() => session.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
             onZoomChange={session.setZoom.bind(session)}
@@ -157,6 +149,7 @@ export function EditorShell({
             pendingChangeSetCount={state.pendingChangeSetCount}
             collabRevision={state.collabRevision}
             hasPendingOperations={state.hasPendingOperations}
+            fixedDecimalPlaces={state.editingOptions.fixedDecimalPlaces}
           />
         )}
         workspacePhase={state.phase}
@@ -170,10 +163,7 @@ export function EditorShell({
                 sheetId={state.activeSheetId}
                 selection={state.selection}
                 activeCell={state.activeCell}
-                formulaDraft={state.editSession?.draftText ?? state.formulaDraft}
-                editingCell={state.editSession?.cell ?? null}
-                editComposing={state.editSession?.composition.active ?? false}
-                editCaret={state.editSession?.caret}
+                cellEdit={session.cellEdit}
                 phase={state.phase}
                 zoom={state.zoom}
                 peers={state.peers}
@@ -267,18 +257,6 @@ export function EditorShell({
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
-                onCommitCell={(value) => session.commitFormula(value)}
-                onBeginEdit={(initialText) => session.beginEdit(initialText)}
-                onCancelEdit={session.cancelEdit.bind(session)}
-                onCommitEdit={(moveAfter) => session.commitEdit(moveAfter ?? "down")}
-                onFormulaDraftChange={session.setFormulaDraft.bind(session)}
-                onEditCaretChange={session.setEditCaret.bind(session)}
-                onEditCompositionStart={session.beginEditComposition.bind(session)}
-                onEditCompositionUpdate={session.updateEditComposition.bind(session)}
-                onEditCompositionEnd={session.endEditComposition.bind(session)}
-                onAppendFormulaDraft={session.appendFormulaDraft.bind(session)}
-                onInsertRef={session.insertRefIntoDraft.bind(session)}
-                onToggleAbsolute={session.toggleAbsoluteReference.bind(session)}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
                 onResizeRow={session.resizeRow.bind(session)}
@@ -329,7 +307,6 @@ export function EditorShell({
                 onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
                 onSortFilterColumn={(column, ascending) => session.sortFilterColumn(column, ascending)}
                 onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
-                getValidationList={session.getValidationAt.bind(session)}
                 onRetry={session.retry.bind(session)}
                 onCreateSheet={session.addSheet.bind(session)}
                 resolveAssetUrl={session.resolveAssetUrl.bind(session)}

@@ -236,6 +236,64 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('');
   });
 
+  test('Alt+Enter inserts a canonical multiline draft and commits it without an early Enter action', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await canvas.press('F2');
+    const editor = page.getByLabel('Cell editor');
+    await editor.type('line one');
+    await editor.press('Alt+Enter');
+    await editor.type('line two');
+    await expect(page.getByTestId('formula-input')).toHaveValue('line one\nline two');
+    await editor.press('Enter');
+    await canvas.press('ArrowUp');
+    await expect(page.getByTestId('formula-input')).toHaveValue('line one\nline two');
+  });
+
+  test('formula Point mode inserts a clicked reference and F4 rewrites the caret token', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('Spreadsheet canvas has no bounds');
+    await page.keyboard.type('=');
+    await page.mouse.click(...Object.values(cellPoint(box, 1, 1)) as [number, number]);
+    await expect(page.getByLabel('Cell editor')).toBeVisible();
+    await expect(page.getByTestId('formula-input')).toHaveValue('=B2');
+    await page.getByLabel('Cell editor').press('F4');
+    await expect(page.getByTestId('formula-input')).toHaveValue('=$B$2');
+    await page.getByLabel('Cell editor').press('Enter');
+  });
+
+  test('Ctrl+Enter commits one draft to every selected cell and one undo removes the whole transaction', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('Spreadsheet canvas has no bounds');
+    await dragCells(page, canvas, { row: 0, column: 0 }, { row: 1, column: 1 });
+    await page.keyboard.type('batch-entry');
+    await page.getByLabel('Cell editor').press('Control+Enter');
+    for (const target of [{ row: 0, column: 0 }, { row: 0, column: 1 }, { row: 1, column: 0 }, { row: 1, column: 1 }]) {
+      await page.mouse.click(...Object.values(cellPoint(box, target.row, target.column)) as [number, number]);
+      await expect(page.getByTestId('formula-input')).toHaveValue('batch-entry');
+    }
+    await canvas.press('Control+Z');
+    await page.mouse.click(...Object.values(cellPoint(box, 0, 0)) as [number, number]);
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
+    await page.mouse.click(...Object.values(cellPoint(box, 1, 1)) as [number, number]);
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
+  });
+
+  test('draft Ctrl+Z is owned by CellEditDomain before workbook history', async ({ page }) => {
+    await waitForWorkspace(page);
+    await focusCanvas(page);
+    await page.keyboard.type('draft');
+    const editor = page.getByLabel('Cell editor');
+    await editor.press('Control+Z');
+    await expect(page.getByTestId('formula-input')).toHaveValue('draf');
+    await editor.press('Escape');
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
+  });
+
   test('a dragged A2:C9 selection edits and places the editor at active cell C9', async ({ page }) => {
     await waitForWorkspace(page);
     const canvas = await focusCanvas(page);

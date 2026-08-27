@@ -5,6 +5,7 @@ import type {
   DataValidationRule,
   RangeRef,
 } from '@react-sheets/core-model';
+import { isCellEditorConfig } from '@react-sheets/core-model';
 import { clearFormulaProvenance } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import { createCellSetMutationParams } from './cell-write-authority';
@@ -54,8 +55,7 @@ function isRange(value: unknown): value is RangeRef {
 }
 
 function isEditor(value: unknown): value is CellEditorConfig {
-  if (!isRecord(value) || !['text', 'number', 'date', 'list', 'checkbox'].includes(String(value.kind))) return false;
-  return value.values === undefined || (Array.isArray(value.values) && value.values.every((entry) => typeof entry === 'string'));
+  return isCellEditorConfig(value);
 }
 
 function isTemplate(value: unknown): value is CellStyleTemplate {
@@ -132,12 +132,10 @@ function templateValidationId(templateId: string, sheetId: string, range: RangeR
 }
 
 function templateValidationRule(template: CellStyleTemplate, sheetId: string, ranges: RangeRef[], index: number): DataValidationRule | undefined {
-  const validation = template.dataValidation ?? (template.editor?.kind === 'list'
-    ? { type: 'list' as const, listSource: { kind: 'values' as const, values: template.editor.values ?? [] }, allowBlank: true, showDropdown: true }
-    : template.editor?.kind === 'checkbox'
+  const validation = template.dataValidation ?? (template.editor?.kind === 'checkbox'
       ? { type: 'checkbox' as const, allowBlank: true }
-      : template.editor?.kind === 'date'
-        ? { type: 'date' as const, allowBlank: true }
+      : template.editor?.kind === 'datetime'
+        ? { type: template.editor.mode === 'time' ? 'time' as const : 'date' as const, allowBlank: true }
         : template.editor?.kind === 'number'
           ? { type: 'decimal' as const, allowBlank: true }
           : undefined);

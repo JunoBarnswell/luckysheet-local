@@ -1,28 +1,19 @@
 import React, { useEffect, useMemo, useRef, type CSSProperties } from 'react';
-import { Stack, Textarea } from '@react-sheets/ui-system';
+import { CheckToggle, RichTextInput, Stack, Textarea } from '@react-sheets/ui-system';
 import type { CellStyle } from '@react-sheets/core-model';
+import type { CellEditController, CellEditDraft, CellEditorSurfaceDescriptor } from '@react-sheets/spreadsheet-app';
+import { toCanonicalKeyGesture } from '../editor/cell-edit-gesture';
 
 export interface CellEditorProps {
-  initialText: string;
+  editorSurface: CellEditorSurfaceDescriptor;
+  cellEdit: CellEditController;
+  draft: CellEditDraft;
   cellStyle?: CellStyle;
-  onChange: (value: string) => void;
-  onCommit: (moveAfter?: 'down' | 'up' | 'left' | 'right' | 'none') => void;
-  onCancel: () => void;
-  caret?: { start: number; end: number };
-  composing?: boolean;
-  onCaretChange?: (start: number, end: number) => void;
-  onCompositionStart?: () => void;
-  onCompositionUpdate?: (text: string) => void;
-  onCompositionEnd?: () => void;
-  /** 向草稿插入引用文本(编辑中点击单元格/F4 由画布侧转发) */
-  onInsertRef?: (refText: string) => void;
+  caret: { start: number; end: number };
 }
 
-/**
- * 行内浮动编辑器。多行受控输入,回车提交(Shift+Enter 反向),
- * Tab 横向提交,Escape 取消。
- */
-export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCancel, caret, composing = false, onCaretChange, onCompositionStart, onCompositionUpdate, onCompositionEnd }: CellEditorProps): React.ReactElement {
+/** In-cell DOM surface. CellEditDomain owns every editing decision. */
+export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret }: CellEditorProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const focusedRef = useRef(false);
   const editorStyle = useMemo<CSSProperties>(() => ({
@@ -45,50 +36,72 @@ export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCance
     // draft. Explicitly place the caret after it; browsers otherwise retain a
     // start-of-text selection during this focus transition and produce
     // `ello-h` / `1+2=` style reordered input.
-    const start = Math.max(0, Math.min(textarea.value.length, caret?.start ?? textarea.value.length));
-    const end = Math.max(start, Math.min(textarea.value.length, caret?.end ?? start));
+    const start = Math.max(0, Math.min(textarea.value.length, caret.start));
+    const end = Math.max(start, Math.min(textarea.value.length, caret.end));
     textarea.setSelectionRange(start, end);
-    if (!caret) onCaretChange?.(start, end);
-  }, [initialText, caret?.start, caret?.end]);
+  }, [draft.text, caret.start, caret.end]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    const result = cellEdit.dispatch({ type: 'keyboard', gesture: toCanonicalKeyGesture(event) });
+    if (result.preventDefault) event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const focusGridEditor = () => {
+    const status = cellEdit.getSnapshot().status;
+    cellEdit.dispatch({ type: 'surface.focus', surface: 'grid' });
+    if (status === 'enter') cellEdit.dispatch({ type: 'status.toggle' });
+  };
 
   return (
-    <Stack gap="none" className="h-full w-full">
-      <Textarea
+    <Stack gap="none" className="h-full w-full" onPointerDown={focusGridEditor} onFocusCapture={focusGridEditor}>
+      {editorSurface.kind === 'checkbox' ? (
+        <CheckToggle
+          aria-label="Cell editor checkbox"
+          checked={/^true$/i.test(draft.text)}
+          className="h-full w-full justify-center"
+          onChange={(event) => {
+            const text = event.currentTarget.checked ? 'TRUE' : 'FALSE';
+            cellEdit.dispatch({ type: 'text.replace', text, caret: { start: text.length, end: text.length } });
+          }}
+          onKeyDown={handleKeyDown}
+        />
+      ) : draft.kind === 'rich-text' ? (
+        <RichTextInput
+          ariaLabel="Cell editor"
+          caret={caret}
+          runs={draft.runs}
+          style={editorStyle}
+          onCaretChange={(start, end) => cellEdit.dispatch({ type: 'caret.set', caret: { start, end } })}
+          onCompositionStart={() => cellEdit.dispatch({ type: 'composition.start' })}
+          onCompositionUpdate={(event) => cellEdit.dispatch({ type: 'composition.update', text: event.currentTarget.textContent ?? '' })}
+          onCompositionEnd={(event) => {
+            const value = event.currentTarget.textContent ?? '';
+            cellEdit.dispatch({ type: 'composition.end', text: value, caret: cellEdit.getSnapshot().session?.caret ?? { start: value.length, end: value.length } });
+          }}
+          onInput={(value, start, end) => cellEdit.dispatch({ type: 'text.replace', text: value, caret: { start, end } })}
+          onKeyDown={handleKeyDown}
+        />
+      ) : (
+        <Textarea
         ref={textareaRef}
         style={editorStyle}
         aria-label="Cell editor"
+        inputMode={editorSurface.inputMode ?? 'text'}
+        autoCapitalize={cellEdit.getSnapshot().session?.adapterKind === 'formula' ? 'off' : undefined}
         data-pointer-gesture-owner="cell-editor"
         className="h-full min-h-0 w-full resize-none overflow-hidden rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0"
-        value={initialText}
-        onCompositionStart={() => onCompositionStart?.()}
-        onCompositionUpdate={(event) => onCompositionUpdate?.(event.currentTarget.value)}
-        onCompositionEnd={() => onCompositionEnd?.()}
+        value={draft.text}
+        onCompositionStart={() => cellEdit.dispatch({ type: 'composition.start' })}
+        onCompositionUpdate={(event) => cellEdit.dispatch({ type: 'composition.update', text: event.currentTarget.value })}
+        onCompositionEnd={(event) => cellEdit.dispatch({ type: 'composition.end', text: event.currentTarget.value, caret: { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd } })}
         onChange={(event) => {
-          onChange(event.target.value);
-          onCaretChange?.(event.target.selectionStart, event.target.selectionEnd);
+          cellEdit.dispatch({ type: 'text.replace', text: event.target.value, caret: { start: event.target.selectionStart, end: event.target.selectionEnd } });
         }}
-        onSelect={(event) => onCaretChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || composing) {
-            event.stopPropagation();
-            return;
-          }
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            onCommit('down');
-          } else if (event.key === 'Enter' && event.shiftKey) {
-            event.preventDefault();
-            onCommit('up');
-          } else if (event.key === 'Tab') {
-            event.preventDefault();
-            onCommit(event.shiftKey ? 'left' : 'right');
-          } else if (event.key === 'Escape') {
-            event.preventDefault();
-            onCancel();
-          }
-          event.stopPropagation();
-        }}
-      />
+        onSelect={(event) => cellEdit.dispatch({ type: 'caret.set', caret: { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd } })}
+        onKeyDown={handleKeyDown}
+        />
+      )}
     </Stack>
   );
 }

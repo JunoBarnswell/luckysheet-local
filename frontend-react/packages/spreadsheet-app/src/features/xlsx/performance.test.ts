@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { it } from 'node:test';
+import '../../cell-edit/performance.test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { exportSnapshotToXlsxBuffer, importXlsx } from '@react-sheets/exchange-excel-ooxml';
 import { createSpreadsheetRuntime, disposeSpreadsheetRuntime, hydrateRuntime } from '../../runtime';

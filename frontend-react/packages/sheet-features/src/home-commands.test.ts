@@ -306,7 +306,7 @@ test('workbook cell templates apply style, editor and validation through one com
       id: 'status',
       name: 'Status',
       style: { background: '#e2f0d9', indent: 1 },
-      editor: { kind: 'list', values: ['Open', 'Closed'] },
+      editor: { kind: 'validation-list' },
     },
   });
   runtime.execute('sheet.cellTemplate.apply', { sheetId: sheet.id, ranges: [range], templateId: 'status' });

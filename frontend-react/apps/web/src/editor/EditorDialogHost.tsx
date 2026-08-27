@@ -49,9 +49,9 @@ export function EditorDialogHost({
         open={state.dialogs.active === 'function-wizard'}
         onClose={session.closeFunctionWizard.bind(session)}
         onInsertFormula={(formula) => {
-          if (!state.editSession) session.beginEdit(undefined, 'functionInsert');
-          session.setFormulaDraft(formula);
-          session.commitEdit('none');
+          if (!session.cellEdit.getSnapshot().session) session.cellEdit.dispatch({ type: 'begin.request', source: 'function-insert', surface: 'formula-panel' });
+          session.cellEdit.dispatch({ type: 'text.replace', text: formula, caret: { start: formula.length, end: formula.length } });
+          session.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
         }}
       />
       <SortDialog

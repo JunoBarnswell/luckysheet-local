@@ -5,11 +5,12 @@ import type { Locale } from '../i18n';
 
 export interface SheetTabsProps {
   activeSheetId: string;
+  groupedSheetIds: readonly string[];
   locale: Locale;
   disabled: boolean;
   sheets: SheetTabSnapshot[];
   onAdd: () => void;
-  onSelect: (sheetId: string) => void;
+  onSelect: (sheetId: string, options?: { toggleGroup?: boolean }) => void;
   onRenameSheet?: (sheetId: string, name: string) => void;
   onDeleteSheet?: (sheetId: string) => void;
   onDuplicateSheet?: (sheetId: string) => void;
@@ -24,6 +25,7 @@ export interface SheetTabsProps {
 
 export function SheetTabs({
   activeSheetId,
+  groupedSheetIds,
   locale,
   disabled,
   sheets,
@@ -145,8 +147,8 @@ export function SheetTabs({
                 <Tab
                   active={sheet.id === activeSheetId}
                   disabled={disabled}
-                  onClick={() => onSelect(sheet.id)}
-                  className="!h-7 !min-h-0 !rounded-none border-b-2 border-transparent px-2 py-0 text-xs font-semibold aria-selected:!bg-[#e7feee] aria-selected:!text-[#217345]"
+                  onClick={(event) => onSelect(sheet.id, { toggleGroup: event.ctrlKey || event.metaKey })}
+                  className={`!h-7 !min-h-0 !rounded-none border-b-2 border-transparent px-2 py-0 text-xs font-semibold aria-selected:!bg-[#e7feee] aria-selected:!text-[#217345] ${groupedSheetIds.includes(sheet.id) ? 'bg-[#eef8f1] text-[#217345]' : ''}`}
                   style={sheet.tabColor ? { borderBottomColor: sheet.tabColor, borderBottomWidth: 2 } : undefined}
                 >
                   <Text as="span">{sheet.name}</Text>

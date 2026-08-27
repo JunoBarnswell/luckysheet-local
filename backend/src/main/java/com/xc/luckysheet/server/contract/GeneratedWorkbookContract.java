@@ -7,11 +7,12 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-08-24";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 8;
+    public static final int SNAPSHOT_VERSION = 9;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
+        Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
         Map.entry("sheet.extent.restore", new MutationCapability("local", false, "SheetExtentRestore", "viewer", "none", false, "none", false, "none", "worksheet")),
         Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false, "edit-objects", true, "declared", "drawing")),
@@ -105,6 +106,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("name.remove", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("name.set", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("workbook.calculation.mode.set", new PermissionPolicy("format", "none", false, "none", "workbook")),
+        Map.entry("workbook.editing.options.set", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("note.remove", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("note.set", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("note.visibility", new PermissionPolicy("comment", "none", false, "none", "workbook")),

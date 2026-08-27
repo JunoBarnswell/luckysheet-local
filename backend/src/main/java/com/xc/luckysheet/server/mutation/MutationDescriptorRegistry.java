@@ -44,7 +44,7 @@ public class MutationDescriptorRegistry {
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
             "dv.add", "dv.remove", "autoFilter.remove", "autoFilter.set", "freeze.set",
             "hyperlink.remove", "hyperlink.set", "merge.remove", "merge.set",
-            "name.remove", "name.set", "workbook.calculation.mode.set", "note.remove", "note.set", "note.visibility", "outline.set",
+            "name.remove", "name.set", "workbook.calculation.mode.set", "workbook.editing.options.set", "note.remove", "note.set", "note.visibility", "outline.set",
             "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set",
             "query.definition.replace", "query.load.pivot-source", "query.load.range", "query.load.sheet-table", "query.load.workbook-table",
@@ -69,6 +69,7 @@ public class MutationDescriptorRegistry {
 
     public MutationDescriptorRegistry() {
         register(new SheetExtentDescriptor());
+        register(new WorkbookEditingOptionsDescriptor());
         register(new CellDescriptor("cell.set"));
         register(new CellDescriptor("cell.restore"));
         register(new CellDescriptor("range.set"));
@@ -1202,6 +1203,42 @@ public class MutationDescriptorRegistry {
             }
             root.put("name", name);
             return root;
+        }
+    }
+
+    private static final class WorkbookEditingOptionsDescriptor extends BaseDescriptor {
+        private static final Set<String> DIRECTIONS = Set.of("down", "up", "right", "left");
+
+        private WorkbookEditingOptionsDescriptor() {
+            super("workbook.editing.options.set", WorkbookAclRole.EDITOR);
+        }
+
+        @Override
+        public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
+            SnapshotMutationSupport.root(snapshot);
+            validate(SnapshotMutationSupport.params(mutation));
+            return List.of();
+        }
+
+        @Override
+        public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            validate(params);
+            root.set("editingOptions", params.deepCopy());
+            return root;
+        }
+
+        private static void validate(ObjectNode params) {
+            SnapshotMutationSupport.validateKnownKeys(params, Set.of("allowEditDirectly", "moveAfterEnter", "enterDirection", "formulaAutoComplete", "valueAutoComplete", "fixedDecimalPlaces"), "workbook.editing.options.set");
+            if (!params.path("allowEditDirectly").isBoolean() || !params.path("moveAfterEnter").isBoolean() || !params.path("formulaAutoComplete").isBoolean() || !params.path("valueAutoComplete").isBoolean()) {
+                throw ServiceException.validation("Workbook editing option flags must be Boolean");
+            }
+            if (!DIRECTIONS.contains(params.path("enterDirection").asText(""))) throw ServiceException.validation("Workbook enter direction is invalid");
+            JsonNode fixed = params.get("fixedDecimalPlaces");
+            if (fixed == null || !(fixed.isNull() || fixed.isIntegralNumber() && fixed.canConvertToInt() && fixed.intValue() >= 0 && fixed.intValue() <= 15)) {
+                throw ServiceException.validation("Workbook fixed decimal places must be null or 0..15");
+            }
         }
     }
 

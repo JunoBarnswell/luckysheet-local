@@ -44,6 +44,7 @@ import type {
   TableSheetDefinition,
   WorkbookTableModel,
   WorkbookSnapshot,
+  WorkbookEditingOptions,
   WorksheetModel,
   CellHyperlink,
   HyperlinkTarget,
@@ -63,7 +64,7 @@ import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } fro
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
+import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -101,9 +102,34 @@ import {
   createCellInputInterpretationContext,
   type CellInputSourceKind,
   type FormatPainterStylePattern,
+  isCellEntryError,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
-import { EditSession } from './edit-session';
+import {
+  CellEditDomain,
+  CellEditError,
+  FormulaAutocompleteIndex,
+  ColumnValueAutocompleteIndex,
+  parseFormulaReferences,
+  createCellEditorAdapterRegistry,
+  type CellEditAdapterKind,
+  type CellEditBeginRequest,
+  type CellEditCommitRequest,
+  type CellEditCommitPayload,
+  type CellEditController,
+  type CellEditDispatchResult,
+  type CellEditDraft,
+  type CellEditEffect,
+  type CellEditEntryContext,
+  type CellEditFailure,
+  type CellEditIntent,
+  type CellEditLifecycleEvent,
+  type FormulaReferenceSelection,
+  type CellEditMoveAfter,
+  type CellEditUserIntent,
+  type CellEditorContext,
+  type CellEditorAdapter,
+} from './cell-edit';
 import {
   buildCollaborationSnapshot,
   type CollaborationSnapshot,
@@ -128,6 +154,7 @@ import {
   type SpreadsheetRuntime,
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
+import { resolveSelectionTarget } from './selection-target-resolver';
 import { cellAddress, columnLabel } from './address';
 import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipboard-browser';
 import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
@@ -229,7 +256,6 @@ import type {
   ClipboardState,
   CellShiftOperation,
   DesignerState,
-  EditSession as DesignerEditSession,
   FocusState,
   HomeRibbonState,
   HomeStyleAggregate,
@@ -361,7 +387,8 @@ export interface UiSnapshot extends DesignerState {
   panels: PanelState;
   ribbonTab: RibbonTabId;
   formulaDraft: string;
-  editingCell: { row: number; column: number } | null;
+  editingOptions: WorkbookEditingOptions;
+  groupedSheetIds: readonly string[];
   zoom: number;
   /** All workbook sheets as cheap tab metadata; never a Canvas projection list. */
   sheets: SheetTabSnapshot[];
@@ -410,7 +437,6 @@ export interface UiSnapshot extends DesignerState {
   version: number;
   /** Canonical DesignerState fields; render-specific projections remain read-only views of the same session. */
   workbook: DesignerState['workbook'];
-  editSession: DesignerEditSession | null;
   activeObject: DesignerState['activeObject'];
   ribbon: DesignerState['ribbon'];
   clipboard: ClipboardState;
@@ -543,7 +569,19 @@ export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
   private readonly permission: PermissionService;
-  private readonly editSession = new EditSession();
+  private readonly cellEditDomain = new CellEditDomain();
+  private readonly cellEditorAdapters = createCellEditorAdapterRegistry();
+  private readonly formulaAutocomplete = new FormulaAutocompleteIndex();
+  private formulaAutocompleteAbort: AbortController | null = null;
+  private formulaAutocompleteRevision = 0;
+  private readonly valueAutocomplete = new ColumnValueAutocompleteIndex();
+  private valueAutocompleteAbort: AbortController | null = null;
+  private valueAutocompleteBuildKey: string | null = null;
+  readonly cellEdit: CellEditController = {
+    subscribe: this.cellEditDomain.subscribe,
+    getSnapshot: this.cellEditDomain.getSnapshot,
+    dispatch: (intent) => this.dispatchCellEditIntent(intent),
+  };
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
   private readonly xlsxExecution: 'worker' | 'inline-test';
@@ -556,6 +594,7 @@ export class WorkbookSession {
   private pivotCreateTask: PivotCreateTaskState = { status: 'idle' };
   private version = 0;
   private activeSheetId: string;
+  private readonly groupedSheetIds = new Set<string>();
   private panels: PanelState = { active: 'inspector', open: false, dock: 'right' };
   private barcodeDraftSymbology: BarcodeSymbology = 'qr';
   private backstage: BackstageState = { open: false, panel: 'info' };
@@ -617,8 +656,8 @@ export class WorkbookSession {
   private readonly assetUrls = new Map<string, string>();
 
   private get formulaDraft(): string {
-    const active = this.editSession.active;
-    if (active) return active.currentDraft;
+    const active = this.cellEditDomain.getSnapshot().session;
+    if (active) return active.draft.text;
     const selection = this.selectionService?.getState();
     if (!selection) return '';
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -641,7 +680,6 @@ export class WorkbookSession {
   private started = false;
   private disposed = false;
   private lifecycleGeneration = 0;
-  private overrideTarget: { row: number; column: number } | null = null;
   private clipboardData: ClipboardPayload | null = null;
   private clipboardSystemStatus: 'unknown' | 'published' | 'reduced' | 'failed' = 'unknown';
   private clipboardSystemFormats: readonly string[] = [];
@@ -688,6 +726,7 @@ export class WorkbookSession {
     this.actorId = resolveActorId();
     this.phase = initialPhase;
     this.activeSheetId = this.runtime.model.primarySheetId;
+    this.groupedSheetIds.add(this.activeSheetId);
     this.selectionService = new SelectionService(
       this.runtime.model.unitId,
       () => this.activeSheetId,
@@ -702,15 +741,22 @@ export class WorkbookSession {
       },
       createInitialSelection(this.activeSheetId),
     );
+    this.rebuildFormulaAutocompleteIndex();
     this.wireRuntimeHandlers();
     this.syncPersistenceMeta();
   }
 
   private ensureActiveSheetSession(): void {
-    if (this.runtime.model.sheets.has(this.activeSheetId)) return;
+    for (const sheetId of this.groupedSheetIds) if (!this.runtime.model.sheets.has(sheetId)) this.groupedSheetIds.delete(sheetId);
+    if (this.runtime.model.sheets.has(this.activeSheetId)) {
+      if (this.groupedSheetIds.size === 0) this.groupedSheetIds.add(this.activeSheetId);
+      return;
+    }
     this.activeSheetId = this.runtime.model.primarySheetId;
+    this.groupedSheetIds.clear();
+    this.groupedSheetIds.add(this.activeSheetId);
     this.selectionService.resetForSheet(this.activeSheetId);
-    this.editSession.cancel();
+    this.cellEdit.dispatch({ type: 'cancel' });
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
   }
@@ -918,6 +964,11 @@ export class WorkbookSession {
     this.pendingPivotCommitResults.clear();
     this.pivotCreateAbort?.abort();
     this.pivotCreateAbort = null;
+    this.formulaAutocompleteAbort?.abort();
+    this.formulaAutocompleteAbort = null;
+    this.valueAutocompleteAbort?.abort();
+    this.valueAutocompleteAbort = null;
+    this.valueAutocompleteBuildKey = null;
     disposeSpreadsheetRuntime(this.runtime);
     this.sheetProjectionCache.clear();
     this.cachedUiSnapshot = null;
@@ -1208,7 +1259,6 @@ export class WorkbookSession {
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
-    const activeEdit = this.editSession.active;
     const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
       activeModelSheet.protectionRules,
@@ -1217,9 +1267,6 @@ export class WorkbookSession {
       selection.activeCell.column,
       activeModelCell?.style,
     );
-    const visibleActiveEdit = activeEdit && activeFormulaHidden
-      ? { ...activeEdit, currentDraft: '', originalFormula: undefined }
-      : activeEdit;
     const activeDrawing = this.selectedFloatingId
       ? selectedSheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId)
       : undefined;
@@ -1247,7 +1294,8 @@ export class WorkbookSession {
       panels: { ...this.panels },
       ribbonTab: this.ribbonTab,
       formulaDraft: activeFormulaHidden ? '' : this.formulaDraft,
-      editingCell: this.editSession.editingCell,
+      editingOptions: structuredClone(this.runtime.model.editingOptions),
+      groupedSheetIds: [...this.groupedSheetIds],
       zoom: this.zoom,
       sheets,
       projectionSheets,
@@ -1282,18 +1330,6 @@ export class WorkbookSession {
       backstage: { ...this.backstage },
       inputMode: this.inputMode,
       focus: { ...this.focus },
-      editSession: visibleActiveEdit ? {
-        sheetId: visibleActiveEdit.sheetId,
-        cell: { row: visibleActiveEdit.row, column: visibleActiveEdit.column },
-        originalValue: activeFormulaHidden ? null : visibleActiveEdit.originalValue?.value ?? null,
-        ...(visibleActiveEdit.originalFormula !== undefined ? { originalFormula: visibleActiveEdit.originalFormula } : {}),
-        draftText: visibleActiveEdit.currentDraft,
-        caret: structuredClone(visibleActiveEdit.caret),
-        composition: structuredClone(visibleActiveEdit.composition),
-        referenceMode: visibleActiveEdit.referenceMode,
-        mode: visibleActiveEdit.originalFormula || visibleActiveEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
-        source: visibleActiveEdit.source === 'formulaBar' ? 'formulaBar' : visibleActiveEdit.source === 'functionInsert' ? 'functionInsert' : 'cell',
-      } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
       ribbon: { activeTab: this.ribbonTab },
       clipboard: {
@@ -1632,6 +1668,15 @@ export class WorkbookSession {
     this.emit();
   }
 
+  setWorkbookEditingOptions(options: WorkbookEditingOptions): void {
+    this.runCommand('workbook.editing.options.set', options);
+  }
+
+  registerCellEditorAdapter(adapter: CellEditorAdapter): void {
+    if (!adapter.kind.startsWith('custom:')) throw new Error('Only custom CellEditorAdapter registrations are accepted at the workbook boundary');
+    this.cellEditorAdapters.register(adapter);
+  }
+
   runCommand(commandId: string, params?: unknown): CommandResult {
     const resolvedParams = this.resolveCommandContext(commandId, params);
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
@@ -1677,11 +1722,14 @@ export class WorkbookSession {
       const restoreParams = resolvedParams as { targetRevision?: number };
       rehydrateFormulaAfterRestore(this.runtime, restoreParams.targetRevision);
       this.activeSheetId = this.runtime.model.primarySheetId;
+      this.groupedSheetIds.clear();
+      this.groupedSheetIds.add(this.activeSheetId);
       this.selectionService.resetForSheet(this.activeSheetId);
       this.clearHistoryPreview();
     }
     this.applySelectionFromCommand(commandId, resolvedParams, result);
     this.syncTableContextFromSelection();
+    this.scheduleFormulaAutocompleteIndex();
     this.refresh();
     return result;
   }
@@ -1802,15 +1850,13 @@ export class WorkbookSession {
   selectAddress(address: string): boolean {
     const trimmed = address.trim();
     if (!trimmed) return false;
-    if (this.editSession.active?.referenceMode) {
-      return this.selectionService.selectCell(trimmed, {
-        editing: true,
-        insertRef: (ref) => this.insertRefIntoDraft(ref),
-      });
+    if (this.cellEditDomain.getSnapshot().status === 'point') {
+      this.dispatchFormulaReferenceText(trimmed);
+      return false;
     }
-    if (this.editSession.editingCell) {
-      this.commitEdit('none');
-      if (this.editSession.editingCell) return false;
+    if (this.cellEditDomain.getSnapshot().session) {
+      this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+      if (this.cellEditDomain.getSnapshot().session) return false;
     }
     const range = parseRangeReference(trimmed);
     if (range) {
@@ -2103,6 +2149,8 @@ export class WorkbookSession {
     );
     hydrateRuntime(this.runtime, response.snapshot);
     this.activeSheetId = this.runtime.model.primarySheetId;
+    this.groupedSheetIds.clear();
+    this.groupedSheetIds.add(this.activeSheetId);
     this.selectionService.resetForSheet(this.activeSheetId);
     this.invalidateAllSheetProjections();
     this.reconcileDrawingSessionState();
@@ -2382,54 +2430,580 @@ export class WorkbookSession {
     this.emit();
   };
 
-  syncDraftFromPrimary(): void {
-    if (this.editSession.active) {
+  private dispatchCellEditIntent(intent: CellEditUserIntent): CellEditDispatchResult {
+    if (intent.type === 'begin.request') {
+      try {
+        return this.beginCellEdit(intent);
+      } catch (error) {
+        const active = this.selectionService.getState().activeCell;
+        const failure = this.toCellEditFailure(error, { sheetId: this.activeSheetId, row: active.row, column: active.column });
+        this.notify(failure.message);
+        return { handled: true, preventDefault: true, status: this.cellEditDomain.getSnapshot().status, effects: [], failure };
+      }
+    }
+    return this.executeCellEditEffects(this.cellEditDomain.dispatch(intent as CellEditIntent));
+  }
+
+  private beginCellEdit(request: CellEditBeginRequest): CellEditDispatchResult {
+    if (this.phase !== 'ready' || this.cellEditDomain.getSnapshot().session) {
+      return { handled: false, preventDefault: false, status: this.cellEditDomain.getSnapshot().status, effects: [] };
+    }
+    if (!this.runtime.model.editingOptions.allowEditDirectly && request.surface !== 'formula-bar' && request.source !== 'function-insert' && request.source !== 'cell-control') {
+      throw new CellEditError({ code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'Direct in-cell editing is disabled for this workbook', recovery: 'Edit through the Formula Bar or enable direct cell editing.' });
+    }
+    const selection = this.selectionService.getState();
+    const displaySheet = this.runtime.model.getSheet(this.activeSheetId);
+    const resolvedDisplay = resolveSelectionTarget({ rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] }, selection.activeCell, 'cells', displaySheet.id);
+    const canonicalAddress = this.resolveCanonicalCellTarget(displaySheet.id, resolvedDisplay.cell.row, resolvedDisplay.cell.column);
+    const canonicalSheet = this.runtime.model.getSheet(canonicalAddress.sheetId);
+    const target = {
+      display: { sheetId: displaySheet.id, row: resolvedDisplay.cell.row, column: resolvedDisplay.cell.column },
+      canonical: canonicalAddress,
+      ...(resolvedDisplay.range.startRow !== resolvedDisplay.range.endRow || resolvedDisplay.range.startColumn !== resolvedDisplay.range.endColumn
+        ? { mergedRange: structuredClone(resolvedDisplay.range) }
+        : {}),
+    };
+    const projection = this.getCanvasProjection(displaySheet);
+    const pivotHit = Object.values(projection.pivotProjections).some((candidate) => Boolean(findPivotProjectionCellAt(candidate, resolvedDisplay.cell.row, resolvedDisplay.cell.column)));
+    if (pivotHit) {
+      throw new CellEditError({ code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'Pivot projection cells do not enter the ordinary cell editor', target: canonicalAddress, recovery: 'Use PivotTable interactions or edit the source data.' });
+    }
+    const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', {
+      ...canonicalAddress,
+      text: request.initialText ?? '',
+    }, this.actorId, canonicalAddress.sheetId);
+    if (!permission.allowed) {
+      throw new CellEditError({ code: 'CELL_EDIT_PERMISSION_DENIED', message: permission.reason ?? 'This cell is not editable', target: canonicalAddress, recovery: 'Request edit permission or select an editable cell.' });
+    }
+    for (const spill of canonicalSheet.spillRanges) {
+      if (isSpillChild(spill, canonicalAddress.row, canonicalAddress.column)) {
+        throw new CellEditError({ code: 'CELL_EDIT_SPILL_CHILD', message: 'Spill cells are read-only', target: canonicalAddress, recovery: 'Edit the dynamic-array source formula instead.' });
+      }
+    }
+    const cell = this.readResolvedCell(canonicalSheet, canonicalAddress.row, canonicalAddress.column);
+    if (protectionResolver.isFormulaHidden(canonicalSheet.protectionRules, canonicalSheet.id, canonicalAddress.row, canonicalAddress.column, cell?.style)) {
+      throw new CellEditError({ code: 'CELL_EDIT_FORMULA_HIDDEN', message: 'This formula is hidden while the worksheet is protected', target: canonicalAddress, recovery: 'Unprotect the worksheet or select an editable non-hidden cell.' });
+    }
+    if (cell?.editor?.allowEditInCell === false) {
+      throw new CellEditError({ code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'This cell editor does not allow in-cell text editing', target: canonicalAddress, recovery: 'Use the cell control action or enable allowEditInCell.' });
+    }
+    if (this.selectedFloatingId) {
+      throw new CellEditError({ code: 'CELL_EDIT_UNSUPPORTED_TARGET', message: 'A drawing object owns the active editing gesture', target: canonicalAddress, recovery: 'Finish object editing or select a worksheet cell.' });
+    }
+
+    const rule = findValidationRule(canonicalSheet, canonicalAddress.row, canonicalAddress.column);
+    const listValues = rule ? validationList(rule, canonicalSheet) : undefined;
+    const editorContext: CellEditorContext = {
+      target,
+      cell: cell ? structuredClone(cell) : null,
+      inputContext: this.createInputContext('direct-entry', cell),
+      ...(cell?.editor ? { config: structuredClone(cell.editor) } : {}),
+      ...(listValues ? { validationValues: listValues } : {}),
+    };
+    const adapter = request.initialText?.startsWith('=') && cell?.editor?.kind !== 'text'
+      ? this.cellEditorAdapters.get('formula')
+      : !cell?.editor && listValues
+        ? this.cellEditorAdapters.get('validation-list')
+        : this.cellEditorAdapters.resolve(editorContext);
+    const entryDecision = adapter.canEnter(editorContext);
+    if (!entryDecision.allowed) {
+      throw new CellEditError({ code: entryDecision.code, message: entryDecision.message, target: canonicalAddress, recovery: entryDecision.recovery });
+    }
+    const beforeInitialDraft = adapter.createDraft(editorContext);
+    const initialDraft = request.initialText === undefined
+      ? beforeInitialDraft
+      : adapter.kind === 'rich-text'
+        ? { kind: 'rich-text' as const, text: request.initialText, runs: request.initialText ? [{ text: request.initialText }] : [] }
+        : { kind: 'plain' as const, text: request.initialText };
+    const referenceSelections = this.resolveFormulaReferenceSelections(initialDraft.text, target.display.sheetId, target.display.row);
+    const entry: CellEditEntryContext = {
+      target,
+      source: request.source,
+      surface: request.surface ?? (request.source === 'formula-bar' ? 'formula-bar' : 'grid'),
+      adapterKind: adapter.kind,
+      editorSurface: structuredClone(adapter.surface),
+      initialDraft,
+      ...(request.initialText === undefined ? {} : { beforeInitialDraft }),
+      caret: request.caret ?? { start: initialDraft.text.length, end: initialDraft.text.length },
+      originalSelection: this.selectionService.getSnapshot(),
+      originalCell: cell ? structuredClone(cell) : null,
+      baseCellFingerprint: this.cellFingerprint(cell),
+      ...(referenceSelections.length > 0 ? { referenceSelections, activeReferenceId: referenceSelections[0]!.id } : {}),
+      ...(rule?.showInputMessage && rule.inputMessage ? { inputMessage: { message: rule.inputMessage, ...(rule.inputTitle ? { title: rule.inputTitle } : {}) } } : {}),
+      enterMove: this.runtime.model.editingOptions.moveAfterEnter ? this.runtime.model.editingOptions.enterDirection : 'none',
+      groupedSheetIds: [...this.groupedSheetIds],
+    };
+    const begun = this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'begin', entry }));
+    if (request.source === 'cell-control' || request.source === 'double-click') {
+      const items = adapter.kind === 'validation-list'
+        ? listValues?.map((value) => ({ label: value, text: value }))
+        : cell?.editor?.kind === 'combo-box'
+          ? cell.editor.items.map((item) => ({ label: item.label ?? String(item.value ?? ''), text: String(item.value ?? '') }))
+          : undefined;
+      if (items && items.length > 0) return this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'editor-list.open', items }));
+    }
+    return begun;
+  }
+
+  private executeCellEditEffects(result: CellEditDispatchResult): CellEditDispatchResult {
+    let finalResult = result;
+    for (const effect of result.effects) {
+      const nested = this.executeCellEditEffect(effect);
+      if (nested) finalResult = nested;
+    }
+    return { handled: result.handled, preventDefault: result.preventDefault, status: this.cellEditDomain.getSnapshot().status, effects: finalResult.effects, ...(finalResult.failure ? { failure: finalResult.failure } : result.failure ? { failure: result.failure } : {}) };
+  }
+
+  private executeCellEditEffect(effect: CellEditEffect): CellEditDispatchResult | null {
+    switch (effect.type) {
+      case 'commit':
+        return this.executeCellEditCommit(effect.request);
+      case 'cancel':
+        this.activeSheetId = effect.originalSelection.sheetId;
+        this.selectionService.applyState(effect.originalSelection);
+        this.selectionService.setInteractionMode('normal');
+        this.setFocusState('grid', 'grid');
+        this.emit();
+        return null;
+      case 'focus':
+        this.setFocusState('cell-edit', effect.surface === 'grid' ? 'grid' : 'formula-bar');
+        this.emit();
+        return null;
+      case 'reference.move':
+        this.moveFormulaReference(effect);
+        return null;
+      case 'overlay.toggle-request':
+        this.openCellEditOverlay();
+        return null;
+      case 'insert-current':
+        this.insertCanonicalCurrentValue(effect.value);
+        return null;
+      case 'reference.switch-sheet':
+        this.selectAdjacentSheet(effect.direction);
+        return null;
+      case 'defined-name.request':
+        this.openDefinedNameAutocomplete();
+        return null;
+      case 'lifecycle':
+        this.publishCellEditLifecycle(effect.event);
+        if (effect.event.type === 'EditEnded') {
+          this.valueAutocompleteAbort?.abort();
+          this.valueAutocompleteAbort = null;
+          this.valueAutocompleteBuildKey = null;
+        }
+        if (effect.event.type === 'EditStarted' || effect.event.type === 'EditChanged' || effect.event.type === 'EditorStatusChanged') {
+          this.synchronizeFormulaReferences();
+          this.refreshFormulaAutocomplete();
+          if (effect.event.type === 'EditStarted') this.scheduleValueAutocomplete();
+          else this.refreshValueAutocomplete();
+        }
+        return null;
+    }
+  }
+
+  private executeCellEditCommit(request: CellEditCommitRequest): CellEditDispatchResult {
+    try {
+      const currentSheet = this.runtime.model.getSheet(request.target.canonical.sheetId);
+      const currentCell = this.readResolvedCell(currentSheet, request.target.canonical.row, request.target.canonical.column);
+      if (this.cellFingerprint(currentCell) !== request.baseCellFingerprint) {
+        throw new CellEditError({ code: 'CELL_EDIT_REVISION_CONFLICT', message: 'The target cell changed after editing began', target: request.target.canonical, recovery: 'Cancel or copy the draft, reload the current cell, and reapply the edit intentionally.' });
+      }
+
+      const rule = findValidationRule(currentSheet, request.target.canonical.row, request.target.canonical.column);
+      const listValues = rule ? validationList(rule, currentSheet) : undefined;
+      const adapter = this.cellEditorAdapters.get(request.adapterKind);
+      const adapterContext: CellEditorContext = {
+        target: request.target,
+        cell: currentCell ? structuredClone(currentCell) : null,
+        inputContext: this.createInputContext('direct-entry', currentCell),
+        ...(currentCell?.editor ? { config: structuredClone(currentCell.editor) } : {}),
+        ...(listValues ? { validationValues: listValues } : {}),
+      };
+      const validation = adapter.validate(request.draft, adapterContext);
+      if (!validation.valid) {
+        throw new CellEditError({ code: validation.code, message: validation.message, target: request.target.canonical, recovery: validation.recovery });
+      }
+      const payload = adapter.toCommitPayload(request.draft, adapterContext);
+      const groupedSheetIds = request.groupedSheetIds.filter((sheetId) => this.runtime.model.sheets.has(sheetId));
+      if (request.toSelection || groupedSheetIds.length > 1) {
+        const baseRanges = request.toSelection
+          ? request.originalSelection.ranges
+          : [{ sheetId: request.target.display.sheetId, startRow: request.target.display.row, endRow: request.target.display.row, startColumn: request.target.display.column, endColumn: request.target.display.column }];
+        const ranges = groupedSheetIds.flatMap((sheetId) => baseRanges.map((range) => ({ ...range, sheetId })));
+        this.commitPayloadToSelection(payload, request.validationConfirmation, { ...request.originalSelection, ranges });
+      } else if (payload.kind === 'raw-text') {
+        this.runCommand('sheet.cell.commitText', { ...request.target.canonical, text: payload.text, inputContext: this.createInputContext('direct-entry', currentCell), style: currentCell?.style, validationConfirmation: request.validationConfirmation });
+      } else if (payload.kind === 'typed-value') {
+        this.runCommand('sheet.cell.commitTypedValue', { ...request.target.canonical, value: payload.value, validationConfirmation: request.validationConfirmation });
+      } else {
+        this.runCommand('sheet.cell.commitRichText', { ...request.target.canonical, text: payload.text, runs: payload.runs, validationConfirmation: request.validationConfirmation });
+      }
+
+      const completed = this.cellEditDomain.dispatch({ type: 'commit.succeeded' });
+      this.activeSheetId = request.originalSelection.sheetId;
+      this.selectionService.applyState(request.originalSelection);
+      this.selectionService.setInteractionMode('normal');
+      const deltas: Record<CellEditMoveAfter, readonly [number, number]> = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] };
+      const [rowDelta, columnDelta] = deltas[request.moveAfter];
+      if (rowDelta !== 0 || columnDelta !== 0) this.selectionService.movePrimary(rowDelta, columnDelta);
+      this.syncTableContextFromSelection();
+      this.setFocusState('grid', 'grid');
       this.emit();
+      return this.executeCellEditEffects(completed);
+    } catch (error) {
+      const failure = this.toCellEditFailure(error, request.target.canonical);
+      this.setFocusState('cell-edit', 'grid');
+      return this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'commit.failed', error: failure }));
+    }
+  }
+
+  private commitPayloadToSelection(payload: CellEditCommitPayload, validationConfirmation: boolean, selection: SelectionState): void {
+    const identities = new Set<string>();
+    const targets: Array<{ sheetId: string; row: number; column: number; inputContext: ReturnType<WorkbookSession['createInputContext']>; style?: Partial<CellStyle> }> = [];
+    for (const range of selection.ranges) {
+      const displaySheet = this.runtime.model.getSheet(range.sheetId);
+      if (range.startRow < 0 || range.startColumn < 0 || range.endRow >= displaySheet.rowCount || range.endColumn >= displaySheet.columnCount) {
+        throw new CellEditError({ code: 'CELL_EDIT_COMMIT_REJECTED', message: `Grouped selection is outside worksheet extent: ${displaySheet.name}`, target: { sheetId: displaySheet.id, row: range.startRow, column: range.startColumn }, recovery: 'Grow the grouped worksheet extent or ungroup it before committing.' });
+      }
+      const displaySurface = { rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] };
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          const display = resolveSelectionTarget(displaySurface, { row, column }, 'cells', displaySheet.id).cell;
+          const canonical = this.resolveCanonicalCellTarget(displaySheet.id, display.row, display.column);
+          const identity = `${canonical.sheetId}:${canonical.row}:${canonical.column}`;
+          if (identities.has(identity)) continue;
+          identities.add(identity);
+          const sheet = this.runtime.model.getSheet(canonical.sheetId);
+          const cell = this.readResolvedCell(sheet, canonical.row, canonical.column);
+          const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', { ...canonical, text: payload.kind === 'raw-text' ? payload.text : '' }, this.actorId, canonical.sheetId);
+          if (!permission.allowed) throw new CellEditError({ code: 'CELL_EDIT_PERMISSION_DENIED', message: permission.reason ?? 'A selected cell is not editable', target: canonical, recovery: 'Remove protected/read-only targets from the selection and retry.' });
+          targets.push({ ...canonical, inputContext: this.createInputContext('direct-entry', cell), ...(cell?.style ? { style: structuredClone(cell.style) } : {}) });
+        }
+      }
+    }
+    if (payload.kind === 'raw-text') {
+      this.runCommand('sheet.cells.commitText', { text: payload.text, targets, validationConfirmation });
+    } else if (payload.kind === 'typed-value') {
+      this.runCommand('sheet.cells.commitTypedValue', { value: payload.value, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
+    } else {
+      this.runCommand('sheet.cells.commitRichText', { text: payload.text, runs: payload.runs, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
+    }
+  }
+
+  private moveFormulaReference(effect: Extract<CellEditEffect, { type: 'reference.move' }>): void {
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!session || session.status !== 'point') return;
+    const current = session.referenceSelections.find((selection) => selection.id === effect.referenceId) ?? session.referenceSelections.at(-1);
+    if (!current) return;
+    const sheet = this.runtime.model.getSheet(current.sheetId);
+    const clampRow = (value: number) => Math.max(0, Math.min(sheet.rowCount - 1, value));
+    const clampColumn = (value: number) => Math.max(0, Math.min(sheet.columnCount - 1, value));
+    let rowDelta = effect.rowDelta;
+    let columnDelta = effect.columnDelta;
+    if (effect.jump) {
+      const originRow = effect.extend ? current.range.endRow : current.range.startRow;
+      const originColumn = effect.extend ? current.range.endColumn : current.range.startColumn;
+      let row = originRow + rowDelta;
+      let column = originColumn + columnDelta;
+      while (row >= 0 && row < sheet.rowCount && column >= 0 && column < sheet.columnCount) {
+        const cell = this.readResolvedCell(sheet, row, column);
+        if (cell && (cell.formula || cell.value !== null && cell.value !== undefined && cell.value !== '')) break;
+        row += rowDelta;
+        column += columnDelta;
+      }
+      rowDelta = clampRow(row) - originRow;
+      columnDelta = clampColumn(column) - originColumn;
+    }
+    const rowSpan = current.range.endRow - current.range.startRow;
+    const columnSpan = current.range.endColumn - current.range.startColumn;
+    const movedStartRow = Math.max(0, Math.min(sheet.rowCount - rowSpan - 1, current.range.startRow + rowDelta));
+    const movedStartColumn = Math.max(0, Math.min(sheet.columnCount - columnSpan - 1, current.range.startColumn + columnDelta));
+    const range = effect.extend
+      ? { ...current.range, endRow: clampRow(current.range.endRow + rowDelta), endColumn: clampColumn(current.range.endColumn + columnDelta) }
+      : { ...current.range, startRow: movedStartRow, endRow: movedStartRow + rowSpan, startColumn: movedStartColumn, endColumn: movedStartColumn + columnSpan };
+    const normalized = normalizeRangeRef(range);
+    const reference = this.formatFormulaReference(current.sheetId, normalized, session.target.display.sheetId);
+    this.cellEditDomain.dispatch({ type: 'caret.set', caret: current.tokenSpan });
+    this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'reference.insert', referenceText: reference, selection: { ...current, range: normalized } }));
+  }
+
+  private formatFormulaReference(sheetId: string, range: RangeRef, formulaSheetId: string): string {
+    const start = cellAddress(range.startRow, range.startColumn);
+    const end = cellAddress(range.endRow, range.endColumn);
+    const address = start === end ? start : `${start}:${end}`;
+    if (sheetId === formulaSheetId) return address;
+    const name = this.runtime.model.getSheet(sheetId).name.replace(/'/g, "''");
+    return `'${name}'!${address}`;
+  }
+
+  private resolveFormulaReferenceSelections(text: string, formulaSheetId: string, formulaRow: number, depth = 0): FormulaReferenceSelection[] {
+    if (depth > 8) return [];
+    const sheets = this.runtime.model.getSheets();
+    return parseFormulaReferences(text).flatMap((reference, index) => {
+      if (reference.definedName) {
+        const name = this.runtime.model.getDefinedName(reference.definedName, formulaSheetId);
+        if (!name) return [];
+        const resolved: FormulaReferenceSelection | undefined = this.resolveFormulaReferenceSelections(name.formula, name.sheetId ?? formulaSheetId, formulaRow, depth + 1)[0];
+        return resolved ? [{ ...resolved, id: `reference-${reference.tokenSpan.start}-${reference.tokenSpan.end}-${index}`, tokenSpan: reference.tokenSpan, colorIndex: index % 8 }] : [];
+      }
+      if (reference.table) {
+        const owner = sheets.map((sheet) => ({ sheet, table: sheet.sheetTables.find((table) => table.name.localeCompare(reference.table!.name, undefined, { sensitivity: 'base' }) === 0) })).find((entry) => entry.table);
+        if (!owner?.table) return [];
+        const table = owner.table;
+        const firstColumn = reference.table.columnName ? table.columns.findIndex((column) => column.name.localeCompare(reference.table!.columnName!, undefined, { sensitivity: 'base' }) === 0) : 0;
+        const lastColumn = reference.table.columnEndName ? table.columns.findIndex((column) => column.name.localeCompare(reference.table!.columnEndName!, undefined, { sensitivity: 'base' }) === 0) : reference.table.columnName ? firstColumn : table.columns.length - 1;
+        if (firstColumn < 0 || lastColumn < 0) return [];
+        const headerRows = table.hasHeaderRow ? 1 : 0;
+        const totalRows = table.hasTotalRow ? 1 : 0;
+        const dataStart = table.range.startRow + headerRows;
+        const dataEnd = table.range.endRow - totalRows;
+        const rowRange = reference.table.thisRow
+          ? { startRow: Math.max(dataStart, Math.min(dataEnd, formulaRow)), endRow: Math.max(dataStart, Math.min(dataEnd, formulaRow)) }
+          : reference.table.specifier === 'headers'
+            ? { startRow: table.range.startRow, endRow: table.range.startRow }
+            : reference.table.specifier === 'totals'
+              ? { startRow: table.range.endRow, endRow: table.range.endRow }
+              : reference.table.specifier === 'all'
+                ? { startRow: table.range.startRow, endRow: table.range.endRow }
+                : { startRow: dataStart, endRow: dataEnd };
+        return [{ id: `reference-${reference.tokenSpan.start}-${reference.tokenSpan.end}-${index}`, sheetId: owner.sheet.id, range: normalizeRangeRef({ sheetId: owner.sheet.id, ...rowRange, startColumn: table.range.startColumn + Math.min(firstColumn, lastColumn), endColumn: table.range.startColumn + Math.max(firstColumn, lastColumn) }), tokenSpan: reference.tokenSpan, colorIndex: index % 8, operation: 'replace' as const }];
+      }
+      const sheet = reference.sheetName
+        ? sheets.find((candidate) => candidate.id === reference.sheetName || candidate.name === reference.sheetName)
+        : this.runtime.model.getSheet(formulaSheetId);
+      if (!sheet) return [];
+      const startRow = reference.wholeColumn ? 0 : reference.startRow;
+      const endRow = reference.wholeColumn ? sheet.rowCount - 1 : reference.endRow;
+      const startColumn = reference.wholeRow ? 0 : reference.startColumn;
+      const endColumn = reference.wholeRow ? sheet.columnCount - 1 : reference.endColumn;
+      if (startRow === undefined || endRow === undefined || startColumn === undefined || endColumn === undefined) return [];
+      return [{
+        id: `reference-${reference.tokenSpan.start}-${reference.tokenSpan.end}-${index}`,
+        sheetId: sheet.id,
+        range: normalizeRangeRef({ sheetId: sheet.id, startRow, endRow, startColumn, endColumn }),
+        tokenSpan: reference.tokenSpan,
+        colorIndex: index % 8,
+        operation: 'replace' as const,
+      }];
+    });
+  }
+
+  private synchronizeFormulaReferences(): void {
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!session) return;
+    const parsed = this.resolveFormulaReferenceSelections(session.draft.text, session.target.display.sheetId, session.target.display.row);
+    const next = parsed.map((reference, index) => {
+      const previous = session.referenceSelections[index];
+      return previous ? { ...reference, id: previous.id, colorIndex: previous.colorIndex } : reference;
+    });
+    const currentSignature = JSON.stringify(session.referenceSelections.map((reference) => [reference.id, reference.sheetId, reference.range, reference.tokenSpan, reference.colorIndex]));
+    const nextSignature = JSON.stringify(next.map((reference) => [reference.id, reference.sheetId, reference.range, reference.tokenSpan, reference.colorIndex]));
+    if (currentSignature === nextSignature) return;
+    const caretStart = Math.min(session.caret.start, session.caret.end);
+    const caretEnd = Math.max(session.caret.start, session.caret.end);
+    const active = next.find((reference) => caretStart >= reference.tokenSpan.start && caretEnd <= reference.tokenSpan.end)?.id ?? null;
+    this.cellEditDomain.dispatch({ type: 'reference.set', selections: next, activeReferenceId: active });
+  }
+
+  private toCellEditFailure(error: unknown, target: { sheetId: string; row: number; column: number }): CellEditFailure {
+    if (error instanceof CellEditError) return error.toFailure();
+    if (isCellEntryError(error)) {
+      const code = error.code === 'CELL_ENTRY_CONFIRMATION_REQUIRED'
+        ? 'CELL_EDIT_CONFIRMATION_REQUIRED'
+        : error.code === 'CELL_ENTRY_VALIDATION_BLOCKED'
+          ? 'CELL_EDIT_VALIDATION_BLOCKED'
+          : error.code === 'CELL_ENTRY_SPILL_CHILD'
+            ? 'CELL_EDIT_SPILL_CHILD'
+            : 'CELL_EDIT_COMMIT_REJECTED';
+      return { code, message: error.message, target: { sheetId: error.sheetId, row: error.row, column: error.column }, recovery: error.recovery, ...(error.alertStyle ? { alertStyle: error.alertStyle } : {}), ...(error.title ? { title: error.title } : {}) };
+    }
+    return { code: 'CELL_EDIT_COMMIT_REJECTED', message: error instanceof Error ? error.message : 'Cell input was rejected', target, recovery: 'Correct the draft or inspect the command rejection before retrying.' };
+  }
+
+  private formulaAutocompleteSource() {
+    const definedNames = this.runtime.model.definedNameModels;
+    const tables = [...this.runtime.model.dataModel.tables.values()];
+    const revision = JSON.stringify({
+      names: definedNames.map((entry) => [entry.scope, entry.sheetId ?? '', entry.name, entry.formula]),
+      tables: tables.map((table) => [table.id, table.name, table.revision, table.fields.map((field) => [field.id, field.name, field.ordinal, field.type])]),
+    });
+    return { revision, definedNames, tables };
+  }
+
+  private rebuildFormulaAutocompleteIndex(): void {
+    this.formulaAutocomplete.rebuild(this.formulaAutocompleteSource());
+    this.formulaAutocompleteRevision += 1;
+  }
+
+  private scheduleFormulaAutocompleteIndex(): void {
+    const source = this.formulaAutocompleteSource();
+    if (source.revision === this.formulaAutocomplete.sourceRevision) return;
+    this.formulaAutocompleteAbort?.abort();
+    const abort = new AbortController();
+    this.formulaAutocompleteAbort = abort;
+    void this.formulaAutocomplete.rebuildAsync(source, abort.signal).then(() => {
+      if (this.formulaAutocompleteAbort !== abort) return;
+      this.formulaAutocompleteAbort = null;
+      this.formulaAutocompleteRevision += 1;
+      this.refreshFormulaAutocomplete();
+    }).catch((error) => {
+      if (abort.signal.aborted) return;
+      this.formulaAutocompleteAbort = null;
+      const session = this.cellEditDomain.getSnapshot().session;
+      if (!session) return;
+      if (session.overlay.kind === 'autocomplete') this.cellEditDomain.dispatch({ type: 'autocomplete.close' });
+      this.notify(`Formula autocomplete index failed: ${error instanceof Error ? error.message : 'invalid workbook metadata'}`);
+    });
+  }
+
+  private refreshFormulaAutocomplete(): void {
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!this.runtime.model.editingOptions.formulaAutoComplete || !session || !session.draft.text.startsWith('=') || session.composition.active || session.validation.kind !== 'idle') return;
+    const result = this.formulaAutocomplete.query(session.draft.text, session.caret);
+    if (!result || result.candidates.length === 0) {
+      if (result?.hint) {
+        this.cellEditDomain.dispatch({ type: 'function-hint.open', functionName: result.hint.functionName, argumentIndex: result.hint.argumentIndex });
+        return;
+      }
+      if (session.overlay.kind === 'autocomplete') this.cellEditDomain.dispatch({ type: 'autocomplete.close' });
       return;
     }
-    this.emit();
+    this.cellEditDomain.dispatch({ type: 'autocomplete.open', candidates: result.candidates, replacementSpan: result.replacementSpan, revision: this.formulaAutocompleteRevision });
   }
 
-  setFormulaDraft(value: string): void {
-    if (this.editSession.active) this.editSession.setDraft(value);
-    this.emit();
+  private openCellEditOverlay(): void {
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!session) return;
+    if (session.draft.text.startsWith('=')) {
+      this.refreshFormulaAutocomplete();
+      return;
+    }
+    const sheet = this.runtime.model.getSheet(session.target.canonical.sheetId);
+    const cell = this.readResolvedCell(sheet, session.target.canonical.row, session.target.canonical.column);
+    const rule = findValidationRule(sheet, session.target.canonical.row, session.target.canonical.column);
+    const items = cell?.editor?.kind === 'combo-box'
+      ? cell.editor.items.map((item) => ({ label: item.label ?? String(item.value ?? ''), text: String(item.value ?? '') }))
+      : rule ? validationList(rule, sheet)?.map((value) => ({ label: value, text: value })) : undefined;
+    if (items && items.length > 0) this.cellEditDomain.dispatch({ type: 'editor-list.open', items });
   }
 
-  setEditCaret(start: number, end: number = start): void {
-    this.editSession.setCaret({ start, end });
-    this.emit();
+  private openDefinedNameAutocomplete(): void {
+    const snapshot = this.cellEditDomain.getSnapshot();
+    const session = snapshot.session;
+    if (!session) return;
+    const candidates = this.runtime.model.listDefinedNames(session.target.display.sheetId).map((name) => ({
+      id: `name:${name.scope}:${name.sheetId ?? ''}:${name.name}`,
+      kind: 'defined-name' as const,
+      label: name.name,
+      insertionText: name.name,
+      detail: name.formula,
+    }));
+    if (candidates.length > 0) this.cellEditDomain.dispatch({ type: 'autocomplete.open', candidates, replacementSpan: session.caret, revision: this.formulaAutocompleteRevision });
   }
 
-  beginEditComposition(): void {
-    this.editSession.compositionStart();
-    this.emit();
+  private valueAutocompleteSource() {
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!session || session.adapterKind !== 'text' || session.source !== 'direct-typing' || session.draft.kind !== 'plain') return null;
+    const sheet = this.runtime.model.getSheet(session.target.display.sheetId);
+    return {
+      key: `${sheet.id}:${session.target.display.column}`,
+      revision: sheet.cells.revision,
+      entries: sheet.cells.entriesInColumn(session.target.display.column),
+      excludeRow: session.target.display.row,
+      cultureId: this.runtime.model.collationContext.cultureId,
+    };
   }
 
-  updateEditComposition(text: string): void {
-    this.editSession.compositionUpdate(text);
-    this.emit();
+  private scheduleValueAutocomplete(): void {
+    if (!this.runtime.model.editingOptions.valueAutoComplete) return;
+    const source = this.valueAutocompleteSource();
+    if (!source) return;
+    if (this.valueAutocomplete.has(source)) {
+      this.refreshValueAutocomplete();
+      return;
+    }
+    const buildKey = `${source.key}@${source.revision}`;
+    if (this.valueAutocompleteBuildKey === buildKey) return;
+    this.valueAutocompleteAbort?.abort();
+    const abort = new AbortController();
+    this.valueAutocompleteAbort = abort;
+    this.valueAutocompleteBuildKey = buildKey;
+    void this.valueAutocomplete.rebuild(source, abort.signal).then(() => {
+      if (this.valueAutocompleteAbort !== abort) return;
+      this.valueAutocompleteAbort = null;
+      this.valueAutocompleteBuildKey = null;
+      this.refreshValueAutocomplete();
+    }).catch((error) => {
+      if (abort.signal.aborted) return;
+      this.valueAutocompleteAbort = null;
+      this.valueAutocompleteBuildKey = null;
+      this.notify(`Cell AutoComplete index failed: ${error instanceof Error ? error.message : 'invalid column data'}`);
+    });
   }
 
-  endEditComposition(): void {
-    this.editSession.compositionEnd();
-    this.emit();
+  private refreshValueAutocomplete(): void {
+    if (!this.runtime.model.editingOptions.valueAutoComplete) return;
+    const session = this.cellEditDomain.getSnapshot().session;
+    const source = this.valueAutocompleteSource();
+    if (!session || !source || session.composition.active || session.validation.kind !== 'idle') return;
+    if (!this.valueAutocomplete.has(source)) {
+      this.scheduleValueAutocomplete();
+      return;
+    }
+    if (session.overlay.kind !== 'none' && session.overlay.kind !== 'input-message' && session.overlay.kind !== 'value-autocomplete') return;
+    const prefix = session.draft.text.slice(0, Math.min(session.caret.start, session.caret.end));
+    const candidate = this.valueAutocomplete.query(source.key, source.revision, prefix);
+    if (!candidate) return;
+    this.cellEditDomain.dispatch({ type: 'value-autocomplete.apply', prefix, candidate });
   }
 
-  appendFormulaDraft(fragment: string): void {
-    if (!fragment) return;
-    if (this.editSession.active) this.editSession.setDraft(this.formulaDraft + fragment);
+  private insertCanonicalCurrentValue(kind: 'date' | 'time'): void {
+    const value = this.runtime.canonicalReferenceDate;
+    if (!value) throw new CellEditError({ code: 'CELL_EDIT_COMMIT_REJECTED', message: 'Workbook reference date is unavailable', recovery: 'Initialize the canonical workbook date context before editing.' });
+    const pad = (part: number) => String(part).padStart(2, '0');
+    const text = kind === 'date'
+      ? `${value.year}-${pad(value.month)}-${pad(value.day)}`
+      : `${pad(value.hour)}:${pad(value.minute)}:${pad(value.second)}`;
+    this.executeCellEditEffects(this.cellEditDomain.dispatch({ type: 'text.insert', text }));
+  }
+
+  private publishCellEditLifecycle(event: CellEditLifecycleEvent): void {
+    const collaboration = this.runtime.collaboration;
+    if (event.type === 'EditEnded') {
+      collaboration?.presence.clearEditSession(this.actorId);
+      this.runtime.broadcastPresence({ status: 'online', edit: null });
+      return;
+    }
+    if (event.type !== 'EditStarted' && event.type !== 'EditorStatusChanged' && event.type !== 'EditSurfaceChanged') return;
+    const session = this.cellEditDomain.getSnapshot().session;
+    if (!session) return;
+    const edit = {
+      sheetId: session.target.display.sheetId,
+      row: session.target.display.row,
+      column: session.target.display.column,
+      status: session.status,
+      surface: session.surface,
+    } as const;
+    collaboration?.presence.updateEditSession({ actorId: this.actorId, ...edit });
+    this.runtime.broadcastPresence({ status: 'online', edit });
+  }
+
+  private cellFingerprint(cell: CellData | undefined): string {
+    return JSON.stringify(cell ?? null);
+  }
+
+  syncDraftFromPrimary(): void {
     this.emit();
   }
 
   selectCell(address: string): void {
-    if (this.editSession.active?.referenceMode) {
-      this.selectionService.selectCell(address, { editing: true, insertRef: (ref) => this.insertRefIntoDraft(ref) });
-      this.emit();
+    if (this.cellEditDomain.getSnapshot().status === 'point') {
+      this.dispatchFormulaReferenceText(address);
       return;
     }
-    if (this.editSession.editingCell) {
-      this.commitEdit('none');
-      if (this.editSession.editingCell) return;
+    if (this.cellEditDomain.getSnapshot().session) {
+      this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+      if (this.cellEditDomain.getSnapshot().session) return;
     }
     const parsed = parseRangeReference(address);
     const target = parsed && parsed.startRow === parsed.endRow && parsed.startColumn === parsed.endColumn ? parsed : undefined;
@@ -2441,10 +3015,7 @@ export class WorkbookSession {
         return;
       }
     }
-    const changed = this.selectionService.selectCell(address, {
-      editing: Boolean(this.editSession.active?.referenceMode),
-      insertRef: (ref) => this.insertRefIntoDraft(ref),
-    });
+    const changed = this.selectionService.selectCell(address);
     if (changed) this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
     this.emit();
@@ -2459,20 +3030,21 @@ export class WorkbookSession {
 
   /** Commit a canvas selection exactly, including its active cell and anchor. */
   applyCanvasSelection(selection: SelectionState): void {
-    if (this.editSession.active) {
+    const edit = this.cellEditDomain.getSnapshot();
+    if (edit.session) {
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-      const draft = this.editSession.active.currentDraft;
-      if (targetRange && (this.editSession.active.referenceMode || draft.startsWith('='))) {
-        this.editSession.enterReferenceMode();
-        this.selectionService.setInteractionMode('formulaReference');
-        const reference = targetRange.startRow === targetRange.endRow && targetRange.startColumn === targetRange.endColumn
-          ? cellAddress(targetRange.startRow, targetRange.startColumn)
-          : `${cellAddress(targetRange.startRow, targetRange.startColumn)}:${cellAddress(targetRange.endRow, targetRange.endColumn)}`;
-        this.insertRefIntoDraft(reference);
+      if (targetRange && (edit.status === 'point' || edit.session.draft.text.startsWith('='))) {
+        const reference = this.formatFormulaReference(targetRange.sheetId, targetRange, edit.session.target.display.sheetId);
+        const id = edit.session.activeReferenceId ?? `reference-${edit.revision + 1}`;
+        this.cellEdit.dispatch({
+          type: 'reference.insert',
+          referenceText: reference,
+          selection: { id, sheetId: targetRange.sheetId, range: structuredClone(targetRange), tokenSpan: edit.session.caret, colorIndex: edit.session.referenceSelections.length % 8, operation: edit.session.activeReferenceId ? 'replace' : 'insert' },
+        });
         return;
       }
-      this.commitEdit('none');
-      if (this.editSession.active) return;
+      this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+      if (this.cellEditDomain.getSnapshot().session) return;
     }
     this.selectionService.applyState(selection);
     if (this.formatPainter) {
@@ -2647,7 +3219,7 @@ export class WorkbookSession {
       );
     }
     this.selectionService.movePrimary(rowDelta, columnDelta, opts);
-    if (!this.editSession.editingCell) {
+    if (!this.cellEditDomain.getSnapshot().session) {
       this.syncDraftFromPrimary();
     }
     this.emit();
@@ -2832,58 +3404,10 @@ export class WorkbookSession {
     });
   }
 
-  beginEdit(initialText?: string, source: import('./edit-session').EditSource = initialText === undefined ? 'f2' : 'directTyping'): boolean {
-    const sel = this.selectionService.getState();
-    const canonicalTarget = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
-    const canonicalSheet = this.runtime.model.getSheet(canonicalTarget.sheetId);
-    const target = { ...canonicalTarget, text: initialText ?? '' };
-    const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', target, this.actorId, target.sheetId);
-    if (!permission.allowed) {
-      this.notify(permission.reason ?? 'This cell is not editable');
-      return false;
-    }
-    for (const spill of canonicalSheet.spillRanges) {
-      if (isSpillChild(spill, canonicalTarget.row, canonicalTarget.column)) {
-        this.notify('Spill cells are read-only');
-        return false;
-      }
-    }
-    const cell = this.readResolvedCell(canonicalSheet, canonicalTarget.row, canonicalTarget.column);
-    if (protectionResolver.isFormulaHidden(canonicalSheet.protectionRules, canonicalSheet.id, canonicalTarget.row, canonicalTarget.column, cell?.style)) {
-      this.notify('This formula is hidden while the worksheet is protected');
-      return false;
-    }
-    this.selectionService.setInteractionMode('normal');
-    this.editSession.begin({
-      sheetId: this.activeSheetId,
-      row: sel.activeCell.row,
-      column: sel.activeCell.column,
-      cell,
-      selection: this.selectionService.getSnapshot(),
-      initialText,
-      source,
-      baseRevision: this.runtime.remoteRevision,
-    });
-    this.setFocusState('cell-edit', 'grid');
-    this.emit();
-    return true;
-  }
-
-  cancelEdit(): void {
-    const originalSelection = this.editSession.active?.originalSelection;
-    this.editSession.cancel();
-    if (originalSelection) this.selectionService.applyState(originalSelection);
-    else this.selectionService.setInteractionMode('normal');
-    this.setFocusState('grid', 'grid');
-    this.emit();
-  }
-
   commitFormula(overrideValue?: string): boolean {
     if (this.phase !== 'ready') return false;
     const sel = this.selectionService.getState();
-    const displayRow = this.overrideTarget?.row ?? sel.activeCell.row;
-    const displayColumn = this.overrideTarget?.column ?? sel.activeCell.column;
-    const target = this.resolveCanonicalCellTarget(this.activeSheetId, displayRow, displayColumn);
+    const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
     const row = target.row;
     const column = target.column;
     const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
@@ -2905,50 +3429,48 @@ export class WorkbookSession {
     }
   }
 
-  commitEdit(moveAfter: 'down' | 'up' | 'left' | 'right' | 'none' = 'down'): void {
-    if (!this.editSession.editingCell) return;
-    const editing = this.editSession.editingCell;
-    const draft = this.editSession.active?.currentDraft ?? '';
-    this.overrideTarget = editing;
-    const committed = this.commitFormula(draft);
-    this.overrideTarget = null;
-    if (!committed) {
-      this.setFocusState('cell-edit', 'grid');
-      this.emit();
+  private dispatchFormulaReferenceText(refText: string): void {
+    const snapshot = this.cellEditDomain.getSnapshot();
+    const session = snapshot.session;
+    if (!session || !refText) return;
+    const parsed = parseRangeReference(refText.replace(/^'(?:[^']|'')+'!/, ''));
+    if (!parsed) {
+      this.cellEdit.dispatch({ type: 'text.insert', text: refText });
       return;
     }
-    this.editSession.apply();
-    this.selectionService.setInteractionMode('normal');
-    const deltas = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] } as const;
-    const [dr, dc] = deltas[moveAfter];
-    this.movePrimary(dr, dc);
-    this.syncDraftFromPrimary();
-    this.setFocusState('grid', 'grid');
-    this.emit();
+    const range = { ...parsed, sheetId: this.activeSheetId };
+    const id = session.activeReferenceId ?? `reference-${snapshot.revision + 1}`;
+    this.cellEdit.dispatch({
+      type: 'reference.insert',
+      referenceText: refText,
+      selection: { id, sheetId: range.sheetId, range, tokenSpan: session.caret, colorIndex: session.referenceSelections.length % 8, operation: session.activeReferenceId ? 'replace' : 'insert' },
+    });
   }
 
-  insertRefIntoDraft(refText: string): void {
-    if (this.editSession.active) {
-      this.selectionService.setInteractionMode('formulaReference');
-      this.editSession.insertRef(refText);
+  selectSheet(sheetId: string, options: { toggleGroup?: boolean } = {}): void {
+    let sheet = this.runtime.model.getSheet(sheetId);
+    const edit = this.cellEditDomain.getSnapshot();
+    if (edit.session && edit.status !== 'point') {
+      this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+      if (this.cellEditDomain.getSnapshot().session) return;
     }
-    this.emit();
-  }
-
-  toggleAbsoluteReference(): void {
-    if (this.editSession.active) {
-      this.editSession.toggleAbsoluteReference();
-      this.emit();
-      return;
+    if (!edit.session || edit.status !== 'point') {
+      if (options.toggleGroup) {
+        if (this.groupedSheetIds.has(sheetId) && this.groupedSheetIds.size > 1) this.groupedSheetIds.delete(sheetId);
+        else this.groupedSheetIds.add(sheetId);
+      } else {
+        this.groupedSheetIds.clear();
+        this.groupedSheetIds.add(sheetId);
+      }
     }
-    this.repeatLastCommand();
-  }
-
-  selectSheet(sheetId: string): void {
-    const sheet = this.runtime.model.getSheet(sheetId);
-    this.activeSheetId = sheetId;
-    this.selectionService.resetForSheet(sheetId);
-    this.editSession.cancel();
+    const nextActiveSheetId = edit.session && edit.status === 'point'
+      ? sheetId
+      : options.toggleGroup && !this.groupedSheetIds.has(sheetId)
+      ? this.groupedSheetIds.values().next().value ?? sheetId
+      : sheetId;
+    this.activeSheetId = nextActiveSheetId;
+    sheet = this.runtime.model.getSheet(nextActiveSheetId);
+    this.selectionService.resetForSheet(nextActiveSheetId);
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
     if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
@@ -4424,7 +4946,7 @@ export class WorkbookSession {
 
   private focusFindMatch(match: FindMatch): void {
     if (match.sheetId !== this.activeSheetId) this.selectSheet(match.sheetId);
-    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.active?.referenceMode), insertRef: (ref) => this.insertRefIntoDraft(ref) });
+    this.selectCell(cellAddress(match.row, match.column));
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
     this.emit();
@@ -4925,11 +5447,6 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     return findValidationRule(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
   }
-  getValidationAt(row: number, column: number): string[] | undefined {
-    const rule = findValidationRule(this.runtime.model.getSheet(this.activeSheetId), row, column);
-    return rule ? validationList(rule) : undefined;
-  }
-
   printWorkbook(layout: PrintLayout): void {
     if (!this.canExecute('print.preview')) {
       this.notify('You do not have permission to print');

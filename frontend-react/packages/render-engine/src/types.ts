@@ -92,7 +92,7 @@ export interface CellRenderData {
   formula?: string;
   displayValue?: string;
   style?: CellRenderStyle;
-  editor?: { kind: 'text' | 'number' | 'date' | 'list' | 'checkbox'; values?: string[] };
+  editor?: { kind: 'text' | 'number' | 'datetime' | 'validation-list' | 'combo-box' | 'checkbox' | 'mask' | 'formula' | 'rich-text' | 'custom' };
   presentation?: import('@react-sheets/core-model').CellPresentation;
   error?: string;
   merge?: MergeInfo;

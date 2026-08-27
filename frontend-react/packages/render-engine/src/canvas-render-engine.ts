@@ -5,6 +5,7 @@ import { Scene } from "./scene";
 import { SheetSkeleton } from "./sheet-skeleton";
 import { Viewport } from "./viewport";
 import { drawChromeLayer } from "./chrome-renderer";
+import { resolveCellTextLayout } from './cell-text-layout';
 import {
   COL_HEADER_HEIGHT,
   RESIZE_HIT_TOLERANCE_PX,
@@ -341,6 +342,49 @@ export class CanvasRenderEngine {
     if (local.x < origin.x || local.y < origin.y) return null;
     const content = this.localToContent(local);
     return this.skeletonModel.getCellAtPoint(content);
+  }
+
+  /** Resolve a double-click point to a UTF-16 caret offset using render-owned text geometry. */
+  textCaretAtLocalPoint(local: Point, cell: CellAddress, text: string): number | null {
+    const data = this.cellProvider(cell);
+    const rect = this.skeletonModel.getCellRect(cell.row, cell.column);
+    const context = this.scene.getLayer('content')?.renderingContext;
+    if (!data || !rect || !context) return null;
+    if (data.style?.textOrientation && data.style.textOrientation !== 'horizontal') return null;
+    const content = this.localToContent(local);
+    const layout = resolveCellTextLayout(context, data, this.theme, text, rect.width, false);
+    const padding = data.style?.padding ?? this.theme.cellPadding;
+    const lineIndex = Math.max(0, Math.min(layout.lines.length - 1, Math.floor((content.y - rect.y - padding) / Math.max(1, layout.lineHeightPx))));
+    const line = layout.lines[lineIndex] ?? '';
+    context.save();
+    context.font = layout.font;
+    const lineWidth = context.measureText(line).width;
+    const alignment = data.style?.horizontalAlignment;
+    const lineStartX = alignment === 'right'
+      ? rect.x + rect.width - padding - lineWidth
+      : alignment === 'center' || alignment === 'centerContinuous'
+        ? rect.x + (rect.width - lineWidth) / 2
+        : rect.x + padding + Math.max(0, Math.trunc(data.style?.indent ?? 0)) * 12;
+    const targetX = content.x - lineStartX;
+    let lineOffset = 0;
+    let width = 0;
+    for (const character of Array.from(line)) {
+      const nextWidth = width + context.measureText(character).width;
+      if (targetX < (width + nextWidth) / 2) break;
+      width = nextWidth;
+      lineOffset += character.length;
+    }
+    context.restore();
+    let textOffset = 0;
+    for (let index = 0; index < lineIndex; index += 1) {
+      const previous = layout.lines[index] ?? '';
+      const found = text.indexOf(previous, textOffset);
+      textOffset = (found < 0 ? textOffset + previous.length : found + previous.length);
+      if (text[textOffset] === '\r') textOffset += 1;
+      if (text[textOffset] === '\n') textOffset += 1;
+    }
+    const lineStart = text.indexOf(line, textOffset);
+    return Math.max(0, Math.min(text.length, (lineStart < 0 ? textOffset : lineStart) + lineOffset));
   }
 
   /** 表头命中:角块/行头/列头 + 调整热区 */

@@ -18,6 +18,7 @@ import {
   type UiSessionIntent,
   type UiSnapshot,
   type WorkbookSession,
+  richTextSelectionHasFlag,
 } from "@react-sheets/spreadsheet-app";
 import type { RibbonPivotActions } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
@@ -386,6 +387,14 @@ export function useEditorCommandController({
   };
 
   const executeShortcut = (id: string): boolean => {
+    const toggleRichTextFlag = (key: 'bold' | 'italic' | 'underline'): boolean => {
+      const edit = session.cellEdit.getSnapshot().session;
+      if (!edit || edit.caret.start === edit.caret.end) return false;
+      const enabled = !richTextSelectionHasFlag(edit.draft, edit.caret, key);
+      const style = key === 'bold' ? { bold: enabled } : key === 'italic' ? { italic: enabled } : { underline: enabled };
+      session.cellEdit.dispatch({ type: 'rich-text.format', style });
+      return true;
+    };
     switch (id) {
       case "history.undo": session.undo(); return true;
       case "history.redo": session.redo(); return true;
@@ -396,9 +405,9 @@ export function useEditorCommandController({
       case "clipboard.pasteSpecial": dispatchSessionIntent({ type: "dialog.open", dialog: "paste-special" }); return true;
       case "clipboard.cancel": session.clearClipboard(); session.cancelFormatPainter(); return true;
       case "workbook.save": void session.saveWorkbook("Keyboard shortcut"); return true;
-      case "format.bold": dispatchCommand({ commandId: "sheet.style.set", params: { style: { bold: !state.homeRibbon.style.bold } } }); return true;
-      case "format.italic": dispatchCommand({ commandId: "sheet.style.set", params: { style: { italic: !state.homeRibbon.style.italic } } }); return true;
-      case "format.underline": dispatchCommand({ commandId: "sheet.style.set", params: { style: { underline: !state.homeRibbon.style.underline } } }); return true;
+      case "format.bold": if (!toggleRichTextFlag('bold')) dispatchCommand({ commandId: "sheet.style.set", params: { style: { bold: !state.homeRibbon.style.bold } } }); return true;
+      case "format.italic": if (!toggleRichTextFlag('italic')) dispatchCommand({ commandId: "sheet.style.set", params: { style: { italic: !state.homeRibbon.style.italic } } }); return true;
+      case "format.underline": if (!toggleRichTextFlag('underline')) dispatchCommand({ commandId: "sheet.style.set", params: { style: { underline: !state.homeRibbon.style.underline } } }); return true;
       case "range.fillDown": session.fillSelection("down"); return true;
       case "range.clearContents": session.clearSelection("contents"); return true;
       case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "insert" }); return true;
@@ -416,7 +425,7 @@ export function useEditorCommandController({
       case "sheet.previous": session.selectAdjacentSheet("previous"); return true;
       case "sheet.next": session.selectAdjacentSheet("next"); return true;
       case "formula.autoSum": session.autoSum(); return true;
-      case "edit.begin": session.beginEdit(); return true;
+      case "edit.begin": session.cellEdit.dispatch({ type: 'begin.request', source: 'f2', surface: 'grid' }); return true;
       case "drawing.remove": session.removeSelectedDrawing(); return true;
       case "formula.functionWizard": dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" }); return true;
       case "formula.calculate": void session.recalculateFormulas(); return true;

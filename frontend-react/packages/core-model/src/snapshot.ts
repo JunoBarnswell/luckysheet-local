@@ -5,6 +5,8 @@ import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
+import { isCellEditorConfig } from './cell-editor';
+import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 import type { ReviewStoreSnapshot } from './review-store';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
@@ -16,7 +18,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, t
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 8;
+  version: 9;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -24,6 +26,7 @@ export interface WorkbookSnapshot {
   collationContext?: WorkbookCollationContext;
   /** Workbook-owned calculation policy; formula workers consume this exact state. */
   calculationSettings: WorkbookCalculationSettings;
+  editingOptions: WorkbookEditingOptions;
   /** Workbook-owned theme identity and resolved colors. */
   theme?: WorkbookTheme;
   definedNames?: Record<string, string>;
@@ -44,7 +47,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 8 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 9 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -59,13 +62,20 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.version === 8 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version === 7 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 6 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     if (containsLegacyImageDataUrl(input)) throw new Error('ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before runtime load');
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
@@ -73,6 +83,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   }
   if (input.version === 5 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
@@ -264,6 +275,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     || !Array.isArray(snapshot.dataModel.relationships) || !Array.isArray(snapshot.dataModel.views)) {
     throw new Error('Workbook snapshot dataModel is invalid');
   }
+  if (!isWorkbookEditingOptions(snapshot.editingOptions)) throw new Error('Workbook snapshot editingOptions are invalid');
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
@@ -390,11 +402,8 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
       throw new Error('Cell style template indent is invalid');
     }
-    if (template.editor && !['text', 'number', 'date', 'list', 'checkbox'].includes(template.editor.kind)) {
+    if (template.editor && !isCellEditorConfig(template.editor)) {
       throw new Error('Cell style template editor is invalid');
-    }
-    if (template.editor?.kind === 'list' && (!Array.isArray(template.editor.values) || template.editor.values.some((value) => !value.trim()))) {
-      throw new Error('Cell style template list editor values are invalid');
     }
     templateIds.add(template.id);
   }

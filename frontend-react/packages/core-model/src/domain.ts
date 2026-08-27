@@ -102,20 +102,6 @@ export function createEmptySelection(unitId: UnitId, sheetId: SheetId): Selectio
   };
 }
 
-/** 编辑会话 — Cancel 只恢复 original，不写模型 */
-export interface EditSession {
-  sheetId: SheetId;
-  row: Row;
-  column: Column;
-  originalValue: CellData | null;
-  originalFormula?: string;
-  originalSelection: SelectionSnapshot;
-  currentDraft: string;
-  referenceMode: boolean;
-  isDirty: boolean;
-  source: 'cell' | 'formula-bar';
-}
-
 /** Excel Sheet Table — 与 WorkbookTableModel（列存/查询结果）是两个概念 */
 export interface SheetTableColumn {
   id: string;
