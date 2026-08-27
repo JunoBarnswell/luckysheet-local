@@ -42,6 +42,7 @@ import {
   updateDimensionResizeGesture,
   type DimensionResizeGesture,
 } from "./dimension-resize-gesture";
+import { resolveAutoScrollExtentGrowth } from './sheet-extent-growth';
 
 export interface CanvasFillPreview {
   startRow: number;
@@ -360,7 +361,17 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const speed = (distance: number) => Math.max(2, Math.min(24, Math.round(distance / threshold * 24)));
       const dx = left ? -speed(currentOrigin.x + threshold - point.x) : right ? speed(point.x - (currentHost.clientWidth - threshold)) : 0;
       const dy = top ? -speed(currentOrigin.y + threshold - point.y) : bottom ? speed(point.y - (currentHost.clientHeight - threshold)) : 0;
-      if (right || bottom) onRequestExtentGrowth({ rows: bottom, columns: right });
+      const viewport = currentEngine.viewport.getSnapshot();
+      const content = currentEngine.skeleton.contentSize;
+      const { rows, columns } = resolveAutoScrollExtentGrowth({
+        right,
+        bottom,
+        viewport,
+        content,
+        defaultRowHeight: currentEngine.skeleton.defaultRowHeight,
+        defaultColumnWidth: currentEngine.skeleton.defaultColumnWidth,
+      });
+      if (rows || columns) onRequestExtentGrowth({ rows, columns });
       if (dx !== 0 || dy !== 0) currentEngine.scrollBy(dx, dy);
       const queryPoint = {
         x: Math.max(currentOrigin.x + 1, Math.min(currentHost.clientWidth - 1, point.x)),
@@ -906,13 +917,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const engine = engineRef.current;
     if (!engine) return;
     event.preventDefault();
-    const viewport = engine.viewport.getSnapshot();
-    const content = engine.skeleton.contentSize;
-    const rows = event.deltaY > 0 && content.height - viewport.scrollY - viewport.height <= Math.max(viewport.height, skeleton.defaultRowHeight * 50);
-    const columns = event.deltaX > 0 && content.width - viewport.scrollX - viewport.width <= Math.max(viewport.width, skeleton.defaultColumnWidth * 8);
-    if (rows || columns) onRequestExtentGrowth({ rows, columns });
     engine.scrollBy(event.deltaX, event.deltaY);
-  }, [engineRef, onRequestExtentGrowth, skeleton]);
+  }, [engineRef]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (phase !== "ready") return;

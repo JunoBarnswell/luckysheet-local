@@ -44,10 +44,6 @@ import {
   DEFAULT_PIVOT_STYLE_OPTIONS,
   formatPivotMember,
   isPivotError,
-  MAX_SHEET_COLUMN_COUNT,
-  MAX_SHEET_ROW_COUNT,
-  SHEET_COLUMN_GROWTH_CHUNK,
-  SHEET_ROW_GROWTH_CHUNK,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
@@ -62,6 +58,7 @@ import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
+import { planSheetExtentGrowth } from './canvas/sheet-extent-growth';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
 
@@ -489,18 +486,14 @@ export function SheetCanvas({
   }, [sheet.columnCount, sheet.rowCount, sheetId]);
 
   const requestExtentGrowth = useCallback((axes: { rows?: boolean; columns?: boolean }) => {
-    const pending = requestedExtentRef.current.sheetId === sheetId
-      ? requestedExtentRef.current
-      : { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
-    const rowCount = axes.rows && pending.rowCount <= sheet.rowCount
-      ? Math.min(MAX_SHEET_ROW_COUNT, sheet.rowCount + SHEET_ROW_GROWTH_CHUNK)
-      : Math.max(sheet.rowCount, pending.rowCount);
-    const columnCount = axes.columns && pending.columnCount <= sheet.columnCount
-      ? Math.min(MAX_SHEET_COLUMN_COUNT, sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK)
-      : Math.max(sheet.columnCount, pending.columnCount);
-    if (rowCount === sheet.rowCount && columnCount === sheet.columnCount) return;
-    requestedExtentRef.current = { sheetId, rowCount, columnCount };
-    onEnsureSheetExtent(rowCount, columnCount);
+    const next = planSheetExtentGrowth(
+      { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount },
+      requestedExtentRef.current,
+      axes,
+    );
+    if (!next) return;
+    requestedExtentRef.current = next;
+    onEnsureSheetExtent(next.rowCount, next.columnCount);
   }, [onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
 
   const skeleton = useMemo(
@@ -1053,7 +1046,7 @@ export function SheetCanvas({
               />
             </Box>
             {engineReady && engineRef.current ? (
-              <SheetScrollBars engine={engineRef.current} onRequestExtentGrowth={requestExtentGrowth} />
+              <SheetScrollBars engine={engineRef.current} />
             ) : null}
             {engineReady ? pivotStatusProjections.map((projection) => (
               <PivotProjectionStatusNotice
@@ -1199,10 +1192,8 @@ function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | n
  */
 function SheetScrollBars({
   engine,
-  onRequestExtentGrowth,
 }: {
   engine: CanvasRenderEngine;
-  onRequestExtentGrowth: (axes: { rows?: boolean; columns?: boolean }) => void;
 }): React.ReactElement {
   const [viewport, setViewport] = useState(() => engine.viewport.getSnapshot());
   useEffect(() => {
@@ -1218,9 +1209,6 @@ function SheetScrollBars({
         offset={viewport.scrollX}
         onChange={(offset) => {
           const currentViewport = engine.viewport.getSnapshot();
-          if (content.width - offset - currentViewport.width <= Math.max(currentViewport.width, engine.skeleton.defaultColumnWidth * 8)) {
-            onRequestExtentGrowth({ columns: true });
-          }
           engine.scrollTo(offset, currentViewport.scrollY);
         }}
         orientation="horizontal"
@@ -1231,9 +1219,6 @@ function SheetScrollBars({
         offset={viewport.scrollY}
         onChange={(offset) => {
           const currentViewport = engine.viewport.getSnapshot();
-          if (content.height - offset - currentViewport.height <= Math.max(currentViewport.height, engine.skeleton.defaultRowHeight * 50)) {
-            onRequestExtentGrowth({ rows: true });
-          }
           engine.scrollTo(currentViewport.scrollX, offset);
         }}
         orientation="vertical"
