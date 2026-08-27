@@ -420,6 +420,7 @@ export function Ribbon({
       onExecute={executeCatalogResult}
       iconOnly={options.iconOnly}
       iconOverride={options.iconOverride}
+      labelOverride={options.labelOverride}
       ribbonLayoutNodeId={options.ribbonLayoutNodeId}
       textBelow={options.tile}
       className={options.className}

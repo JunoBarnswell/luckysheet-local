@@ -56,7 +56,7 @@ export {
   type PointerGestureOwner,
 } from './pointer-gesture-owner';
 export { DesignerShell, type DesignerShellProps } from './DesignerShell';
-export { DESIGNER_GEOMETRY, RIBBON_DENSITY, type PeerCursor, type SaveState } from './shell-types';
+export { DESIGNER_GEOMETRY, RIBBON_DENSITY, RIBBON_DENSITY_CLASSES, type PeerCursor, type SaveState } from './shell-types';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
 export {
   RibbonEmptyState,

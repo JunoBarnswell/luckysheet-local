@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { registerSheetCommands } from '@react-sheets/sheet-features';
+import { createCellSetMutationParams, registerSheetCommands } from '@react-sheets/sheet-features';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { CollaborationSession } from './collaboration-session';
 import { OfflineQueue } from './offline-queue';
@@ -52,7 +52,11 @@ describe('collaboration helpers', () => {
       id: 'cell.set',
       unitId: 'wb-1',
       sheetId: 'sheet-1',
-      params: { sheetId: 'sheet-1', row: 1, column: 1, value: { value: 2 } },
+      params: createCellSetMutationParams(
+        workbook.getSheet('sheet-1'),
+        { sheetId: 'sheet-1', row: 1, column: 1, value: { value: 2 } },
+        'script',
+      ),
       affectedRanges: [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }],
     }], 'wb-1', 'op-ack');
     assert.equal(session.offlineQueue.getPendingCount(), 1);
@@ -77,7 +81,11 @@ describe('collaboration helpers', () => {
       id: 'cell.set',
       unitId: workbook.unitId,
       sheetId: workbook.primarySheetId,
-      params: { sheetId: workbook.primarySheetId, row: 0, column: 0, value: { value: 8 } },
+      params: createCellSetMutationParams(
+        workbook.getSheet(workbook.primarySheetId),
+        { sheetId: workbook.primarySheetId, row: 0, column: 0, value: { value: 8 } },
+        'script',
+      ),
       affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
     }], workbook.unitId, 'op-rest');
     session.offlineQueue.setOnline(true);
@@ -155,7 +163,11 @@ describe('collaboration helpers', () => {
       id: 'cell.set',
       unitId: 'wb-1',
       sheetId: 'sheet-1',
-      params: { sheetId: 'sheet-1', row: 9, column: 0, value: { value: 2 } },
+      params: createCellSetMutationParams(
+        workbook.getSheet('sheet-1'),
+        { sheetId: 'sheet-1', row: 9, column: 0, value: { value: 2 } },
+        'script',
+      ),
       affectedRanges: [{ sheetId: 'sheet-1', startRow: 9, endRow: 9, startColumn: 0, endColumn: 0 }],
     }], 'wb-1', 'op-pending');
     session.recordCommittedMutations([{

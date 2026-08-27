@@ -7,6 +7,7 @@ import type {
 } from '@react-sheets/core-model';
 import { clearFormulaProvenance } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
+import { createCellSetMutationParams } from './cell-write-authority';
 
 export interface SetCellStyleTemplateParams {
   sheetId: string;
@@ -305,7 +306,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
       for (const entry of entries) {
         const cellRange = { sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column };
         const next = clearFormulaProvenance(entry.next);
-        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, value: next }, affectedRanges: [cellRange],
+        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: entry.row, column: entry.column, value: next }, 'script'), affectedRanges: [cellRange],
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous }, affectedRanges: [cellRange] }],
           apply: () => sheet.cells.set(entry.row, entry.column, next),
         });

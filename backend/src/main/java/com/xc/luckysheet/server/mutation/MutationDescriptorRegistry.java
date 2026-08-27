@@ -35,7 +35,7 @@ public class MutationDescriptorRegistry {
     private static final Set<String> TEXT_ORIENTATIONS = Set.of("horizontal", "stacked", "rotateUp", "rotateDown");
     private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
-            "banded.set",
+            "banded.set", "sheet.extent.grow",
             "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set", "fill.applied", "fill.restored",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
@@ -68,6 +68,7 @@ public class MutationDescriptorRegistry {
     private final Map<String, MutationDescriptor> descriptors = new ConcurrentHashMap<>();
 
     public MutationDescriptorRegistry() {
+        register(new SheetExtentDescriptor());
         register(new CellDescriptor("cell.set"));
         register(new CellDescriptor("cell.restore"));
         register(new CellDescriptor("range.set"));
@@ -241,6 +242,53 @@ public class MutationDescriptorRegistry {
         @Override public String protectionAction() { return permission.protectionAction(); }
     }
 
+    private static final class SheetExtentDescriptor extends BaseDescriptor {
+        private SheetExtentDescriptor() {
+            super("sheet.extent.grow", WorkbookAclRole.EDITOR);
+        }
+
+        @Override
+        public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "rowCount", "columnCount"), "sheet.extent.grow");
+            requireExtent(snapshot, mutation, params);
+            return List.of();
+        }
+
+        @Override
+        public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            ObjectNode sheet = requireExtent(root, mutation, params);
+            sheet.put("rowCount", params.path("rowCount").intValue());
+            sheet.put("columnCount", params.path("columnCount").intValue());
+            return root;
+        }
+
+        private static ObjectNode requireExtent(JsonNode snapshot, OperationMutation mutation, ObjectNode params) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot);
+            String sheetId = params.path("sheetId").asText("");
+            if (sheetId.isBlank() || !sheetId.equals(mutation.sheetId())) {
+                throw ServiceException.validation("sheet.extent.grow sheetId must match the mutation sheet");
+            }
+            ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+            int rowCount = boundedCount(params.get("rowCount"), SnapshotMutationSupport.MAX_ROW + 1, "rowCount");
+            int columnCount = boundedCount(params.get("columnCount"), SnapshotMutationSupport.MAX_COLUMN + 1, "columnCount");
+            if (rowCount < sheet.path("rowCount").asInt(0) || columnCount < sheet.path("columnCount").asInt(0)) {
+                throw ServiceException.validation("sheet.extent.grow cannot shrink a worksheet");
+            }
+            return sheet;
+        }
+
+        private static int boundedCount(JsonNode value, int maximum, String field) {
+            if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()
+                    || value.intValue() < 1 || value.intValue() > maximum) {
+                throw ServiceException.validation("sheet.extent.grow " + field + " is outside worksheet limits");
+            }
+            return value.intValue();
+        }
+    }
+
     private static final class CellDescriptor extends BaseDescriptor {
         private CellDescriptor(String id) {
             super(id, WorkbookAclRole.EDITOR);
@@ -323,9 +371,11 @@ public class MutationDescriptorRegistry {
         }
 
         private void setCell(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "row", "column", "value", "writeAuthority"), "cell.set");
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
             JsonNode value = params.get("value");
             if (value == null || !value.isObject()) throw ServiceException.validation("cell.set value must be an object");
+            CellWriteAuthority.requireCellWrite(root, sheet, sheetId, params, (ObjectNode) value);
             SnapshotMutationSupport.putCell(sheet, coordinate, value);
         }
 

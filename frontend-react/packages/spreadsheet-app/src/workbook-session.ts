@@ -257,6 +257,7 @@ export interface WorkbookSessionOptions {
   /** Workbook calendar and one fixed calculation-cycle clock basis. */
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   xlsxExecution?: 'worker' | 'inline-test';
 }
@@ -608,7 +609,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -622,6 +623,7 @@ export class WorkbookSession {
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
       canonicalReferenceDate,
+      collaborationUrl,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();

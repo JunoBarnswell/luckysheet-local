@@ -61,6 +61,7 @@ export interface SpreadsheetRuntime {
   formulaAudit: FormulaAuditController;
   dateSystem: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
   model: WorkbookModel;
   commands: CommandRuntime;
   drawing: DrawingRuntime;
@@ -135,6 +136,7 @@ export function createSpreadsheetRuntime(options: {
   resolution?: WorkbookResolution;
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  collaborationUrl?: string;
 } = {}): SpreadsheetRuntime {
   const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
   if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
@@ -174,6 +176,7 @@ export function createSpreadsheetRuntime(options: {
     formulaAudit,
     dateSystem,
     canonicalReferenceDate,
+    collaborationUrl: options.collaborationUrl,
     model,
     commands,
     drawing,
@@ -902,7 +905,11 @@ export function startCollaborationSession(
     runtime.collaboration.setRevision(runtime.remoteRevision);
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const client = new CollabSocketClient(protocol + '://' + window.location.host + '/ws', {
+    const parsedCollaborationUrl = new URL(runtime.collaborationUrl ?? (protocol + '://' + window.location.host + '/ws'));
+    if (!['ws:', 'wss:'].includes(parsedCollaborationUrl.protocol) || parsedCollaborationUrl.username || parsedCollaborationUrl.password) {
+      throw new Error('Collaboration URL must be an uncredentialed ws:// or wss:// URL');
+    }
+    const client = new CollabSocketClient(parsedCollaborationUrl.toString(), {
       authTokenProvider,
       shareTokenProvider,
     });

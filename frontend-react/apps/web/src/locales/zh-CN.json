@@ -373,6 +373,7 @@
     "format": "格式",
     "columnWidth": "列宽…",
     "autoFitColumnWidth": "自动调整列宽",
+    "autoSumCompact": "自动求和",
     "hideColumns": "隐藏列",
     "unhideColumns": "取消隐藏列",
     "defaultColumnWidth": "默认列宽…",

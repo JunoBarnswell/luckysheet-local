@@ -4,7 +4,7 @@ import { ribbonLayoutModeForWidth } from './RibbonShell';
 import { DESIGNER_GEOMETRY, RIBBON_DENSITY } from './shell-types';
 
 describe('RibbonShell responsive layout', () => {
-  it('uses Office-style density breakpoints without a horizontal overflow mode', () => {
+  it('uses Office-style density breakpoints with one reachable command viewport', () => {
     assert.equal(ribbonLayoutModeForWidth(1920), 'wide');
     assert.equal(ribbonLayoutModeForWidth(1919), 'compact');
     assert.equal(ribbonLayoutModeForWidth(1800), 'compact');
@@ -16,13 +16,14 @@ describe('RibbonShell responsive layout', () => {
 
   it('keeps the 1920x1080 Designer vertical contract exact', () => {
     assert.equal(DESIGNER_GEOMETRY.ribbonHeight + DESIGNER_GEOMETRY.formulaBarHeight + DESIGNER_GEOMETRY.workspaceHeight + DESIGNER_GEOMETRY.statusBarHeight, 1080);
-    assert.equal(DESIGNER_GEOMETRY.ribbonTabHeight + DESIGNER_GEOMETRY.ribbonContentHeight, 133);
+    assert.equal(DESIGNER_GEOMETRY.ribbonTabHeight + DESIGNER_GEOMETRY.ribbonContentHeight, 118);
     assert.deepEqual(RIBBON_DENSITY, {
-      shellHeight: 133,
+      shellHeight: 118,
       tabStripHeight: 32,
-      commandAreaHeight: 101,
-      groupControlHeight: 70,
-      groupCaptionHeight: 12,
+      commandAreaHeight: 86,
+      groupContentHeight: 82,
+      largeCommandHeight: 56,
+      groupCaptionHeight: 14,
     });
   });
 });

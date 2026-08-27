@@ -14,6 +14,12 @@ import {
 import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
 
+declare global {
+  interface Window {
+    reactSheetsDesktopConfig?: Readonly<{ collaborationUrl: string }>;
+  }
+}
+
 export interface StorageReadiness {
   state: WorkspacePersistenceState | 'warming' | 'failed';
   error: WorkspaceStorageError | null;
@@ -40,6 +46,17 @@ function formatStorageError(error: unknown): WorkspaceStorageError {
     recovery: '请重新开始页面内存会话后重试。',
     cause: error,
   });
+}
+
+function resolveDesktopCollaborationUrl(): string | undefined {
+  if (typeof window === 'undefined' || window.location.protocol !== 'app:') return undefined;
+  const candidate = window.reactSheetsDesktopConfig?.collaborationUrl;
+  if (!candidate) throw new Error('Desktop runtime is missing its collaboration endpoint');
+  const parsed = new URL(candidate);
+  if (!['ws:', 'wss:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('Desktop collaboration endpoint is invalid');
+  }
+  return parsed.toString();
 }
 
 export function ApplicationServicesProvider({ children }: { children: ReactNode }) {
@@ -75,6 +92,7 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       workspacePersistence: persistence,
       authTokenProvider,
       shareTokenProvider,
+      collaborationUrl: resolveDesktopCollaborationUrl(),
       assetStore: useLocalAssets ? new LocalAssetStore(unitId, persistence.coordinator) : new RemoteAssetStore(unitId, workbookApi),
     });
     return { catalog, persistence, ensureStorageReady, retryStorage, workbookApi, createWorkbookSessionOptions };

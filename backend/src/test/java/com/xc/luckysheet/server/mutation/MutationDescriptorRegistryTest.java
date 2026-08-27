@@ -32,10 +32,45 @@ class MutationDescriptorRegistryTest {
     void cellSetUsesServerResolvedRangeAndChangesSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}");
-        var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree("{\"row\":2,\"column\":3,\"value\":{\"value\":42}}"));
+        var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 3, "{\"value\":42}", "accepted")));
         assertEquals(2, registry.resolveRanges(snapshot, mutation).get(0).startRow());
         var next = registry.applyPublicMutations(snapshot, List.of(mutation));
         assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+    }
+
+    @Test
+    void sheetExtentGrowCommitsMonotonicallyAndRejectsShrinkOrOverflow() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        var grow = new OperationMutation("sheet.extent.grow", "sheet-1", mapper.readTree("{\"sheetId\":\"sheet-1\",\"rowCount\":2000,\"columnCount\":52}"));
+        var next = registry.applyPublicMutations(snapshot, List.of(grow));
+        assertEquals(2000, next.path("sheets").get(0).path("rowCount").asInt());
+        assertEquals(52, next.path("sheets").get(0).path("columnCount").asInt());
+
+        var shrink = new OperationMutation("sheet.extent.grow", "sheet-1", mapper.readTree("{\"sheetId\":\"sheet-1\",\"rowCount\":999,\"columnCount\":52}"));
+        var overflow = new OperationMutation("sheet.extent.grow", "sheet-1", mapper.readTree("{\"sheetId\":\"sheet-1\",\"rowCount\":1048577,\"columnCount\":52}"));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(shrink)));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(overflow)));
+    }
+
+    @Test
+    void cellSetRevalidatesTheBoundCandidateAgainstTheCommitSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[{
+                  "id":"whole-positive","type":"whole","operator":"greaterThan","formula1":"0","alertStyle":"stop","allowBlank":false,
+                  "ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}]
+                }]}]}
+                """);
+        var invalid = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(0, 0, "{\"value\":-1}", "accepted")));
+        ServiceException validation = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+        assertEquals("VALIDATION_ERROR", validation.code());
+
+        var mismatched = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","row":0,"column":0,"value":{"value":2},"writeAuthority":{"kind":"script",
+                 "target":{"sheetId":"sheet-1","row":0,"column":0},"candidate":{"value":3},"validationDecision":{"status":"accepted","ruleId":"whole-positive","alertStyle":"stop"}}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(mismatched)));
     }
 
     @Test
@@ -75,6 +110,12 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, prepared.affectedRanges().size());
         assertEquals(true, next.path("sheets").get(0).path("cells").path("0").isMissingNode());
         assertEquals("move", next.path("sheets").get(0).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    private static String cellSetParams(int row, int column, String value, String status) {
+        return "{\"sheetId\":\"sheet-1\",\"row\":" + row + ",\"column\":" + column + ",\"value\":" + value
+                + ",\"writeAuthority\":{\"kind\":\"script\",\"target\":{\"sheetId\":\"sheet-1\",\"row\":" + row
+                + ",\"column\":" + column + "},\"candidate\":" + value + ",\"validationDecision\":{\"status\":\"" + status + "\"}}}";
     }
 
     @Test
@@ -216,7 +257,7 @@ class MutationDescriptorRegistryTest {
                 "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
-                "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
+                "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",

@@ -24,12 +24,13 @@ class CanonicalRowsPermutedRangesMigrationTest {
             Context context = mock(Context.class);
             when(context.getConnection()).thenReturn(connection);
 
-            new db.migration.h2.V6__canonical_rows_permuted_ranges().migrate(context);
+            new db.migration.h2.R__canonical_rows_permuted().migrate(context);
 
             try (var statement = connection.createStatement(); var rows = statement.executeQuery("select envelope_json from operation_log where operation_id = 'op-1'")) {
                 rows.next();
                 assertTrue(rows.getString(1).contains("\"startColumn\":0"));
                 assertTrue(rows.getString(1).contains("\"endColumn\":16383"));
+                assertTrue(rows.getString(1).contains("\"affectedColumnEnd\":16383"));
             }
             try (var statement = connection.createStatement(); var rows = statement.executeQuery("select payload_json from coordination_outbox where event_id = 'event-1'")) {
                 rows.next();
@@ -49,7 +50,7 @@ class CanonicalRowsPermutedRangesMigrationTest {
             Context context = mock(Context.class);
             when(context.getConnection()).thenReturn(connection);
 
-            assertThrows(IllegalStateException.class, () -> new db.migration.h2.V6__canonical_rows_permuted_ranges().migrate(context));
+            assertThrows(IllegalStateException.class, () -> new db.migration.h2.R__canonical_rows_permuted().migrate(context));
         }
     }
 

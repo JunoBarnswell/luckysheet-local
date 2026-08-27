@@ -7,6 +7,7 @@ import {
   Inline,
   Stack,
   Text,
+  RIBBON_DENSITY_CLASSES,
   type RibbonLayoutState,
 } from '@react-sheets/ui-system';
 import {
@@ -83,11 +84,11 @@ const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = 
   history: 'w-[64px]',
   clipboard: 'w-[118px]',
   font: 'w-[205px]',
-  alignment: 'w-[211px]',
+  alignment: 'w-[180px]',
   number: 'w-[120px]',
-  styles: 'w-[266px]',
-  cells: 'w-[158px]',
-  editing: 'w-[222px]',
+  styles: 'w-[166px]',
+  cells: 'w-[118px]',
+  editing: 'w-[204px]',
 };
 
 export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
@@ -169,18 +170,18 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const spec = RIBBON_LAYOUT_SPECS[tab];
   const isHome = tab === 'home';
   return (
-    <Inline gap="none" className={`${isHome ? 'h-[101px] px-3 py-1' : 'h-[86px]'} w-full min-w-0 flex-nowrap items-start overflow-hidden`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} ${isHome ? 'px-3' : ''} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {spec.groups.map((group, index) => {
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
         const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
         return (
           <React.Fragment key={group.id}>
             {index > 0 ? isHome
-              ? <Box className="relative mx-2 h-[76px] w-0 shrink-0"><Divider orientation="vertical" className="absolute left-0 h-full" /></Box>
-              : <Divider orientation="vertical" className="h-[82px]" /> : null}
-            <Stack data-ribbon-group={group.id} gap="none" className={`${isHome ? 'h-[93px] overflow-visible' : 'h-[86px] overflow-hidden'} min-w-0 shrink-0 justify-between px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
-              <Inline gap="none" className={`${isHome ? 'h-[70px]' : 'h-[72px] pt-1'} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
-              <Text size="xs" tone="subtle" className={`${isHome ? 'h-[12px] text-[10px] font-normal leading-[12px] text-[#999]' : 'h-[14px] font-medium leading-[14px] text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
+              ? <Box className={`${RIBBON_DENSITY_CLASSES.groupContent} relative mx-1.5 w-0 shrink-0`}><Divider orientation="vertical" className="absolute left-0 h-full" /></Box>
+              : <Divider orientation="vertical" className={RIBBON_DENSITY_CLASSES.groupContent} /> : null}
+            <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+              <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
+              <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} ${isHome ? 'text-[10px] font-normal text-[#999]' : 'font-medium text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
             </Stack>
           </React.Fragment>
         );

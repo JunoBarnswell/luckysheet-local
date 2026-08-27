@@ -222,7 +222,7 @@ function occupiedCellsForColumns(sheet: CanvasSheetSnapshot, columns: ReadonlySe
   const cells: OccupiedCellAddress[] = [];
   sheet.forEachOccupiedCell((row, column) => {
     if (columns.has(column)) cells.push({ row, column });
-  });
+  }, { columns });
   return cells;
 }
 
@@ -233,7 +233,7 @@ function occupiedCellsByRow(sheet: CanvasSheetSnapshot, rows: ReadonlySet<number
     const columns = cells.get(row) ?? [];
     columns.push(column);
     cells.set(row, columns);
-  });
+  }, { rows });
   return cells;
 }
 

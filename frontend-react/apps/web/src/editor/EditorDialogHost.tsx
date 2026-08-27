@@ -134,7 +134,7 @@ export function EditorDialogHost({
         rows={[]}
         layout={state.printLayout}
         pages={state.printPages}
-        getRow={(row) => ({
+        getRow={(row) => state.selectedSheet.hiddenRows.includes(row) ? undefined : ({
           rowNumber: row + 1,
           cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? "" })),
         })}

@@ -373,6 +373,7 @@
     "format": "Format",
     "columnWidth": "Column Width…",
     "autoFitColumnWidth": "AutoFit Column Width",
+    "autoSumCompact": "AutoSum",
     "hideColumns": "Hide Columns",
     "unhideColumns": "Unhide Columns",
     "defaultColumnWidth": "Default Width…",

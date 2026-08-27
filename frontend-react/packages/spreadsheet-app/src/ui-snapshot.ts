@@ -111,7 +111,10 @@ export interface CanvasSheetSnapshot {
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
   /** Sparse model addresses for operations such as AutoFit; never a rectangle scan. */
-  forEachOccupiedCell: (visitor: (row: number, column: number) => void) => void;
+  forEachOccupiedCell: (
+    visitor: (row: number, column: number) => void,
+    selection?: { rows?: ReadonlySet<number>; columns?: ReadonlySet<number> },
+  ) => void;
   usedRange: RangeRef;
   /** Canonical floating-object aggregate. UI never consumes legacy projections. */
   drawings: DrawingObject[];
@@ -303,6 +306,30 @@ export function buildCanvasSheetSnapshot(
     };
   };
 
+  const forEachOccupiedCell: CanvasSheetSnapshot['forEachOccupiedCell'] = (visitor, selection = {}) => {
+    const visitMaterialized = (_cell: CellData, row: number, column: number) => {
+      if (selection.rows && !selection.rows.has(row)) return;
+      if (selection.columns && !selection.columns.has(column)) return;
+      visitor(row, column);
+    };
+    if (selection.rows) sheet.cells.forEachInRows(selection.rows, visitMaterialized);
+    else if (selection.columns) sheet.cells.forEachInColumns(selection.columns, visitMaterialized);
+    else sheet.cells.forEach(visitMaterialized);
+
+    for (const region of sheet.dataRegions) {
+      const startRow = Math.max(region.range.startRow, region.headerRow + 1);
+      const rows = selection.rows
+        ? [...selection.rows].filter((row) => row >= startRow && row <= region.range.endRow)
+        : Array.from({ length: Math.max(0, region.range.endRow - startRow + 1) }, (_, offset) => startRow + offset);
+      const columns = selection.columns
+        ? [...selection.columns].filter((column) => column >= region.range.startColumn && column <= region.range.endColumn)
+        : Array.from({ length: region.range.endColumn - region.range.startColumn + 1 }, (_, offset) => region.range.startColumn + offset);
+      for (const row of rows) for (const column of columns) {
+        if (!sheet.cells.has(row, column)) visitor(row, column);
+      }
+    }
+  };
+
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
@@ -341,7 +368,7 @@ export function buildCanvasSheetSnapshot(
     isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
     occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
-    forEachOccupiedCell: (visitor) => sheet.cells.forEach((_cell, row, column) => visitor(row, column)),
+    forEachOccupiedCell,
     usedRange,
     drawings: structuredClone(sheet.drawings),
     drawingPayloads: new Map(

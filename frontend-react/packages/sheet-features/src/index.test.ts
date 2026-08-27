@@ -12,6 +12,8 @@ import {
   copyRangeToClipboardData,
   clipboardRepresentations,
   createPasteSpecialSpec,
+  createCellSetMutationParams,
+  isCellSetMutationParams,
 } from './index';
 import type { CellInputInterpretationContext } from './text-input';
 
@@ -66,6 +68,30 @@ test('sheet commands: cell.set, range.set, and undo/redo', () => {
   assert.equal(sheet.cells.get(1, 0), undefined);
   assert.equal(sheet.cells.get(2, 1), undefined);
   assert.equal(sheet.cells.get(0, 0)?.value, 'Title'); // untouched
+});
+
+test('cell.set authority matches canonical values independently of JSON object key order', () => {
+  const workbook = new WorkbookModel('unit-cell-write-authority', 'Cell authority');
+  const sheet = workbook.getSheet('sheet-1');
+  const params = createCellSetMutationParams(sheet, {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    value: { value: 'ordered', style: { bold: true, italic: false } },
+  }, 'external-sync');
+  const reordered = {
+    column: params.column,
+    row: params.row,
+    sheetId: params.sheetId,
+    value: { style: { italic: false, bold: true }, value: 'ordered' },
+    writeAuthority: {
+      validationDecision: params.writeAuthority.validationDecision,
+      candidate: { style: { italic: false, bold: true }, value: 'ordered' },
+      target: params.writeAuthority.target,
+      kind: params.writeAuthority.kind,
+    },
+  };
+  assert.equal(isCellSetMutationParams(reordered), true);
 });
 
 test('checkbox editor normalizes supported values atomically and restores exact cells', () => {

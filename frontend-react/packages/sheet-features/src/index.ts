@@ -42,6 +42,7 @@ import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
+import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -78,6 +79,7 @@ export * from './find-replace';
 export * from './cell-template-commands';
 export * from './clear-planner';
 export * from './data-region-context';
+export * from './cell-write-authority';
 
 
 export interface SetCellValueParams {
@@ -689,7 +691,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
     metadata: {
       schema: { name: 'SheetExtentGrow', validate: isSheetExtentMutation },
-      permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['sheet.extent.restore'],
     },
@@ -1102,17 +1104,18 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
 
   // 2. Cell mutations & commands
-  runtime.registry.registerMutation<SetCellValueParams>({
+  runtime.registry.registerMutation<CellSetMutationParams>({
     id: 'cell.set',
     handler: (item, context) => {
-      if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
+      if (!isCellSetMutationParams(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
+      assertCellWriteAuthority(params, context.workbook.getSheet(params.sheetId));
       const value = clearFormulaProvenance(params.value);
       assertCanonicalCheckboxCell(value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
     },
     metadata: {
-      schema: { name: 'SetCellValue', validate: isCellSetMutation },
+      schema: { name: 'SetCellValue', validate: isCellSetMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: cellRange, mode: 'exact' },
       inverseIds: ['cell.restore'],
@@ -1141,7 +1144,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const previous = sheet.cells.get(params.row, params.column);
       const affectedRanges = cellRange(params);
       const value = clearFormulaProvenance(params.value);
-      const canonicalParams = { ...params, value };
+      const canonicalParams = createCellSetMutationParams(sheet, { ...params, value }, 'script');
       context.applyMutation({
         id: 'cell.set',
         unitId: context.workbook.unitId,
@@ -1199,12 +1202,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         id: 'cell.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params: {
+        params: createCellSetMutationParams(sheet, {
           sheetId: params.sheetId,
           row: params.row,
           column: params.column,
           value: structuredClone(next),
-        },
+        }, 'direct-entry', params.validationConfirmation === true),
         affectedRanges,
         inverse: [{
           id: 'cell.restore',

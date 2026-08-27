@@ -12,7 +12,7 @@ public final class GeneratedWorkbookContract {
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
-        Map.entry("sheet.extent.grow", new MutationCapability("local", false, "SheetExtentGrow", "viewer", "none", false, "none", false, "none", "worksheet")),
+        Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
         Map.entry("sheet.extent.restore", new MutationCapability("local", false, "SheetExtentRestore", "viewer", "none", false, "none", false, "none", "worksheet")),
         Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false, "edit-objects", true, "declared", "drawing")),
         Map.entry("sheet.add", new MutationCapability("remote", true, "SheetAdd", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -43,7 +43,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true, "edit-objects", true, "declared", "drawing"))
     );
     public static final Map<String, PermissionPolicy> MUTATION_PERMISSIONS = Map.ofEntries(
-        Map.entry("sheet.extent.grow", new PermissionPolicy("navigate", "none", false, "none", "worksheet")),
+        Map.entry("sheet.extent.grow", new PermissionPolicy("edit-cell", "none", false, "none", "worksheet")),
         Map.entry("sheet.extent.restore", new PermissionPolicy("navigate", "none", false, "none", "worksheet")),
         Map.entry("banded.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new PermissionPolicy("format", "format", true, "declared", "range")),

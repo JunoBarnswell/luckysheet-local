@@ -232,6 +232,15 @@ describe('canonical drawing UI projection', () => {
     assert.equal(cell?.value, '10');
     assert.equal(cell?.displayValue, '10');
     assert.equal(cell?.style?.bold, true);
+    const occupied: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => occupied.push(`${row}:${column}`));
+    assert.deepEqual(occupied.sort(), ['1:0', '1:1', '2:0', '2:1']);
+    const selectedColumn: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => selectedColumn.push(`${row}:${column}`), { columns: new Set([1]) });
+    assert.deepEqual(selectedColumn.sort(), ['1:1', '2:1']);
+    const selectedRow: string[] = [];
+    snapshot.forEachOccupiedCell((row, column) => selectedRow.push(`${row}:${column}`), { rows: new Set([2]) });
+    assert.deepEqual(selectedRow.sort(), ['2:0', '2:1']);
   });
 
   it('projects review metadata from canonical sheet stores only', () => {

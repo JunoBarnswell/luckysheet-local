@@ -10,13 +10,17 @@ import org.flywaydb.core.api.migration.Context;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 
-/** One-way clean-break migration for the rows.permuted committed-operation contract. */
-public abstract class CanonicalRowsPermutedRangesMigration extends BaseJavaMigration {
+/** One repeatable clean-break owner for every persisted rows.permuted envelope. */
+public abstract class CanonicalRowsPermutedMigration extends BaseJavaMigration {
     private static final int MAX_ROW = 1_048_575;
     private static final int MAX_COLUMN = 16_383;
     private final ObjectMapper mapper = new ObjectMapper();
+
+    @Override
+    public Integer getChecksum() {
+        return 1;
+    }
 
     @Override
     public void migrate(Context context) throws Exception {
@@ -36,22 +40,16 @@ public abstract class CanonicalRowsPermutedRangesMigration extends BaseJavaMigra
              PreparedStatement write = connection.prepareStatement(update)) {
             while (rows.next()) {
                 String id = rows.getString(1);
-                String payload = rows.getString(2);
-                ObjectNode envelope = parse(source, id, payload);
+                JsonNode parsed = mapper.readTree(rows.getString(2));
+                if (!(parsed instanceof ObjectNode envelope)) {
+                    throw new IllegalStateException(source + " record " + id + " is not an operation envelope");
+                }
                 if (!canonicalize(envelope, source, id)) continue;
                 write.setString(1, mapper.writeValueAsString(envelope));
                 write.setString(2, id);
                 if (write.executeUpdate() != 1) throw new IllegalStateException(source + " migration lost record " + id);
             }
         }
-    }
-
-    private ObjectNode parse(String source, String id, String payload) throws Exception {
-        JsonNode parsed = mapper.readTree(payload);
-        if (!(parsed instanceof ObjectNode envelope)) {
-            throw new IllegalStateException(source + " record " + id + " is not an operation envelope");
-        }
-        return envelope;
     }
 
     private boolean canonicalize(ObjectNode envelope, String source, String id) {
@@ -74,14 +72,34 @@ public abstract class CanonicalRowsPermutedRangesMigration extends BaseJavaMigra
             int startRow = coordinate(range, "startRow", source, id);
             int endRow = coordinate(range, "endRow", source, id);
             if (endRow < startRow) throw new IllegalStateException(source + " record " + id + " has inverted rows.permuted range");
-            ArrayNode ranges = mutation.putArray("affectedRanges");
-            ObjectNode canonical = ranges.addObject();
-            canonical.put("sheetId", sheetId);
-            canonical.put("startRow", startRow);
-            canonical.put("endRow", endRow);
-            canonical.put("startColumn", 0);
-            canonical.put("endColumn", MAX_COLUMN);
-            changed = true;
+
+            JsonNode existingExtent = params.get("affectedColumnEnd");
+            if (existingExtent != null && (!existingExtent.isIntegralNumber() || existingExtent.intValue() != MAX_COLUMN)) {
+                throw new IllegalStateException(source + " record " + id + " has a conflicting rows.permuted affectedColumnEnd");
+            }
+            if (existingExtent == null) {
+                params.put("affectedColumnEnd", MAX_COLUMN);
+                changed = true;
+            }
+
+            JsonNode rangesNode = mutation.get("affectedRanges");
+            boolean canonicalRange = rangesNode instanceof ArrayNode ranges && ranges.size() == 1
+                    && ranges.get(0).isObject()
+                    && sheetId.equals(ranges.get(0).path("sheetId").asText())
+                    && ranges.get(0).path("startRow").asInt(-1) == startRow
+                    && ranges.get(0).path("endRow").asInt(-1) == endRow
+                    && ranges.get(0).path("startColumn").asInt(-1) == 0
+                    && ranges.get(0).path("endColumn").asInt(-1) == MAX_COLUMN;
+            if (!canonicalRange) {
+                ArrayNode ranges = mutation.putArray("affectedRanges");
+                ObjectNode canonical = ranges.addObject();
+                canonical.put("sheetId", sheetId);
+                canonical.put("startRow", startRow);
+                canonical.put("endRow", endRow);
+                canonical.put("startColumn", 0);
+                canonical.put("endColumn", MAX_COLUMN);
+                changed = true;
+            }
         }
         return changed;
     }

@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from './Button';
 import { DropdownMenu } from './DropdownMenu';
 import { Box, Inline, Text } from './layout';
-import { RIBBON_DENSITY, RIBBON_TAB_ORDER, type RibbonLayoutMode, type RibbonLayoutState, type RibbonTabId } from './shell-types';
+import { RIBBON_DENSITY, RIBBON_DENSITY_CLASSES, RIBBON_TAB_ORDER, type RibbonLayoutMode, type RibbonLayoutState, type RibbonTabId } from './shell-types';
 import { Tab, TabList, Tabs } from './Tabs';
 
 export type { RibbonLayoutMode, RibbonLayoutState, RibbonTabId } from './shell-types';
@@ -85,8 +85,8 @@ export function RibbonShell({
   }, []);
 
   return (
-    <Tabs ref={rootRef} className="h-[133px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-ribbon-height={RIBBON_DENSITY.shellHeight} data-testid="ribbon-shell">
-      <Inline gap="none" className="h-[32px] min-w-0 flex-nowrap px-2">
+    <Tabs ref={rootRef} className={`${RIBBON_DENSITY_CLASSES.shell} overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]`} data-ribbon-layout={layout.mode} data-ribbon-height={RIBBON_DENSITY.shellHeight} data-testid="ribbon-shell">
+      <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.tabStrip} min-w-0 flex-nowrap px-2`}>
         {onFileEntry ? (
           <DropdownMenu
             disabled={disabled}
@@ -108,7 +108,7 @@ export function RibbonShell({
             )}
           </DropdownMenu>
         ) : null}
-        <TabList label="Workbook ribbon tabs" className="h-full min-w-0 flex-1 flex-nowrap gap-0 overflow-hidden">
+        <TabList label="Workbook ribbon tabs" className="h-full min-w-0 flex-1 flex-nowrap gap-0 overflow-x-auto overflow-y-hidden [scrollbar-width:thin]">
           {tabs.map((tab) => (
             <Tab
               key={tab}
@@ -128,7 +128,7 @@ export function RibbonShell({
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[101px] overflow-hidden border-t-0 bg-white px-0 py-0">
+      <Box className={`${RIBBON_DENSITY_CLASSES.commandArea} overflow-hidden border-t-0 bg-white px-0 py-0`}>
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

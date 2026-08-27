@@ -913,6 +913,23 @@ export class CellMatrix {
     }
   }
 
+  forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    for (const row of rows) {
+      const columns = this.rows.get(row);
+      if (!columns) continue;
+      for (const [column, cell] of columns) callback(cell, row, column);
+    }
+  }
+
+  forEachInColumns(columns: ReadonlySet<Column>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    for (const [row, rowCells] of this.rows) {
+      for (const column of columns) {
+        const cell = rowCells.get(column);
+        if (cell) callback(cell, row, column);
+      }
+    }
+  }
+
   /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
   forEachInRange(
     startRow: Row,

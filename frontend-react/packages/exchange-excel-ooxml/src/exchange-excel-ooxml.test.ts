@@ -1247,6 +1247,26 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(sheet.autoFilter?.range.endColumn, 1);
   });
 
+  it('normalizes Excel and WPS formula namespaces only for runtime and restores their source spelling on export', async () => {
+    const workbook = new WorkbookModel('wb-formula-namespace', 'Formula namespace');
+    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8('<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetFormatPr defaultRowHeight="15"/><sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>_xlfn.SUM(A1:A1)</f><v>1</v></c><c r="C1"><f>_xlfn._xlws.FILTER(A1:A1,A1:A1&gt;0)</f><v>1</v></c><c r="D1"><f>_xlfn.SINGLE(A1)</f><v>1</v></c></row></sheetData></worksheet>');
+    const imported = await importXlsx({ fileName: 'formula-namespace.xlsx', buffer: zipXlsxPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+    const sheet = imported.snapshot.sheets[0]!;
+    assert.equal(sheet.cells['0']?.['1']?.formula, '=SUM(A1:A1)');
+    assert.equal(sheet.cells['0']?.['1']?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
+    assert.equal(sheet.cells['0']?.['2']?.formula, '=FILTER(A1:A1,A1:A1>0)');
+    assert.equal(sheet.cells['0']?.['2']?.formulaMetadata?.sourceFormula, '=_xlfn._xlws.FILTER(A1:A1,A1:A1>0)');
+    assert.equal(sheet.cells['0']?.['3']?.formula, '=@(A1)');
+    assert.equal(sheet.cells['0']?.['3']?.formulaMetadata?.sourceFormula, '=_xlfn.SINGLE(A1)');
+
+    const exported = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(imported.snapshot));
+    const worksheet = strFromU8(exported.files['xl/worksheets/sheet1.xml']!);
+    assert.match(worksheet, /_xlfn\.SUM\(A1:A1\)/);
+    assert.match(worksheet, /_xlfn\._xlws\.FILTER\(A1:A1,A1:A1&gt;0\)/);
+    assert.match(worksheet, /_xlfn\.SINGLE\(A1\)/);
+  });
+
   it('accepts supported dynamic AutoFilters and rejects unknown OOXML types', () => {
     const workbook = new WorkbookModel('wb-dynamic-filter', 'Dynamic Filter');
     const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));

@@ -1524,10 +1524,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   const styleAttr = style === undefined ? '' : ` s="${style}"`;
   const metadata = cell.formulaMetadata;
   if (cell.formula || metadata?.preservedOnly) {
-    // A normal edit owns the current formula text. Only a preserved-only
-    // import may use sourceFormula, otherwise stale provenance could rewrite a
-    // newly authored formula during export.
-    const sourceFormula = metadata?.preservedOnly ? metadata.sourceFormula ?? cell.formula ?? '' : cell.formula ?? '';
+    const sourceFormula = formulaSourceForExport(cell);
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
     const cachedSerial = typeof cachedValue === 'string' && isExcelDateFormat(cell.numberFormat) ? canonicalDateToSerial(cachedValue, dateSystem) : undefined;
@@ -1552,6 +1549,22 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
     return `<c r="${ref}"${styleAttr}><v>${serial}</v></c>`;
   }
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is>${serializeRichText(cell.value, cell.richText)}</is></c>`;
+}
+
+function formulaSourceForExport(cell: CellData): string {
+  const current = cell.formula ?? '';
+  const metadata = cell.formulaMetadata;
+  if (!metadata?.sourceFormula) return current;
+  if (metadata.preservedOnly) return metadata.sourceFormula;
+  if (!current) throw new Error('Formula provenance exists without a canonical formula');
+  try {
+    const sourceCanonical = formatFormula(parseFormula(normalizeExternalFormula(metadata.sourceFormula)));
+    const currentCanonical = formatFormula(parseFormula(current));
+    if (sourceCanonical !== currentCanonical) throw new Error('Formula provenance no longer matches the canonical formula');
+  } catch (error) {
+    throw new Error('Formula provenance cannot be exported safely', { cause: error });
+  }
+  return metadata.sourceFormula;
 }
 
 function canonicalizeImportedDate(value: CellData['value'], format: string | undefined, dateSystem: DateSystem, label: string): CellData['value'] {
@@ -2134,10 +2147,20 @@ function readFormula(
     const master = sharedMasters.get(index);
     if (!master) throw new Error(`Worksheet ${descriptor.name}!${columnToLetter(address.column)}${address.row + 1} references missing shared formula master si=${index}`);
     try {
+      const isMaster = address.row === master.row && address.column === master.column;
       const formula = address.row === master.row && address.column === master.column
         ? formatFormula(parseFormula(master.formula))
         : formatFormula(offsetAst(parseFormula(master.formula), address.row - master.row, address.column - master.column));
-      return { formula, metadata: { kind: 'shared', sharedIndex: index, sharedMaster: address.row === master.row && address.column === master.column, ...(master.range ? { range: master.range } : {}) } };
+      return {
+        formula,
+        metadata: {
+          kind: 'shared',
+          sharedIndex: index,
+          sharedMaster: isMaster,
+          ...(master.range ? { range: master.range } : {}),
+          ...(isMaster && master.sourceFormula !== master.formula ? { sourceFormula: master.sourceFormula } : {}),
+        },
+      };
     } catch {
       return {
         metadata: {
@@ -2160,7 +2183,13 @@ function readFormula(
   if (unsupported) return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: unsupported, sourceFormula } };
   try {
     parseFormula(formula);
-    return { formula, metadata: formulaKind === 'normal' ? undefined : { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}) } };
+    const sourceMetadata = sourceFormula === formula ? {} : { sourceFormula };
+    return {
+      formula,
+      metadata: formulaKind === 'normal' && sourceFormula === formula
+        ? undefined
+        : { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), ...sourceMetadata },
+    };
   } catch {
     return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: 'Formula syntax is not supported by the canonical AST', sourceFormula } };
   }
