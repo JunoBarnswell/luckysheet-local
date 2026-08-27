@@ -66,7 +66,7 @@ function sheet(pivot: PivotGridProjection): CanvasSheetSnapshot {
     getFilterOwner: () => undefined,
     getActiveAutoFilter: () => undefined,
     sheetTables: [],
-    previewRows: [],
+    forEachOccupiedCell: () => {},
   };
 }
 

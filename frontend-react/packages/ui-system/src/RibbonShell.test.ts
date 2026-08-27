@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ribbonLayoutModeForWidth } from './RibbonShell';
-import { DESIGNER_GEOMETRY } from './shell-types';
+import { DESIGNER_GEOMETRY, RIBBON_DENSITY } from './shell-types';
 
 describe('RibbonShell responsive layout', () => {
   it('uses Office-style density breakpoints without a horizontal overflow mode', () => {
@@ -16,6 +16,13 @@ describe('RibbonShell responsive layout', () => {
 
   it('keeps the 1920x1080 Designer vertical contract exact', () => {
     assert.equal(DESIGNER_GEOMETRY.ribbonHeight + DESIGNER_GEOMETRY.formulaBarHeight + DESIGNER_GEOMETRY.workspaceHeight + DESIGNER_GEOMETRY.statusBarHeight, 1080);
-    assert.equal(DESIGNER_GEOMETRY.ribbonTabHeight + DESIGNER_GEOMETRY.ribbonContentHeight, 195);
+    assert.equal(DESIGNER_GEOMETRY.ribbonTabHeight + DESIGNER_GEOMETRY.ribbonContentHeight, 118);
+    assert.deepEqual(RIBBON_DENSITY, {
+      shellHeight: 118,
+      tabStripHeight: 32,
+      commandAreaHeight: 86,
+      groupControlHeight: 56,
+      groupCaptionHeight: 14,
+    });
   });
 });

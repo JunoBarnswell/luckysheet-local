@@ -56,7 +56,10 @@ function makeSheet(cells: Record<string, TestCell>, rows = 2, columns = 4): Canv
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     sheetTables: [],
-    previewRows: [],
+    forEachOccupiedCell: (visitor: (row: number, column: number) => void) => Object.keys(cells).forEach((key) => {
+      const [row, column] = key.split(':').map(Number);
+      visitor(row!, column!);
+    }),
   } as unknown as CanvasSheetSnapshot;
 }
 

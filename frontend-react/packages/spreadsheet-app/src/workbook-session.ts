@@ -558,8 +558,9 @@ export class WorkbookSession {
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
-  private projectionGeneration = 0;
-  private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
+  private projectionDomainGeneration = 0;
+  private readonly sheetProjectionGeneration = new Map<string, number>();
+  private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
   constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
@@ -702,8 +703,9 @@ export class WorkbookSession {
       this.emit();
     };
     this.runtime.handlers.onMutationsApplied = () => {
-      this.refreshPivotsForTrigger({ kind: 'source-change', mutations: this.runtime.drainPivotMutations() });
-      this.projectionGeneration += 1;
+      const mutations = this.runtime.drainPivotMutations();
+      this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
+      this.invalidateSheetProjections(mutations.map((mutation) => mutation.sheetId));
       this.persistenceMetaDirty = true;
       this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
@@ -773,7 +775,7 @@ export class WorkbookSession {
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
-        this.projectionGeneration += 1;
+        this.invalidateAllSheetProjections();
         this.emit();
       }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
@@ -984,7 +986,8 @@ export class WorkbookSession {
     }
     const sheets = this.runtime.model.getSheets().map((sheet) => {
       const cached = this.sheetProjectionCache.get(sheet.id);
-      if (cached?.generation === this.projectionGeneration) return cached.snapshot;
+      const revision = this.projectionRevisionForSheet(sheet.id);
+      if (cached?.revision === revision) return cached.snapshot;
       const snapshot = buildCanvasSheetSnapshot(
         this.runtime.model,
         sheet,
@@ -996,7 +999,7 @@ export class WorkbookSession {
         this.runtime.pivotErrors,
         this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
       );
-      this.sheetProjectionCache.set(sheet.id, { generation: this.projectionGeneration, snapshot });
+      this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
       return snapshot;
     });
     const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
@@ -1847,7 +1850,7 @@ export class WorkbookSession {
       if (!this.runtime.commands.undo()) break;
     }
     this.ensureActiveSheetSession();
-    this.projectionGeneration += 1;
+    this.invalidateAllSheetProjections();
     this.reconcileDrawingSessionState();
     this.syncDraftFromPrimary();
     this.notify(`Restored session history to step ${index + 1}`);
@@ -1873,7 +1876,7 @@ export class WorkbookSession {
     hydrateRuntime(this.runtime, response.snapshot);
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
-    this.projectionGeneration += 1;
+    this.invalidateAllSheetProjections();
     this.reconcileDrawingSessionState();
     this.clearHistoryPreview();
     this.notify(`Restored workbook to revision ${revision}`);
@@ -1985,7 +1988,7 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.undo()) {
       this.ensureActiveSheetSession();
-      this.projectionGeneration += 1;
+      this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Undo applied');
@@ -2001,7 +2004,7 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.redo()) {
       this.ensureActiveSheetSession();
-      this.projectionGeneration += 1;
+      this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Redo applied');
@@ -3495,10 +3498,9 @@ export class WorkbookSession {
     for (const pivotId of Object.keys(this.runtime.pivotErrors)) if (!activeIds.has(pivotId)) delete this.runtime.pivotErrors[pivotId];
     const refreshIds = pivotIdsToRefresh(this.runtime.model, pivots, trigger);
     for (const pivotId of refreshIds) this.recomputePivotResult(pivotId);
-    if (refreshIds.length > 0) {
-      this.projectionGeneration += 1;
-      this.sheetProjectionCache.clear();
-    }
+    if (refreshIds.length > 0) this.invalidateSheetProjections(
+      pivots.filter((pivot) => refreshIds.includes(pivot.id)).map((pivot) => pivot.target.sheetId),
+    );
   }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {

@@ -131,13 +131,13 @@ export function EditorDialogHost({
         rowCount={state.selectedSheet.rowCount}
         columnCount={state.selectedSheet.columnCount}
         columns={state.selectedSheet.columns}
-        rows={state.selectedSheet.previewRows}
+        rows={[]}
         layout={state.printLayout}
         pages={state.printPages}
-        getRow={(row) => state.selectedSheet.previewRows[row] ?? {
+        getRow={(row) => ({
           rowNumber: row + 1,
           cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? "" })),
-        }}
+        })}
       />
       <CellTemplateDialog
         open={state.dialogs.active === 'cell-template'}

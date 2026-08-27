@@ -36,7 +36,6 @@ describe('canonical drawing UI projection', () => {
 
     const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
     assert.deepEqual(snapshot.hiddenRows, [2, 4]);
-    assert.deepEqual(snapshot.previewRows.map((row) => row.rowNumber), [1, 2, 4]);
     assert.equal(snapshot.getCell(2, 0)?.value, 'Drop');
   });
 

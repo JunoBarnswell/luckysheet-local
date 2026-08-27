@@ -13,6 +13,9 @@ import {
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
 import type { AssetRef } from '@react-sheets/core-model';
+import { cellRenderFont, resolveCellTextLayout } from './cell-text-layout';
+
+export { cellRenderFont } from './cell-text-layout';
 
 export type AssetUrlResolver = (asset: AssetRef) => Promise<string>;
 
@@ -468,14 +471,6 @@ export function hasMeasurableCellContent(
   return typeof displayValue === 'string' ? displayValue.length > 0 : true;
 }
 
-export function cellRenderFont(style: CellRenderData["style"], theme: RenderTheme): string {
-  const size = style?.fontSizePx ?? 13;
-  const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : '"Microsoft YaHei", "Segoe UI", sans-serif';
-  const weight = style?.bold ? "700" : "400";
-  const slant = style?.italic ? " italic" : "";
-  return slant + " " + weight + " " + size + "px " + family;
-}
-
 export interface AutoFitMeasurement {
   widthPx: number;
   heightPx: number;
@@ -490,41 +485,8 @@ export function measureCellAutoFit(
   reserveFilterButton = false,
 ): AutoFitMeasurement {
   const text = resolveDisplayText(cell);
-  const style = cell.style;
-  const padding = style?.padding ?? theme.cellPadding;
-  context.save();
-  context.font = cellRenderFont(style, theme);
-  const lines = text.split(/\r?\n/);
-  const rawWidth = Math.max(0, ...lines.map((line) => context.measureText(line).width));
-  const fontSizePx = style?.fontSizePx ?? 13;
-  const lineHeight = Math.max(fontSizePx * 1.25, 16);
-  const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
-  let width = rawWidth + padding * 2 + indent + (reserveFilterButton ? 18 : 0) + (style?.borders?.left ? 1 : 0) + (style?.borders?.right ? 1 : 0);
-  let lineCount = Math.max(1, lines.length);
-  if (style?.wrapText && availableWidthPx && availableWidthPx > padding * 2) {
-    lineCount = lines.reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / Math.max(1, availableWidthPx - padding * 2))), 0);
-    width = Math.min(width, availableWidthPx);
-  }
-  if (style?.shrinkToFit && availableWidthPx && availableWidthPx > padding * 2) width = Math.min(width, availableWidthPx);
-  let height = lineCount * lineHeight + padding * 2 + (style?.borders?.top ? 1 : 0) + (style?.borders?.bottom ? 1 : 0);
-  if (style?.textOrientation === 'stacked') {
-    width = Math.max(fontSizePx, ...lines.map((line) => context.measureText(line).width / Math.max(1, line.length))) + padding * 2 + indent;
-    height = Array.from(text).length * lineHeight + padding * 2;
-  }
-  const rotationDegrees = style?.textOrientation === 'rotateUp'
-    ? 90
-    : style?.textOrientation === 'rotateDown'
-      ? 180
-      : style?.textRotate ?? 0;
-  const rotation = Math.abs(rotationDegrees * Math.PI / 180);
-  if (rotation > 0) {
-    const rotatedWidth = Math.abs(Math.cos(rotation)) * width + Math.abs(Math.sin(rotation)) * height;
-    const rotatedHeight = Math.abs(Math.sin(rotation)) * width + Math.abs(Math.cos(rotation)) * height;
-    width = rotatedWidth;
-    height = rotatedHeight;
-  }
-  context.restore();
-  return { widthPx: Math.ceil(width), heightPx: Math.ceil(height) };
+  const layout = resolveCellTextLayout(context, cell, theme, text, availableWidthPx, reserveFilterButton);
+  return { widthPx: layout.widthPx, heightPx: layout.heightPx };
 }
 
 function drawCellValue(
@@ -550,28 +512,23 @@ function drawCellValue(
   const vAlign = style?.verticalAlignment ?? "middle";
 
   context.save();
-  context.font = cellRenderFont(style, theme);
+  const maxWidth = rect.width - padding * 2 - indent;
+  const textLayout = resolveCellTextLayout(context, cell, theme, text, rect.width);
+  context.font = textLayout.font;
   context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
 
   const wrap = Boolean(style?.wrapText);
-  const maxWidth = rect.width - padding * 2 - indent;
-  let measured = context.measureText(text).width;
-  if (style?.shrinkToFit && !wrap && maxWidth > 0 && measured > maxWidth) {
-    const currentSize = style.fontSizePx ?? 13;
-    const fittedSize = Math.max(4, currentSize * maxWidth / measured);
-    context.font = cellRenderFont({ ...style, fontSizePx: fittedSize }, theme);
-    measured = context.measureText(text).width;
-  }
+  const measured = textLayout.rawTextWidthPx;
 
   if (style?.textOrientation === 'stacked') {
-    drawStackedText(context, text, rect, padding + indent, vAlign);
+    drawStackedText(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, vAlign);
     context.restore();
     return;
   }
 
   if (wrap) {
-    drawWrapped(context, text, rect, padding + indent, hAlign, vAlign, maxWidth);
+    drawWrapped(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, hAlign, vAlign, maxWidth);
     context.restore();
     return;
   }
@@ -588,7 +545,7 @@ function drawCellValue(
   else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
   else x = rect.x + padding + indent;
 
-  const fontSize = style?.fontSizePx ?? 13;
+  const fontSize = textLayout.fontSizePx;
   let y = vAlign === 'top'
     ? rect.y + padding + fontSize / 2
     : vAlign === 'bottom'
@@ -668,30 +625,14 @@ function allowedOverflowWidth(
 
 function drawWrapped(
   context: CanvasRenderingContext2D,
-  text: string,
+  lines: readonly string[],
+  lineHeight: number,
   rect: Rect,
   padding: number,
   hAlign: import('@react-sheets/core-model').HorizontalAlignment,
   vAlign: import('@react-sheets/core-model').VerticalAlignment,
   maxWidth: number,
 ): void {
-  const hasCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text);
-  const tokens = hasCjk ? Array.from(text) : text.split(/\s+/);
-  const lineHeight = 16;
-  const lines: string[] = [];
-  let currentLine = "";
-  for (const token of tokens) {
-    const separator = hasCjk || !currentLine ? "" : " ";
-    const attempt = currentLine + separator + token;
-    if (context.measureText(attempt).width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = token;
-    } else {
-      currentLine = attempt;
-    }
-  }
-  if (currentLine) lines.push(currentLine);
-
   const textHeight = lines.length * lineHeight;
   const startY = vAlign === "top"
     ? rect.y + padding + lineHeight / 2
@@ -775,14 +716,13 @@ function drawDistributedText(
 
 function drawStackedText(
   context: CanvasRenderingContext2D,
-  text: string,
+  characters: readonly string[],
+  lineHeight: number,
   rect: Rect,
   padding: number,
   vAlign: import('@react-sheets/core-model').VerticalAlignment,
 ): void {
-  const characters = Array.from(text);
   if (characters.length === 0) return;
-  const lineHeight = 16;
   const contentHeight = characters.length * lineHeight;
   const startY = vAlign === 'top'
     ? rect.y + padding + lineHeight / 2

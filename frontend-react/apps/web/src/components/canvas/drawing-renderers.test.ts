@@ -48,7 +48,7 @@ function sourceSnapshot(): CanvasSheetSnapshot {
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     sheetTables: [],
-    previewRows: [],
+    forEachOccupiedCell: () => {},
   };
 }
 

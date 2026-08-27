@@ -24,6 +24,7 @@ export * from './reference-cursor';
 export * from './circular';
 export * from './calculation-settings';
 export * from './excel-date';
+export * from './external-formula-normalizer';
 export { type SpillModel, spillBlocked, STANDARD_FORMULA_ERRORS } from './spill';
 export * from './sheet-table-resolver';
 export * from './calculation-task-port';

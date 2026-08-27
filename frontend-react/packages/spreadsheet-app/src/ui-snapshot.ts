@@ -99,13 +99,6 @@ export interface CanvasCellSnapshot {
   overlay?: ConditionalOverlay;
 }
 
-/** Bounded preview row for print UI only */
-export interface PreviewRowSnapshot {
-  rowNumber: number;
-  cells: Array<{ value: string }>;
-  height: number;
-}
-
 /** Canvas-friendly sheet snapshot — single getCell path, no SheetView DTO */
 export interface CanvasSheetSnapshot {
   kind?: WorksheetModel['kind'];
@@ -117,6 +110,8 @@ export interface CanvasSheetSnapshot {
   isEmpty?: boolean;
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
+  /** Sparse model addresses for operations such as AutoFit; never a rectangle scan. */
+  forEachOccupiedCell: (visitor: (row: number, column: number) => void) => void;
   usedRange: RangeRef;
   /** Canonical floating-object aggregate. UI never consumes legacy projections. */
   drawings: DrawingObject[];
@@ -164,8 +159,6 @@ export interface CanvasSheetSnapshot {
   reportSheet?: ReportSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
-  /** Print preview only — bounded slice */
-  previewRows: PreviewRowSnapshot[];
 }
 
 function toFormulaDisplay(value: FormulaValue): string {
@@ -336,17 +329,6 @@ export function buildCanvasSheetSnapshot(
     };
   };
 
-  const previewRows: PreviewRowSnapshot[] = [];
-  const previewRowLimit = Math.min(Math.max(0, sheet.rowCount), 200);
-  for (let row = 0; row < previewRowLimit; row += 1) {
-    if (hiddenRows.has(row)) continue;
-    const cells: Array<{ value: string }> = [];
-    for (let column = 0; column < viewColumns.length; column += 1) {
-      cells.push({ value: getCell(row, column)?.value ?? '' });
-    }
-    previewRows.push({ rowNumber: row + 1, cells, height: sheet.rowHeightsPx[row] ?? sheet.defaultRowHeightPx });
-  }
-
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
@@ -385,6 +367,7 @@ export function buildCanvasSheetSnapshot(
     isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
     occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
+    forEachOccupiedCell: (visitor) => sheet.cells.forEach((_cell, row, column) => visitor(row, column)),
     usedRange,
     drawings: structuredClone(sheet.drawings),
     drawingPayloads: new Map(
@@ -434,7 +417,6 @@ export function buildCanvasSheetSnapshot(
     reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
-    previewRows,
   };
 }
 

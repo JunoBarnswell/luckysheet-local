@@ -155,16 +155,16 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
   return (
-    <Inline gap="none" className="h-[120px] w-full min-w-0 flex-nowrap items-start overflow-hidden" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" className="h-[86px] w-full min-w-0 flex-nowrap items-start overflow-hidden" data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {spec.groups.map((group, index) => {
         const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
         const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
         return (
           <React.Fragment key={group.id}>
-            {index > 0 ? <Divider orientation="vertical" className="h-[114px]" /> : null}
-            <Stack data-ribbon-group={group.id} gap="none" className={`h-[120px] min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width)}`}>
-              <Inline gap="none" className="min-h-0 flex-1 flex-nowrap items-center justify-center content-center pt-1">{content}</Inline>
-              <Text size="xs" tone="subtle" className="h-5 shrink-0 truncate text-center text-[10px] font-medium text-[#5b555a] select-none pb-0.5">{groupLabel}</Text>
+            {index > 0 ? <Divider orientation="vertical" className="h-[82px]" /> : null}
+            <Stack data-ribbon-group={group.id} gap="none" className={`h-[86px] min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width)}`}>
+              <Inline gap="none" className="h-[72px] min-h-0 flex-nowrap items-center justify-center content-center pt-1">{content}</Inline>
+              <Text size="xs" tone="subtle" className="h-[14px] shrink-0 truncate text-center text-[10px] font-medium leading-[14px] text-[#5b555a] select-none">{groupLabel}</Text>
             </Stack>
           </React.Fragment>
         );

@@ -30,6 +30,7 @@ import {
   type CanonicalExcelDate,
   type CanonicalExcelDateParts,
   formatFormula,
+  normalizeExternalFormula,
   offsetAst,
   parseFormula,
 } from '@react-sheets/formula-engine';
@@ -2104,7 +2105,7 @@ function collectSharedFormulaMasters(
     result.set(index, {
       row: entry.row,
       column: entry.column,
-      formula: `=${textContent(formula)}`,
+      formula: normalizeExternalFormula(`=${textContent(formula)}`),
       ...(formula.attrs.ref ? { range: formula.attrs.ref } : {}),
     });
   }
@@ -2149,15 +2150,16 @@ function readFormula(
     }
   }
   if (!raw) return {};
-  const formula = `=${raw}`;
+  const sourceFormula = `=${raw}`;
+  const formula = normalizeExternalFormula(sourceFormula);
   const formulaKind = kind === 'array' ? 'array' : 'normal';
   const unsupported = formulaPreserveReason(formula);
-  if (unsupported) return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: unsupported, sourceFormula: formula } };
+  if (unsupported) return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: unsupported, sourceFormula } };
   try {
     parseFormula(formula);
     return { formula, metadata: formulaKind === 'normal' ? undefined : { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}) } };
   } catch {
-    return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: 'Formula syntax is not supported by the canonical AST', sourceFormula: formula } };
+    return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: 'Formula syntax is not supported by the canonical AST', sourceFormula } };
   }
 }
 
