@@ -434,6 +434,8 @@ test('Pivot layout-only update accepts a new calculated field without fieldCatal
       params: {
         sheetId: 'sheet-1',
         pivotId: 'pivot-1',
+        calculationProof: { schema: 'PivotCalculationProof', pivotId: 'pivot-1', sourceRevision: 'source-1', layoutRevision: 'layout-2', filterRevision: 'filter-1', occupiedRange: { sheetId: 'sheet-1', startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 } },
+        previousCalculationProof: { schema: 'PivotCalculationProof', pivotId: 'pivot-1', sourceRevision: 'source-1', layoutRevision: 'layout-1', filterRevision: 'filter-1', occupiedRange: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 } },
         layout: {
           calculatedFields: [{ fieldId: 'calculated:margin', name: 'Margin', formula: '=amount*1.15' }],
           calculatedItems: [],

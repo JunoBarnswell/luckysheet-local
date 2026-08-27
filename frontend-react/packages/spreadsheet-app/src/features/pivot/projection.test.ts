@@ -20,6 +20,7 @@ import { buildPivotModel } from './helpers';
 import { patchPivotValueField } from './panel-state';
 import { buildPivotSlicerDrawing } from '../pivot-controls/helpers';
 import { createSpillEnvironment } from '../../formula-spill-sync';
+import { createPivotSourceIndex } from './source-index';
 
 /** Existing projection tests model an explicit calculation request. */
 function buildPivotGridProjection(
@@ -28,7 +29,8 @@ function buildPivotGridProjection(
   cachedResult?: import('@react-sheets/core-model').PivotResultTree,
   options: Parameters<typeof buildPivotGridProjectionCore>[3] = {},
 ) {
-  return buildPivotGridProjectionCore(workbook, pivot, cachedResult, { refreshAuthorized: true, ...options });
+  const result = cachedResult ?? (pivot.source.kind === 'data-source' ? undefined : computePivotResult(workbook, pivot));
+  return buildPivotGridProjectionCore(workbook, pivot, result, options);
 }
 
 function workbookWithData(): WorkbookModel {
@@ -46,7 +48,7 @@ it('does not calculate a Pivot from a read-only projection request', () => {
   assert.equal(projection.refresh.status, 'refreshing');
   assert.equal(projection.cells.some((cell) => cell.kind === 'loading'), true);
   assert.equal(projection.cells.some((cell) => cell.kind === 'value'), false);
-  const authorized = buildPivotGridProjectionCore(workbook, pivot, undefined, { refreshAuthorized: true });
+  const authorized = buildPivotGridProjectionCore(workbook, pivot, computePivotResult(workbook, pivot));
   assert.equal(authorized.refresh.status, 'ready');
   assert.equal(authorized.cells.some((cell) => cell.kind === 'value'), true);
 });
@@ -1282,7 +1284,8 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'count' }];
     const refreshedLayout = buildPivotGridProjection(workbook, pivot, firstResult);
     assert.notEqual(refreshedLayout.refresh.status, 'stale');
-    assert.equal(refreshedLayout.cells.some((cell) => cell.value === 3), true);
+    assert.equal(refreshedLayout.refresh.status, 'refreshing');
+    assert.equal(refreshedLayout.cells.some((cell) => cell.value === 3), false);
   });
 
   it('retains a cached block Pivot result across loading and source failure states', () => {
@@ -1330,16 +1333,13 @@ describe('native PivotGridProjection contract', () => {
     const loading = buildPivotGridProjection(workbook, pivot);
     assert.equal(loading.refresh.status, 'refreshing');
     assert.equal(loading.cells.some((cell) => cell.kind === 'loading'), true);
-    const result = computePivotResultFromBlockSource(workbook, pivot, {
-      fields: [
-        { fieldId: 'region', name: 'Region', ordinal: 0, dataType: 'text' },
-        { fieldId: 'amount', name: 'Amount', ordinal: 1, dataType: 'number' },
+    const result = computePivotResultFromBlockSource(workbook, pivot, createPivotSourceIndex({
+      columns: [
+        { field: { fieldId: 'region', name: 'Region', ordinal: 0, dataType: 'text' }, values: ['East', 'West'] },
+        { field: { fieldId: 'amount', name: 'Amount', ordinal: 1, dataType: 'number' }, values: [10, 20] },
       ],
-      rows: [
-        { values: { region: 'East', amount: 10 }, paths: [{ sheetId: 'sheet-1', row: 1 }] },
-        { values: { region: 'West', amount: 20 }, paths: [{ sheetId: 'sheet-1', row: 2 }] },
-      ],
-    }, 'source-block:1');
+      rowPaths: [[{ sheetId: 'sheet-1', row: 1 }], [{ sheetId: 'sheet-1', row: 2 }]],
+    }), 'source-block:1');
     const ready = buildPivotGridProjection(workbook, pivot, result, { sourceState: { availability: 'ready' } });
     assert.equal(ready.refresh.status, 'ready');
     assert.equal(ready.cells.some((cell) => cell.value === 30), true);

@@ -15,6 +15,7 @@ import {
 } from '../data-source/codec';
 import { DataSourceContentQuery } from '../data-source/content-query';
 import { readPivotBlockSource } from './block-source';
+import { pivotSourceColumnValues, pivotSourceRowPaths } from './source-index';
 
 const fields: ColumnarBlockField[] = [
   { id: 'orders:field:0', name: 'Region', ordinal: 0, type: 'text' },
@@ -118,11 +119,13 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
     { fieldId: 'orders:field:0', name: 'Region', ordinal: 0, dataType: 'text' },
     { fieldId: 'orders:field:1', name: 'Amount', ordinal: 1, dataType: 'number' },
   ]);
-  assert.deepEqual(result.source.rows, [
-    { values: { 'orders:field:0': 'East', 'orders:field:1': 10 }, paths: [{ sheetId: 'source-sheet', row: 1 }] },
-    { values: { 'orders:field:0': 'West', 'orders:field:1': 20 }, paths: [{ sheetId: 'source-sheet', row: 2 }] },
-    { values: { 'orders:field:0': 'East', 'orders:field:1': 30 }, paths: [{ sheetId: 'source-sheet', row: 3 }] },
-    { values: { 'orders:field:0': 'North', 'orders:field:1': 40 }, paths: [{ sheetId: 'source-sheet', row: 4 }] },
+  assert.deepEqual(pivotSourceColumnValues(result.source, 0), ['East', 'West', 'East', 'North']);
+  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [10, 20, 30, 40]);
+  assert.deepEqual(Array.from({ length: result.source.rowCount }, (_, row) => pivotSourceRowPaths(result.source, row)), [
+    [{ sheetId: 'source-sheet', row: 1 }],
+    [{ sheetId: 'source-sheet', row: 2 }],
+    [{ sheetId: 'source-sheet', row: 3 }],
+    [{ sheetId: 'source-sheet', row: 4 }],
   ]);
   assert.deepEqual(events, ['loading', 'ready']);
 });

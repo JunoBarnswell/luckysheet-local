@@ -114,6 +114,8 @@ export function EditorDialogHost({
         sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
         locale={locale}
+        pending={state.pivotCreateTask.status === 'running'}
+        {...(state.pivotCreateTask.status === 'failed' ? { error: state.pivotCreateTask.error } : {})}
         onClose={session.closeCreatePivotDialog.bind(session)}
         onCreate={createPivotFromDialog}
       />

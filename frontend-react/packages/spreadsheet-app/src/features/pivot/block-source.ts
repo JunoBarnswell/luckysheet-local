@@ -8,6 +8,7 @@ import type {
   SheetId,
 } from '@react-sheets/core-model';
 import type { DataSourceContentLoadState, DataSourceContentQuery } from '../data-source/content-query';
+import { createPivotSourceIndex, type PivotSourceIndex } from './source-index';
 
 export interface PivotBlockSourceField {
   fieldId: string;
@@ -16,15 +17,7 @@ export interface PivotBlockSourceField {
   dataType: PivotFieldDataType;
 }
 
-export interface PivotBlockSourceRow {
-  values: Record<string, PivotScalar>;
-  paths: PivotSourceRowPath[];
-}
-
-export interface PivotBlockSourceTable {
-  fields: PivotBlockSourceField[];
-  rows: PivotBlockSourceRow[];
-}
+export type PivotBlockSourceTable = PivotSourceIndex;
 
 export type PivotBlockSourceStatus = 'loading' | 'ready' | 'missing' | 'error';
 
@@ -165,7 +158,8 @@ export async function readPivotBlockSource(
     })
     : undefined;
   try {
-    const rows: PivotBlockSourceRow[] = [];
+    const columnValues = fields.map(() => [] as PivotScalar[]);
+    const rowPaths: PivotSourceRowPath[][] = [];
     for (let startRow = 0; startRow < queryManifest.rowCount; startRow += chunkRowCount) {
       const rowCount = Math.min(chunkRowCount, queryManifest.rowCount - startRow);
       const result = await query.getRows(startRow, rowCount);
@@ -182,14 +176,10 @@ export async function readPivotBlockSource(
         if (values.length !== fields.length) {
           return failure('error', sourceId, `Data source row ${String(startRow + localRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`, state.blockId);
         }
-        const rowValues: Record<string, PivotScalar> = {};
         fields.forEach((field, ordinal) => {
-          rowValues[field.fieldId] = values[ordinal] ?? null;
+          columnValues[ordinal]!.push(values[ordinal] ?? null);
         });
-        rows.push({
-          values: rowValues,
-          paths: [rowPath(sourceSheetId, sourceRowStart, startRow + localRow)],
-        });
+        rowPaths.push([rowPath(sourceSheetId, sourceRowStart, startRow + localRow)]);
       }
     }
     const readyState: PivotBlockSourceState = {
@@ -200,7 +190,10 @@ export async function readPivotBlockSource(
     return {
       status: 'ready',
       state: readyState,
-      source: { fields, rows },
+      source: createPivotSourceIndex({
+        columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
+        rowPaths,
+      }),
       sourceRevision: sourceRevision(query),
     };
   } catch (error) {

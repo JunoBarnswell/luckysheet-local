@@ -110,6 +110,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("note.visibility", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("outline.set", new PermissionPolicy("structure", "format", true, "declared", "range")),
         Map.entry("pivot.add", new PermissionPolicy("structure", "format", true, "declared", "range")),
+        Map.entry("pivot.create", new PermissionPolicy("structure", "format", true, "declared", "range")),
         Map.entry("pivot.chart.create", new PermissionPolicy("drawing", "edit-objects", true, "declared", "drawing")),
         Map.entry("pivot.drilldown.add", new PermissionPolicy("structure", "format", true, "declared", "range")),
         Map.entry("pivot.drilldown.remove", new PermissionPolicy("structure", "format", true, "declared", "range")),

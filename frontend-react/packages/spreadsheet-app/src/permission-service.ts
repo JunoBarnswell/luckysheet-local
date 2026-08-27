@@ -132,7 +132,7 @@ export class PermissionService {
       return { allowed: true };
     }
 
-    const allowsPendingSheet = input.commandId === 'pivot.create' || input.commandId === 'pivot.add' || input.commandId === 'pivot.drillDown';
+    const allowsPendingSheet = input.commandId === 'pivot.create' || input.commandId === 'pivot.drillDown';
     if (policy.protectionAction === 'none') {
       return { allowed: false, reason: `Command permission contract requires a protection action: ${input.commandId}`, blockedBy: 'share-role' };
     }

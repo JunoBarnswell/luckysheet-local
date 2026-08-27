@@ -293,6 +293,7 @@ export const MUTATION_PERMISSION_POLICIES = {
   "note.visibility": { capability: "comment", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "outline.set": { capability: "structure", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "pivot.add": { capability: "structure", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "pivot.create": { capability: "structure", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "pivot.chart.create": { capability: "drawing", protectionAction: "edit-objects", checksProtection: true, affectedRangeMode: "declared", objectScope: "drawing" },
   "pivot.drilldown.add": { capability: "structure", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "pivot.drilldown.remove": { capability: "structure", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },

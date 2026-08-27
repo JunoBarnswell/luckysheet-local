@@ -124,6 +124,7 @@ export interface CanvasSheetSnapshot {
   snapSettings?: import('@react-sheets/core-model').WorksheetSnapSettings;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
+  pivotTaskErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>>;
   /** Derived worksheet overlay; never materialized in ordinary cells. */
   pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
@@ -222,7 +223,7 @@ export function buildCanvasSheetSnapshot(
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
   dateSystem: FilterDateSystem = '1900',
-  pivotErrors: Readonly<Record<string, string>> = {},
+  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
   dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
   const conditionalRuntime = createConditionalFormatRuntime(sheet);
@@ -345,7 +346,7 @@ export function buildCanvasSheetSnapshot(
     let cachedResult = reusable(runtimeResult) ? runtimeResult : reusable(retainedResult) ? retainedResult : undefined;
     if (cachedResult) pivotResults[pivot.id] = cachedResult;
     try {
-      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula, refreshError: pivotErrors[pivot.id] });
+      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula, refreshError: pivotErrors[pivot.id]?.message });
       const retained = getLastValidPivotResult(workbook, pivot.id);
       if (!pivotResults[pivot.id] && reusable(retained)) pivotResults[pivot.id] = retained;
     } catch {
@@ -374,6 +375,7 @@ export function buildCanvasSheetSnapshot(
     snapSettings: structuredClone(sheet.snapSettings),
     pivots: [...sheet.pivots],
     pivotResults,
+    pivotTaskErrors: pivotErrors,
     pivotProjections,
     sparklines: [...sheet.sparklines],
     sparklineGroups: structuredClone(sheet.sparklineGroups),
@@ -422,6 +424,7 @@ export function buildAllSheetSnapshots(
   formula: FormulaEngine,
   pivotResults: Readonly<Record<string, PivotResultTree>>,
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
+  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
 ): CanvasSheetSnapshot[] {
-  return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults, dataContent));
+  return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults, dataContent, '1900', pivotErrors));
 }

@@ -946,7 +946,7 @@ function validatePivotMutationParams(id: string, value: unknown): void {
   }
   if (id !== 'pivot.update') return;
   const params = requireRecord(value, 'Pivot update');
-  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'], 'Pivot update');
+  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout', 'calculationProof', 'previousCalculationProof'], 'Pivot update');
   if (!isNonEmptyString(params.sheetId) || !isNonEmptyString(params.pivotId)) throw new Error('Pivot update identity is invalid');
   if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
   if (params.source !== undefined) validatePivotSource(params.source);
@@ -958,6 +958,19 @@ function validatePivotMutationParams(id: string, value: unknown): void {
   }
   if (params.presentation !== undefined) validatePivotPresentation(params.presentation);
   if (params.layout !== undefined) validatePivotCalculatedDefinitions(requireRecord(params.layout, 'Pivot update layout'));
+  validatePivotCalculationProof(params.calculationProof, 'Pivot update calculation proof');
+  validatePivotCalculationProof(params.previousCalculationProof, 'Pivot update previous calculation proof');
+}
+
+function validatePivotCalculationProof(value: unknown, label: string): void {
+  const proof = requireRecord(value, label);
+  validateExactKeys(proof, ['schema', 'pivotId', 'sourceRevision', 'layoutRevision', 'filterRevision', 'occupiedRange'], label);
+  if (proof.schema !== 'PivotCalculationProof'
+    || !isNonEmptyString(proof.pivotId)
+    || !isNonEmptyString(proof.sourceRevision)
+    || !isNonEmptyString(proof.layoutRevision)
+    || !isNonEmptyString(proof.filterRevision)
+    || !isRangeRef(proof.occupiedRange)) throw new Error(`${label} is invalid`);
 }
 
 /** Validate the only snapshot representation accepted at the wire boundary. */

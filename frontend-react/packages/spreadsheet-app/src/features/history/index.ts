@@ -1,7 +1,9 @@
-import { WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
+import { pivotSourceIdentity, WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import { FormulaEngine, type SheetTableRef } from '@react-sheets/formula-engine';
-import { computePivotResult } from '../pivot/engine';
+import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
+import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
+import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from '../../ui-snapshot';
 
 export interface HistoryEntryMeta {
@@ -30,6 +32,7 @@ export class HistoryPreviewSession {
   readonly revision: number;
   readonly meta: HistoryEntryMeta;
   readonly derivedCache: ReadonlyMap<string, PivotResultTree>;
+  readonly pivotErrors: ReadonlyMap<string, PivotTaskError>;
   private readonly projection: readonly CanvasSheetSnapshot[];
   private disposed = false;
 
@@ -38,6 +41,7 @@ export class HistoryPreviewSession {
     formula: FormulaEngine,
     meta: HistoryEntryMeta,
     derivedCache: ReadonlyMap<string, PivotResultTree>,
+    pivotErrors: ReadonlyMap<string, PivotTaskError>,
     projection: readonly CanvasSheetSnapshot[],
   ) {
     this.workbook = workbook;
@@ -45,29 +49,63 @@ export class HistoryPreviewSession {
     this.revision = meta.revision;
     this.meta = meta;
     this.derivedCache = derivedCache;
+    this.pivotErrors = pivotErrors;
     this.projection = projection;
   }
 
-  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot): Promise<HistoryPreviewSession> {
+  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot, taskPort?: PivotTaskPort): Promise<HistoryPreviewSession> {
     const workbook = WorkbookModel.fromSnapshot(snapshot);
     const formula = await hydratePreviewFormula(workbook);
     const derivedCache = new Map<string, PivotResultTree>();
     const pivotResults: Record<string, PivotResultTree> = {};
-    for (const sheet of workbook.getSheets()) {
-      for (const pivot of sheet.pivots) {
+    const pivotErrors: Record<string, PivotTaskError> = {};
+    const activePort = taskPort ?? new InlinePivotTaskPort();
+    const registered = new Map<string, string>();
+    let generation = 0;
+    try {
+      for (const sheet of workbook.getSheets()) for (const pivot of sheet.pivots) {
+        const sourceIdentity = `history:${meta.revision}:${workbook.unitId}:${pivotSourceIdentity(pivot.source)}`;
+        generation += 1;
         try {
-          const result = computePivotResult(workbook, pivot, formula);
+          let descriptor = preparePivotTaskDescriptor(workbook, pivot, formula);
+          if (registered.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
+            const prepared = await preparePivotTaskInputAsync(workbook, pivot, formula);
+            descriptor = { definition: prepared.definition, controls: prepared.controls, revisions: prepared.revisions, targetBounds: prepared.targetBounds };
+            const registration = await activePort.submit(createPivotSourceRegisterRequest(`history-source:${generation}`, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source));
+            if (registration.status !== 'accepted') {
+              if (registration.status === 'failed') pivotErrors[pivot.id] = registration.error;
+              continue;
+            }
+            registered.set(sourceIdentity, prepared.revisions.sourceRevision);
+          }
+          const task = await activePort.submit(createPivotCalculateRequest(`history-calculate:${generation}`, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
+          if (task.status !== 'completed') {
+            if (task.status === 'failed') pivotErrors[pivot.id] = task.error;
+            continue;
+          }
           const cacheKey = pivotCacheKey(meta.revision, pivot.id);
-          derivedCache.set(cacheKey, structuredClone(result));
-          pivotResults[pivot.id] = result;
-        } catch {
-          // A corrupt historical pivot must not prevent the rest of the
-          // workbook from being previewed.
+          derivedCache.set(cacheKey, structuredClone(task.result));
+          pivotResults[pivot.id] = task.result;
+        } catch (error) {
+          pivotErrors[pivot.id] = {
+            code: 'PIVOT_TASK_FAILED',
+            message: error instanceof Error ? error.message : `Historical Pivot failed: ${pivot.id}`,
+            pivotId: pivot.id,
+            sourceIdentity,
+            sourceRevision: 'unknown',
+            recovery: 'retry',
+          };
         }
       }
+    } finally {
+      for (const [sourceIdentity, sourceRevision] of registered) {
+        generation += 1;
+        await activePort.submit(createPivotSourceReleaseRequest(`history-release:${generation}`, generation, sourceIdentity, sourceRevision));
+      }
+      if (!taskPort) activePort.dispose();
     }
-    const projection = buildAllSheetSnapshots(workbook, formula, pivotResults);
-    return new HistoryPreviewSession(workbook, formula, meta, derivedCache, projection);
+    const projection = buildAllSheetSnapshots(workbook, formula, pivotResults, new Map(), pivotErrors);
+    return new HistoryPreviewSession(workbook, formula, meta, derivedCache, new Map(Object.entries(pivotErrors)), projection);
   }
 
   get ui(): HistoryPreviewProjection {

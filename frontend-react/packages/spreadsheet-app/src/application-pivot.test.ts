@@ -47,11 +47,22 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   };
 }
 
+async function waitForPivot(app: WorkbookSession, pivotId: string): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const state = app.getUiSnapshot().pivotTaskStates[pivotId];
+    if (!state || state.status === 'idle') return;
+    if (state.status === 'failed') throw new Error(`${state.error.code}: ${state.error.message}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Pivot task did not settle: ${pivotId}`);
+}
+
 describe('WorkbookSession PivotTable integration', () => {
-  it('enters and leaves a validated PivotTable contextual Ribbon state', () => {
+  it('enters and leaves a validated PivotTable contextual Ribbon state', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
-    app.runCommand('pivot.add', pivot);
+    assert.equal((await app.addPivot(pivot)).status, 'created');
 
     app.setActivePivotContext(pivot.id, sheetId);
     let snapshot = app.getUiSnapshot();
@@ -72,7 +83,7 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.deepEqual(app.getUiSnapshot().activeContext, { kind: 'none' });
   });
 
-  it('creates a new worksheet and PivotTable as one history entry', () => {
+  it('creates a new worksheet and PivotTable as one history entry', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.runCommand('selection.set', {
@@ -83,8 +94,10 @@ describe('WorkbookSession PivotTable integration', () => {
       anchorCell: { row: 0, column: 0 },
     });
     const beforeHistory = app.getUiSnapshot().historyEntries.length;
-    const pivotId = app.createPivotTable({ destination: { kind: 'new-sheet' } });
-    assert.ok(pivotId);
+    const created = await app.createPivotTable({ destination: { kind: 'new-sheet' } });
+    assert.equal(created.status, 'created');
+    if (created.status !== 'created') return;
+    const pivotId = created.pivotId;
     const createdSheetId = app.getActiveSheetId();
     assert.notEqual(createdSheetId, sheetId);
     assert.equal(app.getUiSnapshot().historyEntries.length, beforeHistory + 1);
@@ -99,17 +112,19 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(restoredSnapshot.selectedSheet.pivots[0]?.id, pivotId);
   });
 
-  it('keeps the worksheet scope on a named-range source through create, undo, and redo', () => {
+  it('keeps the worksheet scope on a named-range source through create, undo, and redo', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.setDefinedName({ name: 'SharedSource', formula: "='Sheet1'!A1:B3", scope: 'workbook' });
     app.setDefinedName({ name: 'SharedSource', formula: "='Sheet1'!A1:B3", scope: 'sheet', sheetId });
 
-    const pivotId = app.createPivotTable({
+    const created = await app.createPivotTable({
       source: { kind: 'named-range', name: 'SharedSource', sheetId },
       destination: { kind: 'existing-sheet', sheetId, anchor: { row: 5, column: 0 } },
     });
-    assert.ok(pivotId, app.getUiSnapshot().notice);
+    assert.equal(created.status, 'created', app.getUiSnapshot().notice);
+    if (created.status !== 'created') return;
+    const pivotId = created.pivotId;
     const source = app.getUiSnapshot().selectedSheet.pivots.find((pivot) => pivot.id === pivotId)?.source;
     assert.deepEqual(source, { kind: 'named-range', name: 'SharedSource', sheetId });
 
@@ -119,26 +134,26 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.deepEqual(app.getUiSnapshot().selectedSheet.pivots.find((pivot) => pivot.id === pivotId)?.source, { kind: 'named-range', name: 'SharedSource', sheetId });
   });
 
-  it('leaves workbook and history unchanged when create preflight rejects duplicate headers', () => {
+  it('leaves workbook and history unchanged when create preflight rejects duplicate headers', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 'Region' } });
     const before = app.getUiSnapshot();
-    const pivotId = app.createPivotTable({ destination: { kind: 'new-sheet' } });
-    assert.equal(pivotId, undefined);
+    const outcome = await app.createPivotTable({ destination: { kind: 'new-sheet' } });
+    assert.equal(outcome.status, 'rejected');
     const after = app.getUiSnapshot();
     assert.equal(after.sheets.length, before.sheets.length);
     assert.equal(after.historyEntries.length, before.historyEntries.length);
     assert.equal(after.notice, 'Pivot source header is duplicated: Region');
   });
 
-  it('rejects PivotTable creation for a viewer before any worksheet mutation', () => {
+  it('rejects PivotTable creation for a viewer before any worksheet mutation', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app['permission'].applyServerAccess('viewer');
     app['permission'].setOnline(true);
     const before = app.getUiSnapshot();
-    assert.equal(app.createPivotTable({ destination: { kind: 'new-sheet' } }), undefined);
+    assert.equal((await app.createPivotTable({ destination: { kind: 'new-sheet' } })).status, 'rejected');
     const after = app.getUiSnapshot();
     assert.equal(after.sheets.length, before.sheets.length);
     assert.equal(after.historyEntries.length, before.historyEntries.length);
@@ -146,17 +161,17 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(sheetId, app.getActiveSheetId());
   });
 
-  it('addPivot computes a local result tree', () => {
+  it('addPivot computes a local result tree', async () => {
     const app = new WorkbookSession();
     const { pivot } = seed(app);
-    app.addPivot(pivot);
+    assert.equal((await app.addPivot(pivot)).status, 'created');
     const snapshot = app.getUiSnapshot();
     assert.equal(snapshot.selectedSheet.pivots.length, 1);
     assert.ok(snapshot.selectedSheet.pivotResults[pivot.id]);
     assert.ok(snapshot.selectedSheet.pivotResults[pivot.id]!.rows.length > 0);
   });
 
-  it('insertPivotFromSelection builds a PivotTable from the current selection', () => {
+  it('insertPivotFromSelection builds a PivotTable from the current selection', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.runCommand('selection.set', {
@@ -166,16 +181,17 @@ describe('WorkbookSession PivotTable integration', () => {
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    const pivotId = app.insertPivotFromSelection();
-    assert.ok(pivotId);
-    assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivotId!]);
+    const created = await app.insertPivotFromSelection();
+    assert.equal(created.status, 'created');
+    if (created.status !== 'created') return;
+    assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[created.pivotId]);
   });
 
-  it('drillDownPivot creates a detail worksheet through the canonical command', () => {
+  it('drillDownPivot creates a detail worksheet through the canonical command', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-drill';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const beforeCount = app.getUiSnapshot().sheets.length;
     app.drillDownPivot(pivot.id, 'East', [{ sheetId, row: 1 }]);
     const snapshot = app.getUiSnapshot();
@@ -183,13 +199,14 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.notEqual(snapshot.activeSheetId, sheetId);
   });
 
-  it('creates a slicer drawing and refreshes a derived result without persisted refresh state', () => {
+  it('creates a slicer drawing and refreshes a derived result without persisted refresh state', async () => {
     const app = new WorkbookSession();
     const { pivot } = seed(app);
     pivot.id = 'pivot-slicer';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
     app.refreshPivot(pivot.id);
+    await waitForPivot(app, pivot.id);
     assert.equal(app.listPivotControls(pivot.id).length, 1);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
   });
@@ -198,56 +215,59 @@ describe('WorkbookSession PivotTable integration', () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-dispatch';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
     const nextLayout = structuredClone(pivot.layout);
     nextLayout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'count' }];
-    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
-    assert.equal(dispatch.status, 'committed');
+    const dispatch = await app.updatePivotLayout(pivot.id, nextLayout);
+    assert.equal(dispatch.status, 'updated');
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
   });
 
-  it('keeps manual and on-open results stale until the explicit refresh command', () => {
+  it('keeps manual and on-open results stale until the explicit refresh command', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-manual-policy';
     pivot.refreshPolicy = { mode: 'manual', preserveFormatting: true, refreshOnLoad: false };
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 100 } });
     const stale = app.getUiSnapshot().selectedSheet;
     assert.equal(stale.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
     assert.equal(stale.pivotProjections[pivot.id]?.refresh.status, 'stale');
 
     app.refreshPivot(pivot.id);
+    await waitForPivot(app, pivot.id);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 120);
 
     const onOpen = structuredClone(pivot);
     onOpen.id = 'pivot-on-open-policy';
     onOpen.target = { sheetId, anchor: { row: 12, column: 0 } };
     onOpen.refreshPolicy = { mode: 'on-open', preserveFormatting: true, refreshOnLoad: true };
-    app.addPivot(onOpen);
+    await app.addPivot(onOpen);
     app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 200 } });
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[onOpen.id]?.grandTotal?.values[0], 120);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[onOpen.id]?.refresh.status, 'stale');
   });
 
-  it('refreshes only intersecting on-change sources and supports refresh all explicitly', () => {
+  it('refreshes only intersecting on-change sources and supports refresh all explicitly', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-on-change-policy';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const other = structuredClone(pivot);
     other.id = 'pivot-manual-peer';
     other.target = { sheetId, anchor: { row: 12, column: 0 } };
     other.refreshPolicy = { mode: 'manual', preserveFormatting: true, refreshOnLoad: false };
-    app.addPivot(other);
+    await app.addPivot(other);
     app.runCommand('sheet.cell.set', { sheetId, row: 10, column: 1, value: { value: 999 } });
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 40 } });
+    await waitForPivot(app, pivot.id);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 60);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[other.id]?.grandTotal?.values[0], 30);
     app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 50 } });
     app.refreshAllPivots();
+    await waitForPivot(app, other.id);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[other.id]?.grandTotal?.values[0], 90);
   });
 
@@ -255,12 +275,12 @@ describe('WorkbookSession PivotTable integration', () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-grand-total-undo';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const nextLayout = structuredClone(pivot.layout);
     nextLayout.showRowGrandTotals = false;
     nextLayout.showColumnGrandTotals = true;
-    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
-    assert.equal(dispatch.status, 'committed');
+    const dispatch = await app.updatePivotLayout(pivot.id, nextLayout);
+    assert.equal(dispatch.status, 'updated');
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showRowGrandTotals, false);
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showColumnGrandTotals, true);
     app.undo();
@@ -275,11 +295,11 @@ describe('WorkbookSession PivotTable integration', () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-report-layout-undo';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const nextLayout = structuredClone(pivot.layout);
     nextLayout.reportLayout = 'tabular';
-    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
-    assert.equal(dispatch.status, 'committed');
+    const dispatch = await app.updatePivotLayout(pivot.id, nextLayout);
+    assert.equal(dispatch.status, 'updated');
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.reportLayout, 'tabular');
     app.undo();
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.reportLayout, 'compact');
@@ -291,11 +311,12 @@ describe('WorkbookSession PivotTable integration', () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-style';
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const presentation = { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: false, showLastColumn: true } } as const;
-    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, presentation } });
-    assert.equal(dispatch.status, 'committed');
-    assert.deepEqual(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation, presentation);
+    const dispatch = await app.updatePivotConfiguration(pivot.id, { presentation });
+    assert.equal(dispatch.status, 'updated');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleName, presentation.styleName);
+    assert.deepEqual(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleOptions, presentation.styleOptions);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.presentation?.styleName, 'PivotStyleMedium4');
     app.undo();
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleName, undefined);
@@ -311,20 +332,22 @@ describe('WorkbookSession PivotTable integration', () => {
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: amount.fieldId }];
     pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
-    app.addPivot(pivot);
+    await app.addPivot(pivot);
     const tree = app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]!;
     const parent = tree.rows[0]!;
     assert.ok(parent.nodeId);
     const beforeHistory = app.getUiSnapshot().historyEntries.length;
-    const collapsed = await app.dispatch({ commandId: 'pivot.expansion.toggle', params: { sheetId, pivotId: pivot.id, nodeId: parent.nodeId } });
-    assert.equal(collapsed.status, 'committed');
+    const collapsed = await app.togglePivotExpansion(pivot.id, parent.nodeId!);
+    assert.equal(collapsed.status, 'updated');
     const collapsedProjection = app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!;
     assert.equal(collapsedProjection.cells.some((cell) => cell.nodeId === parent.nodeId && cell.expanded === false), true);
     assert.equal(collapsedProjection.cells.filter((cell) => cell.nodeId && cell.nodeId.startsWith(`${parent.nodeId}/`)).length, 0);
     assert.equal(app.getUiSnapshot().historyEntries.length, beforeHistory + 1);
     app.undo();
+    await waitForPivot(app, pivot.id);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!.cells.some((cell) => cell.nodeId?.startsWith(`${parent.nodeId}/`)), true);
     app.redo();
+    await waitForPivot(app, pivot.id);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!.cells.some((cell) => cell.nodeId === parent.nodeId && cell.expanded === false), true);
   });
 });

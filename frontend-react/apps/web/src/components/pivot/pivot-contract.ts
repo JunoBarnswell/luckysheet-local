@@ -126,7 +126,7 @@ export interface PivotPanelCallbacks {
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
   onSubtotalLocationChange?: (location: import('@react-sheets/core-model').PivotSubtotalLocation) => void;
-  onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
+  onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => boolean | Promise<boolean>;
   onPresentationChange?: (presentation: PivotPresentation) => void;
   onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;

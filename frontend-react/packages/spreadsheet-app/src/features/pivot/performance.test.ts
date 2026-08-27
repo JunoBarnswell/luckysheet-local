@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { buildPivotGridProjection, computePivotResult, detectPivotCollision, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotOccupiedRange, normalizePivotDefinition } from './engine';
+import { buildPivotGridProjection, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, normalizePivotDefinition, preparePivotTaskInput } from './engine';
 import { buildPivotModel } from './helpers';
+import { createPivotSourceIndex, estimatePivotSourceIndexBytes } from './source-index';
 
 const ROW_COUNT = 4_058;
 const COLUMN_COUNT = 23;
@@ -22,9 +23,11 @@ function attachmentScaleWorkbook(): WorkbookModel {
 
 it('keeps attachment-scale Pivot calculation, projection, and lookup inside the interactive budget', () => {
   const workbook = attachmentScaleWorkbook();
+  workbook.addSheet('pivot-target', 'Pivot target', 1_000, 512);
   const startedAt = performance.now();
   const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-performance', { sheetId: 'sheet-1', startRow: 0, endRow: ROW_COUNT, startColumn: 0, endColumn: COLUMN_COUNT - 1 });
   assert.ok(pivot);
+  pivot.target = { sheetId: 'pivot-target', anchor: { row: 0, column: 0 } };
   const page = pivot.fieldCatalog.fields.find((field) => field.name === '页码')!;
   const bom1 = pivot.fieldCatalog.fields.find((field) => field.name === 'BOM1')!;
   const bom2 = pivot.fieldCatalog.fields.find((field) => field.name === 'BOM2')!;
@@ -32,7 +35,7 @@ it('keeps attachment-scale Pivot calculation, projection, and lookup inside the 
   pivot.layout.columns = [{ fieldId: page.fieldId }];
   pivot.layout.values = [{ valueId: 'bom1:count', fieldId: bom1.fieldId, summarizeBy: 'count' }];
   const result = computePivotResult(workbook, pivot);
-  const projection = buildPivotGridProjection(workbook, pivot, result, { refreshAuthorized: true });
+  const projection = buildPivotGridProjection(workbook, pivot, result);
   const projectedAt = performance.now();
   let hits = 0;
   for (let index = 0; index < 10_000; index += 1) {
@@ -61,11 +64,8 @@ it('rejects an oversized attachment-scale Pivot from its footprint before materi
   pivot.layout.values = [{ valueId: 'bom1:count', fieldId: bom1.fieldId, summarizeBy: 'count' }];
   const startedAt = performance.now();
   const definition = normalizePivotDefinition(workbook, pivot);
-  const result = computePivotResult(workbook, definition);
-  const occupied = getPivotOccupiedRange(definition, result);
-  const collision = detectPivotCollision(workbook, definition, occupied);
+  assert.throws(() => evaluatePivotTask(preparePivotTaskInput(workbook, definition)), /exceeds the destination worksheet boundary/);
   const finishedAt = performance.now();
-  assert.equal(collision.reasons.includes('worksheet-bounds'), true);
   assert.ok(finishedAt - startedAt < 1_000, `oversized Pivot rejection exceeded 1000ms: ${Math.round(finishedAt - startedAt)}ms`);
 });
 
@@ -80,4 +80,85 @@ it('reuses one revision-owned source index and field catalog across repeated Fie
   }
   const finishedAt = performance.now();
   assert.ok(finishedAt - startedAt < 300, `20 cached field-catalog reads exceeded 300ms: ${Math.round(finishedAt - startedAt)}ms`);
+});
+
+it('keeps a 100k x 20 columnar Pivot task within the worker and memory budgets', () => {
+  const rowCount = 100_000;
+  const columnCount = 20;
+  const columns = Array.from({ length: columnCount }, (_, column) => ({
+    field: { fieldId: `field:${column}`, name: `Field ${column}`, ordinal: column, dataType: column === 2 ? 'number' as const : 'text' as const },
+    values: Array.from({ length: rowCount }, (_, row) => column === 2 ? row % 1_000 : `V${column}:${row % (column === 0 ? 100 : column === 1 ? 20 : 32)}`),
+  }));
+  const source = createPivotSourceIndex({
+    columns,
+    rowPaths: Array.from({ length: rowCount }, (_, row) => [{ sheetId: 'source-sheet', row }]),
+  });
+  const definition = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-100k',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'source-sheet', startRow: 0, endRow: rowCount, startColumn: 0, endColumn: columnCount - 1 } },
+    target: { sheetId: 'target-sheet', anchor: { row: 0, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: source.fields.map((field) => ({ fieldId: field.fieldId, name: field.name, dataType: field.dataType ?? 'mixed' as const, ordinal: field.ordinal })) },
+    refreshPolicy: { mode: 'manual' as const, preserveFormatting: true, refreshOnLoad: false },
+    layout: {
+      rows: [{ fieldId: 'field:0' }], columns: [{ fieldId: 'field:1' }], filters: [], allowMultipleFiltersPerField: true,
+      collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
+      values: [{ valueId: 'field:2:sum', fieldId: 'field:2', summarizeBy: 'sum' as const }],
+      calculatedFields: [], calculatedItems: [], subtotalLocation: 'bottom' as const,
+      showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const,
+      expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+    },
+    presentation: {
+      styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
+    },
+  };
+  const startedAt = performance.now();
+  const result = evaluatePivotTask({
+    definition,
+    source,
+    controls: [],
+    revisions: { pivotId: definition.id, sourceRevision: 'source-1', layoutRevision: 'layout-1', filterRevision: 'filter-1' },
+    targetBounds: { rowCount: 2_000, columnCount: 512 },
+  });
+  const finishedAt = performance.now();
+  const legacyRowObjectEstimate = rowCount * columnCount * 56 + rowCount * 48;
+  assert.equal(result.rows.length, 100);
+  assert.equal(result.columnPaths.length, 20);
+  assert.ok(finishedAt - startedAt < 2_000, `100k x 20 Pivot task exceeded 2000ms: ${Math.round(finishedAt - startedAt)}ms`);
+  assert.ok(estimatePivotSourceIndexBytes(source) < legacyRowObjectEstimate * 0.35);
+});
+
+it('rejects a sparse high-cardinality source before allocating a dense 300k-cell result', () => {
+  const rowCount = 600;
+  const source = createPivotSourceIndex({
+    columns: [
+      { field: { fieldId: 'row', name: 'Row', ordinal: 0, dataType: 'text' }, values: Array.from({ length: rowCount }, (_, row) => `R${row}`) },
+      { field: { fieldId: 'column', name: 'Column', ordinal: 1, dataType: 'text' }, values: Array.from({ length: rowCount }, (_, row) => `C${row % 500}`) },
+      { field: { fieldId: 'value', name: 'Value', ordinal: 2, dataType: 'number' }, values: Array.from({ length: rowCount }, () => 1) },
+    ],
+    rowPaths: Array.from({ length: rowCount }, (_, row) => [{ sheetId: 'source-sheet', row }]),
+  });
+  const definition = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-result-limit',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'source-sheet', startRow: 0, endRow: rowCount, startColumn: 0, endColumn: 2 } },
+    target: { sheetId: 'target-sheet', anchor: { row: 0, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: source.fields.map((field) => ({ fieldId: field.fieldId, name: field.name, dataType: field.dataType ?? 'mixed' as const, ordinal: field.ordinal })) },
+    refreshPolicy: { mode: 'manual' as const, preserveFormatting: true, refreshOnLoad: false },
+    layout: {
+      rows: [{ fieldId: 'row' }], columns: [{ fieldId: 'column' }], filters: [], allowMultipleFiltersPerField: true,
+      collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
+      values: [{ valueId: 'value:sum', fieldId: 'value', summarizeBy: 'sum' as const }],
+      calculatedFields: [], calculatedItems: [], subtotalLocation: 'bottom' as const,
+      showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const,
+      expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+    },
+  };
+  assert.throws(() => evaluatePivotTask({
+    definition,
+    source,
+    controls: [],
+    revisions: { pivotId: definition.id, sourceRevision: 'source-1', layoutRevision: 'layout-1', filterRevision: 'filter-1' },
+    targetBounds: { rowCount: 1_000, columnCount: 1_000 },
+  }), /result cell limit exceeded/);
 });
