@@ -306,17 +306,18 @@ test('workbook cell templates apply style, editor and validation through one com
       id: 'status',
       name: 'Status',
       style: { background: '#e2f0d9', indent: 1 },
-      editor: { kind: 'list', values: ['Open', 'Closed'] },
+      editor: { kind: 'validation-list' },
+      dataValidation: { type: 'list', listSource: { kind: 'values', values: ['Open', 'Closed'] } },
     },
   });
   runtime.execute('sheet.cellTemplate.apply', { sheetId: sheet.id, ranges: [range], templateId: 'status' });
   assert.equal(sheet.cells.get(1, 1)?.style?.indent, 1);
-  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'list');
+  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'validation-list');
   assert.deepEqual(sheet.dataValidations[0]?.listSource, { kind: 'values', values: ['Open', 'Closed'] });
   runtime.undo();
   assert.equal(sheet.cells.get(1, 1), undefined);
   runtime.redo();
-  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'list');
+  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'validation-list');
 });
 
 test('Home cell commands fail closed on block-backed data regions', () => {

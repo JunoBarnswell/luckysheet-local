@@ -69,19 +69,6 @@ export interface FocusState {
   target: FocusTarget;
 }
 
-export interface EditSession {
-  sheetId: string;
-  cell: { row: number; column: number };
-  originalValue: unknown;
-  originalFormula?: string;
-  draftText: string;
-  caret: { start: number; end: number };
-  composition: { active: boolean; text: string };
-  referenceMode: boolean;
-  mode: 'value' | 'formula';
-  source: 'cell' | 'formulaBar' | 'functionInsert';
-}
-
 export interface PanelState {
   active: SidebarPanelId;
   open: boolean;
@@ -138,7 +125,6 @@ export interface BackstageState {
 export interface DesignerState {
   workbook: { unitId: string; name: string };
   selection: SelectionState;
-  editSession: EditSession | null;
   activeObject: { kind: string; id: string } | null;
   ribbon: { activeTab: RibbonTabId };
   panels: PanelState;

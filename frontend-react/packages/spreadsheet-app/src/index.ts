@@ -20,7 +20,7 @@ export {
 } from './workbook-session';
 export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
-export { useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
+export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
   getFeatureRegistry,
@@ -33,7 +33,7 @@ export { buildPivotChartData, type PivotChartCategory, type PivotChartData, type
 export * from './features/data-source';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
-export { EditSession } from './edit-session';
+export * from './cell-edit';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
 export type { SelectionArea, SelectionKind, SelectionMode } from './selection-service';
 export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';

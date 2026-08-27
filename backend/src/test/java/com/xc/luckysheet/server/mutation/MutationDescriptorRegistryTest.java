@@ -54,6 +54,20 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void workbookEditingOptionsUseOneValidatedRootReducer() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("{\"editingOptions\":{\"allowEditDirectly\":true,\"moveAfterEnter\":true,\"enterDirection\":\"down\",\"formulaAutoComplete\":true,\"valueAutoComplete\":true,\"fixedDecimalPlaces\":null},\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}");
+        var options = mapper.readTree("{\"allowEditDirectly\":false,\"moveAfterEnter\":true,\"enterDirection\":\"right\",\"formulaAutoComplete\":true,\"valueAutoComplete\":false,\"fixedDecimalPlaces\":2}");
+        var mutation = new OperationMutation("workbook.editing.options.set", "sheet-1", options);
+        assertEquals(List.of(), registry.resolveRanges(snapshot, mutation));
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+        assertEquals("right", next.path("editingOptions").path("enterDirection").asText());
+        assertEquals(2, next.path("editingOptions").path("fixedDecimalPlaces").asInt());
+        var invalid = new OperationMutation("workbook.editing.options.set", "sheet-1", mapper.readTree("{\"allowEditDirectly\":true,\"moveAfterEnter\":true,\"enterDirection\":\"down\",\"formulaAutoComplete\":true,\"fixedDecimalPlaces\":null}"));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+    }
+
+    @Test
     void cellSetRevalidatesTheBoundCandidateAgainstTheCommitSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
@@ -257,7 +271,7 @@ class MutationDescriptorRegistryTest {
                 "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
-                "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed",
+                "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed", "workbook.editing.options.set",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",

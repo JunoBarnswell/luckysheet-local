@@ -19,6 +19,8 @@ export interface RemoteEditSession {
   sheetId: string;
   row: number;
   column: number;
+  status: 'enter' | 'edit' | 'point';
+  surface?: 'grid' | 'formula-bar' | 'formula-panel';
   draftPreview?: string;
 }
 

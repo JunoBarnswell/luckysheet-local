@@ -81,6 +81,7 @@ export interface SpreadsheetRuntime {
   pivotErrors: Record<string, import('./features/pivot/task-protocol').PivotTaskError>;
   collab: CollabSocketClient | null;
   collabDispose: (() => void) | null;
+  broadcastPresence: (state: unknown) => boolean;
   collaboration: CollaborationSession | null;
   bootstrapDispose: (() => void) | null;
   operationJournal: OperationJournalStore;
@@ -198,6 +199,7 @@ export function createSpreadsheetRuntime(options: {
     pivotErrors: {},
     collab: null,
     collabDispose: null,
+    broadcastPresence: () => false,
     collaboration: null,
     bootstrapDispose: null,
     operationJournal,
@@ -933,6 +935,7 @@ export function startCollaborationSession(
       shareTokenProvider,
     });
     runtime.collab = client;
+    runtime.broadcastPresence = (state) => !runtime.disposed && client.send({ type: 'presence.updated', unitId: runtime.model.unitId, state });
 
     const applyRemote = (message: OperationMessage) => {
       if (runtime.disposed) return;
@@ -952,7 +955,7 @@ export function startCollaborationSession(
           runtime.collaboration?.presence.removeUser(message.actorId);
           return;
         }
-        const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
+        const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string; edit?: { sheetId: string; row: number; column: number; status: 'enter' | 'edit' | 'point'; surface?: 'grid' | 'formula-bar' | 'formula-panel' } | null } | null;
         const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.primarySheetId);
         runtime.collaboration?.presence.upsertUser({
           actorId: peer.actorId,
@@ -960,6 +963,8 @@ export function startCollaborationSession(
           color: peer.color,
         });
         if (runtime.collaboration) updatePresenceFromPeer(runtime.collaboration, peer);
+        if (cursorState?.edit) runtime.collaboration?.presence.updateEditSession({ actorId: message.actorId, ...cursorState.edit });
+        else runtime.collaboration?.presence.clearEditSession(message.actorId);
         runtime.handlers.onPeersChange?.([peer]);
       }
     };
@@ -998,6 +1003,7 @@ export function startCollaborationSession(
       client.close();
       runtime.collaboration?.attachTransport(undefined);
       runtime.collab = null;
+      runtime.broadcastPresence = () => false;
     };
   }).catch(() => {
     runtime.handlers.onCollabStatus?.('closed');

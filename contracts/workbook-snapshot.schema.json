@@ -3,10 +3,10 @@
   "$id": "https://react-sheets.local/contracts/workbook-snapshot.schema.json",
   "title": "WorkbookSnapshot",
   "type": "object",
-  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataModel", "sheets"],
+  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "calculationSettings", "editingOptions", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 8 },
+    "version": { "const": 9 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -16,6 +16,20 @@
         "normalFontFamily": { "type": "string", "minLength": 1 },
         "normalFontSizePx": { "type": "number", "exclusiveMinimum": 0 },
         "maximumDigitWidthPx": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "calculationSettings": { "type": "object" },
+    "editingOptions": {
+      "type": "object",
+      "required": ["allowEditDirectly", "moveAfterEnter", "enterDirection", "formulaAutoComplete", "valueAutoComplete", "fixedDecimalPlaces"],
+      "properties": {
+        "allowEditDirectly": { "type": "boolean" },
+        "moveAfterEnter": { "type": "boolean" },
+        "enterDirection": { "enum": ["down", "up", "right", "left"] },
+        "formulaAutoComplete": { "type": "boolean" },
+        "valueAutoComplete": { "type": "boolean" },
+        "fixedDecimalPlaces": { "type": ["integer", "null"], "minimum": 0, "maximum": 15 }
       },
       "additionalProperties": false
     },

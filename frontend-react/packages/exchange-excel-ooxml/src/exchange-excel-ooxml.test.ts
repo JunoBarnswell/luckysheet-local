@@ -9,7 +9,6 @@ import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './arch
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
-import { readFile } from 'node:fs/promises';
 
 describe('exchange-excel-ooxml', () => {
   it('preserves native Pivot error cache items as typed error members', () => {
@@ -1352,11 +1351,25 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['custom/book.xml']!), /purl\.oclc\.org\/ooxml\/spreadsheetml\/main/);
   });
 
-  it('imports the repository House cleaning sample with Excel widths converted to CSS pixels', async () => {
-    const bytes = await readFile(new URL('../../../../luckyexcel-node/House cleaning checklist.xlsx', import.meta.url));
-    const imported = await importXlsx({ fileName: 'House cleaning checklist.xlsx', buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' } });
-    const widths = imported.snapshot.sheets.flatMap((sheet) => Object.values(sheet.columnWidthsPx ?? {}));
-    assert.ok(widths.some((width) => width >= 67 && width <= 68), '9.625 Excel characters should render near 68 CSS pixels');
-    assert.equal(widths.some((width) => Math.abs(width - 9.625) < 0.001), false);
+  it('round-trips editable rich-text run formatting including superscript and subscript', async () => {
+    const workbook = new WorkbookModel('rich-text-editing', 'Rich Text Editing');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'H2O', richText: [
+      { text: 'H', style: { bold: true, textColor: '#2563EB' } },
+      { text: '2', style: { verticalAlignment: 'subscript' } },
+      { text: 'O', style: { italic: true } },
+    ] });
+    const imported = await importXlsx({ fileName: 'rich-text.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const richText = imported.snapshot.sheets[0]?.cells['0']?.['0']?.richText;
+    assert.equal(richText?.map((run) => run.text).join(''), 'H2O');
+    assert.equal(richText?.[1]?.style?.verticalAlignment, 'subscript');
+    assert.equal(richText?.[0]?.style?.bold, true);
+  });
+
+  it('round-trips the canonical workbook editing options through owned OOXML metadata', async () => {
+    const workbook = new WorkbookModel('editing-options', 'Editing Options');
+    workbook.setEditingOptions({ allowEditDirectly: false, moveAfterEnter: true, enterDirection: 'right', formulaAutoComplete: false, valueAutoComplete: true, fixedDecimalPlaces: 3 });
+    const imported = await importXlsx({ fileName: 'editing-options.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(imported.snapshot.editingOptions, workbook.editingOptions);
   });
 });

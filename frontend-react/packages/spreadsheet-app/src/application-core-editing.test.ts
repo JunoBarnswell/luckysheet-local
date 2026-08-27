@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import './cell-edit/domain.test';
 import { copyRangeToClipboardData, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { WorkbookSession } from './workbook-session';
 
@@ -388,13 +389,59 @@ describe('WorkbookSession core editing integration', () => {
     });
     assert.equal(app.getUiSnapshot().activeCell, 'C9');
 
-    app.beginEdit('4');
-    assert.deepEqual(app.getUiSnapshot().editingCell, { row: 8, column: 2 });
-    app.commitEdit('none');
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', initialText: '4' });
+    assert.deepEqual(app.cellEdit.getSnapshot().session?.target.display, { sheetId, row: 8, column: 2 });
+    app.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
 
     const cells = app['runtime'].model.getSheet(sheetId).cells;
     assert.equal(cells.get(8, 2)?.value, 4);
     assert.equal(cells.get(1, 0), undefined);
+  });
+
+  it('keeps draft, caret and IME updates off the full workbook UI snapshot and model history', () => {
+    const app = new WorkbookSession();
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', initialText: 'a' });
+    const uiSnapshot = app.getUiSnapshot();
+    const historyDepth = app['runtime'].commands.getUndoEntries().length;
+    const modelRevision = app['runtime'].model.getSheet(app.getActiveSheetId()).cells.revision;
+    app.cellEdit.dispatch({ type: 'text.insert', text: 'b' });
+    app.cellEdit.dispatch({ type: 'caret.set', caret: { start: 1, end: 2 } });
+    app.cellEdit.dispatch({ type: 'composition.start' });
+    app.cellEdit.dispatch({ type: 'composition.update', text: '中文' });
+    assert.strictEqual(app.getUiSnapshot(), uiSnapshot);
+    assert.equal(app['runtime'].commands.getUndoEntries().length, historyDepth);
+    assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.revision, modelRevision);
+  });
+
+  it('grouped worksheets commit the same cell through one semantic history transaction', () => {
+    const app = new WorkbookSession();
+    const firstSheetId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'sheet-grouped-2', name: 'Grouped 2' });
+    app.selectSheet(firstSheetId);
+    app.selectSheet('sheet-grouped-2', { toggleGroup: true });
+    assert.deepEqual(new Set(app.getUiSnapshot().groupedSheetIds), new Set([firstSheetId, 'sheet-grouped-2']));
+    const historyDepth = app['runtime'].commands.getUndoEntries().length;
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', initialText: 'grouped-value' });
+    app.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+    assert.equal(app['runtime'].model.getSheet(firstSheetId).cells.get(0, 0)?.value, 'grouped-value');
+    assert.equal(app['runtime'].model.getSheet('sheet-grouped-2').cells.get(0, 0)?.value, 'grouped-value');
+    assert.equal(app['runtime'].commands.getUndoEntries().length, historyDepth + 1);
+    app.undo();
+    assert.equal(app['runtime'].model.getSheet(firstSheetId).cells.get(0, 0), undefined);
+    assert.equal(app['runtime'].model.getSheet('sheet-grouped-2').cells.get(0, 0), undefined);
+  });
+
+  it('fails closed when the canonical target changes during an active draft', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'base' } });
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'f2' });
+    app.cellEdit.dispatch({ type: 'text.replace', text: 'local draft', caret: { start: 11, end: 11 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'remote value' } });
+    const commit = app.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
+    assert.equal(commit.failure?.code, 'CELL_EDIT_REVISION_CONFLICT');
+    assert.equal(app.cellEdit.getSnapshot().session?.draft.text, 'local draft');
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0)?.value, 'remote value');
   });
 
   it('cell insert down preserves the selected data and shifts the following band', () => {

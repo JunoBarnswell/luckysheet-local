@@ -1,6 +1,7 @@
 import type {
   BandedRule,
   CellData,
+  RichTextRun,
   CellStyle,
   ConditionalFormatRule,
   DataValidationRule,
@@ -31,11 +32,11 @@ import {
   type BorderLine,
 } from '@react-sheets/core-model';
 import { isHorizontalAlignment, isReadingOrder, isVerticalAlignment } from '@react-sheets/core-model';
-import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { buildCellFromText, type CellInputInterpretationContext } from './text-input';
 import { registerEditingCommands } from './editing';
-import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
+import { registerDataToolCommands, findValidationRule, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
@@ -43,6 +44,7 @@ import { registerHomeCommands } from './home-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
+import { CellEntryError } from './cell-entry-error';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -80,6 +82,7 @@ export * from './cell-template-commands';
 export * from './clear-planner';
 export * from './data-region-context';
 export * from './cell-write-authority';
+export * from './cell-entry-error';
 
 
 export interface SetCellValueParams {
@@ -99,6 +102,48 @@ export interface CommitTextParams {
   inputContext: CellInputInterpretationContext;
   style?: Partial<CellStyle>;
   /** Required only when a warning/information validation rule is overridden. */
+  validationConfirmation?: boolean;
+}
+
+export interface CommitTypedValueParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  value: CellData['value'];
+  validationConfirmation?: boolean;
+}
+
+export interface CommitRichTextParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  text: string;
+  runs: RichTextRun[];
+  validationConfirmation?: boolean;
+}
+
+export interface CommitTextCellsParams {
+  text: string;
+  targets: Array<{
+    sheetId: string;
+    row: number;
+    column: number;
+    inputContext: CellInputInterpretationContext;
+    style?: Partial<CellStyle>;
+  }>;
+  validationConfirmation?: boolean;
+}
+
+export interface CommitTypedValueCellsParams {
+  value: CellData['value'];
+  targets: Array<{ sheetId: string; row: number; column: number }>;
+  validationConfirmation?: boolean;
+}
+
+export interface CommitRichTextCellsParams {
+  text: string;
+  runs: RichTextRun[];
+  targets: Array<{ sheetId: string; row: number; column: number }>;
   validationConfirmation?: boolean;
 }
 
@@ -262,6 +307,132 @@ function cellRange(params: Pick<SetCellValueParams, 'sheetId' | 'row' | 'column'
       endColumn: params.column,
     },
   ];
+}
+
+interface CellEntryTarget {
+  sheetId: string;
+  row: number;
+  column: number;
+  validationConfirmation?: boolean;
+}
+
+function rejectCellEntry(target: Pick<CellEntryTarget, 'sheetId' | 'row' | 'column'>, message: string, recovery: string): never {
+  throw new CellEntryError({ code: 'CELL_ENTRY_INVALID_INPUT', message, ...target, recovery });
+}
+
+interface PreparedCellEntry {
+  params: CellEntryTarget;
+  next: CellData;
+  previous: CellData | undefined;
+  sheet: WorksheetModel;
+  affectedRanges: RangeRef[];
+}
+
+function prepareCellEntry(
+  params: CellEntryTarget,
+  next: CellData,
+  context: CommandContext,
+): PreparedCellEntry {
+  if (!Number.isSafeInteger(params.row) || params.row < 0 || !Number.isSafeInteger(params.column) || params.column < 0) {
+    throw new CellEntryError({
+      code: 'CELL_ENTRY_INVALID_INPUT',
+      message: 'Cell row and column must be non-negative integers',
+      sheetId: params.sheetId,
+      row: params.row,
+      column: params.column,
+      recovery: 'Resolve a canonical non-negative cell address before committing.',
+    });
+  }
+  const sheet = context.workbook.getSheet(params.sheetId);
+  assertCanonicalCheckboxCell(next);
+  for (const spill of sheet.spillRanges) {
+    if (isSpillChild(spill, params.row, params.column)) {
+      throw new CellEntryError({
+        code: 'CELL_ENTRY_SPILL_CHILD',
+        message: 'Cannot edit a dynamic-array spill child',
+        sheetId: params.sheetId,
+        row: params.row,
+        column: params.column,
+        recovery: 'Edit the dynamic-array source formula instead of a spill child.',
+      });
+    }
+  }
+  if (!next.formula) {
+    const validation = validateDataInput(sheet, params.row, params.column, next.value);
+    const rule = validation.ruleId ? findValidationRule(sheet, params.row, params.column) : undefined;
+    if (validation.blocking) {
+      throw new CellEntryError({
+        code: 'CELL_ENTRY_VALIDATION_BLOCKED',
+        message: validation.message ?? 'Cell value failed data validation',
+        sheetId: params.sheetId,
+        row: params.row,
+        column: params.column,
+        recovery: 'Correct the draft so it satisfies the target validation rule.',
+        alertStyle: 'stop',
+        ...(rule?.errorTitle ? { title: rule.errorTitle } : {}),
+      });
+    }
+    if (!validation.valid && params.validationConfirmation !== true) {
+      const alertStyle = validation.alertStyle === 'information' ? 'information' : 'warning';
+      throw new CellEntryError({
+        code: 'CELL_ENTRY_CONFIRMATION_REQUIRED',
+        message: validation.message ?? 'Cell value requires explicit validation confirmation',
+        sheetId: params.sheetId,
+        row: params.row,
+        column: params.column,
+        recovery: 'Confirm the warning/information decision or return to the active edit session.',
+        alertStyle,
+        ...(rule?.errorTitle ? { title: rule.errorTitle } : {}),
+      });
+    }
+  }
+
+  return {
+    params,
+    next: structuredClone(next),
+    previous: sheet.cells.get(params.row, params.column),
+    sheet,
+    affectedRanges: cellRange(params),
+  };
+}
+
+function applyPreparedCellEntry(prepared: PreparedCellEntry, context: CommandContext): void {
+  const { params, next, previous, sheet, affectedRanges } = prepared;
+  context.applyMutation({
+    id: 'cell.set',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params: createCellSetMutationParams(sheet, {
+      sheetId: params.sheetId,
+      row: params.row,
+      column: params.column,
+      value: structuredClone(next),
+    }, 'direct-entry', params.validationConfirmation === true),
+    affectedRanges,
+    inverse: [{
+      id: 'cell.restore',
+      unitId: context.workbook.unitId,
+      sheetId: params.sheetId,
+      params: {
+        sheetId: params.sheetId,
+        row: params.row,
+        column: params.column,
+        previous: previous ? structuredClone(previous) : undefined,
+      },
+      affectedRanges,
+    }],
+    apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
+  });
+}
+
+function commitCellEntry(
+  params: CellEntryTarget,
+  next: CellData,
+  context: CommandContext,
+): CommandResult {
+  const prepared = prepareCellEntry(params, next, context);
+  applyPreparedCellEntry(prepared, context);
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges: prepared.affectedRanges };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -667,7 +838,8 @@ function restoreCell(
 
 function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
   if (cell?.editor?.kind !== 'checkbox') return;
-  normalizeCheckboxCellValue(cell);
+  const normalized = normalizeCheckboxCellValue(cell, cell.editor);
+  if (!Object.is(normalized, cell.value)) throw new Error('Checkbox cell value must match one configured canonical state');
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
@@ -1169,61 +1341,161 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<CommitTextParams>({
     id: 'sheet.cell.commitText',
     execute: (params, context) => {
-      if (typeof params.text !== 'string') throw new Error('Cell text must be a string');
-      if (!Number.isSafeInteger(params.row) || params.row < 0 || !Number.isSafeInteger(params.column) || params.column < 0) {
-        throw new Error('Cell row and column must be non-negative integers');
-      }
-      const sheet = context.workbook.getSheet(params.sheetId);
-      for (const spill of sheet.spillRanges) {
-        if (isSpillChild(spill, params.row, params.column)) {
-          throw new Error('Cannot edit a dynamic-array spill child');
-        }
-      }
-
-      const previous = sheet.cells.get(params.row, params.column);
-      const next = buildCellFromText(params.text, previous, params.inputContext, params.style);
-      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
-      // A formula is validated by the FormulaEngine after commit and does not
-      // have a scalar value to validate at this boundary. Scalar input must
-      // satisfy the target rule before the cell.set mutation is opened.
-      if (!next.formula) {
-        const validation = validateDataInput(sheet, params.row, params.column, next.value);
-        if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
-        if (!validation.valid && params.validationConfirmation !== true) {
-          throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
-        }
-      }
-      const affectedRanges = cellRange({
-        sheetId: params.sheetId,
-        row: params.row,
-        column: params.column,
-      });
-      context.applyMutation({
-        id: 'cell.set',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: createCellSetMutationParams(sheet, {
+      if (typeof params.text !== 'string') {
+        throw new CellEntryError({
+          code: 'CELL_ENTRY_INVALID_INPUT',
+          message: 'Cell text must be a string',
           sheetId: params.sheetId,
           row: params.row,
           column: params.column,
-          value: structuredClone(next),
-        }, 'direct-entry', params.validationConfirmation === true),
-        affectedRanges,
-        inverse: [{
-          id: 'cell.restore',
-          unitId: context.workbook.unitId,
+          recovery: 'Pass the unchanged lexical input string to sheet.cell.commitText.',
+        });
+      }
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.cells.get(params.row, params.column);
+      const next = buildCellFromText(params.text, previous, params.inputContext, params.style);
+      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
+      return commitCellEntry(params, next, context);
+    },
+  });
+
+  runtime.registry.registerCommand<CommitTypedValueParams>({
+    id: 'sheet.cell.commitTypedValue',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.cells.get(params.row, params.column);
+      const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+      next.value = structuredClone(params.value);
+      delete next.formula;
+      delete next.formulaValue;
+      delete next.displayValue;
+      delete next.richText;
+      return commitCellEntry(params, next, context);
+    },
+  });
+
+  runtime.registry.registerCommand<CommitRichTextParams>({
+    id: 'sheet.cell.commitRichText',
+    execute: (params, context) => {
+      if (typeof params.text !== 'string' || !Array.isArray(params.runs) || params.runs.some((run) => typeof run.text !== 'string')) {
+        throw new CellEntryError({
+          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
+          message: 'Rich-text commit requires text and canonical runs',
           sheetId: params.sheetId,
-          params: {
-            sheetId: params.sheetId,
-            row: params.row,
-            column: params.column,
-            previous: previous ? structuredClone(previous) : undefined,
-          },
-          affectedRanges,
-        }],
-        apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
+          row: params.row,
+          column: params.column,
+          recovery: 'Submit a canonical rich-text draft with text-preserving runs.',
+        });
+      }
+      if (params.runs.map((run) => run.text).join('') !== params.text) {
+        throw new CellEntryError({
+          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
+          message: 'Rich-text runs do not reproduce the canonical plain text',
+          sheetId: params.sheetId,
+          row: params.row,
+          column: params.column,
+          recovery: 'Normalize the run sequence before committing.',
+        });
+      }
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.cells.get(params.row, params.column);
+      const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+      next.value = params.text;
+      next.richText = structuredClone(params.runs);
+      delete next.formula;
+      delete next.formulaValue;
+      delete next.displayValue;
+      return commitCellEntry(params, next, context);
+    },
+  });
+
+  runtime.registry.registerCommand<CommitTextCellsParams>({
+    id: 'sheet.cells.commitText',
+    execute: (params, context) => {
+      if (typeof params.text !== 'string' || !Array.isArray(params.targets) || params.targets.length === 0) {
+        throw new CellEntryError({
+          code: 'CELL_ENTRY_INVALID_INPUT',
+          message: 'Multi-cell text commit requires a raw text value and at least one target',
+          sheetId: params.targets?.[0]?.sheetId ?? context.workbook.primarySheetId,
+          row: params.targets?.[0]?.row ?? 0,
+          column: params.targets?.[0]?.column ?? 0,
+          recovery: 'Resolve the complete canonical selection before opening the transaction.',
+        });
+      }
+      const identities = new Set<string>();
+      const prepared = params.targets.map((target) => {
+        const identity = `${target.sheetId}:${target.row}:${target.column}`;
+        if (identities.has(identity)) {
+          throw new CellEntryError({
+            code: 'CELL_ENTRY_INVALID_INPUT',
+            message: `Multi-cell text commit contains a duplicate target: ${identity}`,
+            sheetId: target.sheetId,
+            row: target.row,
+            column: target.column,
+            recovery: 'Normalize overlapping selection ranges into unique canonical targets.',
+          });
+        }
+        identities.add(identity);
+        const sheet = context.workbook.getSheet(target.sheetId);
+        const previous = sheet.cells.get(target.row, target.column);
+        const next = buildCellFromText(params.text, previous, target.inputContext, target.style);
+        if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
+        return prepareCellEntry({ ...target, validationConfirmation: params.validationConfirmation }, next, context);
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      for (const entry of prepared) applyPreparedCellEntry(entry, context);
+      return {
+        operationId: context.operationId,
+        mutationCount: prepared.length,
+        affectedRanges: prepared.flatMap((entry) => entry.affectedRanges),
+      };
+    },
+  });
+
+  runtime.registry.registerCommand<CommitTypedValueCellsParams>({
+    id: 'sheet.cells.commitTypedValue',
+    execute: (params, context) => {
+      if (!Array.isArray(params.targets) || params.targets.length === 0) rejectCellEntry({ sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell typed commit requires at least one target', 'Resolve the complete canonical selection before committing.');
+      const identities = new Set<string>();
+      const prepared = params.targets.map((target) => {
+        const identity = `${target.sheetId}:${target.row}:${target.column}`;
+        if (identities.has(identity)) rejectCellEntry(target, `Multi-cell typed commit contains a duplicate target: ${identity}`, 'Normalize overlapping selection ranges into unique canonical targets.');
+        identities.add(identity);
+        const sheet = context.workbook.getSheet(target.sheetId);
+        const previous = sheet.cells.get(target.row, target.column);
+        const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+        next.value = structuredClone(params.value);
+        delete next.formula;
+        delete next.formulaValue;
+        delete next.displayValue;
+        delete next.richText;
+        return prepareCellEntry({ ...target, validationConfirmation: params.validationConfirmation }, next, context);
+      });
+      for (const entry of prepared) applyPreparedCellEntry(entry, context);
+      return { operationId: context.operationId, mutationCount: prepared.length, affectedRanges: prepared.flatMap((entry) => entry.affectedRanges) };
+    },
+  });
+
+  runtime.registry.registerCommand<CommitRichTextCellsParams>({
+    id: 'sheet.cells.commitRichText',
+    execute: (params, context) => {
+      if (!Array.isArray(params.targets) || params.targets.length === 0 || params.runs.map((run) => run.text).join('') !== params.text) rejectCellEntry(params.targets?.[0] ?? { sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell rich-text commit payload is invalid', 'Submit text-preserving rich-text runs and at least one canonical target.');
+      const identities = new Set<string>();
+      const prepared = params.targets.map((target) => {
+        const identity = `${target.sheetId}:${target.row}:${target.column}`;
+        if (identities.has(identity)) rejectCellEntry(target, `Multi-cell rich-text commit contains a duplicate target: ${identity}`, 'Normalize overlapping selection ranges into unique canonical targets.');
+        identities.add(identity);
+        const sheet = context.workbook.getSheet(target.sheetId);
+        const previous = sheet.cells.get(target.row, target.column);
+        const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+        next.value = params.text;
+        next.richText = structuredClone(params.runs);
+        delete next.formula;
+        delete next.formulaValue;
+        delete next.displayValue;
+        return prepareCellEntry({ ...target, validationConfirmation: params.validationConfirmation }, next, context);
+      });
+      for (const entry of prepared) applyPreparedCellEntry(entry, context);
+      return { operationId: context.operationId, mutationCount: prepared.length, affectedRanges: prepared.flatMap((entry) => entry.affectedRanges) };
     },
   });
 

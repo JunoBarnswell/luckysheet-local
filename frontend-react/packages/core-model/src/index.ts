@@ -30,7 +30,24 @@ import type {
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
+import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
+import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, type AssetRef } from './asset';
+export {
+  checkboxStateFromValue,
+  checkboxValueForState,
+  isCellEditorConfig,
+  isUnambiguousCheckboxEditor,
+  nextCheckboxValue,
+  normalizeCheckboxValue,
+  type CellEditorConfig,
+  type CellEditorKind,
+  type CellEditorOptionValue,
+  type CellEditorScalar,
+  type CheckboxCellEditorConfig,
+  type CheckboxCellState,
+} from './cell-editor';
+export { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, normalizeWorkbookEditingOptions, type WorkbookEditingOptions, type WorkbookEnterDirection } from './editing-options';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,
@@ -115,16 +132,6 @@ export interface WorkbookTheme {
   colors: Record<string, string>;
 }
 
-/** Editable cell behavior that can be expressed through the canonical workbook model. */
-export type CellEditorKind = 'text' | 'number' | 'date' | 'list' | 'checkbox';
-
-export interface CellEditorConfig {
-  kind: CellEditorKind;
-  /** List editors use an explicit canonical value list; range/formula lists belong to validation. */
-  values?: string[];
-  placeholder?: string;
-}
-
 export interface CellComment {
   id: string;
   author: string;
@@ -199,9 +206,13 @@ export interface ImageCellPresentation {
 
 export type CellPresentation = BarcodeCellPresentation | ImageCellPresentation;
 
+export interface RichTextRunStyle extends Pick<CellStyle, 'fontFamily' | 'fontSizePx' | 'bold' | 'italic' | 'underline' | 'strikethrough' | 'textColor'> {
+  verticalAlignment?: 'baseline' | 'superscript' | 'subscript';
+}
+
 export interface RichTextRun {
   text: string;
-  style?: Pick<CellStyle, 'fontFamily' | 'fontSizePx' | 'bold' | 'italic' | 'underline' | 'strikethrough' | 'textColor'>;
+  style?: RichTextRunStyle;
   /** Names of OOXML run properties retained by the source package but not editable in the canonical model. */
   preservedProperties?: string[];
 }
@@ -271,7 +282,6 @@ export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
 
 export type {
   SelectionSnapshot,
-  EditSession,
   SheetTableModel,
   OutlineGroup,
   OutlineModel,
@@ -930,6 +940,13 @@ export class CellMatrix {
     }
   }
 
+  *entriesInColumn(column: Column): IterableIterator<{ row: Row; cell: CellData }> {
+    for (const [row, rowCells] of this.rows) {
+      const cell = rowCells.get(column);
+      if (cell) yield { row, cell };
+    }
+  }
+
   /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
   forEachInRange(
     startRow: Row,
@@ -1282,6 +1299,7 @@ export class WorkbookModel {
   collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
   /** Canonical authored calculation policy shared by the runtime and workers. */
   calculationSettings: WorkbookCalculationSettings = normalizeWorkbookCalculationSettings(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
+  editingOptions: WorkbookEditingOptions = normalizeWorkbookEditingOptions(DEFAULT_WORKBOOK_EDITING_OPTIONS);
   /** The sole theme owner. Clipboard and OOXML boundaries carry a reference to this state. */
   theme: WorkbookTheme = { id: 'workbook-theme-default', colors: {} };
 
@@ -1301,6 +1319,10 @@ export class WorkbookModel {
 
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): void {
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
+  }
+
+  setEditingOptions(options: WorkbookEditingOptions): void {
+    this.editingOptions = normalizeWorkbookEditingOptions(options);
   }
 
   setTheme(theme: WorkbookTheme): void {
@@ -1329,11 +1351,8 @@ export class WorkbookModel {
     if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
       throw new Error('Cell style template indent is invalid');
     }
-    if (template.editor && !['text', 'number', 'date', 'list', 'checkbox'].includes(template.editor.kind)) {
+    if (template.editor && !isCellEditorConfig(template.editor)) {
       throw new Error('Cell style template editor is invalid');
-    }
-    if (template.editor?.kind === 'list' && (!Array.isArray(template.editor.values) || template.editor.values.some((value) => !value.trim()))) {
-      throw new Error('Cell style template list editor values are invalid');
     }
     this.cellStyleTemplates.set(id, structuredClone({ ...template, id, name }));
   }
@@ -1617,12 +1636,13 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 8,
+      version: 9,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
       collationContext: structuredClone(this.collationContext),
       calculationSettings: structuredClone(this.calculationSettings),
+      editingOptions: structuredClone(this.editingOptions),
       theme: structuredClone(this.theme),
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
@@ -1682,13 +1702,14 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 8) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 9) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     if (snapshot.theme) workbook.setTheme(snapshot.theme);
     workbook.collationContext = normalizeWorkbookCollation(snapshot.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
     workbook.setCalculationSettings(snapshot.calculationSettings);
+    workbook.setEditingOptions(snapshot.editingOptions);
     workbook.sheets.clear();
     // `definedNameModels` is canonical. The optional map is accepted only as
     // a boundary projection for older snapshots and is immediately folded

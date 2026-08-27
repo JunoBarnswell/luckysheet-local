@@ -12,7 +12,7 @@ import {
   type FloatingDrawable,
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
-import type { AssetRef } from '@react-sheets/core-model';
+import { checkboxStateFromValue, type AssetRef, type CheckboxCellState } from '@react-sheets/core-model';
 import { cellRenderFont, resolveCellTextLayout } from './cell-text-layout';
 
 export { cellRenderFont } from './cell-text-layout';
@@ -276,7 +276,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
         if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
         else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation, options);
         else drawCellValue(context, skeleton, options, address, cell, contentRect);
-        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
+        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, checkboxStateFromValue(cell.editor, cell.value ?? null));
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
   }
@@ -398,17 +398,17 @@ function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect
   context.restore();
 }
 
-function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, checked: boolean | undefined): void {
+function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, state: CheckboxCellState | null): void {
   const size = Math.min(14, Math.max(10, rect.height - 8));
   const x = rect.x + 4;
   const y = rect.y + (rect.height - size) / 2;
   context.save();
-  context.fillStyle = checked === undefined ? '#fff7ed' : '#ffffff';
-  context.strokeStyle = checked === undefined ? '#c2410c' : checked ? '#217345' : '#94a3b8';
+  context.fillStyle = state === null ? '#fff7ed' : '#ffffff';
+  context.strokeStyle = state === null ? '#c2410c' : state === 'checked' ? '#217345' : '#94a3b8';
   context.lineWidth = 1;
   context.fillRect(x, y, size, size);
   context.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
-  if (checked === true) {
+  if (state === 'checked') {
     context.strokeStyle = '#217345';
     context.lineWidth = 2;
     context.beginPath();
@@ -416,7 +416,10 @@ function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, check
     context.lineTo(x + size / 2 - 1, y + size - 3);
     context.lineTo(x + size - 2, y + 3);
     context.stroke();
-  } else if (checked === undefined) {
+  } else if (state === 'indeterminate') {
+    context.fillStyle = '#64748b';
+    context.fillRect(x + 3, y + size / 2 - 1, size - 6, 2);
+  } else if (state === null) {
     context.fillStyle = '#c2410c';
     context.font = `${Math.max(8, size - 2)}px sans-serif`;
     context.textAlign = 'center';

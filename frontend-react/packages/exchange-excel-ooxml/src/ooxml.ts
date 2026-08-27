@@ -13,12 +13,13 @@ import type {
   OutlineModel,
   ProtectionRule,
   RichTextRun,
+  RichTextRunStyle,
   WorkbookSnapshot,
   SheetSnapshot,
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, DEFAULT_WORKBOOK_EDITING_OPTIONS, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
 import {
   canonicalExcelDateDayOfWeek,
   canonicalExcelDateFromParts,
@@ -242,11 +243,12 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 8,
+    version: 9,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
     calculationSettings: structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS),
+    editingOptions: structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS),
     theme: {
       id: `ooxml-theme-${styles.themeColors.join('').replace(/[^0-9a-f]/gi, '').slice(0, 64) || 'default'}`,
       colors: Object.fromEntries(styles.themeColors.map((color, index) => [`color${index}`, color])),
@@ -1095,11 +1097,22 @@ function parseRichTextContainer(container: XmlNode, themeColors: string[] = []):
   if (!runs.length) return { value: descendants(container, 't').map(textContent).join('') };
   const richText = runs.map((run) => {
     const properties = child(run, 'rPr');
-    const known = new Set(['rFont', 'name', 'sz', 'b', 'i', 'u', 'strike', 'color']);
+    const known = new Set(['rFont', 'name', 'sz', 'b', 'i', 'u', 'strike', 'color', 'vertAlign']);
     const preservedProperties = properties?.children
       .map((property) => localName(property.name))
       .filter((name) => !known.has(name)) ?? [];
-    const style = parseFontStyle(properties, themeColors);
+    const fontStyle = parseFontStyle(properties, themeColors);
+    const verticalAlignment = child(properties, 'vertAlign')?.attrs.val;
+    const style: RichTextRunStyle = {
+      ...(fontStyle.fontFamily ? { fontFamily: fontStyle.fontFamily } : {}),
+      ...(fontStyle.fontSizePx ? { fontSizePx: fontStyle.fontSizePx } : {}),
+      ...(fontStyle.bold !== undefined ? { bold: fontStyle.bold } : {}),
+      ...(fontStyle.italic !== undefined ? { italic: fontStyle.italic } : {}),
+      ...(fontStyle.underline !== undefined ? { underline: fontStyle.underline } : {}),
+      ...(fontStyle.strikethrough !== undefined ? { strikethrough: fontStyle.strikethrough } : {}),
+      ...(fontStyle.textColor ? { textColor: fontStyle.textColor } : {}),
+      ...(verticalAlignment === 'superscript' || verticalAlignment === 'subscript' ? { verticalAlignment } : {}),
+    };
     return {
       text: descendants(run, 't').map(textContent).join(''),
       ...(Object.keys(style).length ? { style } : {}),
@@ -1580,7 +1593,7 @@ function serializeRichText(value: string, runs?: RichTextRun[]): string {
   if (!runs?.length) return `<t xml:space="preserve">${encodeXml(value)}</t>`;
   return runs.map((run) => {
     const style = run.style;
-    const properties = style ? `<rPr>${style.fontFamily ? `<rFont val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</rPr>` : '';
+    const properties = style ? `<rPr>${style.fontFamily ? `<rFont val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}${style.verticalAlignment && style.verticalAlignment !== 'baseline' ? `<vertAlign val="${style.verticalAlignment}"/>` : ''}</rPr>` : '';
     return `<r>${properties}<t xml:space="preserve">${encodeXml(run.text)}</t></r>`;
   }).join('');
 }
@@ -1887,14 +1900,15 @@ function buildRootRelationshipsXml(existing: XlsxRelationship[], workbookPart = 
 
 interface ReactSheetsPackageMetadata {
   schema: 'ReactSheetsWorkbookMetadata';
-  version: 1;
+  version: 2;
+  editingOptions: WorkbookSnapshot['editingOptions'];
   dataModel: WorkbookSnapshot['dataModel'];
   sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
 }
 
 function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
   const metadata: ReactSheetsPackageMetadata = {
-    schema: 'ReactSheetsWorkbookMetadata', version: 1, dataModel: structuredClone(snapshot.dataModel),
+    schema: 'ReactSheetsWorkbookMetadata', version: 2, editingOptions: structuredClone(snapshot.editingOptions), dataModel: structuredClone(snapshot.dataModel),
     sheets: snapshot.sheets.map((sheet) => {
       const cellMetadata: ReactSheetsPackageMetadata['sheets'][number]['cellMetadata'] = [];
       for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) if (cell.presentation || cell.editor) cellMetadata.push({ row: Number(rowKey), column: Number(columnKey), presentation: cell.presentation ? structuredClone(cell.presentation) : undefined, editor: cell.editor ? structuredClone(cell.editor) : undefined });
@@ -1923,8 +1937,16 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
   if (!bytes) return;
   try {
     const root = firstElement(parseXml(strFromU8(bytes)), 'reactSheetsWorkbook');
-    const parsed = JSON.parse(textContent(child(root, 'json'))) as ReactSheetsPackageMetadata;
-    if (parsed.schema !== 'ReactSheetsWorkbookMetadata' || parsed.version !== 1 || !parsed.dataModel || !Array.isArray(parsed.sheets)) return;
+    const raw = JSON.parse(textContent(child(root, 'json'))) as Record<string, unknown>;
+    if (raw.schema !== 'ReactSheetsWorkbookMetadata') throw new Error('React Sheets workbook metadata schema is unsupported');
+    if (raw.version === 1) {
+      raw.version = 2;
+      raw.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
+    }
+    if (raw.version !== 2) throw new Error(`React Sheets workbook metadata version is unsupported: ${String(raw.version)}`);
+    const parsed = raw as unknown as ReactSheetsPackageMetadata;
+    if (!parsed.dataModel || !Array.isArray(parsed.sheets) || !parsed.editingOptions) throw new Error('React Sheets workbook metadata payload is incomplete');
+    snapshot.editingOptions = structuredClone(parsed.editingOptions);
     snapshot.dataModel = structuredClone(parsed.dataModel);
     for (let index = 0; index < parsed.sheets.length; index += 1) {
       const metadata = parsed.sheets[index]!;

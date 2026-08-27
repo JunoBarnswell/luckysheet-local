@@ -1,4 +1,4 @@
-import { Box, Button, Stack, StatePanel, Text } from "@react-sheets/ui-system";
+import { Box, Button, CheckToggle, Inline, Select, Stack, StatePanel, Text, TextInput } from "@react-sheets/ui-system";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkbookBackstageShell } from "./workbooks";
 import { WorkbookHubContainer } from "./containers/WorkbookHubContainer";
@@ -118,7 +118,26 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">选项</Text><Text size="sm">语言</Text>
             <Box className="flex gap-2"><Button onClick={() => setLocale("zh-CN")} size="sm" variant={locale === "zh-CN" ? "brand" : "outline"}>中文</Button><Button onClick={() => setLocale("en-US")} size="sm" variant={locale === "en-US" ? "brand" : "outline"}>English</Button></Box>
-            <Text size="xs" tone="muted">自动保存、自动同步和离线缓存由文件中心的当前用户偏好统一管理。</Text>
+            <Text size="sm" weight="semibold">单元格编辑</Text>
+            <CheckToggle label="允许直接在单元格中编辑" checked={state.editingOptions.allowEditDirectly} onChange={(event) => session.setWorkbookEditingOptions({ ...state.editingOptions, allowEditDirectly: event.currentTarget.checked })} />
+            <CheckToggle label="按 Enter 后移动选区" checked={state.editingOptions.moveAfterEnter} onChange={(event) => session.setWorkbookEditingOptions({ ...state.editingOptions, moveAfterEnter: event.currentTarget.checked })} />
+            <Inline gap="sm">
+              <Text size="sm">Enter 方向</Text>
+              <Select aria-label="Enter 移动方向" value={state.editingOptions.enterDirection} disabled={!state.editingOptions.moveAfterEnter} onChange={(event) => session.setWorkbookEditingOptions({ ...state.editingOptions, enterDirection: event.currentTarget.value as typeof state.editingOptions.enterDirection })}>
+                <option value="down">向下</option><option value="up">向上</option><option value="right">向右</option><option value="left">向左</option>
+              </Select>
+            </Inline>
+            <CheckToggle label="启用公式自动完成" checked={state.editingOptions.formulaAutoComplete} onChange={(event) => session.setWorkbookEditingOptions({ ...state.editingOptions, formulaAutoComplete: event.currentTarget.checked })} />
+            <CheckToggle label="启用同列文本自动完成" checked={state.editingOptions.valueAutoComplete} onChange={(event) => session.setWorkbookEditingOptions({ ...state.editingOptions, valueAutoComplete: event.currentTarget.checked })} />
+            <Inline gap="sm">
+              <Text size="sm">固定小数位</Text>
+              <TextInput aria-label="固定小数位" className="w-24" inputMode="numeric" placeholder="关闭" value={state.editingOptions.fixedDecimalPlaces ?? ''} onChange={(event) => {
+                const raw = event.currentTarget.value.trim();
+                if (raw === '') session.setWorkbookEditingOptions({ ...state.editingOptions, fixedDecimalPlaces: null });
+                else if (/^\d+$/.test(raw) && Number(raw) <= 15) session.setWorkbookEditingOptions({ ...state.editingOptions, fixedDecimalPlaces: Number(raw) });
+              }} />
+            </Inline>
+            <Text size="xs" tone="muted">这些选项是工作簿语义，通过命令、历史、协作与持久化统一保存。</Text>
           </Stack>
         )}
       </WorkbookBackstageShell>

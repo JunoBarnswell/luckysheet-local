@@ -23,6 +23,8 @@ export interface CellInputInterpretationContext {
     readonly allowFormula?: boolean;
     readonly allowBoolean?: boolean;
     readonly allowDateTime?: boolean;
+    readonly fixedDecimalPlaces?: number | null;
+    readonly allowInvalidFormula?: boolean;
   };
 }
 
@@ -34,11 +36,15 @@ export function isCellInputInterpretationContext(value: unknown): value is CellI
   const optionsValid = inputOptions === undefined || (typeof inputOptions === 'object' && inputOptions !== null && !Array.isArray(inputOptions)
     && (typeof (inputOptions as Record<string, unknown>).allowFormula === 'undefined' || typeof (inputOptions as Record<string, unknown>).allowFormula === 'boolean')
     && (typeof (inputOptions as Record<string, unknown>).allowBoolean === 'undefined' || typeof (inputOptions as Record<string, unknown>).allowBoolean === 'boolean')
-    && (typeof (inputOptions as Record<string, unknown>).allowDateTime === 'undefined' || typeof (inputOptions as Record<string, unknown>).allowDateTime === 'boolean'));
+    && (typeof (inputOptions as Record<string, unknown>).allowDateTime === 'undefined' || typeof (inputOptions as Record<string, unknown>).allowDateTime === 'boolean')
+    && (typeof (inputOptions as Record<string, unknown>).fixedDecimalPlaces === 'undefined'
+      || (inputOptions as Record<string, unknown>).fixedDecimalPlaces === null
+      || (Number.isInteger((inputOptions as Record<string, unknown>).fixedDecimalPlaces) && Number((inputOptions as Record<string, unknown>).fixedDecimalPlaces) >= 0 && Number((inputOptions as Record<string, unknown>).fixedDecimalPlaces) <= 15))
+    && (typeof (inputOptions as Record<string, unknown>).allowInvalidFormula === 'undefined' || typeof (inputOptions as Record<string, unknown>).allowInvalidFormula === 'boolean'));
   return (context.sourceKind === 'direct-entry' || context.sourceKind === 'clipboard-text' || context.sourceKind === 'import-text' || context.sourceKind === 'find-replace' || context.sourceKind === 'script-text')
     && typeof context.cultureId === 'string' && typeof context.decimalSeparator === 'string' && typeof context.groupSeparator === 'string'
     && (context.currentNumberFormat === undefined || typeof context.currentNumberFormat === 'string')
-    && (context.currentCellType === undefined || context.currentCellType === 'text' || context.currentCellType === 'number' || context.currentCellType === 'date' || context.currentCellType === 'list' || context.currentCellType === 'checkbox')
+    && (context.currentCellType === undefined || (typeof context.currentCellType === 'string' && ['text', 'number', 'datetime', 'validation-list', 'combo-box', 'checkbox', 'mask', 'formula', 'rich-text', 'custom'].includes(context.currentCellType)))
     && (context.dateSystem === '1900' || context.dateSystem === '1904')
     && optionsValid
     && Boolean(referenceDate && typeof referenceDate === 'object' && !Array.isArray(referenceDate)
@@ -97,6 +103,7 @@ export function createCellInputInterpretationContext(
     referenceDate: structuredClone(options.referenceDate),
     currentNumberFormat: options.cell?.numberFormat ?? options.cell?.style?.numberFormat,
     currentCellType: options.cell?.editor?.kind,
+    inputOptions: { fixedDecimalPlaces: workbook.editingOptions.fixedDecimalPlaces, ...(options.cell?.editor?.kind === 'formula' ? { allowInvalidFormula: options.cell.editor.allowInvalidFormula ?? false } : {}) },
   };
 }
 
@@ -117,7 +124,12 @@ export function interpretCellInput(text: string, context: CellInputInterpretatio
   }
 
   if (text.startsWith('=') && context.inputOptions?.allowFormula !== false) {
-    parseFormula(text);
+    try {
+      parseFormula(text);
+    } catch (error) {
+      if (context.inputOptions?.allowInvalidFormula) return result(text, 'text', text, preserve);
+      throw error;
+    }
     return { value: null, valueType: 'formula', formula: text, numberFormatIntent: preserve, lexicalSource: text };
   }
   if (text === '') return result(null, 'empty', text, preserve);
@@ -142,7 +154,14 @@ export function interpretCellInput(text: string, context: CellInputInterpretatio
   const normalizedNumericText = currency?.value ?? numericText;
   const number = parseCultureNumber(normalizedNumericText, context);
   if (number !== undefined) {
-    const value = percent || isPercentFormat(context.currentNumberFormat) ? number / 100 : number;
+    const fixedDecimalPlaces = context.sourceKind === 'direct-entry' ? context.inputOptions?.fixedDecimalPlaces : null;
+    const fixedDecimalApplies = fixedDecimalPlaces !== null && fixedDecimalPlaces !== undefined
+      && !normalizedNumericText.includes(context.decimalSeparator)
+      && !/[eE]/.test(normalizedNumericText)
+      && !percent
+      && !currency;
+    const fixedNumber = fixedDecimalApplies ? number / 10 ** fixedDecimalPlaces : number;
+    const value = percent || isPercentFormat(context.currentNumberFormat) ? fixedNumber / 100 : fixedNumber;
     const format = percent && !isPercentFormat(context.currentNumberFormat)
       ? { kind: 'set' as const, format: '0%' }
       : currency?.format && (!context.currentNumberFormat || /^general$/i.test(context.currentNumberFormat.trim()))

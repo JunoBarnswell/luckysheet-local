@@ -1,5 +1,5 @@
-import type { RangeRef, SelectionSnapshot } from '@react-sheets/core-model';
-import { createEmptySelection } from '@react-sheets/core-model';
+import type { RangeRef, SelectionSnapshot, WorkbookEditingOptions } from '@react-sheets/core-model';
+import { createEmptySelection, isWorkbookEditingOptions } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface SetSelectionParams {
@@ -13,6 +13,36 @@ export interface SetSelectionParams {
 
 /** M1 编辑特性 — 多选区 selection.set(选区由 Application 订阅,命令返回目标范围) */
 export function registerEditingFeatures(runtime: CommandRuntime): void {
+  runtime.registry.registerMutation<WorkbookEditingOptions>({
+    id: 'workbook.editing.options.set',
+    handler: (item, context) => {
+      if (!isWorkbookEditingOptions(item.params)) throw new Error('workbook.editing.options.set requires canonical options');
+      context.workbook.setEditingOptions(item.params);
+    },
+    metadata: {
+      schema: { name: 'WorkbookEditingOptions', validate: isWorkbookEditingOptions },
+      permission: { capability: 'workbook.editing.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['workbook.editing.options.set'], minCount: 1, maxCount: 1 },
+    },
+  });
+  runtime.registry.registerCommand<WorkbookEditingOptions>({
+    id: 'workbook.editing.options.set',
+    execute: (params, context) => {
+      if (!isWorkbookEditingOptions(params)) throw new Error('Workbook editing options are invalid');
+      const previous = structuredClone(context.workbook.editingOptions);
+      context.applyMutation({
+        id: 'workbook.editing.options.set',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.primarySheetId,
+        params: structuredClone(params),
+        affectedRanges: [],
+        inverse: [{ id: 'workbook.editing.options.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: previous, affectedRanges: [] }],
+        apply: () => context.workbook.setEditingOptions(params),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
   runtime.registry.registerCommand<SetSelectionParams>({
     id: 'selection.set',
     execute: (params, context) => {

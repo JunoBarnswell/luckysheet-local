@@ -20,6 +20,24 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(app.getUiSnapshot().pendingChangeSetCount, 0);
   });
 
+  it('publishes edit target/status lifecycle without broadcasting draft characters', () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    runtime.collaboration = new CollaborationSession(runtime.commands);
+    const broadcasts: unknown[] = [];
+    runtime.broadcastPresence = (state) => { broadcasts.push(structuredClone(state)); return true; };
+    app.cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', initialText: '=' });
+    app.cellEdit.dispatch({ type: 'text.insert', text: 'SENSITIVE-DRAFT' });
+    app.cellEdit.dispatch({ type: 'reference.begin' });
+    const active = runtime.collaboration.presence.snapshot().editSessions[0];
+    assert.equal(active?.status, 'point');
+    assert.equal('draftPreview' in (active ?? {}), false);
+    assert.equal(JSON.stringify(broadcasts).includes('SENSITIVE-DRAFT'), false);
+    app.cellEdit.dispatch({ type: 'cancel' });
+    assert.equal(runtime.collaboration.presence.snapshot().editSessions.length, 0);
+    assert.deepEqual((broadcasts.at(-1) as { edit?: unknown }).edit, null);
+  });
+
   it('rebaseMutation shifts cell references after structural row inserts', () => {
     const committed = classifyMutation('rows.inserted', { at: 5, count: 1 }, 'sheet-1', [{
       sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0,

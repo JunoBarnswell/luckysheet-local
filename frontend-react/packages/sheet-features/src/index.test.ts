@@ -16,6 +16,7 @@ import {
   isCellSetMutationParams,
 } from './index';
 import type { CellInputInterpretationContext } from './text-input';
+import { CellEntryError } from './cell-entry-error';
 
 const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
   sourceKind: 'clipboard-text', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
@@ -24,6 +25,50 @@ const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
 const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
 const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
 const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
+
+test('fixed-decimal direct entry uses the canonical interpreter and explicit decimals override it', () => {
+  const workbook = new WorkbookModel('unit-fixed-decimal', 'Fixed Decimal');
+  workbook.setEditingOptions({ ...workbook.editingOptions, fixedDecimalPlaces: 2 });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheetId = workbook.primarySheetId;
+  const context: CellInputInterpretationContext = { ...DIRECT_INPUT_CONTEXT, inputOptions: { fixedDecimalPlaces: 2 } };
+  runtime.execute('sheet.cell.commitText', { sheetId, row: 0, column: 0, text: '1234', inputContext: context });
+  runtime.execute('sheet.cell.commitText', { sheetId, row: 0, column: 1, text: '12.34', inputContext: context });
+  assert.equal(workbook.getSheet(sheetId).cells.get(0, 0)?.value, 12.34);
+  assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 12.34);
+});
+
+test('multi-cell text commit preflights every validation and leaves zero partial writes on rejection', () => {
+  const workbook = new WorkbookModel('unit-cell-edit-atomic', 'Atomic Entry');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.dataValidations.push({ id: 'whole-stop', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }], type: 'whole', operator: 'greaterThan', formula1: '10', alertStyle: 'stop' });
+  const history = runtime.getUndoEntries().length;
+  assert.throws(() => runtime.execute('sheet.cells.commitText', {
+    text: '5',
+    targets: [
+      { sheetId: sheet.id, row: 0, column: 0, inputContext: DIRECT_INPUT_CONTEXT },
+      { sheetId: sheet.id, row: 0, column: 1, inputContext: DIRECT_INPUT_CONTEXT },
+    ],
+  }), (error) => error instanceof CellEntryError && error.code === 'CELL_ENTRY_VALIDATION_BLOCKED');
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  assert.equal(sheet.cells.get(0, 1), undefined);
+  assert.equal(runtime.getUndoEntries().length, history);
+});
+
+test('warning validation exposes a typed confirmation boundary and commits only after confirmation', () => {
+  const workbook = new WorkbookModel('unit-cell-edit-warning', 'Warning Entry');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.dataValidations.push({ id: 'whole-warning', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', operator: 'greaterThan', formula1: '10', alertStyle: 'warning', errorTitle: 'Below minimum', errorMessage: 'Confirm this value' });
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '5', inputContext: DIRECT_INPUT_CONTEXT }), (error) => error instanceof CellEntryError && error.code === 'CELL_ENTRY_CONFIRMATION_REQUIRED' && error.alertStyle === 'warning' && error.title === 'Below minimum');
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '5', inputContext: DIRECT_INPUT_CONTEXT, validationConfirmation: true });
+  assert.equal(sheet.cells.get(0, 0)?.value, 5);
+});
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd', 'Commands');
@@ -197,8 +242,38 @@ test('checkbox.toggle flips canonical ranges as one undoable operation and rejec
   assert.throws(() => runtime.execute('checkbox.toggle', {
     sheetId: sheet.id,
     ranges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 2 }],
-  }), /canonical Boolean checkbox/);
+  }), /canonical checkbox/);
   assert.deepEqual(sheet.cells.get(2, 0), before);
+});
+
+test('checkbox editor preserves configured values and cycles three states through one protocol', () => {
+  const workbook = new WorkbookModel('unit-checkbox-custom-values', 'Checkbox Custom Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const editor = { kind: 'checkbox' as const, trueValue: 'yes', falseValue: 'no', indeterminateValue: 'mixed', threeState: true };
+  sheet.cells.set(4, 0, { value: false });
+  sheet.cells.set(4, 1, { value: null });
+  sheet.cells.set(4, 2, { value: 'yes' });
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 2 }],
+    editor,
+  });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['no', 'mixed', 'yes']);
+
+  const target = [{ sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 2 }];
+  runtime.execute('checkbox.toggle', { sheetId: sheet.id, ranges: target });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['yes', 'no', 'mixed']);
+  runtime.execute('checkbox.toggle', { sheetId: sheet.id, ranges: target });
+  assert.deepEqual([sheet.cells.get(4, 0)?.value, sheet.cells.get(4, 1)?.value, sheet.cells.get(4, 2)?.value], ['mixed', 'yes', 'no']);
+
+  assert.throws(() => runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: target,
+    editor: { kind: 'checkbox', trueValue: 'same', falseValue: 'same' },
+  }), /Invalid cell editor configuration/);
 });
 
 test('checkbox cell text commits stay Boolean and reject unsupported input', () => {

@@ -45,9 +45,9 @@ import {
   formatPivotMember,
   isPivotError,
 } from "@react-sheets/core-model";
-import { CellEditor } from "./CellEditor";
+import { CellEditOverlay } from "./CellEditOverlay";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase, type CellEditController } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -68,8 +68,7 @@ export interface SheetCanvasProps {
   sheetId: string;
   selection: SelectionState;
   activeCell: string;
-  formulaDraft: string;
-  editingCell: { row: number; column: number } | null;
+  cellEdit: CellEditController;
   phase: AppPhase;
   zoom: number;
   peers: PeerCursor[];
@@ -96,20 +95,6 @@ export interface SheetCanvasProps {
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
-  onCommitCell: (value: string) => void;
-  onBeginEdit: (initialText?: string) => void;
-  onCancelEdit: () => void;
-  onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
-  onFormulaDraftChange: (value: string) => void;
-  editComposing?: boolean;
-  editCaret?: { start: number; end: number };
-  onEditCaretChange?: (start: number, end: number) => void;
-  onEditCompositionStart?: () => void;
-  onEditCompositionUpdate?: (text: string) => void;
-  onEditCompositionEnd?: () => void;
-  onAppendFormulaDraft?: (fragment: string) => void;
-  onInsertRef: (refText: string) => void;
-  onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onExtendSelection?: (row: number, column: number) => void;
@@ -149,7 +134,6 @@ export interface SheetCanvasProps {
   onApplyFilter: (column: number, patch: FilterPatch) => void;
   onSortFilterColumn: (column: number, ascending: boolean) => void;
   onToggleOutline?: (groupId: string) => void;
-  getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
   resolveAssetUrl?: (asset: import('@react-sheets/core-model').AssetRef) => Promise<string>;
@@ -377,8 +361,7 @@ export function SheetCanvas({
   sheetId,
   selection,
   activeCell,
-  formulaDraft,
-  editingCell,
+  cellEdit,
   phase,
   zoom,
   peers,
@@ -399,20 +382,6 @@ export function SheetCanvas({
   onSelectionChange,
   onMovePrimary,
   onEnsureSheetExtent,
-  onCommitCell,
-  onBeginEdit,
-  onCancelEdit,
-  onCommitEdit,
-  onFormulaDraftChange,
-  editComposing = false,
-  editCaret,
-  onEditCaretChange,
-  onEditCompositionStart,
-  onEditCompositionUpdate,
-  onEditCompositionEnd,
-  onAppendFormulaDraft,
-  onInsertRef,
-  onToggleAbsolute,
   onJumpEdge,
   onSelectAll,
   onExtendSelection,
@@ -452,12 +421,13 @@ export function SheetCanvas({
   onApplyFilter,
   onSortFilterColumn,
   onToggleOutline,
-  getValidationList,
   onRetry,
   onCreateSheet,
   resolveAssetUrl,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
+  const editSession = cellEdit.getSnapshot().session;
+  const editingCell = editSession?.target.display.sheetId === sheetId ? editSession.target.display : null;
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const assetUrlCacheRef = useRef(new Map<string, string>());
   const assetUrlPendingRef = useRef(new Set<string>());
@@ -468,7 +438,6 @@ export function SheetCanvas({
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [pivotFilterPopover, setPivotFilterPopover] = useState<{ pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number } | null>(null);
-  const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
@@ -655,26 +624,19 @@ export function SheetCanvas({
 
   const canvasInteraction = useCanvasInteraction({
     canRepeat,
+    cellEdit,
     chromeState,
     containerRef,
     contextRangeRef,
     drawings,
     drawingPayloads,
     drawingSelectionMode,
-    editingCell,
     engineRef,
     findPivotProjectionCell,
     floatables,
     formatPainterActive,
-    formulaDraft,
-    editComposing,
-    getValidationList,
     isPivotValueCell,
-    onAppendFormulaDraft,
-    onBeginEdit,
-    onCancelEdit,
     onCancelFormatPainter,
-    onCommitEdit,
     onExitDrawingSelectionMode,
     onExtendSelection,
     onFillRange,
@@ -683,8 +645,6 @@ export function SheetCanvas({
     onCancelTextBoxPlacement: () => onCancelTextBoxPlacement?.(),
     onBeginTextBoxEdit: (drawingId, initialText) => onBeginTextBoxEdit?.(drawingId, initialText),
     onFloatingSelect,
-    onToggleCheckbox: (ranges) => onCommand({ commandId: 'checkbox.toggle', params: { sheetId, ranges } }),
-    onFormulaDraftChange,
     onJumpEdge,
     onMovePrimary,
     onRequestExtentGrowth: requestExtentGrowth,
@@ -701,7 +661,6 @@ export function SheetCanvas({
     onSelectAll,
     onSelectionChange,
     onShortcut,
-    onToggleAbsolute,
     onToggleOutline,
     phase,
     selectedFloatingId,
@@ -710,7 +669,6 @@ export function SheetCanvas({
     setContextMenu,
     setFillPreview,
     setFilterPopover,
-    setValidationDropdown,
     sheet,
     sheetId,
     skeleton,
@@ -944,32 +902,6 @@ export function SheetCanvas({
     setContextMenu({ x: event.clientX, y: event.clientY, open: true });
   }, [canvasInteraction.localPointOf, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
 
-  // ---------- 编辑器定位(随滚动更新) ----------
-
-  const editingPivotContextHit = editingCell
-    ? resolvePivotProjectionHit(sheet, editingCell.row, editingCell.column)
-    : null;
-
-  // 编辑器随滚动重定位:依赖 scrollTick 触发重算
-  const editorRect = useMemo(() => {
-    void scrollTick;
-    const engine = engineRef.current;
-    if (!engine || !editingCell || editingPivotContextHit) return null;
-    // The engine owns the render geometry. Reading the local React skeleton
-    // here can race with setSkeleton during a session refresh, and the main
-    // pane is not the correct origin for frozen rows/columns.
-    const rect = engine.skeleton.getCellRect(editingCell.row, editingCell.column);
-    if (!rect) return null;
-    const topLeft = engine.contentToScreen({ x: rect.x, y: rect.y }, editingCell);
-    return {
-      x: topLeft.x,
-      y: topLeft.y,
-      width: rect.width,
-      height: rect.height,
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingCell, editingPivotContextHit, skeleton, scrollTick]);
-
   const textBoxEditorRect = useMemo(() => {
     void scrollTick;
     if (!textBoxEdit) return null;
@@ -1076,27 +1008,7 @@ export function SheetCanvas({
             }) : null}
           </Box>
 
-          {editorRect && editingCell ? (
-            <Box
-              className="absolute z-20 overflow-hidden rounded-none border border-[#5292f7] bg-white"
-              style={{ left: editorRect.x, top: editorRect.y, width: editorRect.width, height: editorRect.height }}
-            >
-              <CellEditor
-                cellStyle={sheet.getCell(editingCell.row, editingCell.column)?.style}
-                initialText={formulaDraft}
-                onCancel={onCancelEdit}
-                onChange={onFormulaDraftChange}
-                onCommit={onCommitEdit}
-                onInsertRef={onInsertRef}
-                composing={editComposing}
-                caret={editCaret}
-                onCaretChange={onEditCaretChange}
-                onCompositionStart={onEditCompositionStart}
-                onCompositionUpdate={onEditCompositionUpdate}
-                onCompositionEnd={onEditCompositionEnd}
-              />
-            </Box>
-          ) : null}
+          <CellEditOverlay cellEdit={cellEdit} engine={engineReady ? engineRef.current : null} host={containerRef.current} scrollTick={scrollTick} sheet={sheet} />
 
           {textBoxEditorRect && textBoxEdit ? (
             <Box
@@ -1133,17 +1045,6 @@ export function SheetCanvas({
 
           {fillPreview ? (
             <FillPreviewOverlay engine={engineRef.current} preview={fillPreview} />
-          ) : null}
-
-          {validationDropdown ? (
-            <ValidationDropdown
-              options={validationDropdown.options}
-              onPick={(value) => {
-                onCommitCell(value);
-                setValidationDropdown(null);
-              }}
-              onClose={() => setValidationDropdown(null)}
-            />
           ) : null}
 
           {filterPopover ? (
@@ -1294,36 +1195,5 @@ function FillPreviewOverlay({
         />
       ))}
     </>
-  );
-}
-
-function ValidationDropdown({
-  options,
-  onPick,
-  onClose,
-}: {
-  options: string[];
-  onPick: (value: string) => void;
-  onClose: () => void;
-}): React.ReactElement {
-  return (
-    <Box className="absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
-      <Stack gap="none">
-        {options.map((option) => (
-          <Button
-            key={option}
-            size="sm"
-            variant="ghost"
-            className="justify-start"
-            onClick={() => onPick(option)}
-          >
-            {option}
-          </Button>
-        ))}
-        <Button size="sm" variant="ghost" className="justify-start text-slate-400" onClick={onClose}>
-          Cancel
-        </Button>
-      </Stack>
-    </Box>
   );
 }

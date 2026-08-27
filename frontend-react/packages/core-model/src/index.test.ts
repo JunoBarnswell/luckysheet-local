@@ -11,7 +11,16 @@ import {
   pivotTimelineInstant,
   WorkbookModel,
 } from './index';
-import { assertCanonicalWorkbookSnapshot } from './snapshot';
+import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
+
+test('v8 storage migration creates the single canonical v9 editing options contract', () => {
+  const legacy = structuredClone(new WorkbookModel('unit-v8-editing', 'Legacy').snapshot()) as unknown as Record<string, unknown>;
+  legacy.version = 8;
+  delete legacy.editingOptions;
+  const migrated = migrateStoredWorkbookSnapshot(legacy);
+  assert.equal(migrated.version, 9);
+  assert.deepEqual(migrated.editingOptions, { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null });
+});
 
 test('canonical snapshots bound drawing source work', () => {
   const workbook = new WorkbookModel('unit-drawing-ranges', 'Drawing ranges');
@@ -282,7 +291,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     id: 'status-template',
     name: 'Status',
     style: { background: '#e2f0d9', indent: 2 },
-    editor: { kind: 'list', values: ['Open', 'Closed'] },
+    editor: { kind: 'combo-box', items: [{ value: 'Open' }, { value: 'Closed' }], editable: true },
   });
 
   const snapshot = workbook.snapshot();
@@ -309,7 +318,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restored.getDefinedNameExact('SharedName', 'sheet', 'sheet-1')?.formula, "='Sheet1'!B1");
   assert.equal(restored.getDefinedName('SharedName', 'sheet-1')?.scope, 'sheet');
   assert.equal(restored.listCellStyleTemplates()[0]?.style.indent, 2);
-  assert.deepEqual(restored.listCellStyleTemplates()[0]?.editor?.values, ['Open', 'Closed']);
+  const restoredEditor = restored.listCellStyleTemplates()[0]?.editor;
+  assert.deepEqual(restoredEditor?.kind === 'combo-box' ? restoredEditor.items : undefined, [{ value: 'Open' }, { value: 'Closed' }]);
 });
 
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {
