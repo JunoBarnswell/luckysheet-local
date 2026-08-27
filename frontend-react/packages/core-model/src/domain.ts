@@ -508,6 +508,8 @@ export type ChartSubtype =
   | 'stacked'
   | 'percent-stacked'
   | 'three-dimensional'
+  | 'three-dimensional-stacked'
+  | 'three-dimensional-percent-stacked'
   | 'line'
   | 'line-markers'
   | 'area'
@@ -538,10 +540,10 @@ export type ChartSubtype =
   | 'filled-map';
 
 export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly ChartSubtype[]>> = {
-  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional'],
-  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional'],
-  line: ['line', 'line-markers', 'stacked', 'percent-stacked'],
-  area: ['area', 'stacked', 'percent-stacked'],
+  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked'],
+  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked'],
+  line: ['line', 'line-markers', 'stacked', 'percent-stacked', 'three-dimensional'],
+  area: ['area', 'stacked', 'percent-stacked', 'three-dimensional'],
   pie: ['pie', 'three-dimensional', 'pie-of-pie', 'bar-of-pie'],
   doughnut: ['doughnut'],
   scatter: ['scatter-markers', 'scatter-smooth-lines', 'scatter-straight-lines'],
@@ -569,7 +571,7 @@ export function isChartSubtypeForType(type: P1ChartType, subtype: ChartSubtype):
 }
 
 export function chartStackingForSubtype(subtype: ChartSubtype): 'stacked' | 'percent' | undefined {
-  return subtype === 'stacked' ? 'stacked' : subtype === 'percent-stacked' ? 'percent' : undefined;
+  return subtype === 'stacked' || subtype === 'three-dimensional-stacked' ? 'stacked' : subtype === 'percent-stacked' || subtype === 'three-dimensional-percent-stacked' ? 'percent' : undefined;
 }
 
 export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;

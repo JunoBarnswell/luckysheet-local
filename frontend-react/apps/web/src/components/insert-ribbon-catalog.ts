@@ -43,12 +43,12 @@ export const INSERT_CHART_VARIANTS = [
 
 export const INSERT_CHART_FAMILIES: readonly InsertChartFamilyDefinition[] = [
   { id: 'chart-family.column-bar', icon: 'chart-column', labelKey: 'chartColumn', variants: [
-    { id: 'chart.column.clustered', chartType: 'column', subtype: 'clustered' }, { id: 'chart.column.stacked', chartType: 'column', subtype: 'stacked' }, { id: 'chart.column.percent', chartType: 'column', subtype: 'percent-stacked' },
-    { id: 'chart.bar.clustered', chartType: 'bar', subtype: 'clustered' }, { id: 'chart.bar.stacked', chartType: 'bar', subtype: 'stacked' }, { id: 'chart.bar.percent', chartType: 'bar', subtype: 'percent-stacked' },
+    { id: 'chart.column.clustered', chartType: 'column', subtype: 'clustered' }, { id: 'chart.column.stacked', chartType: 'column', subtype: 'stacked' }, { id: 'chart.column.percent', chartType: 'column', subtype: 'percent-stacked' }, { id: 'chart.column.3d', chartType: 'column', subtype: 'three-dimensional' }, { id: 'chart.column.3d-stacked', chartType: 'column', subtype: 'three-dimensional-stacked' }, { id: 'chart.column.3d-percent', chartType: 'column', subtype: 'three-dimensional-percent-stacked' },
+    { id: 'chart.bar.clustered', chartType: 'bar', subtype: 'clustered' }, { id: 'chart.bar.stacked', chartType: 'bar', subtype: 'stacked' }, { id: 'chart.bar.percent', chartType: 'bar', subtype: 'percent-stacked' }, { id: 'chart.bar.3d', chartType: 'bar', subtype: 'three-dimensional' }, { id: 'chart.bar.3d-stacked', chartType: 'bar', subtype: 'three-dimensional-stacked' }, { id: 'chart.bar.3d-percent', chartType: 'bar', subtype: 'three-dimensional-percent-stacked' },
   ] },
   { id: 'chart-family.line-area', icon: 'chart-line', labelKey: 'chartLine', variants: [
-    { id: 'chart.line.line', chartType: 'line', subtype: 'line' }, { id: 'chart.line.markers', chartType: 'line', subtype: 'line-markers' }, { id: 'chart.line.stacked', chartType: 'line', subtype: 'stacked' },
-    { id: 'chart.area.area', chartType: 'area', subtype: 'area' }, { id: 'chart.area.stacked', chartType: 'area', subtype: 'stacked' }, { id: 'chart.area.percent', chartType: 'area', subtype: 'percent-stacked' },
+    { id: 'chart.line.line', chartType: 'line', subtype: 'line' }, { id: 'chart.line.markers', chartType: 'line', subtype: 'line-markers' }, { id: 'chart.line.stacked', chartType: 'line', subtype: 'stacked' }, { id: 'chart.line.3d', chartType: 'line', subtype: 'three-dimensional' },
+    { id: 'chart.area.area', chartType: 'area', subtype: 'area' }, { id: 'chart.area.stacked', chartType: 'area', subtype: 'stacked' }, { id: 'chart.area.percent', chartType: 'area', subtype: 'percent-stacked' }, { id: 'chart.area.3d', chartType: 'area', subtype: 'three-dimensional' },
   ] },
   { id: 'chart-family.pie', icon: 'chart-pie', labelKey: 'chartPie', variants: [
     { id: 'chart.pie.pie', chartType: 'pie', subtype: 'pie' }, { id: 'chart.pie.3d', chartType: 'pie', subtype: 'three-dimensional' }, { id: 'chart.pie.pie-of-pie', chartType: 'pie', subtype: 'pie-of-pie' }, { id: 'chart.pie.bar-of-pie', chartType: 'pie', subtype: 'bar-of-pie' }, { id: 'chart.doughnut', chartType: 'doughnut', subtype: 'doughnut' },
