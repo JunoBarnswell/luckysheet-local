@@ -13,6 +13,14 @@ function sameOriginResourceUrls(): string[] {
 /** Registers the offline application shell. Workbook data is intentionally
  * owned by the canonical local workspace store, never by this cache. */
 export function registerOfflineShell(): void {
+  if (import.meta.env.DEV) {
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.getRegistrations().then((registrations) =>
+        Promise.all(registrations.map((registration) => registration.unregister())),
+      );
+    }
+    return;
+  }
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/sw.js', { scope: '/' })
