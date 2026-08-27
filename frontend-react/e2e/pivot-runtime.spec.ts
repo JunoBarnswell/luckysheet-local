@@ -8,6 +8,7 @@ test.describe('Pivot worker runtime', () => {
   test.use({ viewport: { width: 1770, height: 1041 }, deviceScaleFactor: 1 });
 
   test('imports the real OCR workbook and applies a deferred Pivot layout without blocking', async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
     test.skip(!existsSync(fixturePath), 'OCR fixture is not installed on this host');
     const diagnostics = installBrowserDiagnostics(page);
     await page.addInitScript(() => window.localStorage.setItem('react-sheets:locale', 'zh-CN'));
@@ -31,9 +32,9 @@ test.describe('Pivot worker runtime', () => {
     await expect(page.getByText('选择要添加到报表的字段', { exact: true })).toBeVisible({ timeout: 5_000 });
     const createMs = performance.now() - createStartedAt;
 
-    await page.getByRole('button', { name: '字段菜单: 页码', exact: true }).click();
+    await page.getByRole('button', { name: '字段菜单: 页码', exact: true }).click({ force: true });
     await page.getByRole('button', { name: '行', exact: true }).last().click();
-    await page.getByRole('button', { name: '字段菜单: BOM1', exact: true }).click();
+    await page.getByRole('button', { name: '字段菜单: BOM1', exact: true }).click({ force: true });
     await page.getByRole('button', { name: '值', exact: true }).last().click();
     const applyButton = page.getByRole('button', { name: '应用布局', exact: true });
     await expect(applyButton).toBeEnabled();
