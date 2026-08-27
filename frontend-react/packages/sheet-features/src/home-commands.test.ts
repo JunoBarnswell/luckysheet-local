@@ -322,7 +322,7 @@ test('workbook cell templates apply style, editor and validation through one com
 test('Home cell commands fail closed on block-backed data regions', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.dataRegions.push({
+  sheet.addDataRegion({
     id: 'block-home',
     sourceId: 'source-home',
     range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
@@ -407,7 +407,7 @@ test('fill fails closed for protected or block-backed targets without history or
   assert.deepEqual(workbook.snapshot(), before);
 
   sheet.protectionRules.length = 0;
-  sheet.dataRegions.push({
+  sheet.addDataRegion({
     id: 'fill-block',
     sourceId: 'fill-source',
     range: targetRange,
@@ -499,7 +499,7 @@ test('dataRegion.materialize commits the prepared payload and restores it on und
     revision: 1,
   };
   workbook.dataModel.sources.set(manifest.id, manifest);
-  sheet.dataRegions.push(region);
+  sheet.addDataRegion(region);
   sheet.cells.set(0, 0, { value: 'Value' });
   sheet.cells.set(1, 0, { value: 10 });
   const payload = {

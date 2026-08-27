@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createPivotMemberKey, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
-import { scanSnapshotFeatures } from './feature-scan';
+import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
@@ -46,6 +46,25 @@ describe('exchange-excel-ooxml', () => {
     assert.ok(features.includes('cells'));
     assert.ok(features.includes('formulas'));
     assert.ok(features.includes('merges'));
+  });
+
+  it('reports a preserved Excel data-table formula even when OOXML has no formula body', () => {
+    const workbook = new WorkbookModel('wb-data-table-diagnostic', 'Data table diagnostic');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(4, 2, {
+      value: 42,
+      formulaMetadata: {
+        kind: 'dataTable', range: 'C5:D7', preservedOnly: true,
+        reason: 'Excel data-table formulas are preserved from the source package',
+      },
+    });
+    assert.deepEqual(scanFormulaPreserveIssues(workbook.snapshot()), [
+      {
+        level: 'C', severity: 'warning', feature: 'data-table-formula', location: 'Sheet1!C5',
+        message: 'Formula is preserved-only: Excel data-table formulas are preserved from the source package',
+        preserved: true, status: 'preserved-only', reason: 'Excel data-table formulas are preserved from the source package',
+      },
+    ]);
   });
 
   it('scans canonical drawing payloads instead of removed per-kind collections', () => {

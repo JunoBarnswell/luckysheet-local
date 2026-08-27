@@ -681,8 +681,157 @@ export interface SortCriterion {
   ascending: boolean;
 }
 
+interface HeapEntry {
+  coordinate: number;
+  key: string;
+}
+
+/**
+ * A tiny binary heap used by sparse bounds indexes. Stale entries are removed
+ * lazily, so a cell delete never needs to scan every persisted coordinate.
+ */
+class CoordinateHeap {
+  private readonly entries: HeapEntry[] = [];
+
+  constructor(private readonly before: (left: number, right: number) => boolean) {}
+
+  push(entry: HeapEntry): void {
+    this.entries.push(entry);
+    let index = this.entries.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (!this.before(this.entries[index]!.coordinate, this.entries[parent]!.coordinate)) break;
+      [this.entries[index], this.entries[parent]] = [this.entries[parent]!, this.entries[index]!];
+      index = parent;
+    }
+  }
+
+  peek(): HeapEntry | undefined {
+    return this.entries[0];
+  }
+
+  pop(): HeapEntry | undefined {
+    const first = this.entries[0];
+    const last = this.entries.pop();
+    if (!first) return undefined;
+    if (last && this.entries.length > 0) {
+      this.entries[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let next = index;
+        if (left < this.entries.length && this.before(this.entries[left]!.coordinate, this.entries[next]!.coordinate)) next = left;
+        if (right < this.entries.length && this.before(this.entries[right]!.coordinate, this.entries[next]!.coordinate)) next = right;
+        if (next === index) break;
+        [this.entries[index], this.entries[next]] = [this.entries[next]!, this.entries[index]!];
+        index = next;
+      }
+    }
+    return first;
+  }
+
+  clear(): void {
+    this.entries.length = 0;
+  }
+}
+
+/** Incremental sparse coordinate bounds with O(log n) updates and amortized O(log n) reads. */
+class SparseAxisBounds {
+  private readonly counts = new Map<number, number>();
+  private readonly minimums = new CoordinateHeap((left, right) => left < right);
+  private readonly maximums = new CoordinateHeap((left, right) => left > right);
+
+  add(coordinate: number): void {
+    const count = this.counts.get(coordinate) ?? 0;
+    this.counts.set(coordinate, count + 1);
+    if (count === 0) {
+      const entry = { coordinate, key: String(coordinate) };
+      this.minimums.push(entry);
+      this.maximums.push(entry);
+    }
+  }
+
+  remove(coordinate: number): void {
+    const count = this.counts.get(coordinate);
+    if (!count) return;
+    if (count === 1) this.counts.delete(coordinate);
+    else this.counts.set(coordinate, count - 1);
+  }
+
+  get minimum(): number | undefined {
+    return this.read(this.minimums);
+  }
+
+  get maximum(): number | undefined {
+    return this.read(this.maximums);
+  }
+
+  clear(): void {
+    this.counts.clear();
+    this.minimums.clear();
+    this.maximums.clear();
+  }
+
+  private read(heap: CoordinateHeap): number | undefined {
+    while (heap.peek() && !this.counts.has(heap.peek()!.coordinate)) heap.pop();
+    return heap.peek()?.coordinate;
+  }
+}
+
+/**
+ * Worksheet-owned block ranges are indexed by their four boundaries. The
+ * index intentionally stores no materialized cells for block-backed regions.
+ */
+class DataRegionBoundsIndex {
+  private readonly ranges = new Map<string, RangeRef>();
+  private readonly startRows = new CoordinateHeap((left, right) => left < right);
+  private readonly endRows = new CoordinateHeap((left, right) => left > right);
+  private readonly startColumns = new CoordinateHeap((left, right) => left < right);
+  private readonly endColumns = new CoordinateHeap((left, right) => left > right);
+
+  add(region: SheetDataRegion): void {
+    if (this.ranges.has(region.id)) throw new Error(`Data region ${region.id} already exists`);
+    const range = structuredClone(region.range);
+    this.ranges.set(region.id, range);
+    this.startRows.push({ coordinate: range.startRow, key: region.id });
+    this.endRows.push({ coordinate: range.endRow, key: region.id });
+    this.startColumns.push({ coordinate: range.startColumn, key: region.id });
+    this.endColumns.push({ coordinate: range.endColumn, key: region.id });
+  }
+
+  remove(regionId: string): void {
+    this.ranges.delete(regionId);
+  }
+
+  clear(): void {
+    this.ranges.clear();
+    this.startRows.clear();
+    this.endRows.clear();
+    this.startColumns.clear();
+    this.endColumns.clear();
+  }
+
+  get range(): RangeRef | undefined {
+    const startRow = this.read(this.startRows, 'startRow');
+    const endRow = this.read(this.endRows, 'endRow');
+    const startColumn = this.read(this.startColumns, 'startColumn');
+    const endColumn = this.read(this.endColumns, 'endColumn');
+    if (startRow === undefined || endRow === undefined || startColumn === undefined || endColumn === undefined) return undefined;
+    return { sheetId: this.ranges.get(this.startRows.peek()!.key)!.sheetId, startRow, endRow, startColumn, endColumn };
+  }
+
+  private read(heap: CoordinateHeap, boundary: keyof Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>): number | undefined {
+    while (heap.peek() && this.ranges.get(heap.peek()!.key)?.[boundary] !== heap.peek()!.coordinate) heap.pop();
+    return heap.peek()?.coordinate;
+  }
+}
+
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
+  private readonly rowBounds = new SparseAxisBounds();
+  private readonly columnBounds = new SparseAxisBounds();
+  private cellCount = 0;
   private revisionCounter = 0;
 
   /** Monotonic content revision used by derived caches; it is not persisted. */
@@ -704,7 +853,13 @@ export class CellMatrix {
     const normalizedCell = fontFamily === undefined
       ? cell
       : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
+    const existed = rowMap.has(column);
     rowMap.set(column, normalizedCell);
+    if (!existed) {
+      this.cellCount += 1;
+      this.rowBounds.add(row);
+      this.columnBounds.add(column);
+    }
     this.revisionCounter += 1;
   }
 
@@ -713,7 +868,12 @@ export class CellMatrix {
     const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
     if (rowMap?.size === 0) this.rows.delete(row);
-    if (existed) this.revisionCounter += 1;
+    if (existed) {
+      this.cellCount -= 1;
+      this.rowBounds.remove(row);
+      this.columnBounds.remove(column);
+      this.revisionCounter += 1;
+    }
   }
 
   has(row: Row, column: Column): boolean {
@@ -723,14 +883,28 @@ export class CellMatrix {
   clear(): void {
     if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
+    this.rowBounds.clear();
+    this.columnBounds.clear();
+    this.cellCount = 0;
   }
 
   count(): number {
-    let count = 0;
-    for (const columns of this.rows.values()) {
-      count += columns.size;
-    }
-    return count;
+    return this.cellCount;
+  }
+
+  /** Read the persisted-cell extent without walking CellMatrix rows. */
+  occupiedRange(sheetId: SheetId): RangeRef {
+    const startRow = this.rowBounds.minimum;
+    const endRow = this.rowBounds.maximum;
+    const startColumn = this.columnBounds.minimum;
+    const endColumn = this.columnBounds.maximum;
+    return {
+      sheetId,
+      startRow: startRow ?? 0,
+      endRow: endRow ?? 0,
+      startColumn: startColumn ?? 0,
+      endColumn: endColumn ?? 0,
+    };
   }
 
   forEach(callback: (cell: CellData, row: Row, column: Column) => void): void {
@@ -838,7 +1012,8 @@ export class WorksheetModel {
   reportSheet?: ReportSheetDefinition;
   readonly cells = new CellMatrix();
   /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
-  readonly dataRegions: SheetDataRegion[] = [];
+  private readonly dataRegionStore: SheetDataRegion[] = [];
+  private readonly dataRegionBounds = new DataRegionBoundsIndex();
   readonly merges: MergeSpan[] = [];
   readonly pivots: PivotModel[] = [];
   readonly sparklines: SparklineModel[] = [];
@@ -883,7 +1058,7 @@ export class WorksheetModel {
     copy.ganttSheet = this.ganttSheet ? structuredClone(this.ganttSheet) : undefined;
     copy.reportSheet = this.reportSheet ? structuredClone(this.reportSheet) : undefined;
     this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
-    copy.dataRegions.push(...structuredClone(this.dataRegions));
+    copy.replaceDataRegions(this.dataRegions);
     copy.merges.push(...structuredClone(this.merges));
     copy.pivots.push(...structuredClone(this.pivots));
     copy.sparklines.push(...structuredClone(this.sparklines));
@@ -943,6 +1118,53 @@ export class WorksheetModel {
 
   ensureRangeExtent(startRow: number, endRow: number, startColumn: number, endColumn: number): void {
     this.extent.ensureRange(startRow, endRow, startColumn, endColumn);
+  }
+
+  /** Read-only block-backed region view; all mutations must update the range index below. */
+  get dataRegions(): readonly SheetDataRegion[] {
+    return this.dataRegionStore;
+  }
+
+  addDataRegion(region: SheetDataRegion, index = this.dataRegionStore.length): void {
+    if (region.range.sheetId !== this.id) throw new Error(`Data region ${region.id} belongs to ${region.range.sheetId}, not worksheet ${this.id}`);
+    const copy = structuredClone(region);
+    this.dataRegionBounds.add(copy);
+    this.dataRegionStore.splice(Math.min(Math.max(index, 0), this.dataRegionStore.length), 0, copy);
+  }
+
+  removeDataRegionAt(index: number): SheetDataRegion | undefined {
+    const region = this.dataRegionStore[index];
+    if (!region) return undefined;
+    this.dataRegionStore.splice(index, 1);
+    this.dataRegionBounds.remove(region.id);
+    return structuredClone(region);
+  }
+
+  replaceDataRegions(regions: readonly SheetDataRegion[]): void {
+    const copies = regions.map((region) => structuredClone(region));
+    const nextBounds = new DataRegionBoundsIndex();
+    for (const region of copies) {
+      if (region.range.sheetId !== this.id) throw new Error(`Data region ${region.id} belongs to ${region.range.sheetId}, not worksheet ${this.id}`);
+      nextBounds.add(region);
+    }
+    this.dataRegionStore.splice(0, this.dataRegionStore.length, ...copies);
+    this.dataRegionBounds.clear();
+    for (const region of copies) this.dataRegionBounds.add(region);
+  }
+
+  /** One incremental used-range authority for cells and block-backed regions. */
+  get usedRange(): RangeRef {
+    const cells = this.cells.occupiedRange(this.id);
+    const regions = this.dataRegionBounds.range;
+    if (!regions) return cells;
+    if (this.cells.count() === 0) return regions;
+    return {
+      sheetId: this.id,
+      startRow: Math.min(cells.startRow, regions.startRow),
+      endRow: Math.max(cells.endRow, regions.endRow),
+      startColumn: Math.min(cells.startColumn, regions.startColumn),
+      endColumn: Math.max(cells.endColumn, regions.endColumn),
+    };
   }
 
   isMerged(row: Row, column: Column): MergeSpan | undefined {
@@ -1400,7 +1622,7 @@ export class WorkbookModel {
         rowCount: sheet.rowCount,
         columnCount: sheet.columnCount,
         cells: sheet.cells.toJSON(),
-        dataRegions: structuredClone(sheet.dataRegions),
+        dataRegions: sheet.dataRegions.map((region) => structuredClone(region)),
         merges: structuredClone(sheet.merges),
         pane: normalizeWorksheetPane(sheet.pane),
         pivots: structuredClone(sheet.pivots),
@@ -1480,7 +1702,7 @@ export class WorkbookModel {
         sheet.cells.set(row, column, normalized);
         if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
       });
-      if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
+      if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
       sheet.merges.push(...structuredClone(input.merges));
       sheet.pane = normalizeWorksheetPane(input.pane);
       sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));

@@ -12,6 +12,7 @@ export {
   CommandDispatchError,
   type DefinedNameCommandInput,
   type UiSnapshot,
+  type SheetTabSnapshot,
 } from './workbook-session';
 export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';

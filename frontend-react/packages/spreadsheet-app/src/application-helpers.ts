@@ -4,23 +4,7 @@ import { columnLabel } from './address';
 export { columnLabel } from './address';
 
 export function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
-  let minRow = Number.POSITIVE_INFINITY;
-  let minColumn = Number.POSITIVE_INFINITY;
-  let maxRow = 0;
-  let maxColumn = 0;
-  sheet.cells.forEach((_cell, row, column) => {
-    minRow = Math.min(minRow, row);
-    minColumn = Math.min(minColumn, column);
-    maxRow = Math.max(maxRow, row);
-    maxColumn = Math.max(maxColumn, column);
-  });
-  return {
-    sheetId: sheet.id,
-    startRow: Number.isFinite(minRow) ? minRow : 0,
-    endRow: Number.isFinite(minRow) ? maxRow : 0,
-    startColumn: Number.isFinite(minColumn) ? minColumn : 0,
-    endColumn: Number.isFinite(minColumn) ? maxColumn : 0,
-  };
+  return sheet.usedRange;
 }
 
 /**

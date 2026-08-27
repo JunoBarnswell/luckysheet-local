@@ -191,32 +191,6 @@ function formatDisplayValue(
   return resolved.text;
 }
 
-function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
-  let minRow = Number.POSITIVE_INFINITY;
-  let minColumn = Number.POSITIVE_INFINITY;
-  let maxRow = 0;
-  let maxColumn = 0;
-  sheet.cells.forEach((_cell, row, column) => {
-    minRow = Math.min(minRow, row);
-    minColumn = Math.min(minColumn, column);
-    maxRow = Math.max(maxRow, row);
-    maxColumn = Math.max(maxColumn, column);
-  });
-  for (const region of sheet.dataRegions) {
-    minRow = Math.min(minRow, region.range.startRow);
-    minColumn = Math.min(minColumn, region.range.startColumn);
-    maxRow = Math.max(maxRow, region.range.endRow);
-    maxColumn = Math.max(maxColumn, region.range.endColumn);
-  }
-  return {
-    sheetId: sheet.id,
-    startRow: Number.isFinite(minRow) ? minRow : 0,
-    endRow: Number.isFinite(minRow) ? maxRow : 0,
-    startColumn: Number.isFinite(minColumn) ? minColumn : 0,
-    endColumn: Number.isFinite(minColumn) ? maxColumn : 0,
-  };
-}
-
 function pivotSourceState(
   pivot: PivotModel,
   dataContent: ReadonlyMap<string, DataSourceContentQuery>,
@@ -276,7 +250,7 @@ export function buildCanvasSheetSnapshot(
   const filterButtons = resolveFilterButtonCells(sheet);
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
-  const usedRange = usedRangeOfSheet(sheet);
+  const usedRange = sheet.usedRange;
   const advancedTableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : sheet.kind === 'report-sheet' ? sheet.reportSheet?.tableId : undefined;
   const advancedTable = advancedTableId ? workbook.dataModel.tables.get(advancedTableId) : undefined;
 
@@ -382,7 +356,7 @@ export function buildCanvasSheetSnapshot(
     sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
-    dataRegions: structuredClone(sheet.dataRegions),
+    dataRegions: sheet.dataRegions.map((region) => structuredClone(region)),
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
     autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,

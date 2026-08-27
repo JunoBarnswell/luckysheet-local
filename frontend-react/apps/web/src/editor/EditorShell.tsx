@@ -259,7 +259,7 @@ export function EditorShell({
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
-                allSheets={state.sheets}
+                allSheets={state.projectionSheets}
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
                 tables={state.tables}

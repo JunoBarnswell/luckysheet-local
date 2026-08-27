@@ -263,6 +263,38 @@ export interface WorkbookSessionOptions {
 
 export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
 
+type SheetProjectionDomain = 'content' | 'dimensions' | 'formulaResults' | 'dataRules' | 'drawings' | 'review' | 'structure';
+
+interface SheetProjectionRevision {
+  content: number;
+  dimensions: number;
+  formulaResults: number;
+  dataRules: number;
+  drawings: number;
+  review: number;
+  structure: number;
+}
+
+const PROJECTION_DOMAINS: readonly SheetProjectionDomain[] = [
+  'content', 'dimensions', 'formulaResults', 'dataRules', 'drawings', 'review', 'structure',
+];
+
+function createSheetProjectionRevision(): SheetProjectionRevision {
+  return { content: 0, dimensions: 0, formulaResults: 0, dataRules: 0, drawings: 0, review: 0, structure: 0 };
+}
+
+function projectionDomainsForMutation(mutation: MutationInfo): readonly SheetProjectionDomain[] {
+  const id = mutation.id;
+  if (id.startsWith('drawing.') || id.startsWith('shape.') || id.startsWith('chart.') || id.startsWith('image.') || id.startsWith('camera.') || id.startsWith('formControl.')) return ['drawings'];
+  if (id.startsWith('comment.') || id.startsWith('note.') || id.startsWith('hyperlink.')) return ['review'];
+  if (id.startsWith('sheet.rows.') || id.startsWith('sheet.columns.') || id.startsWith('sheet.cellShift.') || id === 'sheet.add' || id === 'sheet.delete' || id === 'sheet.restore' || id === 'sheet.rename' || id === 'sheet.move') return PROJECTION_DOMAINS;
+  if (id.startsWith('sheet.row.') || id.startsWith('sheet.column.') || id.startsWith('sheet.dimension.') || id.startsWith('sheet.visibility.') || id.startsWith('sheet.freeze.')) return ['dimensions'];
+  if (id.startsWith('filter.') || id.startsWith('sheetTable.') || id.startsWith('dataRegion.') || id.startsWith('dataSource.') || id.startsWith('validation.') || id.startsWith('conditionalFormat.') || id.startsWith('outline.')) return ['dataRules', 'content'];
+  if (id.startsWith('pivot.')) return ['content', 'formulaResults', 'dataRules'];
+  if (id.startsWith('formula.')) return ['content', 'formulaResults'];
+  return ['content'];
+}
+
 export class CommandDispatchError extends Error {
   constructor(
     readonly code: DispatchErrorCode,
@@ -292,6 +324,15 @@ export type ClipboardExecutionOutcome = SystemClipboardWriteOutcome & {
   privatePayloadStored: boolean;
 };
 
+/** Lightweight worksheet chrome state. It deliberately excludes Canvas projection data. */
+export interface SheetTabSnapshot {
+  id: string;
+  name: string;
+  kind: SheetKind;
+  hidden: boolean;
+  tabColor?: string;
+}
+
 export interface UiSnapshot extends DesignerState {
   unitId: string;
   workbookName: string;
@@ -307,7 +348,10 @@ export interface UiSnapshot extends DesignerState {
   formulaDraft: string;
   editingCell: { row: number; column: number } | null;
   zoom: number;
-  sheets: CanvasSheetSnapshot[];
+  /** All workbook sheets as cheap tab metadata; never a Canvas projection list. */
+  sheets: SheetTabSnapshot[];
+  /** Active sheet plus the explicitly required cross-sheet render sources only. */
+  projectionSheets: CanvasSheetSnapshot[];
   selectedSheet: CanvasSheetSnapshot;
   selectedFloatingId: string | null;
   selectedDrawingIds: readonly string[];
@@ -558,8 +602,9 @@ export class WorkbookSession {
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
-  private projectionDomainGeneration = 0;
-  private readonly sheetProjectionGeneration = new Map<string, number>();
+  /** Only true workbook replacement increments this epoch; ordinary edits stay sheet/domain scoped. */
+  private workbookProjectionEpoch = 0;
+  private readonly sheetProjectionRevisions = new Map<string, SheetProjectionRevision>();
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
@@ -705,7 +750,8 @@ export class WorkbookSession {
     this.runtime.handlers.onMutationsApplied = () => {
       const mutations = this.runtime.drainPivotMutations();
       this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
-      this.invalidateSheetProjections(mutations.map((mutation) => mutation.sheetId));
+      if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
+      else this.invalidateFormulaResultProjections();
       this.persistenceMetaDirty = true;
       this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
@@ -716,6 +762,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onDataSourceContentChanged = (sourceId) => {
       this.refreshPivotsForTrigger({ kind: 'source-content-change', sourceId });
+      this.invalidateDataSourceProjection(sourceId);
       this.refresh();
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -976,28 +1023,98 @@ export class WorkbookSession {
     };
   }
 
-  /**
-   * Projection revisions are domain-owned: a mutation invalidates only the
-   * worksheet named by its canonical command payload.  A global increment is
-   * reserved for real whole-workbook replacements (hydrate/history/native
-   * package changes), never ordinary cell edits.
-   */
-  private invalidateSheetProjections(sheetIds: readonly string[]): void {
-    if (sheetIds.length === 0) {
-      this.invalidateAllSheetProjections();
-      return;
-    }
-    for (const sheetId of new Set(sheetIds)) {
-      this.sheetProjectionGeneration.set(sheetId, (this.sheetProjectionGeneration.get(sheetId) ?? 0) + 1);
+  /** A mutation has an explicit worksheet, range, and projection-domain impact. */
+  private invalidateSheetProjection(sheetId: string, domains: readonly SheetProjectionDomain[]): void {
+    if (!this.runtime.model.sheets.has(sheetId)) return;
+    const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
+    for (const domain of domains) revision[domain] += 1;
+    this.sheetProjectionRevisions.set(sheetId, revision);
+  }
+
+  private invalidateProjectionMutations(mutations: readonly MutationInfo[]): void {
+    for (const mutation of mutations) this.invalidateSheetProjection(mutation.sheetId, projectionDomainsForMutation(mutation));
+  }
+
+  /** Formula completion has no mutation payload; invalidate only the formula-result domain. */
+  private invalidateFormulaResultProjections(): void {
+    for (const sheet of this.runtime.model.getSheets()) this.invalidateSheetProjection(sheet.id, ['formulaResults']);
+  }
+
+  private invalidateDataSourceProjection(sourceId: string): void {
+    for (const sheet of this.runtime.model.getSheets()) {
+      if (sheet.dataRegions.some((region) => region.sourceId === sourceId)) this.invalidateSheetProjection(sheet.id, ['content', 'dataRules', 'formulaResults']);
     }
   }
 
   private invalidateAllSheetProjections(): void {
-    this.projectionDomainGeneration += 1;
+    this.workbookProjectionEpoch += 1;
+    this.sheetProjectionRevisions.clear();
+    this.sheetProjectionCache.clear();
   }
 
   private projectionRevisionForSheet(sheetId: string): string {
-    return `${this.projectionDomainGeneration}:${this.sheetProjectionGeneration.get(sheetId) ?? 0}`;
+    const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
+    return `${this.workbookProjectionEpoch}:${PROJECTION_DOMAINS.map((domain) => revision[domain]).join(':')}`;
+  }
+
+  private getCanvasProjection(sheet: WorksheetModel): CanvasSheetSnapshot {
+    const cached = this.sheetProjectionCache.get(sheet.id);
+    const revision = this.projectionRevisionForSheet(sheet.id);
+    if (cached?.revision === revision) return cached.snapshot;
+    const snapshot = buildCanvasSheetSnapshot(
+      this.runtime.model,
+      sheet,
+      this.runtime.formula,
+      true,
+      this.runtime.pivotResults,
+      this.runtime.dataContent,
+      this.nativePackage?.dateSystem ?? '1900',
+      this.runtime.pivotErrors,
+      this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
+    );
+    this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
+    return snapshot;
+  }
+
+  /**
+   * A Canvas snapshot is created only for the active sheet and data that its
+   * visible objects can read. Tab chrome gets a separate metadata projection.
+   */
+  private getActiveProjectionSheetIds(activeSheet: WorksheetModel): ReadonlySet<string> {
+    const ids = new Set<string>([activeSheet.id]);
+    const addRange = (range: RangeRef | undefined): void => {
+      if (range && this.runtime.model.sheets.has(range.sheetId)) ids.add(range.sheetId);
+    };
+    for (const sparkline of activeSheet.sparklines) addRange(sparkline.sourceRange);
+    for (const payload of activeSheet.drawingPayloads.values()) {
+      switch (payload.kind) {
+        case 'camera':
+          addRange(payload.sourceRange);
+          break;
+        case 'chart':
+          for (const range of payload.sourceRanges) addRange(range);
+          addRange(payload.categoryRange);
+          break;
+        case 'data-chart': {
+          const sourceRange = payload.source.kind === 'table'
+            ? this.runtime.model.dataModel.tables.get(payload.source.tableId)?.sourceRange
+            : payload.source.kind === 'report-sheet' ? payload.source.range : undefined;
+          addRange(sourceRange);
+          break;
+        }
+        case 'form-control':
+          if ('inputRange' in payload) addRange(payload.inputRange);
+          if ('cellLink' in payload && payload.cellLink) ids.add(payload.cellLink.sheetId);
+          break;
+        default:
+          break;
+      }
+    }
+    if (activeSheet.reportSheet) {
+      const tableId = activeSheet.reportSheet.tableId;
+      if (tableId) addRange(this.runtime.model.dataModel.tables.get(tableId)?.sourceRange);
+    }
+    return ids;
   }
 
   getUiSnapshot = (): UiSnapshot => {
@@ -1008,32 +1125,26 @@ export class WorkbookSession {
     for (const sheetId of this.sheetProjectionCache.keys()) {
       if (!activeSheetIds.has(sheetId)) this.sheetProjectionCache.delete(sheetId);
     }
-    const sheets = this.runtime.model.getSheets().map((sheet) => {
-      const cached = this.sheetProjectionCache.get(sheet.id);
-      const revision = this.projectionRevisionForSheet(sheet.id);
-      if (cached?.revision === revision) return cached.snapshot;
-      const snapshot = buildCanvasSheetSnapshot(
-        this.runtime.model,
-        sheet,
-        this.runtime.formula,
-        true,
-        this.runtime.pivotResults,
-        this.runtime.dataContent,
-        this.nativePackage?.dateSystem ?? '1900',
-        this.runtime.pivotErrors,
-        this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
-      );
-      this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
-      return snapshot;
-    });
-    const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
+    const modelSheets = this.runtime.model.getSheets();
+    const activeModelSheet = this.runtime.model.getSheet(this.activeSheetId);
+    const requiredProjectionIds = this.getActiveProjectionSheetIds(activeModelSheet);
+    const projectionSheets = modelSheets
+      .filter((sheet) => requiredProjectionIds.has(sheet.id))
+      .map((sheet) => this.getCanvasProjection(sheet));
+    const selectedSheet = projectionSheets.find((sheet) => sheet.id === this.activeSheetId) ?? this.getCanvasProjection(activeModelSheet);
+    const sheets: SheetTabSnapshot[] = modelSheets.map((sheet) => ({
+      id: sheet.id,
+      name: sheet.name,
+      kind: sheet.kind,
+      hidden: sheet.hidden,
+      ...(sheet.tabColor ? { tabColor: sheet.tabColor } : {}),
+    }));
     const selection = this.selectionService.getState();
     const collaboration = this.getCollaborationSnapshot();
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
     const activeEdit = this.editSession.active;
-    const activeModelSheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
       activeModelSheet.protectionRules,
@@ -1065,6 +1176,7 @@ export class WorkbookSession {
       editingCell: this.editSession.editingCell,
       zoom: this.zoom,
       sheets,
+      projectionSheets,
       selectedSheet,
       selectedFloatingId: this.selectedFloatingId,
       selectedDrawingIds: [...this.selectedDrawingIds],
@@ -3522,9 +3634,11 @@ export class WorkbookSession {
     for (const pivotId of Object.keys(this.runtime.pivotErrors)) if (!activeIds.has(pivotId)) delete this.runtime.pivotErrors[pivotId];
     const refreshIds = pivotIdsToRefresh(this.runtime.model, pivots, trigger);
     for (const pivotId of refreshIds) this.recomputePivotResult(pivotId);
-    if (refreshIds.length > 0) this.invalidateSheetProjections(
-      pivots.filter((pivot) => refreshIds.includes(pivot.id)).map((pivot) => pivot.target.sheetId),
-    );
+    if (refreshIds.length > 0) {
+      for (const pivot of pivots) {
+        if (refreshIds.includes(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
+      }
+    }
   }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {

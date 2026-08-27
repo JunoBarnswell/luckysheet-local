@@ -269,7 +269,7 @@ describe('structural operations', () => {
       }],
       revision: 0,
     });
-    sheet.dataRegions.push({
+    sheet.addDataRegion({
       id: 'structure-region',
       sourceId,
       range: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
@@ -293,7 +293,7 @@ describe('structural operations', () => {
   it('rejects row or column edits that intersect a block-backed region until a block transaction is supplied', () => {
     const workbook = new WorkbookModel('unit-data-region-reject', 'Data Region Reject');
     const sheet = workbook.getSheet('sheet-1');
-    sheet.dataRegions.push({
+    sheet.addDataRegion({
       id: 'region-reject',
       sourceId: 'source-reject',
       range: { sheetId: sheet.id, startRow: 5, endRow: 8, startColumn: 2, endColumn: 4 },
@@ -327,7 +327,7 @@ describe('structural operations', () => {
       blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'b'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
       revision: 0,
     });
-    sheet.dataRegions.push({
+    sheet.addDataRegion({
       id: 'region-move', sourceId,
       range: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 }, headerRow: 2, revision: 0,
     });

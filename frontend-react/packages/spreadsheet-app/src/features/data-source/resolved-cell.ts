@@ -475,7 +475,7 @@ export function applyDataRegionMaterialization(
   }
   clearRange(sheet, prepared.range);
   for (const entry of prepared.materializedCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));
-  sheet.dataRegions.splice(regionIndex, 1);
+  sheet.removeDataRegionAt(regionIndex);
   const sourceRemoved = !sourceStillReferenced(workbook, prepared.region.sourceId);
   if (sourceRemoved) workbook.dataModel.sources.delete(prepared.region.sourceId);
   return {
@@ -504,7 +504,7 @@ export function restoreDataRegionMaterialization(
   }
   clearRange(sheet, transaction.range);
   for (const entry of transaction.previousCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));
-  sheet.dataRegions.splice(Math.min(transaction.regionIndex, sheet.dataRegions.length), 0, clone(transaction.region));
+  sheet.addDataRegion(transaction.region, transaction.regionIndex);
 }
 
 /**

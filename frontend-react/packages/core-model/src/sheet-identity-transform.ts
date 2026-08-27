@@ -231,7 +231,7 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
     return allocated;
   };
 
-  copy.dataRegions.splice(0, copy.dataRegions.length, ...copy.dataRegions.map((region) => ({ ...region, range: mapRange(region.range, source.id, targetSheetId) })));
+  copy.replaceDataRegions(copy.dataRegions.map((region) => ({ ...region, range: mapRange(region.range, source.id, targetSheetId) })));
   copy.merges.splice(0, copy.merges.length, ...copy.merges.map((merge) => ({ ...merge, range: mapRange(merge.range, source.id, targetSheetId) })));
   copy.pivots.splice(0, copy.pivots.length, ...copy.pivots.map((pivot) => remapPivot(pivot, source.id, targetSheetId, pivotIds.get(pivot.id)!, tableIds)));
   copy.sparklines.splice(0, copy.sparklines.length, ...copy.sparklines.map((sparkline) => ({ ...sparkline, id: sparklineIds.get(sparkline.id)!, sheetId: targetSheetId, sourceRange: mapRange(sparkline.sourceRange, source.id, targetSheetId), groupId: sparkline.groupId ? sparklineGroupIds.get(sparkline.groupId) : undefined })));

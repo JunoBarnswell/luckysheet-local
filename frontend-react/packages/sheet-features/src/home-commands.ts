@@ -441,7 +441,7 @@ function applyDataRegionMaterialization(params: DataRegionMaterializeParams, con
     for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
   }
   for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
-  sheet.dataRegions.splice(index, 1);
+  sheet.removeDataRegionAt(index);
   if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
 }
 
@@ -453,7 +453,7 @@ function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, c
     for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
   }
   for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
-  sheet.dataRegions.splice(Math.min(params.regionIndex, sheet.dataRegions.length), 0, structuredClone(params.region));
+  sheet.addDataRegion(params.region, params.regionIndex);
 }
 
 function replaceText(original: string, params: ReplaceRangeParams): string | undefined {

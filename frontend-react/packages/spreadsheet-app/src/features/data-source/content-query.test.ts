@@ -199,7 +199,7 @@ test('one-time overlay migration preserves block values before canonical resolut
   const sheet = workbook.getSheet('sheet-1');
   sheet.rowCount = 4;
   sheet.columnCount = 2;
-  sheet.dataRegions.push({
+  sheet.addDataRegion({
     id: 'resolved-region',
     sourceId,
     range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
@@ -276,7 +276,7 @@ test('resolved cells expose loading and missing states without replacing a block
   const workbook = new WorkbookModel('resolved-unloaded', 'Resolved Unloaded');
   const sheet = workbook.getSheet('sheet-1');
   workbook.addDataSource(query.manifest);
-  sheet.dataRegions.push({
+  sheet.addDataRegion({
     id: 'unloaded-region',
     sourceId,
     range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },

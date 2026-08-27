@@ -14,6 +14,25 @@ import {
 } from './features/data-source';
 
 describe('canonical drawing UI projection', () => {
+  it('reads the worksheet-owned used range without scanning sparse cells', () => {
+    const workbook = new WorkbookModel('snapshot-sparse-bounds', 'Snapshot sparse bounds');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(12, 3, { value: 'first' });
+    sheet.cells.set(900_000, 19, { value: 'last' });
+    const originalForEach = sheet.cells.forEach;
+    sheet.cells.forEach = () => {
+      throw new Error('Canvas snapshot must not scan CellMatrix to derive used range');
+    };
+    try {
+      const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
+      assert.deepEqual(snapshot.usedRange, {
+        sheetId: sheet.id, startRow: 12, endRow: 900_000, startColumn: 3, endColumn: 19,
+      });
+    } finally {
+      sheet.cells.forEach = originalForEach;
+    }
+  });
+
   it('collapses filtered rows in the render projection without blank placeholders', () => {
     const workbook = new WorkbookModel('snapshot-filter', 'Snapshot Filter');
     const sheet = workbook.getSheet('sheet-1');
@@ -188,7 +207,7 @@ describe('canonical drawing UI projection', () => {
     await store.put(ref, payload);
     const query = new DataSourceContentQuery(manifest, store);
     workbook.addDataSource(manifest);
-    sheet.dataRegions.push({
+    sheet.addDataRegion({
       id: 'snapshot-block-region',
       sourceId,
       range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },

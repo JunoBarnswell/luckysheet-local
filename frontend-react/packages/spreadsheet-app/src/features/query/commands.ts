@@ -73,7 +73,7 @@ function removeCurrentBinding(context: CommandContext, sourceId: string): void {
       const region = sheet.dataRegions[index]!;
       if (region.sourceId !== sourceId) continue;
       clearRegionCells(context, region.range);
-      sheet.dataRegions.splice(index, 1);
+      sheet.removeDataRegionAt(index);
     }
   }
   for (const table of context.workbook.dataModel.tables.values()) {
@@ -116,7 +116,7 @@ function applyBinding(context: CommandContext, binding: QueryLoadBinding | null,
     sheet.ensureRangeExtent(binding.region.range.startRow, binding.region.range.endRow, binding.region.range.startColumn, binding.region.range.endColumn);
   }
   clearRegionCells(context, binding.region.range);
-  sheet.dataRegions.push(structuredClone(binding.region));
+  sheet.addDataRegion(binding.region);
   writeHeader(context, binding.header, binding);
 }
 

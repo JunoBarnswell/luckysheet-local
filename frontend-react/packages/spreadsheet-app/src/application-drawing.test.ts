@@ -145,7 +145,7 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal(snapshot.selectedFloatingId, null);
     assert.deepEqual(snapshot.selectedDrawingIds, []);
     assert.deepEqual(snapshot.activeContext, { kind: 'none' });
-    assert.equal(snapshot.sheets[0]?.drawings.some((drawing) => drawing.id === 'draw-undo-reconcile'), true);
+    assert.equal(snapshot.selectedSheet.drawings.some((drawing) => drawing.id === 'draw-undo-reconcile'), true);
   });
 
   it('keeps valid multi-selection while removing the deleted object from active context', () => {
