@@ -23,7 +23,7 @@ export interface InsertRibbonProps {
 }
 
 function RibbonLarge({ children, compact = false, icon, disabled, surfaceId, title, onClick }: { children: React.ReactNode; compact?: boolean; icon: React.ComponentProps<typeof Button>['icon']; disabled?: boolean; surfaceId: string; title: string; onClick?: () => void }) {
-  return <Button aria-label={title} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={icon} onClick={onClick} size="sm" variant="ghost" className={compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[66px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0'}>{compact ? null : children}</Button>;
+  return <Button aria-label={title} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={icon} onClick={onClick} size="sm" variant="ghost" className={compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[56px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0'}>{compact ? null : children}</Button>;
 }
 
 function variantButton({ id, icon, label, onSelect, surfaceId, disabled }: { id: string; icon: React.ComponentProps<typeof Button>['icon']; label: string; onSelect: () => void; surfaceId: string; disabled?: boolean }) {
@@ -91,7 +91,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       <RibbonLarge compact={isNarrow} disabled={disabled} icon={icon} onClick={onSelect} surfaceId={surface.id} title={title}>
         {title}
       </RibbonLarge>
-      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[72px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
+      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[56px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
         <Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack>
       </DropdownMenu>
     </Inline>

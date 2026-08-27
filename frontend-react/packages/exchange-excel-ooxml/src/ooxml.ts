@@ -2088,6 +2088,7 @@ interface SharedFormulaMaster {
   row: number;
   column: number;
   formula: string;
+  sourceFormula: string;
   range?: string;
 }
 
@@ -2102,10 +2103,12 @@ function collectSharedFormulaMasters(
     const index = Number(formula.attrs.si);
     if (!Number.isSafeInteger(index) || index < 0) throw new Error(`Worksheet ${descriptor.name}!${columnToLetter(entry.column)}${entry.row + 1} has an invalid shared formula index`);
     if (result.has(index)) throw new Error(`Worksheet ${descriptor.name} has duplicate shared formula master si=${index}`);
+    const sourceFormula = `=${textContent(formula)}`;
     result.set(index, {
       row: entry.row,
       column: entry.column,
-      formula: normalizeExternalFormula(`=${textContent(formula)}`),
+      formula: normalizeExternalFormula(sourceFormula),
+      sourceFormula,
       ...(formula.attrs.ref ? { range: formula.attrs.ref } : {}),
     });
   }
@@ -2144,7 +2147,7 @@ function readFormula(
           ...(master.range ? { range: master.range } : {}),
           preservedOnly: true,
           reason: 'Shared formula uses syntax outside the canonical formula AST',
-          sourceFormula: master.formula,
+          sourceFormula: master.sourceFormula,
         },
       };
     }

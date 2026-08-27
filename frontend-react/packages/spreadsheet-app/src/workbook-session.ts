@@ -976,6 +976,30 @@ export class WorkbookSession {
     };
   }
 
+  /**
+   * Projection revisions are domain-owned: a mutation invalidates only the
+   * worksheet named by its canonical command payload.  A global increment is
+   * reserved for real whole-workbook replacements (hydrate/history/native
+   * package changes), never ordinary cell edits.
+   */
+  private invalidateSheetProjections(sheetIds: readonly string[]): void {
+    if (sheetIds.length === 0) {
+      this.invalidateAllSheetProjections();
+      return;
+    }
+    for (const sheetId of new Set(sheetIds)) {
+      this.sheetProjectionGeneration.set(sheetId, (this.sheetProjectionGeneration.get(sheetId) ?? 0) + 1);
+    }
+  }
+
+  private invalidateAllSheetProjections(): void {
+    this.projectionDomainGeneration += 1;
+  }
+
+  private projectionRevisionForSheet(sheetId: string): string {
+    return `${this.projectionDomainGeneration}:${this.sheetProjectionGeneration.get(sheetId) ?? 0}`;
+  }
+
   getUiSnapshot = (): UiSnapshot => {
     if (this.cachedUiSnapshot && this.cachedUiSnapshotGeneration === this.snapshotGeneration) {
       return this.cachedUiSnapshot;
