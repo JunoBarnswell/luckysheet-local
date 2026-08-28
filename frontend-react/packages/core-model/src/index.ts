@@ -32,7 +32,7 @@ import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
 import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
-export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, type AssetRef } from './asset';
+export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, isSupportedAssetMime, type AssetRef } from './asset';
 export {
   checkboxStateFromValue,
   checkboxValueForState,
@@ -340,6 +340,17 @@ export type {
   ChartSource,
   ChartFieldBinding,
   CameraDrawingPayload,
+  ScreenshotDrawingPayload,
+  IconDrawingPayload,
+  Model3dGeometry,
+  Model3dDrawingPayload,
+  SmartArtNode,
+  SmartArtDrawingPayload,
+  WordArtDrawingPayload,
+  SignatureLineDrawingPayload,
+  EmbeddedObjectDrawingPayload,
+  EquationDrawingPayload,
+  LocalDrawingObjectKind,
   FormControlStyle,
   FormControlCellLink,
   FormControlAction,
@@ -393,6 +404,14 @@ export {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
   isFormControlDrawingPayload,
+  isIconDrawingPayload,
+  isModel3dDrawingPayload,
+  isSmartArtDrawingPayload,
+  isWordArtDrawingPayload,
+  isSignatureLineDrawingPayload,
+  isEmbeddedObjectDrawingPayload,
+  isEquationDrawingPayload,
+  isScreenshotDrawingPayload,
   isDrawingConnectorPayload,
   isShapeDrawingPayload,
   isDrawingGroup,

@@ -1,5 +1,6 @@
 import type { AutoFilterModel, CellAddress, CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
 import type { PivotMemberKey } from './pivot';
+import { isAssetRef } from './asset';
 
 /**
  * A defined name is scoped either to the workbook or to one worksheet.
@@ -127,7 +128,7 @@ export interface SheetTableModel {
   styleName?: string;
 }
 
-export type DrawingKind = 'image' | 'shape' | 'connector' | 'chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
+export type DrawingKind = 'image' | 'shape' | 'connector' | 'chart' | 'camera' | 'screenshot' | 'textbox' | 'form-control' | 'icon' | 'model3d' | 'smartart' | 'wordart' | 'signature-line' | 'embedded-object' | 'equation' | 'slicer' | 'timeline';
 
 export interface DrawingTransform {
   x: number;
@@ -313,6 +314,96 @@ export interface CameraDrawingPayload {
   refreshPolicy: 'live';
 }
 
+/** 本地对象插入的共同可审计身份。对象内容在工作簿快照中拥有唯一语义，不依赖宿主激活。 */
+export type LocalDrawingObjectKind = 'icon' | 'model3d' | 'smartart' | 'wordart' | 'signature-line' | 'embedded-object' | 'equation' | 'screenshot';
+
+export interface IconDrawingPayload {
+  kind: 'icon';
+  iconName: string;
+  /** Fluent 单色 SVG path，由本地图标注册表提供并随快照保存。 */
+  svgPath: string;
+  viewBox: string;
+  fill: string;
+  accessibilityLabel: string;
+}
+
+export interface Model3dGeometry {
+  vertices: Array<{ x: number; y: number; z: number }>;
+  faces: Array<[number, number, number]>;
+}
+
+export interface Model3dDrawingPayload {
+  kind: 'model3d';
+  fileName: string;
+  format: 'obj';
+  geometry: Model3dGeometry;
+  rotation: { x: number; y: number; z: number };
+  scale: number;
+}
+
+export interface SmartArtNode {
+  id: string;
+  text: string;
+}
+
+export interface SmartArtDrawingPayload {
+  kind: 'smartart';
+  layout: 'process' | 'cycle' | 'hierarchy' | 'list';
+  nodes: SmartArtNode[];
+  edges: Array<{ from: string; to: string }>;
+  fill: string;
+  stroke: string;
+  textColor: string;
+}
+
+export interface WordArtDrawingPayload {
+  kind: 'wordart';
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  fill: string;
+  outline: string;
+  outlineWidth: number;
+  italic: boolean;
+  bold: boolean;
+}
+
+export interface SignatureLineDrawingPayload {
+  kind: 'signature-line';
+  signerName: string;
+  signerTitle?: string;
+  signerEmail?: string;
+  instructions?: string;
+  status: 'unsigned' | 'signed';
+  signedBy?: string;
+  signedAt?: string;
+}
+
+export interface EmbeddedObjectDrawingPayload {
+  kind: 'embedded-object';
+  fileName: string;
+  mimeType: string;
+  asset: import('./asset').AssetRef;
+  relationship: 'embedded' | 'linked';
+  previewText?: string;
+}
+
+export interface EquationDrawingPayload {
+  kind: 'equation';
+  linearExpression: string;
+  tokens: Array<{ kind: 'text' | 'operator' | 'fraction' | 'superscript' | 'subscript'; value: string }>;
+  fontSize: number;
+  textColor: string;
+}
+
+/** 屏幕截图在本地语义中是工作表区域快照，不调用 OS/宿主屏幕捕获。 */
+export interface ScreenshotDrawingPayload {
+  kind: 'screenshot';
+  sourceRange: RangeRef;
+  includeGridlines: boolean;
+  capturedAt: string;
+}
+
 export type FormControlType = 'button' | 'spin-button' | 'list-box' | 'combo-box' | 'checkbox' | 'option-button' | 'group-box' | 'label' | 'scrollbar';
 
 export interface FormControlStyle {
@@ -479,6 +570,75 @@ export function isFormControlDrawingPayload(value: unknown): value is FormContro
     default:
       return false;
   }
+}
+
+function isColor(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function isIconDrawingPayload(value: unknown): value is IconDrawingPayload {
+  return isRecord(value) && value.kind === 'icon'
+    && typeof value.iconName === 'string' && value.iconName.trim().length > 0
+    && typeof value.svgPath === 'string' && value.svgPath.trim().length > 0
+    && typeof value.viewBox === 'string' && /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?$/.test(value.viewBox)
+    && isColor(value.fill) && typeof value.accessibilityLabel === 'string' && value.accessibilityLabel.trim().length > 0;
+}
+
+export function isModel3dDrawingPayload(value: unknown): value is Model3dDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'model3d' || typeof value.fileName !== 'string' || !value.fileName.trim() || value.format !== 'obj') return false;
+  const geometry = value.geometry;
+  if (!isRecord(geometry) || !Array.isArray(geometry.vertices) || !Array.isArray(geometry.faces) || geometry.vertices.length === 0 || geometry.vertices.length > 5000 || geometry.faces.length === 0 || geometry.faces.length > 10000) return false;
+  const vertices = geometry.vertices as unknown[];
+  const faces = geometry.faces as unknown[];
+  const validVertex = (entry: unknown) => isRecord(entry) && [entry.x, entry.y, entry.z].every((part) => typeof part === 'number' && Number.isFinite(part));
+  const validFace = (entry: unknown) => Array.isArray(entry) && entry.length === 3 && entry.every((part) => Number.isSafeInteger(part) && (part as number) >= 0 && (part as number) < vertices.length);
+  return vertices.every(validVertex) && faces.every(validFace)
+    && isRecord(value.rotation) && [value.rotation.x, value.rotation.y, value.rotation.z].every((part) => typeof part === 'number' && Number.isFinite(part))
+    && typeof value.scale === 'number' && Number.isFinite(value.scale) && value.scale > 0 && value.scale <= 100;
+}
+
+export function isSmartArtDrawingPayload(value: unknown): value is SmartArtDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'smartart' || !['process', 'cycle', 'hierarchy', 'list'].includes(String(value.layout)) || !Array.isArray(value.nodes) || value.nodes.length < 1 || value.nodes.length > 100 || !Array.isArray(value.edges) || value.edges.length > 200 || !isColor(value.fill) || !isColor(value.stroke) || !isColor(value.textColor)) return false;
+  const ids = new Set<string>();
+  for (const node of value.nodes) {
+    if (!isRecord(node) || typeof node.id !== 'string' || !node.id.trim() || ids.has(node.id) || typeof node.text !== 'string') return false;
+    ids.add(node.id);
+  }
+  return value.edges.every((edge) => isRecord(edge) && typeof edge.from === 'string' && ids.has(edge.from) && typeof edge.to === 'string' && ids.has(edge.to) && edge.from !== edge.to);
+}
+
+export function isWordArtDrawingPayload(value: unknown): value is WordArtDrawingPayload {
+  return isRecord(value) && value.kind === 'wordart' && typeof value.text === 'string' && value.text.trim().length > 0
+    && typeof value.fontFamily === 'string' && value.fontFamily.trim().length > 0
+    && typeof value.fontSize === 'number' && Number.isFinite(value.fontSize) && value.fontSize >= 8 && value.fontSize <= 200
+    && isColor(value.fill) && isColor(value.outline) && typeof value.outlineWidth === 'number' && Number.isFinite(value.outlineWidth) && value.outlineWidth >= 0 && value.outlineWidth <= 20
+    && typeof value.italic === 'boolean' && typeof value.bold === 'boolean';
+}
+
+export function isSignatureLineDrawingPayload(value: unknown): value is SignatureLineDrawingPayload {
+  return isRecord(value) && value.kind === 'signature-line' && typeof value.signerName === 'string' && value.signerName.trim().length > 0
+    && (value.signerTitle === undefined || typeof value.signerTitle === 'string')
+    && (value.signerEmail === undefined || typeof value.signerEmail === 'string')
+    && (value.instructions === undefined || typeof value.instructions === 'string')
+    && (value.status === 'unsigned' || value.status === 'signed')
+    && (value.signedBy === undefined || typeof value.signedBy === 'string')
+    && (value.signedAt === undefined || typeof value.signedAt === 'string');
+}
+
+export function isEmbeddedObjectDrawingPayload(value: unknown): value is EmbeddedObjectDrawingPayload {
+  return isRecord(value) && value.kind === 'embedded-object' && typeof value.fileName === 'string' && value.fileName.trim().length > 0
+    && typeof value.mimeType === 'string' && value.mimeType.trim().length > 0 && isAssetRef(value.asset)
+    && (value.relationship === 'embedded' || value.relationship === 'linked')
+    && (value.previewText === undefined || typeof value.previewText === 'string');
+}
+
+export function isEquationDrawingPayload(value: unknown): value is EquationDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'equation' || typeof value.linearExpression !== 'string' || !value.linearExpression.trim() || !Array.isArray(value.tokens) || value.tokens.length === 0 || value.tokens.length > 256 || typeof value.fontSize !== 'number' || !Number.isFinite(value.fontSize) || value.fontSize < 8 || value.fontSize > 120 || !isColor(value.textColor)) return false;
+  return value.tokens.every((token) => isRecord(token) && ['text', 'operator', 'fraction', 'superscript', 'subscript'].includes(String(token.kind)) && typeof token.value === 'string' && token.value.length > 0);
+}
+
+export function isScreenshotDrawingPayload(value: unknown): value is ScreenshotDrawingPayload {
+  return isRecord(value) && value.kind === 'screenshot' && isRangeRef(value.sourceRange) && typeof value.includeGridlines === 'boolean' && typeof value.capturedAt === 'string' && !Number.isNaN(Date.parse(value.capturedAt));
 }
 
 export type P1ChartType =
@@ -812,7 +972,15 @@ export type DrawingPayload =
   | TextBoxDrawingPayload
   | ChartDrawingPayload
   | CameraDrawingPayload
+  | ScreenshotDrawingPayload
   | FormControlDrawingPayload
+  | IconDrawingPayload
+  | Model3dDrawingPayload
+  | SmartArtDrawingPayload
+  | WordArtDrawingPayload
+  | SignatureLineDrawingPayload
+  | EmbeddedObjectDrawingPayload
+  | EquationDrawingPayload
   | PivotSlicerDrawingPayload
   | PivotTimelineDrawingPayload;
 

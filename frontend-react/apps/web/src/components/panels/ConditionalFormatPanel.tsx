@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Button, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ConditionalFormatOperator, ConditionalFormatRule, ConditionalFormatType, RangeRef } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { homeTemplate, homeText, resolveHomeLocale } from '../home/home-localization';
@@ -29,6 +29,9 @@ export function ConditionalFormatPanel({
   const [value1, setValue1] = useState('50');
   const [bg, setBg] = useState('#dcfce7');
   const [color, setColor] = useState('#166534');
+  const [stopIfTrue, setStopIfTrue] = useState(false);
+  const [iconSet, setIconSet] = useState('threeTrafficLights1');
+  const [topBottomPercent, setTopBottomPercent] = useState(false);
 
   const handleCreate = () => {
     const newRule: ConditionalFormatRule = {
@@ -36,8 +39,11 @@ export function ConditionalFormatPanel({
       sheetId,
       ranges: [{ ...range, sheetId }],
       type,
-      operator,
-      value1,
+      ...(type === 'colorScale' || type === 'dataBar' || type === 'iconSet' ? {} : { operator }),
+      ...(type === 'topBottom' ? { topBottom: { direction: operator === 'bottom' ? 'bottom' as const : 'top' as const, rank: Math.max(1, Number(value1) || 10), percent: topBottomPercent } } : { value1 }),
+      ...(type === 'iconSet' ? { iconSet, iconThresholds: [{ type: 'percent' as const, value: 0 }, { type: 'percent' as const, value: 33 }, { type: 'percent' as const, value: 67 }] } : {}),
+      priority: rules.length + 1,
+      stopIfTrue,
       style: {
         background: bg,
         textColor: color,
@@ -61,12 +67,14 @@ export function ConditionalFormatPanel({
             </Text>
             <Select
               value={type}
-              onChange={(e) => setType(e.target.value as ConditionalFormatType)}
+              onChange={(e) => { const next = e.target.value as ConditionalFormatType; setType(next); if (next === 'topBottom') setOperator('top'); else if (operator === 'top' || operator === 'bottom') setOperator('greaterThan'); }}
               sizeVariant="sm"
             >
               <option value="highlight">{homeText(activeLocale, 'highlightRules')}</option>
               <option value="colorScale">{homeText(activeLocale, 'colorScale')}</option>
               <option value="dataBar">{homeText(activeLocale, 'dataBars')}</option>
+              <option value="iconSet">{homeText(activeLocale, 'iconSets')}</option>
+              <option value="topBottom">{homeText(activeLocale, 'topBottomRules')}</option>
             </Select>
           </Box>
 
@@ -85,8 +93,13 @@ export function ConditionalFormatPanel({
               <option value="between">Between Range</option>
               <option value="containsText">Text Contains</option>
               <option value="duplicate">Duplicate Values</option>
+              {type === 'topBottom' ? <><option value="top">Top</option><option value="bottom">Bottom</option></> : null}
             </Select>
           </Box>
+
+          {type === 'iconSet' ? <Select aria-label="Icon set" sizeVariant="sm" value={iconSet} onChange={(event) => setIconSet(event.target.value)}><option value="threeTrafficLights1">三色交通灯</option><option value="threeArrows">三色箭头</option><option value="fourRatings">四级评级</option><option value="fiveQuarters">五级刻度</option></Select> : null}
+          {type === 'topBottom' ? <CheckToggle checked={topBottomPercent} label="按百分比" onChange={(event) => setTopBottomPercent(event.target.checked)} /> : null}
+          <CheckToggle checked={stopIfTrue} label={homeText(activeLocale, 'stopIfTrue')} onChange={(event) => setStopIfTrue(event.target.checked)} />
 
           <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">

@@ -7,7 +7,7 @@ import { commitFontFamilyValue } from '../FontFamilyControl';
 
 describe('HOME responsive localization catalogs', () => {
   it('keeps canonical number-format values stable while localizing every label', () => {
-    assert.deepEqual(HOME_NUMBER_FORMAT_OPTIONS.map(({ value }) => value), ['general', '$#,##0', '0%', '#,##0', '0.00']);
+    assert.deepEqual(HOME_NUMBER_FORMAT_OPTIONS.map(({ value }) => value), ['general', '$#,##0', '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)', '0%', '#,##0', '0.00', 'mm/dd/yyyy', 'dddd, mmmm dd, yyyy', 'h:mm:ss AM/PM', '# ?/?', '0.00E+00', '@']);
     for (const { value, labelKey } of HOME_NUMBER_FORMAT_OPTIONS) {
       assert.notEqual(enUS.homeUi[labelKey], undefined, `${value} is missing from en-US`);
       assert.notEqual(zhCN.homeUi[labelKey], undefined, `${value} is missing from zh-CN`);

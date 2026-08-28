@@ -133,6 +133,23 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(target?.formula, undefined);
   });
 
+  it('paste source theme adopts the clipboard theme as one undoable workbook state', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const workbook = app['runtime'].model;
+    workbook.setTheme({ id: 'target-theme', colors: { accent1: '#111111' } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'themed', style: { background: '#ffeeee' } } });
+    selectCell(app, 0, 0);
+    const clipboard = copyRangeToClipboardData(workbook, app.getPrimaryRange());
+    app.setClipboard({ ...clipboard, transfer: 'copy', rangeMetadata: { ...clipboard.rangeMetadata, sourceWorkbookThemeRef: { id: 'source-theme', colors: { accent1: '#2563eb', accent2: '#10b981' } } } });
+    selectCell(app, 0, 1);
+    const outcome = await app.pasteSpecial(createPasteSpecialSpec({ content: 'all', formatting: 'source-theme', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }));
+    assert.equal(outcome.status, 'committed');
+    assert.deepEqual(workbook.theme, { id: 'source-theme', colors: { accent1: '#2563eb', accent2: '#10b981' } });
+    app.undo();
+    assert.deepEqual(workbook.theme, { id: 'target-theme', colors: { accent1: '#111111' } });
+  });
+
   it('returns a typed dispatch outcome and preserves state when permission rejects a paste', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

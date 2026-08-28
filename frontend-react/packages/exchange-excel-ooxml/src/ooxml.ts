@@ -323,6 +323,7 @@ export function exportSnapshotToOpcPackageGraph(
   nativeUpdate.files = chartUpdate.files;
   nativeUpdate.relationships = chartUpdate.relationships;
   synchronizeImageAssets(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes);
+  synchronizeEmbeddedAssets(nativeUpdate.files, snapshot, options.assetBytes);
   files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
@@ -434,6 +435,16 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
       if (Object.keys(sheet.review.notesById).length || Object.keys(sheet.review.threadsById).length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
+        else if (payload.kind === 'camera') features.add('camera');
+        else if (payload.kind === 'screenshot') features.add('screenshot');
+        else if (payload.kind === 'form-control') features.add('form-control');
+        else if (payload.kind === 'icon') features.add('icons');
+        else if (payload.kind === 'model3d') features.add('models3d');
+        else if (payload.kind === 'smartart') features.add('smartart');
+        else if (payload.kind === 'wordart') features.add('wordart');
+        else if (payload.kind === 'signature-line') features.add('signature-line');
+        else if (payload.kind === 'embedded-object') features.add('embedded-object');
+        else if (payload.kind === 'equation') features.add('equation');
         else if (payload.kind === 'slicer') features.add('slicer');
         else if (payload.kind === 'timeline') features.add('timeline');
         else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
@@ -514,6 +525,25 @@ function synchronizeImageAssets(
     files[drawingPart] = strToU8(`${drawingXml}${closing}`);
     relationships[drawingPart] = drawingRelations;
     files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(drawingRelations));
+  }
+}
+
+/** Local embedded objects are carried as content-addressed OPC embedding parts.
+ * They are intentionally not activated by Excel/COM; React Sheets restores the
+ * same bytes into its local AssetStore on import. */
+function synchronizeEmbeddedAssets(
+  files: Record<string, Uint8Array>,
+  snapshot: WorkbookSnapshot,
+  assetBytes: Record<string, Uint8Array> | undefined,
+): void {
+  const entries = snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads).filter((payload): payload is Extract<import('@react-sheets/core-model').DrawingPayload, { kind: 'embedded-object' }> => payload.kind === 'embedded-object'));
+  if (!entries.length) return;
+  if (!assetBytes) throw new Error('ASSET_EXPORT_REQUIRED: embedded object bytes must be resolved from AssetStore before XLSX export');
+  for (const payload of entries) {
+    const bytes = assetBytes[payload.asset.assetId];
+    if (!bytes || bytes.byteLength !== payload.asset.byteLength) throw new Error(`ASSET_EXPORT_MISSING: ${payload.asset.assetId}`);
+    const extension = payload.fileName.includes('.') ? payload.fileName.slice(payload.fileName.lastIndexOf('.') + 1).toLowerCase().replace(/[^a-z0-9]/g, '') : 'bin';
+    files[`xl/embeddings/${payload.asset.assetId}.${extension || 'bin'}`] = bytes.slice();
   }
 }
 
@@ -1887,6 +1917,11 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
     const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
     const mediaTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
     if (mediaTypes[extension]) defaults.set(extension, mediaTypes[extension]);
+  }
+  for (const name of files.keys()) {
+    if (!name.startsWith('xl/embeddings/')) continue;
+    const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    if (extension && !defaults.has(extension)) defaults.set(extension, 'application/octet-stream');
   }
   for (const name of files.keys()) {
     if (!name.startsWith('xl/worksheets/') || !name.endsWith('.xml')) continue;

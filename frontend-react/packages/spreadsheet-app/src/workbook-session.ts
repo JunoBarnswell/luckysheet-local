@@ -8,6 +8,14 @@ import type {
   CellStyleTemplate,
   BarcodeSymbology,
   CameraDrawingPayload,
+  ScreenshotDrawingPayload,
+  IconDrawingPayload,
+  Model3dDrawingPayload,
+  SmartArtDrawingPayload,
+  WordArtDrawingPayload,
+  SignatureLineDrawingPayload,
+  EmbeddedObjectDrawingPayload,
+  EquationDrawingPayload,
   ChartBindings,
   ChartDrawingPayload,
   ConnectorDrawingPayload,
@@ -271,6 +279,7 @@ import type {
   SidebarPanelId,
   SheetDialogState,
   UiSessionIntent,
+  LocalObjectDialogKind,
   DialogState,
   FindDialogMode,
   MergeOperation,
@@ -569,6 +578,70 @@ function clearPreservedFilterChildren(value: unknown): unknown {
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+const LOCAL_ICON_REGISTRY: Readonly<Record<string, Pick<IconDrawingPayload, 'svgPath' | 'viewBox' | 'accessibilityLabel'>>> = {
+  star: { svgPath: 'M12 2.5l2.86 5.79 6.39.93-4.62 4.5 1.09 6.36L12 17.07 6.28 20.08l1.09-6.36-4.62-4.5 6.39-.93L12 2.5z', viewBox: '0 0 24 24', accessibilityLabel: 'Star' },
+  heart: { svgPath: 'M12 20.5S4 15.6 4 9.5A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8 2.5c0 6.1-8 11-8 11z', viewBox: '0 0 24 24', accessibilityLabel: 'Heart' },
+  checkmark: { svgPath: 'M5 12.5l4.2 4.2L19 7v2L9.2 19 5 14.5z', viewBox: '0 0 24 24', accessibilityLabel: 'Checkmark' },
+  circle: { svgPath: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z', viewBox: '0 0 24 24', accessibilityLabel: 'Circle' },
+};
+
+function parseLocalObj(source: string): Model3dDrawingPayload['geometry'] {
+  const vertices: Array<{ x: number; y: number; z: number }> = [];
+  const faces: Array<[number, number, number]> = [];
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split(/\s+/);
+    if (parts[0] === 'v') {
+      if (parts.length < 4) throw new Error('LOCAL_3D_INVALID: vertex requires x y z');
+      const values = parts.slice(1, 4).map(Number);
+      if (values.some((value) => !Number.isFinite(value))) throw new Error('LOCAL_3D_INVALID: vertex contains a non-finite coordinate');
+      vertices.push({ x: values[0]!, y: values[1]!, z: values[2]! });
+      if (vertices.length > 5000) throw new Error('LOCAL_3D_LIMIT: OBJ contains more than 5000 vertices');
+    } else if (parts[0] === 'f') {
+      if (parts.length < 4) throw new Error('LOCAL_3D_INVALID: face requires three vertices');
+      const indices = parts.slice(1).map((part) => Number.parseInt(part.split('/')[0]!, 10));
+      if (indices.some((index) => !Number.isSafeInteger(index) || index === 0)) throw new Error('LOCAL_3D_INVALID: face index is invalid');
+      for (let index = 1; index < indices.length - 1; index += 1) {
+        const triangle = [indices[0]!, indices[index]!, indices[index + 1]!].map((value) => value < 0 ? vertices.length + value : value - 1) as [number, number, number];
+        if (triangle.some((value) => value < 0 || value >= vertices.length)) throw new Error('LOCAL_3D_INVALID: face references a missing vertex');
+        faces.push(triangle);
+        if (faces.length > 10000) throw new Error('LOCAL_3D_LIMIT: OBJ contains more than 10000 faces');
+      }
+    } else if (!['vn', 'vt', 'o', 'g', 's', 'usemtl', 'mtllib'].includes(parts[0]!)) {
+      throw new Error(`LOCAL_3D_UNSUPPORTED: OBJ directive ${parts[0]}`);
+    }
+  }
+  if (vertices.length === 0 || faces.length === 0) throw new Error('LOCAL_3D_INVALID: OBJ requires at least one vertex and one face');
+  const center = vertices.reduce((sum, vertex) => ({ x: sum.x + vertex.x, y: sum.y + vertex.y, z: sum.z + vertex.z }), { x: 0, y: 0, z: 0 });
+  center.x /= vertices.length; center.y /= vertices.length; center.z /= vertices.length;
+  const radius = Math.max(...vertices.map((vertex) => Math.hypot(vertex.x - center.x, vertex.y - center.y, vertex.z - center.z)), 0.0001);
+  return { vertices: vertices.map((vertex) => ({ x: (vertex.x - center.x) / radius, y: (vertex.y - center.y) / radius, z: (vertex.z - center.z) / radius })), faces };
+}
+
+function equationTokens(expression: string): EquationDrawingPayload['tokens'] {
+  const tokens: EquationDrawingPayload['tokens'] = [];
+  const parts = expression.match(/[A-Za-z0-9.]+|[+\-*/=()^_]/g) ?? [];
+  if (parts.join('') !== expression.replace(/\s+/g, '')) throw new Error('LOCAL_EQUATION_INVALID: only linear equation tokens are supported');
+  for (const part of parts) {
+    const kind = part === '^' ? 'superscript' : part === '_' ? 'subscript' : ['+', '-', '*', '/', '='].includes(part) ? 'operator' : 'text';
+    tokens.push({ kind, value: part });
+  }
+  if (tokens.length === 0) throw new Error('LOCAL_EQUATION_INVALID: expression is empty');
+  return tokens;
+}
+
+export interface LocalObjectInsertInput {
+  iconName?: string;
+  text?: string;
+  file?: File;
+  layout?: SmartArtDrawingPayload['layout'];
+  signerName?: string;
+  signerTitle?: string;
+  signerEmail?: string;
+  relationship?: EmbeddedObjectDrawingPayload['relationship'];
+}
+
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
@@ -626,7 +699,7 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number' };
+  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number', localObjectKind: null };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
   private findCursorSignature = '';
@@ -1620,7 +1693,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight, intent.formatCellsTab);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight, intent.formatCellsTab, intent.localObjectKind);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -2340,10 +2413,10 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number'): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number', localObjectKind?: LocalObjectDialogKind): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, localObjectKind: dialog === 'local-object' ? localObjectKind ?? 'icon' : null, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
@@ -2355,7 +2428,7 @@ export class WorkbookSession {
   closeActiveDialog(): void {
     if (!this.dialogs.active) return;
     if (this.dialogs.active === 'find-replace') this.resetFindCursor();
-    this.dialogs = { ...this.dialogs, active: null, columnWidth: null, rowHeight: null, sheet: null };
+    this.dialogs = { ...this.dialogs, active: null, localObjectKind: null, columnWidth: null, rowHeight: null, sheet: null };
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -3720,6 +3793,79 @@ export class WorkbookSession {
     this.commitInsertDrawing({ commandId: 'drawing.add.camera', sheetId: this.activeSheetId, drawing, payload });
     this.notify('区域快照已插入');
     this.refresh();
+  }
+
+  /** 所有 INSERT 本地对象共用的领域入口；成功后只提交一次 drawing.add。 */
+  async insertLocalObject(kind: LocalObjectDialogKind, input: LocalObjectInsertInput = {}): Promise<void> {
+    const transform: DrawingTransform = { x: 96, y: 96, width: 260, height: 150, rotation: 0 };
+    if (kind === 'screenshot') {
+      const sourceRange = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
+      const drawing = this.createInsertDrawing('screenshot', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'screenshot', transform });
+      const payload: ScreenshotDrawingPayload = { kind: 'screenshot', sourceRange, includeGridlines: true, capturedAt: new Date().toISOString() };
+      this.commitInsertDrawing({ commandId: 'drawing.add.screenshot', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('工作表区域截图已插入'); this.refresh(); return;
+    }
+    if (kind === 'icon') {
+      const iconName = input.iconName ?? 'star';
+      const icon = LOCAL_ICON_REGISTRY[iconName];
+      if (!icon) throw new Error(`LOCAL_ICON_NOT_FOUND: ${iconName}`);
+      const drawing = this.createInsertDrawing('icon', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'icon', transform: { ...transform, width: 96, height: 96 } });
+      const payload: IconDrawingPayload = { kind: 'icon', iconName, svgPath: icon.svgPath, viewBox: icon.viewBox, fill: '#2563eb', accessibilityLabel: icon.accessibilityLabel };
+      this.commitInsertDrawing({ commandId: 'drawing.add.icon', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地图标已插入'); this.refresh(); return;
+    }
+    if (kind === 'model3d') {
+      if (!input.file) throw new Error('LOCAL_3D_FILE_REQUIRED: 请选择 OBJ 文件');
+      if (!input.file.name.toLowerCase().endsWith('.obj')) throw new Error('LOCAL_3D_UNSUPPORTED: 仅支持本地 OBJ 文件');
+      const geometry = parseLocalObj(await input.file.text());
+      const drawing = this.createInsertDrawing('model3d', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'model3d', transform });
+      const payload: Model3dDrawingPayload = { kind: 'model3d', fileName: input.file.name, format: 'obj', geometry, rotation: { x: 0.2, y: -0.4, z: 0 }, scale: 1 };
+      this.commitInsertDrawing({ commandId: 'drawing.add.model3d', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地 3D 模型已插入'); this.refresh(); return;
+    }
+    if (kind === 'smartart') {
+      const text = input.text?.trim() || '开始\n处理\n完成';
+      const nodes = text.split(/\r?\n/).map((value, index) => ({ id: `node-${index + 1}`, text: value.trim() })).filter((node) => node.text.length > 0);
+      if (nodes.length === 0) throw new Error('LOCAL_SMARTART_INVALID: 至少需要一个节点');
+      const layout = input.layout ?? 'process';
+      const edges = layout === 'cycle' ? nodes.map((node, index) => ({ from: node.id, to: nodes[(index + 1) % nodes.length]!.id })) : nodes.slice(1).map((node, index) => ({ from: nodes[index]!.id, to: node.id }));
+      const drawing = this.createInsertDrawing('smartart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'smartart', transform: { ...transform, width: 360, height: 180 } });
+      const payload: SmartArtDrawingPayload = { kind: 'smartart', layout, nodes, edges, fill: '#dbeafe', stroke: '#2563eb', textColor: '#1e3a8a' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.smartart', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地 SmartArt 已插入'); this.refresh(); return;
+    }
+    if (kind === 'wordart') {
+      const text = input.text?.trim(); if (!text) throw new Error('LOCAL_WORDART_INVALID: 文字不能为空');
+      const drawing = this.createInsertDrawing('wordart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'wordart', transform });
+      const payload: WordArtDrawingPayload = { kind: 'wordart', text, fontFamily: 'Aptos Display', fontSize: 30, fill: '#2563eb', outline: '#1e3a8a', outlineWidth: 1.5, italic: false, bold: true };
+      this.commitInsertDrawing({ commandId: 'drawing.add.wordart', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地艺术字已插入'); this.refresh(); return;
+    }
+    if (kind === 'signature-line') {
+      const signerName = input.signerName?.trim(); if (!signerName) throw new Error('LOCAL_SIGNATURE_INVALID: 签名人不能为空');
+      const drawing = this.createInsertDrawing('signature-line', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'signature-line', transform: { ...transform, height: 90 } });
+      const payload: SignatureLineDrawingPayload = { kind: 'signature-line', signerName, signerTitle: input.signerTitle?.trim() || undefined, signerEmail: input.signerEmail?.trim() || undefined, instructions: '双击后记录本地签名状态', status: 'unsigned' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.signature-line', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地签名行已插入'); this.refresh(); return;
+    }
+    if (kind === 'embedded-object') {
+      if (!input.file) throw new Error('LOCAL_OBJECT_FILE_REQUIRED: 请选择要嵌入的本地文件');
+      const asset = await this.runtime.assetStore.put({ content: input.file, mimeType: input.file.type || 'application/octet-stream' });
+      try {
+        const drawing = this.createInsertDrawing('embedded-object', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'embedded-object', transform });
+        const payload: EmbeddedObjectDrawingPayload = { kind: 'embedded-object', fileName: input.file.name, mimeType: input.file.type || 'application/octet-stream', asset, relationship: input.relationship ?? 'embedded', previewText: '本地文件对象' };
+        this.commitInsertDrawing({ commandId: 'drawing.add.embedded-object', sheetId: this.activeSheetId, drawing, payload });
+      } catch (error) { await this.runtime.assetStore.release(asset); throw error; }
+      this.notify('本地文件对象已嵌入'); this.refresh(); return;
+    }
+    if (kind === 'equation') {
+      const linearExpression = input.text?.trim() || 'a^2+b^2=c^2';
+      const drawing = this.createInsertDrawing('equation', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'equation', transform: { ...transform, height: 72 } });
+      const payload: EquationDrawingPayload = { kind: 'equation', linearExpression, tokens: equationTokens(linearExpression), fontSize: 24, textColor: '#1f2937' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.equation', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地公式对象已插入'); this.refresh(); return;
+    }
+    throw new Error(`LOCAL_OBJECT_UNSUPPORTED: ${kind}`);
   }
 
   insertFormControl(controlType: FormControlType = 'button'): void {

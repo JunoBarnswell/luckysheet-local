@@ -12,6 +12,7 @@ import type {
   WorksheetModel,
   BorderLine,
   BorderPlacement,
+  WorkbookTheme,
 } from '@react-sheets/core-model';
 import { cellKey, clearFormulaProvenance, columnLabel, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
@@ -182,6 +183,7 @@ interface PasteSnapshot {
   validations?: DataValidationRule[];
   conditionalFormats?: ConditionalFormatRule[];
   columnWidths?: Array<{ column: number; widthPx?: number }>;
+  workbookTheme?: WorkbookTheme;
 }
 
 function isPasteMutation(value: unknown): value is PasteMutationParams {
@@ -253,7 +255,8 @@ function isPasteSnapshot(value: unknown): value is PasteSnapshot {
     && (value.comments === undefined || Array.isArray(value.comments))
     && (value.validations === undefined || Array.isArray(value.validations))
     && (value.conditionalFormats === undefined || Array.isArray(value.conditionalFormats))
-    && (value.columnWidths === undefined || Array.isArray(value.columnWidths));
+    && (value.columnWidths === undefined || Array.isArray(value.columnWidths))
+    && (value.workbookTheme === undefined || (isRecord(value.workbookTheme) && typeof value.workbookTheme.id === 'string' && value.workbookTheme.id.trim().length > 0 && isRecord(value.workbookTheme.colors) && Object.values(value.workbookTheme.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))));
 }
 
 function isCellShiftMutation(value: unknown): value is CellShiftParams {
@@ -621,7 +624,8 @@ function snapshotMetadata(sheet: WorksheetModel, ranges: RangeRef[], include: Pa
   return { notes, hyperlinks, commentCells, comments };
 }
 
-function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): void {
+function applyPasteSnapshot(workbook: WorkbookModel, sheet: WorksheetModel, snapshot: PasteSnapshot): void {
+  if (snapshot.workbookTheme) workbook.setTheme(snapshot.workbookTheme);
   for (const range of [...(snapshot.clearRanges ?? []), ...(snapshot.clearMetadataRanges ?? [])]) {
     if (range.sheetId !== sheet.id) continue;
     sheet.rowCount = Math.max(sheet.rowCount, range.endRow + 1);
@@ -767,10 +771,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     if (!isPasteMutation(item.params)) throw new Error('Invalid range.paste mutation payload');
     const params = item.params;
     const targetSheet = context.workbook.getSheet(params.sheetId);
-    applyPasteSnapshot(targetSheet, params.snapshot);
+    applyPasteSnapshot(context.workbook, targetSheet, params.snapshot);
     if (params.sourceRange && params.sourceRange.sheetId !== params.sheetId) {
       const sourceSheet = context.workbook.getSheet(params.sourceRange.sheetId);
-      if (params.sourceSnapshot) applyPasteSnapshot(sourceSheet, params.sourceSnapshot);
+      if (params.sourceSnapshot) applyPasteSnapshot(context.workbook, sourceSheet, params.sourceSnapshot);
     }
     },
     metadata: {
@@ -849,6 +853,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         ...(params.spec.metadata.validation ? { validations: structuredClone(sheet.dataValidations) } : {}),
         ...(params.spec.metadata.conditionalFormats ? { conditionalFormats: structuredClone(sheet.conditionalFormats) } : {}),
         ...(params.spec.metadata.columnWidths ? { columnWidths: sparseWidths(sheet, touchedRanges) } : {}),
+        ...(params.spec.formatting === 'source-theme' ? { workbookTheme: structuredClone(context.workbook.theme) } : {}),
       };
       const sourceSheet = transfer === 'move' ? context.workbook.getSheet(sourceRange!.sheetId) : undefined;
       const sourceBefore = transfer === 'move' && sourceRange && sourceRange.sheetId !== params.sheetId && sourceSheet
@@ -873,6 +878,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         ...(before.validations ? { validations: structuredClone(before.validations) } : {}),
         ...(before.conditionalFormats ? { conditionalFormats: structuredClone(before.conditionalFormats) } : {}),
         ...(before.columnWidths ? { columnWidths: structuredClone(before.columnWidths) } : {}),
+        ...(params.spec.formatting === 'source-theme' ? { workbookTheme: structuredClone(clipboard.rangeMetadata.sourceWorkbookThemeRef!) } : {}),
       };
       const inRanges = (row: number, column: number, ranges: RangeRef[]) => ranges.some((range) => rangeContains(range, row, column));
       after.cells = after.cells.filter((entry) => !inRanges(entry.row, entry.column, after.clearRanges ?? []));
@@ -951,10 +957,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => {
-          applyPasteSnapshot(sheet, after);
+          applyPasteSnapshot(context.workbook, sheet, after);
           if (transfer === 'move' && sourceRange && sourceRange.sheetId !== params.sheetId) {
             const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
-            if (sourceAfter) applyPasteSnapshot(sourceSheet, sourceAfter);
+            if (sourceAfter) applyPasteSnapshot(context.workbook, sourceSheet, sourceAfter);
           }
         },
       });

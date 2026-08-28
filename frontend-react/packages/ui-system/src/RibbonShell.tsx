@@ -8,10 +8,13 @@ import { Tab, TabList, Tabs } from './Tabs';
 export type { RibbonLayoutMode, RibbonLayoutState, RibbonTabId } from './shell-types';
 export { RIBBON_TAB_ORDER } from './shell-types';
 
-export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
-  if (width >= 1783) return 'wide';
-  if (width >= 1024) return 'compact';
-  return 'narrow';
+/**
+ * Ribbon geometry is a fixed product surface. Viewport width only controls
+ * horizontal scrolling; it must never change command density, labels or
+ * available capabilities.
+ */
+export function ribbonLayoutModeForWidth(_width: number): RibbonLayoutMode {
+  return 'wide';
 }
 
 const DENSE_COMPACT_MIN_WIDTH = 1440;

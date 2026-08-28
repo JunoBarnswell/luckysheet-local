@@ -39,10 +39,14 @@ const NUMBER_PRESETS: Array<{ labelKey: HomeUiTextKey; value: string }> = [
   { labelKey: 'numberPresetNumber', value: '0.00' },
   { labelKey: 'numberPresetComma', value: '#,##0' },
   { labelKey: 'numberPresetCurrency', value: '$#,##0.00' },
+  { labelKey: 'numberPresetAccounting', value: '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)' },
   { labelKey: 'numberPresetPercent', value: '0%' },
   { labelKey: 'numberPresetScientific', value: '0.00E+00' },
   { labelKey: 'numberPresetDate', value: 'yyyy-mm-dd' },
+  { labelKey: 'numberPresetShortDate', value: 'mm/dd/yyyy' },
+  { labelKey: 'numberPresetLongDate', value: 'dddd, mmmm dd, yyyy' },
   { labelKey: 'numberPresetTime', value: 'hh:mm' },
+  { labelKey: 'numberPresetFraction', value: '# ?/?' },
   { labelKey: 'numberPresetText', value: '@' },
 ];
 

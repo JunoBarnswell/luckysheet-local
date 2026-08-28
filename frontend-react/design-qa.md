@@ -2,13 +2,12 @@
 
 final result: passed
 
-## Compact-width alignment follow-up
+## Fixed-width alignment follow-up
 
-- `ribbonLayoutModeForWidth(1183)` now reaches the HOME compact geometry rather than reusing the 1783px wide geometry.
-- Compact HOME group widths are Clipboard 124px, Font 224px, Alignment 248px, Number 154px, Styles 220px, Cells 144px, Editing 300px.
-- Compact Font controls use a 100px family field, 45px size field and 25px A↑/A↓ controls; Alignment's wrap/merge controls are 74px/84px with 22px alignment glyph buttons.
-- Important padding utilities are explicit (`!px-*`) so the shared Button base padding cannot compress icon boxes; measured compact Fluent glyphs are 16px (font) and 14px (alignment).
-- Browser comment target at 1183px was rechecked with no group-child overflow or overlap.
+- All viewport widths use the same wide Ribbon geometry; narrower windows scroll the fixed track instead of changing command density or hiding chart capabilities.
+- HOME group widths are Clipboard 141px, Font 347px, Alignment 342px, Number 201px, Styles 251px, Cells 191px, Editing 310px; INSERT keeps its 1905px track.
+- Important padding utilities are explicit (`!px-*`) so the shared Button base padding cannot compress icon boxes; Fluent glyph sizes remain stable across widths.
+- Browser targets at 1280px and the fixed reference widths were rechecked with the same chart menu and no group-child overlap.
 
 ## Icon alignment follow-up
 
@@ -31,15 +30,22 @@ final result: passed
 - Group widths were measured from the supplied separators and encoded in the shared layout renderer.
 - HOME no longer renders History or direct Strikethrough surfaces.
 - Paste is a real split surface; Format Cells launchers target Font, Alignment, and Number.
+- INSERT local objects (Forms, Icons, 3D OBJ, SmartArt, Screenshot, WordArt, Signature Line, Object, Equation) use the same canonical drawing/history path and do not call an external host.
 
 ## Automated gates
 
 - TypeScript: passed.
-- Unit tests: 737/737 passed.
+- Unit tests: 746/746 passed.
 - Architecture boundaries and mutation registry: passed.
 - Contracts and acceptance matrix: passed.
 - Production build: passed with pre-existing circular-chunk and large-chunk warnings.
 - `git diff --check`: passed.
+
+## Local-object acceptance
+
+- Local object dialog and canvas insertion were exercised in the in-app browser for Icon, SmartArt and Screenshot; WordArt, Signature Line, Object and Equation dialogs opened locally.
+- The chart menu retained the complete local families (column/bar, line/area, pie/doughnut, hierarchy, statistical, scatter/bubble, waterfall/more, combo and filled map) under the fixed Ribbon track.
+- Console had no new errors after the Vite dependency cache was force-rebuilt; the initial stale-cache React hook error was not reproduced after restart.
 
 ## In-app browser evidence
 

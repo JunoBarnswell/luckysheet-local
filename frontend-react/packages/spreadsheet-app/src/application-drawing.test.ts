@@ -93,6 +93,38 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
   });
 
+  it('inserts every local-only Insert object through the canonical drawing history', async () => {
+    const app = new WorkbookSession();
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    await app.insertLocalObject('icon', { iconName: 'heart' });
+    await app.insertLocalObject('smartart', { text: 'Plan\nBuild\nShip', layout: 'process' });
+    await app.insertLocalObject('wordart', { text: 'Local only' });
+    await app.insertLocalObject('signature-line', { signerName: 'Ada Lovelace', signerTitle: 'Engineer' });
+    await app.insertLocalObject('equation', { text: 'a^2+b^2=c^2' });
+    await app.insertLocalObject('screenshot');
+    const objKinds = sheet.drawings.map((drawing) => drawing.kind);
+    assert.deepEqual(objKinds, ['icon', 'smartart', 'wordart', 'signature-line', 'equation', 'screenshot']);
+    assert.equal(sheet.drawingPayloads.size, 6);
+    assert.equal(app.getUiSnapshot().selectedFloatingId, sheet.drawings.at(-1)?.id);
+    assert.equal(app.getUiSnapshot().historyEntries.at(-1)?.redo[0]?.id, 'drawing.add');
+    app.undo();
+    assert.equal(sheet.drawings.some((drawing) => drawing.kind === 'screenshot'), false);
+  });
+
+  it('parses local OBJ files and rejects malformed geometry before mutation', async () => {
+    const app = new WorkbookSession();
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    const cube = new File(['v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3'], 'triangle.obj', { type: 'text/plain' });
+    await app.insertLocalObject('model3d', { file: cube });
+    const payload = [...sheet.drawingPayloads.values()].find((entry) => entry.kind === 'model3d');
+    assert.equal(payload?.kind, 'model3d');
+    assert.equal(payload?.kind === 'model3d' ? payload.geometry.faces.length : 0, 1);
+    const before = sheet.drawings.length;
+    const malformed = new File(['v 0 0 0\nf 1 2 3'], 'broken.obj', { type: 'text/plain' });
+    await assert.rejects(() => app.insertLocalObject('model3d', { file: malformed }), /LOCAL_3D_INVALID/);
+    assert.equal(sheet.drawings.length, before);
+  });
+
   it('inserts a bound connector only for two selected shapes and exposes Shape Format context', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

@@ -386,7 +386,7 @@ export function Ribbon({
     onCreateAdvancedSheet,
     onApplyBarcode,
     onCreateCamera,
-    onCreateFormControl: () => onCreateFormControl('button'),
+    onCreateFormControl,
     onApplyCheckbox,
     onCreateTextBox,
   };
@@ -413,8 +413,7 @@ export function Ribbon({
   const executeCatalogResult = (result: RibbonCommandResult) => {
     if (result.type === 'command') onCommand(result.descriptor);
     else if (result.type === 'intent') onSessionIntent(result.intent);
-    else if (result.type === 'callback') result.invoke();
-    else onSessionIntent({ type: 'notice', message: `${result.error.code}: ${result.error.reason} ${result.error.recovery}` });
+    else result.invoke();
   };
   const renderHomeCommand = (id: RibbonCommandId, options: HomeRibbonCommandOptions = {}) => (
     <CatalogButton

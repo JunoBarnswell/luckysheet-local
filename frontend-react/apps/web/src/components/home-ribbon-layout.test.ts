@@ -4,21 +4,20 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { HOME_RIBBON_ICON_NAMES } from './home/HomeRibbonIcon';
 import { ribbonGroupWidthClass } from './RibbonLayoutRenderer';
+import { ribbonLayoutModeForWidth } from '@react-sheets/ui-system';
 
 describe('Home Ribbon responsive group geometry', () => {
-  it('keeps the wide and compact command groups reachable', () => {
-    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1581, 'home'), 'w-[141px]');
-    assert.equal(ribbonGroupWidthClass('font', 'compact', 1581, 'home'), 'w-[347px]');
-    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[342px]');
-    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1581, 'home'), 'w-[251px]');
-    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1581, 'home'), 'w-[191px]');
-    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1581, 'home'), 'w-[310px]');
-    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1183, 'home'), 'w-[124px]');
-    assert.equal(ribbonGroupWidthClass('font', 'compact', 1183, 'home'), 'w-[224px]');
-    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1183, 'home'), 'w-[248px]');
-    assert.equal(ribbonGroupWidthClass('styles', 'compact', 1183, 'home'), 'w-[220px]');
-    assert.equal(ribbonGroupWidthClass('cells', 'compact', 1183, 'home'), 'w-[144px]');
-    assert.equal(ribbonGroupWidthClass('editing', 'compact', 1183, 'home'), 'w-[300px]');
+  it('keeps the same wide group widths at every viewport', () => {
+    assert.equal(ribbonLayoutModeForWidth(1581), 'wide');
+    assert.equal(ribbonLayoutModeForWidth(1183), 'wide');
+    for (const width of [1581, 1183]) {
+      assert.equal(ribbonGroupWidthClass('clipboard', 'wide', width, 'home'), 'w-[141px]');
+      assert.equal(ribbonGroupWidthClass('font', 'wide', width, 'home'), 'w-[347px]');
+      assert.equal(ribbonGroupWidthClass('alignment', 'wide', width, 'home'), 'w-[342px]');
+      assert.equal(ribbonGroupWidthClass('styles', 'wide', width, 'home'), 'w-[251px]');
+      assert.equal(ribbonGroupWidthClass('cells', 'wide', width, 'home'), 'w-[191px]');
+      assert.equal(ribbonGroupWidthClass('editing', 'wide', width, 'home'), 'w-[310px]');
+    }
   });
 
   it('ships every Figma SVG and the exact Noto Sans SC font used by the Home design', () => {

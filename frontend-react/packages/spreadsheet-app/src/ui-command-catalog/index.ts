@@ -1,6 +1,6 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
-import type { BarcodeSymbology, SheetTableModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, FormControlType, SheetTableModel } from '@react-sheets/core-model';
 import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 
 export type RibbonCatalogTabId =
@@ -498,7 +498,7 @@ export interface RibbonCommandActions {
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateCamera: () => void;
-  onCreateFormControl: () => void;
+  onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
   onCreateTextBox: () => void;
 }
@@ -543,8 +543,7 @@ export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
   | { type: 'intent'; intent: UiSessionIntent }
-  | { type: 'callback'; invoke: () => void }
-  | { type: 'rejection'; error: { code: 'UNSUPPORTED_FEATURE'; feature: string; reason: string; recovery: string } };
+  | { type: 'callback'; invoke: () => void };
 
 export interface RibbonCommandPlacement {
   readonly tab: RibbonCatalogTabId;
@@ -1537,24 +1536,6 @@ const intent = (
   build: (context) => ({ type: 'intent', intent: buildIntent(context) }),
 });
 
-const unsupportedFeature = (
-  id: RibbonCommandId,
-  groupId: RibbonGroupId,
-  labelKey: RibbonTextKey,
-  feature: string,
-  reason: string,
-  recovery: string,
-  icon?: RibbonIconName,
-): CommandDefinition => ({
-  id,
-  placements: [{ tab: 'insert', group: groupId }],
-  labelKey,
-  icon,
-  priority: 30,
-  display: icon ? 'small' : 'medium',
-  build: () => ({ type: 'rejection', error: { code: 'UNSUPPORTED_FEATURE', feature, reason, recovery } }),
-});
-
 const dynamicCommand = (
   id: RibbonCommandId,
   tab: RibbonCatalogTabId,
@@ -1811,16 +1792,16 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('threadedComment', 'insert', 'insertComments', RIBBON_TEXT.commands.threadedComment, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
   intent('headerFooter', 'insert', 'text', RIBBON_TEXT.commands.headerFooter, () => ({ type: 'panel.open', panel: 'print' }), 'printer'),
   intent('recommendedPivotTables', 'insert', 'tables', RIBBON_TEXT.commands.recommendedPivotTables, () => ({ type: 'dialog.open', dialog: 'recommended-pivots' }), 'table-pivot'),
-  unsupportedFeature('forms', 'tables', RIBBON_TEXT.commands.forms, 'microsoft-forms', 'Microsoft Forms requires an authenticated Microsoft 365 host connection.', 'Open the workbook in Microsoft 365 to create a linked form.', 'form-control'),
-  unsupportedFeature('icons', 'illustrations', RIBBON_TEXT.commands.icons, 'office-icons', 'The licensed Office icon library is not installed.', 'Install an approved icon asset provider.', 'picture'),
-  unsupportedFeature('models3d', 'illustrations', RIBBON_TEXT.commands.models3d, 'office-3d-model', 'Browser 3D model import and OOXML scene editing are not available.', 'Use desktop Excel to insert or edit a 3D model.', 'picture'),
-  unsupportedFeature('smartArt', 'illustrations', RIBBON_TEXT.commands.smartArt, 'smart-art', 'SmartArt layout editing is not available.', 'Use desktop Excel while the opaque SmartArt parts remain preserved.', 'layout'),
-  unsupportedFeature('screenshot', 'illustrations', RIBBON_TEXT.commands.screenshot, 'screen-clipping', 'Screen clipping requires an operating-system capture host.', 'Use the system screenshot tool and insert the resulting picture.', 'camera'),
+  callback('forms', 'insert', 'tables', RIBBON_TEXT.commands.forms, (context) => context.actions.onCreateFormControl('button'), 'form-control'),
+  intent('icons', 'insert', 'illustrations', RIBBON_TEXT.commands.icons, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'icon' }), 'picture'),
+  intent('models3d', 'insert', 'illustrations', RIBBON_TEXT.commands.models3d, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'model3d' }), 'picture'),
+  intent('smartArt', 'insert', 'illustrations', RIBBON_TEXT.commands.smartArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'smartart' }), 'layout'),
+  intent('screenshot', 'insert', 'illustrations', RIBBON_TEXT.commands.screenshot, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'screenshot' }), 'camera'),
   intent('recommendedCharts', 'insert', 'charts', RIBBON_TEXT.commands.recommendedCharts, () => ({ type: 'dialog.open', dialog: 'recommended-charts' }), 'chart'),
-  unsupportedFeature('wordArt', 'text', RIBBON_TEXT.commands.wordArt, 'word-art', 'WordArt transform geometry editing is not available.', 'Use a Text Box or edit WordArt in desktop Excel.', 'type'),
-  unsupportedFeature('signatureLine', 'text', RIBBON_TEXT.commands.signatureLine, 'signature-line', 'Digital signing requires a certificate provider and Office host.', 'Sign the workbook in desktop Excel.', 'type'),
-  unsupportedFeature('embeddedObject', 'text', RIBBON_TEXT.commands.embeddedObject, 'embedded-object', 'OLE activation is unavailable in the browser sandbox.', 'Use desktop Excel; existing embedded parts remain preserved.', 'table'),
-  unsupportedFeature('equation', 'symbols', RIBBON_TEXT.commands.equation, 'office-math', 'Office Math editing is not available.', 'Edit the equation in desktop Excel; existing math parts remain preserved.', 'function'),
+  intent('wordArt', 'insert', 'text', RIBBON_TEXT.commands.wordArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'wordart' }), 'type'),
+  intent('signatureLine', 'insert', 'text', RIBBON_TEXT.commands.signatureLine, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'signature-line' }), 'type'),
+  intent('embeddedObject', 'insert', 'text', RIBBON_TEXT.commands.embeddedObject, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'embedded-object' }), 'table'),
+  intent('equation', 'insert', 'symbols', RIBBON_TEXT.commands.equation, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'equation' }), 'function'),
   intent('symbol', 'insert', 'symbols', RIBBON_TEXT.commands.symbol, () => ({ type: 'dialog.open', dialog: 'symbol' }), 'type'),
 
   {

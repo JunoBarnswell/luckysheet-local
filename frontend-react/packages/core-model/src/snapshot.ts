@@ -7,7 +7,7 @@ import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
-import { isChartSubtypeForType } from './domain';
+import { isChartSubtypeForType, isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
 import type { ReviewStoreSnapshot } from './review-store';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
@@ -350,6 +350,17 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (payload.kind === 'chart' && !isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
       if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
+      if (payload.kind === 'screenshot') {
+        if (!isScreenshotDrawingPayload(payload)) throw new Error('Drawing screenshot payload is invalid');
+        validateDrawingSourceRange(payload.sourceRange, snapshot, 'Screenshot');
+      }
+      if (payload.kind === 'icon' && !isIconDrawingPayload(payload)) throw new Error('Drawing icon payload is invalid');
+      if (payload.kind === 'model3d' && !isModel3dDrawingPayload(payload)) throw new Error('Drawing 3D model payload is invalid');
+      if (payload.kind === 'smartart' && !isSmartArtDrawingPayload(payload)) throw new Error('Drawing SmartArt payload is invalid');
+      if (payload.kind === 'wordart' && !isWordArtDrawingPayload(payload)) throw new Error('Drawing WordArt payload is invalid');
+      if (payload.kind === 'signature-line' && !isSignatureLineDrawingPayload(payload)) throw new Error('Drawing signature-line payload is invalid');
+      if (payload.kind === 'embedded-object' && !isEmbeddedObjectDrawingPayload(payload)) throw new Error('Drawing embedded-object payload is invalid');
+      if (payload.kind === 'equation' && !isEquationDrawingPayload(payload)) throw new Error('Drawing equation payload is invalid');
     }
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
