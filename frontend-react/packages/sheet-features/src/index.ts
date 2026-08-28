@@ -644,6 +644,35 @@ function isSheetIndicesMutation(value: unknown): value is { sheetId: string; ind
     && value.indices.every((index) => Number.isInteger(index) && Number(index) >= 0);
 }
 
+function isSelectedDimensionCommand(value: unknown): value is { sheetId: string; indices: number[] } {
+  return isSheetIndicesMutation(value) && value.indices.length > 0 && new Set(value.indices).size === value.indices.length;
+}
+
+function executeSelectedDimensionCommand(
+  runtime: CommandRuntime,
+  axis: 'row' | 'column',
+  operation: 'insert' | 'delete',
+  params: { sheetId: string; indices: number[] },
+  context: CommandContext,
+): CommandResult {
+  if (!isSelectedDimensionCommand(params)) throw new Error(`Invalid selected ${axis} ${operation} command payload`);
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const limit = axis === 'row' ? sheet.rowCount : sheet.columnCount;
+  if (params.indices.some((index) => index >= limit)) throw new Error(`Selected ${axis} index is outside the worksheet bounds`);
+  const commandId = axis === 'row'
+    ? operation === 'insert' ? 'sheet.rows.insert' : 'sheet.rows.delete'
+    : operation === 'insert' ? 'sheet.columns.insert' : 'sheet.columns.delete';
+  const ordered = [...params.indices].sort((left, right) => right - left);
+  const affectedRanges: RangeRef[] = [];
+  let mutationCount = 0;
+  for (const index of ordered) {
+    const result = runtime.execute(commandId, { sheetId: params.sheetId, at: index, count: 1 });
+    mutationCount += result.mutationCount;
+    affectedRanges.push(...result.affectedRanges);
+  }
+  return { operationId: context.operationId, mutationCount, affectedRanges };
+}
+
 function rowAffectedRange(value: { sheetId: string; row: number }): RangeRef[] {
   return [{ sheetId: value.sheetId, startRow: value.row, endRow: value.row, startColumn: 0, endColumn: 0 }];
 }
@@ -2540,6 +2569,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
+    id: 'sheet.rows.insert.selected',
+    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'row', 'insert', params, context),
+  });
+  runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
+    id: 'sheet.rows.delete.selected',
+    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'row', 'delete', params, context),
+  });
+  runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
+    id: 'sheet.columns.insert.selected',
+    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'column', 'insert', params, context),
+  });
+  runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
+    id: 'sheet.columns.delete.selected',
+    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'column', 'delete', params, context),
   });
 
   // 12. 多列排序 / 转置 / 翻转 / 拆分

@@ -1,6 +1,6 @@
 import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
-import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit } from '@react-sheets/render-engine';
-import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
+import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderData } from '@react-sheets/render-engine';
+import type { CanvasSheetSnapshot, WorkbookSession } from '@react-sheets/spreadsheet-app';
 import { autoFitBlockTransferables, createAutoFitBlock, type AutoFitCellInput } from './column-autofit-protocol';
 
 export interface ColumnWidthPreview {
@@ -16,7 +16,6 @@ export class ColumnDimensionController {
   constructor(
     private readonly session: WorkbookSession,
     private readonly getSheet: () => CanvasSheetSnapshot,
-    private readonly getSelection: () => SelectionState,
   ) {}
 
   previewPixels(widthPx: number): ColumnWidthPreview {
@@ -24,46 +23,6 @@ export class ColumnDimensionController {
     if (!Number.isFinite(widthPx) || widthPx < 0) throw new Error('Column width must be a finite non-negative pixel value');
     const bounded = Math.max(0, widthPx);
     return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, maximumDigitWidthPx) };
-  }
-
-  selectedColumns(includeOrdinaryCellRanges = true): number[] {
-    const sheet = this.getSheet();
-    const selection = this.getSelection();
-    const columns = new Set<number>();
-    for (const range of selection.ranges) {
-      const completeColumn = range.startRow === 0 && range.endRow >= sheet.rowCount - 1;
-      if (!completeColumn && !includeOrdinaryCellRanges) continue;
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) columns.add(column);
-    }
-    if (!columns.size) columns.add(selection.activeCell.column);
-    return [...columns].sort((left, right) => left - right);
-  }
-
-  selectedRows(includeOrdinaryCellRanges = true): number[] {
-    const sheet = this.getSheet();
-    const selection = this.getSelection();
-    const rows = new Set<number>();
-    for (const range of selection.ranges) {
-      const completeRow = range.startColumn === 0 && range.endColumn >= sheet.columnCount - 1;
-      if (!completeRow && !includeOrdinaryCellRanges) continue;
-      for (let row = range.startRow; row <= range.endRow; row += 1) rows.add(row);
-    }
-    if (!rows.size) rows.add(selection.activeCell.row);
-    return [...rows].sort((left, right) => left - right);
-  }
-
-  columnsForBoundary(boundaryColumn: number): number[] {
-    const selected = this.selectedColumns(false);
-    return selected.includes(boundaryColumn) ? selected : [boundaryColumn];
-  }
-
-  rowsForBoundary(boundaryRow: number): number[] {
-    const selected = this.selectedRows(false);
-    return selected.includes(boundaryRow) ? selected : [boundaryRow];
-  }
-
-  resizeBoundary(boundaryColumn: number, widthPx: number): void {
-    this.setPixels(this.columnsForBoundary(boundaryColumn), widthPx);
   }
 
   setExcelWidth(columns: readonly number[], excelWidth: number): void {
@@ -86,12 +45,22 @@ export class ColumnDimensionController {
   }
 
   setRowHeightPoints(rows: readonly number[], points: number): void {
-    if (!Number.isFinite(points) || points <= 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (points === 0) {
+      this.setRowsHidden(rows, true);
+      return;
+    }
+    this.setRowsHidden(rows, false);
     this.session.resizeRows(rows, pointsToPixels(points));
   }
 
   setRowPixels(rows: readonly number[], heightPx: number): void {
-    if (!Number.isFinite(heightPx) || heightPx <= 0) throw new Error('Row height must be positive pixels');
+    if (!Number.isFinite(heightPx) || heightPx < 0) throw new Error('Row height must be non-negative pixels');
+    if (heightPx === 0) {
+      this.setRowsHidden(rows, true);
+      return;
+    }
+    this.setRowsHidden(rows, false);
     this.session.resizeRows(rows, heightPx);
   }
 
@@ -143,7 +112,7 @@ export class ColumnDimensionController {
           const cell = sheet.getCell(row, column);
           if (!cell || !hasMeasurableCellContent(cell)) continue;
           const availableWidthPx = sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
-          heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, filterButtons.has(`${row}:${column}`)).heightPx);
+          heightPx = Math.max(heightPx, measureCellAutoFit(context, cell as CellRenderData, DEFAULT_RENDER_THEME, availableWidthPx, filterButtons.has(`${row}:${column}`)).heightPx);
         }
         heights.push({ row, heightPx });
         if (heights.length % 250 === 0) await yieldToBrowser();
@@ -172,7 +141,7 @@ export class ColumnDimensionController {
       if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
       const cell = sheet.getCell(row, column);
       if (!cell || !hasMeasurableCellContent(cell)) continue;
-      const width = measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, undefined, filterButtons.has(`${row}:${column}`)).widthPx;
+      const width = measureCellAutoFit(context, cell as CellRenderData, DEFAULT_RENDER_THEME, undefined, filterButtons.has(`${row}:${column}`)).widthPx;
       maxima.set(column, Math.max(maxima.get(column) ?? 8, width));
       if (index > 0 && index % 1_000 === 0) await yieldToBrowser();
     }
@@ -199,7 +168,7 @@ export class ColumnDimensionController {
         for (const { row, column } of occupiedCells.slice(start, start + 1_000)) {
           if (isCoveredByMultiColumnMerge(mergeRows.get(row), column)) continue;
           const cell = sheet.getCell(row, column);
-          if (cell && hasMeasurableCellContent(cell)) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, filterButton: filterButtons.has(`${row}:${column}`) });
+          if (cell && hasMeasurableCellContent(cell)) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, richText: cell.richText, phonetic: cell.phonetic, filterButton: filterButtons.has(`${row}:${column}`) });
         }
         const block = createAutoFitBlock(cells);
         worker.postMessage({ kind: 'chunk', taskId, block }, autoFitBlockTransferables(block));

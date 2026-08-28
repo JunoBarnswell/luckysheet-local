@@ -5,7 +5,7 @@ import { Scene } from "./scene";
 import { SheetSkeleton } from "./sheet-skeleton";
 import { Viewport } from "./viewport";
 import { drawChromeLayer } from "./chrome-renderer";
-import { resolveCellTextLayout } from './cell-text-layout';
+import { resolveCellContentLayout, type CellContentLayoutMode, type CellContentLayoutResult, type CellLayoutNeighbor } from './cell-content-layout';
 import {
   COL_HEADER_HEIGHT,
   RESIZE_HIT_TOLERANCE_PX,
@@ -46,6 +46,13 @@ export interface CanvasRenderEngineOptions {
 
 function cellMapKey(row: number, column: number): string {
   return row + ":" + column;
+}
+
+function hasRenderableCell(cell: CellRenderData | undefined): boolean {
+  if (!cell) return false;
+  if (cell.presentation || cell.editor || cell.formula) return true;
+  const value = cell.displayValue ?? cell.value;
+  return value !== undefined && value !== null && String(value).length > 0;
 }
 
 function createMapProvider(cells: ReadonlyMap<string, CellRenderData>): CellProvider {
@@ -352,19 +359,34 @@ export class CanvasRenderEngine {
     if (!data || !rect || !context) return null;
     if (data.style?.textOrientation && data.style.textOrientation !== 'horizontal') return null;
     const content = this.localToContent(local);
-    const layout = resolveCellTextLayout(context, data, this.theme, text, rect.width, false);
-    const padding = data.style?.padding ?? this.theme.cellPadding;
-    const lineIndex = Math.max(0, Math.min(layout.lines.length - 1, Math.floor((content.y - rect.y - padding) / Math.max(1, layout.lineHeightPx))));
+    const mergedRect = data.merge?.isAnchor
+      ? this.skeletonModel.getRangeRect({ startRow: data.merge.startRow, endRow: data.merge.endRow, startColumn: data.merge.startColumn, endColumn: data.merge.endColumn })
+      : undefined;
+    const alignmentSpan = data.alignmentSpan?.isAnchor
+      ? this.skeletonModel.getRangeRect({ startRow: cell.row, endRow: cell.row, startColumn: data.alignmentSpan.startColumn, endColumn: data.alignmentSpan.endColumn })
+      : undefined;
+    const layout = resolveCellContentLayout({
+      context,
+      cell: data,
+      theme: this.theme,
+      text,
+      cellRect: rect,
+      mode: 'display',
+      ...(mergedRect ? { mergedRect } : {}),
+      ...(alignmentSpan ? { alignmentSpan } : {}),
+      cellRange: { startColumn: mergedRect ? data.merge!.startColumn : alignmentSpan ? data.alignmentSpan!.startColumn : cell.column, endColumn: mergedRect ? data.merge!.endColumn : alignmentSpan ? data.alignmentSpan!.endColumn : cell.column },
+    });
+    const lineIndex = Math.max(0, Math.min(layout.lines.length - 1, Math.floor((content.y - layout.contentRect.y) / Math.max(1, layout.lineHeightPx))));
     const line = layout.lines[lineIndex] ?? '';
     context.save();
     context.font = layout.font;
     const lineWidth = context.measureText(line).width;
-    const alignment = data.style?.horizontalAlignment;
+    const alignment = layout.horizontalAlignment;
     const lineStartX = alignment === 'right'
-      ? rect.x + rect.width - padding - lineWidth
+      ? layout.contentRect.x + layout.contentRect.width - lineWidth
       : alignment === 'center' || alignment === 'centerContinuous'
-        ? rect.x + (rect.width - lineWidth) / 2
-        : rect.x + padding + Math.max(0, Math.trunc(data.style?.indent ?? 0)) * 12;
+        ? layout.contentRect.x + (layout.contentRect.width - lineWidth) / 2
+        : layout.contentRect.x;
     const targetX = content.x - lineStartX;
     let lineOffset = 0;
     let width = 0;
@@ -397,6 +419,8 @@ export class CanvasRenderEngine {
       const contentX = local.x - pane.screenRect.x + pane.contentOrigin.x;
       const column = this.skeletonModel.findColumnAt(contentX);
       if (column < 0) return null;
+      const hiddenBoundary = this.hiddenColumnBoundaryAt(contentX);
+      if (hiddenBoundary) return { kind: "col", index: column, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.findNearestColumnBoundary(contentX, RESIZE_HIT_TOLERANCE_PX);
       return boundary
         ? { kind: "col", index: boundary.index, resizeBoundaryPx: boundary.deltaPx }
@@ -408,11 +432,39 @@ export class CanvasRenderEngine {
       const contentY = local.y - pane.screenRect.y + pane.contentOrigin.y;
       const row = this.skeletonModel.findRowAt(contentY);
       if (row < 0) return null;
+      const hiddenBoundary = this.hiddenRowBoundaryAt(contentY);
+      if (hiddenBoundary) return { kind: "row", index: row, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.getRowTop(row) + this.skeletonModel.getRowHeight(row) - contentY;
       const resizeBoundaryPx = Math.abs(boundary) <= RESIZE_HIT_TOLERANCE_PX ? boundary : undefined;
       return { kind: "row", index: row, resizeBoundaryPx };
     }
     return null;
+  }
+
+  private hiddenColumnBoundaryAt(contentX: number): { deltaPx: number; indices: number[] } | null {
+    const visible = this.skeletonModel.findColumnAt(Math.min(Math.max(0, contentX), Math.max(0, this.skeletonModel.totalWidth - 1e-7)));
+    if (visible < 0) return null;
+    const preceding: number[] = [];
+    for (let index = visible - 1; index >= 0 && this.skeletonModel.isColumnHidden(index); index -= 1) preceding.unshift(index);
+    const following: number[] = [];
+    for (let index = visible + 1; index < this.skeletonModel.columnCount && this.skeletonModel.isColumnHidden(index); index += 1) following.push(index);
+    const candidates: Array<{ deltaPx: number; indices: number[] }> = [];
+    if (preceding.length) candidates.push({ deltaPx: this.skeletonModel.getColumnLeft(visible) - contentX, indices: preceding });
+    if (following.length) candidates.push({ deltaPx: this.skeletonModel.getColumnLeft(visible) + this.skeletonModel.getColumnWidth(visible) - contentX, indices: following });
+    return candidates.filter((candidate) => Math.abs(candidate.deltaPx) <= RESIZE_HIT_TOLERANCE_PX).sort((left, right) => Math.abs(left.deltaPx) - Math.abs(right.deltaPx))[0] ?? null;
+  }
+
+  private hiddenRowBoundaryAt(contentY: number): { deltaPx: number; indices: number[] } | null {
+    const visible = this.skeletonModel.findRowAt(Math.min(Math.max(0, contentY), Math.max(0, this.skeletonModel.totalHeight - 1e-7)));
+    if (visible < 0) return null;
+    const preceding: number[] = [];
+    for (let index = visible - 1; index >= 0 && this.skeletonModel.isRowHidden(index); index -= 1) preceding.unshift(index);
+    const following: number[] = [];
+    for (let index = visible + 1; index < this.skeletonModel.rowCount && this.skeletonModel.isRowHidden(index); index += 1) following.push(index);
+    const candidates: Array<{ deltaPx: number; indices: number[] }> = [];
+    if (preceding.length) candidates.push({ deltaPx: this.skeletonModel.getRowTop(visible) - contentY, indices: preceding });
+    if (following.length) candidates.push({ deltaPx: this.skeletonModel.getRowTop(visible) + this.skeletonModel.getRowHeight(visible) - contentY, indices: following });
+    return candidates.filter((candidate) => Math.abs(candidate.deltaPx) <= RESIZE_HIT_TOLERANCE_PX).sort((left, right) => Math.abs(left.deltaPx) - Math.abs(right.deltaPx))[0] ?? null;
   }
 
   /**
@@ -456,6 +508,56 @@ export class CanvasRenderEngine {
       });
     }
     return rects;
+  }
+
+  /** Resolve a cell's canonical content geometry in the active pane's screen space. */
+  cellContentLayoutAtScreen(
+    cell: CellAddress,
+    text: string,
+    mode: CellContentLayoutMode,
+    options: { range?: CellRange; cell?: CellRenderData; caret?: { start: number; end: number } } = {},
+  ): CellContentLayoutResult | null {
+    const context = this.scene.getLayer('content')?.renderingContext;
+    const source = { ...(this.cellProvider(cell) ?? { value: null }), ...(options.cell ?? {}) };
+    const range = options.range ?? { startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column };
+    const rect = this.skeletonModel.getRangeRect(range);
+    if (!context || !rect) return null;
+    const pane = this.currentPaneMap().paneForCell(cell);
+    if (!pane) return null;
+    const alignmentSpan = source.alignmentSpan?.isAnchor
+      ? this.skeletonModel.getRangeRect({ startRow: cell.row, endRow: cell.row, startColumn: source.alignmentSpan.startColumn, endColumn: source.alignmentSpan.endColumn })
+      : undefined;
+    const layout = resolveCellContentLayout({
+      context,
+      cell: source,
+      theme: this.theme,
+      text,
+      cellRect: rect,
+      mode,
+      ...(alignmentSpan ? { alignmentSpan } : {}),
+      cellRange: { startColumn: range.startColumn, endColumn: range.endColumn },
+      neighborOccupancy: this.layoutNeighbors(cell, range),
+      viewportRect: { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
+      ...(options.caret ? { caret: options.caret } : {}),
+      zoom: this.skeletonModel.zoom,
+    });
+    const screenOrigin = this.contentToScreen({ x: rect.x, y: rect.y }, cell);
+    const translateRect = (value: Rect): Rect => ({ ...value, x: value.x + screenOrigin.x - rect.x, y: value.y + screenOrigin.y - rect.y });
+    return {
+      ...layout,
+      displayRect: translateRect(layout.displayRect),
+      editRect: translateRect(layout.editRect),
+      contentRect: translateRect(layout.contentRect),
+      ...(layout.caretGeometry ? { caretGeometry: { ...layout.caretGeometry, x: layout.caretGeometry.x + screenOrigin.x - rect.x, y: layout.caretGeometry.y + screenOrigin.y - rect.y } } : {}),
+    };
+  }
+
+  private layoutNeighbors(cell: CellAddress, range: CellRange): { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] } {
+    const left: CellLayoutNeighbor[] = [];
+    for (let column = range.startColumn - 1; column >= 0; column -= 1) left.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied: hasRenderableCell(this.cellProvider({ row: cell.row, column })) });
+    const right: CellLayoutNeighbor[] = [];
+    for (let column = range.endColumn + 1; column < this.skeletonModel.columnCount; column += 1) right.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied: hasRenderableCell(this.cellProvider({ row: cell.row, column })) });
+    return { left, right };
   }
 
   hitTestFloating(local: Point): FloatingHit | null {

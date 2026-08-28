@@ -7,6 +7,7 @@ export * from './viewport';
 export * from './sheet-skeleton';
 export * from './render-plan';
 export * from './cell-renderer';
+export * from './cell-content-layout';
 export * from './chrome-renderer';
 export * from './canvas-render-engine';
 export * from './canvas-render-surface';

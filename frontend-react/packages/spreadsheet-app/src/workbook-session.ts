@@ -1697,7 +1697,11 @@ export class WorkbookSession {
       || commandId === 'sheet.rows.insert'
       || commandId === 'sheet.rows.delete'
       || commandId === 'sheet.columns.insert'
-      || commandId === 'sheet.columns.delete';
+      || commandId === 'sheet.columns.delete'
+      || commandId === 'sheet.rows.insert.selected'
+      || commandId === 'sheet.rows.delete.selected'
+      || commandId === 'sheet.columns.insert.selected'
+      || commandId === 'sheet.columns.delete.selected';
   }
 
   /**
@@ -1721,6 +1725,10 @@ export class WorkbookSession {
       'sheet.rows.delete',
       'sheet.columns.insert',
       'sheet.columns.delete',
+      'sheet.rows.insert.selected',
+      'sheet.rows.delete.selected',
+      'sheet.columns.insert.selected',
+      'sheet.columns.delete.selected',
       'sheet.freeze.set',
     ]);
     if (!selectionScoped.has(commandId)) return params;
@@ -1748,6 +1756,10 @@ export class WorkbookSession {
     }
     if (commandId === 'sheet.columns.insert' || commandId === 'sheet.columns.delete') {
       return { ...input, sheetId, at: input.at ?? range.startColumn, count: input.count ?? 1 };
+    }
+    if (commandId.endsWith('.insert.selected') || commandId.endsWith('.delete.selected')) {
+      const sheet = this.runtime.model.getSheet(sheetId);
+      return { ...input, sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
     }
     if (commandId === 'sheet.freeze.set') {
       return { ...input, sheetId };

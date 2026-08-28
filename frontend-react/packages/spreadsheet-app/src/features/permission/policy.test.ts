@@ -51,4 +51,23 @@ describe('permission policy', () => {
     }, 'editor-1', 'sheet-1');
     assert.equal(autoSumTargetBlocked.allowed, false);
   });
+
+  it('resolves every selected row or column for structural permission checks', () => {
+    const workbook = new WorkbookModel('wb-selected-header', 'Selected header');
+    const permission = new PermissionService();
+    permission.applyServerAccess('editor');
+    permission.setOnline(true);
+    workbook.getSheet('sheet-1').protectionRules.push({
+      id: 'column-rule',
+      scope: 'range',
+      sheetId: 'sheet-1',
+      range: { sheetId: 'sheet-1', startRow: 0, endRow: 99, startColumn: 3, endColumn: 3 },
+      locked: true,
+      allow: { insertColumns: false, deleteColumns: false },
+    });
+    const blocked = canExecuteCommand(permission, workbook, 'sheet.columns.delete.selected', { sheetId: 'sheet-1', indices: [1, 3], rowCount: 100, columnCount: 26 }, 'editor-1', 'sheet-1');
+    assert.equal(blocked.allowed, false);
+    const allowed = canExecuteCommand(permission, workbook, 'sheet.columns.delete.selected', { sheetId: 'sheet-1', indices: [1, 2], rowCount: 100, columnCount: 26 }, 'editor-1', 'sheet-1');
+    assert.equal(allowed.allowed, true);
+  });
 });

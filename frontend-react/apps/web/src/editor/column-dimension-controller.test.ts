@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ColumnDimensionController } from './column-dimension-controller';
 import { createAutoFitBlock } from './column-autofit-protocol';
-import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
+import { headerTargetSelected, selectedHeaderIndices } from '@react-sheets/spreadsheet-app';
+import type { CanvasSheetSnapshot, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
 type TestCell = { value: string; displayValue?: string; formula?: string; style?: { padding?: number } };
 
@@ -73,32 +74,32 @@ function installCanvas(): { restore: () => void } {
   return { restore: () => { (globalThis as { document?: unknown }).document = previousDocument; } };
 }
 
-function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }, selection: SelectionState = { ranges: [], activeCell: { row: 0, column: 0 }, anchorCell: { row: 0, column: 0 }, primaryRangeIndex: 0 }): ColumnDimensionController {
+function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }): ColumnDimensionController {
   return new ColumnDimensionController(
     {
       applyColumnWidths: (entries: readonly unknown[]) => { calls.columns = [...entries]; },
       applyRowHeights: (entries: readonly unknown[]) => { calls.rows = [...entries]; },
     } as unknown as WorkbookSession,
     () => sheet,
-    () => selection as never,
   );
 }
 
-test('selectedRows uses full-row and ordinary cell selections through one deterministic rule', () => {
-  const sheet = makeSheet({}, 10, 4);
-  const controller = controllerFor(sheet, {}, {
+test('dimension selection owns full-header and ordinary-cell semantics in HeaderInteractionDomain', () => {
+  const bounds = { rowCount: 10, columnCount: 4 };
+  const selection = {
     ranges: [
-      { sheetId: sheet.id, startRow: 2, endRow: 3, startColumn: 0, endColumn: 3 },
-      { sheetId: sheet.id, startRow: 7, endRow: 8, startColumn: 1, endColumn: 2 },
+      { sheetId: 'sheet-1', startRow: 2, endRow: 3, startColumn: 0, endColumn: 3 },
+      { sheetId: 'sheet-1', startRow: 7, endRow: 8, startColumn: 1, endColumn: 2 },
     ],
     primaryRangeIndex: 0,
     activeCell: { row: 2, column: 0 },
     anchorCell: { row: 2, column: 0 },
-  });
-  assert.deepEqual(controller.selectedRows(), [2, 3, 7, 8]);
-  assert.deepEqual(controller.selectedRows(false), [2, 3]);
-  assert.deepEqual(controller.rowsForBoundary(3), [2, 3]);
-  assert.deepEqual(controller.rowsForBoundary(5), [5]);
+  };
+  assert.deepEqual(selectedHeaderIndices(selection, 'row', bounds), [2, 3]);
+  assert.deepEqual(selectedHeaderIndices(selection, 'row', bounds, { includeOrdinaryCellRanges: true }), [2, 3, 7, 8]);
+  assert.deepEqual(selectedHeaderIndices(selection, 'column', bounds, { includeOrdinaryCellRanges: true }), [0, 1, 2, 3]);
+  assert.equal(headerTargetSelected(selection, { kind: 'row', index: 3 }, bounds), true);
+  assert.equal(headerTargetSelected(selection, { kind: 'row', index: 5 }, bounds), false);
 });
 
 test('AutoFit rows and main-thread columns measure canonical 0, FALSE, formatted text and errors', async () => {
@@ -141,6 +142,8 @@ test('AutoFit compact blocks intern matching styles and keep per-cell flags posi
   assert.deepEqual([...block.styleIndexes], [1, 1, 0]);
   assert.deepEqual([...block.filterButtons], [1, 0, 0]);
   assert.deepEqual(block.styles, [style]);
+  assert.deepEqual(block.richTexts, [undefined, undefined, undefined]);
+  assert.deepEqual(block.phonetics, [undefined, undefined, undefined]);
 });
 
 test('AutoFit worker uses the compact block protocol with the same typed-content gate and measurement', async () => {

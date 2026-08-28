@@ -47,7 +47,7 @@ import {
 } from "@react-sheets/core-model";
 import { CellEditOverlay } from "./CellEditOverlay";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase, type CellEditController } from "@react-sheets/spreadsheet-app";
+import { applyHeaderSelection, buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, headerContextMenuCatalog, headerTargetSelected, intersectsRange, resolveContextHit, resolveSelectionTarget, selectedHeaderIndices, selectionFromGesture, type HeaderContextAction, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase, type CellEditController } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -98,10 +98,10 @@ export interface SheetCanvasProps {
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onExtendSelection?: (row: number, column: number) => void;
-  onResizeRow: (row: number, heightPx: number) => void;
   columnDimensions: ColumnDimensionController;
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenRowHeightDialog: (rows: number[]) => void;
+  onOpenFormatCells: () => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
   drawingSelectionMode?: boolean;
   onExitDrawingSelectionMode?: () => void;
@@ -123,6 +123,7 @@ export interface SheetCanvasProps {
   onCopy: () => void;
   onCut: () => void;
   onPaste: () => void;
+  onPasteSpecial: () => void;
   onUndo: () => void;
   onRedo: () => void;
   /** Host owns command/session execution after the shared registry resolves a shortcut. */
@@ -386,10 +387,10 @@ export function SheetCanvas({
   onJumpEdge,
   onSelectAll,
   onExtendSelection,
-  onResizeRow,
   columnDimensions,
   onOpenColumnWidthDialog,
   onOpenRowHeightDialog,
+  onOpenFormatCells,
   onFillRange,
   drawingSelectionMode = false,
   onExitDrawingSelectionMode,
@@ -412,6 +413,7 @@ export function SheetCanvas({
   onCopy,
   onCut,
   onPaste,
+  onPasteSpecial,
   onUndo,
   onRedo,
   onShortcut,
@@ -529,9 +531,10 @@ export function SheetCanvas({
     }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
     return {
-      value: showFormulas && cell.formula ? cell.formula : parseCellValue(cell),
+      value: showFormulas && cell.formula ? cell.formula : cell.rawValue !== undefined ? cell.rawValue : parseCellValue(cell),
       formula: cell.formula,
       displayValue: cell.value,
+      richText: cell.richText,
       style: cell.style,
       alignmentSpan: centerAcrossSpan(row, column, cell.style),
       editor: cell.editor,
@@ -656,11 +659,37 @@ export function SheetCanvas({
     onPivotExpansionToggle,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
-    onResizeColumn: (column, widthPx) => columnDimensions.resizeBoundary(column, widthPx),
-    onAutoFitColumn: (column) => columnDimensions.autoFit(columnDimensions.columnsForBoundary(column)),
-    onAutoFitRow: (row) => columnDimensions.autoFitRows([row]),
+    onResizeColumn: (column, widthPx) => {
+      const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      const columns = headerTargetSelected(selection, { kind: 'column', index: column }, bounds)
+        ? selectedHeaderIndices(selection, 'column', bounds)
+        : [column];
+      columnDimensions.setPixels(columns, widthPx);
+    },
+    onAutoFitColumn: (column) => {
+      const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      const columns = headerTargetSelected(selection, { kind: 'column', index: column }, bounds)
+        ? selectedHeaderIndices(selection, 'column', bounds)
+        : [column];
+      return columnDimensions.autoFit(columns);
+    },
+    onAutoFitRow: (row) => {
+      const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      const rows = headerTargetSelected(selection, { kind: 'row', index: row }, bounds)
+        ? selectedHeaderIndices(selection, 'row', bounds)
+        : [row];
+      return columnDimensions.autoFitRows(rows);
+    },
+    onUnhideColumns: (columns) => columnDimensions.setHidden(columns, false),
+    onUnhideRows: (rows) => columnDimensions.setRowsHidden(rows, false),
     formatColumnWidthPreview: (widthPx) => columnDimensions.previewPixels(widthPx),
-    onResizeRow,
+    onResizeRow: (row, heightPx) => {
+      const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      const rows = headerTargetSelected(selection, { kind: 'row', index: row }, bounds)
+        ? selectedHeaderIndices(selection, 'row', bounds)
+        : [row];
+      columnDimensions.setRowPixels(rows, heightPx);
+    },
     onSelectAll,
     onSelectionChange,
     onShortcut,
@@ -726,6 +755,33 @@ export function SheetCanvas({
   // Pointer, keyboard, drag-selection, and auto-scroll are implemented by useCanvasInteraction.
   // ---------- 右键菜单 ----------
 
+  const buildHeaderContextMenu = useCallback((kind: 'column' | 'row', targetIndex: number, hiddenIndices?: readonly number[]): ContextMenuItem[] => {
+    const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+    const indices = headerTargetSelected(selection, { kind, index: targetIndex }, bounds)
+      ? selectedHeaderIndices(selection, kind, bounds)
+      : [targetIndex];
+    const commandId = kind === 'column' ? 'sheet.columns' : 'sheet.rows';
+    const unhideIndices = hiddenIndices && hiddenIndices.length > 0 ? [...hiddenIndices] : indices;
+    const selectAction = (action: HeaderContextAction): (() => void) => {
+      switch (action) {
+        case 'cut': return onCut;
+        case 'copy': return onCopy;
+        case 'paste': return onPaste;
+        case 'paste-special': return onPasteSpecial;
+        case 'insert': return () => onCommand({ commandId: `${commandId}.insert.selected`, params: { sheetId, indices, rowCount: sheet.rowCount, columnCount: sheet.columnCount } });
+        case 'delete': return () => onCommand({ commandId: `${commandId}.delete.selected`, params: { sheetId, indices, rowCount: sheet.rowCount, columnCount: sheet.columnCount } });
+        case 'clear': return () => onClearSelection('contents');
+        case 'format': return onOpenFormatCells;
+        case 'size': return () => kind === 'column' ? onOpenColumnWidthDialog(indices) : onOpenRowHeightDialog(indices);
+        case 'hide': return () => kind === 'column' ? columnDimensions.setHidden(indices, true) : columnDimensions.setRowsHidden(indices, true);
+        case 'unhide': return () => kind === 'column' ? columnDimensions.setHidden(unhideIndices, false) : columnDimensions.setRowsHidden(unhideIndices, false);
+      }
+    };
+    return headerContextMenuCatalog(kind).map((entry) => entry.separator
+      ? { id: entry.id, label: entry.label, separator: true }
+      : { id: entry.id, label: entry.label, danger: entry.danger, onSelect: selectAction(entry.action) });
+  }, [columnDimensions, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenFormatCells, onOpenRowHeightDialog, onPaste, onPasteSpecial, selection, sheet.columnCount, sheet.rowCount, sheetId]);
+
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (contextHit?.kind === "pivot" && contextHit.pivot) {
       const supplied = getPivotContextMenuItems?.(contextHit);
@@ -755,29 +811,8 @@ export function SheetCanvas({
     if (selectedPayload?.kind === 'textbox' && selectedDrawing) {
       return [{ id: 'textbox-edit', label: 'Edit Text', onSelect: () => onBeginTextBoxEdit?.(selectedDrawing.id) }];
     }
-    if (contextHit?.kind === 'column-header') {
-      const columns = columnDimensions.selectedColumns();
-      return [
-        { id: 'column-width', label: 'Column Width…', onSelect: () => onOpenColumnWidthDialog(columns) },
-        { id: 'column-autofit', label: 'AutoFit Column Width', onSelect: () => { void columnDimensions.autoFit(columns); } },
-        { id: 'column-hide', label: 'Hide Columns', onSelect: () => columnDimensions.setHidden(columns, true) },
-        { id: 'column-unhide', label: 'Unhide Columns', onSelect: () => columnDimensions.setHidden(columns, false) },
-      ];
-    }
-    if (contextHit?.kind === 'row-header') {
-      const range = getContextRange();
-      const startRow = range?.startRow ?? selection.activeCell.row;
-      const rowCount = range ? range.endRow - range.startRow + 1 : 1;
-      const rows = columnDimensions.selectedRows();
-      return [
-        { id: 'row-insert', label: 'Insert rows above', onSelect: () => onCommand({ commandId: 'sheet.rows.insert', params: { sheetId, at: startRow, count: rowCount } }) },
-        { id: 'row-delete', label: 'Delete rows', danger: true, onSelect: () => onCommand({ commandId: 'sheet.rows.delete', params: { sheetId, at: startRow, count: rowCount } }) },
-        { id: 'row-height', label: 'Row Height…', onSelect: () => onOpenRowHeightDialog(rows) },
-        { id: 'row-autofit', label: 'AutoFit Row Height', onSelect: () => { void columnDimensions.autoFitRows(rows); } },
-        { id: 'row-hide', label: 'Hide rows', onSelect: () => columnDimensions.setRowsHidden(rows, true) },
-        { id: 'row-unhide', label: 'Unhide rows', onSelect: () => columnDimensions.setRowsHidden(rows, false) },
-      ];
-    }
+    if (contextHit?.kind === 'column-header') return buildHeaderContextMenu('column', contextHit.column ?? selection.activeCell.column, contextHit.hiddenIndices);
+    if (contextHit?.kind === 'row-header') return buildHeaderContextMenu('row', contextHit.row ?? selection.activeCell.row, contextHit.hiddenIndices);
     const items: ContextMenuItem[] = [
       { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: onCut },
       { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: onCopy },
@@ -788,9 +823,10 @@ export function SheetCanvas({
       { id: "delete-row", label: "Delete row", danger: true, onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.rows.delete", params: { sheetId, at: range.startRow, count: range.endRow - range.startRow + 1 } }); } },
       { id: "delete-column", label: "Delete column", danger: true, onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.columns.delete", params: { sheetId, at: range.startColumn, count: range.endColumn - range.startColumn + 1 } }); } },
       { id: "sep-2", label: "", separator: true },
-      { id: "hide-row", label: "Hide rows", onSelect: () => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), true) },
-      { id: "hide-col", label: "Hide columns", onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.column.hide", params: { sheetId, index: range.startColumn } }); } },
-      { id: "unhide-rows", label: "Unhide rows", onSelect: () => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), false) },
+      { id: "hide-row", label: "Hide rows", onSelect: () => columnDimensions.setRowsHidden(selectedHeaderIndices(selection, "row", { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { includeOrdinaryCellRanges: true }), true) },
+      { id: "hide-col", label: "Hide columns", onSelect: () => columnDimensions.setHidden(selectedHeaderIndices(selection, "column", { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { includeOrdinaryCellRanges: true }), true) },
+      { id: "unhide-rows", label: "Unhide rows", onSelect: () => columnDimensions.setRowsHidden(selectedHeaderIndices(selection, "row", { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { includeOrdinaryCellRanges: true }), false) },
+      { id: "unhide-cols", label: "Unhide columns", onSelect: () => columnDimensions.setHidden(selectedHeaderIndices(selection, "column", { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { includeOrdinaryCellRanges: true }), false) },
       { id: "sep-3", label: "", separator: true },
       { id: "clear", label: "Clear contents", onSelect: () => onClearSelection("contents") },
       { id: "clear-formats", label: "Clear formats", onSelect: () => onClearSelection("formats") },
@@ -799,7 +835,7 @@ export function SheetCanvas({
       { id: "hyperlink-remove", label: "Remove Hyperlink", disabled: !hasActiveHyperlink, danger: true, onSelect: onRemoveHyperlink },
     ];
     return items;
-  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, hasActiveHyperlink, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenHyperlink, onOpenInspector, onOpenRowHeightDialog, onPaste, onPivotShowDetails, onRemoveHyperlink, selectedFloatingId, selection, sheetId]);
+  }, [buildHeaderContextMenu, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, hasActiveHyperlink, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenHyperlink, onOpenInspector, onPaste, onPivotShowDetails, onRemoveHyperlink, selectedFloatingId, selection, sheet.columnCount, sheet.rowCount, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -826,6 +862,7 @@ export function SheetCanvas({
       ? resolveContextHit({
         sheetId,
         header: headerHit.kind === 'row' ? 'row' : 'column',
+        ...(headerHit.hiddenIndices ? { hiddenIndices: headerHit.hiddenIndices } : {}),
         cell: { row: headerHit.kind === 'row' ? headerHit.index : 0, column: headerHit.kind === 'col' ? headerHit.index : 0 },
       })
       : null);
@@ -835,27 +872,20 @@ export function SheetCanvas({
       onSelectAll();
     } else if (headerHit?.kind === "row") {
       const row = headerHit.index;
-      const target = resolveSelectionTarget(sheet, { row, column: 0 }, 'rows', sheetId);
-      contextRangeRef.current = target.range;
-      onSelectionChange(selectionFromGesture(selection, {
-        origin: target.cell,
-        target: target.cell,
-        kind: 'rows',
-        expandedRange: target.range,
-      }, sheetId));
+      const target = { kind: 'row' as const, index: row };
+      const alreadySelected = headerTargetSelected(selection, target, { rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+      const targetRange = applyHeaderSelection(selection, target, sheetId, { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { additive: false, extend: false }).ranges[0]!;
+      contextRangeRef.current = alreadySelected ? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange : targetRange;
+      if (!alreadySelected) onSelectionChange(applyHeaderSelection(selection, target, sheetId, { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { additive: false, extend: false }));
     } else if (headerHit?.kind === "col") {
       const column = headerHit.index;
-      const alreadySelected = selection.ranges.some((range) => range.startRow === 0 && range.endRow >= sheet.rowCount - 1 && column >= range.startColumn && column <= range.endColumn);
+      const target = { kind: 'column' as const, index: column };
+      const alreadySelected = headerTargetSelected(selection, target, { rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+      const targetRange = applyHeaderSelection(selection, target, sheetId, { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { additive: false, extend: false }).ranges[0]!;
       if (!alreadySelected) {
-        const target = resolveSelectionTarget(sheet, { row: 0, column }, 'columns', sheetId);
-        contextRangeRef.current = target.range;
-        onSelectionChange(selectionFromGesture(selection, {
-          origin: target.cell,
-          target: target.cell,
-          kind: 'columns',
-          expandedRange: target.range,
-        }, sheetId));
-      }
+        contextRangeRef.current = targetRange;
+        onSelectionChange(applyHeaderSelection(selection, target, sheetId, { rowCount: sheet.rowCount, columnCount: sheet.columnCount }, { additive: false, extend: false }));
+      } else contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
     } else {
       const hitCell = engine.cellAtLocalPoint(local);
       if (hitCell) {

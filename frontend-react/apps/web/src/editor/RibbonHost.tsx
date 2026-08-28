@@ -18,6 +18,8 @@ export interface RibbonHostProps {
   exportDocument: () => void | Promise<void>;
   importDocument: () => void;
   columnDimensions: ColumnDimensionController;
+  selectedColumns: number[];
+  selectedRows: number[];
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenDefaultColumnWidthDialog: () => void;
   onOpenRowHeightDialog: (rows: number[]) => void;
@@ -47,6 +49,8 @@ export function RibbonHost({
   exportDocument,
   importDocument,
   columnDimensions,
+  selectedColumns,
+  selectedRows,
   onOpenColumnWidthDialog,
   onOpenDefaultColumnWidthDialog,
   onOpenRowHeightDialog,
@@ -127,15 +131,15 @@ export function RibbonHost({
       onAutoSum={(functionName) => session.autoSum(functionName)}
       onFill={(direction, mode) => mode === 'series' ? session.fillSeries() : session.fillSelection(direction)}
       onFreezeAtPrimary={() => session.freezeAtPrimary()}
-      onOpenColumnWidth={() => onOpenColumnWidthDialog(columnDimensions.selectedColumns())}
-      onAutoFitColumns={() => { void columnDimensions.autoFit(columnDimensions.selectedColumns()); }}
-      onHideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), true)}
-      onUnhideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), false)}
+      onOpenColumnWidth={() => onOpenColumnWidthDialog(selectedColumns)}
+      onAutoFitColumns={() => { void columnDimensions.autoFit(selectedColumns); }}
+      onHideColumns={() => columnDimensions.setHidden(selectedColumns, true)}
+      onUnhideColumns={() => columnDimensions.setHidden(selectedColumns, false)}
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
-      onOpenRowHeight={() => onOpenRowHeightDialog(columnDimensions.selectedRows())}
-      onAutoFitRows={() => { void columnDimensions.autoFitRows(columnDimensions.selectedRows()); }}
-      onHideRows={() => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), true)}
-      onUnhideRows={() => columnDimensions.setRowsHidden(columnDimensions.selectedRows(), false)}
+      onOpenRowHeight={() => onOpenRowHeightDialog(selectedRows)}
+      onAutoFitRows={() => { void columnDimensions.autoFitRows(selectedRows); }}
+      onHideRows={() => columnDimensions.setRowsHidden(selectedRows, true)}
+      onUnhideRows={() => columnDimensions.setRowsHidden(selectedRows, false)}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
       onCreateSheetTable={() => session.openCreateTableDialog()}

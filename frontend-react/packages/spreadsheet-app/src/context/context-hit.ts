@@ -8,6 +8,8 @@ export interface ResolvedContextHit {
   sheetId: string;
   row?: number;
   column?: number;
+  /** Hidden row/column models represented by the adjacent double-line indicator. */
+  hiddenIndices?: readonly number[];
   range?: RangeRef;
   objectId?: string;
   pivot?: PivotHitTest;
@@ -22,6 +24,7 @@ export interface ContextHitInput {
   tableId?: string;
   filterColumn?: number;
   header?: 'row' | 'column';
+  hiddenIndices?: readonly number[];
   cell?: { row: number; column: number; range?: RangeRef };
 }
 
@@ -44,8 +47,8 @@ export function resolveContextHit(input: ContextHitInput): ResolvedContextHit {
       pivot: input.pivot,
     };
   }
-  if (input.header === 'row') return { kind: 'row-header', priority: 40, sheetId: input.sheetId, ...input.cell };
-  if (input.header === 'column') return { kind: 'column-header', priority: 40, sheetId: input.sheetId, ...input.cell };
+  if (input.header === 'row') return { kind: 'row-header', priority: 40, sheetId: input.sheetId, ...input.cell, ...(input.hiddenIndices ? { hiddenIndices: input.hiddenIndices } : {}) };
+  if (input.header === 'column') return { kind: 'column-header', priority: 40, sheetId: input.sheetId, ...input.cell, ...(input.hiddenIndices ? { hiddenIndices: input.hiddenIndices } : {}) };
   if (input.tableId) return { kind: 'table', priority: 60, sheetId: input.sheetId, objectId: input.tableId, ...input.cell };
   if (input.filterColumn !== undefined) return { kind: 'filter', priority: 50, sheetId: input.sheetId, column: input.filterColumn, ...input.cell };
   if (input.cell) return { kind: 'grid', priority: 10, sheetId: input.sheetId, ...input.cell };

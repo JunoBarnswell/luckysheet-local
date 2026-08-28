@@ -7,7 +7,7 @@ import { type Locale } from "../i18n";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
-import type { ChartElementSelection, UiSessionIntent, UiSnapshot, WorkbookSession } from "@react-sheets/spreadsheet-app";
+import { selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
 import type { SelectionState } from "@react-sheets/spreadsheet-app";
 import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
@@ -60,14 +60,15 @@ export function EditorShell({
   onOpenPrintPreview,
 }: EditorShellProps): ReactNode {
   const sheetRef = useRef(state.selectedSheet);
-  const selectionRef = useRef(state.selection);
   sheetRef.current = state.selectedSheet;
-  selectionRef.current = state.selection;
   const columnDimensions = useMemo(
-    () => new ColumnDimensionController(session, () => sheetRef.current, () => selectionRef.current),
+    () => new ColumnDimensionController(session, () => sheetRef.current),
     [session],
   );
   useEffect(() => () => columnDimensions.cancelAutoFit(), [columnDimensions]);
+  const dimensionBounds = { rowCount: state.selectedSheet.rowCount, columnCount: state.selectedSheet.columnCount };
+  const selectedColumns = selectedHeaderIndices(state.selection, 'column', dimensionBounds, { includeOrdinaryCellRanges: true });
+  const selectedRows = selectedHeaderIndices(state.selection, 'row', dimensionBounds, { includeOrdinaryCellRanges: true });
   const selectedCellStyle = state.homeRibbon.style;
   const formatCellsInitial = {
     numberFormat: selectedCellStyle.numberFormat ?? "general",
@@ -108,8 +109,10 @@ export function EditorShell({
             importDocument={importDocument}
             commands={controller}
             columnDimensions={columnDimensions}
+            selectedColumns={selectedColumns}
+            selectedRows={selectedRows}
             onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
-            onOpenDefaultColumnWidthDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns: columnDimensions.selectedColumns(), defaultMode: true } })}
+            onOpenDefaultColumnWidthDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns: selectedColumns, defaultMode: true } })}
             onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
           />
         )}
@@ -259,10 +262,10 @@ export function EditorShell({
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
-                onResizeRow={session.resizeRow.bind(session)}
                 columnDimensions={columnDimensions}
                 onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
                 onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
+                onOpenFormatCells={() => dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" })}
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
@@ -307,6 +310,7 @@ export function EditorShell({
                 onCopy={() => session.copy()}
                 onCut={() => session.cut()}
                 onPaste={() => session.paste()}
+                onPasteSpecial={() => dispatchSessionIntent({ type: "dialog.open", dialog: "paste-special" })}
                 onUndo={() => session.undo()}
                 onRedo={() => session.redo()}
                 onShortcut={controller.executeShortcut}
