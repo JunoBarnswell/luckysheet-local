@@ -73,7 +73,7 @@ import {
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
-import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
@@ -222,7 +222,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeExportXlsx, summarizeCompatibilityReport } from './features/xlsx';
+import { exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -252,7 +252,18 @@ import type {
   ScenarioResult,
 } from './features/extended/what-if';
 import type { WhatIfPlan } from './features/extended';
-import type { CompatibilityReport } from './features/xlsx';
+import type { CompatibilityReport } from './features/native-document';
+
+function nativeDocumentMimeType(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
+}
 import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
@@ -306,7 +317,7 @@ export interface WorkbookSessionOptions {
   canonicalReferenceDate?: CanonicalExcelDateParts;
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
-  xlsxExecution?: 'worker' | 'inline-test';
+  nativeDocumentExecution?: 'worker' | 'inline-test';
   /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
   pivotTaskPort?: PivotTaskPort;
   pivotExecution?: 'worker' | 'inline-test';
@@ -661,7 +672,7 @@ export class WorkbookSession {
   };
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
-  private readonly xlsxExecution: 'worker' | 'inline-test';
+  private readonly nativeDocumentExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
   private readyCallback: Promise<void> | null = null;
 
@@ -698,7 +709,7 @@ export class WorkbookSession {
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
-  private nativePackage: NativePackageState | undefined;
+  private nativeArtifact: NativeDocumentArtifact | undefined;
   private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number', localObjectKind: null };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
@@ -772,7 +783,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -795,7 +806,7 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    this.xlsxExecution = xlsxExecution;
+    this.nativeDocumentExecution = nativeDocumentExecution;
     const resolvedPivotTaskPort = pivotTaskPort ?? (pivotExecution === 'worker' ? createBrowserPivotTaskPort() : new InlinePivotTaskPort());
     if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
     this.pivotTaskPort = resolvedPivotTaskPort;
@@ -1000,9 +1011,9 @@ export class WorkbookSession {
         this.persistenceChecksum = persisted.checksum;
         this.persistenceMetaDirty = false;
       }
-      const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
+      const artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
-        this.nativePackage = artifact;
+        this.nativeArtifact = artifact;
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
         this.invalidateAllSheetProjections();
         this.emit();
@@ -1261,7 +1272,7 @@ export class WorkbookSession {
       true,
       this.runtime.pivotResults,
       this.runtime.dataContent,
-      this.nativePackage?.dateSystem ?? '1900',
+      this.nativeArtifact?.dateSystem ?? '1900',
       this.runtime.pivotErrors,
       this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
     );
@@ -2276,14 +2287,22 @@ export class WorkbookSession {
     );
   }
 
+  getNativeDocumentFileName(): string | undefined {
+    return this.nativeArtifact?.fileName;
+  }
+
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
     this.saveState = 'saving';
     this.emit();
     try {
       void reason;
+      if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
+      const nativeExport = await this.exportNativeDocumentForSave();
+      if (!nativeExport.buffer || !nativeExport.fileName) throw new Error('Native document export did not produce a file');
+      this.nativeArtifact = nativeExport.artifact;
       const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
       if (remoteWorkbook && !this.runtime.remoteConnected) {
-        await this.runtime.checkpointWorkspace();
+        await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
         this.saveState = 'offline';
         this.syncPersistenceMeta();
         this.notify('Local checkpoint saved; waiting to sync with the server');
@@ -2296,8 +2315,13 @@ export class WorkbookSession {
         }
         const checkpoint = await this.runtime.api.checkpointWorkbook(this.runtime.model.unitId);
         this.runtime.remoteRevision = checkpoint.snapshot.revision;
+        await this.runtime.api.putWorkbookSourceArtifact(
+          this.runtime.model.unitId,
+          new Blob([nativeExport.buffer], { type: nativeDocumentMimeType(nativeExport.fileName) }),
+          nativeExport.fileName,
+        );
       }
-      await this.runtime.checkpointWorkspace();
+      await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
       this.saveState = 'saved';
       this.syncPersistenceMeta();
       this.notify(remoteWorkbook ? 'Workbook saved to server' : 'Local workbook checkpoint saved');
@@ -2307,6 +2331,15 @@ export class WorkbookSession {
       this.emit();
       throw error instanceof Error ? error : new Error('Save failed');
     }
+  }
+
+  private exportNativeDocumentForSave(): Promise<Awaited<ReturnType<typeof exchangeExportDocument>>> {
+    return exchangeSaveDocument(this.runtime.model.snapshot(), this.nativeArtifact, {
+      fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+      execution: this.nativeDocumentExecution,
+      revision: this.version,
+      assetStore: this.runtime.assetStore,
+    });
   }
 
   private runReadyCallback(): void {
@@ -5049,7 +5082,7 @@ export class WorkbookSession {
         sheet,
         column,
         (row, currentColumn) => this.readResolvedFilterCell(sheet, row, currentColumn),
-        this.nativePackage?.dateSystem ?? '1900',
+        this.nativeArtifact?.dateSystem ?? '1900',
       );
       validateFilterCriterionAgainstDomain(descriptor, patch.criterion);
     }
@@ -6094,26 +6127,35 @@ export class WorkbookSession {
     };
   }
 
-  async exportXlsxWorkbook(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string } | null> {
-    if (!this.canExecute('xlsx.export')) {
+  async exportDocument(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string; artifact: NativeDocumentArtifact } | null> {
+    if (!this.canExecute('document.export')) {
       this.notify('You do not have permission to export workbooks');
       return null;
     }
     try {
-      const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
-      fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
-        nativePackage: this.nativePackage,
-        execution: this.xlsxExecution,
-        revision: this.version,
-        assetStore: this.runtime.assetStore,
-      });
+      const exported = fileName
+        ? await exchangeSaveAsDocument(this.runtime.model.snapshot(), {
+          fileName,
+          artifact: this.nativeArtifact,
+          execution: this.nativeDocumentExecution,
+          revision: this.version,
+          assetStore: this.runtime.assetStore,
+        })
+        : await exchangeExportDocument(this.runtime.model.snapshot(), {
+          fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+          artifact: this.nativeArtifact,
+          execution: this.nativeDocumentExecution,
+          revision: this.version,
+          assetStore: this.runtime.assetStore,
+        });
+      if (!fileName || this.nativeArtifact?.fileName === exported.fileName) this.nativeArtifact = exported.artifact;
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
       if (!exported.buffer || !exported.fileName) return null;
-      return { buffer: exported.buffer, fileName: exported.fileName };
+      return { buffer: exported.buffer, fileName: exported.fileName, artifact: exported.artifact };
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'XLSX export failed');
+      this.notify(error instanceof Error ? error.message : 'Native document export failed');
       return null;
     }
   }

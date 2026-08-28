@@ -32,7 +32,7 @@ The workbook catalog contract is:
 - `POST /api/workbooks` creates a native workbook in the actor's personal space unless `spaceId`/`folderId` are supplied.
 - `PATCH /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/copy`, `DELETE /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/restore-from-trash`, and `DELETE /api/workbooks/{unitId}/purge` manage metadata and lifecycle. Purge requires a previously trashed owner workbook.
 - `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, autosave/sync, default cloud location, offline cache, import compatibility, language, and theme state.
-- `GET/PUT /api/workbooks/{unitId}/native-package-state` streams the native package state with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
+- `GET/PUT /api/workbooks/{unitId}/native-document-artifact` streams the original native document bytes with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
 - `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
 
 Workbook mutations are written only through `POST /api/workbooks/{unitId}/operations`. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.

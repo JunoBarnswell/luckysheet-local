@@ -49,12 +49,12 @@ import {
   type XmlNode,
 } from './xml';
 import {
-  DEFAULT_XLSX_ZIP_LIMITS,
+  DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS,
   type DateSystem,
-  type ExcelDocumentFormat,
+  type NativeDocumentFormat,
   type OpcPackageGraph,
-  type XlsxRelationship,
-  type XlsxZipLimits,
+  type NativeRelationship,
+  type NativeDocumentResourceLimits,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { synchronizeNativePivotCharts } from './native-chart';
@@ -102,7 +102,7 @@ export interface ParsedOpcPackageGraph {
   features: string[];
 }
 
-export interface ParseLoadedXlsxOptions {
+export interface ParseLoadedOoxmlOptions {
   fontMeasurer?: OoxmlFontMeasurer;
   workbookName?: string;
   /** Required when an imported AutoFilter contains a dynamic date criterion. */
@@ -136,9 +136,9 @@ interface SheetDescriptor {
   hidden: boolean;
 }
 
-export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}, fileName = 'workbook.xlsx'): LoadedOpcPackageGraph {
+export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Partial<NativeDocumentResourceLimits> = {}, fileName = 'workbook.xlsx'): LoadedOpcPackageGraph {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const effective = { ...DEFAULT_XLSX_ZIP_LIMITS, ...limits };
+  const effective = { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...limits };
   if (bytes.byteLength > effective.maxArchiveBytes) {
     throw new Error(`XLSX archive exceeds ${effective.maxArchiveBytes} byte limit`);
   }
@@ -199,7 +199,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
       relationships,
       sheetPartById,
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
-    dateSystem,
+      dateSystem,
       format,
       profile: format.family === 'ooxml' ? format.profile : 'transitional',
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
@@ -207,7 +207,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
   };
 }
 
-export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoadedXlsxOptions = {}): ParsedOpcPackageGraph {
+export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLoadedOoxmlOptions = {}): ParsedOpcPackageGraph {
   const files = loaded.files;
   const workbookPart = loaded.packageGraph.workbookPart;
   const workbookXml = parseXml(strFromU8(files[workbookPart]!));
@@ -273,19 +273,28 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
 }
 
-function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): ExcelDocumentFormat {
+function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): Extract<NativeDocumentFormat, { family: 'ooxml' }> {
   const lowerName = fileName.toLocaleLowerCase();
   const workbookXml = strFromU8(files[workbookPart] ?? new Uint8Array());
   const contentTypes = strFromU8(files['[Content_Types].xml'] ?? new Uint8Array());
   const strict = workbookXml.includes('purl.oclc.org/ooxml/spreadsheetml') || contentTypes.includes('purl.oclc.org/ooxml/officeDocument');
   const hasMacros = Object.keys(files).some((name) => isVbaPart(name, undefined, files));
-  const variant = lowerName.endsWith('.xlam') ? 'xlam' : lowerName.endsWith('.xltm') ? 'xltm' : lowerName.endsWith('.xltx') ? 'xltx' : lowerName.endsWith('.xlsm') || hasMacros ? 'xlsm' : 'xlsx';
+  const workbookType = contentTypes.match(/<Override\b[^>]*PartName=["']\/?[^"']*workbook\.xml["'][^>]*ContentType=["']([^"']+)["'][^>]*>/i)?.[1] ?? '';
+  const variant = workbookType.includes('addin.macroEnabled') ? 'xlam'
+    : workbookType.includes('template.macroEnabled') ? 'xltm'
+      : workbookType.includes('template.main') ? 'xltx'
+        : workbookType.includes('macroEnabled.main') || hasMacros ? 'xlsm'
+          : lowerName.endsWith('.xlam') ? 'xlam'
+            : lowerName.endsWith('.xltm') ? 'xltm'
+              : lowerName.endsWith('.xltx') ? 'xltx'
+                : lowerName.endsWith('.xlsm') ? 'xlsm'
+                  : 'xlsx';
   return { family: 'ooxml', profile: strict ? 'strict' : 'transitional', variant };
 }
 
 export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
-  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> },
+  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> },
   preserved?: OpcPackageGraph,
 ): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
@@ -331,7 +340,7 @@ export function exportSnapshotToOpcPackageGraph(
   const styleIndexes = collectStyleIndexes(snapshot);
   const differentialStyleIndexes = collectDifferentialStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
-  const sheetRelationships: Record<string, XlsxRelationship[]> = {};
+  const sheetRelationships: Record<string, NativeRelationship[]> = {};
   for (let index = 0; index < snapshot.sheets.length; index += 1) {
     const sheet = snapshot.sheets[index]!;
     const part = sheetParts[index]!;
@@ -376,7 +385,7 @@ export function exportSnapshotToOpcPackageGraph(
     const outputRelationships = options.preserveMacros === false ? filterMacroRelationships(source, relationships, preserved) : relationships;
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(outputRelationships)));
   }
-  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart)));
+  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart, options.targetFormat?.variant)));
 
   if (preserved?.profile === 'strict') {
     const strictParts = new Set<string>([
@@ -459,7 +468,7 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
  * AssetStore at the application boundary; no binary data enters snapshots. */
 function synchronizeImageAssets(
   files: Record<string, Uint8Array>,
-  relationships: Record<string, XlsxRelationship[]>,
+  relationships: Record<string, NativeRelationship[]>,
   snapshot: WorkbookSnapshot,
   sheetPartById: Record<string, string>,
   assetBytes: Record<string, Uint8Array> | undefined,
@@ -1382,14 +1391,14 @@ function prepareTableParts(
   preserved: OpcPackageGraph | undefined,
   files: Map<string, Uint8Array>,
   differentialStyleIndexes: Map<string, number>,
-): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
+): { parts: Map<string, string>; required: Array<Pick<NativeRelationship, 'type' | 'target'>> } {
   const tables = sheet.sheetTables ?? [];
   if (!tables.length) return { parts: new Map(), required: [] };
   const existing = (preserved?.relationships[sourcePart] ?? []).filter((relation) => isRelationshipKind(relation.type, 'table'));
   const usedParts = new Set(files.keys());
   let nextNumber = 1;
   const parts = new Map<string, string>();
-  const required: Array<Pick<XlsxRelationship, 'type' | 'target'>> = [];
+  const required: Array<Pick<NativeRelationship, 'type' | 'target'>> = [];
   for (let index = 0; index < tables.length; index += 1) {
     const table = tables[index]!;
     const existingRelation = existing.find((relation) => {
@@ -1464,7 +1473,7 @@ function collectDifferentialStyleIndexes(snapshot: WorkbookSnapshot): Map<string
 function buildWorksheetXml(
   sheet: SheetSnapshot,
   sourcePart: string,
-  relationships: XlsxRelationship[],
+  relationships: NativeRelationship[],
   originalRoot: XmlNode | undefined,
   files: Map<string, Uint8Array>,
   styleIndexes: Map<string, number>,
@@ -1815,7 +1824,7 @@ function serializeWorksheetControlExtensions(original: XmlNode | undefined, cont
   return serializeXml(root);
 }
 
-function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: XlsxRelationship[]): string {
+function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: NativeRelationship[]): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
   if (!controls.some((control) => !control.valid)) {
     root.children = root.children.flatMap((extension) => {
@@ -1837,7 +1846,7 @@ function serializeWorkbookControlExtensions(original: XmlNode | undefined, contr
   return serializeXml(root);
 }
 
-function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: OpcPackageGraph): string {
+function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, relationships: NativeRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: OpcPackageGraph): string {
   const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget(workbookPart, relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
@@ -1892,9 +1901,9 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
   return `${xml}</workbook>`;
 }
 
-function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string): string {
+function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string, targetVariant?: Extract<NativeDocumentFormat, { family: 'ooxml' }>['variant']): string {
   const defaults = new Map<string, string>([['rels', 'application/vnd.openxmlformats-package.relationships+xml'], ['xml', 'application/xml']]);
-  const variant = preserved?.format.family === 'ooxml' ? preserved.format.variant : 'xlsx';
+  const variant = targetVariant ?? (preserved?.format.family === 'ooxml' ? preserved.format.variant : 'xlsx');
   const mainType = variant === 'xlsm'
     ? 'application/vnd.ms-excel.sheet.macroEnabled.main+xml'
     : variant === 'xltm'
@@ -1953,11 +1962,11 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${[...defaults.entries()].map(([extension, type]) => `<Default Extension="${encodeXml(extension)}" ContentType="${encodeXml(type)}"/>`).join('')}${[...overrides.entries()].filter(([part]) => files.has(part.slice(1))).map(([part, type]) => `<Override PartName="${encodeXml(part)}" ContentType="${encodeXml(type)}"/>`).join('')}</Types>`;
 }
 
-function buildRelationshipsXml(relationships: XlsxRelationship[]): string {
+function buildRelationshipsXml(relationships: NativeRelationship[]): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS_REL}">${relationships.map((relation) => `<Relationship Id="${encodeXml(relation.id)}" Type="${encodeXml(relation.type)}" Target="${encodeXml(relation.target)}"${relation.targetMode ? ` TargetMode="${encodeXml(relation.targetMode)}"` : ''}/>`).join('')}</Relationships>`;
 }
 
-function buildRootRelationshipsXml(existing: XlsxRelationship[], workbookPart = 'xl/workbook.xml'): string {
+function buildRootRelationshipsXml(existing: NativeRelationship[], workbookPart = 'xl/workbook.xml'): string {
   const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }]);
   return buildRelationshipsXml(relationships);
 }
@@ -2044,7 +2053,7 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
   }
 }
 
-function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'> & { id?: string }>): XlsxRelationship[] {
+function mergeRelationships(existing: NativeRelationship[], required: Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'> & { id?: string }>): NativeRelationship[] {
   const result = existing.map((relation) => ({ ...relation }));
   const used = new Set(result.map((relation) => relation.id));
   let next = 1;
@@ -2062,8 +2071,8 @@ function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<X
   return result;
 }
 
-function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: XlsxRelationship[]): Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> {
-  const links: Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> = [];
+function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: NativeRelationship[]): Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> {
+  const links: Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> = [];
   for (const entry of sheet.hyperlinks ?? []) {
     const target = entry.hyperlink.target;
     if (target.kind !== 'url' && target.kind !== 'email') continue;
@@ -2084,7 +2093,7 @@ function hyperlinkTarget(link: CellHyperlink): string {
   }
 }
 
-function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row: number, column: number, sheetDescriptors: readonly SheetDescriptor[]): CellHyperlink | undefined {
+function hyperlinkForCell(root: XmlNode, relationships: NativeRelationship[], row: number, column: number, sheetDescriptors: readonly SheetDescriptor[]): CellHyperlink | undefined {
   const hyperlinks = child(root, 'hyperlinks');
   const reference = `${columnToLetter(column)}${row + 1}`;
   const node = children(hyperlinks, 'hyperlink').find((candidate) => candidate.attrs.ref === reference);
@@ -2670,8 +2679,8 @@ function hasNativePivotMarkers(files: Record<string, Uint8Array>): boolean {
   return false;
 }
 
-function readRelationships(files: Record<string, Uint8Array>): Record<string, XlsxRelationship[]> {
-  const result: Record<string, XlsxRelationship[]> = {};
+function readRelationships(files: Record<string, Uint8Array>): Record<string, NativeRelationship[]> {
+  const result: Record<string, NativeRelationship[]> = {};
   for (const name of Object.keys(files)) {
     if (!name.endsWith('.rels')) continue;
     const source = sourcePartFromRelationships(name);
@@ -2684,7 +2693,7 @@ function readRelationships(files: Record<string, Uint8Array>): Record<string, Xl
   return result;
 }
 
-function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>, workbookPart: string): Record<string, string> {
+function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Record<string, NativeRelationship[]>, workbookPart: string): Record<string, string> {
   const map: Record<string, string> = {};
   const workbook = firstElement(parseXml(strFromU8(files[workbookPart]!)), 'workbook');
   const rels = relationships[workbookPart] ?? [];
@@ -2781,7 +2790,7 @@ function isVbaPart(name: string, pkg?: OpcPackageGraph, files?: Record<string, U
   return false;
 }
 
-function filterMacroRelationships(source: string, relationships: XlsxRelationship[], pkg: OpcPackageGraph | undefined): XlsxRelationship[] {
+function filterMacroRelationships(source: string, relationships: NativeRelationship[], pkg: OpcPackageGraph | undefined): NativeRelationship[] {
   return relationships.filter((relationship) => !isVbaPart(resolveTarget(source, relationship.target), pkg));
 }
 
@@ -2794,7 +2803,7 @@ function isRelationshipKind(type: string, kind: string): boolean {
   return relationshipKind(type).toLocaleLowerCase() === kind.toLocaleLowerCase();
 }
 
-function resolveWorkbookRelatedPart(workbookPart: string, relationships: XlsxRelationship[], kind: string, fallback: string): string {
+function resolveWorkbookRelatedPart(workbookPart: string, relationships: NativeRelationship[], kind: string, fallback: string): string {
   const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, kind));
   return relation ? resolveTarget(workbookPart, relation.target) : fallback;
 }

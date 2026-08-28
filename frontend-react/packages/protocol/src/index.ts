@@ -1125,7 +1125,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
   if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
   if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
-  if (input.source !== undefined && !['native', 'xlsx-import'].includes(String(input.source))) throw new Error('Workbook summary source is invalid');
+  if (input.source !== undefined && !['native', 'document-import'].includes(String(input.source))) throw new Error('Workbook summary source is invalid');
   if (input.locationPath !== undefined && (!Array.isArray(input.locationPath) || input.locationPath.some((entry) => typeof entry !== 'string'))) throw new Error('Workbook summary locationPath is invalid');
   for (const key of ['ownerSubject', 'spaceId', 'spaceName', 'folderId', 'sourceFileName', 'deletedAt', 'lastOpenedAt'] as const) {
     if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`Workbook summary ${key} is invalid`);
@@ -1399,11 +1399,11 @@ export interface CompatibilityReportPayload {
   };
 }
 
-export interface XlsxImportResponse extends SnapshotResponse {
+export interface NativeDocumentImportResponse extends SnapshotResponse {
   report: CompatibilityReportPayload;
 }
 
-export interface XlsxExportResponse {
+export interface NativeDocumentExportResponse {
   unitId: string;
   base64: string;
   fileName: string;
@@ -1475,7 +1475,7 @@ export interface WorkbookSummary {
   favorite?: boolean;
 }
 
-export type WorkbookSourceKind = 'native' | 'xlsx-import';
+export type WorkbookSourceKind = 'native' | 'document-import';
 export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
 export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
@@ -1867,7 +1867,7 @@ export class WorkbookApiClient {
 
   async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
     const checksum = await sha256(artifact);
-    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-package-state`, {
+    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, {
       method: 'PUT',
       headers: {
         'content-type': 'application/octet-stream',
@@ -1879,7 +1879,7 @@ export class WorkbookApiClient {
   }
 
   async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
-    const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/native-package-state`);
+    const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`);
     const disposition = response.headers.get('content-disposition') ?? '';
     const fileNameMatch = /filename="?([^";]+)"?/i.exec(disposition);
     const fileName = fileNameMatch?.[1];

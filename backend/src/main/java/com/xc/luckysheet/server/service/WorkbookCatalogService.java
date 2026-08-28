@@ -58,7 +58,7 @@ import java.util.HexFormat;
 /** The sole backend catalog boundary for workbook resources and their artifacts. */
 @Service
 public class WorkbookCatalogService {
-    public static final long MAX_XLSX_BYTES = 50L * 1024L * 1024L;
+    public static final long MAX_NATIVE_DOCUMENT_BYTES = 50L * 1024L * 1024L;
 
     private final WorkbookEntityRepository workbooks;
     private final WorkbookAclEntityRepository acl;
@@ -276,26 +276,26 @@ public class WorkbookCatalogService {
         requireRole(unitId, actor, WorkbookAclRole.EDITOR);
         validateArtifact(fileName, checksum, content);
         String actual = checksum(content);
-        if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("XLSX artifact checksum mismatch");
+        if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("Native document artifact checksum mismatch");
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() ->
                 new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
-                        content.length, content.clone(), "{\"schema\":\"NativePackageMetadata\",\"format\":\"xlsx\",\"codecRevision\":4}", now, now));
-        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), "{\"schema\":\"NativePackageMetadata\",\"format\":\"xlsx\",\"codecRevision\":4}", now);
+                        content.length, content.clone(), nativeArtifactMetadata(fileName), now, now));
+        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), nativeArtifactMetadata(fileName), now);
         artifacts.save(entity);
         return artifactResponse(entity);
     }
 
     public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor) {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
-        return artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook XLSX artifact not found"));
+        return artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native document artifact not found"));
     }
 
     @Transactional
     public WorkbookImportResponse importWorkbook(MultipartFile file, String name, String spaceId, String folderId,
                                                  String snapshotJson, String format, String nativeMetadataJson, String actor) {
-        if (file == null || file.isEmpty()) throw ServiceException.validation("XLSX file is required");
-        if (file.getSize() > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX file exceeds 50 MiB");
+        if (file == null || file.isEmpty()) throw ServiceException.validation("Native document file is required");
+        if (file.getSize() > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document exceeds 50 MiB");
         if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
         JsonNode snapshot;
         try {
@@ -310,7 +310,7 @@ public class WorkbookCatalogService {
         try {
             content = file.getBytes();
         } catch (IOException error) {
-            throw ServiceException.unavailable("Unable to read XLSX artifact");
+            throw ServiceException.unavailable("Unable to read native document artifact");
         }
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
@@ -322,17 +322,17 @@ public class WorkbookCatalogService {
             throw ServiceException.validation("Native package metadata is invalid");
         }
         if (format == null || format.isBlank() || nativeMetadata == null || !nativeMetadata.isObject()
-                || !"NativePackageMetadata".equals(nativeMetadata.path("schema").asText())) {
-            throw ServiceException.validation("Native package metadata is invalid");
+                || !"NativeDocumentMetadata".equals(nativeMetadata.path("schema").asText())) {
+            throw ServiceException.validation("Native document metadata is invalid");
         }
-        ObjectNode artifactMetadata = mapper.createObjectNode().put("schema", "NativePackageMetadata").put("format", format);
+        ObjectNode artifactMetadata = mapper.createObjectNode().put("schema", "NativeDocumentMetadata").put("format", format);
         artifactMetadata.setAll((ObjectNode) nativeMetadata.deepCopy());
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
-                WorkbookSource.XLSX_IMPORT), actor);
+                WorkbookSource.DOCUMENT_IMPORT), actor);
         String digest = checksum(content);
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
-                safeFileName(file.getOriginalFilename() == null ? resolvedName + ".xlsx" : file.getOriginalFilename()),
+                safeFileName(file.getOriginalFilename() == null ? resolvedName + ".ssjson" : file.getOriginalFilename()),
                 safeMimeType(file.getContentType()), digest, content.length, content, writeJson(artifactMetadata), now, now);
         artifacts.save(artifact);
         return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
@@ -468,22 +468,28 @@ public class WorkbookCatalogService {
     }
 
     private void validateArtifact(String fileName, String checksum, byte[] content) {
-        if (content == null || content.length == 0 || content.length > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX artifact size is invalid");
-        if (checksum == null || !checksum.matches("[A-Fa-f0-9]{64}")) throw ServiceException.validation("XLSX artifact checksum is invalid");
+        if (content == null || content.length == 0 || content.length > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document artifact size is invalid");
+        if (checksum == null || !checksum.matches("[A-Fa-f0-9]{64}")) throw ServiceException.validation("Native document artifact checksum is invalid");
         if (fileName != null && fileName.length() > GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
-            throw ServiceException.validation("XLSX file name is too long");
+            throw ServiceException.validation("Native document file name is too long");
         }
     }
 
     private String safeFileName(String value) {
-        if (value == null || value.isBlank()) return "workbook.xlsx";
+        if (value == null || value.isBlank()) throw ServiceException.validation("Native document file name is required");
         try {
             return java.net.URLDecoder.decode(value, java.nio.charset.StandardCharsets.UTF_8).replaceAll("[\\r\\n]", "_");
         } catch (IllegalArgumentException ignored) {
             return value.replaceAll("[\\r\\n]", "_");
         }
     }
-    private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : value; }
+    private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/octet-stream" : value; }
+    private String nativeArtifactMetadata(String fileName) {
+        String lower = safeFileName(fileName).toLowerCase(java.util.Locale.ROOT);
+        String family = lower.endsWith(".xlsb") ? "xlsb" : lower.endsWith(".xls") || lower.endsWith(".xlt") || lower.endsWith(".xla") || lower.endsWith(".xlw") ? "biff" : lower.endsWith(".xlsm") || lower.endsWith(".xltm") || lower.endsWith(".xltx") || lower.endsWith(".xlam") || lower.endsWith(".xlsx") ? "ooxml" : lower.endsWith(".ods") ? "ods" : lower.endsWith(".sjs") ? "sjs" : lower.endsWith(".ssjson") ? "ssjson" : lower.endsWith(".xml") ? "xmlss" : "text";
+        String variant = lower.endsWith(".slk") ? "sylk" : lower.contains(".") ? lower.substring(lower.lastIndexOf('.') + 1) : "ssjson";
+        return "{\"schema\":\"NativeDocumentMetadata\",\"format\":\"" + family + "/" + variant + "\",\"codecRevision\":1}";
+    }
     private String writeJson(Object value) { try { return mapper.writeValueAsString(value); } catch (Exception error) { throw new IllegalStateException("Unable to serialize workbook snapshot", error); } }
     private String checksum(byte[] content) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content)); } catch (Exception error) { throw new IllegalStateException("SHA-256 is unavailable", error); } }
     private boolean nonBlank(String value) { return value != null && !value.isBlank(); }

@@ -32,8 +32,8 @@ export interface EditorShellProps {
   setLocale: (locale: Locale) => void;
   copyWorkbookLink: () => void;
   saveWorkbook: () => void;
-  exportXlsx: () => void | Promise<void>;
-  importXlsx: () => void;
+  exportDocument: () => void | Promise<void>;
+  importDocument: () => void;
   renameWorkbook: (name: string) => void | Promise<void>;
   onOpenPrintPreview: () => void;
 }
@@ -54,8 +54,8 @@ export function EditorShell({
   setLocale,
   copyWorkbookLink,
   saveWorkbook,
-  exportXlsx,
-  importXlsx,
+  exportDocument,
+  importDocument,
   renameWorkbook,
   onOpenPrintPreview,
 }: EditorShellProps): ReactNode {
@@ -104,8 +104,8 @@ export function EditorShell({
             dispatchCommand={dispatchCommand}
             dispatchSessionIntent={dispatchSessionIntent}
             saveWorkbook={saveWorkbook}
-            exportXlsx={exportXlsx}
-            importXlsx={importXlsx}
+            exportDocument={exportDocument}
+            importDocument={importDocument}
             commands={controller}
             columnDimensions={columnDimensions}
             onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}

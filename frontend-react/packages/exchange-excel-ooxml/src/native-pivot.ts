@@ -49,7 +49,7 @@ import type {
   NativePivotSource,
   NativePivotTableDefinition,
   NativePivotTableField,
-  XlsxRelationship,
+  NativeRelationship,
 } from './types';
 import { builtInNumberFormat, collectCustomNumberFormatIds, numberFormatId } from './native-number-format';
 
@@ -91,21 +91,21 @@ const NATIVE_DATA_FIELD_ATTRIBUTES = new Set([
 
 export interface NativePivotReadInput {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   sheetPartById: Record<string, string>;
   dateSystem: import('./types').DateSystem;
 }
 
 export interface NativePivotWriteInput {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   graph: NativePivotGraph;
   sheetNameByPart?: Record<string, string>;
 }
 
 export interface NativePivotPackageWriteInput {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   graph?: NativePivotGraph;
   snapshot: WorkbookSnapshot;
   sheetPartById: Record<string, string>;
@@ -476,10 +476,10 @@ function synchronizeCacheRefreshPolicy(cache: NativePivotCacheDefinition, entrie
   }
 }
 
-function isSlicerCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER_CACHE_MODERN || relation.type === REL_SLICER_CACHE || relation.type.endsWith('/slicerCache'); }
-function isSlicerRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER || relation.type.endsWith('/slicer'); }
-function isTimelineCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_TIMELINE_CACHE || relation.type === REL_TIMELINE_CACHE_ALT || relation.type.endsWith('/timelineCache') || relation.type.endsWith('/TimelineCache'); }
-function isTimelineRelation(relation: XlsxRelationship): boolean { return relation.type === REL_TIMELINE || relation.type.endsWith('/timeline'); }
+function isSlicerCacheRelation(relation: NativeRelationship): boolean { return relation.type === REL_SLICER_CACHE_MODERN || relation.type === REL_SLICER_CACHE || relation.type.endsWith('/slicerCache'); }
+function isSlicerRelation(relation: NativeRelationship): boolean { return relation.type === REL_SLICER || relation.type.endsWith('/slicer'); }
+function isTimelineCacheRelation(relation: NativeRelationship): boolean { return relation.type === REL_TIMELINE_CACHE || relation.type === REL_TIMELINE_CACHE_ALT || relation.type.endsWith('/timelineCache') || relation.type.endsWith('/TimelineCache'); }
+function isTimelineRelation(relation: NativeRelationship): boolean { return relation.type === REL_TIMELINE || relation.type.endsWith('/timeline'); }
 
 function pruneRemovedControlDrawingAnchors(
   files: Record<string, Uint8Array>,
@@ -909,7 +909,7 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
 
 interface NativeControlSyncInput {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   existing: NativePivotControlDefinition[];
   snapshot: WorkbookSnapshot;
   sheetPartById: Record<string, string>;
@@ -919,7 +919,7 @@ interface NativeControlSyncInput {
 
 interface NativeControlSyncResult {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   controls: NativePivotControlDefinition[];
 }
 
@@ -1212,7 +1212,7 @@ export function synchronizeNativePivotGraph(input: NativePivotWriteInput): Recor
   return files;
 }
 
-export function serializeNativePivotCaches(graph: NativePivotGraph, relationships: XlsxRelationship[]): string {
+export function serializeNativePivotCaches(graph: NativePivotGraph, relationships: NativeRelationship[]): string {
   const items = graph.caches.map((cache) => {
     const relation = relationships.find((candidate) => candidate.type.endsWith('/pivotCacheDefinition') && resolveTarget('xl/workbook.xml', candidate.target) === cache.part);
     if (!relation) throw new Error(`Native Pivot cache relation is missing for ${cache.part}`);
@@ -1676,7 +1676,7 @@ function mergeDisplayCells(target: Record<string, Record<string, CellData>>, dis
   for (const [row, columns] of Object.entries(display)) for (const [column, cell] of Object.entries(columns)) { if (sheet.cells[row]?.[column]) continue; target[row] ??= {}; target[row]![column] ??= cell; }
 }
 
-function rebuildRelationships(input: Record<string, XlsxRelationship[]>, caches: NativePivotCacheDefinition[], tables: NativePivotTableDefinition[], files: Record<string, Uint8Array>): Record<string, XlsxRelationship[]> {
+function rebuildRelationships(input: Record<string, NativeRelationship[]>, caches: NativePivotCacheDefinition[], tables: NativePivotTableDefinition[], files: Record<string, Uint8Array>): Record<string, NativeRelationship[]> {
   const result = cloneRelationships(input);
   const workbook = result['xl/workbook.xml'] ?? [];
   const oldCacheRelations = input['xl/workbook.xml']?.filter((relation) => relation.type.endsWith('/pivotCacheDefinition')) ?? [];
@@ -2070,16 +2070,16 @@ function parseDataFields(node: XmlNode | undefined, customNumberFormats: Readonl
     };
   });
 }
-function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
-function requireRelationship(rels: XlsxRelationship[], id: string, type: string, context: string): XlsxRelationship { const relation = rels.find((candidate) => candidate.id === id); if (!relation) throw new Error(`${context} relation ${id} is missing`); if (relation.type !== type && !relation.type.endsWith(`/${type.split('/').pop()!}`)) throw new Error(`${context} relation ${id} has unexpected type ${relation.type}`); return relation; }
+function readSheetNames(workbook: XmlNode, rels: NativeRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
+function requireRelationship(rels: NativeRelationship[], id: string, type: string, context: string): NativeRelationship { const relation = rels.find((candidate) => candidate.id === id); if (!relation) throw new Error(`${context} relation ${id} is missing`); if (relation.type !== type && !relation.type.endsWith(`/${type.split('/').pop()!}`)) throw new Error(`${context} relation ${id} has unexpected type ${relation.type}`); return relation; }
 function firstElement(root: XmlNode, name: string): XmlNode { const found = localName(root.name) === name ? root : descendants(root, name)[0]; if (!found) throw new Error(`OOXML part is missing <${name}>`); return found; }
 function resolveTarget(source: string, target: string): string { if (target.startsWith('/')) return normalizePartName(target.slice(1)); const base = source.includes('/') ? source.slice(0, source.lastIndexOf('/') + 1) : ''; return normalizePartName(`${base}${target}`); }
 function normalizePartName(name: string): string { const pieces: string[] = []; for (const piece of name.replaceAll('\\', '/').split('/')) { if (!piece || piece === '.') continue; if (piece === '..') { if (!pieces.length) throw new Error(`Unsafe XLSX part target: ${name}`); pieces.pop(); } else pieces.push(piece); } const result = pieces.join('/'); if (!result || result.includes('\0')) throw new Error(`Unsafe XLSX part target: ${name}`); return result; }
 function cloneFiles(files: Record<string, Uint8Array>): Record<string, Uint8Array> { return Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, bytes.slice()])); }
-function cloneRelationships(input: Record<string, XlsxRelationship[]>): Record<string, XlsxRelationship[]> { return Object.fromEntries(Object.entries(input).map(([source, list]) => [source, list.map((relation) => ({ ...relation }))])); }
-function allocateId(list: XlsxRelationship[]): string { const used = new Set(list.map((relation) => relation.id)); let index = 1; while (used.has(`rId${index}`)) index += 1; return `rId${index}`; }
+function cloneRelationships(input: Record<string, NativeRelationship[]>): Record<string, NativeRelationship[]> { return Object.fromEntries(Object.entries(input).map(([source, list]) => [source, list.map((relation) => ({ ...relation }))])); }
+function allocateId(list: NativeRelationship[]): string { const used = new Set(list.map((relation) => relation.id)); let index = 1; while (used.has(`rId${index}`)) index += 1; return `rId${index}`; }
 function relativeTarget(source: string, target: string): string { const left = source.slice(0, source.lastIndexOf('/') + 1).split('/').filter(Boolean); const right = target.split('/').filter(Boolean); while (left.length && right.length && left[0] === right[0]) { left.shift(); right.shift(); } return `${'../'.repeat(left.length)}${right.join('/')}`; }
-function isPivotRelation(relation: XlsxRelationship): boolean { return relation.type.endsWith('/pivotCacheDefinition') || relation.type.endsWith('/pivotCacheRecords') || relation.type.endsWith('/pivotTable'); }
+function isPivotRelation(relation: NativeRelationship): boolean { return relation.type.endsWith('/pivotCacheDefinition') || relation.type.endsWith('/pivotCacheRecords') || relation.type.endsWith('/pivotTable'); }
 function isNativePivotPart(name: string): boolean { return /^xl\/(pivotTables\/|pivotCache\/)/i.test(name); }
 function isNativeControlPart(name: string): boolean { return /^xl\/(slicers\/|slicerCaches\/|timelines\/|timelineCaches\/)/i.test(name); }
 function nextPartNumbers(files: Record<string, Uint8Array>): { cacheDefinition: number; records: number; table: number } { const max = (pattern: RegExp): number => Object.keys(files).reduce((value, name) => Math.max(value, Number(name.match(pattern)?.[1] ?? 0)), 0); return { cacheDefinition: max(/pivotCacheDefinition(\d+)\.xml$/i) + 1, records: max(/pivotCacheRecords(\d+)\.xml$/i) + 1, table: max(/pivotTable(\d+)\.xml$/i) + 1 }; }

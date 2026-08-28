@@ -1,5 +1,5 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import {
   ApiRequestError,
   AuthenticationRequiredError,
@@ -12,9 +12,10 @@ import {
 } from '@react-sheets/protocol';
 import { buildOperation } from '../../collaboration/helpers';
 import {
-  exchangeExportXlsx,
-  exchangeImportXlsx,
-} from '../xlsx';
+  exchangeImportDocument,
+  exchangeSaveAsDocument,
+  exchangeSaveDocument,
+} from '../native-document';
 import {
   type WorkspaceRecord,
   type WorkspaceRecordMetadata,
@@ -40,7 +41,7 @@ import type {
 } from './types';
 import { WorkbookResolver } from './resolver';
 
-export const DEFAULT_XLSX_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_NATIVE_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
 
 export class WorkbookCatalogError extends Error {
   readonly code: 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input' | 'conflict';
@@ -92,7 +93,7 @@ function normalizeRole(role: WorkbookRole | undefined, fallback: WorkspaceRole =
 }
 
 function sourceFromProtocol(summary: WorkbookSummary): WorkspaceRecordMetadata['source'] {
-  return summary.source === 'xlsx-import' ? 'xlsx-import' : 'native';
+  return summary.source === 'document-import' ? 'document-import' : 'native';
 }
 
 function metadataFromRemote(summary: WorkbookSummary): WorkspaceRecordMetadata {
@@ -116,7 +117,7 @@ function metadataToProtocol(metadata: Partial<WorkspaceRecordMetadata> | undefin
   return {
     spaceId: metadata?.spaceId,
     folderId: metadata?.folderId,
-    source: metadata?.source === 'xlsx-import' ? 'xlsx-import' : 'native',
+    source: metadata?.source === 'document-import' ? 'document-import' : 'native',
   };
 }
 
@@ -371,9 +372,9 @@ export class WorkbookCatalogService {
   }
 
   async importWorkbook(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
-    if (!input.fileName.trim()) throw new WorkbookCatalogError('invalid-input', 'XLSX file name is required');
-    if (input.buffer.byteLength > DEFAULT_XLSX_IMPORT_MAX_BYTES) {
-      throw new WorkbookCatalogError('invalid-input', `XLSX file exceeds ${DEFAULT_XLSX_IMPORT_MAX_BYTES} byte limit`);
+    if (!input.fileName.trim()) throw new WorkbookCatalogError('invalid-input', 'Native document file name is required');
+    if (input.buffer.byteLength > DEFAULT_NATIVE_IMPORT_MAX_BYTES) {
+      throw new WorkbookCatalogError('invalid-input', `Native document exceeds ${DEFAULT_NATIVE_IMPORT_MAX_BYTES} byte limit`);
     }
     let compatibilityTarget = input.options?.compatibilityTarget;
     if (!compatibilityTarget && this.canUseRemote()) {
@@ -383,19 +384,19 @@ export class WorkbookCatalogService {
         if (!isRemoteUnavailable(error) && !(error instanceof ApiRequestError && [401, 403].includes(error.status))) throw error;
       }
     }
-    const imported = await exchangeImportXlsx({
+    const imported = await exchangeImportDocument({
       fileName: input.fileName,
       buffer: input.buffer,
       options: { ...input.options, compatibilityTarget: compatibilityTarget ?? 'B' },
       workerPort: input.workerPort,
       execution: input.execution,
     });
-    if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'XLSX import did not produce a workbook snapshot');
+    if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'Native document import did not produce a workbook snapshot');
     const unitId = this.unitIdFactory();
     const importedSnapshot = reidentifySnapshot(imported.snapshot, unitId);
     const destination = input.destination ?? (this.remote ? 'remote' : 'local');
     const metadata: WorkbookCreateMetadata = {
-      source: 'xlsx-import',
+      source: 'document-import',
       spaceId: input.spaceId,
       folderId: input.folderId,
     };
@@ -403,72 +404,60 @@ export class WorkbookCatalogService {
     if (destination === 'remote') {
       const api = this.requireRemote();
       const response = await api.createWorkbookImport({
-        artifact: new Blob([input.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+        artifact: new Blob([input.buffer], { type: nativeDocumentMimeType(input.fileName) }),
         artifactFileName: input.fileName,
         snapshot: importedSnapshot,
-        format: imported.nativePackage?.format.variant ?? 'xlsx',
+        format: `${imported.artifact.format.family}/${imported.artifact.format.variant}`,
         nativeMetadata: {
-          schema: 'NativePackageMetadata',
-          codecRevision: imported.nativePackage?.codecRevision ?? 4,
-          detectedFeatures: imported.nativePackage?.detectedFeatures ?? [],
+          schema: 'NativeDocumentMetadata',
+          codecRevision: imported.artifact.codecRevision,
+          detectedFeatures: imported.artifact.detectedFeatures,
           compatibility: imported.report,
         },
         ...metadata,
       });
       const serverSnapshot = assertSnapshotUnitId(response.snapshot, importedSnapshot.unitId);
-      record = imported.nativePackage
-        ? await this.persistence.checkpointWithArtifact(serverSnapshot, 1, response.summary.revision, 'remote', imported.nativePackage, undefined, {
-          location: 'remote', lifecycle: 'active', source: 'xlsx-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
-          sourceFileName: input.fileName,
-        })
-        : await this.persistence.checkpoint(serverSnapshot, 1, response.summary.revision, 'remote', undefined, {
-          location: 'remote', lifecycle: 'active', source: 'xlsx-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
-          sourceFileName: input.fileName,
-        });
+      record = await this.persistence.checkpointWithArtifact(serverSnapshot, 1, response.summary.revision, 'remote', imported.artifact, undefined, {
+        location: 'remote', lifecycle: 'active', source: 'document-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
+        sourceFileName: input.fileName,
+      });
     } else {
-      record = imported.nativePackage
-        ? await this.persistence.checkpointWithArtifact(importedSnapshot, 1, 0, 'local-only', imported.nativePackage, undefined, {
-          location: 'local', lifecycle: 'active', source: 'xlsx-import', role: 'owner',
-          sourceFileName: input.fileName,
-        })
-        : await this.persistence.checkpoint(importedSnapshot, 1, 0, 'local-only', undefined, {
-          location: 'local', lifecycle: 'active', source: 'xlsx-import', role: 'owner',
-          sourceFileName: input.fileName,
-        });
+      record = await this.persistence.checkpointWithArtifact(importedSnapshot, 1, 0, 'local-only', imported.artifact, undefined, {
+        location: 'local', lifecycle: 'active', source: 'document-import', role: 'owner',
+        sourceFileName: input.fileName,
+      });
     }
     return {
       entry: localEntry(record, destination === 'remote'),
       snapshot: clone(record.snapshot),
       report: imported.report,
-      nativePackage: imported.nativePackage,
+      artifact: imported.artifact,
     };
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
     const resolved = await this.resolve(unitId);
-    let artifact = await this.persistence.nativePackages.load(unitId);
+    let artifact = await this.persistence.nativeDocuments.load(unitId);
     if (!artifact && this.canUseRemote()) {
       try {
         const remoteArtifact = await this.requireRemote().getWorkbookSourceArtifact(unitId);
-        const imported = await exchangeImportXlsx({
+        const imported = await exchangeImportDocument({
           fileName: remoteArtifact.metadata.fileName,
           buffer: await remoteArtifact.artifact.arrayBuffer(),
-          execution: 'inline-test',
+          execution: 'worker',
         });
-        artifact = imported.nativePackage
-          ? { ...imported.nativePackage, codecRevision: remoteArtifact.metadata.codecRevision ?? 1 }
+        artifact = imported.artifact
+          ? { ...imported.artifact, codecRevision: remoteArtifact.metadata.codecRevision ?? 1 }
           : null;
-        if (artifact) await this.persistence.nativePackages.save(unitId, artifact);
+        if (artifact) await this.persistence.nativeDocuments.save(unitId, artifact);
       } catch (error) {
         if (!isRemoteUnavailable(error)) throw error;
       }
     }
-    const exported = await exchangeExportXlsx(resolved.snapshot, {
-      ...input,
-      fileName: input.fileName ?? `${resolved.snapshot.name || 'workbook'}.xlsx`,
-      nativePackage: artifact ?? undefined,
-    });
-    if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', 'XLSX export did not produce a file');
+    const exported = input.fileName
+      ? await exchangeSaveAsDocument(resolved.snapshot, { ...input, fileName: input.fileName, artifact: artifact ?? undefined })
+      : await exchangeSaveDocument(resolved.snapshot, artifact ?? undefined, { ...input, fileName: artifact?.fileName ?? `${resolved.snapshot.name || 'workbook'}.ssjson` });
+    if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', 'Native document export did not produce a file');
     return { unitId, fileName: exported.fileName, buffer: exported.buffer, report: exported.report };
   }
 
@@ -480,7 +469,7 @@ export class WorkbookCatalogService {
     let checkpoint: SnapshotResponse;
     if (record.syncMode === 'local-only' || record.metadata.location === 'local') {
       checkpoint = await api.createWorkbook(record.snapshot, metadataToProtocol(record.metadata));
-      const artifact = await this.persistence.nativePackages.load(unitId);
+      const artifact = await this.persistence.nativeDocuments.load(unitId);
       if (artifact) {
         await api.putWorkbookSourceArtifact(
           unitId,
@@ -562,7 +551,7 @@ export class WorkbookCatalogService {
       snapshot = reidentifySnapshot(snapshot, copied.unitId);
       remoteRevision = copied.revision;
     }
-    const artifact = await this.persistence.nativePackages.load(unitId);
+    const artifact = await this.persistence.nativeDocuments.load(unitId);
     const saved = artifact
       ? await this.persistence.checkpointWithArtifact(snapshot, 1, remoteRevision, destination === 'remote' ? 'remote' : 'local-only', artifact, undefined, {
         location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: destination === 'remote' ? 'owner' : 'owner', spaceId: request.spaceId, folderId: request.folderId,
@@ -689,4 +678,15 @@ export class WorkbookCatalogService {
   async deleteSpaceMember(spaceId: string, subject: string): Promise<void> {
     await this.requireRemote().deleteSpaceMember(spaceId, subject.trim());
   }
+}
+
+function nativeDocumentMimeType(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
 }

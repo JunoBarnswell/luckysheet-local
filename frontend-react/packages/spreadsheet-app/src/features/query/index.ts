@@ -249,15 +249,15 @@ export class TsvDataConnector extends CsvDataConnector {
   protected delimiter = '\t';
 }
 
-export class XlsxDataConnector implements DataConnector {
+export class OoxmlDataConnector implements DataConnector {
   readonly kind = 'xlsx' as const;
   readonly id = 'xlsx';
   readonly execution = 'local' as const;
   private result: QueryResult = { columns: [], rows: [], rowCount: 0 };
   async connect(config: Record<string, unknown>): Promise<void> {
     const bytes = await readBytes(config);
-    const { importXlsx } = await import('@react-sheets/exchange-excel-ooxml');
-    const imported = await importXlsx({ fileName: typeof config.fileName === 'string' ? config.fileName : 'query.xlsx', buffer: bytes.slice().buffer as ArrayBuffer, options: { compatibilityTarget: 'A' } });
+    const { importOoxmlDocument } = await import('@react-sheets/exchange-excel-ooxml');
+    const imported = await importOoxmlDocument({ fileName: typeof config.fileName === 'string' ? config.fileName : 'query.xlsx', buffer: bytes.slice().buffer as ArrayBuffer, options: { compatibilityTarget: 'A' } });
     const first = imported.snapshot.sheets[0];
     if (!first) throw new Error('XLSX workbook contains no worksheets');
     this.result = snapshotSheetResult(first);
@@ -283,7 +283,7 @@ export function createDefaultConnectorRegistry(): ConnectorRegistry {
   registry.register(new JsonDataConnector());
   registry.register(new CsvDataConnector());
   registry.register(new TsvDataConnector());
-  registry.register(new XlsxDataConnector());
+  registry.register(new OoxmlDataConnector());
   return registry;
 }
 

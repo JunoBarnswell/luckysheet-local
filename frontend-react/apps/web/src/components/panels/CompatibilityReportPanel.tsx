@@ -12,7 +12,7 @@ export function CompatibilityReportPanel({ report, onClear }: CompatibilityRepor
     return (
       <Panel className="shadow-none">
         <PanelBody>
-          <Text size="xs" tone="subtle">No compatibility report yet. Import or export an XLSX file to see feature mapping.</Text>
+          <Text size="xs" tone="subtle">No compatibility report yet. Open or export a native document to see protocol mapping.</Text>
         </PanelBody>
       </Panel>
     );
@@ -22,7 +22,7 @@ export function CompatibilityReportPanel({ report, onClear }: CompatibilityRepor
     <Panel className="shadow-none">
       <PanelHeader className="border-b border-slate-200">
         <Stack gap="xs" className="w-full">
-          <PanelTitle size="sm">XLSX Compatibility</PanelTitle>
+          <PanelTitle size="sm">Native document compatibility</PanelTitle>
           {report ? <Text size="xs" tone="subtle">{report.fileName} · {report.dateSystem} date system · level {report.importLevel}</Text> : <Text size="xs" tone="subtle">Stored source artifact</Text>}
         </Stack>
       </PanelHeader>

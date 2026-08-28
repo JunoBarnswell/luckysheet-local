@@ -50,8 +50,8 @@ export interface RibbonProps {
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
-  onExportXlsx: () => void;
-  onImportXlsx: () => void;
+  onExportDocument: () => void;
+  onImportDocument: () => void;
   onRecalculate: () => void;
   onTracePrecedents: () => void;
   onTraceDependents: () => void;
@@ -235,8 +235,8 @@ export function Ribbon({
   onUndo,
   onRedo,
   onSave,
-  onExportXlsx,
-  onImportXlsx,
+  onExportDocument,
+  onImportDocument,
   onRecalculate,
   onTracePrecedents,
   onTraceDependents,
@@ -335,8 +335,8 @@ export function Ribbon({
     onUndo,
     onRedo,
     onSave,
-    onExportXlsx,
-    onImportXlsx,
+    onExportDocument,
+    onImportDocument,
     onRecalculate,
     onTracePrecedents,
     onTraceDependents,

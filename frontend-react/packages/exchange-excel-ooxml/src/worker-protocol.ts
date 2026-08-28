@@ -1,84 +1,88 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import type { XlsxExportOptions, XlsxExportResult, XlsxImportOptions, XlsxImportResult, NativePackageState } from './types';
+import type { NativeDocumentExportOptions, NativeDocumentExportResult, NativeDocumentImportOptions, NativeDocumentImportResult, NativeDocumentArtifact } from './types';
 
-export const XLSX_WORKER_PROTOCOL = 'react-sheets/xlsx-exchange';
-export const XLSX_WORKER_VERSION = 1;
+export const NATIVE_DOCUMENT_WORKER_PROTOCOL = 'react-sheets/native-document-io';
+export const NATIVE_DOCUMENT_WORKER_VERSION = 1;
 
-export interface XlsxWorkerImportPayload {
+export interface NativeDocumentWorkerImportPayload {
   fileName: string;
   buffer: ArrayBuffer;
-  options: XlsxImportOptions;
+  options: NativeDocumentImportOptions;
 }
 
-export interface XlsxWorkerExportPayload {
+export interface NativeDocumentWorkerExportPayload {
   fileName: string;
   snapshot: WorkbookSnapshot;
-  options: XlsxExportOptions;
-  nativePackage?: NativePackageState;
+  options: NativeDocumentExportOptions;
+  artifact?: NativeDocumentArtifact;
+  mode?: 'save' | 'save-as' | 'export';
 }
 
-export interface XlsxWorkerImportRequest {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerImportRequest {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   kind: 'import';
   taskId: string;
   revision: number;
-  payload: XlsxWorkerImportPayload;
+  payload: NativeDocumentWorkerImportPayload;
 }
 
-export interface XlsxWorkerExportRequest {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerExportRequest {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   kind: 'export';
   taskId: string;
   revision: number;
-  payload: XlsxWorkerExportPayload;
+  payload: NativeDocumentWorkerExportPayload;
 }
 
-export interface XlsxWorkerCancelRequest {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerCancelRequest {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   kind: 'cancel';
   taskId: string;
   revision?: number;
 }
 
-export type XlsxWorkerRequest = XlsxWorkerImportRequest | XlsxWorkerExportRequest | XlsxWorkerCancelRequest;
+export type NativeDocumentWorkerRequest = NativeDocumentWorkerImportRequest | NativeDocumentWorkerExportRequest | NativeDocumentWorkerCancelRequest;
 
-export interface XlsxWorkerError {
+export interface NativeDocumentWorkerError {
   code: string;
   message: string;
+  format?: import('./types').NativeDocumentFormat;
+  location?: string;
+  recovery?: string;
 }
 
-export interface XlsxWorkerCompletedResult {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerCompletedResult {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   taskId: string;
   revision: number;
   status: 'completed';
-  result: XlsxImportResult | XlsxExportResult;
+  result: NativeDocumentImportResult | NativeDocumentExportResult;
 }
 
-export interface XlsxWorkerFailedResult {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerFailedResult {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   taskId: string;
   revision: number;
   status: 'failed';
-  error: XlsxWorkerError;
+  error: NativeDocumentWorkerError;
 }
 
-export interface XlsxWorkerCancelledResult {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerCancelledResult {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   taskId: string;
   revision: number;
   status: 'cancelled';
 }
 
-export interface XlsxWorkerProgressResult {
-  protocol: typeof XLSX_WORKER_PROTOCOL;
-  version: typeof XLSX_WORKER_VERSION;
+export interface NativeDocumentWorkerProgressResult {
+  protocol: typeof NATIVE_DOCUMENT_WORKER_PROTOCOL;
+  version: typeof NATIVE_DOCUMENT_WORKER_VERSION;
   taskId: string;
   revision: number;
   status: 'progress';
@@ -86,67 +90,68 @@ export interface XlsxWorkerProgressResult {
   percent: number;
 }
 
-export type XlsxWorkerResult = XlsxWorkerCompletedResult | XlsxWorkerFailedResult | XlsxWorkerCancelledResult | XlsxWorkerProgressResult;
+export type NativeDocumentWorkerResult = NativeDocumentWorkerCompletedResult | NativeDocumentWorkerFailedResult | NativeDocumentWorkerCancelledResult | NativeDocumentWorkerProgressResult;
 
-export function createXlsxImportRequest(taskId: string, revision: number, payload: XlsxWorkerImportPayload): XlsxWorkerImportRequest {
-  return { protocol: XLSX_WORKER_PROTOCOL, version: XLSX_WORKER_VERSION, kind: 'import', taskId, revision, payload };
+export function createNativeDocumentImportRequest(taskId: string, revision: number, payload: NativeDocumentWorkerImportPayload): NativeDocumentWorkerImportRequest {
+  return { protocol: NATIVE_DOCUMENT_WORKER_PROTOCOL, version: NATIVE_DOCUMENT_WORKER_VERSION, kind: 'import', taskId, revision, payload };
 }
 
-export function createXlsxExportRequest(taskId: string, revision: number, payload: XlsxWorkerExportPayload): XlsxWorkerExportRequest {
-  return { protocol: XLSX_WORKER_PROTOCOL, version: XLSX_WORKER_VERSION, kind: 'export', taskId, revision, payload };
+export function createNativeDocumentExportRequest(taskId: string, revision: number, payload: NativeDocumentWorkerExportPayload): NativeDocumentWorkerExportRequest {
+  return { protocol: NATIVE_DOCUMENT_WORKER_PROTOCOL, version: NATIVE_DOCUMENT_WORKER_VERSION, kind: 'export', taskId, revision, payload };
 }
 
-export function createXlsxCancelRequest(taskId: string, revision?: number): XlsxWorkerCancelRequest {
-  return { protocol: XLSX_WORKER_PROTOCOL, version: XLSX_WORKER_VERSION, kind: 'cancel', taskId, ...(revision === undefined ? {} : { revision }) };
+export function createNativeDocumentCancelRequest(taskId: string, revision?: number): NativeDocumentWorkerCancelRequest {
+  return { protocol: NATIVE_DOCUMENT_WORKER_PROTOCOL, version: NATIVE_DOCUMENT_WORKER_VERSION, kind: 'cancel', taskId, ...(revision === undefined ? {} : { revision }) };
 }
 
-export function assertXlsxWorkerRequest(value: unknown): asserts value is XlsxWorkerRequest {
-  if (!isRecord(value) || value.protocol !== XLSX_WORKER_PROTOCOL || value.version !== XLSX_WORKER_VERSION) {
-    throw new Error('Invalid XLSX worker protocol or version');
+export function assertNativeDocumentWorkerRequest(value: unknown): asserts value is NativeDocumentWorkerRequest {
+  if (!isRecord(value) || value.protocol !== NATIVE_DOCUMENT_WORKER_PROTOCOL || value.version !== NATIVE_DOCUMENT_WORKER_VERSION) {
+    throw new Error('Invalid native document worker protocol or version');
   }
-  if (typeof value.taskId !== 'string' || value.taskId.length === 0) throw new Error('XLSX worker taskId is required');
+  if (typeof value.taskId !== 'string' || value.taskId.length === 0) throw new Error('Native document worker taskId is required');
   if (value.kind === 'cancel') {
-    if (value.revision !== undefined && (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0)) throw new Error('XLSX worker cancellation revision is invalid');
+    if (value.revision !== undefined && (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0)) throw new Error('Native document worker cancellation revision is invalid');
     return;
   }
-  if (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0) throw new Error('XLSX worker revision must be a non-negative integer');
-  if (!isRecord(value.payload)) throw new Error('XLSX worker payload is required');
+    if (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0) throw new Error('Native document worker revision must be a non-negative integer');
+  if (!isRecord(value.payload)) throw new Error('Native document worker payload is required');
   if (value.kind === 'import') {
-    if (typeof value.payload.fileName !== 'string' || !isArrayBuffer(value.payload.buffer) || !isRecord(value.payload.options)) throw new Error('Invalid XLSX import worker payload');
-    assertXlsxOptions(value.payload.options, 'import');
+    if (typeof value.payload.fileName !== 'string' || !isArrayBuffer(value.payload.buffer) || !isRecord(value.payload.options)) throw new Error('Invalid native document import worker payload');
+    assertNativeDocumentOptions(value.payload.options, 'import');
     return;
   }
   if (value.kind === 'export') {
-    if (typeof value.payload.fileName !== 'string' || !isRecord(value.payload.snapshot) || value.payload.snapshot.schema !== 'WorkbookSnapshot' || !isRecord(value.payload.options)) throw new Error('Invalid XLSX export worker payload');
-    assertXlsxOptions(value.payload.options, 'export');
+    if (typeof value.payload.fileName !== 'string' || !isRecord(value.payload.snapshot) || value.payload.snapshot.schema !== 'WorkbookSnapshot' || !isRecord(value.payload.options)) throw new Error('Invalid native document export worker payload');
+    assertNativeDocumentOptions(value.payload.options, 'export');
+    if (value.payload.mode !== undefined && !['save', 'save-as', 'export'].includes(value.payload.mode)) throw new Error('Invalid native document export mode');
     return;
   }
-  throw new Error('Unknown XLSX worker request kind');
+  throw new Error('Unknown native document worker request kind');
 }
 
-export function assertXlsxWorkerResult(value: unknown): asserts value is XlsxWorkerResult {
-  if (!isRecord(value) || value.protocol !== XLSX_WORKER_PROTOCOL || value.version !== XLSX_WORKER_VERSION || typeof value.taskId !== 'string' || value.taskId.length === 0 || typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0) {
-    throw new Error('Invalid XLSX worker result envelope');
+export function assertNativeDocumentWorkerResult(value: unknown): asserts value is NativeDocumentWorkerResult {
+  if (!isRecord(value) || value.protocol !== NATIVE_DOCUMENT_WORKER_PROTOCOL || value.version !== NATIVE_DOCUMENT_WORKER_VERSION || typeof value.taskId !== 'string' || value.taskId.length === 0 || typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0) {
+    throw new Error('Invalid native document worker result envelope');
   }
   if (value.status === 'completed' && isRecord(value.result)) return;
   if (value.status === 'cancelled') return;
   if (value.status === 'progress' && (value.stage === 'validate' || value.stage === 'read' || value.stage === 'parse' || value.stage === 'serialize' || value.stage === 'complete') && typeof value.percent === 'number' && Number.isFinite(value.percent) && value.percent >= 0 && value.percent <= 100) return;
-  if (value.status === 'failed' && isRecord(value.error) && typeof value.error.code === 'string' && typeof value.error.message === 'string') return;
-  throw new Error('Invalid XLSX worker result payload');
+  if (value.status === 'failed' && isRecord(value.error) && typeof value.error.code === 'string' && typeof value.error.message === 'string' && (value.error.location === undefined || typeof value.error.location === 'string') && (value.error.recovery === undefined || typeof value.error.recovery === 'string')) return;
+  throw new Error('Invalid native document worker result payload');
 }
 
 function isArrayBuffer(value: unknown): value is ArrayBuffer {
   return value instanceof ArrayBuffer;
 }
 
-function assertXlsxOptions(value: Record<string, any>, kind: 'import' | 'export'): void {
-  if (value.compatibilityTarget !== 'A' && value.compatibilityTarget !== 'B' && value.compatibilityTarget !== 'C') throw new Error(`Invalid XLSX ${kind} compatibility target`);
-  if (value.compatibilityMode !== undefined && !['strict', 'balanced', 'best-effort'].includes(value.compatibilityMode)) throw new Error(`Invalid XLSX ${kind} compatibility mode`);
-  if (value.dateSystem !== undefined && value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error(`Invalid XLSX ${kind} date system`);
-  if (value.preserveMacros !== undefined && typeof value.preserveMacros !== 'boolean') throw new Error(`Invalid XLSX ${kind} preserveMacros flag`);
-  if (kind === 'import' && value.limits !== undefined) {
-    if (!isRecord(value.limits)) throw new Error('Invalid XLSX import limits');
-    for (const [key, limit] of Object.entries(value.limits)) if (!['maxArchiveBytes', 'maxEntries', 'maxEntryBytes', 'maxUncompressedBytes', 'maxCompressionRatio'].includes(key) || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0) throw new Error(`Invalid XLSX import limit: ${key}`);
+function assertNativeDocumentOptions(value: Record<string, any>, kind: 'import' | 'export'): void {
+  if (value.compatibilityTarget !== 'A' && value.compatibilityTarget !== 'B' && value.compatibilityTarget !== 'C') throw new Error(`Invalid native document ${kind} compatibility target`);
+  if (value.compatibilityMode !== undefined && !['strict', 'balanced', 'best-effort'].includes(value.compatibilityMode)) throw new Error(`Invalid native document ${kind} compatibility mode`);
+  if (value.dateSystem !== undefined && value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error(`Invalid native document ${kind} date system`);
+  if (value.preserveMacros !== undefined && typeof value.preserveMacros !== 'boolean') throw new Error(`Invalid native document ${kind} preserveMacros flag`);
+  if (value.limits !== undefined) {
+    if (!isRecord(value.limits)) throw new Error(`Invalid native document ${kind} limits`);
+    for (const [key, limit] of Object.entries(value.limits)) if (!['maxArchiveBytes', 'maxEntries', 'maxEntryBytes', 'maxUncompressedBytes', 'maxCompressionRatio', 'maxCfbStreams', 'maxStreamBytes', 'maxRecordCount', 'maxXmlDepth', 'maxXmlBytes', 'maxCells'].includes(key) || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0) throw new Error(`Invalid native document ${kind} limit: ${key}`);
   }
 }
 

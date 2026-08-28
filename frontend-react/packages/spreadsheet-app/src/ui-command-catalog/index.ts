@@ -85,10 +85,10 @@ export type RibbonGroupId =
 
 export type RibbonCommandId =
   | 'save'
-  | 'exportXlsx'
-  | 'importXlsx'
-  | 'exportXlsxView'
-  | 'importXlsxView'
+  | 'exportDocument'
+  | 'importDocument'
+  | 'exportDocumentView'
+  | 'importDocumentView'
   | 'calculateNow'
   | 'goalSeek'
   | 'sjsTable'
@@ -447,8 +447,8 @@ export interface RibbonCommandActions {
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
-  onExportXlsx: () => void;
-  onImportXlsx: () => void;
+  onExportDocument: () => void;
+  onImportDocument: () => void;
   onRecalculate: () => void;
   onTracePrecedents: () => void;
   onTraceDependents: () => void;
@@ -769,10 +769,10 @@ export const RIBBON_TEXT = {
   },
   commands: {
     save: 'commands.save',
-    exportXlsx: 'commands.exportXlsx',
-    importXlsx: 'commands.importXlsx',
-    exportXlsxView: 'commands.exportXlsxView',
-    importXlsxView: 'commands.importXlsxView',
+    exportDocument: 'commands.exportDocument',
+    importDocument: 'commands.importDocument',
+    exportDocumentView: 'commands.exportDocumentView',
+    importDocumentView: 'commands.importDocumentView',
     calculateNow: 'commands.calculateNow',
     goalSeek: 'commands.goalSeek',
     sjsTable: 'commands.sjsTable',
@@ -1653,8 +1653,8 @@ const stylePresetCommand = (
 
 export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
-  callback('exportXlsx', 'file', 'workbook', RIBBON_TEXT.commands.exportXlsx, (context) => context.actions.onExportXlsx()),
-  callback('importXlsx', 'file', 'workbook', RIBBON_TEXT.commands.importXlsx, (context) => context.actions.onImportXlsx()),
+  callback('exportDocument', 'file', 'workbook', RIBBON_TEXT.commands.exportDocument, (context) => context.actions.onExportDocument()),
+  callback('importDocument', 'file', 'workbook', RIBBON_TEXT.commands.importDocument, (context) => context.actions.onImportDocument()),
 
 
   callback('calculateNow', 'formulas', 'calculation', RIBBON_TEXT.commands.calculateNow, (context) => context.actions.onRecalculate(), 'calculator'),
@@ -2062,8 +2062,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('printPdf', 'view', 'printLayout', RIBBON_TEXT.commands.printPdf, () => ({ type: 'dialog.open', dialog: 'print-preview' }), 'printer'),
   callback('bandedRows', 'view', 'appearanceFiles', RIBBON_TEXT.commands.bandedRows, (context) => context.actions.onToggleBandedRows()),
   intent('settings', 'settings', 'settings', RIBBON_TEXT.commands.settings, () => ({ type: 'backstage.open', panel: 'options' }), 'sliders'),
-  callback('exportXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.exportXlsxView, (context) => context.actions.onExportXlsx()),
-  callback('importXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.importXlsxView, (context) => context.actions.onImportXlsx()),
+  callback('exportDocumentView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.exportDocumentView, (context) => context.actions.onExportDocument()),
+  callback('importDocumentView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.importDocumentView, (context) => context.actions.onImportDocument()),
 ] as const;
 
 const commandById = new Map<RibbonCommandId, CommandDefinition>(RIBBON_COMMAND_CATALOG.map((definition) => [definition.id, definition] as const));

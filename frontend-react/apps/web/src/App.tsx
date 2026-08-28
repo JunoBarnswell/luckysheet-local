@@ -1,6 +1,6 @@
 import { Box, Button, CheckToggle, Inline, Select, Stack, StatePanel, Text, TextInput } from "@react-sheets/ui-system";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
-import { WorkbookBackstageShell } from "./workbooks";
+import { SaveAsDocumentDialog, WorkbookBackstageShell } from "./workbooks";
 import { WorkbookHubContainer } from "./containers/WorkbookHubContainer";
 import { useApplicationServices } from "./ApplicationServicesProvider";
 import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
@@ -61,6 +61,8 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     onReady: () => catalog.markOpened(resolution),
   });
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsBusy, setSaveAsBusy] = useState(false);
   const initialSelectionApplied = useRef(false);
   const isBusy = state.phase !== "ready" || state.pendingCommandCount > 0;
 
@@ -80,19 +82,30 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
   const saveWorkbook = () => { void session.saveWorkbook("Ribbon save"); };
-  const exportXlsx = async () => {
+  const exportDocument = async () => {
     try {
       await session.saveWorkbook("Export workbook");
       const exported = await catalog.exportWorkbook(state.unitId);
-      const href = URL.createObjectURL(new Blob([exported.buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const href = URL.createObjectURL(new Blob([exported.buffer], { type: mimeTypeForFileName(exported.fileName) }));
       const link = document.createElement("a"); link.href = href; link.download = exported.fileName; link.click(); URL.revokeObjectURL(href);
-    } catch (cause) { session.notify(cause instanceof Error ? cause.message : "XLSX export failed"); }
+    } catch (cause) { session.notify(cause instanceof Error ? cause.message : "文档导出失败"); }
   };
   const renameWorkbook = async (name: string) => {
     const normalized = name.trim(); if (!normalized) return;
     try { session.renameWorkbook(normalized); } catch (cause) { session.notify(cause instanceof Error ? cause.message : "Unable to rename workbook"); }
   };
-  const importXlsx = () => navigate("/workbooks?dialog=import");
+  const importDocument = () => navigate("/workbooks?dialog=import");
+  const saveAsDocument = async (fileName: string) => {
+    setSaveAsBusy(true);
+    try {
+      await session.saveWorkbook("Save before Save As");
+      const exported = await catalog.exportWorkbook(state.unitId, { fileName });
+      const href = URL.createObjectURL(new Blob([exported.buffer], { type: mimeTypeForFileName(exported.fileName) }));
+      const link = document.createElement("a"); link.href = href; link.download = exported.fileName; link.click(); URL.revokeObjectURL(href);
+      setSaveAsOpen(false);
+    } catch (cause) { session.notify(cause instanceof Error ? cause.message : "另存为失败"); }
+    finally { setSaveAsBusy(false); }
+  };
 
   if (state.backstage.open) {
     const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
@@ -100,18 +113,20 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     const actions = [
       { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },
       { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: () => { void session.saveWorkbook("Backstage save"); } },
-      { id: "import", label: "导入", description: "导入为新的工作簿", icon: "upload" as const, disabled: isBusy, onSelect: importXlsx },
-      { id: "export", label: "导出", description: "下载当前工作簿的 XLSX 副本", icon: "download" as const, disabled: isBusy, onSelect: () => { void exportXlsx(); } },
+      { id: "save-as", label: "另存为", description: "选择目标协议导出副本", icon: "save" as const, disabled: isBusy, onSelect: () => setSaveAsOpen(true) },
+      { id: "import", label: "打开 / 导入", description: "按原生协议打开为新的工作簿", icon: "upload" as const, disabled: isBusy, onSelect: importDocument },
+      { id: "export", label: "导出", description: "下载当前工作簿的原生文档副本", icon: "download" as const, disabled: isBusy, onSelect: () => { void exportDocument(); } },
       { id: "close", label: "关闭", description: "保存后返回工作簿中心", icon: "x" as const, disabled: isBusy, onSelect: () => { void closeWorkbook(); } },
       { id: "options", label: "选项", description: "语言与工作簿偏好", icon: "settings" as const, onSelect: () => session.setBackstagePanel("options") },
     ];
     return (
-      <WorkbookBackstageShell actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：导入会创建新的工作簿；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+      <>
+      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
         {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>
             <Stack gap="xs">
-              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">待同步操作：{state.pendingChangeSetCount}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "导入的 XLSX" : "原生工作簿"}</Text>
+              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">待同步操作：{state.pendingChangeSetCount}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "原生文档导入" : "原生工作簿"}</Text>
             </Stack>
           </Stack>
         ) : (
@@ -141,10 +156,23 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           </Stack>
         )}
       </WorkbookBackstageShell>
+      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.ssjson`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
+      </>
     );
   }
 
-  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportXlsx={exportXlsx} importXlsx={importXlsx} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
+  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportDocument={exportDocument} importDocument={importDocument} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
+}
+
+function mimeTypeForFileName(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
 }
 
 export default function App() {

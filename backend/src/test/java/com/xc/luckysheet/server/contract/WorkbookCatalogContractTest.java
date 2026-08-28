@@ -30,8 +30,8 @@ class WorkbookCatalogContractTest {
 
     @Test
     void importedSourceUsesThePublicHyphenatedWireValue() throws Exception {
-        assertEquals("\"xlsx-import\"", mapper.writeValueAsString(WorkbookSource.XLSX_IMPORT));
-        assertEquals(WorkbookSource.XLSX_IMPORT, mapper.readValue("\"xlsx-import\"", WorkbookSource.class));
+        assertEquals("\"document-import\"", mapper.writeValueAsString(WorkbookSource.DOCUMENT_IMPORT));
+        assertEquals(WorkbookSource.DOCUMENT_IMPORT, mapper.readValue("\"document-import\"", WorkbookSource.class));
         assertEquals("\"personal\"", mapper.writeValueAsString(WorkspaceSpaceType.PERSONAL));
     }
 }

@@ -3,20 +3,20 @@ import { child, children, descendants, localName, parseXml } from './xml';
 import type { CompatibilityFeatureDetection } from './compatibility-report';
 import type { OpcPackageGraph } from './types';
 
-export type XlsxCapabilityState = 'full' | 'partial' | 'none';
+export type NativeCapabilityState = 'full' | 'partial' | 'none';
 
-export interface XlsxCapabilityDeclaration {
+export interface NativeCapabilityDeclaration {
   feature: string;
-  detect: XlsxCapabilityState;
-  read: XlsxCapabilityState;
-  write: XlsxCapabilityState;
-  edit: XlsxCapabilityState;
-  preserve: XlsxCapabilityState;
+  detect: NativeCapabilityState;
+  read: NativeCapabilityState;
+  write: NativeCapabilityState;
+  edit: NativeCapabilityState;
+  preserve: NativeCapabilityState;
   approximation?: string;
 }
 
 /** Machine-readable source for import/export reporting and strict-mode gating. */
-export const XLSX_CAPABILITY_MANIFEST = {
+export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   cells: capability('cells', 'full', 'full', 'full', 'full', 'full'),
   formulas: capability('formulas', 'full', 'partial', 'full', 'partial', 'full'),
   styles: capability('styles', 'full', 'full', 'full', 'full', 'full'),
@@ -50,6 +50,17 @@ export const XLSX_CAPABILITY_MANIFEST = {
   'embedded-object': capability('embedded-object', 'full', 'full', 'full', 'full', 'full', 'File bytes are content-addressed in the local asset store; activation is intentionally not part of the object contract.'),
   equation: capability('equation', 'full', 'full', 'full', 'full', 'full', 'The supported linear/OMML token subset is rendered and retained locally.'),
   screenshot: capability('screenshot', 'full', 'full', 'full', 'full', 'full', 'Screenshot captures a workbook region locally and never requests OS screen permission.'),
+  xmlss: capability('xmlss', 'full', 'full', 'full', 'full', 'full', 'SpreadsheetML 2003 is parsed and written directly without OOXML conversion.'),
+  text: capability('text', 'full', 'full', 'full', 'full', 'full', 'Text dialect encoding, BOM, delimiter, quote and row terminators are owned by the text codec.'),
+  ods: capability('ods', 'full', 'full', 'full', 'full', 'full', 'ODF package parts are parsed and written directly; unknown parts remain in the package graph.'),
+  sjs: capability('sjs', 'full', 'full', 'full', 'full', 'full', 'SpreadJS SJS JSON parts are parsed and written directly.'),
+  ssjson: capability('ssjson', 'full', 'full', 'full', 'full', 'full', 'SpreadJS SSJSON is validated as its own JSON document.'),
+  xlsb: capability('xlsb', 'full', 'none', 'none', 'none', 'full', 'BIFF12 record-native codec boundary is detected and preserved; editing is blocked until record ownership is implemented.'),
+  biff: capability('biff', 'full', 'none', 'none', 'none', 'full', 'BIFF/CFB artifact identity is detected and preserved; editing is blocked until record ownership is implemented.'),
+  dbf: capability('dbf', 'full', 'none', 'none', 'none', 'full', 'Excel lists DBF as open-only; the local runtime refuses projection without a DBF reader.'),
+  works: capability('works', 'full', 'none', 'none', 'none', 'full', 'Works spreadsheet files are detected but remain blocked without a native reader.'),
+  web: capability('web', 'full', 'none', 'none', 'none', 'full', 'Office web documents are detected but are not workbook round-trip formats.'),
+  presentation: capability('presentation', 'full', 'none', 'none', 'none', 'full', 'PDF/XPS are presentation exports, not workbook round-trip formats.'),
   pivot: capability('pivot', 'full', 'partial', 'partial', 'partial', 'full'),
   slicer: capability('slicer', 'full', 'partial', 'partial', 'partial', 'full'),
   timeline: capability('timeline', 'full', 'partial', 'partial', 'partial', 'full'),
@@ -59,17 +70,17 @@ export const XLSX_CAPABILITY_MANIFEST = {
   'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
   'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
   'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
-} as const satisfies Record<string, XlsxCapabilityDeclaration>;
+} as const satisfies Record<string, NativeCapabilityDeclaration>;
 
 function capability(
   feature: string,
-  detect: XlsxCapabilityState,
-  read: XlsxCapabilityState,
-  write: XlsxCapabilityState,
-  edit: XlsxCapabilityState,
-  preserve: XlsxCapabilityState,
+  detect: NativeCapabilityState,
+  read: NativeCapabilityState,
+  write: NativeCapabilityState,
+  edit: NativeCapabilityState,
+  preserve: NativeCapabilityState,
   approximation?: string,
-): XlsxCapabilityDeclaration {
+): NativeCapabilityDeclaration {
   return { feature, detect, read, write, edit, preserve, ...(approximation ? { approximation } : {}) };
 }
 
@@ -124,8 +135,8 @@ function resolvePart(source: string, target: string): string {
   return result.join('/');
 }
 
-export function capabilityFor(feature: string): XlsxCapabilityDeclaration {
-  return XLSX_CAPABILITY_MANIFEST[feature as keyof typeof XLSX_CAPABILITY_MANIFEST]
+export function capabilityFor(feature: string): NativeCapabilityDeclaration {
+  return NATIVE_DOCUMENT_CAPABILITY_MANIFEST[feature as keyof typeof NATIVE_DOCUMENT_CAPABILITY_MANIFEST]
     ?? capability(feature, 'partial', 'none', 'none', 'none', 'none');
 }
 

@@ -1,7 +1,7 @@
 import { strFromU8, strToU8 } from 'fflate';
 import type { ChartDrawingPayload, DrawingObject, SheetSnapshot, WorkbookSnapshot } from '@react-sheets/core-model';
 import { descendants, encodeXml, localName, parseXml, serializeXml, type XmlNode } from './xml';
-import type { NativePivotGraph, NativePivotTableDefinition, XlsxRelationship } from './types';
+import type { NativePivotGraph, NativePivotTableDefinition, NativeRelationship } from './types';
 
 const NS_CHART = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 const NS_DRAWING = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
@@ -14,7 +14,7 @@ const GENERATED_DRAWING_NAME_PREFIX = 'react-pivot-chart:';
 
 export interface NativePivotChartSyncInput {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   snapshot: WorkbookSnapshot;
   graph: NativePivotGraph;
   sheetPartById: Record<string, string>;
@@ -23,7 +23,7 @@ export interface NativePivotChartSyncInput {
 
 export interface NativePivotChartSyncResult {
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
 }
 
 /**
@@ -200,7 +200,7 @@ function pruneGeneratedChartParts(files: Record<string, Uint8Array>, activeParts
   for (const name of Object.keys(files)) if (name.startsWith(GENERATED_CHART_PREFIX) && !activeParts.has(name)) delete files[name];
 }
 
-function pruneGeneratedDrawingAnchors(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>): Set<string> {
+function pruneGeneratedDrawingAnchors(files: Record<string, Uint8Array>, relationships: Record<string, NativeRelationship[]>): Set<string> {
   const generatedDrawingParts = new Set<string>();
   for (const [source, list] of Object.entries(relationships)) {
     if (!source.startsWith('xl/drawings/') || source.includes('/_rels/')) continue;
@@ -221,7 +221,7 @@ function isGeneratedChartAnchor(node: XmlNode): boolean {
   return Boolean(name);
 }
 
-function pruneEmptyGeneratedDrawings(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>, generatedDrawingParts: Set<string>): void {
+function pruneEmptyGeneratedDrawings(files: Record<string, Uint8Array>, relationships: Record<string, NativeRelationship[]>, generatedDrawingParts: Set<string>): void {
   for (const [sheetPart, list] of Object.entries(relationships)) {
     if (!sheetPart.startsWith('xl/worksheets/')) continue;
     const drawing = list.find((relation) => relation.type === REL_DRAWING || relation.type.endsWith('/drawing'));
@@ -238,7 +238,7 @@ function pruneEmptyGeneratedDrawings(files: Record<string, Uint8Array>, relation
   }
 }
 
-function validateGeneratedPackage(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>, activeParts: Set<string>): void {
+function validateGeneratedPackage(files: Record<string, Uint8Array>, relationships: Record<string, NativeRelationship[]>, activeParts: Set<string>): void {
   for (const chartPart of activeParts) {
     if (!files[chartPart]) throw new Error(`Generated PivotChart part is missing: ${chartPart}`);
     const chartXml = strFromU8(files[chartPart]!);
@@ -251,21 +251,21 @@ function validateGeneratedPackage(files: Record<string, Uint8Array>, relationshi
   }
 }
 
-function isChartRelation(relation: XlsxRelationship): boolean { return relation.type === REL_CHART || relation.type.endsWith('/chart'); }
+function isChartRelation(relation: NativeRelationship): boolean { return relation.type === REL_CHART || relation.type.endsWith('/chart'); }
 
 function createDrawingRoot(): XmlNode { return firstElement(parseXml(`<xdr:wsDr xmlns:xdr="${NS_DRAWING}" xmlns:a="${NS_DRAWING_MAIN}" xmlns:c="${NS_CHART}" xmlns:r="${NS_DOC_REL}"/>`), 'wsDr'); }
 
 function firstElement(root: XmlNode, name: string): XmlNode { const found = root.name === name || localName(root.name) === name ? root : descendants(root, name)[0]; if (!found) throw new Error(`OOXML part is missing <${name}>`); return found; }
 function withXmlDeclaration(xml: string): string { return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`; }
 function cloneFiles(files: Record<string, Uint8Array>): Record<string, Uint8Array> { return Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, bytes.slice()])); }
-function cloneRelationships(input: Record<string, XlsxRelationship[]>): Record<string, XlsxRelationship[]> { return Object.fromEntries(Object.entries(input).map(([source, list]) => [source, list.map((relation) => ({ ...relation }))])); }
-function allocateId(list: XlsxRelationship[]): string { const used = new Set(list.map((relation) => relation.id)); let index = 1; while (used.has(`rId${index}`)) index += 1; return `rId${index}`; }
+function cloneRelationships(input: Record<string, NativeRelationship[]>): Record<string, NativeRelationship[]> { return Object.fromEntries(Object.entries(input).map(([source, list]) => [source, list.map((relation) => ({ ...relation }))])); }
+function allocateId(list: NativeRelationship[]): string { const used = new Set(list.map((relation) => relation.id)); let index = 1; while (used.has(`rId${index}`)) index += 1; return `rId${index}`; }
 function nextDrawingPart(files: Record<string, Uint8Array>): string { let index = 1; while (files[`xl/drawings/drawing${index}.xml`]) index += 1; return `xl/drawings/drawing${index}.xml`; }
 function nextDrawingObjectId(root: XmlNode, offset: number): number { const ids = descendants(root, 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isFinite); return Math.max(0, ...ids, offset) + 1; }
 function resolveTarget(source: string, target: string): string { if (target.startsWith('/')) return target.slice(1); const base = source.includes('/') ? source.slice(0, source.lastIndexOf('/') + 1) : ''; const result: string[] = []; for (const piece of `${base}${target}`.split('/')) { if (!piece || piece === '.') continue; if (piece === '..') result.pop(); else result.push(piece); } return result.join('/'); }
 function relativeTarget(source: string, target: string): string { const left = source.slice(0, source.lastIndexOf('/') + 1).split('/').filter(Boolean); const right = target.split('/').filter(Boolean); while (left.length && right.length && left[0] === right[0]) { left.shift(); right.shift(); } return `${'../'.repeat(left.length)}${right.join('/')}`; }
 function relationshipPartName(source: string): string { const slash = source.lastIndexOf('/'); return slash < 0 ? `_rels/${source}.rels` : `${source.slice(0, slash)}/_rels/${source.slice(slash + 1)}.rels`; }
-function buildRelationshipsXml(relationships: XlsxRelationship[]): string { return withXmlDeclaration(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.map((relation) => `<Relationship Id="${encodeXml(relation.id)}" Type="${encodeXml(relation.type)}" Target="${encodeXml(relation.target)}"${relation.targetMode ? ` TargetMode="${encodeXml(relation.targetMode)}"` : ''}/>`).join('')}</Relationships>`); }
+function buildRelationshipsXml(relationships: NativeRelationship[]): string { return withXmlDeclaration(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.map((relation) => `<Relationship Id="${encodeXml(relation.id)}" Type="${encodeXml(relation.type)}" Target="${encodeXml(relation.target)}"${relation.targetMode ? ` TargetMode="${encodeXml(relation.targetMode)}"` : ''}/>`).join('')}</Relationships>`); }
 function columnToLetter(index: number): string { let value = index + 1; let result = ''; while (value > 0) { const remainder = (value - 1) % 26; result = String.fromCharCode(65 + remainder) + result; value = Math.floor((value - 1) / 26); } return result; }
 interface A1Range { startRow: number; endRow: number; startColumn: number; endColumn: number }
 function parseA1Range(value: string): A1Range | undefined { const parts = value.split(':'); const start = parseA1(parts[0] ?? ''); const end = parseA1(parts[1] ?? parts[0] ?? ''); return start && end ? { startRow: start.row, endRow: end.row, startColumn: start.column, endColumn: end.column } : undefined; }

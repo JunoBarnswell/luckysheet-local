@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createNativePackageState, exportSnapshotToXlsxBuffer, loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
+import { createNativeDocumentArtifact, exportSnapshotToOoxmlBuffer, loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
@@ -64,15 +64,15 @@ describe('page-session memory persistence', () => {
   it('checkpoints the workspace and native artifact atomically', async () => {
     const persistence = new WorkspacePersistence();
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
-    const sourceBytes = exportSnapshotToXlsxBuffer(snapshot);
-    const artifact = await createNativePackageState({
+    const sourceBytes = exportSnapshotToOoxmlBuffer(snapshot);
+    const artifact = await createNativeDocumentArtifact({
       fileName: 'artifact.xlsx', buffer: sourceBytes, dateSystem: '1900',
-      packageGraph: loadOpcPackageGraph(sourceBytes).packageGraph satisfies OpcPackageGraph,
+      nativeGraph: { kind: 'opc', package: loadOpcPackageGraph(sourceBytes).packageGraph satisfies OpcPackageGraph },
       detectedFeatures: ['worksheet'],
     });
     const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
     assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
-    assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
+    assert.equal((await persistence.nativeDocuments.load(snapshot.unitId))?.checksum, artifact.checksum);
   });
 
   it('commits operation journal and rejects a stale storage revision', async () => {
