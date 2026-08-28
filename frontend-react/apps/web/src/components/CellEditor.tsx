@@ -96,6 +96,7 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
         aria-label="Cell editor"
         inputMode={editorSurface.inputMode ?? 'text'}
         autoCapitalize={editorSurface.autoCapitalize}
+        wrap={layout?.multiline ? 'soft' : 'off'}
         data-pointer-gesture-owner="cell-editor"
         className={`h-full min-h-0 w-full resize-none rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0 ${layout?.requiresInternalScroll ? 'overflow-auto' : 'overflow-visible'}`}
         value={draft.text}
