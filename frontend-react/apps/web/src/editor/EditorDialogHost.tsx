@@ -201,6 +201,7 @@ export function EditorDialogHost({
         {...(chartRecommendationError ? { error: chartRecommendationError } : {})}
         onClose={session.closeActiveDialog.bind(session)}
         onSelect={(candidate) => { session.insertRecommendedChart(candidate); session.closeActiveDialog(); }}
+        onOpenAllCharts={() => { session.closeActiveDialog(); session.setActivePanel('chart'); }}
       />
       <RecommendedPivotTablesDialog
         open={state.dialogs.active === 'recommended-pivots'}

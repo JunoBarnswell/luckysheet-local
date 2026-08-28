@@ -19,6 +19,8 @@ import type {
   SheetSnapshot,
   RangeRef,
   WorksheetPane,
+  SparklineGroup,
+  SparklineModel,
 } from '@react-sheets/core-model';
 import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, DEFAULT_WORKBOOK_EDITING_OPTIONS, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
 import {
@@ -57,7 +59,7 @@ import {
   type NativeDocumentResourceLimits,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
-import { synchronizeNativePivotCharts } from './native-chart';
+import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
@@ -189,6 +191,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
   const nativePivotGraph = workbookPart === 'xl/workbook.xml' && hasNativePivotMarkers(normalizedFiles)
     ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById, dateSystem })
     : undefined;
+  const nativeChartGraph = readNativeChartGraph({ files: normalizedFiles, relationships, sheetPartById });
   return {
     files: normalizedFiles,
     packageGraph: {
@@ -203,6 +206,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
       format,
       profile: format.family === 'ooxml' ? format.profile : 'transitional',
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
+      ...(nativeChartGraph ? { nativeChartGraph } : {}),
     },
   };
 }
@@ -267,9 +271,10 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
     sheets,
   };
   applyReactSheetsMetadata(snapshot, files[REACT_SHEETS_METADATA_PART], loaded.packageGraph);
+  attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
+  loaded.packageGraph.nativeChartGraph = projectNativeCharts(snapshot, loaded.packageGraph.nativeChartGraph, files, relationships, loaded.packageGraph.sheetPartById, loaded.packageGraph.nativePivotGraph);
   assertCanonicalWorkbookSnapshot(snapshot);
   applyPrintDefinedNames(snapshot);
-  attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
 }
 
@@ -326,11 +331,13 @@ export function exportSnapshotToOpcPackageGraph(
     relationships: nativeUpdate.relationships,
     snapshot,
     graph: nativeUpdate.graph,
+    nativeChartGraph: preserved?.nativeChartGraph,
     sheetPartById,
     displayCellsBySheetPart: nativeUpdate.displayCellsBySheetPart,
   });
   nativeUpdate.files = chartUpdate.files;
   nativeUpdate.relationships = chartUpdate.relationships;
+  nativeUpdate.nativeChartGraph = chartUpdate.nativeChartGraph;
   synchronizeImageAssets(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes);
   synchronizeEmbeddedAssets(nativeUpdate.files, snapshot, options.assetBytes);
   files.clear();
@@ -355,7 +362,7 @@ export function exportSnapshotToOpcPackageGraph(
       [...requiredHyperlinks, ...tableParts.required],
     );
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])))));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [])));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -663,6 +670,7 @@ function parseSheet(
   }
   const manualHiddenRows = hiddenRows.filter((row) => !filterOwnedRows.has(row));
   const outline = parseOutline(root);
+  const nativeSparklines = parseNativeSparklines(root, descriptor, sheetDescriptors);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
   const rowCount = Math.max(1, maxRow + 1);
@@ -677,7 +685,8 @@ function parseSheet(
     merges,
     pane,
     pivots: [],
-    sparklines: [],
+    sparklines: nativeSparklines.sparklines,
+    ...(nativeSparklines.groups.length ? { sparklineGroups: nativeSparklines.groups } : {}),
     drawings: [],
     drawingPayloads: {},
     conditionalFormats,
@@ -984,6 +993,109 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     };
     sheet.drawings.push(drawing);
   }
+}
+
+function parseNativeSparklines(root: XmlNode, descriptor: SheetDescriptor, sheetDescriptors: readonly SheetDescriptor[]): { sparklines: SparklineModel[]; groups: SparklineGroup[] } {
+  const sparklines: SparklineModel[] = [];
+  const groups: SparklineGroup[] = [];
+  const groupRoot = descendants(root, 'sparklineGroups')[0];
+  if (!groupRoot) return { sparklines, groups };
+  const sheetIdByName = new Map(sheetDescriptors.map((entry) => [entry.name, entry.id]));
+  let groupIndex = 0;
+  for (const groupNode of children(groupRoot, 'sparklineGroup')) {
+    const type = groupNode.attrs.type === 'column' || groupNode.attrs.type === 'win-loss' ? groupNode.attrs.type : 'line';
+    const groupId = `native-sparkline-group-${groupIndex++}`;
+    const memberIds: string[] = [];
+    const bool = (name: string): boolean | undefined => groupNode.attrs[name] === undefined ? undefined : groupNode.attrs[name] === '1' || groupNode.attrs[name] === 'true';
+    const numeric = (name: string): number | undefined => {
+      if (groupNode.attrs[name] === undefined) return undefined;
+      const value = Number(groupNode.attrs[name]);
+      return Number.isFinite(value) ? value : undefined;
+    };
+    const color = (name: string): string | undefined => {
+      const node = child(groupNode, name);
+      const value = node?.attrs.rgb ?? node?.attrs.val ?? groupNode.attrs[name];
+      if (!value) return undefined;
+      const rgb = value.replace(/^#/, '').slice(-6);
+      return /^[0-9a-f]{6}$/i.test(rgb) ? `#${rgb}` : undefined;
+    };
+    const emptyCells = groupNode.attrs.displayEmptyCellsAs === 'zero' ? 'zero' as const : groupNode.attrs.displayEmptyCellsAs === 'span' || groupNode.attrs.displayEmptyCellsAs === 'connect' ? 'connect' as const : groupNode.attrs.displayEmptyCellsAs === 'gap' ? 'gap' as const : undefined;
+    const minimum = numeric('manualMin');
+    const maximum = numeric('manualMax');
+    const seriesColor = color('colorSeries');
+    const group: SparklineGroup = {
+      id: groupId,
+      sheetId: descriptor.id,
+      type,
+      sparklineIds: memberIds,
+      ...(bool('displayXAxis') === undefined ? {} : { showAxis: bool('displayXAxis') }),
+      ...(bool('markers') === undefined ? {} : { showMarkers: bool('markers') }),
+      ...(numeric('lineWeight') === undefined ? {} : { lineWeight: numeric('lineWeight') }),
+      ...(bool('dateAxis') === undefined ? {} : { dateAxis: bool('dateAxis') }),
+      ...(bool('rightToLeft') === undefined ? {} : { rightToLeft: bool('rightToLeft') }),
+      ...(bool('displayHidden') === undefined ? {} : { hiddenCells: bool('displayHidden') ? 'show' : 'hide' }),
+      ...(emptyCells ? { emptyCells } : {}),
+      ...(minimum !== undefined && maximum !== undefined ? { verticalAxis: { mode: 'custom' as const, minimum, maximum } } : {}),
+      ...(color('colorAxis') ? { axisColor: color('colorAxis') } : {}),
+      ...(color('colorFirst') ? { firstColor: color('colorFirst') } : {}),
+      ...(color('colorLast') ? { lastColor: color('colorLast') } : {}),
+      ...(color('colorHigh') ? { highColor: color('colorHigh') } : {}),
+      ...(color('colorLow') ? { lowColor: color('colorLow') } : {}),
+      ...(color('colorNegative') ? { negativeColor: color('colorNegative') } : {}),
+      ...(color('colorMarkers') ? { markerColor: color('colorMarkers') } : {}),
+    };
+    for (const sparklineNode of descendants(child(groupNode, 'sparklines'), 'sparkline')) {
+      const sourceRange = parseNativeSparklineRange(textContent(child(sparklineNode, 'f')), sheetIdByName);
+      const target = parseNativeSparklineAddress(textContent(child(sparklineNode, 'sqref')));
+      if (!sourceRange || !target) continue;
+      const id = `native-sparkline-${sparklines.length + 1}`;
+      memberIds.push(id);
+      const memberBool = (name: string): boolean | undefined => sparklineNode.attrs[name] === undefined ? bool(name) : sparklineNode.attrs[name] === '1' || sparklineNode.attrs[name] === 'true';
+      sparklines.push({
+        id,
+        sheetId: descriptor.id,
+        anchor: target,
+        sourceRange,
+        type,
+        color: seriesColor ?? '#2563eb',
+        ...(color('colorNegative') ? { negativeColor: color('colorNegative') } : {}),
+        ...(memberBool('markers') === undefined ? {} : { showMarkers: memberBool('markers') }),
+        ...(memberBool('high') === undefined ? {} : { highlightMax: memberBool('high') }),
+        ...(memberBool('low') === undefined ? {} : { highlightMin: memberBool('low') }),
+        ...(memberBool('first') === undefined ? {} : { highlightFirst: memberBool('first') }),
+        ...(memberBool('last') === undefined ? {} : { highlightLast: memberBool('last') }),
+        ...(memberBool('negative') === undefined ? {} : { highlightNegative: memberBool('negative') }),
+        ...(sparklineNode.attrs.lineWeight || group.lineWeight !== undefined ? { lineWeight: Number(sparklineNode.attrs.lineWeight ?? group.lineWeight) } : {}),
+        ...(group.dateAxis === undefined ? {} : { dateAxis: group.dateAxis }),
+        ...(group.rightToLeft === undefined ? {} : { rightToLeft: group.rightToLeft }),
+        ...(group.hiddenCells === undefined ? {} : { hiddenCells: group.hiddenCells }),
+        ...(group.emptyCells === undefined ? {} : { emptyCells: group.emptyCells }),
+        ...(group.verticalAxis === undefined ? {} : { verticalAxis: structuredClone(group.verticalAxis) }),
+        ...(group.axisColor === undefined ? {} : { axisColor: group.axisColor }),
+        ...(group.firstColor === undefined ? {} : { firstColor: group.firstColor }),
+        ...(group.lastColor === undefined ? {} : { lastColor: group.lastColor }),
+        ...(group.highColor === undefined ? {} : { highColor: group.highColor }),
+        ...(group.lowColor === undefined ? {} : { lowColor: group.lowColor }),
+        ...(group.markerColor === undefined ? {} : { markerColor: group.markerColor }),
+        groupId,
+      });
+    }
+    if (memberIds.length) groups.push(group);
+  }
+  return { sparklines, groups };
+}
+
+function parseNativeSparklineRange(value: string, sheetIdByName: ReadonlyMap<string, string>): RangeRef | undefined {
+  const match = /^'?((?:[^']|'')+)'?!\s*(\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)$/i.exec(value.trim());
+  if (!match) return undefined;
+  const sheetId = sheetIdByName.get(match[1]!.replaceAll("''", "'"));
+  const range = parseRange(match[2]!);
+  return sheetId && range ? { ...range, sheetId } : undefined;
+}
+
+function parseNativeSparklineAddress(value: string): { row: number; column: number } | undefined {
+  const address = parseA1(value.split(':')[0] ?? '');
+  return address ? { row: address.row, column: address.column } : undefined;
 }
 
 function parseSheetTables(
@@ -1485,6 +1597,8 @@ function buildWorksheetXml(
   nativeControls: NativePivotControlDefinition[] = [],
   printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
   sheetNames: ReadonlyMap<string, string> = new Map(),
+  sparklines: SheetSnapshot['sparklines'] = [],
+  sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [],
 ): string {
   validateOoxmlExchangeBoundary(sheet);
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
@@ -1581,10 +1695,10 @@ function buildWorksheetXml(
       if (node) xml += serializeXml(node);
     }
     const extension = preservedNodes.get('extLst');
-    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart));
-    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid)) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart));
-  } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid)) {
-    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart));
+    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+  } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) {
+    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
   }
   xml += '</worksheet>';
   return xml;
@@ -1803,12 +1917,13 @@ function outlineLevelAt(outline: OutlineModel | undefined, axis: 'row' | 'column
   return { level: Math.max(...matches.map((group) => group.level)), collapsed: matches.some((group) => group.collapsed) };
 }
 
-function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[]): string {
+function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], sparklines: SheetSnapshot['sparklines'] = [], sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [], sheetNames: ReadonlyMap<string, string> = new Map()): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
   if (!controls.some((control) => !control.valid)) {
     root.children = root.children.flatMap((extension) => {
       const hasNativeControl = descendants(extension, 'slicerList').length > 0 || descendants(extension, 'timelineRefs').length > 0;
-      return hasNativeControl ? [] : [extension];
+      const hasNativeSparklines = descendants(extension, 'sparklineGroups').length > 0;
+      return hasNativeControl || (hasNativeSparklines && sparklines.length > 0) ? [] : [extension];
     });
   }
   const slicers = controls.filter((control) => control.kind === 'slicer' && control.valid && control.relationshipId);
@@ -1819,6 +1934,42 @@ function serializeWorksheetControlExtensions(original: XmlNode | undefined, cont
   }
   if (timelines.length) {
     const node = firstElement(parseXml(`<ext uri="{7E03D99C-DC04-49D9-9315-930204A7B6E9}" xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"><x15:timelineRefs>${timelines.map((control) => `<x15:timelineRef r:id="${encodeXml(control.relationshipId)}"/>`).join('')}</x15:timelineRefs></ext>`), 'ext');
+    root.children.push(node);
+  }
+  if (sparklines.length) {
+    const groups = new Map<string, { type: string; members: SheetSnapshot['sparklines']; group?: NonNullable<SheetSnapshot['sparklineGroups']>[number] }>();
+    for (const sparkline of sparklines) {
+      const key = sparkline.groupId ?? `single:${sparkline.id}`;
+      const existing = groups.get(key) ?? { type: sparkline.type, members: [], group: sparklineGroups.find((entry) => entry.id === sparkline.groupId) };
+      existing.members.push(sparkline);
+      groups.set(key, existing);
+    }
+    const colorNode = (name: string, value: string | undefined): string => value ? `<x14:${name} rgb="${encodeXml(ooxmlRgb(value))}"/>` : '';
+    const groupXml = [...groups.values()].map((entry) => {
+      const representative = entry.members[0];
+      if (!representative) return '';
+      const group = entry.group;
+      const effective = { ...representative, ...(group ?? {}) };
+      const attrs = [
+        `type="${encodeXml(effective.type)}"`,
+        ...(effective.lineWeight === undefined ? [] : [`lineWeight="${effective.lineWeight}"`]),
+        ...(effective.dateAxis === undefined ? [] : [`dateAxis="${effective.dateAxis ? 1 : 0}"`]),
+        ...(effective.showMarkers === undefined ? [] : [`markers="${effective.showMarkers ? 1 : 0}"`]),
+        ...(effective.highlightMax === undefined ? [] : [`high="${effective.highlightMax ? 1 : 0}"`]),
+        ...(effective.highlightMin === undefined ? [] : [`low="${effective.highlightMin ? 1 : 0}"`]),
+        ...(effective.highlightFirst === undefined ? [] : [`first="${effective.highlightFirst ? 1 : 0}"`]),
+        ...(effective.highlightLast === undefined ? [] : [`last="${effective.highlightLast ? 1 : 0}"`]),
+        ...(effective.highlightNegative === undefined ? [] : [`negative="${effective.highlightNegative ? 1 : 0}"`]),
+        ...(effective.showAxis === undefined ? [] : [`displayXAxis="${effective.showAxis ? 1 : 0}"`]),
+        ...(effective.rightToLeft === undefined ? [] : [`rightToLeft="${effective.rightToLeft ? 1 : 0}"`]),
+        ...(effective.hiddenCells === undefined ? [] : [`displayHidden="${effective.hiddenCells === 'show' ? 1 : 0}"`]),
+        ...(effective.emptyCells === undefined ? [] : [`displayEmptyCellsAs="${effective.emptyCells === 'connect' ? 'span' : effective.emptyCells}"`]),
+        ...(effective.verticalAxis?.mode === 'custom' && effective.verticalAxis.minimum !== undefined ? [`manualMin="${effective.verticalAxis.minimum}"`] : []),
+        ...(effective.verticalAxis?.mode === 'custom' && effective.verticalAxis.maximum !== undefined ? [`manualMax="${effective.verticalAxis.maximum}"`] : []),
+      ].join(' ');
+      return `<x14:sparklineGroup ${attrs}>${colorNode('colorSeries', effective.color)}${colorNode('colorNegative', effective.negativeColor)}${colorNode('colorAxis', effective.axisColor)}${colorNode('colorMarkers', effective.markerColor)}${colorNode('colorFirst', effective.firstColor)}${colorNode('colorLast', effective.lastColor)}${colorNode('colorHigh', effective.highColor)}${colorNode('colorLow', effective.lowColor)}<x14:sparklines>${entry.members.map((sparkline) => `<x14:sparkline><xm:f>${encodeXml(`'${sheetNames.get(sparkline.sourceRange.sheetId) ?? sparkline.sourceRange.sheetId}'!${rangeToA1(sparkline.sourceRange)}`)}</xm:f><xm:sqref>${encodeXml(`${columnToLetter(sparkline.anchor.column)}${sparkline.anchor.row + 1}`)}</xm:sqref></x14:sparkline>`).join('')}</x14:sparklines></x14:sparklineGroup>`;
+    }).join('');
+    const node = firstElement(parseXml(`<ext uri="{05C60535-1F16-4FD2-B633-F4F36F0B64E0}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:sparklineGroups>${groupXml}</x14:sparklineGroups></ext>`), 'ext');
     root.children.push(node);
   }
   return serializeXml(root);
@@ -1976,7 +2127,7 @@ interface ReactSheetsPackageMetadata {
   version: 2;
   editingOptions: WorkbookSnapshot['editingOptions'];
   dataModel: WorkbookSnapshot['dataModel'];
-  sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
+  sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'sparklines' | 'sparklineGroups' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
 }
 
 function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
@@ -1990,7 +2141,7 @@ function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
       const drawingPayloads = Object.fromEntries(Object.entries(sheet.drawingPayloads).filter(([payloadId]) => payloadIds.has(payloadId)));
       const drawingIds = new Set(drawings.map((drawing) => drawing.id));
       const drawingGroups = (sheet.drawingGroups ?? []).filter((group) => group.memberDrawingIds.every((id) => drawingIds.has(id)));
-      return { id: sheet.id, kind: sheet.kind, tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined, ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined, reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined, drawings: structuredClone(drawings), drawingPayloads: structuredClone(drawingPayloads), drawingGroups: structuredClone(drawingGroups), snapSettings: sheet.snapSettings ? structuredClone(sheet.snapSettings) : undefined, cellMetadata };
+      return { id: sheet.id, kind: sheet.kind, tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined, ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined, reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined, sparklines: structuredClone(sheet.sparklines), sparklineGroups: structuredClone(sheet.sparklineGroups ?? []), drawings: structuredClone(drawings), drawingPayloads: structuredClone(drawingPayloads), drawingGroups: structuredClone(drawingGroups), snapSettings: sheet.snapSettings ? structuredClone(sheet.snapSettings) : undefined, cellMetadata };
     }),
   };
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><reactSheetsWorkbook xmlns="urn:react-sheets:workbook-metadata:v1"><json>${encodeXml(JSON.stringify(metadata))}</json></reactSheetsWorkbook>`;
@@ -2036,6 +2187,8 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       sheet.tableSheet = metadata.tableSheet ? structuredClone(metadata.tableSheet) : undefined;
       sheet.ganttSheet = metadata.ganttSheet ? structuredClone(metadata.ganttSheet) : undefined;
       sheet.reportSheet = metadata.reportSheet ? structuredClone(metadata.reportSheet) : undefined;
+      if ('sparklines' in metadata) sheet.sparklines = structuredClone(metadata.sparklines ?? []);
+      if ('sparklineGroups' in metadata) sheet.sparklineGroups = structuredClone(metadata.sparklineGroups ?? []);
       sheet.drawings = structuredClone(metadata.drawings);
       sheet.drawingPayloads = structuredClone(metadata.drawingPayloads);
       sheet.drawingGroups = structuredClone(metadata.drawingGroups ?? []);

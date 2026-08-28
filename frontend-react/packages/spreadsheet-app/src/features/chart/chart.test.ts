@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
+import { buildChartLayout, buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -64,11 +64,12 @@ describe('chart feature', () => {
     assert.equal(runtime.redo(), true);
 
     runtime.execute('chart.setElements', { sheetId: 'sheet-1', chartId: 'chart-1', elements: { hiddenData: 'hideRows', plotArea: { fill: '#f8fafc' }, valueAxis: { id: 'y', position: 'left', minimum: 0, maximum: 2000, majorGridlines: { visible: false } } } });
-    runtime.execute('chart.setSeriesStyle', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', style: { marker: { enabled: true, shape: 'circle', size: 6 }, trendline: { type: 'linear', color: '#2563eb' } } });
+    runtime.execute('chart.setSeriesStyle', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', style: { marker: { enabled: true, shape: 'circle', size: 6 }, trendlines: [{ type: 'linear', color: '#2563eb' }] } });
     const edited = sheet.drawingPayloads.get('chart-1') as ChartPayload;
     assert.equal(edited.elements.hiddenData, 'hideRows');
     assert.equal(edited.elements.valueAxis?.majorGridlines?.visible, false);
     assert.equal(edited.series?.[0]?.marker?.shape, 'circle');
+    assert.equal(edited.series?.[0]?.trendlines?.[0]?.type, 'linear');
 
     const remoteWorkbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
     const remoteRuntime = new CommandRuntime(remoteWorkbook);
@@ -97,8 +98,8 @@ describe('chart feature', () => {
       source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
       elements: { hiddenData: 'show' },
       series: [
-        { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
-        { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 2, endColumn: 2 }, chartType: 'scatter', axis: 'secondary' },
+        { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, xRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
+        { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 2, endColumn: 2 }, xRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, chartType: 'scatter', axis: 'secondary' },
       ],
     };
     const local = resolveChartData(workbook, payload);
@@ -193,5 +194,62 @@ describe('chart feature', () => {
     const rootProjection = buildPivotChartData(noRows);
     assert.deepEqual(rootProjection.categories.map((category) => category.label), ['Values']);
     assert.deepEqual(rootProjection.series[0]?.values, [null]);
+  });
+
+  it('resolves XY and Bubble bindings positionally and applies empty-cell policy before layout', () => {
+    const workbook = new WorkbookModel('chart-xy-test', 'XY Charts');
+    const sheet = workbook.getSheet('sheet-1');
+    [
+      ['Label', 'X', 'Y', 'Size'],
+      ['A', 1, 10, 5],
+      ['B', 2, null, 12],
+      ['C', 4, 40, 8],
+    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 3 };
+    const xRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 };
+    const yRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 };
+    const sizeRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 3, endColumn: 3 };
+    const scatter: ChartPayload = {
+      kind: 'chart', chartId: 'xy-chart', chartType: 'scatter', subtype: 'scatter-markers', source: { kind: 'worksheet-ranges', ranges: [range] },
+      series: [{ id: 'xy-series', name: 'Y', range: yRange, xRange, yRange, chartType: 'scatter' }], categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }, elements: { hiddenData: 'show', emptyCells: 'gap' },
+    };
+    const scatterData = resolveChartData(workbook, scatter);
+    assert.deepEqual(scatterData.series[0]?.xValues, [1, 2, 4]);
+    assert.deepEqual(scatterData.series[0]?.values, [10, null, 40]);
+    const scatterLayout = buildChartLayout(scatter, scatterData, 400, 240);
+    assert.equal(scatterLayout.status.kind, 'ready');
+    assert.deepEqual(scatterLayout.series[0]?.points.map((point) => point.xValue), [1, 2, 4]);
+    assert.equal(scatterLayout.series[0]?.points[1]?.visible, false);
+
+    const bubble: ChartPayload = { ...scatter, chartId: 'bubble-chart', chartType: 'bubble', subtype: 'bubble', series: [{ id: 'bubble-series', name: 'Y', range: yRange, xRange, yRange, sizeRange, chartType: 'bubble' }] };
+    const bubbleData = resolveChartData(workbook, bubble);
+    assert.deepEqual(bubbleData.series[0]?.sizeValues, [5, 12, 8]);
+    const bubbleLayout = buildChartLayout(bubble, bubbleData, 400, 240);
+    assert.equal(bubbleLayout.status.kind, 'ready');
+    assert.deepEqual(bubbleLayout.series[0]?.points.map((point) => point.sizeValue), [5, 12, 8]);
+
+    const zeroData = resolveChartData(workbook, { ...scatter, chartId: 'xy-zero', elements: { hiddenData: 'show', emptyCells: 'zero' } });
+    assert.deepEqual(zeroData.series[0]?.values, [10, 0, 40]);
+    assert.deepEqual(zeroData.series[0]?.missing, [false, false, false]);
+  });
+
+  it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
+    const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
+    const sheet = workbook.getSheet('sheet-1');
+    [['', 'Jan', 'Feb', 'Mar'], ['Revenue', 10, 20, 30], ['Cost', 4, 8, 12]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = { kind: 'chart', chartId: 'row-chart', chartType: 'line', subtype: 'line-markers', dataOrientation: 'rows', source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 3 }] }, elements: { hiddenData: 'show' } };
+    const data = resolveChartData(workbook, payload);
+    assert.deepEqual(data.categories, ['Jan', 'Feb', 'Mar']);
+    assert.deepEqual(data.series.map((series) => series.values), [[10, 20, 30], [4, 8, 12]]);
+    assert.deepEqual(data.series.map((series) => series.name), ['Revenue', 'Cost']);
+  });
+
+  it('rejects a chart that declares a semantic XY family without independent bindings', () => {
+    const workbook = new WorkbookModel('chart-reject-test', 'Chart Reject');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    registerChartCommands(runtime);
+    const payload: ChartPayload = { kind: 'chart', chartId: 'invalid-xy', chartType: 'scatter', subtype: 'scatter-markers', source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] }, series: [{ name: 'Y', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter' }], elements: { hiddenData: 'show' } };
+    assert.throws(() => runtime.execute('chart.insert', chartPair('sheet-1', 'invalid-xy', payload)), /explicit X\/Y range bindings/);
   });
 });

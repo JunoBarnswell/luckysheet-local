@@ -1,18 +1,73 @@
-import { createPivotMemberKey, formatPivotMember, pivotMemberKey, type ChartDrawingPayload, type PivotModel, type PivotResultNode, type PivotResultTree, type PivotScalar, type WorkbookModel, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import {
+  createPivotMemberKey,
+  formatPivotMember,
+  pivotMemberKey,
+  type ChartDrawingPayload,
+  type ChartSource,
+  type ChartSubtype,
+  type PivotModel,
+  type PivotResultNode,
+  type PivotResultTree,
+  type PivotScalar,
+  type RangeRef,
+  type WorkbookModel,
+  type WorkbookTableModel,
+} from '@react-sheets/core-model';
 import type { ChartPayload, ChartSeries } from './commands';
 
+export type ChartDataSourceKind = 'range' | 'pivot' | 'table' | 'report-range';
+
 export interface ResolvedChartSeries {
+  id: string;
   name: string;
+  /** Y values are kept positionally; null/error means a missing data point. */
   values: PivotScalar[];
+  xValues?: PivotScalar[];
+  sizeValues?: PivotScalar[];
+  missing?: boolean[];
   color?: string;
   axis: 'primary' | 'secondary';
   chartType?: Exclude<ChartPayload['chartType'], 'combo'>;
+  subtype?: ChartSubtype;
+  marker?: ChartSeries['marker'];
+  smooth?: boolean;
+  trendlines?: ChartSeries['trendlines'];
+  errorBars?: ChartSeries['errorBars'];
+  errorPlusValues?: PivotScalar[];
+  errorMinusValues?: PivotScalar[];
+  stockRoles?: ChartSeries['stockRoles'];
+  stockValues?: {
+    open?: PivotScalar[];
+    high: PivotScalar[];
+    low: PivotScalar[];
+    close: PivotScalar[];
+    volume?: PivotScalar[];
+  };
+}
+
+export interface ChartBindingModel {
+  source: ChartDataSourceKind;
+  orientation: 'rows' | 'columns';
+  categories: PivotScalar[];
+  series: ResolvedChartSeries[];
+  hierarchyLevels: PivotScalar[][];
+  nonContiguous: boolean;
+  dynamicRangeIdentity?: string;
+  tableStructuredReference?: string;
+}
+
+export interface ChartDataStatus {
+  kind: 'ready' | 'invalid' | 'unsupported';
+  code?: 'INVALID_CHART_SOURCE' | 'UNSUPPORTED_FEATURE' | 'PIVOT_REFERENCE_UNAVAILABLE';
+  message?: string;
 }
 
 export interface ResolvedChartData {
   categories: PivotScalar[];
   series: ResolvedChartSeries[];
-  source: 'range' | 'pivot';
+  source: ChartDataSourceKind;
+  binding: ChartBindingModel;
+  status: ChartDataStatus;
 }
 
 export interface StructuredChartSheet {
@@ -22,8 +77,10 @@ export interface StructuredChartSheet {
 }
 
 export interface StructuredChartSeries {
+  id: string;
   name: string;
-  values: number[];
+  values: Array<number | null>;
+  categories: string[];
 }
 
 export interface StructuredChartData {
@@ -52,10 +109,9 @@ export interface PivotChartData {
 }
 
 /**
- * Project the live Pivot result matrix into the chart's stable category and
- * series identities.  The renderer must not infer Pivot semantics from a
- * single result cell; every visible Column path and Values placement is a
- * Cartesian series, while the complete typed Row path is the category key.
+ * Project the live Pivot result matrix into stable category and series
+ * identities. Every visible column path and value field remains a distinct
+ * series; no renderer is allowed to infer Pivot semantics from a cell.
  */
 export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): PivotChartData {
   const leaves: Array<{ node: PivotResultNode; path: string[] }> = [];
@@ -68,9 +124,11 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
   };
   collectLeaves(tree.rows);
 
-  const categories = leaves.map(({ node, path }, index) => {
-    return { id: node.path?.join('|') ?? node.nodeId ?? `row:${index}`, path, label: path.join(' / ') || node.label || `Row ${index + 1}` };
-  });
+  const categories = leaves.map(({ node, path }, index) => ({
+    id: node.path?.join('|') ?? node.nodeId ?? `row:${index}`,
+    path,
+    label: path.join(' / ') || node.label || `Row ${index + 1}`,
+  }));
   const columnPaths: PivotScalar[][] = [];
   const seenColumns = new Set<string>();
   const addColumnPath = (path: PivotScalar[]): void => {
@@ -86,7 +144,7 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
   const valueFields = tree.valueFields ?? pivot?.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId })) ?? [];
   const valueCount = Math.max(valueFields.length, ...leaves.flatMap(({ node }) => node.values.map((cell) => cell.values.length)), 0);
   const series: PivotChartSeries[] = [];
-  for (const [columnIndex, columnPath] of columnPaths.entries()) {
+  for (const columnPath of columnPaths) {
     const columnCaption = columnPath.map(pivotScalarLabel).join(' / ');
     for (let valueIndex = 0; valueIndex < valueCount; valueIndex += 1) {
       const field = valueFields[valueIndex];
@@ -136,105 +194,256 @@ function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember
 function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
 function fieldName(fieldId: string | undefined, tree: PivotResultTree): string { return tree.fields.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Value'; }
 
-function cellValue(sheet: WorksheetModel, row: number, column: number): PivotScalar {
-  return sheet.cells.get(row, column)?.value ?? null;
+function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
+  return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
 }
 
-function rangeValues(sheet: WorksheetModel, range: { startRow: number; endRow: number; startColumn: number; endColumn: number }, hiddenData: ChartPayload['elements']['hiddenData'] = 'show'): PivotScalar[][] {
+function isMissing(value: PivotScalar | undefined): boolean {
+  return value == null
+    || (typeof value === 'object' && value.kind === 'error')
+    || (typeof value === 'number' && !Number.isFinite(value))
+    || (typeof value === 'string' && value.trim() !== '' && chartNumericValue(value) === undefined);
+}
+
+function normalizeEmptyValues(values: PivotScalar[], mode: ChartPayload['elements']['emptyCells']): { values: PivotScalar[]; missing: boolean[] } {
+  const normalized = values.map((value) => mode === 'zero' && (value === null || value === undefined || value === '') ? 0 : value);
+  return { values: normalized, missing: normalized.map(isMissing) };
+}
+
+export function chartNumericValue(value: PivotScalar | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value.replace(/[$,%]/g, ''));
+    return Number.isFinite(numeric) ? numeric : undefined;
+  }
+  return undefined;
+}
+
+function scalarValue(sheet: StructuredChartSheet, row: number, column: number): PivotScalar {
+  return sheet.getCell(row, column)?.value ?? null;
+}
+
+function readRange(
+  sheet: StructuredChartSheet,
+  range: RangeRef,
+  hiddenData: ChartPayload['elements']['hiddenData'],
+): PivotScalar[][] {
   const rows: PivotScalar[][] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
-    if (hiddenData === 'hideRows' && sheet.hiddenRows.has(row)) continue;
+    if (hiddenData === 'hideRows' && containsHidden(sheet.hiddenRows, row)) continue;
     const values: PivotScalar[] = [];
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      if (hiddenData === 'hideColumns' && sheet.hiddenColumns.has(column)) continue;
-      values.push(cellValue(sheet, row, column));
+      if (hiddenData === 'hideColumns' && containsHidden(sheet.hiddenColumns, column)) continue;
+      values.push(scalarValue(sheet, row, column));
     }
     rows.push(values);
   }
   return rows;
 }
 
-function seriesName(sheet: WorksheetModel, range: { startRow: number; startColumn: number }, fallback: string): string {
-  const value = cellValue(sheet, range.startRow, range.startColumn);
+function scalarColumn(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData'], headerRow?: number): PivotScalar[] {
+  const rows = readRange(sheet, range, hiddenData);
+  const values = rows.map((row) => row[0] ?? null);
+  return headerRow === range.startRow && values.length > 0 ? values.slice(1) : values;
+}
+
+function seriesName(sheet: StructuredChartSheet, range: RangeRef, fallback: string): string {
+  const value = scalarValue(sheet, range.startRow, range.startColumn);
   return value == null || value === '' ? fallback : String(value);
 }
 
-function resolveRangeData(workbook: WorkbookModel, payload: ChartPayload): ResolvedChartData {
+function sheetFor(getSheet: (sheetId: string) => StructuredChartSheet | undefined, range: RangeRef): StructuredChartSheet {
+  const sheet = getSheet(range.sheetId);
+  if (!sheet) throw new Error(`Chart source sheet not found: ${range.sheetId}`);
+  return sheet;
+}
+
+function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined, sourceRange?: RangeRef): ResolvedChartSeries {
+  const valueRange = declared.yRange ?? declared.range;
+  const sheet = sheetFor(getSheet, valueRange);
+  const headerRow = sourceRange?.startRow;
+  const normalizedValues = normalizeEmptyValues(scalarColumn(sheet, valueRange, payload.elements.hiddenData, headerRow), payload.elements.emptyCells);
+  const values = normalizedValues.values;
+  const xValues = declared.xRange ? scalarColumn(sheetFor(getSheet, declared.xRange), declared.xRange, payload.elements.hiddenData, headerRow) : undefined;
+  const sizeValues = declared.sizeRange ? scalarColumn(sheetFor(getSheet, declared.sizeRange), declared.sizeRange, payload.elements.hiddenData, headerRow) : undefined;
+  const stockValues = declared.stockRoles ? {
+    ...(declared.stockRoles.open ? { open: scalarColumn(sheetFor(getSheet, declared.stockRoles.open), declared.stockRoles.open, payload.elements.hiddenData, headerRow) } : {}),
+    high: scalarColumn(sheetFor(getSheet, declared.stockRoles.high), declared.stockRoles.high, payload.elements.hiddenData, headerRow),
+    low: scalarColumn(sheetFor(getSheet, declared.stockRoles.low), declared.stockRoles.low, payload.elements.hiddenData, headerRow),
+    close: scalarColumn(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData, headerRow),
+    ...(declared.stockRoles.volume ? { volume: scalarColumn(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData, headerRow) } : {}),
+  } : undefined;
+  return {
+    id: declared.id ?? `series:${declared.name}:${valueRange.sheetId}:${valueRange.startRow}:${valueRange.startColumn}`,
+    name: declared.name || seriesName(sheet, valueRange, 'Series'),
+    values,
+    ...(xValues ? { xValues } : {}),
+    ...(sizeValues ? { sizeValues } : {}),
+    missing: normalizedValues.missing,
+    color: declared.color,
+    axis: declared.axis ?? 'primary',
+    chartType: declared.chartType,
+    subtype: declared.subtype,
+    marker: declared.marker,
+    smooth: declared.smooth,
+    trendlines: declared.trendlines,
+    errorBars: declared.errorBars,
+    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData, headerRow) } : {}),
+    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData, headerRow) } : {}),
+    stockRoles: declared.stockRoles,
+    ...(stockValues ? { stockValues } : {}),
+  };
+}
+
+function rangeSourceData(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
   if (payload.source.kind !== 'worksheet-ranges') throw new Error(`Chart source mismatch: expected worksheet-ranges, received ${payload.source.kind}`);
-  const sourceRanges = payload.source.ranges;
-  const firstRange = sourceRanges[0];
-  if (!firstRange) return { categories: [], series: [], source: 'range' };
-  const firstSheet = workbook.getSheet(firstRange.sheetId);
-  const firstRows = rangeValues(firstSheet, firstRange, payload.elements.hiddenData);
-  const declaredSeries = payload.series ?? [];
-  const firstXRange = declaredSeries.find((entry) => entry.xRange)?.xRange;
-  const categories = payload.categoryRange
-    ? rangeValues(workbook.getSheet(payload.categoryRange.sheetId), payload.categoryRange, payload.elements.hiddenData).map((row) => row[0] ?? null)
-    : firstXRange
-      ? rangeValues(workbook.getSheet(firstXRange.sheetId), firstXRange, payload.elements.hiddenData).slice(1).map((row) => row[0] ?? null)
-    : firstRows.slice(1).map((row) => row[0] ?? null);
-
+  const sourceRange = payload.source.ranges[0];
+  if (!sourceRange) return { categories: [], series: [] };
+  const sheet = sheetFor(getSheet, sourceRange);
+  const matrix = readRange(sheet, sourceRange, payload.elements.hiddenData);
+  const categoryRange = payload.categoryRange;
+  const categories = categoryRange
+    ? scalarColumn(sheetFor(getSheet, categoryRange), categoryRange, payload.elements.hiddenData, categoryRange.startRow === sourceRange.startRow ? sourceRange.startRow : undefined)
+    : payload.dataOrientation === 'rows'
+      ? (matrix[0]?.slice(1) ?? [])
+      : matrix.slice(1).map((row) => row[0] ?? null);
+  const declared = payload.series ?? [];
+  if (declared.length > 0) return { categories, series: declared.map((entry) => chartSeriesFromDeclaration(payload, entry, getSheet, sourceRange)) };
   const series: ResolvedChartSeries[] = [];
-  if (declaredSeries.length > 0) {
-    for (const declared of declaredSeries) {
-      const valueRange = declared.yRange ?? declared.range;
-      const rows = rangeValues(workbook.getSheet(valueRange.sheetId), valueRange, payload.elements.hiddenData);
-      series.push({
-        name: declared.name || seriesName(workbook.getSheet(valueRange.sheetId), valueRange, 'Series'),
-        values: rows.slice(1).map((row) => row[0] ?? null),
-        color: declared.color,
-        axis: declared.axis ?? 'primary',
-        chartType: declared.chartType,
-      });
+  const width = sourceRange.endColumn - sourceRange.startColumn + 1;
+  if (payload.dataOrientation === 'rows') {
+    for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+      const row = matrix[rowIndex] ?? [];
+      const normalized = normalizeEmptyValues(row.slice(1), payload.elements.emptyCells);
+      series.push({ id: `series:${sourceRange.sheetId}:${sourceRange.startRow + rowIndex}`, name: String(row[0] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
     }
-    return { categories, series, source: 'range' };
+    return { categories, series };
   }
-
-  for (const range of sourceRanges) {
-    const sheet = workbook.getSheet(range.sheetId);
-    const rows = rangeValues(sheet, range, payload.elements.hiddenData);
-    const width = range.endColumn - range.startColumn + 1;
-    if (width <= 1) {
-      series.push({ name: seriesName(sheet, range, `Series ${series.length + 1}`), values: rows.slice(1).map((row) => row[0] ?? null), axis: 'primary' });
-      continue;
+  const appendMatrixSeries = (range: RangeRef, rangeMatrix: PivotScalar[][]): void => {
+    const rangeWidth = range.endColumn - range.startColumn + 1;
+    if (rangeWidth <= 1) {
+      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
+      series.push({ id: `series:${range.sheetId}:${range.startColumn}`, name: seriesName(sheetFor(getSheet, range), range, `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
+      return;
     }
+    for (let columnIndex = 1; columnIndex < rangeWidth; columnIndex += 1) {
+      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
+      series.push({ id: `series:${range.sheetId}:${range.startColumn + columnIndex}`, name: String(rangeMatrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
+    }
+  };
+  if (width <= 1) {
+    const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
+    series.push({ id: 'series:1', name: seriesName(sheet, sourceRange, 'Series 1'), values: normalized.values, missing: normalized.missing, axis: 'primary' });
+  } else {
     for (let columnIndex = 1; columnIndex < width; columnIndex += 1) {
+      const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
       series.push({
-        name: String(rows[0]?.[columnIndex] ?? `Series ${series.length + 1}`),
-        values: rows.slice(1).map((row) => row[columnIndex] ?? null),
+        id: `series:${sourceRange.sheetId}:${sourceRange.startColumn + columnIndex}`,
+        name: String(matrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`),
+        values: normalized.values,
+        missing: normalized.missing,
         axis: 'primary',
       });
     }
   }
-  return { categories, series, source: 'range' };
+  for (const range of payload.source.ranges.slice(1)) appendMatrixSeries(range, readRange(sheetFor(getSheet, range), range, payload.elements.hiddenData));
+  return { categories, series };
 }
 
-function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): ResolvedChartData {
+function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
   const projected = buildPivotChartData(tree);
   const declared = payload.series ?? [];
   const series: ResolvedChartSeries[] = projected.series.map((entry, index) => {
     const declaredSeries = declared[index];
+    const normalized = normalizeEmptyValues([...entry.values], payload.elements.emptyCells);
+    const values = normalized.values;
     return {
+      id: declaredSeries?.id ?? entry.id,
       name: declaredSeries?.name ?? entry.name,
-      values: [...entry.values],
+      values,
+      missing: normalized.missing,
       color: declaredSeries?.color,
       axis: declaredSeries?.axis ?? 'primary',
       chartType: declaredSeries?.chartType,
+      subtype: declaredSeries?.subtype,
+      marker: declaredSeries?.marker,
+      smooth: declaredSeries?.smooth,
+      trendlines: declaredSeries?.trendlines,
+      errorBars: declaredSeries?.errorBars,
+      stockRoles: declaredSeries?.stockRoles,
     };
   });
-  return { categories: projected.categories.map((category) => category.label), series, source: 'pivot' };
+  return { categories: projected.categories.map((category) => category.label), series };
 }
 
-function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
-  return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
+function bindingFor(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options: Partial<Pick<ChartBindingModel, 'orientation' | 'hierarchyLevels' | 'nonContiguous' | 'dynamicRangeIdentity' | 'tableStructuredReference'>> = {}): ChartBindingModel {
+  return {
+    source: source.kind === 'worksheet-ranges' ? 'range' : source.kind,
+    orientation: options.orientation ?? 'columns',
+    categories: structuredClone(categories),
+    series: structuredClone(series),
+    hierarchyLevels: structuredClone(options.hierarchyLevels ?? []),
+    nonContiguous: options.nonContiguous ?? (source.kind === 'worksheet-ranges' && source.ranges.length > 1),
+    ...(options.dynamicRangeIdentity ? { dynamicRangeIdentity: options.dynamicRangeIdentity } : {}),
+    ...(options.tableStructuredReference ? { tableStructuredReference: options.tableStructuredReference } : {}),
+  };
 }
 
-/** Canonical resolver for table/report-backed chart bindings used by both the model and canvas projection. */
-export function resolveStructuredChartBindings(
-  payload: ChartDrawingPayload,
-  tables: readonly WorkbookTableModel[],
-  getSheet: (sheetId: string) => StructuredChartSheet | undefined,
-): StructuredChartData {
+function readyData(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options?: Parameters<typeof bindingFor>[3]): ResolvedChartData {
+  return { categories, series, source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, categories, series, options), status: { kind: 'ready' } };
+}
+
+function invalidData(source: ChartSource, code: ChartDataStatus['code'], message: string): ResolvedChartData {
+  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message } };
+}
+
+/** Resolve a canonical chart against a worksheet reader without constructing a second model. */
+export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = []): ResolvedChartData {
+  try {
+    if (payload.source.kind === 'pivot') {
+      const tree = pivotResults[payload.source.pivotId];
+      if (!tree) return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`);
+      const resolved = resolvePivotData(payload, tree);
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' });
+    }
+    if (payload.source.kind === 'worksheet-ranges') {
+      const resolved = rangeSourceData(payload, getSheet);
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns', dynamicRangeIdentity: payload.source.identity });
+    }
+    const structured = resolveStructuredChartBindings(payload, tables, getSheet);
+    const series = structured.series.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      values: entry.values,
+      missing: entry.values.map((value) => value === null),
+      axis: 'primary' as const,
+    }));
+    return readyData(payload.source, structured.categories, series, {
+      tableStructuredReference: payload.source.kind === 'table' ? payload.source.structuredReference ?? `${payload.source.tableId}[${payload.source.bindings.values.map((entry) => entry.fieldId).join(',')}]` : undefined,
+      dynamicRangeIdentity: payload.source.kind === 'report-range' ? payload.source.identity : undefined,
+    });
+  } catch (error) {
+    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Resolve chart data from the live WorkbookModel for command/unit-test consumers. */
+export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload, pivotResults: Readonly<Record<string, PivotResultTree>> = {}): ResolvedChartData {
+  const result = resolveChartDataFromSources(
+    payload,
+    (sheetId) => {
+      const sheet = workbook.getSheet(sheetId);
+      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns };
+    },
+    pivotResults,
+    [...workbook.dataModel.tables.values()],
+  );
+  if (result.status.kind !== 'ready') throw new Error(`${result.status.code ?? 'INVALID_CHART_SOURCE'}: ${result.status.message ?? 'Chart data is unavailable'}`);
+  return result;
+}
+
+/** Canonical resolver for table/report-backed chart bindings used by model and Canvas. */
+export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tables: readonly WorkbookTableModel[], getSheet: (sheetId: string) => StructuredChartSheet | undefined): StructuredChartData {
   const source = payload.source;
   if (source.kind !== 'table' && source.kind !== 'report-range') throw new Error(`Chart binding resolver received ${source.kind}`);
   const table = source.kind === 'table' ? tables.find((entry) => entry.id === source.tableId) : undefined;
@@ -261,56 +470,93 @@ export function resolveStructuredChartBindings(
     for (const binding of valueBindings) {
       const field = fieldById.get(binding.fieldId);
       if (!field) throw new Error(`Chart binding field not found: ${binding.fieldId}`);
-      const raw = sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value;
-      if (typeof raw === 'number' && Number.isFinite(raw)) byField.set(binding.fieldId, [...(byField.get(binding.fieldId) ?? []), raw]);
+      const numeric = chartNumericValue(sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value);
+      if (numeric !== undefined) byField.set(binding.fieldId, [...(byField.get(binding.fieldId) ?? []), numeric]);
     }
     buckets.set(category, byField);
   }
-  const aggregate = (values: number[], mode: typeof source.bindings.values[number]['aggregate']): number => {
-    if (!values.length || mode === 'none') return values.length ? values[values.length - 1]! : 0;
+  const aggregate = (values: number[], mode: typeof source.bindings.values[number]['aggregate']): number | null => {
+    if (!values.length || mode === 'none') return values.length ? values[values.length - 1]! : payload.elements.emptyCells === 'zero' ? 0 : null;
     if (mode === 'count') return values.length;
     if (mode === 'min') return Math.min(...values);
     if (mode === 'max') return Math.max(...values);
     if (mode === 'average') return values.reduce((sum, value) => sum + value, 0) / values.length;
     return values.reduce((sum, value) => sum + value, 0);
   };
-  const categories = [...buckets.keys()];
-  const series = valueBindings.map((binding) => ({ name: fieldById.get(binding.fieldId)!.name, values: categories.map((category) => aggregate(buckets.get(category)?.get(binding.fieldId) ?? [], binding.aggregate)) }));
+  let categories = [...buckets.keys()];
+  let series = valueBindings.map((binding) => ({
+    id: binding.fieldId,
+    name: fieldById.get(binding.fieldId)!.name,
+    values: categories.map((category) => aggregate(buckets.get(category)?.get(binding.fieldId) ?? [], binding.aggregate)),
+    categories: [...categories],
+  }));
   const sortBinding = valueBindings.find((binding) => binding.sort);
-  if (!sortBinding) return { categories, series };
-  const sortIndex = series.findIndex((entry) => entry.name === fieldById.get(sortBinding.fieldId)?.name);
-  if (sortIndex < 0) return { categories, series };
-  const order = sortBinding.sort === 'desc' ? -1 : 1;
-  const orderIndexes = categories.map((_category, index) => index).sort((left, right) => (series[sortIndex]!.values[left]! - series[sortIndex]!.values[right]!) * order);
-  return { categories: orderIndexes.map((index) => categories[index]!), series: series.map((entry) => ({ ...entry, values: orderIndexes.map((index) => entry.values[index]!) })) };
-}
-
-/** Resolve chart data from live ranges or the canonical, read-only PivotResultTree cache. */
-export function resolveChartData(
-  workbook: WorkbookModel,
-  payload: ChartPayload,
-  pivotResults: Readonly<Record<string, PivotResultTree>> = {},
-): ResolvedChartData {
-  if (payload.source.kind === 'pivot') {
-    const tree = pivotResults[payload.source.pivotId];
-    if (!tree) throw new Error(`Pivot reference unavailable: ${payload.source.pivotId}`);
-    return resolvePivotData(payload, tree);
+  if (sortBinding) {
+    const sortIndex = series.findIndex((entry) => entry.id === sortBinding.fieldId);
+    if (sortIndex >= 0) {
+      const order = sortBinding.sort === 'desc' ? -1 : 1;
+      const orderIndexes = categories.map((_category, index) => index).sort((left, right) => {
+        const leftValue = series[sortIndex]!.values[left];
+        const rightValue = series[sortIndex]!.values[right];
+        if (leftValue == null && rightValue == null) return 0;
+        if (leftValue == null) return -1 * order;
+        if (rightValue == null) return 1 * order;
+        return (leftValue - rightValue) * order;
+      });
+      categories = orderIndexes.map((index) => categories[index]!);
+      series = series.map((entry) => ({ ...entry, categories: [...categories], values: orderIndexes.map((index) => entry.values[index]!) }));
+    }
   }
-  if (payload.source.kind === 'table' || payload.source.kind === 'report-range') {
-    const structured = resolveStructuredChartBindings(payload, [...workbook.dataModel.tables.values()], (sheetId) => {
-      const sheet = workbook.getSheet(sheetId);
-      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns };
-    });
-    return { categories: structured.categories, series: structured.series.map((entry) => ({ ...entry, axis: 'primary' as const })), source: 'range' };
-  }
-  return resolveRangeData(workbook, payload);
+  return { categories, series };
 }
 
 export function normalizeChartSeries(series: ChartSeries[] | undefined): ChartSeries[] | undefined {
   if (!series) return undefined;
-  return series.map((entry) => ({
+  return series.map((entry, index) => ({
     ...structuredClone(entry),
+    id: entry.id ?? `series:${index + 1}`,
     axis: entry.axis ?? 'primary',
     chartType: entry.chartType ?? undefined,
+    trendlines: entry.trendlines ? structuredClone(entry.trendlines) : undefined,
   }));
+}
+
+export interface ResolvedSparklineSeries {
+  values: Array<number | null>;
+  min: number;
+  max: number;
+}
+
+/** Sparkline data uses the same positional hidden/empty rules as ChartDomain. */
+export function resolveSparklineSeries(
+  sparkline: import('@react-sheets/core-model').SparklineModel,
+  getSheet: (sheetId: string) => StructuredChartSheet | undefined,
+  group?: import('@react-sheets/core-model').SparklineGroup,
+): ResolvedSparklineSeries {
+  const source = sparkline.sourceRange;
+  const sheet = getSheet(source.sheetId);
+  if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
+  const orientation = group?.dataOrientation ?? sparkline.dataOrientation ?? 'rows';
+  const rows: Array<Array<PivotScalar>> = [];
+  for (let row = source.startRow; row <= source.endRow; row += 1) {
+    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenRows, row)) continue;
+    const values: PivotScalar[] = [];
+    for (let column = source.startColumn; column <= source.endColumn; column += 1) {
+      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenColumns, column)) continue;
+      values.push(scalarValue(sheet, row, column));
+    }
+    rows.push(values);
+  }
+  const values = orientation === 'columns'
+    ? Array.from({ length: Math.max(0, source.endColumn - source.startColumn + 1) }, (_, column) => rows.map((row) => row[column] ?? null)).flat()
+    : rows.flat();
+  const emptyMode = group?.emptyCells ?? sparkline.emptyCells ?? 'gap';
+  const resolved = values.map((value) => {
+    const numeric = chartNumericValue(value);
+    const empty = value === null || value === undefined || value === '';
+    return numeric === undefined ? empty && emptyMode === 'zero' ? 0 : null : numeric;
+  });
+  const numbers = resolved.filter((value): value is number => value !== null);
+  const output = sparkline.rightToLeft || group?.rightToLeft ? resolved.reverse() : resolved;
+  return { values: output, min: Math.min(0, ...numbers), max: Math.max(0, ...numbers) };
 }

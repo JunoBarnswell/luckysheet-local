@@ -842,7 +842,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.drawingPayloads.set('pivot-chart-payload', { kind: 'chart', chartId: 'pivot-chart-1', chartType: 'column', subtype: 'clustered', source: { kind: 'pivot', pivotId: 'pivot-chart-1' }, elements: { hiddenData: 'show', title: 'Amounts', legend: { visible: true, position: 'bottom' } } });
 
     const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
-    const chartParts = Object.keys(output.files).filter((name) => name.startsWith('xl/charts/react-pivot-chart-'));
+    const chartParts = Object.keys(output.files).filter((name) => name.startsWith('xl/charts/react-chart-'));
     assert.equal(chartParts.length, 1);
     const chartXml = strFromU8(output.files[chartParts[0]!]!);
     assert.match(chartXml, /<c:pivotSource>/);
@@ -863,7 +863,7 @@ describe('exchange-excel-ooxml', () => {
       payload.chartType = type;
       payload.subtype = defaultChartSubtype(type);
       const typedOutput = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(typed));
-      const typedChartPart = Object.keys(typedOutput.files).find((name) => name.startsWith('xl/charts/react-pivot-chart-'));
+      const typedChartPart = Object.keys(typedOutput.files).find((name) => name.startsWith('xl/charts/react-chart-'));
       assert.ok(typedChartPart);
       assert.match(strFromU8(typedOutput.files[typedChartPart!]!), new RegExp(xmlName.replace(/[<>]/g, '')));
     }
@@ -872,7 +872,7 @@ describe('exchange-excel-ooxml', () => {
     withoutChart.sheets[0]!.drawings = [];
     withoutChart.sheets[0]!.drawingPayloads = {};
     const removed = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(withoutChart, output.packageGraph));
-    assert.equal(Object.keys(removed.files).some((name) => name.startsWith('xl/charts/react-pivot-chart-')), false);
+    assert.equal(Object.keys(removed.files).some((name) => name.startsWith('xl/charts/react-chart-')), false);
     assert.doesNotMatch(strFromU8(removed.files['xl/worksheets/sheet1.xml']!), /<drawing r:id=/);
   });
 
@@ -888,8 +888,55 @@ describe('exchange-excel-ooxml', () => {
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
     sheet.drawings.push({ id: 'invalid-pivot-chart', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1, payloadId: 'invalid-pivot-chart' });
-    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'pie', subtype: 'pie', source: { kind: 'pivot', pivotId: 'pivot-invalid-chart' }, elements: { hiddenData: 'show' } });
-    assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), /unsupported native chart type/);
+    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'map', subtype: 'filled-map', source: { kind: 'pivot', pivotId: 'pivot-invalid-chart' }, elements: { hiddenData: 'show' } });
+    assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), /authoritative geography provider/);
+  });
+
+  it('writes ordinary XY/Bubble charts through the same native chart chain and preserves unknown chart-space nodes', () => {
+    const workbook = new WorkbookModel('wb-native-xy-chart', 'Native XY Chart');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Label', 'X', 'Y', 'Size'], ['A', 1, 10, 5], ['B', 2, 20, 8], ['C', 4, 40, 12]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.drawings.push({ id: 'xy-chart-drawing', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 5, column: 4 }, transform: { x: 0, y: 0, width: 360, height: 240 }, zIndex: 1, payloadId: 'xy-chart-payload' });
+    sheet.drawingPayloads.set('xy-chart-payload', {
+      kind: 'chart', chartId: 'xy-chart-payload', chartType: 'bubble', subtype: 'bubble', source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 3 }] },
+      series: [{ id: 'bubble-series', name: 'Y', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, xRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, sizeRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 3, endColumn: 3 }, chartType: 'bubble' }],
+      categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }, elements: { hiddenData: 'show', title: 'Bubble' },
+    });
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const chartPart = Object.keys(output.files).find((name) => name.startsWith('xl/charts/react-chart-'));
+    assert.ok(chartPart);
+    const chartXml = strFromU8(output.files[chartPart!]!);
+    assert.match(chartXml, /<c:bubbleChart>/);
+    assert.match(chartXml, /<c:xVal>.*\$B\$2:\$B\$4/);
+    assert.match(chartXml, /<c:yVal>.*\$C\$2:\$C\$4/);
+    assert.match(chartXml, /<c:bubbleSize>.*\$D\$2:\$D\$4/);
+
+    const preserved = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const preservedChartPart = Object.keys(preserved.files).find((name) => name.startsWith('xl/charts/react-chart-'));
+    assert.ok(preservedChartPart);
+    preserved.packageGraph.parts[preservedChartPart!] = strToU8(strFromU8(preserved.packageGraph.parts[preservedChartPart!]!).replace('</c:chartSpace>', '<c:unknownChartNode val="keep"/><c:extLst><c:ext uri="{test}"><c:unknown val="keep"/></c:ext></c:extLst></c:chartSpace>'));
+    const rewritten = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), preserved.packageGraph));
+    const rewrittenXml = strFromU8(rewritten.files[preservedChartPart!]!);
+    assert.match(rewrittenXml, /unknownChartNode/);
+    assert.match(rewrittenXml, /uri="\{test\}"/);
+  });
+
+  it('serializes and imports native Sparkline design and group semantics', async () => {
+    const workbook = new WorkbookModel('wb-native-sparkline', 'Native Sparkline');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [[2, null, -4, 8], [1, 3, 5, 7]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex + 1, columnIndex + 1, { value })));
+    sheet.sparklines.push({ id: 'spark-native', sheetId: sheet.id, anchor: { row: 1, column: 5 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 4 }, type: 'line', color: '#2563eb', negativeColor: '#ef4444', showAxis: true, showMarkers: true, lineWeight: 2, dateAxis: true, rightToLeft: true, hiddenCells: 'hide', emptyCells: 'connect', verticalAxis: { mode: 'custom', minimum: -10, maximum: 10 }, axisColor: '#475569', firstColor: '#f59e0b', lastColor: '#8b5cf6', highColor: '#16a34a', lowColor: '#dc2626', markerColor: '#0ea5e9', groupId: 'spark-group' });
+    sheet.sparklineGroups.push({ id: 'spark-group', sheetId: sheet.id, type: 'line', sparklineIds: ['spark-native'], showAxis: true, showMarkers: true, lineWeight: 2, dateAxis: true, rightToLeft: true, hiddenCells: 'hide', emptyCells: 'connect', verticalAxis: { mode: 'custom', minimum: -10, maximum: 10 }, axisColor: '#475569', firstColor: '#f59e0b', lastColor: '#8b5cf6', highColor: '#16a34a', lowColor: '#dc2626', negativeColor: '#ef4444', markerColor: '#0ea5e9' });
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const sheetXml = strFromU8(output.files['xl/worksheets/sheet1.xml']!);
+    assert.match(sheetXml, /sparklineGroup[^>]+lineWeight="2"/);
+    assert.match(sheetXml, /displayEmptyCellsAs="span"/);
+    assert.match(sheetXml, /manualMin="-10"/);
+    const imported = await importOoxmlDocument({ fileName: 'native-sparkline.xlsx', buffer: zipOpcPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
+    const importedSparkline = imported.snapshot.sheets[0]?.sparklines.find((entry) => entry.id === 'spark-native');
+    assert.equal(importedSparkline?.emptyCells, 'connect');
+    assert.equal(importedSparkline?.rightToLeft, true);
+    assert.equal(imported.snapshot.sheets[0]?.sparklineGroups?.[0]?.verticalAxis?.maximum, 10);
   });
 
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {

@@ -116,6 +116,40 @@ describe('WorkbookSession sparkline integration', () => {
     assert.equal(sparkline?.showMarkers, false);
   });
 
+  it('keeps advanced Sparkline design state in the command history', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.range.set', {
+      sheetId,
+      startRow: 1,
+      startColumn: 1,
+      values: [[{ value: 2 }, { value: null }, { value: -4 }, { value: 8 }]],
+    });
+    app.addSparkline({
+      id: 'spark-advanced', sheetId, anchor: { row: 1, column: 5 },
+      sourceRange: { sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 4 }, type: 'line', color: '#2563eb', negativeColor: '#ef4444',
+      lineWeight: 2.25, dateAxis: true, dataOrientation: 'rows', rightToLeft: true, hiddenCells: 'hide', emptyCells: 'connect',
+      verticalAxis: { mode: 'custom', minimum: -10, maximum: 10 }, axisColor: '#475569', firstColor: '#f59e0b', lastColor: '#8b5cf6', highColor: '#16a34a', lowColor: '#dc2626', markerColor: '#0ea5e9',
+    });
+    let sparkline = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === 'spark-advanced');
+    assert.equal(sparkline?.lineWeight, 2.25);
+    assert.equal(sparkline?.emptyCells, 'connect');
+    assert.equal(sparkline?.verticalAxis?.minimum, -10);
+    app.updateSparkline('spark-advanced', { emptyCells: 'zero', rightToLeft: false, verticalAxis: { mode: 'automatic' }, markerColor: '#111827' });
+    sparkline = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === 'spark-advanced');
+    assert.equal(sparkline?.emptyCells, 'zero');
+    assert.equal(sparkline?.rightToLeft, false);
+    assert.equal(sparkline?.verticalAxis?.mode, 'automatic');
+    app.undo();
+    sparkline = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === 'spark-advanced');
+    assert.equal(sparkline?.emptyCells, 'connect');
+    assert.equal(sparkline?.rightToLeft, true);
+    assert.equal(sparkline?.verticalAxis?.minimum, -10);
+    app.redo();
+    sparkline = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === 'spark-advanced');
+    assert.equal(sparkline?.markerColor, '#111827');
+  });
+
   it('removeSparkline deletes through sparkline.remove command contract', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

@@ -90,6 +90,7 @@ export interface FeatureSidebarProps {
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
+  selectedChartElement?: import('@react-sheets/spreadsheet-app').ChartElementSelection | null;
   initialBarcodeSymbology: import('@react-sheets/core-model').BarcodeSymbology;
   onSelectDrawing: (drawingId: string, mode: DrawingSelectionMode) => void;
   onSetDrawingVisibility: (drawingId: string, visible: boolean) => void;
@@ -306,6 +307,7 @@ export function FeatureSidebar({
   drawings,
   drawingPayloads,
   selectedDrawingIds = [],
+  selectedChartElement = null,
   initialBarcodeSymbology,
   onSelectDrawing,
   onSetDrawingVisibility,
@@ -506,6 +508,7 @@ export function FeatureSidebar({
             drawings={drawings}
             drawingPayloads={drawingPayloads}
             selectedDrawingIds={selectedDrawingIds}
+            selectedChartElement={selectedChartElement}
             defaultRange={selectionText}
             onInsertChart={onInsertChart}
             onCommand={onCommand}

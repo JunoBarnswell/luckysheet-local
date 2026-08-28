@@ -52,6 +52,7 @@ export function FeaturePanelHost({
           activePanel={state.panels.active}
           locale={locale}
           selectedRange={selectedRange}
+          selectedChartElement={state.selectedChartElement}
           onPanelChange={(panel) => {
             onSidebarOpenChange(true);
             if (panel === "print") {

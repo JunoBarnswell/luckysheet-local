@@ -90,6 +90,15 @@ export function SparklinePanel({
   const [highlightNegative, setHighlightNegative] = useState(false);
   const [showAxis, setShowAxis] = useState(false);
   const [showMarkers, setShowMarkers] = useState(false);
+  const [lineWeight, setLineWeight] = useState(1.5);
+  const [dateAxis, setDateAxis] = useState(false);
+  const [dataOrientation, setDataOrientation] = useState<SparklineModel['dataOrientation']>('rows');
+  const [rightToLeft, setRightToLeft] = useState(false);
+  const [hiddenCells, setHiddenCells] = useState<SparklineModel['hiddenCells']>('show');
+  const [emptyCells, setEmptyCells] = useState<SparklineModel['emptyCells']>('gap');
+  const [minimum, setMinimum] = useState('');
+  const [maximum, setMaximum] = useState('');
+  const [axisColor, setAxisColor] = useState('#cbd5e1');
   const parsedSourceRange = parseRangeInput(sourceRange, sheetId);
 
   useEffect(() => {
@@ -111,6 +120,15 @@ export function SparklinePanel({
       setHighlightNegative(false);
       setShowAxis(false);
       setShowMarkers(false);
+      setLineWeight(1.5);
+      setDateAxis(false);
+      setDataOrientation('rows');
+      setRightToLeft(false);
+      setHiddenCells('show');
+      setEmptyCells('gap');
+      setMinimum('');
+      setMaximum('');
+      setAxisColor('#cbd5e1');
       return;
     }
     setType(selectedSparkline.type);
@@ -125,6 +143,15 @@ export function SparklinePanel({
     setHighlightNegative(selectedSparkline.highlightNegative === true);
     setShowAxis(selectedSparkline.showAxis === true);
     setShowMarkers(selectedSparkline.showMarkers === true);
+    setLineWeight(selectedSparkline.lineWeight ?? 1.5);
+    setDateAxis(selectedSparkline.dateAxis === true);
+    setDataOrientation(selectedSparkline.dataOrientation ?? 'rows');
+    setRightToLeft(selectedSparkline.rightToLeft === true);
+    setHiddenCells(selectedSparkline.hiddenCells ?? 'show');
+    setEmptyCells(selectedSparkline.emptyCells ?? 'gap');
+    setMinimum(selectedSparkline.verticalAxis?.minimum?.toString() ?? '');
+    setMaximum(selectedSparkline.verticalAxis?.maximum?.toString() ?? '');
+    setAxisColor(selectedSparkline.axisColor ?? '#cbd5e1');
   }, [defaultRange, selectedSparkline?.id]);
 
   const selectedRangeIds = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -145,11 +172,28 @@ export function SparklinePanel({
       highlightFirst,
       highlightLast,
       highlightNegative,
+      lineWeight,
+      dateAxis,
+      dataOrientation,
+      rightToLeft,
+      hiddenCells,
+      emptyCells,
+      verticalAxis: minimum !== '' && maximum !== '' ? { mode: 'custom', minimum: Number(minimum), maximum: Number(maximum) } : { mode: 'automatic' },
+      axisColor,
     };
     if (!selectedGroup) {
       patch.type = type;
       patch.showAxis = showAxis;
       patch.showMarkers = showMarkers;
+    } else {
+      delete patch.lineWeight;
+      delete patch.dateAxis;
+      delete patch.dataOrientation;
+      delete patch.rightToLeft;
+      delete patch.hiddenCells;
+      delete patch.emptyCells;
+      delete patch.verticalAxis;
+      delete patch.axisColor;
     }
     if (selectedSparkline) {
       onCommand({ commandId: 'sparkline.update', params: { sheetId, sparklineId: selectedSparkline.id, patch } });
@@ -164,7 +208,15 @@ export function SparklinePanel({
       highlightLast,
       highlightNegative,
       showAxis,
-      showMarkers,
+       showMarkers,
+       lineWeight,
+       dateAxis,
+       dataOrientation,
+       rightToLeft,
+       hiddenCells,
+       emptyCells,
+       verticalAxis: minimum !== '' && maximum !== '' ? { mode: 'custom', minimum: Number(minimum), maximum: Number(maximum) } : { mode: 'automatic' },
+       axisColor,
     });
   };
 
@@ -189,7 +241,8 @@ export function SparklinePanel({
         <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Target cell</Text><TextInput value={targetCell} onChange={(event) => setTargetCell(event.target.value)} placeholder="e.g. F2" /></Box>
         <Box className="grid grid-cols-2 gap-2"><Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Series color</Text><ColorPicker color={color} onChange={setColor} /><TextInput value={color} onChange={(event) => setColor(event.target.value)} className="mt-1 h-8 text-xs font-mono" /></Box><Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Negative color</Text><ColorPicker color={negativeColor} onChange={setNegativeColor} /><TextInput value={negativeColor} onChange={(event) => setNegativeColor(event.target.value)} className="mt-1 h-8 text-xs font-mono" /></Box></Box>
         <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">Points and axis</Text><Inline gap="xs" className="flex-wrap"><CheckToggle label="High" checked={highlightMax} onChange={(event) => setHighlightMax(event.currentTarget.checked)} /><CheckToggle label="Low" checked={highlightMin} onChange={(event) => setHighlightMin(event.currentTarget.checked)} /><CheckToggle label="First" checked={highlightFirst} onChange={(event) => setHighlightFirst(event.currentTarget.checked)} /><CheckToggle label="Last" checked={highlightLast} onChange={(event) => setHighlightLast(event.currentTarget.checked)} /><CheckToggle label="Negative" checked={highlightNegative} onChange={(event) => setHighlightNegative(event.currentTarget.checked)} /><CheckToggle label="Markers" checked={showMarkers} disabled={Boolean(selectedGroup)} onChange={(event) => setShowMarkers(event.currentTarget.checked)} /><CheckToggle label="Axis" checked={showAxis} disabled={Boolean(selectedGroup)} onChange={(event) => setShowAxis(event.currentTarget.checked)} /></Inline></Box>
-        {selectedGroup ? <Box className="rounded border border-slate-200 bg-white p-2"><Text size="xs" weight="medium" className="mb-1 text-slate-700">Group settings · {selectedGroup.id}</Text><Stack gap="xs"><Select value={selectedGroup.type} onChange={(event) => updateGroup({ type: event.target.value as SparklineModel['type'] })} sizeVariant="sm"><option value="line">Line</option><option value="column">Column</option><option value="win-loss">Win / Loss</option></Select><CheckToggle label="Shared markers" checked={selectedGroup.showMarkers === true} onChange={(event) => updateGroup({ showMarkers: event.currentTarget.checked })} /><CheckToggle label="Shared axis" checked={selectedGroup.showAxis === true} onChange={(event) => updateGroup({ showAxis: event.currentTarget.checked })} /><Button variant="secondary" size="sm" onClick={() => onCommand({ commandId: 'sparkline.group.remove', params: { sheetId, groupId: selectedGroup.id } })}>Ungroup selected</Button></Stack></Box> : null}
+        <Box className="rounded border border-slate-200 bg-white p-2"><Text size="xs" weight="medium" className="mb-2 text-slate-700">Sparkline Design</Text><Stack gap="xs"><Inline gap="xs"><TextInput value={lineWeight.toString()} onChange={(event) => setLineWeight(Number(event.target.value))} placeholder="Line weight" /><TextInput value={axisColor} onChange={(event) => setAxisColor(event.target.value)} placeholder="Axis color" /></Inline><Inline gap="xs" className="flex-wrap"><CheckToggle label="Date axis" checked={dateAxis} disabled={Boolean(selectedGroup)} onChange={(event) => setDateAxis(event.currentTarget.checked)} /><CheckToggle label="Right to left" checked={rightToLeft} disabled={Boolean(selectedGroup)} onChange={(event) => setRightToLeft(event.currentTarget.checked)} /></Inline><Inline gap="xs"><Select value={dataOrientation} disabled={Boolean(selectedGroup)} onChange={(event) => setDataOrientation(event.target.value as SparklineModel['dataOrientation'])} sizeVariant="sm"><option value="rows">Data in rows</option><option value="columns">Data in columns</option></Select><Select value={hiddenCells} disabled={Boolean(selectedGroup)} onChange={(event) => setHiddenCells(event.target.value as SparklineModel['hiddenCells'])} sizeVariant="sm"><option value="show">Plot hidden cells</option><option value="hide">Ignore hidden cells</option></Select><Select value={emptyCells} disabled={Boolean(selectedGroup)} onChange={(event) => setEmptyCells(event.target.value as SparklineModel['emptyCells'])} sizeVariant="sm"><option value="gap">Empty: gap</option><option value="zero">Empty: zero</option><option value="connect">Empty: connect</option></Select></Inline><Inline gap="xs"><TextInput value={minimum} disabled={Boolean(selectedGroup)} onChange={(event) => setMinimum(event.target.value)} placeholder="Min (auto)" /><TextInput value={maximum} disabled={Boolean(selectedGroup)} onChange={(event) => setMaximum(event.target.value)} placeholder="Max (auto)" /></Inline></Stack></Box>
+        {selectedGroup ? <Box className="rounded border border-slate-200 bg-white p-2"><Text size="xs" weight="medium" className="mb-1 text-slate-700">Group settings · {selectedGroup.id}</Text><Stack gap="xs"><Select value={selectedGroup.type} onChange={(event) => updateGroup({ type: event.target.value as SparklineModel['type'] })} sizeVariant="sm"><option value="line">Line</option><option value="column">Column</option><option value="win-loss">Win / Loss</option></Select><Inline gap="xs"><CheckToggle label="Shared markers" checked={selectedGroup.showMarkers === true} onChange={(event) => updateGroup({ showMarkers: event.currentTarget.checked })} /><CheckToggle label="Shared axis" checked={selectedGroup.showAxis === true} onChange={(event) => updateGroup({ showAxis: event.currentTarget.checked })} /></Inline><TextInput value={selectedGroup.lineWeight?.toString() ?? ''} placeholder="Shared line weight" onChange={(event) => updateGroup({ lineWeight: event.target.value === '' ? undefined : Number(event.target.value) })} /><Inline gap="xs"><Select value={selectedGroup.hiddenCells ?? 'show'} onChange={(event) => updateGroup({ hiddenCells: event.target.value as SparklineGroup['hiddenCells'] })} sizeVariant="sm"><option value="show">Plot hidden cells</option><option value="hide">Ignore hidden cells</option></Select><Select value={selectedGroup.emptyCells ?? 'gap'} onChange={(event) => updateGroup({ emptyCells: event.target.value as SparklineGroup['emptyCells'] })} sizeVariant="sm"><option value="gap">Empty: gap</option><option value="zero">Empty: zero</option><option value="connect">Empty: connect</option></Select></Inline><Button variant="secondary" size="sm" onClick={() => onCommand({ commandId: 'sparkline.group.remove', params: { sheetId, groupId: selectedGroup.id } })}>Ungroup selected</Button></Stack></Box> : null}
         <Inline gap="xs"><Button variant="primary" size="sm" icon="sparkline" disabled={!parsedSourceRange || !parseTargetCell(targetCell)} onClick={handleCommit}>{selectedSparkline ? 'Update Sparkline' : 'Insert Sparkline'}</Button><Button variant="secondary" size="sm" disabled={selectedIds.length < 2} onClick={createGroup}>Group selected</Button></Inline>
         {sparklines.length > 0 ? <Box className="border-t border-slate-200 pt-3"><Text size="xs" weight="semibold" className="mb-2 text-slate-700">Cell Sparklines ({sparklines.length})</Text><Stack gap="xs">{sparklines.map((sparkline) => <Box key={sparkline.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"><CheckToggle aria-label={`Select ${sparkline.id}`} checked={selectedRangeIds.has(sparkline.id)} onChange={() => toggleSelected(sparkline.id)} /><Button variant="ghost" size="xs" className="min-w-0 flex-1 justify-start px-2" onClick={() => setSelectedIds([sparkline.id])}>{sparkline.type.toUpperCase()} · {columnName(sparkline.anchor.column)}{sparkline.anchor.row + 1}{sparkline.groupId ? ` · ${sparkline.groupId}` : ''}</Button><Button variant="ghost" size="xs" icon="trash" iconOnly aria-label={`Delete ${sparkline.id}`} onClick={() => onRemoveSparkline(sparkline.id)} className="text-rose-600 hover:bg-rose-50" /></Box>)}</Stack></Box> : null}
       </Stack></PanelBody>

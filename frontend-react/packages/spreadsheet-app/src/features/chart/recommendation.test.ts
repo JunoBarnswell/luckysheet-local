@@ -28,3 +28,16 @@ test('Recommended Charts rejects a non-numeric selection without fabricating can
   sheet.cells.set(1, 0, { value: 'Alpha' });
   assert.throws(() => recommendCharts(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }), /INVALID_CHART_SOURCE/);
 });
+
+test('Recommended XY candidates carry independent bindings into real previews', () => {
+  const workbook = new WorkbookModel('chart-recommendations-xy', 'Chart Recommendations XY');
+  const sheet = workbook.getSheet('sheet-1');
+  [['X', 'Y', 'Size'], ['1', '10', '5'], ['2', '20', '8'], ['4', '40', '12']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+  const candidates = recommendCharts(workbook, range);
+  const bubble = candidates.find((candidate) => candidate.chartType === 'bubble');
+  assert.ok(bubble?.series?.[0]?.xRange);
+  assert.ok(bubble?.series?.[0]?.yRange);
+  assert.ok(bubble?.series?.[0]?.sizeRange);
+  assert.deepEqual(bubble?.preview.series[0]?.values, [10, 20, 40]);
+});

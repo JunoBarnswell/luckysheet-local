@@ -46,6 +46,20 @@ interface SparklineMemberState {
   groupId?: string;
   showAxis?: boolean;
   showMarkers?: boolean;
+  lineWeight?: number;
+  dateAxis?: boolean;
+  dataOrientation?: SparklineModel['dataOrientation'];
+  rightToLeft?: boolean;
+  hiddenCells?: SparklineModel['hiddenCells'];
+  emptyCells?: SparklineModel['emptyCells'];
+  verticalAxis?: SparklineModel['verticalAxis'];
+  axisColor?: string;
+  firstColor?: string;
+  lastColor?: string;
+  highColor?: string;
+  lowColor?: string;
+  negativeColor?: string;
+  markerColor?: string;
 }
 
 interface SparklineGroupState {
@@ -69,6 +83,14 @@ interface SparklineRemoveParams {
 }
 
 function validateGroupMembers(sheet: ReturnType<CommandContext['workbook']['getSheet']>, group: SparklineGroup): void {
+  if (group.lineWeight !== undefined && (!Number.isFinite(group.lineWeight) || group.lineWeight <= 0 || group.lineWeight > 20)) throw new Error('Sparkline group line weight must be between 0 and 20');
+  if (group.dataOrientation !== undefined && !['rows', 'columns'].includes(group.dataOrientation)) throw new Error('Sparkline group data orientation is invalid');
+  if (group.hiddenCells !== undefined && !['show', 'hide'].includes(group.hiddenCells)) throw new Error('Sparkline group hidden cell mode is invalid');
+  if (group.emptyCells !== undefined && !['gap', 'zero', 'connect'].includes(group.emptyCells)) throw new Error('Sparkline group empty cell mode is invalid');
+  if (group.verticalAxis?.mode === 'custom' && (group.verticalAxis.minimum === undefined || group.verticalAxis.maximum === undefined || group.verticalAxis.maximum <= group.verticalAxis.minimum)) throw new Error('Custom Sparkline group axis requires ordered minimum and maximum');
+  for (const [key, color] of Object.entries({ axisColor: group.axisColor, firstColor: group.firstColor, lastColor: group.lastColor, highColor: group.highColor, lowColor: group.lowColor, negativeColor: group.negativeColor, markerColor: group.markerColor })) {
+    if (color !== undefined && !HEX_COLOR.test(color)) throw new Error(`Sparkline group ${key} must be a six-digit hexadecimal color`);
+  }
   const ids = new Set<string>();
   for (const sparklineId of group.sparklineIds) {
     if (ids.has(sparklineId)) throw new Error(`Sparkline group contains duplicate member: ${sparklineId}`);
@@ -95,6 +117,20 @@ function captureGroupState(
       groupId: sparkline.groupId,
       showAxis: sparkline.showAxis,
       showMarkers: sparkline.showMarkers,
+      lineWeight: sparkline.lineWeight,
+      dateAxis: sparkline.dateAxis,
+      dataOrientation: sparkline.dataOrientation,
+      rightToLeft: sparkline.rightToLeft,
+      hiddenCells: sparkline.hiddenCells,
+      emptyCells: sparkline.emptyCells,
+      verticalAxis: sparkline.verticalAxis ? structuredClone(sparkline.verticalAxis) : undefined,
+      axisColor: sparkline.axisColor,
+      firstColor: sparkline.firstColor,
+      lastColor: sparkline.lastColor,
+      highColor: sparkline.highColor,
+      lowColor: sparkline.lowColor,
+      negativeColor: sparkline.negativeColor,
+      markerColor: sparkline.markerColor,
     }));
   return { sheetId: sheet.id, groupIds: ids, groups, members };
 }
@@ -106,7 +142,41 @@ function memberStateFromSparkline(sparkline: SparklineModel): SparklineMemberSta
     groupId: sparkline.groupId,
     showAxis: sparkline.showAxis,
     showMarkers: sparkline.showMarkers,
+    lineWeight: sparkline.lineWeight,
+    dateAxis: sparkline.dateAxis,
+    dataOrientation: sparkline.dataOrientation,
+    rightToLeft: sparkline.rightToLeft,
+    hiddenCells: sparkline.hiddenCells,
+    emptyCells: sparkline.emptyCells,
+    verticalAxis: sparkline.verticalAxis ? structuredClone(sparkline.verticalAxis) : undefined,
+    axisColor: sparkline.axisColor,
+    firstColor: sparkline.firstColor,
+    lastColor: sparkline.lastColor,
+    highColor: sparkline.highColor,
+    lowColor: sparkline.lowColor,
+    negativeColor: sparkline.negativeColor,
+    markerColor: sparkline.markerColor,
   };
+}
+
+function applyGroupProjection(sparkline: SparklineModel, group: SparklineGroup): void {
+  sparkline.type = group.type;
+  if (group.showAxis === undefined) delete sparkline.showAxis; else sparkline.showAxis = group.showAxis;
+  if (group.showMarkers === undefined) delete sparkline.showMarkers; else sparkline.showMarkers = group.showMarkers;
+  if (group.lineWeight === undefined) delete sparkline.lineWeight; else sparkline.lineWeight = group.lineWeight;
+  if (group.dateAxis === undefined) delete sparkline.dateAxis; else sparkline.dateAxis = group.dateAxis;
+  if (group.dataOrientation === undefined) delete sparkline.dataOrientation; else sparkline.dataOrientation = group.dataOrientation;
+  if (group.rightToLeft === undefined) delete sparkline.rightToLeft; else sparkline.rightToLeft = group.rightToLeft;
+  if (group.hiddenCells === undefined) delete sparkline.hiddenCells; else sparkline.hiddenCells = group.hiddenCells;
+  if (group.emptyCells === undefined) delete sparkline.emptyCells; else sparkline.emptyCells = group.emptyCells;
+  if (group.verticalAxis === undefined) delete sparkline.verticalAxis; else sparkline.verticalAxis = structuredClone(group.verticalAxis);
+  if (group.axisColor === undefined) delete sparkline.axisColor; else sparkline.axisColor = group.axisColor;
+  if (group.firstColor === undefined) delete sparkline.firstColor; else sparkline.firstColor = group.firstColor;
+  if (group.lastColor === undefined) delete sparkline.lastColor; else sparkline.lastColor = group.lastColor;
+  if (group.highColor === undefined) delete sparkline.highColor; else sparkline.highColor = group.highColor;
+  if (group.lowColor === undefined) delete sparkline.lowColor; else sparkline.lowColor = group.lowColor;
+  if (group.negativeColor === undefined) delete sparkline.negativeColor; else sparkline.negativeColor = group.negativeColor;
+  if (group.markerColor === undefined) delete sparkline.markerColor; else sparkline.markerColor = group.markerColor;
 }
 
 function applyGroupState(params: SparklineGroupStateParams, context: CommandContext): void {
@@ -146,6 +216,22 @@ function applyGroupState(params: SparklineGroupStateParams, context: CommandCont
     else sparkline.showAxis = state.showAxis;
     if (state.showMarkers === undefined) delete sparkline.showMarkers;
     else sparkline.showMarkers = state.showMarkers;
+    if (state.lineWeight === undefined) delete sparkline.lineWeight; else sparkline.lineWeight = state.lineWeight;
+    if (state.dateAxis === undefined) delete sparkline.dateAxis; else sparkline.dateAxis = state.dateAxis;
+    if (state.dataOrientation === undefined) delete sparkline.dataOrientation; else sparkline.dataOrientation = state.dataOrientation;
+    if (state.rightToLeft === undefined) delete sparkline.rightToLeft; else sparkline.rightToLeft = state.rightToLeft;
+    if (state.hiddenCells === undefined) delete sparkline.hiddenCells; else sparkline.hiddenCells = state.hiddenCells;
+    if (state.emptyCells === undefined) delete sparkline.emptyCells; else sparkline.emptyCells = state.emptyCells;
+    if (state.verticalAxis === undefined) delete sparkline.verticalAxis; else sparkline.verticalAxis = structuredClone(state.verticalAxis);
+    if (state.axisColor === undefined) delete sparkline.axisColor; else sparkline.axisColor = state.axisColor;
+    if (state.firstColor === undefined) delete sparkline.firstColor; else sparkline.firstColor = state.firstColor;
+    if (state.lastColor === undefined) delete sparkline.lastColor; else sparkline.lastColor = state.lastColor;
+    if (state.highColor === undefined) delete sparkline.highColor; else sparkline.highColor = state.highColor;
+    if (state.lowColor === undefined) delete sparkline.lowColor; else sparkline.lowColor = state.lowColor;
+    if (state.negativeColor === undefined) delete sparkline.negativeColor; else sparkline.negativeColor = state.negativeColor;
+    if (state.markerColor === undefined) delete sparkline.markerColor; else sparkline.markerColor = state.markerColor;
+    const group = state.groupId ? sheet.sparklineGroups.find((entry) => entry.id === state.groupId) : undefined;
+    if (group) applyGroupProjection(sparkline, group);
   }
 }
 
@@ -172,7 +258,27 @@ function transitionForGroup(
     const previous = oldMemberState.get(sparklineId);
     const sparkline = sheet.sparklines.find((entry) => entry.id === sparklineId);
     if (!sparkline) throw new Error(`Unknown sparkline member: ${sparklineId}`);
-    if (selectedIds.has(sparklineId)) return { sparklineId, type: nextGroup.type, groupId: nextGroup.id, showAxis: nextGroup.showAxis, showMarkers: nextGroup.showMarkers };
+    if (selectedIds.has(sparklineId)) return {
+      sparklineId,
+      type: nextGroup.type,
+      groupId: nextGroup.id,
+      showAxis: nextGroup.showAxis,
+      showMarkers: nextGroup.showMarkers,
+      lineWeight: nextGroup.lineWeight,
+      dateAxis: nextGroup.dateAxis,
+      dataOrientation: nextGroup.dataOrientation,
+      rightToLeft: nextGroup.rightToLeft,
+      hiddenCells: nextGroup.hiddenCells,
+      emptyCells: nextGroup.emptyCells,
+      verticalAxis: nextGroup.verticalAxis ? structuredClone(nextGroup.verticalAxis) : undefined,
+      axisColor: nextGroup.axisColor,
+      firstColor: nextGroup.firstColor,
+      lastColor: nextGroup.lastColor,
+      highColor: nextGroup.highColor,
+      lowColor: nextGroup.lowColor,
+      negativeColor: nextGroup.negativeColor,
+      markerColor: nextGroup.markerColor,
+    };
     const retained = oldGroups.find((group) => group.id !== nextGroup.id && group.sparklineIds.includes(sparklineId));
     if (retained) return previous ? { ...previous } : memberStateFromSparkline(sparkline);
     return { sparklineId, type: previous?.type ?? sparkline.type };
@@ -229,6 +335,19 @@ export interface SparklineInsertDialogParams {
   highlightNegative?: boolean;
   showAxis?: boolean;
   showMarkers?: boolean;
+  lineWeight?: number;
+  dateAxis?: boolean;
+  dataOrientation?: SparklineModel['dataOrientation'];
+  rightToLeft?: boolean;
+  hiddenCells?: SparklineModel['hiddenCells'];
+  emptyCells?: SparklineModel['emptyCells'];
+  verticalAxis?: SparklineModel['verticalAxis'];
+  axisColor?: string;
+  firstColor?: string;
+  lastColor?: string;
+  highColor?: string;
+  lowColor?: string;
+  markerColor?: string;
 }
 
 const SPARKLINE_TYPES = new Set<SparklineModel['type']>(['line', 'column', 'win-loss']);
@@ -236,10 +355,17 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const SPARKLINE_PATCH_KEYS = new Set<keyof SparklineModel>([
   'anchor', 'sourceRange', 'type', 'color', 'negativeColor', 'highlightMax', 'highlightMin',
   'highlightFirst', 'highlightLast', 'highlightNegative', 'groupId', 'showAxis', 'showMarkers',
+  'lineWeight', 'dateAxis', 'dataOrientation', 'rightToLeft', 'hiddenCells', 'emptyCells', 'verticalAxis',
+  'axisColor', 'firstColor', 'lastColor', 'highColor', 'lowColor', 'markerColor',
 ]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const isAxisBounds = (value: unknown): value is NonNullable<SparklineModel['verticalAxis']> => isRecord(value)
+  && ['automatic', 'same-group', 'custom'].includes(String(value.mode))
+  && (value.minimum === undefined || (typeof value.minimum === 'number' && Number.isFinite(value.minimum)))
+  && (value.maximum === undefined || (typeof value.maximum === 'number' && Number.isFinite(value.maximum)))
+  && (value.mode !== 'custom' || (typeof value.minimum === 'number' && typeof value.maximum === 'number' && value.maximum > value.minimum));
 const isRange = (value: unknown): value is RangeRef => isRecord(value)
   && isNonEmptyString(value.sheetId)
   && Number.isSafeInteger(value.startRow) && Number.isSafeInteger(value.endRow)
@@ -259,6 +385,14 @@ const isSparkline = (value: unknown): value is SparklineModel => isRecord(value)
   && (value.highlightNegative === undefined || typeof value.highlightNegative === 'boolean')
   && (value.showAxis === undefined || typeof value.showAxis === 'boolean')
   && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean')
+  && (value.lineWeight === undefined || (typeof value.lineWeight === 'number' && value.lineWeight > 0 && value.lineWeight <= 20))
+  && (value.dateAxis === undefined || typeof value.dateAxis === 'boolean')
+  && (value.dataOrientation === undefined || value.dataOrientation === 'rows' || value.dataOrientation === 'columns')
+  && (value.rightToLeft === undefined || typeof value.rightToLeft === 'boolean')
+  && (value.hiddenCells === undefined || value.hiddenCells === 'show' || value.hiddenCells === 'hide')
+  && (value.emptyCells === undefined || value.emptyCells === 'gap' || value.emptyCells === 'zero' || value.emptyCells === 'connect')
+  && (value.verticalAxis === undefined || isAxisBounds(value.verticalAxis))
+  && ['axisColor', 'firstColor', 'lastColor', 'highColor', 'lowColor', 'markerColor'].every((key) => value[key] === undefined || (typeof value[key] === 'string' && HEX_COLOR.test(value[key] as string)))
   && isRange(value.sourceRange) && SPARKLINE_TYPES.has(value.type as SparklineModel['type'])
   && (value.groupId === undefined || isNonEmptyString(value.groupId));
 const isSparklineGroup = (value: unknown): value is SparklineGroup => isRecord(value)
@@ -266,12 +400,27 @@ const isSparklineGroup = (value: unknown): value is SparklineGroup => isRecord(v
   && SPARKLINE_TYPES.has(value.type as SparklineModel['type'])
   && Array.isArray(value.sparklineIds) && value.sparklineIds.every(isNonEmptyString)
   && (value.showAxis === undefined || typeof value.showAxis === 'boolean')
-  && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean');
+  && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean')
+  && (value.lineWeight === undefined || (typeof value.lineWeight === 'number' && value.lineWeight > 0 && value.lineWeight <= 20))
+  && (value.dateAxis === undefined || typeof value.dateAxis === 'boolean')
+  && (value.dataOrientation === undefined || value.dataOrientation === 'rows' || value.dataOrientation === 'columns')
+  && (value.rightToLeft === undefined || typeof value.rightToLeft === 'boolean')
+  && (value.hiddenCells === undefined || value.hiddenCells === 'show' || value.hiddenCells === 'hide')
+  && (value.emptyCells === undefined || value.emptyCells === 'gap' || value.emptyCells === 'zero' || value.emptyCells === 'connect')
+  && (value.verticalAxis === undefined || isAxisBounds(value.verticalAxis))
+  && ['axisColor', 'firstColor', 'lastColor', 'highColor', 'lowColor', 'negativeColor', 'markerColor'].every((key) => value[key] === undefined || (typeof value[key] === 'string' && HEX_COLOR.test(value[key] as string)));
 const isMemberState = (value: unknown): value is SparklineMemberState => isRecord(value)
   && isNonEmptyString(value.sparklineId) && SPARKLINE_TYPES.has(value.type as SparklineModel['type'])
   && (value.groupId === undefined || isNonEmptyString(value.groupId))
   && (value.showAxis === undefined || typeof value.showAxis === 'boolean')
-  && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean');
+  && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean')
+  && (value.lineWeight === undefined || typeof value.lineWeight === 'number')
+  && (value.dateAxis === undefined || typeof value.dateAxis === 'boolean')
+  && (value.dataOrientation === undefined || value.dataOrientation === 'rows' || value.dataOrientation === 'columns')
+  && (value.rightToLeft === undefined || typeof value.rightToLeft === 'boolean')
+  && (value.hiddenCells === undefined || value.hiddenCells === 'show' || value.hiddenCells === 'hide')
+  && (value.emptyCells === undefined || value.emptyCells === 'gap' || value.emptyCells === 'zero' || value.emptyCells === 'connect')
+  && (value.verticalAxis === undefined || isAxisBounds(value.verticalAxis));
 const isGroupState = (value: unknown): value is SparklineGroupStateParams => isRecord(value)
   && isNonEmptyString(value.sheetId)
   && Array.isArray(value.groupIds) && value.groupIds.every(isNonEmptyString)
@@ -353,6 +502,19 @@ function editableSparklinePatch(sparkline: SparklineModel): Partial<SparklineMod
     groupId: sparkline.groupId,
     showAxis: sparkline.showAxis,
     showMarkers: sparkline.showMarkers,
+    lineWeight: sparkline.lineWeight,
+    dateAxis: sparkline.dateAxis,
+    dataOrientation: sparkline.dataOrientation,
+    rightToLeft: sparkline.rightToLeft,
+    hiddenCells: sparkline.hiddenCells,
+    emptyCells: sparkline.emptyCells,
+    verticalAxis: sparkline.verticalAxis ? structuredClone(sparkline.verticalAxis) : undefined,
+    axisColor: sparkline.axisColor,
+    firstColor: sparkline.firstColor,
+    lastColor: sparkline.lastColor,
+    highColor: sparkline.highColor,
+    lowColor: sparkline.lowColor,
+    markerColor: sparkline.markerColor,
   };
 }
 
@@ -387,6 +549,17 @@ function validateSparklineState(context: CommandContext, sparkline: SparklineMod
   }
   const flags: Array<keyof Pick<SparklineModel, 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'showAxis' | 'showMarkers'>> = ['highlightMax', 'highlightMin', 'highlightFirst', 'highlightLast', 'highlightNegative', 'showAxis', 'showMarkers'];
   if (flags.some((flag) => sparkline[flag] !== undefined && typeof sparkline[flag] !== 'boolean')) throw new Error('Sparkline display flags must be boolean');
+  if (sparkline.lineWeight !== undefined && (!Number.isFinite(sparkline.lineWeight) || sparkline.lineWeight <= 0 || sparkline.lineWeight > 20)) throw new Error('Sparkline line weight must be between 0 and 20');
+  if (sparkline.dataOrientation !== undefined && sparkline.dataOrientation !== 'rows' && sparkline.dataOrientation !== 'columns') throw new Error('Sparkline data orientation is invalid');
+  if (sparkline.hiddenCells !== undefined && sparkline.hiddenCells !== 'show' && sparkline.hiddenCells !== 'hide') throw new Error('Sparkline hidden cell mode is invalid');
+  if (sparkline.emptyCells !== undefined && !['gap', 'zero', 'connect'].includes(sparkline.emptyCells)) throw new Error('Sparkline empty cell mode is invalid');
+  if (sparkline.verticalAxis) {
+    if (!['automatic', 'same-group', 'custom'].includes(sparkline.verticalAxis.mode)) throw new Error('Sparkline vertical axis mode is invalid');
+    if (sparkline.verticalAxis.mode === 'custom' && (sparkline.verticalAxis.minimum === undefined || sparkline.verticalAxis.maximum === undefined || sparkline.verticalAxis.maximum <= sparkline.verticalAxis.minimum)) throw new Error('Custom Sparkline axis requires ordered minimum and maximum');
+  }
+  for (const [key, color] of Object.entries({ axisColor: sparkline.axisColor, firstColor: sparkline.firstColor, lastColor: sparkline.lastColor, highColor: sparkline.highColor, lowColor: sparkline.lowColor, markerColor: sparkline.markerColor })) {
+    if (color !== undefined && !HEX_COLOR.test(color)) throw new Error(`Sparkline ${key} must be a six-digit hexadecimal color`);
+  }
   if (sparkline.anchor.row < 0 || sparkline.anchor.column < 0 || sparkline.anchor.row >= target.rowCount || sparkline.anchor.column >= target.columnCount) throw new Error('Sparkline anchor exceeds worksheet bounds');
   const source = sparkline.sourceRange;
   const sourceSheet = context.workbook.getSheet(source.sheetId);
@@ -499,10 +672,23 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         highlightFirst: params.highlightFirst,
         highlightLast: params.highlightLast,
         highlightNegative: params.highlightNegative,
-        groupId: params.groupId,
-        showAxis: params.showAxis ?? false,
-        showMarkers: params.showMarkers ?? false,
-      };
+         groupId: params.groupId,
+         showAxis: params.showAxis ?? false,
+         showMarkers: params.showMarkers ?? false,
+         lineWeight: params.lineWeight,
+         dateAxis: params.dateAxis,
+         dataOrientation: params.dataOrientation,
+         rightToLeft: params.rightToLeft,
+         hiddenCells: params.hiddenCells,
+         emptyCells: params.emptyCells,
+         verticalAxis: params.verticalAxis ? structuredClone(params.verticalAxis) : undefined,
+         axisColor: params.axisColor,
+         firstColor: params.firstColor,
+         lastColor: params.lastColor,
+         highColor: params.highColor,
+         lowColor: params.lowColor,
+         markerColor: params.markerColor,
+       };
       return executeSparklineInsert({ sheetId: params.sheetId, sparkline }, context);
     },
   });

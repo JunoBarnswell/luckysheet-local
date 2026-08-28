@@ -46,20 +46,16 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   // because its source package contained the old opaque part.
   const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
-  const canonicalCharts = request.snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)).filter((payload): payload is import('@react-sheets/core-model').ChartDrawingPayload => payload.kind === 'chart');
-  const sourceHasOpaqueCharts = sourcePackage ? Object.keys(sourcePackage.opaqueParts).some((name) => name.toLowerCase().includes('/charts/')) : false;
-  const allNativePivotCharts = canonicalCharts.length > 0 && canonicalCharts.every((payload) => payload.source.kind === 'pivot' && ['column', 'bar', 'line', 'area'].includes(payload.chartType));
   const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
   const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));
-  if (allNativePivotCharts && !sourceHasOpaqueCharts) {
-    snapshotFeatureSet.delete('charts');
-    packageFeatureSet.delete('charts');
-  }
+  const preservedNativeChartDetections = emittedPackage.nativeChartGraph?.charts.filter((chart) => !chart.editable).map((chart) => ({ feature: 'preserved-native-chart', location: chart.chartPart, reason: chart.reason })) ?? [];
+  const opaqueChartParts = Object.keys(emittedPackage.opaqueParts).filter((part) => part.toLowerCase().includes('/charts/') && !emittedPackage.nativeChartGraph?.charts.some((chart) => chart.chartPart === part));
+  for (const detection of preservedNativeChartDetections) packageFeatureSet.add(detection.feature);
   const snapshotFeatures = [...snapshotFeatureSet];
   const packageFeatures = [...packageFeatureSet];
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
   const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature)])];
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(request.snapshot, emittedPackage.nativePivotGraph);
   const preservedFeatures = sourcePackage ? new Set(Object.keys(sourcePackage.opaqueParts).flatMap((name) => {
     const lower = name.toLowerCase();
@@ -72,11 +68,13 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     if (lower.includes('/drawings/')) return ['images'];
     return [];
   })) : new Set<string>();
+  if (preservedNativeChartDetections.length) preservedFeatures.add('preserved-native-chart');
   // Only parts that survived the writer can be preserved-only. The source
   // package is not authoritative after native graph synchronization.
   for (const feature of [...preservedFeatures]) if (!packageFeatures.includes(feature)) preservedFeatures.delete(feature);
   const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
   editableFeatures.add('defined-names');
+  if (opaqueChartParts.length && !snapshotFeatureSet.has('charts') && !emittedPackage.nativeChartGraph?.charts.some((chart) => chart.editable)) editableFeatures.delete('charts');
   if (nativeStatus.pivot) editableFeatures.add('pivot');
   if (nativeStatus.slicer) editableFeatures.add('slicer');
   if (nativeStatus.timeline) editableFeatures.add('timeline');
@@ -88,7 +86,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures: [...detectedFeatures, ...emittedWorksheetDetections, ...sourceWorksheetDetections],
+    detectedFeatures: [...detectedFeatures, ...emittedWorksheetDetections, ...sourceWorksheetDetections, ...preservedNativeChartDetections],
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures,
