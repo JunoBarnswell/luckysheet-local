@@ -29,9 +29,42 @@ export {
 export * from './ui-command-catalog';
 export * from './features/formula-audit';
 export * from './features/pivot-controls';
-export { buildPivotChartData, resolveStructuredChartBindings, type PivotChartCategory, type PivotChartData, type PivotChartSeries, type StructuredChartData, type StructuredChartSeries, type StructuredChartSheet } from './features/chart/data';
+export {
+  buildPivotChartData,
+  chartNumericValue,
+  resolveChartData,
+  resolveChartDataFromSources,
+  resolveStructuredChartBindings,
+  resolveSparklineSeries,
+  type ChartBindingModel,
+  type ChartDataStatus,
+  type ChartDataSourceKind,
+  type PivotChartCategory,
+  type PivotChartData,
+  type PivotChartSeries,
+  type ResolvedChartData,
+  type ResolvedChartSeries,
+  type ResolvedSparklineSeries,
+  type StructuredChartData,
+  type StructuredChartSeries,
+  type StructuredChartSheet,
+} from './features/chart/data';
+export {
+  buildChartLayout,
+  type ChartLayout,
+  type ChartLayoutBar,
+  type ChartLayoutPoint,
+  type ChartLayoutSeries,
+  type ChartLayoutTrendline,
+  type ChartAxisLayout,
+  type ChartPieSliceLayout,
+  type ChartHistogramBinLayout,
+  type ChartBoxLayout,
+  type ChartWaterfallBarLayout,
+} from './features/chart/layout';
 export { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
 export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
+export { resolveSparklineData } from './features/sparkline/helpers';
 export * from './features/data-source';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
@@ -41,7 +74,7 @@ export type { SelectionArea, SelectionKind, SelectionMode } from './selection-se
 export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';
 export { applyHeaderSelection, headerContextMenuCatalog, headerRange, headerTargetSelected, selectedHeaderIndices, type DimensionSelectionOptions, type HeaderBounds, type HeaderContextAction, type HeaderContextMenuDescriptor, type HeaderIntent, type HeaderTarget } from './header-interaction-domain';
 export { containsRange, expandSelectionRangeForMerges, intersectsRange, nextVisibleCell, resolveSelectionTarget, type ResolvedSelectionTarget, type SelectionTargetSurface } from './selection-target-resolver';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode, LocalObjectDialogKind } from './types';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode, ChartElementSelection, LocalObjectDialogKind } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,

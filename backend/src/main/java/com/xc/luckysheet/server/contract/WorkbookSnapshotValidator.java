@@ -137,8 +137,12 @@ public final class WorkbookSnapshotValidator {
                 if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
                 String kind = payload.path("kind").asText();
                 if (!("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))) continue;
-                if ("chart".equals(kind) && !payload.has("pivotId")) continue;
-                String pivotId = payload.path("pivotId").asText();
+                JsonNode pivotSource = "chart".equals(kind) ? payload.get("source") : payload;
+                if (pivotSource == null || !pivotSource.isObject()) {
+                    throw ServiceException.validation("Drawing " + drawingId + " is missing its canonical Pivot source");
+                }
+                if ("chart".equals(kind) && !"pivot".equals(pivotSource.path("kind").asText())) continue;
+                String pivotId = "chart".equals(kind) ? pivotSource.path("pivotId").asText() : payload.path("pivotId").asText();
                 if (pivotId.isBlank() || !pivotIds.contains(pivotId)) {
                     throw ServiceException.validation("Drawing " + drawingId + " references missing Pivot: " + pivotId);
                 }
@@ -170,21 +174,6 @@ public final class WorkbookSnapshotValidator {
                         }
                     }
                 }
-            }
-        }
-        java.util.Set<String> dataChartTableIds = new java.util.HashSet<>();
-        for (JsonNode sheet : sheets) sheet.path("drawingPayloads").forEach(payload -> {
-            if ("data-chart".equals(payload.path("kind").asText()) && "table".equals(payload.path("source").path("kind").asText())) {
-                dataChartTableIds.add(payload.path("source").path("tableId").asText());
-            }
-            if ("data-chart".equals(payload.path("kind").asText()) && "report-sheet".equals(payload.path("source").path("kind").asText())) {
-                validateDrawingSourceRange(payload.path("source").get("range"), sheetDimensions, "Data chart");
-            }
-        });
-        for (JsonNode table : dataModel.path("tables")) {
-            JsonNode sourceRange = table.get("sourceRange");
-            if (dataChartTableIds.contains(table.path("id").asText()) && sourceRange != null && !sourceRange.isNull()) {
-                validateDrawingSourceRange(sourceRange, sheetDimensions, "Data chart table");
             }
         }
         return snapshot;

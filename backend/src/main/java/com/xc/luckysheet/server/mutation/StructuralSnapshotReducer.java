@@ -475,14 +475,41 @@ final class StructuralSnapshotReducer {
             JsonNode raw = entry.getValue();
             if (!raw.isObject() || !"chart".equals(raw.path("kind").asText())) return;
             ObjectNode chart = (ObjectNode) raw;
-            for (JsonNode range : chart.path("sourceRanges")) shiftRange(root, range, targetSheetId, axis, at, count, direction);
+            ObjectNode source = requiredObject(chart.get("source"), "Chart source");
+            String sourceKind = source.path("kind").asText();
+            if ("worksheet-ranges".equals(sourceKind)) {
+                JsonNode ranges = source.get("ranges");
+                if (ranges == null || !ranges.isArray()) throw ServiceException.validation("Chart worksheet source ranges are invalid");
+                for (JsonNode range : ranges) shiftRange(root, range, targetSheetId, axis, at, count, direction);
+            } else if ("report-range".equals(sourceKind)) {
+                shiftRange(root, source.get("range"), targetSheetId, axis, at, count, direction);
+            } else if (!Set.of("pivot", "table").contains(sourceKind)) {
+                throw ServiceException.validation("Chart source kind is invalid: " + sourceKind);
+            }
             if (chart.has("categoryRange")) shiftRange(root, chart.get("categoryRange"), targetSheetId, axis, at, count, direction);
             for (JsonNode series : chart.path("series")) {
-                if (series.isObject() && series.has("range")) shiftRange(root, series.get("range"), targetSheetId, axis, at, count, direction);
-                if (series.isObject() && series.has("xRange")) shiftRange(root, series.get("xRange"), targetSheetId, axis, at, count, direction);
-                if (series.isObject() && series.has("yRange")) shiftRange(root, series.get("yRange"), targetSheetId, axis, at, count, direction);
+                if (!series.isObject()) throw ServiceException.validation("Chart series is invalid");
+                for (String field : List.of("range", "xRange", "yRange", "sizeRange", "categoryRange")) {
+                    if (series.has(field)) shiftRange(root, series.get(field), targetSheetId, axis, at, count, direction);
+                }
+                JsonNode errorBars = series.get("errorBars");
+                if (errorBars != null && errorBars.isObject()) {
+                    if (errorBars.has("plusRange")) shiftRange(root, errorBars.get("plusRange"), targetSheetId, axis, at, count, direction);
+                    if (errorBars.has("minusRange")) shiftRange(root, errorBars.get("minusRange"), targetSheetId, axis, at, count, direction);
+                }
+                JsonNode stockRoles = series.get("stockRoles");
+                if (stockRoles != null && stockRoles.isObject()) {
+                    for (String field : List.of("open", "high", "low", "close", "volume")) if (stockRoles.has(field)) shiftRange(root, stockRoles.get(field), targetSheetId, axis, at, count, direction);
+                }
+                JsonNode dataLabels = series.get("dataLabels");
+                if (dataLabels != null && dataLabels.isObject() && dataLabels.has("valuesFromCells")) shiftRange(root, dataLabels.get("valuesFromCells"), targetSheetId, axis, at, count, direction);
             }
         });
+    }
+
+    private static ObjectNode requiredObject(JsonNode raw, String label) {
+        if (raw == null || !raw.isObject()) throw ServiceException.validation(label + " must be an object");
+        return (ObjectNode) raw;
     }
 
     private static void shiftTargetDrawings(ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {

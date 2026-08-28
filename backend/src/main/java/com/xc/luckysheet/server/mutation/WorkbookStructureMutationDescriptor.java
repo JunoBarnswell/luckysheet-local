@@ -621,14 +621,33 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if ("camera".equals(kind)) remapRange(payload.get("sourceRange"), sourceSheetId, targetSheetId);
         if ("chart".equals(kind)) {
             remapRange(payload.get("categoryRange"), sourceSheetId, targetSheetId);
-            JsonNode ranges = payload.get("sourceRanges");
-            if (ranges != null && ranges.isArray()) for (JsonNode range : ranges) remapRange(range, sourceSheetId, targetSheetId);
-            if (payload.path("pivotId").isTextual()) payload.put("pivotId", pivotIds.getOrDefault(payload.path("pivotId").asText(), payload.path("pivotId").asText()));
-        }
-        if ("data-chart".equals(kind) && payload.path("source").isObject()) {
-            ObjectNode source = (ObjectNode) payload.get("source");
-            remapRange(source.get("range"), sourceSheetId, targetSheetId);
-            if (source.path("tableId").isTextual()) source.put("tableId", tableIds.getOrDefault(source.path("tableId").asText(), source.path("tableId").asText()));
+            JsonNode source = payload.get("source");
+            if (source == null || !source.isObject()) throw ServiceException.validation("Chart source must be canonical");
+            String sourceKind = source.path("kind").asText();
+            if ("worksheet-ranges".equals(sourceKind)) {
+                JsonNode ranges = source.get("ranges");
+                if (ranges == null || !ranges.isArray()) throw ServiceException.validation("Chart worksheet source ranges are invalid");
+                for (JsonNode range : ranges) remapRange(range, sourceSheetId, targetSheetId);
+            } else if ("report-range".equals(sourceKind)) {
+                remapRange(source.get("range"), sourceSheetId, targetSheetId);
+            } else if ("pivot".equals(sourceKind)) {
+                if (source.path("pivotId").isTextual()) ((ObjectNode) source).put("pivotId", pivotIds.getOrDefault(source.path("pivotId").asText(), source.path("pivotId").asText()));
+            } else if (!"table".equals(sourceKind)) {
+                throw ServiceException.validation("Chart source kind is invalid: " + sourceKind);
+            }
+            for (JsonNode series : payload.path("series")) {
+                if (!series.isObject()) throw ServiceException.validation("Chart series is invalid");
+                for (String field : List.of("range", "xRange", "yRange", "sizeRange", "categoryRange")) remapRange(series.get(field), sourceSheetId, targetSheetId);
+                JsonNode errorBars = series.get("errorBars");
+                if (errorBars != null && errorBars.isObject()) {
+                    remapRange(errorBars.get("plusRange"), sourceSheetId, targetSheetId);
+                    remapRange(errorBars.get("minusRange"), sourceSheetId, targetSheetId);
+                }
+                JsonNode stockRoles = series.get("stockRoles");
+                if (stockRoles != null && stockRoles.isObject()) for (String field : List.of("open", "high", "low", "close", "volume")) remapRange(stockRoles.get(field), sourceSheetId, targetSheetId);
+                JsonNode dataLabels = series.get("dataLabels");
+                if (dataLabels != null && dataLabels.isObject()) remapRange(dataLabels.get("valuesFromCells"), sourceSheetId, targetSheetId);
+            }
         }
         if ("connector".equals(kind)) {
             if (payload.path("start").path("drawingId").isTextual()) ((ObjectNode) payload.get("start")).put("drawingId", drawingIds.getOrDefault(payload.path("start").path("drawingId").asText(), payload.path("start").path("drawingId").asText()));

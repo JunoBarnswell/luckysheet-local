@@ -323,15 +323,35 @@ export type {
   TextBoxTextDirection,
   TextBoxAutofit,
   ChartDrawingPayload,
+  P1ChartType,
+  ChartNativeIdentity,
   ChartSubtype,
   ChartSeriesType,
+  ChartAxisType,
+  ChartAxisCross,
+  ChartTickMark,
+  ChartTickLabelPosition,
   ChartAxisModel,
   ChartGridlineModel,
   ChartAreaStyle,
+  ChartFillKind,
+  ChartFillModel,
+  ChartEffectModel,
+  ChartLineStyle,
+  ChartTextModel,
   ChartMarkerModel,
   ChartTrendlineModel,
   ChartErrorBarsModel,
   ChartDataLabelsModel,
+  ChartDataLabelPosition,
+  ChartDataLabelTarget,
+  ChartDataTableModel,
+  ChartPointModel,
+  ChartStockRoles,
+  ChartHistogramOptions,
+  ChartBoxWhiskerOptions,
+  ChartWaterfallOptions,
+  ChartMapOptions,
   ChartSeriesModel,
   ChartElementModel,
   ChartAggregate,
@@ -492,6 +512,28 @@ export * from './data-source';
 
 export type SheetKind = 'worksheet' | 'table-sheet' | 'gantt-sheet' | 'report-sheet';
 
+export type SparklineDataOrientation = 'rows' | 'columns';
+export type SparklineEmptyCells = 'gap' | 'zero' | 'connect';
+export type SparklineHiddenCells = 'show' | 'hide';
+export type SparklineAxisBoundsMode = 'automatic' | 'same-group' | 'custom';
+
+export interface SparklineAxisBounds {
+  mode: SparklineAxisBoundsMode;
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface SparklineColors {
+  series?: string;
+  negative?: string;
+  first?: string;
+  last?: string;
+  high?: string;
+  low?: string;
+  marker?: string;
+  axis?: string;
+}
+
 export interface SparklineModel {
   id: string;
   sheetId: SheetId;
@@ -508,6 +550,19 @@ export interface SparklineModel {
   groupId?: string;
   showAxis?: boolean;
   showMarkers?: boolean;
+  lineWeight?: number;
+  dateAxis?: boolean;
+  dataOrientation?: SparklineDataOrientation;
+  rightToLeft?: boolean;
+  hiddenCells?: SparklineHiddenCells;
+  emptyCells?: SparklineEmptyCells;
+  verticalAxis?: SparklineAxisBounds;
+  axisColor?: string;
+  firstColor?: string;
+  lastColor?: string;
+  highColor?: string;
+  lowColor?: string;
+  markerColor?: string;
 }
 
 /** 隔行色带规则 */

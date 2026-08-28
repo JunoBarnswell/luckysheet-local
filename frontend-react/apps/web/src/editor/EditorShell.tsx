@@ -7,7 +7,7 @@ import { type Locale } from "../i18n";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
-import { selectedHeaderIndices, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
+import { selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
 import type { SelectionState } from "@react-sheets/spreadsheet-app";
 import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
@@ -283,6 +283,17 @@ export function EditorShell({
                     dispatchSessionIntent({ type: 'panel.open', panel: 'slicer' });
                   }
                   session.setDrawingSelection(hit ? [hit.id] : [], mode);
+                }}
+                onChartElementAction={(drawingId, data) => {
+                  const drawing = state.selectedSheet.drawings.find((entry) => entry.id === drawingId && entry.kind === 'chart');
+                  const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
+                  if (!drawing || payload?.kind !== 'chart' || !data || typeof data !== 'object' || !('kind' in data)) return;
+                  const kind = String((data as { kind: string }).kind);
+                  if ((kind === 'point' || kind === 'series' || kind === 'data-label') && 'seriesId' in data) {
+                    session.selectChartElement({ kind: kind as 'point' | 'series' | 'data-label', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), ...('pointIndex' in data ? { pointIndex: Number((data as { pointIndex: number }).pointIndex) } : {}) });
+                  } else if (['chart-area', 'plot-area', 'title', 'legend', 'axis', 'axis-title', 'gridline', 'data-table', 'trendline', 'error-bar'].includes(kind)) {
+                    session.selectChartElement({ kind: kind as Exclude<ChartElementSelection, { kind: 'series' | 'point' | 'data-label' }>['kind'], chartId: payload.chartId });
+                  }
                 }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}
                 onFloatingRemove={(drawingId) => dispatchCommand({ commandId: "drawing.remove", params: { sheetId: state.activeSheetId, drawingId } })}

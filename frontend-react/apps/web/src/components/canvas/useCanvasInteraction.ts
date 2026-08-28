@@ -137,6 +137,7 @@ export interface CanvasInteractionOptions {
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
+  onChartElementAction?: (drawingId: string, data: unknown) => void;
   onTextBoxPlacementCommit: (bounds: Rect) => void;
   onCancelTextBoxPlacement: () => void;
   onBeginTextBoxEdit: (drawingId: string, initialText?: string) => void;
@@ -208,6 +209,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onFillRange,
     onFloatingMove,
     onFloatingSelect,
+    onChartElementAction,
     onTextBoxPlacementCommit,
     onCancelTextBoxPlacement,
     onBeginTextBoxEdit,
@@ -452,7 +454,9 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (floatingHit) {
       if (floatingHit.control) {
         const action = floatingHit.control.data;
-        if (action && typeof action === 'object' && 'kind' in action) {
+        if (floatingHit.control.action === 'chart.select-element') {
+          onChartElementAction?.(floatingHit.id, action);
+        } else if (action && typeof action === 'object' && 'kind' in action) {
           onPivotControlAction?.(floatingHit.id, action as PivotControlAction);
         }
         // A malformed/unsupported child hit is fail-closed: it must never
@@ -643,7 +647,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [cellEdit, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
+  }, [cellEdit, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onChartElementAction, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;

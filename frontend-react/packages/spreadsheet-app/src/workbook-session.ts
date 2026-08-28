@@ -18,6 +18,7 @@ import type {
   EquationDrawingPayload,
   ChartBindings,
   ChartDrawingPayload,
+  ChartSeriesModel,
   ConnectorDrawingPayload,
   DrawingConnectorType,
   ConditionalFormatRule,
@@ -295,6 +296,7 @@ import type {
   FindDialogMode,
   MergeOperation,
   UndoRedoState,
+  ChartElementSelection,
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
 import type { AssetStore } from './features/persistence';
@@ -420,6 +422,7 @@ export interface UiSnapshot extends DesignerState {
   selectedSheet: CanvasSheetSnapshot;
   selectedFloatingId: string | null;
   selectedDrawingIds: readonly string[];
+  selectedChartElement: ChartElementSelection | null;
   drawingSelectionMode: boolean;
   textBoxPlacement: boolean;
   textBoxEdit: { sheetId: string; drawingId: string; draftText: string } | null;
@@ -589,6 +592,39 @@ function clearPreservedFilterChildren(value: unknown): unknown {
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+function explicitChartSeries(type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], range: RangeRef): ChartSeriesModel[] | undefined {
+  const dataStart = range.startColumn + 1;
+  const width = range.endColumn - range.startColumn;
+  const seriesCount = Math.max(1, width);
+  if (type === 'scatter' || type === 'bubble') {
+    if (width < (type === 'bubble' ? 3 : 2)) return [{ id: 'series:1', name: 'Series 1', range, chartType: type }];
+    const pairCount = type === 'bubble' ? Math.floor(width / 3) : Math.floor(width / 2);
+    return Array.from({ length: Math.max(1, pairCount) }, (_, index) => {
+      const offset = dataStart + index * (type === 'bubble' ? 3 : 2);
+      const xRange = { ...range, startColumn: offset, endColumn: offset };
+      const yRange = { ...range, startColumn: offset + 1, endColumn: offset + 1 };
+      const sizeRange = type === 'bubble' ? { ...range, startColumn: offset + 2, endColumn: offset + 2 } : undefined;
+      return { id: `series:${index + 1}`, name: `Series ${index + 1}`, range: yRange, xRange, yRange, ...(sizeRange ? { sizeRange } : {}), chartType: type, subtype };
+    });
+  }
+  if (type === 'stock') {
+    const roles: NonNullable<ChartSeriesModel['stockRoles']> = {
+      high: { ...range, startColumn: dataStart, endColumn: dataStart },
+      low: { ...range, startColumn: dataStart + 1, endColumn: dataStart + 1 },
+      close: { ...range, startColumn: dataStart + 2, endColumn: dataStart + 2 },
+      ...(subtype.includes('open') ? { open: { ...range, startColumn: dataStart, endColumn: dataStart } } : {}),
+      ...(subtype.includes('volume') ? { volume: { ...range, startColumn: dataStart + (subtype.includes('open') ? 4 : 3), endColumn: dataStart + (subtype.includes('open') ? 4 : 3) } } : {}),
+    };
+    if (subtype.includes('open')) { roles.high = { ...range, startColumn: dataStart + 1, endColumn: dataStart + 1 }; roles.low = { ...range, startColumn: dataStart + 2, endColumn: dataStart + 2 }; roles.close = { ...range, startColumn: dataStart + 3, endColumn: dataStart + 3 }; }
+    return [{ id: 'series:1', name: 'Stock', range: roles.close, stockRoles: roles, chartType: type, subtype }];
+  }
+  if (type === 'combo') {
+    const comboTypes: Array<Exclude<ChartDrawingPayload['chartType'], 'combo'>> = subtype === 'stacked-area-clustered-column' ? ['area', 'column'] : subtype === 'clustered-column-line' || subtype === 'clustered-column-line-secondary' ? ['column', 'line'] : ['column'];
+    return Array.from({ length: seriesCount }, (_, index) => ({ id: `series:${index + 1}`, name: `Series ${index + 1}`, range: { ...range, startColumn: dataStart + index, endColumn: dataStart + index }, chartType: comboTypes[index % comboTypes.length]!, axis: subtype === 'clustered-column-line-secondary' && index % comboTypes.length === 1 ? 'secondary' : 'primary' }));
+  }
+  return undefined;
+}
+
 const LOCAL_ICON_REGISTRY: Readonly<Record<string, Pick<IconDrawingPayload, 'svgPath' | 'viewBox' | 'accessibilityLabel'>>> = {
   star: { svgPath: 'M12 2.5l2.86 5.79 6.39.93-4.62 4.5 1.09 6.36L12 17.07 6.28 20.08l1.09-6.36-4.62-4.5 6.39-.93L12 2.5z', viewBox: '0 0 24 24', accessibilityLabel: 'Star' },
   heart: { svgPath: 'M12 20.5S4 15.6 4 9.5A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8 2.5c0 6.1-8 11-8 11z', viewBox: '0 0 24 24', accessibilityLabel: 'Heart' },
@@ -697,6 +733,7 @@ export class WorkbookSession {
     return this.selectedDrawingIds[0] ?? null;
   }
   private drawingSelectionMode = false;
+  private selectedChartElement: ChartElementSelection | null = null;
   private textBoxPlacement = false;
   private textBoxEdit: { sheetId: string; drawingId: string; draftText: string } | null = null;
   private recentSymbols: string[] = [];
@@ -894,6 +931,13 @@ export class WorkbookSession {
       this.panels = { ...this.panels, open: false };
     }
     if (contextRemoved && this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
+    if (this.selectedChartElement) {
+      const chartStillSelected = activeSelection.some((drawingId) => {
+        const drawing = sheets.find((sheet) => sheet.id === this.activeSheetId)?.drawings.find((entry) => entry.id === drawingId);
+        return drawing?.kind === 'chart' && drawing.payloadId === this.selectedChartElement?.chartId;
+      });
+      if (!chartStillSelected) this.selectedChartElement = null;
+    }
     if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
       this.activeContext = nextContext;
     }
@@ -1300,6 +1344,21 @@ export class WorkbookSession {
           else if (payload.source.kind === 'table') addRange(this.runtime.model.dataModel.tables.get(payload.source.tableId)?.sourceRange);
           else if (payload.source.kind === 'report-range') addRange(payload.source.range);
           addRange(payload.categoryRange);
+          for (const series of payload.series ?? []) {
+            addRange(series.range);
+            addRange(series.xRange);
+            addRange(series.yRange);
+            addRange(series.sizeRange);
+            addRange(series.categoryRange);
+            addRange(series.stockRoles?.open);
+            addRange(series.stockRoles?.high);
+            addRange(series.stockRoles?.low);
+            addRange(series.stockRoles?.close);
+            addRange(series.stockRoles?.volume);
+            addRange(series.errorBars?.plusRange);
+            addRange(series.errorBars?.minusRange);
+            addRange(series.dataLabels?.valuesFromCells);
+          }
           break;
         case 'form-control':
           if ('inputRange' in payload) addRange(payload.inputRange);
@@ -1386,6 +1445,7 @@ export class WorkbookSession {
       selectedSheet,
       selectedFloatingId: this.selectedFloatingId,
       selectedDrawingIds: [...this.selectedDrawingIds],
+      selectedChartElement: this.selectedChartElement ? structuredClone(this.selectedChartElement) : null,
       drawingSelectionMode: this.drawingSelectionMode,
       textBoxPlacement: this.textBoxPlacement,
       textBoxEdit: this.textBoxEdit ? { ...this.textBoxEdit } : null,
@@ -3642,6 +3702,7 @@ export class WorkbookSession {
     this.activeSheetId = nextActiveSheetId;
     sheet = this.runtime.model.getSheet(nextActiveSheetId);
     this.selectionService.resetForSheet(nextActiveSheetId);
+    this.selectedChartElement = null;
     this.textBoxPlacement = false;
     this.textBoxEdit = null;
     if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
@@ -4076,7 +4137,7 @@ export class WorkbookSession {
       subtype,
       source: { kind: 'worksheet-ranges', ranges: [{ ...range, sheetId: this.activeSheetId }] },
       ...(chartStackingForSubtype(subtype) ? { stacked: chartStackingForSubtype(subtype) } : {}),
-      series: type === 'combo' ? [{ name: 'Series 1', range: { ...range, sheetId: this.activeSheetId }, chartType: 'column', axis: 'primary' }] : undefined,
+      series: explicitChartSeries(type, subtype, { ...range, sheetId: this.activeSheetId }),
       elements: {
         title: 'Chart',
         legend: { visible: true, position: 'bottom' },
@@ -4097,7 +4158,7 @@ export class WorkbookSession {
   insertRecommendedChart(candidate: ChartRecommendation): void {
     const range = candidate.source.ranges[0];
     if (!range || range.sheetId !== this.activeSheetId) throw new Error('INVALID_CHART_SOURCE: Recommended Chart source is no longer active');
-    this.insertChartFromPanel(candidate.chartType, structuredClone(range), candidate.title, 'none', candidate.subtype);
+    this.insertChartFromPanel(candidate.chartType, structuredClone(range), candidate.title, 'none', candidate.subtype, candidate.series);
   }
   insertChartFromPanel(
     type: ChartDrawingPayload['chartType'],
@@ -4105,6 +4166,7 @@ export class WorkbookSession {
     title: string,
     stacked: NonNullable<ChartDrawingPayload['stacked']> = 'none',
     subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(type),
+    series?: ChartDrawingPayload['series'],
   ): void {
     const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart', transform: { x: 100, y: 100, width: 480, height: 280, rotation: 0 } });
     const effectiveStacking = stacked === 'none' ? chartStackingForSubtype(subtype) : stacked;
@@ -4114,7 +4176,7 @@ export class WorkbookSession {
       chartType: type,
       subtype,
       source: { kind: 'worksheet-ranges', ranges: [structuredClone(sourceRange)] },
-      series: type === 'combo' ? [{ name: 'Series 1', range: structuredClone(sourceRange), chartType: 'column', axis: 'primary' }] : undefined,
+      series: series ? structuredClone(series) : explicitChartSeries(type, subtype, structuredClone(sourceRange)),
       ...(effectiveStacking ? { stacked: effectiveStacking } : {}),
       elements: {
         title,
@@ -4973,7 +5035,7 @@ export class WorkbookSession {
       dataRange: RangeRef;
       location: { row: number; column: number };
       type?: SparklineModel['type'];
-    } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId' | 'showAxis' | 'showMarkers'>>,
+    } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId' | 'showAxis' | 'showMarkers' | 'lineWeight' | 'dateAxis' | 'dataOrientation' | 'rightToLeft' | 'hiddenCells' | 'emptyCells' | 'verticalAxis' | 'axisColor' | 'firstColor' | 'lastColor' | 'highColor' | 'lowColor' | 'markerColor'>>,
   ): string {
     const sparklineId = params.sparklineId;
     this.commitInsertMutation({
@@ -5012,7 +5074,7 @@ export class WorkbookSession {
     this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch });
     this.refresh();
   }
-  createSparklineGroup(sparklineIds: string[], patch?: Partial<Pick<SparklineGroup, 'showAxis' | 'showMarkers'>>, type: SparklineModel['type'] = 'line'): string {
+  createSparklineGroup(sparklineIds: string[], patch?: Partial<Omit<SparklineGroup, 'id' | 'sheetId' | 'type' | 'sparklineIds'>>, type: SparklineModel['type'] = 'line'): string {
     const groupId = this.insertCoordinator.allocateObjectId('sparkline-group');
     const group = buildSparklineGroup(this.activeSheetId, groupId, sparklineIds, type, patch);
     this.commitInsertMutation({
@@ -5622,6 +5684,7 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const valid = ids.filter((id) => sheet.drawings.some((drawing) => drawing.id === id));
     if (valid.length === 0 && mode === 'replace') {
+      this.selectedChartElement = null;
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
@@ -5634,21 +5697,39 @@ export class WorkbookSession {
       return;
     }
     this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: valid, mode });
+    if (mode === 'replace' && !valid.some((id) => sheet.drawings.find((drawing) => drawing.id === id)?.kind === 'chart')) this.selectedChartElement = null;
     const selectedDrawing = this.selectedFloatingId ? sheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId) : undefined;
     this.activeContext = selectedDrawing
       ? { kind: 'drawing', sheetId: this.activeSheetId, drawingId: selectedDrawing.id }
       : { kind: 'none' };
     if (selectedDrawing?.kind === 'image') {
+      this.selectedChartElement = null;
       this.panels = { ...this.panels, active: 'picture', open: true };
       this.ribbonTab = 'pictureFormat';
     } else if (selectedDrawing?.kind === 'shape' || selectedDrawing?.kind === 'connector') {
+      this.selectedChartElement = null;
       this.panels = { ...this.panels, active: 'shape', open: true };
       this.ribbonTab = 'shapeFormat';
     } else if (selectedDrawing?.kind === 'form-control') {
+      this.selectedChartElement = null;
       this.panels = { ...this.panels, active: 'formControl', open: true };
     } else if (selectedDrawing?.kind === 'textbox') {
+      this.selectedChartElement = null;
       this.panels = { ...this.panels, active: 'textbox', open: true };
+    } else if (selectedDrawing?.kind === 'chart') {
+      this.panels = { ...this.panels, active: 'chart', open: true };
+      this.ribbonTab = 'chartDesign';
     }
+    this.emit();
+  }
+
+  selectChartElement(selection: import('./types').ChartElementSelection | null): void {
+    const selectedChart = selection && this.selectedDrawingIds.some((id) => {
+      const drawing = this.runtime.model.getSheet(this.activeSheetId).drawings.find((entry) => entry.id === id);
+      return drawing?.kind === 'chart' && drawing.payloadId === selection.chartId;
+    });
+    if (selection && !selectedChart) return;
+    this.selectedChartElement = selection ? structuredClone(selection) : null;
     this.emit();
   }
 

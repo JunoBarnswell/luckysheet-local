@@ -54,6 +54,36 @@ export interface ChartSetSeriesParams {
   categoryRange?: RangeRef;
 }
 
+export interface ChartSelectDataParams extends ChartSetSeriesParams {
+  switchRowColumn?: boolean;
+}
+
+export interface ChartSeriesAddParams {
+  sheetId: string;
+  chartId: string;
+  series: ChartSeries;
+}
+
+export interface ChartSeriesUpdateParams {
+  sheetId: string;
+  chartId: string;
+  seriesId: string;
+  series: Partial<ChartSeries>;
+}
+
+export interface ChartSeriesRemoveParams {
+  sheetId: string;
+  chartId: string;
+  seriesId: string;
+}
+
+export interface ChartSeriesMoveParams {
+  sheetId: string;
+  chartId: string;
+  seriesId: string;
+  direction: 'up' | 'down';
+}
+
 export interface ChartSetAxesParams {
   sheetId: string;
   chartId: string;
@@ -73,7 +103,27 @@ export interface ChartSetSeriesStyleParams {
   sheetId: string;
   chartId: string;
   seriesName: string;
-  style: Partial<Pick<ChartSeries, 'color' | 'chartType' | 'axis' | 'smooth' | 'marker' | 'dataLabels' | 'trendline' | 'errorBars'>>;
+  style: Partial<Pick<ChartSeries, 'color' | 'chartType' | 'axis' | 'smooth' | 'marker' | 'dataLabels' | 'trendlines' | 'errorBars'>>;
+}
+
+export interface ChartSetDataTableParams {
+  sheetId: string;
+  chartId: string;
+  dataTable: NonNullable<ChartPayload['elements']['dataTable']>;
+}
+
+export interface ChartSetTrendlinesParams {
+  sheetId: string;
+  chartId: string;
+  seriesId: string;
+  trendlines: NonNullable<ChartSeries['trendlines']>;
+}
+
+export interface ChartSetErrorBarsParams {
+  sheetId: string;
+  chartId: string;
+  seriesId: string;
+  errorBars?: ChartSeries['errorBars'];
 }
 
 export interface ChartSetSecondaryAxisParams {
@@ -109,10 +159,14 @@ const CHART_TYPES: readonly ChartType[] = [
 
 function isChartSource(value: unknown): value is ChartSource {
   if (!isRecord(value)) return false;
-  if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.every(isRange);
+  if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange)
+    && (value.identity === undefined || typeof value.identity === 'string')
+    && (value.dynamic === undefined || typeof value.dynamic === 'boolean');
   if (value.kind === 'pivot') return typeof value.pivotId === 'string' && value.pivotId.length > 0;
-  if (value.kind === 'table') return typeof value.tableId === 'string' && value.tableId.length > 0 && isRecord(value.bindings);
-  return value.kind === 'report-range' && isRange(value.range) && isRecord(value.bindings);
+  if (value.kind === 'table') return typeof value.tableId === 'string' && value.tableId.length > 0 && isRecord(value.bindings)
+    && (value.structuredReference === undefined || typeof value.structuredReference === 'string');
+  return value.kind === 'report-range' && isRange(value.range) && isRecord(value.bindings)
+    && (value.identity === undefined || typeof value.identity === 'string');
 }
 
 function isAxis(value: unknown): value is ChartAxis {
@@ -125,6 +179,17 @@ function isAxis(value: unknown): value is ChartAxis {
     && (value.maximum === undefined || typeof value.maximum === 'number')
     && (value.majorUnit === undefined || typeof value.majorUnit === 'number')
     && (value.minorUnit === undefined || typeof value.minorUnit === 'number')
+    && (value.axisType === undefined || ['category', 'value', 'date'].includes(String(value.axisType)))
+    && (value.logBase === undefined || (typeof value.logBase === 'number' && value.logBase > 1))
+    && (value.automaticMinimum === undefined || typeof value.automaticMinimum === 'boolean')
+    && (value.automaticMaximum === undefined || typeof value.automaticMaximum === 'boolean')
+    && (value.reverseOrder === undefined || typeof value.reverseOrder === 'boolean')
+    && (value.crosses === undefined || ['automatic', 'value', 'maximum'].includes(String(value.crosses)))
+    && (value.crossBetween === undefined || ['mid-category', 'between'].includes(String(value.crossBetween)))
+    && (value.labelAngle === undefined || typeof value.labelAngle === 'number')
+    && (value.labelInterval === undefined || Number.isSafeInteger(value.labelInterval))
+    && (value.markInterval === undefined || Number.isSafeInteger(value.markInterval))
+    && (value.displayUnits === undefined || ['none', 'hundreds', 'thousands', 'ten-thousands', 'millions', 'billions', 'trillions'].includes(String(value.displayUnits)))
     && (value.majorGridlines === undefined || isGridlines(value.majorGridlines))
     && (value.minorGridlines === undefined || isGridlines(value.minorGridlines));
 }
@@ -140,19 +205,57 @@ function isElements(value: unknown): value is ChartPayload['elements'] {
   if (!isRecord(value)) return false;
   const legend = value.legend;
   return (value.title === undefined || typeof value.title === 'string')
-    && (legend === undefined || (isRecord(legend) && typeof legend.visible === 'boolean' && ['top', 'bottom', 'left', 'right'].includes(String(legend.position))))
+    && (legend === undefined || (isRecord(legend) && typeof legend.visible === 'boolean' && ['top', 'bottom', 'left', 'right', 'top-right'].includes(String(legend.position))))
     && (value.dataLabels === undefined || isDataLabels(value.dataLabels))
     && (value.categoryAxis === undefined || isAxis(value.categoryAxis))
     && (value.valueAxis === undefined || isAxis(value.valueAxis))
     && (value.secondaryCategoryAxis === undefined || isAxis(value.secondaryCategoryAxis))
     && (value.secondaryValueAxis === undefined || isAxis(value.secondaryValueAxis))
+    && (value.dataTable === undefined || isRecord(value.dataTable))
     && (value.hiddenData === 'show' || value.hiddenData === 'hideRows' || value.hiddenData === 'hideColumns');
 }
 
 function isDataLabels(value: unknown): boolean {
   return isRecord(value)
     && typeof value.visible === 'boolean'
-    && (value.position === undefined || ['best-fit', 'center', 'inside-end', 'inside-base', 'outside-end'].includes(String(value.position)));
+    && (value.position === undefined || ['best-fit', 'center', 'inside-end', 'inside-base', 'outside-end', 'above', 'below', 'left', 'right'].includes(String(value.position)))
+    && (value.target === undefined || ['chart', 'series', 'point'].includes(String(value.target)))
+    && (value.valuesFromCells === undefined || isRange(value.valuesFromCells));
+}
+
+function isTrendline(value: unknown): boolean {
+  return isRecord(value)
+    && ['linear', 'exponential', 'logarithmic', 'polynomial', 'power', 'moving-average'].includes(String(value.type))
+    && (value.order === undefined || (Number.isSafeInteger(value.order) && Number(value.order) >= 2))
+    && (value.period === undefined || (Number.isSafeInteger(value.period) && Number(value.period) > 0))
+    && ['displayEquation', 'displayRSquared'].every((key) => value[key] === undefined || typeof value[key] === 'boolean');
+}
+
+function isErrorBars(value: unknown): boolean {
+  return isRecord(value)
+    && ['fixed', 'percentage', 'standard-deviation', 'standard-error', 'custom'].includes(String(value.type))
+    && (value.direction === undefined || ['vertical', 'horizontal', 'both'].includes(String(value.direction)))
+    && (value.endStyle === undefined || ['cap', 'no-cap'].includes(String(value.endStyle)))
+    && (value.value === undefined || (typeof value.value === 'number' && Number.isFinite(value.value)))
+    && (value.plusValue === undefined || (typeof value.plusValue === 'number' && Number.isFinite(value.plusValue)))
+    && (value.minusValue === undefined || (typeof value.minusValue === 'number' && Number.isFinite(value.minusValue)))
+    && (value.plusRange === undefined || isRange(value.plusRange))
+    && (value.minusRange === undefined || isRange(value.minusRange))
+    && (value.type !== 'custom' || isRange(value.plusRange) && isRange(value.minusRange));
+}
+
+function isStockRoles(value: unknown): boolean {
+  if (!isRecord(value) || !isRange(value.high) || !isRange(value.low) || !isRange(value.close)) return false;
+  return (value.open === undefined || isRange(value.open)) && (value.volume === undefined || isRange(value.volume));
+}
+
+function isNativeIdentity(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.family === 'string'
+    && typeof value.subtype === 'string'
+    && (value.xlChartType === undefined || Number.isSafeInteger(value.xlChartType))
+    && (value.part === undefined || typeof value.part === 'string')
+    && (value.status === undefined || value.status === 'owned' || value.status === 'preserved-native');
 }
 
 function isSeries(value: unknown): value is ChartSeries {
@@ -162,13 +265,22 @@ function isSeries(value: unknown): value is ChartSeries {
     && isRange(series.range)
     && (series.xRange === undefined || isRange(series.xRange))
     && (series.yRange === undefined || isRange(series.yRange))
-    && (series.chartType === undefined || (CHART_TYPES.includes(series.chartType as ChartType) && series.chartType !== 'combo'))
+    && (series.sizeRange === undefined || isRange(series.sizeRange))
+    && (series.categoryRange === undefined || isRange(series.categoryRange))
+    && (series.chartType === undefined || CHART_TYPES.includes(series.chartType as ChartType))
+    && (series.subtype === undefined || typeof series.subtype === 'string')
     && (series.axis === undefined || series.axis === 'primary' || series.axis === 'secondary')
     && (series.smooth === undefined || typeof series.smooth === 'boolean')
     && (series.marker === undefined || isRecord(series.marker))
     && (series.dataLabels === undefined || isDataLabels(series.dataLabels))
-    && (series.trendline === undefined || isRecord(series.trendline))
-    && (series.errorBars === undefined || isRecord(series.errorBars));
+    && (series.trendlines === undefined || (Array.isArray(series.trendlines) && series.trendlines.every(isTrendline)))
+    && (series.errorBars === undefined || isErrorBars(series.errorBars))
+    && (series.pointOverrides === undefined || isRecord(series.pointOverrides))
+    && (series.visible === undefined || typeof series.visible === 'boolean')
+    && (series.gapWidth === undefined || typeof series.gapWidth === 'number')
+    && (series.overlap === undefined || typeof series.overlap === 'number')
+    && (series.invertIfNegative === undefined || typeof series.invertIfNegative === 'boolean')
+    && (series.stockRoles === undefined || isStockRoles(series.stockRoles));
 }
 
 function isChartPayload(value: unknown): value is ChartPayload {
@@ -183,13 +295,42 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && (series === undefined || (Array.isArray(series) && series.every(isSeries)))
     && isElements(payload.elements)
     && (payload.categoryRange === undefined || isRange(payload.categoryRange))
+    && (payload.nativeIdentity === undefined || isNativeIdentity(payload.nativeIdentity))
+    && (payload.histogramOptions === undefined || isRecord(payload.histogramOptions))
+    && (payload.boxWhiskerOptions === undefined || isRecord(payload.boxWhiskerOptions))
+    && (payload.waterfallOptions === undefined || isRecord(payload.waterfallOptions))
+    && (payload.mapOptions === undefined || isRecord(payload.mapOptions))
+    && (payload.dataOrientation === undefined || payload.dataOrientation === 'rows' || payload.dataOrientation === 'columns')
     && (payload.chartType !== 'combo' || (Array.isArray(series) && series.every((entry) => entry.chartType !== undefined)));
+}
+
+function validateChartSemantics(payload: ChartPayload): void {
+  if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${payload.chartId} has no editable canonical owner`);
+  if (payload.chartType === 'combo') {
+    if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
+    for (const series of payload.series) {
+      if (series.chartType && !['column', 'bar', 'line', 'area'].includes(series.chartType)) throw new Error(`INVALID_CHART_SOURCE: Combo series type ${series.chartType} is not supported by the canonical combo layout`);
+      if (series.subtype && series.chartType && !isChartSubtypeForType(series.chartType, series.subtype)) throw new Error(`Chart series subtype ${series.subtype} does not belong to ${series.chartType}`);
+    }
+  }
+  if (payload.chartType !== 'combo' && payload.series?.some((series) => series.chartType && series.chartType !== payload.chartType)) {
+    throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} chart cannot contain a different series chart type`);
+  }
+  for (const series of payload.series ?? []) {
+    const seriesType = series.chartType ?? payload.chartType;
+    if (seriesType === 'stock' && !series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');
+    if ((seriesType === 'scatter' || seriesType === 'bubble') && (!series.xRange || !series.yRange)) throw new Error(`INVALID_CHART_SOURCE: ${seriesType} charts require explicit X/Y range bindings`);
+    if (seriesType === 'bubble' && !series.sizeRange) throw new Error('INVALID_CHART_SOURCE: Bubble charts require an independent Size range binding');
+    if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
+  }
+  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow === series.range.endRow)) throw new Error('INVALID_CHART_SOURCE: Row-oriented chart series must contain at least one data column');
 }
 
 function validateChartPair(sheet: WorksheetModel, drawing: DrawingObject, payload: ChartPayload): void {
   if (drawing.kind !== 'chart' || payload.kind !== 'chart') throw new Error(`Chart pair kind mismatch: ${drawing.id}`);
   if (drawing.sheetId !== sheet.id || payload.chartId !== drawing.payloadId) throw new Error(`Chart pair identity mismatch: ${drawing.id}`);
   if (!isChartPayload(payload as unknown)) throw new Error('Invalid chart payload');
+  validateChartSemantics(payload);
   if (sheet.drawings.some((entry) => entry.id === drawing.id)) throw new Error(`Drawing already exists: ${drawing.id}`);
   if (sheet.drawingPayloads.has(drawing.payloadId)) throw new Error(`Chart payload already exists: ${drawing.payloadId}`);
 }
@@ -248,9 +389,10 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
 ): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const sheet = context.workbook.getSheet(params.sheetId);
   const current = findChartDrawing(sheet, params.chartId);
-  if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+  if (!current) throw new Error(`Unknown chart: ${params.chartId}`);
   const nextPayload = patch(structuredClone(current.payload), params);
   if (!isChartPayload(nextPayload)) throw new Error(`Invalid chart payload: ${params.chartId}`);
+  validateChartSemantics(nextPayload);
   const affectedRanges = sheetRange(params.sheetId);
   const mutationParams = { sheetId: params.sheetId, payloadId: params.chartId, before: current.payload, after: nextPayload };
   context.applyMutation({
@@ -292,6 +434,45 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   commandIds.push('chart.setDataLabels');
   runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, source: structuredClone(input.source), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
   commandIds.push('chart.setSeries');
+  runtime.registry.registerCommand<ChartSelectDataParams>({ id: 'chart.selectData', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({
+    ...payload,
+    source: structuredClone(input.source),
+    series: input.series ? structuredClone(input.series) : payload.series,
+    categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange,
+    ...(input.switchRowColumn === undefined ? {} : { dataOrientation: input.switchRowColumn ? payload.dataOrientation === 'rows' ? 'columns' : 'rows' : payload.dataOrientation ?? 'columns' }),
+  })) });
+  commandIds.push('chart.selectData');
+  runtime.registry.registerCommand<ChartSeriesAddParams>({ id: 'chart.series.add', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const series = [...(payload.series ?? [])];
+    if (series.some((entry) => entry.id === input.series.id)) throw new Error(`Duplicate chart series: ${input.series.id}`);
+    return { ...payload, series: [...series, structuredClone(input.series)] };
+  }) });
+  commandIds.push('chart.series.add');
+  runtime.registry.registerCommand<ChartSeriesUpdateParams>({ id: 'chart.series.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const index = (payload.series ?? []).findIndex((entry) => entry.id === input.seriesId);
+    if (index < 0) throw new Error(`Unknown chart series: ${input.seriesId}`);
+    const series = [...(payload.series ?? [])];
+    series[index] = { ...series[index]!, ...structuredClone(input.series), id: input.seriesId };
+    return { ...payload, series };
+  }) });
+  commandIds.push('chart.series.update');
+  runtime.registry.registerCommand<ChartSeriesRemoveParams>({ id: 'chart.series.remove', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const series = payload.series ?? [];
+    if (!series.some((entry) => entry.id === input.seriesId)) throw new Error(`Unknown chart series: ${input.seriesId}`);
+    if (series.length <= 1) throw new Error('INVALID_CHART_SOURCE: A chart must retain at least one series');
+    return { ...payload, series: series.filter((entry) => entry.id !== input.seriesId) };
+  }) });
+  commandIds.push('chart.series.remove');
+  runtime.registry.registerCommand<ChartSeriesMoveParams>({ id: 'chart.series.move', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const series = [...(payload.series ?? [])];
+    const index = series.findIndex((entry) => entry.id === input.seriesId);
+    if (index < 0) throw new Error(`Unknown chart series: ${input.seriesId}`);
+    const target = input.direction === 'up' ? index - 1 : index + 1;
+    if (target < 0 || target >= series.length) return payload;
+    [series[index], series[target]] = [series[target]!, series[index]!];
+    return { ...payload, series };
+  }) });
+  commandIds.push('chart.series.move');
   runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.elements.secondaryValueAxis } })) });
   commandIds.push('chart.setAxes');
   runtime.registry.registerCommand<ChartSetSecondaryAxisParams>({ id: 'chart.setSecondaryAxis', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
@@ -305,11 +486,40 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   commandIds.push('chart.setElements');
   runtime.registry.registerCommand<ChartSetSeriesStyleParams>({ id: 'chart.setSeriesStyle', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     let found = false;
-    const series = (payload.series ?? []).map((entry) => entry.name === input.seriesName ? (found = true, { ...entry, ...structuredClone(input.style) }) : entry);
+    const series = (payload.series ?? []).map((entry) => {
+      if (entry.name !== input.seriesName && entry.id !== input.seriesName) return entry;
+      found = true;
+      const style = input.style;
+      return {
+        ...entry,
+        ...(style.color === undefined ? {} : { color: style.color }),
+        ...(style.chartType === undefined ? {} : { chartType: style.chartType }),
+        ...(style.axis === undefined ? {} : { axis: style.axis }),
+        ...(style.smooth === undefined ? {} : { smooth: style.smooth }),
+        ...(style.marker === undefined ? {} : { marker: structuredClone(style.marker) }),
+        ...(style.dataLabels === undefined ? {} : { dataLabels: structuredClone(style.dataLabels) }),
+        ...(style.trendlines === undefined ? {} : { trendlines: structuredClone(style.trendlines) }),
+        ...(style.errorBars === undefined ? {} : { errorBars: structuredClone(style.errorBars) }),
+      };
+    });
     if (!found) throw new Error(`Unknown chart series: ${input.seriesName}`);
     return { ...payload, series };
   }) });
   commandIds.push('chart.setSeriesStyle');
+  runtime.registry.registerCommand<ChartSetDataTableParams>({ id: 'chart.setDataTable', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, dataTable: structuredClone(input.dataTable) } })) });
+  commandIds.push('chart.setDataTable');
+  runtime.registry.registerCommand<ChartSetTrendlinesParams>({ id: 'chart.setTrendlines', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const series = (payload.series ?? []).map((entry) => entry.id === input.seriesId ? { ...entry, trendlines: structuredClone(input.trendlines) } : entry);
+    if (!(payload.series ?? []).some((entry) => entry.id === input.seriesId)) throw new Error(`Unknown chart series: ${input.seriesId}`);
+    return { ...payload, series };
+  }) });
+  commandIds.push('chart.setTrendlines');
+  runtime.registry.registerCommand<ChartSetErrorBarsParams>({ id: 'chart.setErrorBars', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    const series = (payload.series ?? []).map((entry) => entry.id === input.seriesId ? { ...entry, ...(input.errorBars ? { errorBars: structuredClone(input.errorBars) } : { errorBars: undefined }) } : entry);
+    if (!(payload.series ?? []).some((entry) => entry.id === input.seriesId)) throw new Error(`Unknown chart series: ${input.seriesId}`);
+    return { ...payload, series };
+  }) });
+  commandIds.push('chart.setErrorBars');
 
   runtime.registry.registerCommand<ChartRemoveParams>({
     id: 'chart.remove',
@@ -340,7 +550,12 @@ export const CHART_MUTATION_IDS = [] as const;
 export const CHART_COMMAND_IDS = [
   'chart.insert', 'chart.update', 'chart.remove', 'chart.setType', 'chart.setLegend',
   'chart.setDataLabels', 'chart.setSeries', 'chart.setAxes', 'chart.setSecondaryAxis',
-  'chart.setElements', 'chart.setSeriesStyle',
+  'chart.setElements', 'chart.setSeriesStyle', 'chart.selectData', 'chart.setDataTable',
+  'chart.setTrendlines', 'chart.setErrorBars', 'chart.series.add', 'chart.series.update',
+  'chart.series.remove', 'chart.series.move',
   'chart.insert.column', 'chart.insert.bar', 'chart.insert.line', 'chart.insert.area',
-  'chart.insert.pie', 'chart.insert.doughnut', 'chart.insert.scatter', 'chart.insert.combo',
+  'chart.insert.pie', 'chart.insert.doughnut', 'chart.insert.scatter', 'chart.insert.bubble',
+  'chart.insert.treemap', 'chart.insert.sunburst', 'chart.insert.histogram', 'chart.insert.pareto',
+  'chart.insert.box-whisker', 'chart.insert.waterfall', 'chart.insert.funnel', 'chart.insert.stock',
+  'chart.insert.surface', 'chart.insert.radar', 'chart.insert.map', 'chart.insert.combo',
 ] as const;
