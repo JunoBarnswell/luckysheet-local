@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { it } from 'node:test';
 import '../../cell-edit/performance.test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { exportSnapshotToXlsxBuffer, importXlsx } from '@react-sheets/exchange-excel-ooxml';
+import { exportSnapshotToOoxmlBuffer, importOoxmlDocument } from '@react-sheets/exchange-excel-ooxml';
 import { createSpreadsheetRuntime, disposeSpreadsheetRuntime, hydrateRuntime } from '../../runtime';
 
 const ROW_COUNT = 4_058;
@@ -21,9 +21,9 @@ function attachmentScaleSnapshot() {
 }
 
 it('imports and hydrates an attachment-scale value-only workbook without duplicating ordinary cells into FormulaEngine', async () => {
-  const buffer = exportSnapshotToXlsxBuffer(attachmentScaleSnapshot());
+  const buffer = exportSnapshotToOoxmlBuffer(attachmentScaleSnapshot());
   const importStartedAt = performance.now();
-  const imported = await importXlsx({ fileName: 'attachment-scale.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+  const imported = await importOoxmlDocument({ fileName: 'attachment-scale.xlsx', buffer, options: { compatibilityTarget: 'B' } });
   const importedAt = performance.now();
   const runtime = createSpreadsheetRuntime({ unitId: imported.snapshot.unitId });
   hydrateRuntime(runtime, { snapshot: imported.snapshot, revision: 0 });

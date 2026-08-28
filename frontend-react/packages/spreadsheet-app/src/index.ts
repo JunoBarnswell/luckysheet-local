@@ -54,10 +54,12 @@ export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction }
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
-  exchangeExportXlsx,
-  exchangeImportXlsx,
+  exchangeExportDocument,
+  exchangeImportDocument,
+  exchangeSaveAsDocument,
+  exchangeSaveDocument,
   summarizeCompatibilityReport,
-} from './features/xlsx';
+} from './features/native-document';
 export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
@@ -66,7 +68,7 @@ export {
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalNativePackageStore,
+  LocalNativeDocumentStore,
   LocalAssetStore,
   RemoteAssetStore,
   migrateLegacyImageAssets,
@@ -86,7 +88,7 @@ export {
   type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type NativePackageRecord,
+  type NativeDocumentRecord,
   type AssetStore,
   type AssetPutInput,
 } from './features/persistence';

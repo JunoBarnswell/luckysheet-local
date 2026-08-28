@@ -67,7 +67,7 @@ public class WorkbookSourceArtifactEntity {
     public String getNativeMetadataJson() { return nativeMetadataJson; }
     public String getFormat() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"format\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(nativeMetadataJson);
-        return matcher.find() ? matcher.group(1) : "xlsx";
+        return matcher.find() ? matcher.group(1) : "unknown";
     }
     public int getCodecRevision() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"codecRevision\\\"\\s*:\\s*(\\d+)").matcher(nativeMetadataJson);

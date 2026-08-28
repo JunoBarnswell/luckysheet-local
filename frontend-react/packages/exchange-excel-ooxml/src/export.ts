@@ -1,27 +1,46 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import { exportSnapshotToXlsxBuffer, loadOpcPackageGraph } from './archive';
+import { exportSnapshotToOoxmlBuffer, loadOpcPackageGraph } from './archive';
 import { detectPackageFeatures } from './ooxml';
 import { nativePivotFeatureStatus } from './native-pivot';
 import { createCompatibilityReport, refreshCompatibilitySummary } from './compatibility-report';
-import { createNativePackageState, verifyNativePackageState } from './native-package-state';
+import { createNativeDocumentArtifact, nativeSnapshotHash, verifyNativeDocumentArtifact } from './native-document-artifact';
+import { NativeDocumentError } from './native-document-error';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
-import type { XlsxExportOptions, XlsxExportResult, NativePackageState } from './types';
+import type { NativeDocumentExportOptions, NativeDocumentExportResult, NativeDocumentArtifact, OpcPackageGraph } from './types';
 import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
 
-export interface XlsxExportRequest {
+export interface NativeDocumentExportRequest {
   snapshot: WorkbookSnapshot;
   fileName: string;
-  options: XlsxExportOptions;
-  /** The one native package state returned by the import transaction. */
-  nativePackage?: NativePackageState;
+  options: NativeDocumentExportOptions;
+  /** The one native document artifact returned by the import transaction. */
+  artifact?: NativeDocumentArtifact;
+  mode?: 'save' | 'save-as' | 'export';
 }
 
-/** 导出 XLSX 并生成 Compatibility Report */
-export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExportResult> {
-  if (request.nativePackage) await verifyNativePackageState(request.nativePackage);
-  const sourcePackage = request.nativePackage?.packageGraph;
-  const dateSystem = request.options.dateSystem ?? sourcePackage?.dateSystem ?? request.nativePackage?.dateSystem ?? '1900';
-  const buffer = exportSnapshotToXlsxBuffer(request.snapshot, sourcePackage, request.options);
+/** Export an OOXML document and generate its Compatibility Report. */
+export async function exportOoxmlDocument(request: NativeDocumentExportRequest): Promise<NativeDocumentExportResult> {
+  if (request.artifact) await verifyNativeDocumentArtifact(request.artifact);
+  if (request.artifact
+    && request.artifact.nativeGraph.kind === 'opc'
+    && !request.artifact.nativeGraph.package.nativePivotGraph
+    && request.artifact.fileName === request.fileName
+    && request.artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)) {
+    return {
+      taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      report: structuredClone(request.artifact.compatibility),
+      buffer: request.artifact.sourceBytes.slice(0),
+      fileName: request.fileName,
+      artifact: request.artifact,
+    };
+  }
+  const sourcePackage = request.artifact?.nativeGraph.kind === 'opc' ? request.artifact.nativeGraph.package : undefined;
+  const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);
+  if (sourcePackage && targetFormat && targetFormat.variant !== sourcePackage.format.variant && hasMacroParts(sourcePackage) && !macroVariant(targetFormat.variant)) {
+    throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
+  }
+  const dateSystem = request.options.dateSystem ?? sourcePackage?.dateSystem ?? (request.artifact?.dateSystem ?? '1900');
+  const buffer = exportSnapshotToOoxmlBuffer(request.snapshot, sourcePackage, { ...request.options, targetFormat });
   // Report the package that was actually emitted. This prevents a deleted
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.
@@ -82,19 +101,20 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     report: completedReport,
     buffer,
     fileName: emittedFileName,
-    nativePackage: await createNativePackageState({
+    artifact: await createNativeDocumentArtifact({
       fileName: request.fileName,
       buffer,
       dateSystem,
-      packageGraph: emittedPackage,
+      nativeGraph: { kind: 'opc', package: emittedPackage },
       format: emittedPackage.format,
+      snapshot: request.snapshot,
       detectedFeatures,
       compatibility: completedReport,
     }),
   };
 }
 
-function isVbaPartForReport(name: string, packageGraph: NonNullable<XlsxExportRequest['nativePackage']>['packageGraph']): boolean {
+function isVbaPartForReport(name: string, packageGraph: OpcPackageGraph): boolean {
   const lower = name.toLowerCase();
   if (lower.endsWith('vbaproject.bin') || lower.endsWith('vbaprojectsignature.bin')) return true;
   for (const [source, relationships] of Object.entries(packageGraph.relationships)) {
@@ -107,6 +127,20 @@ function isVbaPartForReport(name: string, packageGraph: NonNullable<XlsxExportRe
     }
   }
   return false;
+}
+
+function ooxmlTargetFormat(fileName: string, source?: OpcPackageGraph): Extract<import('./types').NativeDocumentFormat, { family: 'ooxml' }> | undefined {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (!extension || !['xlsx', 'xlsm', 'xltx', 'xltm', 'xlam'].includes(extension)) return source?.format;
+  return { family: 'ooxml', profile: source?.profile ?? 'transitional', variant: extension as Extract<import('./types').NativeDocumentFormat, { family: 'ooxml' }>['variant'] };
+}
+
+function macroVariant(variant: Extract<import('./types').NativeDocumentFormat, { family: 'ooxml' }>['variant']): boolean {
+  return variant === 'xlsm' || variant === 'xltm' || variant === 'xlam';
+}
+
+function hasMacroParts(packageGraph: OpcPackageGraph): boolean {
+  return Object.keys(packageGraph.parts).some((name) => isVbaPartForReport(name, packageGraph));
 }
 
 function fileNameForFormat(input: string, variant: string): string {

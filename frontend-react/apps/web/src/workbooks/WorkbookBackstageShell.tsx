@@ -5,18 +5,18 @@ import { WorkbookStatusBadge } from './WorkbookStatusBadge';
 
 const statusKind = (status: WorkbookBackstageShellProps['syncStatus']) => status;
 
-export function WorkbookBackstageShell({ workbookName, syncStatus, readOnly = false, onBack, onHelp, onSettings, actions, children }: WorkbookBackstageShellProps) {
+export function WorkbookBackstageShell({ workbookName, syncStatus, readOnly = false, onBack, onHelp, onSettings, actions, activeActionId, children }: WorkbookBackstageShellProps) {
   return (
     <Box as="main" className="flex min-h-screen flex-col bg-white text-ink" data-testid="workbook-backstage">
       <WorkbookTopBar onBrandClick={onBack} onHelp={onHelp} onSettings={onSettings} saveLabel="工作簿信息" workbookName={workbookName} />
       <Box className="flex min-h-0 flex-1">
-        <Stack as="nav" aria-label="工作簿文件操作" gap="xs" className="w-[220px] shrink-0 border-r border-slate-200 bg-chrome p-5">
-          <Button className="mb-4 w-full justify-start border-b border-slate-200 pb-4 text-[14px] font-semibold text-slate-800" icon="arrow-left" onClick={onBack} size="md" variant="ghost">返回工作簿</Button>
+        <Stack as="nav" aria-label="工作簿文件操作" gap="xs" className="w-[clamp(208px,22vw,260px)] shrink-0 overflow-y-auto border-r border-slate-200 bg-slate-50/90 p-4">
+          <Button className="mb-3 w-full !justify-start rounded-xl border-b border-slate-200 pb-4 text-[14px] font-semibold text-slate-800" icon="arrow-left" onClick={onBack} size="md" variant="ghost">返回工作簿</Button>
           {actions.map((action) => (
-            <Button key={action.id} aria-disabled={action.disabled || undefined} className="h-auto min-h-[58px] w-full justify-start gap-3 rounded-lg px-3 py-3 text-left" disabled={action.disabled} icon={action.icon} onClick={action.onSelect} size="md" variant="ghost">
-              <Stack gap="none" className="items-start">
-                <Text className="text-[13px] font-medium text-slate-800">{action.label}</Text>
-                {action.description ? <Text className="text-[10px] leading-4 text-slate-400">{action.description}</Text> : null}
+            <Button key={action.id} aria-current={activeActionId === action.id ? 'page' : undefined} aria-disabled={action.disabled || undefined} className="h-[68px] min-h-[68px] w-full !justify-start gap-3 overflow-hidden rounded-xl px-3 py-2.5 text-left" disabled={action.disabled} icon={action.icon} onClick={action.onSelect} size="md" variant={activeActionId === action.id ? 'soft' : 'ghost'}>
+              <Stack gap="none" className="min-w-0 max-w-full items-start">
+                <Text className="max-w-full truncate text-[13px] font-semibold text-slate-800">{action.label}</Text>
+                {action.description ? <Text title={action.description} className="w-full max-w-full truncate text-[10px] leading-4 text-slate-500">{action.description}</Text> : null}
               </Stack>
             </Button>
           ))}

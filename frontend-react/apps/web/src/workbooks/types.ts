@@ -5,7 +5,7 @@ export type WorkbookRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
 export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
-export type WorkbookSourceKind = 'native' | 'xlsx-import';
+export type WorkbookSourceKind = 'native' | 'document-import';
 
 export interface WorkbookCatalogItem {
   unitId: string;
@@ -49,7 +49,7 @@ export interface WorkbookTemplateDefinition {
 export const workbookTemplates: readonly WorkbookTemplateDefinition[] = [
   { kind: 'blank', title: '空白工作簿', description: '从空白表格开始' },
   { kind: 'template', title: '从模板创建', description: '浏览更多模板', icon: 'sparkles' },
-  { kind: 'import', title: '导入 Excel 文件', description: '从 .xlsx 文件开始', icon: 'upload' },
+  { kind: 'import', title: '打开 / 导入原生文档', description: '从原生文档协议开始', icon: 'upload' },
   { kind: 'pivot', title: '数据透视表模板', description: '快速分析业务数据', icon: 'table-pivot' },
   { kind: 'project', title: '项目计划模板', description: '规划项目进度与任务', icon: 'chart' },
   { kind: 'budget', title: '预算模板', description: '管理收支与预算', icon: 'calculator' },
@@ -107,5 +107,6 @@ export interface WorkbookBackstageShellProps {
   onHelp: () => void;
   onSettings: () => void;
   actions: readonly WorkbookBackstageAction[];
+  activeActionId?: string;
   children?: ReactNode;
 }

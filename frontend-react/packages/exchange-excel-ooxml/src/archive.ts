@@ -4,11 +4,11 @@ import {
   detectPackageFeatures,
   exportSnapshotToOpcPackageGraph,
   loadOpcPackageGraph,
-  parseLoadedXlsx,
+  parseLoadedOoxml,
 } from './ooxml';
-import type { DateSystem, OpcPackageGraph, XlsxZipLimits } from './types';
+import type { DateSystem, OpcPackageGraph, NativeDocumentResourceLimits, NativeDocumentFormat } from './types';
 
-export { detectPackageFeatures, loadOpcPackageGraph, parseLoadedXlsx };
+export { detectPackageFeatures, loadOpcPackageGraph, parseLoadedOoxml };
 
 /** Base64 is retained only as an explicit Node/test compatibility helper. */
 export function bytesToBase64(bytes: Uint8Array): string {
@@ -38,7 +38,7 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 /** Readable XML view retained for callers that need to inspect a package. */
-export function unzipXlsxBase64(base64: string, limits?: Partial<XlsxZipLimits>): Record<string, string> {
+export function unzipNativeBase64(base64: string, limits?: Partial<NativeDocumentResourceLimits>): Record<string, string> {
   const loaded = loadOpcPackageGraph(base64ToBytes(base64), limits);
   const files: Record<string, string> = {};
   for (const [name, bytes] of Object.entries(loaded.files)) files[name] = strFromU8(bytes);
@@ -46,47 +46,49 @@ export function unzipXlsxBase64(base64: string, limits?: Partial<XlsxZipLimits>)
 }
 
 /** Parse an in-memory XML file map through the independent OOXML package reader. */
-export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookSnapshot {
+export function parseOoxmlXmlToSnapshot(files: Record<string, string>): WorkbookSnapshot {
   const parts: Record<string, Uint8Array> = Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)]));
   if (!parts['xl/workbook.xml']) throw new Error('Not a valid XLSX package: xl/workbook.xml is missing');
   const loaded = loadOpcPackageGraph(zipSync(parts, { level: 0 }));
-  return parseLoadedXlsx(loaded).snapshot;
+  return parseLoadedOoxml(loaded).snapshot;
 }
 
 /** Export a snapshot as a real OOXML ZIP package. */
-export function exportSnapshotToXlsxBase64(
+export function exportSnapshotToOoxmlBase64(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> } = {},
 ): string {
   return bytesToBase64(new Uint8Array(exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
     includeCachedValues: options.includeCachedValues,
     preserveMacros: options.preserveMacros ?? true,
     assetBytes: options.assetBytes,
+    targetFormat: options.targetFormat,
   }, preserved)));
 }
 
 /** Export a standalone OOXML package without converting it through base64. */
-export function exportSnapshotToXlsxBuffer(
+export function exportSnapshotToOoxmlBuffer(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array> } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> } = {},
 ): ArrayBuffer {
   return exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
     includeCachedValues: options.includeCachedValues,
     preserveMacros: options.preserveMacros ?? true,
     assetBytes: options.assetBytes,
+    targetFormat: options.targetFormat,
   }, preserved);
 }
 
 /** Build a package for callers that need a standalone byte payload. */
-export function zipXlsxParts(parts: Record<string, Uint8Array>): string {
+export function zipOpcParts(parts: Record<string, Uint8Array>): string {
   return bytesToBase64(zipSync(parts, { level: 6 }));
 }
 
-export function zipXlsxPartsBuffer(parts: Record<string, Uint8Array>): ArrayBuffer {
+export function zipOpcPartsBuffer(parts: Record<string, Uint8Array>): ArrayBuffer {
   const zipped = zipSync(parts, { level: 6 });
   return zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength) as ArrayBuffer;
 }

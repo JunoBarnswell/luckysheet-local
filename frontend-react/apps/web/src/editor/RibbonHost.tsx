@@ -15,8 +15,8 @@ export interface RibbonHostProps {
   dispatchCommand: (descriptor: CommandDescriptor) => void;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   saveWorkbook: () => void;
-  exportXlsx: () => void | Promise<void>;
-  importXlsx: () => void;
+  exportDocument: () => void | Promise<void>;
+  importDocument: () => void;
   columnDimensions: ColumnDimensionController;
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenDefaultColumnWidthDialog: () => void;
@@ -44,8 +44,8 @@ export function RibbonHost({
   dispatchCommand,
   dispatchSessionIntent,
   saveWorkbook,
-  exportXlsx,
-  importXlsx,
+  exportDocument,
+  importDocument,
   columnDimensions,
   onOpenColumnWidthDialog,
   onOpenDefaultColumnWidthDialog,
@@ -105,8 +105,8 @@ export function RibbonHost({
       onUndo={() => session.undo()}
       onRedo={() => session.redo()}
       onSave={saveWorkbook}
-      onExportXlsx={() => { void exportXlsx(); }}
-      onImportXlsx={importXlsx}
+      onExportDocument={() => { void exportDocument(); }}
+      onImportDocument={importDocument}
       onRecalculate={() => { void session.recalculateFormulas(); }}
       onTracePrecedents={() => session.showFormulaPrecedents()}
       onTraceDependents={() => session.showFormulaDependents()}

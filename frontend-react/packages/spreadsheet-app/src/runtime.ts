@@ -39,6 +39,7 @@ import {
 import { migrateLegacyImageAssets } from './features/persistence/asset-migration';
 import { isAssetRef, type AssetRef } from '@react-sheets/core-model';
 import type { WorkbookResolution } from './features/workbook-catalog';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -97,7 +98,7 @@ export interface SpreadsheetRuntime {
   formulaCalculation: Promise<void>;
   persistenceReady: Promise<void>;
   pendingLocalOperations: Array<{ operationId: string; mutations: MutationInfo[] }>;
-  checkpointWorkspace: (advanceLocalRevision?: boolean) => Promise<void>;
+  checkpointWorkspace: (advanceLocalRevision?: boolean, artifact?: NativeDocumentArtifact) => Promise<void>;
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -248,7 +249,7 @@ export function createSpreadsheetRuntime(options: {
       }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
     },
   });
-  runtime.checkpointWorkspace = (advanceLocalRevision = true) => checkpointWorkspace(runtime, advanceLocalRevision);
+  runtime.checkpointWorkspace = (advanceLocalRevision = true, artifact) => checkpointWorkspace(runtime, advanceLocalRevision, artifact);
   installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;
@@ -386,7 +387,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   }
   // A value-only workbook has no formula dependency graph. Keeping tens of
   // thousands of ordinary cells in FormulaEngine duplicates CellMatrix and
-  // makes XLSX open proportional to every imported value for no calculation
+  // makes native-document open proportional to every imported value for no calculation
   // benefit. Formula workbooks retain the complete existing input contract.
   if (formulaCount > 0) {
     for (const sheet of workbook.getSheets()) {
@@ -513,7 +514,7 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
   return next;
 }
 
-function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true): Promise<void> {
+function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true, artifact?: NativeDocumentArtifact): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
   if (advanceLocalRevision) runtime.localRevision += 1;
   const snapshot = runtime.model.snapshot();
@@ -533,14 +534,9 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
     .catch(() => undefined)
     .then(() => enqueuePersistenceWrite(runtime, async () => {
       if (runtime.disposed) return;
-      const record = await runtime.workspacePersistence.checkpoint(
-        snapshot,
-        localRevision,
-        serverRevision,
-        syncMode,
-        pendingJournal,
-        metadata,
-      );
+      const record = artifact
+        ? await runtime.workspacePersistence.checkpointWithArtifact(snapshot, localRevision, serverRevision, syncMode, artifact, pendingJournal, metadata)
+        : await runtime.workspacePersistence.checkpoint(snapshot, localRevision, serverRevision, syncMode, pendingJournal, metadata);
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
       await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
