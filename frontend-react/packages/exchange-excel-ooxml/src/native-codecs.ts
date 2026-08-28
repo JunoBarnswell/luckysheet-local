@@ -585,30 +585,6 @@ function decodeDbfText(bytes: Uint8Array): string {
   return new TextDecoder('windows-1252').decode(bytes).replaceAll('\0', '');
 }
 
-function binaryFormat(fileName: string, bytes: Uint8Array): NativeDocumentFormat {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith('.xlsb')) return { family: 'xlsb', variant: 'xlsb' };
-  if (lower.endsWith('.xlt')) return { family: 'biff', variant: 'xlt' };
-  if (lower.endsWith('.xla')) return { family: 'biff', variant: 'xla' };
-  if (lower.endsWith('.xlw')) return { family: 'biff', variant: 'xlw' };
-  if (bytes[0] === 0xd0 && bytes[1] === 0xcf) return { family: 'biff', variant: 'xls' };
-  return { family: 'biff', variant: 'biff5' };
-}
-
-export const binaryCodec: NativeDocumentCodec<NativeDocumentImportTransaction, NativeDocumentExportTransaction> = {
-  family: 'biff',
-  canRead: (fileName, buffer) => /\.(xlsb|xls|xlt|xla|xlw)$/i.test(fileName) || (buffer.byteLength >= 4 && new Uint8Array(buffer).slice(0, 4).every((value, index) => value === [0xd0, 0xcf, 0x11, 0xe0][index])),
-  import: async (request) => { const bytes = new Uint8Array(request.buffer); if (/\.(xlsx|xlsm|xltx|xltm|xlam)$/i.test(request.fileName) && bytes[0] === 0xd0 && bytes[1] === 0xcf) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: 'Encrypted or protected Office security envelope is not decryptable by the local codec', recovery: 'Provide the password through an approved security codec; the encrypted source bytes are not projected or rewritten.' }); const format = binaryFormat(request.fileName, bytes); throw new NativeDocumentError({ code: 'NATIVE_BINARY_CODEC_BLOCKED', message: `${format.family}/${format.variant} requires a record-native parser; source bytes were not converted through OOXML`, format, recovery: 'Use an explicitly supported native codec or add a BIFF record ownership implementation.' }); },
-  export: async (request) => { const format = request.artifact?.format; if (!format || (format.family !== 'biff' && format.family !== 'xlsb')) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: 'Save requires the original binary artifact', recovery: 'Reopen the original binary document before saving.' }); throw new NativeDocumentError({ code: 'NATIVE_BINARY_CODEC_BLOCKED', message: `${format.family}/${format.variant} writer is not available for this binary artifact`, format, recovery: 'Use an explicitly supported native codec or add a BIFF record ownership implementation.' }); },
-};
-
-export const xlsbCodec: NativeDocumentCodec<NativeDocumentImportTransaction, NativeDocumentExportTransaction> = {
-  family: 'xlsb',
-  canRead: (fileName, buffer) => /\.xlsb$/i.test(fileName) || (buffer.byteLength >= 2 && new Uint8Array(buffer)[0] === 0xd0 && new Uint8Array(buffer)[1] === 0xcf),
-  import: binaryCodec.import,
-  export: binaryCodec.export,
-};
-
 function blockedCodec(family: 'works' | 'web' | 'presentation', extensions: RegExp, description: string): NativeDocumentCodec<NativeDocumentImportTransaction, NativeDocumentExportTransaction> {
   return {
     family,

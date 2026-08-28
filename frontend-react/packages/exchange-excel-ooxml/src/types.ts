@@ -373,6 +373,60 @@ export interface BinaryRecordGraph {
   container: 'cfb' | 'biff12';
   records: Array<{ type: number; offset: number; bytes: Uint8Array }>;
   opaque: Uint8Array;
+  streamName?: string;
+  streams?: Record<string, Uint8Array>;
+  cfb?: CfbPackageGraph;
+  package?: BinaryPackageGraph;
+  sheets?: BinarySheetGraph[];
+  sharedStrings?: string[];
+  dateSystem?: DateSystem;
+}
+
+export interface CfbPackageGraph {
+  sectorSize: 512 | 4096;
+  miniSectorSize: 64;
+  majorVersion: 3 | 4;
+  entries: CfbDirectoryEntryGraph[];
+}
+
+export interface CfbDirectoryEntryGraph {
+  name: string;
+  type: 0 | 1 | 2 | 5;
+  left: number;
+  right: number;
+  child: number;
+  startSector: number;
+  size: number;
+  raw: Uint8Array;
+}
+
+export interface BinaryPackageGraph {
+  parts: Record<string, Uint8Array>;
+  workbookPart: string;
+  worksheetParts: Record<string, string>;
+  relationships: Record<string, NativeRelationship[]>;
+  contentTypesXml?: Uint8Array;
+}
+
+export interface BinarySheetGraph {
+  name: string;
+  hidden: boolean;
+  type: 'worksheet' | 'macro' | 'chart' | 'module' | 'unknown';
+  part?: string;
+  boundRecordIndex?: number;
+  startRecord: number;
+  endRecord: number;
+  cells: Record<string, BinaryCellGraph>;
+}
+
+export interface BinaryCellGraph {
+  row: number;
+  column: number;
+  recordIndex: number;
+  recordType: number;
+  value: string | number | boolean | null;
+  styleIndex?: number;
+  auxiliaryRecordIndex?: number;
 }
 
 export interface DbfTableGraph {

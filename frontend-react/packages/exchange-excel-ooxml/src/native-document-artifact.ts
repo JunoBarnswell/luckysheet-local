@@ -76,6 +76,15 @@ export async function verifyNativeDocumentArtifact(state: NativeDocumentArtifact
   if (!state.nativeGraph || typeof state.nativeGraph !== 'object' || !('kind' in state.nativeGraph)) throw new Error('Invalid native document graph');
   if (!['opc', 'text', 'xml', 'ods', 'sjs', 'ssjson', 'biff', 'xlsb', 'dbf'].includes(state.nativeGraph.kind)) throw new Error('Invalid native document graph kind');
   if (state.nativeGraph.kind === 'opc' && state.nativeGraph.package.schema !== 'OpcPackageGraph') throw new Error('Invalid OPC package graph');
+  if (state.nativeGraph.kind === 'biff') {
+    const graph = state.nativeGraph.container;
+    if (graph.container !== 'cfb' || !graph.cfb || !graph.streamName || !graph.streams || !graph.sheets?.length) throw new Error('Invalid BIFF binary graph');
+    if (!graph.streams[graph.streamName] || graph.cfb.entries.length === 0) throw new Error('Invalid BIFF binary stream graph');
+  }
+  if (state.nativeGraph.kind === 'xlsb') {
+    const graph = state.nativeGraph.container;
+    if (graph.container !== 'biff12' || !graph.package || !graph.package.workbookPart || !graph.package.parts[graph.package.workbookPart] || !graph.sheets?.length) throw new Error('Invalid XLSB binary graph');
+  }
   const graphFamily = state.nativeGraph.kind === 'opc' ? state.nativeGraph.package.format.family : state.nativeGraph.kind === 'xml' ? 'xmlss' : state.nativeGraph.kind;
   if (state.format.family !== graphFamily) throw new Error(`Native document format/graph mismatch: ${state.format.family}/${graphFamily}`);
   if (!Array.isArray(state.ownership) || state.ownership.some((entry) => !entry || typeof entry.feature !== 'string' || !['full', 'partial', 'none'].includes(entry.read) || !['full', 'partial', 'none'].includes(entry.edit) || !['full', 'partial', 'none'].includes(entry.write) || !['full', 'partial', 'none'].includes(entry.preserve) || !['editable-owned', 'preserved-owned', 'mixed-owned'].includes(entry.ownership))) throw new Error('Invalid native document ownership manifest');
