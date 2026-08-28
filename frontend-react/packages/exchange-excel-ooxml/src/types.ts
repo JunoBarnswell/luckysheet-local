@@ -1,56 +1,82 @@
 /** XLSX 兼容级别 */
 import type { PivotErrorValue, PivotStyleOptions, PivotTimelineFilterType, PivotTimelineLevel, PivotTimelinePeriod } from '@react-sheets/core-model';
+import type { XmlNode } from './xml';
 
 export type CompatibilityLevel = 'A' | 'B' | 'C';
-export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
-export const OOXML_CODEC_REVISION = 4 as const;
+export type NativeCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
+export const NATIVE_DOCUMENT_CODEC_REVISION = 1 as const;
 
-export type ExcelDocumentFormat =
+export type NativeDocumentFormat =
   | { family: 'ooxml'; profile: 'transitional' | 'strict'; variant: 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'xlam' }
   | { family: 'xlsb'; variant: 'xlsb' }
-  | { family: 'biff'; variant: 'xls' }
-  | { family: 'text'; variant: 'csv' | 'txt' }
-  | { family: 'ods'; variant: 'ods' };
+  | { family: 'biff'; variant: 'xls' | 'xlt' | 'xla' | 'biff5' | 'xlw' }
+  | { family: 'xmlss'; variant: 'xml' }
+  | { family: 'text'; variant: 'csv' | 'txt' | 'prn' | 'dif' | 'sylk' }
+  | { family: 'ods'; variant: 'ods' }
+  | { family: 'sjs'; variant: 'sjs' }
+  | { family: 'ssjson'; variant: 'ssjson' }
+  | { family: 'dbf'; variant: 'dbf' }
+  | { family: 'works'; variant: 'xlr' }
+  | { family: 'web'; variant: 'html' | 'mht' }
+  | { family: 'presentation'; variant: 'pdf' | 'xps' };
 
 /** Excel 日期系统 */
 export type DateSystem = '1900' | '1904';
 
-export interface XlsxImportOptions {
+export interface NativeDocumentImportOptions {
   compatibilityTarget: CompatibilityLevel;
-  compatibilityMode?: XlsxCompatibilityMode;
+  compatibilityMode?: NativeCompatibilityMode;
   dateSystem?: DateSystem;
   preserveMacros?: boolean;
-  /** Reject packages above the parser safety limits instead of attempting to inflate them. */
-  limits?: Partial<XlsxZipLimits>;
+  /** Reject documents above the parser safety limits instead of attempting to materialize them. */
+  limits?: Partial<NativeDocumentResourceLimits>;
 }
 
-export interface XlsxExportOptions {
+export interface NativeDocumentExportOptions {
   compatibilityTarget: CompatibilityLevel;
   dateSystem?: DateSystem;
   includeCachedValues?: boolean;
   preserveMacros?: boolean;
+  /** Same finite limits apply while serializing a native document. */
+  limits?: Partial<NativeDocumentResourceLimits>;
   /** Authoritative asset bytes resolved before the synchronous OOXML writer runs. */
   assetBytes?: Record<string, Uint8Array>;
 }
 
-/** Limits are deliberately finite so an XLSX cannot be used as a zip bomb. */
-export interface XlsxZipLimits {
+/**
+ * Finite limits shared by every native codec.  ZIP/OPC limits are the first
+ * five fields; CFB/BIFF, XML and worksheet limits prevent a hostile native
+ * document from moving the work to an unbounded allocation.
+ */
+export interface NativeDocumentResourceLimits {
   maxArchiveBytes: number;
   maxEntries: number;
   maxEntryBytes: number;
   maxUncompressedBytes: number;
   maxCompressionRatio: number;
+  maxCfbStreams: number;
+  maxStreamBytes: number;
+  maxRecordCount: number;
+  maxXmlDepth: number;
+  maxXmlBytes: number;
+  maxCells: number;
 }
 
-export const DEFAULT_XLSX_ZIP_LIMITS: Readonly<XlsxZipLimits> = {
+export const DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS: Readonly<NativeDocumentResourceLimits> = {
   maxArchiveBytes: 200 * 1024 * 1024,
   maxEntries: 20_000,
   maxEntryBytes: 100 * 1024 * 1024,
   maxUncompressedBytes: 500 * 1024 * 1024,
   maxCompressionRatio: 1_000,
+  maxCfbStreams: 10_000,
+  maxStreamBytes: 500 * 1024 * 1024,
+  maxRecordCount: 2_000_000,
+  maxXmlDepth: 256,
+  maxXmlBytes: 100 * 1024 * 1024,
+  maxCells: 10_000_000,
 };
 
-export interface XlsxRelationship {
+export interface NativeRelationship {
   id: string;
   type: string;
   target: string;
@@ -65,18 +91,28 @@ export interface XlsxRelationship {
  * to preserve OOXML parts which the editable model does not understand yet
  * (for example VBA, custom XML, and native Pivot parts).
  */
-export interface NativePackageState {
-  schema: 'NativePackageState';
-  format: ExcelDocumentFormat;
+export interface NativeDocumentArtifact {
+  schema: 'NativeDocumentArtifact';
+  format: NativeDocumentFormat;
   fileName: string;
   sourceBytes: ArrayBuffer;
   checksum: string;
+  securityEnvelope?: NativeSecurityEnvelope;
   dateSystem: DateSystem;
   detectedFeatures: string[];
-  packageGraph: OpcPackageGraph;
+  nativeGraph: NativeGraph;
+  /** Stable projection identity used to prove an untouched Save can return source bytes. */
+  sourceSnapshotHash?: string;
   ownership: FeatureOwnershipResult[];
   codecRevision: number;
   compatibility: CompatibilityReport;
+}
+
+export interface NativeSecurityEnvelope {
+  kind: 'none' | 'office-standard' | 'office-agile' | 'cfb-opaque' | 'unsupported';
+  encrypted: boolean;
+  passwordRequired: boolean;
+  signatureInvalidated?: boolean;
 }
 
 export type NativePivotSource =
@@ -296,7 +332,7 @@ export interface NativePivotPackageUpdate {
   graph: NativePivotGraph;
   nativeChartGraph?: NativeChartGraph;
   files: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   displayCellsBySheetPart: Record<string, Record<string, Record<string, import('@react-sheets/core-model').CellData>>>;
 }
 
@@ -307,16 +343,130 @@ export interface NativePivotPackageUpdate {
  * does not edit.  Export overlays the editable core parts on this package so
  * chart/pivot/VBA/custom XML bytes are not silently discarded.
  */
+export type NativeGraph =
+  | { kind: 'opc'; package: OpcPackageGraph }
+  | { kind: 'text'; dialect: TextDialectGraph }
+  | { kind: 'xml'; root: XmlDocumentGraph }
+  | { kind: 'ods'; package: OdsPackageGraph }
+  | { kind: 'sjs'; package: SpreadSjsGraph }
+  | { kind: 'ssjson'; document: SpreadSsjsonGraph }
+  | { kind: 'biff'; container: BinaryRecordGraph }
+  | { kind: 'xlsb'; container: BinaryRecordGraph }
+  | { kind: 'dbf'; table: DbfTableGraph };
+
+export interface TextDialectGraph {
+  encoding: 'utf-8' | 'utf-16le' | 'utf-16be' | 'windows-1252';
+  bom: boolean;
+  delimiter: ',' | '\t' | ';' | ' ';
+  rowDelimiter: '\r\n' | '\n' | '\r';
+  quote: 'double' | 'none';
+  variant: 'csv' | 'txt' | 'prn' | 'dif' | 'sylk';
+}
+
+export interface XmlDocumentGraph {
+  namespace: string;
+  root: string;
+  encoding?: string;
+  parsed?: XmlNode;
+}
+
+export interface OdsPackageGraph {
+  parts: Record<string, Uint8Array>;
+  mimetype: string;
+  contentPart: string;
+  contentTree?: XmlNode;
+}
+
+export interface SpreadSjsGraph {
+  parts: Record<string, Uint8Array>;
+  workbookPart: string;
+  unknownParts: Record<string, Uint8Array>;
+  unknownFields: Record<string, unknown>;
+}
+
+export interface SpreadSsjsonGraph {
+  unknownFields: Record<string, unknown>;
+}
+
+export interface BinaryRecordGraph {
+  container: 'cfb' | 'biff12';
+  records: Array<{ type: number; offset: number; bytes: Uint8Array }>;
+  opaque: Uint8Array;
+  streamName?: string;
+  streams?: Record<string, Uint8Array>;
+  cfb?: CfbPackageGraph;
+  package?: BinaryPackageGraph;
+  sheets?: BinarySheetGraph[];
+  sharedStrings?: string[];
+  dateSystem?: DateSystem;
+}
+
+export interface CfbPackageGraph {
+  sectorSize: 512 | 4096;
+  miniSectorSize: 64;
+  majorVersion: 3 | 4;
+  entries: CfbDirectoryEntryGraph[];
+}
+
+export interface CfbDirectoryEntryGraph {
+  name: string;
+  type: 0 | 1 | 2 | 5;
+  left: number;
+  right: number;
+  child: number;
+  startSector: number;
+  size: number;
+  raw: Uint8Array;
+}
+
+export interface BinaryPackageGraph {
+  parts: Record<string, Uint8Array>;
+  workbookPart: string;
+  worksheetParts: Record<string, string>;
+  relationships: Record<string, NativeRelationship[]>;
+  contentTypesXml?: Uint8Array;
+}
+
+export interface BinarySheetGraph {
+  name: string;
+  hidden: boolean;
+  type: 'worksheet' | 'macro' | 'chart' | 'module' | 'unknown';
+  part?: string;
+  boundRecordIndex?: number;
+  startRecord: number;
+  endRecord: number;
+  cells: Record<string, BinaryCellGraph>;
+}
+
+export interface BinaryCellGraph {
+  row: number;
+  column: number;
+  recordIndex: number;
+  recordType: number;
+  value: string | number | boolean | null;
+  styleIndex?: number;
+  auxiliaryRecordIndex?: number;
+}
+
+export interface DbfTableGraph {
+  version: number;
+  headerLength: number;
+  recordLength: number;
+  fields: Array<{ name: string; type: string; length: number; decimals: number }>;
+  recordCount: number;
+  headerBytes: Uint8Array;
+}
+
 export interface OpcPackageGraph {
   schema: 'OpcPackageGraph';
   workbookPart: string;
   parts: Record<string, Uint8Array>;
   opaqueParts: Record<string, Uint8Array>;
-  relationships: Record<string, XlsxRelationship[]>;
+  relationships: Record<string, NativeRelationship[]>;
   sheetPartById: Record<string, string>;
   contentTypesXml?: Uint8Array;
   dateSystem: DateSystem;
-  format: ExcelDocumentFormat;
+  format: Extract<NativeDocumentFormat, { family: 'ooxml' }>;
   profile: 'transitional' | 'strict';
   nativePivotGraph?: NativePivotGraph;
   nativeChartGraph?: NativeChartGraph;
@@ -360,25 +510,25 @@ export interface CompatibilityReport {
   };
 }
 
-export interface XlsxWorkbookPayload {
+export interface NativeWorkbookPayload {
   name: string;
   sheetCount: number;
   dateSystem: DateSystem;
   compatibilityLevel: CompatibilityLevel;
 }
 
-export interface XlsxImportResult {
-  payload: XlsxWorkbookPayload;
+export interface NativeDocumentImportResult {
+  payload: NativeWorkbookPayload;
   report: CompatibilityReport;
   snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
-  nativePackage: NativePackageState;
+  artifact: NativeDocumentArtifact;
   taskId?: string;
 }
 
-export interface XlsxExportResult {
+export interface NativeDocumentExportResult {
   taskId: string;
   report: CompatibilityReport;
   buffer: ArrayBuffer;
   fileName: string;
-  nativePackage?: NativePackageState;
+  artifact: NativeDocumentArtifact;
 }

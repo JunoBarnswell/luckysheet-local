@@ -9,7 +9,15 @@ import type {
   ChartDrawingPayload,
   ChartMarkerModel,
   CameraDrawingPayload,
+  ScreenshotDrawingPayload,
   FormControlDrawingPayload,
+  IconDrawingPayload,
+  Model3dDrawingPayload,
+  SmartArtDrawingPayload,
+  WordArtDrawingPayload,
+  SignatureLineDrawingPayload,
+  EmbeddedObjectDrawingPayload,
+  EquationDrawingPayload,
   ConnectorDrawingPayload,
   DrawingArrowhead,
   DrawingObject,
@@ -496,6 +504,84 @@ export function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: C
   const y = bounds.y + (bounds.height - height) / 2;
   context.drawImage(surface, 0, 0, surface.width, surface.height, x, y, width, height);
   context.restore();
+}
+
+export function drawScreenshotOnCanvas(context: CanvasRenderingContext2D, payload: ScreenshotDrawingPayload, bounds: Rect, getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined): void {
+  drawCameraOnCanvas(context, { kind: 'camera', sourceRange: payload.sourceRange, refreshPolicy: 'live' }, bounds, getSheet);
+}
+
+function drawIconOnCanvas(context: CanvasRenderingContext2D, payload: IconDrawingPayload, bounds: Rect): void {
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  context.strokeStyle = '#cbd5e1';
+  context.strokeRect(bounds.x + 0.5, bounds.y + 0.5, bounds.width - 1, bounds.height - 1);
+  // The SVG path is persisted with the object. Canvas uses a path fallback for
+  // deterministic rendering while the DOM inspector can still expose the same path.
+  const scale = Math.min(bounds.width, bounds.height) / 24;
+  const path = new Path2D(payload.svgPath);
+  context.save();
+  context.translate(bounds.x + (bounds.width - 24 * scale) / 2, bounds.y + (bounds.height - 24 * scale) / 2);
+  context.scale(scale, scale);
+  context.fillStyle = payload.fill;
+  context.fill(path);
+  context.restore();
+  context.restore();
+}
+
+function drawModel3dOnCanvas(context: CanvasRenderingContext2D, payload: Model3dDrawingPayload, bounds: Rect): void {
+  const { vertices, faces } = payload.geometry;
+  const angle = payload.rotation.y;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const points = vertices.map((vertex) => {
+    const x = vertex.x * cos - vertex.z * sin;
+    const z = vertex.x * sin + vertex.z * cos;
+    const perspective = 1 / Math.max(0.25, 2.8 - z * 0.25);
+    return { x: bounds.x + bounds.width / 2 + x * payload.scale * bounds.width * 0.35 * perspective, y: bounds.y + bounds.height / 2 - vertex.y * payload.scale * bounds.height * 0.35 * perspective };
+  });
+  context.save();
+  context.fillStyle = '#f8fafc'; context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  context.strokeStyle = '#64748b'; context.lineWidth = 1;
+  for (const face of faces) {
+    const [a, b, c] = face.map((index) => points[index]!);
+    context.beginPath(); context.moveTo(a!.x, a!.y); context.lineTo(b!.x, b!.y); context.lineTo(c!.x, c!.y); context.closePath(); context.stroke();
+  }
+  context.strokeStyle = '#2563eb'; context.strokeRect(bounds.x + 0.5, bounds.y + 0.5, bounds.width - 1, bounds.height - 1);
+  context.restore();
+}
+
+function drawSmartArtOnCanvas(context: CanvasRenderingContext2D, payload: SmartArtDrawingPayload, bounds: Rect): void {
+  context.save();
+  const gap = 12;
+  const columns = payload.layout === 'process' || payload.layout === 'list' ? Math.min(4, payload.nodes.length) : 1;
+  const rows = Math.max(1, Math.ceil(payload.nodes.length / columns));
+  const nodeWidth = Math.max(48, (bounds.width - gap * (columns - 1) - 16) / columns);
+  const nodeHeight = Math.max(28, (bounds.height - gap * (rows - 1) - 16) / rows);
+  const positions = new Map<string, { x: number; y: number }>();
+  payload.nodes.forEach((node, index) => { const column = index % columns; const row = Math.floor(index / columns); positions.set(node.id, { x: bounds.x + 8 + column * (nodeWidth + gap), y: bounds.y + 8 + row * (nodeHeight + gap) }); });
+  context.strokeStyle = payload.stroke; context.lineWidth = 1.5;
+  for (const edge of payload.edges) { const start = positions.get(edge.from); const end = positions.get(edge.to); if (!start || !end) continue; context.beginPath(); context.moveTo(start.x + nodeWidth / 2, start.y + nodeHeight / 2); context.lineTo(end.x + nodeWidth / 2, end.y + nodeHeight / 2); context.stroke(); }
+  context.font = '12px Segoe UI, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle';
+  for (const node of payload.nodes) { const position = positions.get(node.id)!; context.fillStyle = payload.fill; context.fillRect(position.x, position.y, nodeWidth, nodeHeight); context.strokeStyle = payload.stroke; context.strokeRect(position.x + 0.5, position.y + 0.5, nodeWidth - 1, nodeHeight - 1); context.fillStyle = payload.textColor; context.fillText(node.text, position.x + nodeWidth / 2, position.y + nodeHeight / 2, nodeWidth - 10); }
+  context.restore();
+}
+
+function drawWordArtOnCanvas(context: CanvasRenderingContext2D, payload: WordArtDrawingPayload, bounds: Rect, rotation = 0): void {
+  context.save(); context.translate(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2); context.rotate(rotation * Math.PI / 180);
+  context.font = `${payload.italic ? 'italic ' : ''}${payload.bold ? 'bold ' : ''}${payload.fontSize}px ${payload.fontFamily}`; context.textAlign = 'center'; context.textBaseline = 'middle'; context.lineWidth = payload.outlineWidth; context.strokeStyle = payload.outline; context.fillStyle = payload.fill; context.strokeText(payload.text, 0, 0, Math.max(1, bounds.width - 8)); context.fillText(payload.text, 0, 0, Math.max(1, bounds.width - 8)); context.restore();
+}
+
+function drawSignatureLineOnCanvas(context: CanvasRenderingContext2D, payload: SignatureLineDrawingPayload, bounds: Rect): void {
+  context.save(); context.fillStyle = '#fff'; context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height); context.strokeStyle = '#334155'; context.beginPath(); context.moveTo(bounds.x + 8, bounds.y + bounds.height * 0.62); context.lineTo(bounds.x + bounds.width - 8, bounds.y + bounds.height * 0.62); context.stroke(); context.fillStyle = '#334155'; context.font = '12px Segoe UI, sans-serif'; context.textAlign = 'left'; context.textBaseline = 'top'; context.fillText(payload.signerName, bounds.x + 8, bounds.y + 6); if (payload.signerTitle) context.fillText(payload.signerTitle, bounds.x + 8, bounds.y + 21); context.textAlign = 'right'; context.fillStyle = payload.status === 'signed' ? '#15803d' : '#64748b'; context.fillText(payload.status === 'signed' ? `已签名 ${payload.signedBy ?? ''}` : '未签名', bounds.x + bounds.width - 8, bounds.y + 6); context.restore();
+}
+
+function drawEmbeddedObjectOnCanvas(context: CanvasRenderingContext2D, payload: EmbeddedObjectDrawingPayload, bounds: Rect): void {
+  context.save(); context.fillStyle = '#f8fafc'; context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height); context.strokeStyle = '#94a3b8'; context.strokeRect(bounds.x + 0.5, bounds.y + 0.5, bounds.width - 1, bounds.height - 1); context.fillStyle = '#334155'; context.font = '12px Segoe UI, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(payload.fileName, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 - 8, Math.max(10, bounds.width - 16)); context.fillStyle = '#64748b'; context.font = '10px Segoe UI, sans-serif'; context.fillText(payload.relationship === 'embedded' ? '本地嵌入对象' : '本地链接对象', bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 + 10); context.restore();
+}
+
+function drawEquationOnCanvas(context: CanvasRenderingContext2D, payload: EquationDrawingPayload, bounds: Rect): void {
+  context.save(); context.fillStyle = '#fff'; context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height); context.fillStyle = payload.textColor; context.font = `${payload.fontSize}px Cambria Math, Cambria, serif`; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(payload.tokens.map((token) => token.value).join(''), bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(10, bounds.width - 12)); context.restore();
 }
 
 function drawFormControlOnCanvas(context: CanvasRenderingContext2D, payload: FormControlDrawingPayload, bounds: Rect): void {
@@ -1323,8 +1409,40 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawCameraOnCanvas(context, payload, rect, getSheet) });
       continue;
     }
+    if (payload.kind === 'screenshot') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawScreenshotOnCanvas(context, payload, rect, getSheet) });
+      continue;
+    }
     if (payload.kind === 'form-control') {
       drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawFormControlOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'icon') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawIconOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'model3d') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawModel3dOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'smartart') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawSmartArtOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'wordart') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawWordArtOnCanvas(context, payload, rect, drawing.transform.rotation) });
+      continue;
+    }
+    if (payload.kind === 'signature-line') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawSignatureLineOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'embedded-object') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawEmbeddedObjectOnCanvas(context, payload, rect) });
+      continue;
+    }
+    if (payload.kind === 'equation') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawEquationOnCanvas(context, payload, rect) });
       continue;
     }
     if (payload.kind === 'connector') {

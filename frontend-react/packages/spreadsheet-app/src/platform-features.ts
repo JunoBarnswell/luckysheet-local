@@ -1,7 +1,7 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerHistoryCommands } from './features/history';
 import { registerPrintCommands } from './features/print';
-import { registerXlsxCommands } from './features/xlsx';
+import { registerNativeDocumentCommands } from './features/native-document';
 import { registerPermissionFeature } from './features/permission/commands';
 import { registerQueryCommands } from './features/query';
 import { registerExtendedCommands } from './features/extended';
@@ -10,7 +10,7 @@ import { registerExtendedCommands } from './features/extended';
 export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
   registerHistoryCommands(runtime.registry);
   registerPrintCommands(runtime.registry);
-  registerXlsxCommands(runtime.registry);
+  registerNativeDocumentCommands(runtime.registry);
   registerQueryCommands(runtime.registry);
   registerExtendedCommands(runtime.registry);
   registerPermissionFeature(runtime);
@@ -20,8 +20,8 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
     'print.export',
     'pageLayout.printArea.set',
     'pageLayout.pageSetup.set',
-    'xlsx.import',
-    'xlsx.export',
+    'document.import',
+    'document.export',
     'query.load',
     'query.refresh',
     'extended.whatIf.goalSeek',

@@ -73,7 +73,7 @@ export { SelectionService, createInitialSelection, type SelectionState, type Sel
 export type { SelectionArea, SelectionKind, SelectionMode } from './selection-service';
 export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';
 export { containsRange, expandSelectionRangeForMerges, intersectsRange, nextVisibleCell, resolveSelectionTarget, type ResolvedSelectionTarget, type SelectionTargetSurface } from './selection-target-resolver';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode, ChartElementSelection } from './types';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode, ChartElementSelection, LocalObjectDialogKind } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,
@@ -87,10 +87,12 @@ export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction }
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
-  exchangeExportXlsx,
-  exchangeImportXlsx,
+  exchangeExportDocument,
+  exchangeImportDocument,
+  exchangeSaveAsDocument,
+  exchangeSaveDocument,
   summarizeCompatibilityReport,
-} from './features/xlsx';
+} from './features/native-document';
 export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
@@ -99,7 +101,7 @@ export {
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalNativePackageStore,
+  LocalNativeDocumentStore,
   LocalAssetStore,
   RemoteAssetStore,
   migrateLegacyImageAssets,
@@ -119,7 +121,7 @@ export {
   type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type NativePackageRecord,
+  type NativeDocumentRecord,
   type AssetStore,
   type AssetPutInput,
 } from './features/persistence';

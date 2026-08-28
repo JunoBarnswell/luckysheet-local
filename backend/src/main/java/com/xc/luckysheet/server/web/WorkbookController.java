@@ -144,7 +144,7 @@ public class WorkbookController {
         return catalog.putUserState(unitId, request, ActorIdentity.subject(authentication));
     }
 
-    @PutMapping(value = "/{unitId}/native-package-state", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @PutMapping(value = "/{unitId}/native-document-artifact", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public WorkbookArtifactResponse putSourceArtifact(
             @PathVariable String unitId,
             @RequestHeader(value = "X-File-Name", required = false) String fileName,
@@ -156,7 +156,7 @@ public class WorkbookController {
         return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, ActorIdentity.subject(authentication));
     }
 
-    @GetMapping(value = "/{unitId}/native-package-state", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @GetMapping(value = "/{unitId}/native-document-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
         WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
         return ResponseEntity.ok()

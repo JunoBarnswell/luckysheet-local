@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { it } from 'node:test';
 import { pivotSourceIdentity, type PivotModel } from '@react-sheets/core-model';
-import { importXlsx } from '@react-sheets/exchange-excel-ooxml';
+import { importOoxmlDocument } from '@react-sheets/exchange-excel-ooxml';
 import { createSpreadsheetRuntime, disposeSpreadsheetRuntime, hydrateRuntime } from '../../runtime';
 import { buildPivotGridProjection, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './engine';
 import { InlinePivotTaskPort } from './task-port';
@@ -14,7 +14,7 @@ const fixturePath = process.env.OCR_XLSX_FIXTURE ?? 'C:\\Users\\kuo13\\Downloads
 it('meets the real OCR workbook import, source-index, worker, and projection budgets', { skip: !existsSync(fixturePath) }, async () => {
   const importStartedAt = performance.now();
   const bytes = readFileSync(fixturePath);
-  const imported = await importXlsx({ fileName: 'OCR结果.xlsx', buffer: bytes, options: { compatibilityTarget: 'B' } });
+  const imported = await importOoxmlDocument({ fileName: 'OCR结果.xlsx', buffer: bytes, options: { compatibilityTarget: 'B' } });
   const importedAt = performance.now();
   const runtime = createSpreadsheetRuntime({ unitId: imported.snapshot.unitId });
   hydrateRuntime(runtime, { snapshot: imported.snapshot, revision: 0 });

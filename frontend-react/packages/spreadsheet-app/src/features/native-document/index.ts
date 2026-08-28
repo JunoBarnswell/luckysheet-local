@@ -1,18 +1,18 @@
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 
-export interface XlsxImportCommandParams {
+export interface NativeDocumentImportCommandParams {
   fileName: string;
   buffer: ArrayBuffer;
 }
 
-export interface XlsxExportCommandParams {
+export interface NativeDocumentExportCommandParams {
   fileName?: string;
 }
 
-export function registerXlsxCommands(registry: CommandRegistry): void {
+export function registerNativeDocumentCommands(registry: CommandRegistry): void {
   registry.registerCommand({
-    id: 'xlsx.import',
-    execute(params: XlsxImportCommandParams, context): CommandResult {
+    id: 'document.import',
+    execute(params: NativeDocumentImportCommandParams, context): CommandResult {
       void params;
       return {
         operationId: context.operationId,
@@ -23,8 +23,8 @@ export function registerXlsxCommands(registry: CommandRegistry): void {
   });
 
   registry.registerCommand({
-    id: 'xlsx.export',
-    execute(params: XlsxExportCommandParams, context): CommandResult {
+    id: 'document.export',
+    execute(params: NativeDocumentExportCommandParams, context): CommandResult {
       void params;
       return {
         operationId: context.operationId,

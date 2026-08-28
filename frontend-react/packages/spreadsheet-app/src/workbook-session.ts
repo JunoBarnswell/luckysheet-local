@@ -8,6 +8,14 @@ import type {
   CellStyleTemplate,
   BarcodeSymbology,
   CameraDrawingPayload,
+  ScreenshotDrawingPayload,
+  IconDrawingPayload,
+  Model3dDrawingPayload,
+  SmartArtDrawingPayload,
+  WordArtDrawingPayload,
+  SignatureLineDrawingPayload,
+  EmbeddedObjectDrawingPayload,
+  EquationDrawingPayload,
   ChartBindings,
   ChartDrawingPayload,
   ChartSeriesModel,
@@ -66,7 +74,7 @@ import {
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
-import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
@@ -215,7 +223,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeExportXlsx, summarizeCompatibilityReport } from './features/xlsx';
+import { exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -245,7 +253,18 @@ import type {
   ScenarioResult,
 } from './features/extended/what-if';
 import type { WhatIfPlan } from './features/extended';
-import type { CompatibilityReport } from './features/xlsx';
+import type { CompatibilityReport } from './features/native-document';
+
+function nativeDocumentMimeType(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
+}
 import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
@@ -272,6 +291,7 @@ import type {
   SidebarPanelId,
   SheetDialogState,
   UiSessionIntent,
+  LocalObjectDialogKind,
   DialogState,
   FindDialogMode,
   MergeOperation,
@@ -299,7 +319,7 @@ export interface WorkbookSessionOptions {
   canonicalReferenceDate?: CanonicalExcelDateParts;
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
-  xlsxExecution?: 'worker' | 'inline-test';
+  nativeDocumentExecution?: 'worker' | 'inline-test';
   /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
   pivotTaskPort?: PivotTaskPort;
   pivotExecution?: 'worker' | 'inline-test';
@@ -605,6 +625,70 @@ function explicitChartSeries(type: ChartDrawingPayload['chartType'], subtype: Ch
   return undefined;
 }
 
+const LOCAL_ICON_REGISTRY: Readonly<Record<string, Pick<IconDrawingPayload, 'svgPath' | 'viewBox' | 'accessibilityLabel'>>> = {
+  star: { svgPath: 'M12 2.5l2.86 5.79 6.39.93-4.62 4.5 1.09 6.36L12 17.07 6.28 20.08l1.09-6.36-4.62-4.5 6.39-.93L12 2.5z', viewBox: '0 0 24 24', accessibilityLabel: 'Star' },
+  heart: { svgPath: 'M12 20.5S4 15.6 4 9.5A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8 2.5c0 6.1-8 11-8 11z', viewBox: '0 0 24 24', accessibilityLabel: 'Heart' },
+  checkmark: { svgPath: 'M5 12.5l4.2 4.2L19 7v2L9.2 19 5 14.5z', viewBox: '0 0 24 24', accessibilityLabel: 'Checkmark' },
+  circle: { svgPath: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z', viewBox: '0 0 24 24', accessibilityLabel: 'Circle' },
+};
+
+function parseLocalObj(source: string): Model3dDrawingPayload['geometry'] {
+  const vertices: Array<{ x: number; y: number; z: number }> = [];
+  const faces: Array<[number, number, number]> = [];
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split(/\s+/);
+    if (parts[0] === 'v') {
+      if (parts.length < 4) throw new Error('LOCAL_3D_INVALID: vertex requires x y z');
+      const values = parts.slice(1, 4).map(Number);
+      if (values.some((value) => !Number.isFinite(value))) throw new Error('LOCAL_3D_INVALID: vertex contains a non-finite coordinate');
+      vertices.push({ x: values[0]!, y: values[1]!, z: values[2]! });
+      if (vertices.length > 5000) throw new Error('LOCAL_3D_LIMIT: OBJ contains more than 5000 vertices');
+    } else if (parts[0] === 'f') {
+      if (parts.length < 4) throw new Error('LOCAL_3D_INVALID: face requires three vertices');
+      const indices = parts.slice(1).map((part) => Number.parseInt(part.split('/')[0]!, 10));
+      if (indices.some((index) => !Number.isSafeInteger(index) || index === 0)) throw new Error('LOCAL_3D_INVALID: face index is invalid');
+      for (let index = 1; index < indices.length - 1; index += 1) {
+        const triangle = [indices[0]!, indices[index]!, indices[index + 1]!].map((value) => value < 0 ? vertices.length + value : value - 1) as [number, number, number];
+        if (triangle.some((value) => value < 0 || value >= vertices.length)) throw new Error('LOCAL_3D_INVALID: face references a missing vertex');
+        faces.push(triangle);
+        if (faces.length > 10000) throw new Error('LOCAL_3D_LIMIT: OBJ contains more than 10000 faces');
+      }
+    } else if (!['vn', 'vt', 'o', 'g', 's', 'usemtl', 'mtllib'].includes(parts[0]!)) {
+      throw new Error(`LOCAL_3D_UNSUPPORTED: OBJ directive ${parts[0]}`);
+    }
+  }
+  if (vertices.length === 0 || faces.length === 0) throw new Error('LOCAL_3D_INVALID: OBJ requires at least one vertex and one face');
+  const center = vertices.reduce((sum, vertex) => ({ x: sum.x + vertex.x, y: sum.y + vertex.y, z: sum.z + vertex.z }), { x: 0, y: 0, z: 0 });
+  center.x /= vertices.length; center.y /= vertices.length; center.z /= vertices.length;
+  const radius = Math.max(...vertices.map((vertex) => Math.hypot(vertex.x - center.x, vertex.y - center.y, vertex.z - center.z)), 0.0001);
+  return { vertices: vertices.map((vertex) => ({ x: (vertex.x - center.x) / radius, y: (vertex.y - center.y) / radius, z: (vertex.z - center.z) / radius })), faces };
+}
+
+function equationTokens(expression: string): EquationDrawingPayload['tokens'] {
+  const tokens: EquationDrawingPayload['tokens'] = [];
+  const parts = expression.match(/[A-Za-z0-9.]+|[+\-*/=()^_]/g) ?? [];
+  if (parts.join('') !== expression.replace(/\s+/g, '')) throw new Error('LOCAL_EQUATION_INVALID: only linear equation tokens are supported');
+  for (const part of parts) {
+    const kind = part === '^' ? 'superscript' : part === '_' ? 'subscript' : ['+', '-', '*', '/', '='].includes(part) ? 'operator' : 'text';
+    tokens.push({ kind, value: part });
+  }
+  if (tokens.length === 0) throw new Error('LOCAL_EQUATION_INVALID: expression is empty');
+  return tokens;
+}
+
+export interface LocalObjectInsertInput {
+  iconName?: string;
+  text?: string;
+  file?: File;
+  layout?: SmartArtDrawingPayload['layout'];
+  signerName?: string;
+  signerTitle?: string;
+  signerEmail?: string;
+  relationship?: EmbeddedObjectDrawingPayload['relationship'];
+}
+
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
@@ -624,7 +708,7 @@ export class WorkbookSession {
   };
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
-  private readonly xlsxExecution: 'worker' | 'inline-test';
+  private readonly nativeDocumentExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
   private readyCallback: Promise<void> | null = null;
 
@@ -662,8 +746,8 @@ export class WorkbookSession {
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
-  private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number' };
+  private nativeArtifact: NativeDocumentArtifact | undefined;
+  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number', localObjectKind: null };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
   private findCursorSignature = '';
@@ -736,7 +820,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, xlsxExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -759,7 +843,7 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    this.xlsxExecution = xlsxExecution;
+    this.nativeDocumentExecution = nativeDocumentExecution;
     const resolvedPivotTaskPort = pivotTaskPort ?? (pivotExecution === 'worker' ? createBrowserPivotTaskPort() : new InlinePivotTaskPort());
     if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
     this.pivotTaskPort = resolvedPivotTaskPort;
@@ -971,9 +1055,9 @@ export class WorkbookSession {
         this.persistenceChecksum = persisted.checksum;
         this.persistenceMetaDirty = false;
       }
-      const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
+      const artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
-        this.nativePackage = artifact;
+        this.nativeArtifact = artifact;
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
         this.invalidateAllSheetProjections();
         this.emit();
@@ -1232,7 +1316,7 @@ export class WorkbookSession {
       true,
       this.runtime.pivotResults,
       this.runtime.dataContent,
-      this.nativePackage?.dateSystem ?? '1900',
+      this.nativeArtifact?.dateSystem ?? '1900',
       this.runtime.pivotErrors,
       this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
     );
@@ -1680,7 +1764,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight, intent.formatCellsTab);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode, intent.rowHeight, intent.formatCellsTab, intent.localObjectKind);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -2263,14 +2347,22 @@ export class WorkbookSession {
     );
   }
 
+  getNativeDocumentFileName(): string | undefined {
+    return this.nativeArtifact?.fileName;
+  }
+
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
     this.saveState = 'saving';
     this.emit();
     try {
       void reason;
+      if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
+      const nativeExport = await this.exportNativeDocumentForSave();
+      if (!nativeExport.buffer || !nativeExport.fileName) throw new Error('Native document export did not produce a file');
+      this.nativeArtifact = nativeExport.artifact;
       const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
       if (remoteWorkbook && !this.runtime.remoteConnected) {
-        await this.runtime.checkpointWorkspace();
+        await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
         this.saveState = 'offline';
         this.syncPersistenceMeta();
         this.notify('Local checkpoint saved; waiting to sync with the server');
@@ -2283,8 +2375,13 @@ export class WorkbookSession {
         }
         const checkpoint = await this.runtime.api.checkpointWorkbook(this.runtime.model.unitId);
         this.runtime.remoteRevision = checkpoint.snapshot.revision;
+        await this.runtime.api.putWorkbookSourceArtifact(
+          this.runtime.model.unitId,
+          new Blob([nativeExport.buffer], { type: nativeDocumentMimeType(nativeExport.fileName) }),
+          nativeExport.fileName,
+        );
       }
-      await this.runtime.checkpointWorkspace();
+      await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
       this.saveState = 'saved';
       this.syncPersistenceMeta();
       this.notify(remoteWorkbook ? 'Workbook saved to server' : 'Local workbook checkpoint saved');
@@ -2294,6 +2391,15 @@ export class WorkbookSession {
       this.emit();
       throw error instanceof Error ? error : new Error('Save failed');
     }
+  }
+
+  private exportNativeDocumentForSave(): Promise<Awaited<ReturnType<typeof exchangeExportDocument>>> {
+    return exchangeSaveDocument(this.runtime.model.snapshot(), this.nativeArtifact, {
+      fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+      execution: this.nativeDocumentExecution,
+      revision: this.version,
+      assetStore: this.runtime.assetStore,
+    });
   }
 
   private runReadyCallback(): void {
@@ -2400,10 +2506,10 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number'): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number', localObjectKind?: LocalObjectDialogKind): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, localObjectKind: dialog === 'local-object' ? localObjectKind ?? 'icon' : null, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
@@ -2415,7 +2521,7 @@ export class WorkbookSession {
   closeActiveDialog(): void {
     if (!this.dialogs.active) return;
     if (this.dialogs.active === 'find-replace') this.resetFindCursor();
-    this.dialogs = { ...this.dialogs, active: null, columnWidth: null, rowHeight: null, sheet: null };
+    this.dialogs = { ...this.dialogs, active: null, localObjectKind: null, columnWidth: null, rowHeight: null, sheet: null };
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -3783,6 +3889,79 @@ export class WorkbookSession {
     this.refresh();
   }
 
+  /** 所有 INSERT 本地对象共用的领域入口；成功后只提交一次 drawing.add。 */
+  async insertLocalObject(kind: LocalObjectDialogKind, input: LocalObjectInsertInput = {}): Promise<void> {
+    const transform: DrawingTransform = { x: 96, y: 96, width: 260, height: 150, rotation: 0 };
+    if (kind === 'screenshot') {
+      const sourceRange = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
+      const drawing = this.createInsertDrawing('screenshot', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'screenshot', transform });
+      const payload: ScreenshotDrawingPayload = { kind: 'screenshot', sourceRange, includeGridlines: true, capturedAt: new Date().toISOString() };
+      this.commitInsertDrawing({ commandId: 'drawing.add.screenshot', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('工作表区域截图已插入'); this.refresh(); return;
+    }
+    if (kind === 'icon') {
+      const iconName = input.iconName ?? 'star';
+      const icon = LOCAL_ICON_REGISTRY[iconName];
+      if (!icon) throw new Error(`LOCAL_ICON_NOT_FOUND: ${iconName}`);
+      const drawing = this.createInsertDrawing('icon', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'icon', transform: { ...transform, width: 96, height: 96 } });
+      const payload: IconDrawingPayload = { kind: 'icon', iconName, svgPath: icon.svgPath, viewBox: icon.viewBox, fill: '#2563eb', accessibilityLabel: icon.accessibilityLabel };
+      this.commitInsertDrawing({ commandId: 'drawing.add.icon', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地图标已插入'); this.refresh(); return;
+    }
+    if (kind === 'model3d') {
+      if (!input.file) throw new Error('LOCAL_3D_FILE_REQUIRED: 请选择 OBJ 文件');
+      if (!input.file.name.toLowerCase().endsWith('.obj')) throw new Error('LOCAL_3D_UNSUPPORTED: 仅支持本地 OBJ 文件');
+      const geometry = parseLocalObj(await input.file.text());
+      const drawing = this.createInsertDrawing('model3d', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'model3d', transform });
+      const payload: Model3dDrawingPayload = { kind: 'model3d', fileName: input.file.name, format: 'obj', geometry, rotation: { x: 0.2, y: -0.4, z: 0 }, scale: 1 };
+      this.commitInsertDrawing({ commandId: 'drawing.add.model3d', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地 3D 模型已插入'); this.refresh(); return;
+    }
+    if (kind === 'smartart') {
+      const text = input.text?.trim() || '开始\n处理\n完成';
+      const nodes = text.split(/\r?\n/).map((value, index) => ({ id: `node-${index + 1}`, text: value.trim() })).filter((node) => node.text.length > 0);
+      if (nodes.length === 0) throw new Error('LOCAL_SMARTART_INVALID: 至少需要一个节点');
+      const layout = input.layout ?? 'process';
+      const edges = layout === 'cycle' ? nodes.map((node, index) => ({ from: node.id, to: nodes[(index + 1) % nodes.length]!.id })) : nodes.slice(1).map((node, index) => ({ from: nodes[index]!.id, to: node.id }));
+      const drawing = this.createInsertDrawing('smartart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'smartart', transform: { ...transform, width: 360, height: 180 } });
+      const payload: SmartArtDrawingPayload = { kind: 'smartart', layout, nodes, edges, fill: '#dbeafe', stroke: '#2563eb', textColor: '#1e3a8a' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.smartart', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地 SmartArt 已插入'); this.refresh(); return;
+    }
+    if (kind === 'wordart') {
+      const text = input.text?.trim(); if (!text) throw new Error('LOCAL_WORDART_INVALID: 文字不能为空');
+      const drawing = this.createInsertDrawing('wordart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'wordart', transform });
+      const payload: WordArtDrawingPayload = { kind: 'wordart', text, fontFamily: 'Aptos Display', fontSize: 30, fill: '#2563eb', outline: '#1e3a8a', outlineWidth: 1.5, italic: false, bold: true };
+      this.commitInsertDrawing({ commandId: 'drawing.add.wordart', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地艺术字已插入'); this.refresh(); return;
+    }
+    if (kind === 'signature-line') {
+      const signerName = input.signerName?.trim(); if (!signerName) throw new Error('LOCAL_SIGNATURE_INVALID: 签名人不能为空');
+      const drawing = this.createInsertDrawing('signature-line', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'signature-line', transform: { ...transform, height: 90 } });
+      const payload: SignatureLineDrawingPayload = { kind: 'signature-line', signerName, signerTitle: input.signerTitle?.trim() || undefined, signerEmail: input.signerEmail?.trim() || undefined, instructions: '双击后记录本地签名状态', status: 'unsigned' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.signature-line', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地签名行已插入'); this.refresh(); return;
+    }
+    if (kind === 'embedded-object') {
+      if (!input.file) throw new Error('LOCAL_OBJECT_FILE_REQUIRED: 请选择要嵌入的本地文件');
+      const asset = await this.runtime.assetStore.put({ content: input.file, mimeType: input.file.type || 'application/octet-stream' });
+      try {
+        const drawing = this.createInsertDrawing('embedded-object', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'embedded-object', transform });
+        const payload: EmbeddedObjectDrawingPayload = { kind: 'embedded-object', fileName: input.file.name, mimeType: input.file.type || 'application/octet-stream', asset, relationship: input.relationship ?? 'embedded', previewText: '本地文件对象' };
+        this.commitInsertDrawing({ commandId: 'drawing.add.embedded-object', sheetId: this.activeSheetId, drawing, payload });
+      } catch (error) { await this.runtime.assetStore.release(asset); throw error; }
+      this.notify('本地文件对象已嵌入'); this.refresh(); return;
+    }
+    if (kind === 'equation') {
+      const linearExpression = input.text?.trim() || 'a^2+b^2=c^2';
+      const drawing = this.createInsertDrawing('equation', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'equation', transform: { ...transform, height: 72 } });
+      const payload: EquationDrawingPayload = { kind: 'equation', linearExpression, tokens: equationTokens(linearExpression), fontSize: 24, textColor: '#1f2937' };
+      this.commitInsertDrawing({ commandId: 'drawing.add.equation', sheetId: this.activeSheetId, drawing, payload });
+      this.notify('本地公式对象已插入'); this.refresh(); return;
+    }
+    throw new Error(`LOCAL_OBJECT_UNSUPPORTED: ${kind}`);
+  }
+
   insertFormControl(controlType: FormControlType = 'button'): void {
     const active = this.selectionService.getState().activeCell;
     const drawing = this.createInsertDrawing('form-control', this.activeSheetId, { kind: 'one-cell', row: active.row, column: active.column }, { payloadPrefix: 'form-control', transform: { x: 96, y: 96, width: 140, height: 32, rotation: 0 } });
@@ -4965,7 +5144,7 @@ export class WorkbookSession {
         sheet,
         column,
         (row, currentColumn) => this.readResolvedFilterCell(sheet, row, currentColumn),
-        this.nativePackage?.dateSystem ?? '1900',
+        this.nativeArtifact?.dateSystem ?? '1900',
       );
       validateFilterCriterionAgainstDomain(descriptor, patch.criterion);
     }
@@ -6029,26 +6208,35 @@ export class WorkbookSession {
     };
   }
 
-  async exportXlsxWorkbook(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string } | null> {
-    if (!this.canExecute('xlsx.export')) {
+  async exportDocument(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string; artifact: NativeDocumentArtifact } | null> {
+    if (!this.canExecute('document.export')) {
       this.notify('You do not have permission to export workbooks');
       return null;
     }
     try {
-      const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
-      fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
-        nativePackage: this.nativePackage,
-        execution: this.xlsxExecution,
-        revision: this.version,
-        assetStore: this.runtime.assetStore,
-      });
+      const exported = fileName
+        ? await exchangeSaveAsDocument(this.runtime.model.snapshot(), {
+          fileName,
+          artifact: this.nativeArtifact,
+          execution: this.nativeDocumentExecution,
+          revision: this.version,
+          assetStore: this.runtime.assetStore,
+        })
+        : await exchangeExportDocument(this.runtime.model.snapshot(), {
+          fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+          artifact: this.nativeArtifact,
+          execution: this.nativeDocumentExecution,
+          revision: this.version,
+          assetStore: this.runtime.assetStore,
+        });
+      if (!fileName || this.nativeArtifact?.fileName === exported.fileName) this.nativeArtifact = exported.artifact;
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
       if (!exported.buffer || !exported.fileName) return null;
-      return { buffer: exported.buffer, fileName: exported.fileName };
+      return { buffer: exported.buffer, fileName: exported.fileName, artifact: exported.artifact };
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'XLSX export failed');
+      this.notify(error instanceof Error ? error.message : 'Native document export failed');
       return null;
     }
   }

@@ -1,7 +1,7 @@
 import { cn } from './cn';
 import { Icon, type IconSize } from './Icon';
 
-export type FileIconKind = 'xlsx' | 'workbook' | 'folder' | 'import';
+export type FileIconKind = 'native-document' | 'workbook' | 'folder' | 'import';
 
 export interface FileIconProps {
   kind?: FileIconKind;
@@ -22,7 +22,7 @@ const glyphSizes: Record<NonNullable<FileIconProps['size']>, IconSize> = {
   lg: 'lg',
 };
 
-export function FileIcon({ kind = 'xlsx', size = 'md', className, label }: FileIconProps) {
+export function FileIcon({ kind = 'native-document', size = 'md', className, label }: FileIconProps) {
   const isFolder = kind === 'folder';
   return (
     <span

@@ -7,7 +7,7 @@ import java.util.Locale;
 
 public enum WorkbookSource {
     NATIVE,
-    XLSX_IMPORT;
+    DOCUMENT_IMPORT;
 
     @JsonValue
     public String wireValue() {
@@ -19,7 +19,7 @@ public enum WorkbookSource {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Workbook source is required");
         return switch (value.trim().toLowerCase(Locale.ROOT)) {
             case "native" -> NATIVE;
-            case "xlsx-import", "xlsx_import" -> XLSX_IMPORT;
+            case "document-import", "document_import" -> DOCUMENT_IMPORT;
             default -> throw new IllegalArgumentException("Unknown workbook source: " + value);
         };
     }

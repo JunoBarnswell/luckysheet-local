@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
-import { exportXlsx } from './export';
-import { importXlsx } from './import';
+import { exportOoxmlDocument } from './export';
+import { importOoxmlDocument } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
-import { exportSnapshotToXlsxBuffer } from './archive';
-import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
+import { exportSnapshotToOoxmlBuffer } from './archive';
+import { loadOpcPackageGraph, parseLoadedOoxml, zipOpcPartsBuffer } from './archive';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
@@ -107,22 +107,42 @@ describe('exchange-excel-ooxml', () => {
     assert.ok(features.includes('images'));
   });
 
+  it('round-trips local Insert objects through owned metadata without a host', async () => {
+    const workbook = new WorkbookModel('wb-local-objects', 'Local Objects');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'capture' });
+    const entries = [
+      { kind: 'icon' as const, payload: { kind: 'icon' as const, iconName: 'star', svgPath: 'M12 2h1v20h-1z', viewBox: '0 0 24 24', fill: '#2563eb', accessibilityLabel: 'Star' } },
+      { kind: 'model3d' as const, payload: { kind: 'model3d' as const, fileName: 'triangle.obj', format: 'obj' as const, geometry: { vertices: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }], faces: [[0, 1, 2] as [number, number, number]] }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 } },
+      { kind: 'smartart' as const, payload: { kind: 'smartart' as const, layout: 'process' as const, nodes: [{ id: 'a', text: 'A' }, { id: 'b', text: 'B' }], edges: [{ from: 'a', to: 'b' }], fill: '#dbeafe', stroke: '#2563eb', textColor: '#1e3a8a' } },
+      { kind: 'wordart' as const, payload: { kind: 'wordart' as const, text: 'Local', fontFamily: 'Aptos Display', fontSize: 24, fill: '#2563eb', outline: '#1e3a8a', outlineWidth: 1, italic: false, bold: true } },
+      { kind: 'signature-line' as const, payload: { kind: 'signature-line' as const, signerName: 'Ada', status: 'unsigned' as const } },
+      { kind: 'equation' as const, payload: { kind: 'equation' as const, linearExpression: 'a^2=b^2', tokens: [{ kind: 'text' as const, value: 'a' }, { kind: 'superscript' as const, value: '2' }, { kind: 'operator' as const, value: '=' }, { kind: 'text' as const, value: 'b' }, { kind: 'superscript' as const, value: '2' }], fontSize: 24, textColor: '#1f2937' } },
+      { kind: 'screenshot' as const, payload: { kind: 'screenshot' as const, sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, includeGridlines: true, capturedAt: new Date(0).toISOString() } },
+    ];
+    entries.forEach((entry, index) => { const drawingId = `local-${entry.kind}`; const payloadId = `${drawingId}-payload`; sheet.drawings.push({ id: drawingId, sheetId: sheet.id, kind: entry.kind, anchor: { kind: 'absolute' }, transform: { x: index * 20, y: 0, width: 120, height: 80 }, zIndex: index, payloadId }); sheet.drawingPayloads.set(payloadId, entry.payload); });
+    const imported = await importOoxmlDocument({ fileName: 'local-objects.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const importedKinds = imported.snapshot.sheets[0]!.drawings.map((drawing) => drawing.kind);
+    assert.deepEqual(importedKinds, entries.map((entry) => entry.kind));
+    assert.ok(imported.report.issues.some((issue) => issue.feature === 'models3d' && issue.status === 'editable'));
+  });
+
   it('round-trips snapshot through xlsx archive import/export', async () => {
     const workbook = new WorkbookModel('wb-roundtrip', 'Roundtrip');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 'hello' });
     workbook.getSheet(workbook.primarySheetId).cells.set(1, 0, { value: 42, formula: '=A1&"!"' });
     const snapshot = workbook.snapshot();
-    const buffer = exportSnapshotToXlsxBuffer(snapshot);
-    const imported = await importXlsx({
+    const buffer = exportSnapshotToOoxmlBuffer(snapshot);
+    const imported = await importOoxmlDocument({
       fileName: 'roundtrip.xlsx',
       buffer,
       options: { compatibilityTarget: 'B' },
     });
     assert.equal(imported.snapshot.sheets.length, snapshot.sheets.length);
     assert.equal(imported.report.schema, 'CompatibilityReport');
-    assert.equal(imported.nativePackage.schema, 'NativePackageState');
-    assert.equal(imported.nativePackage.checksum.length, 64);
-    const exported = await exportXlsx({
+    assert.equal(imported.artifact.schema, 'NativeDocumentArtifact');
+    assert.equal(imported.artifact.checksum.length, 64);
+    const exported = await exportOoxmlDocument({
       snapshot: imported.snapshot,
       fileName: 'roundtrip.xlsx',
       options: { compatibilityTarget: 'B' },
@@ -148,7 +168,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.drawingPayloads.set(connector.payloadId, planned.payload);
     sheet.drawingGroups.push({ id: 'shape-group', sheetId: sheet.id, memberDrawingIds: ['shape-a', 'shape-b'] });
     sheet.snapSettings = { enabled: true, snapToGrid: false, snapToShape: true, gridSize: 12 };
-    const imported = await importXlsx({ fileName: 'shape-contracts.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'shape-contracts.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     const importedSheet = imported.snapshot.sheets[0]!;
     assert.deepEqual(importedSheet.drawingGroups, sheet.drawingGroups);
     assert.deepEqual(importedSheet.snapSettings, sheet.snapSettings);
@@ -162,16 +182,16 @@ describe('exchange-excel-ooxml', () => {
     sheet.cells.set(0, 0, { value: 'listed', style: { fontFamily: '  sEgOe Ui  ' } });
     sheet.cells.set(1, 0, { value: 'imported', style: { fontFamily: '  Imported Local Font  ' } });
 
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'font-family.xlsx',
-      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
       options: { compatibilityTarget: 'B' },
     });
     const importedSheet = imported.snapshot.sheets[0]!;
     assert.equal(importedSheet.cells['0']?.['0']?.style?.fontFamily, 'Segoe UI');
     assert.equal(importedSheet.cells['1']?.['0']?.style?.fontFamily, 'Imported Local Font');
 
-    const exported = await exportXlsx({
+    const exported = await exportOoxmlDocument({
       snapshot: imported.snapshot,
       fileName: 'font-family.xlsx',
       options: { compatibilityTarget: 'B' },
@@ -190,9 +210,9 @@ describe('exchange-excel-ooxml', () => {
     sheet.cells.set(0, 1, { value: 2, style: { borders: { top: line, right: line } } });
     sheet.cells.set(1, 0, { value: 3, style: { borders: { bottom: line, left: line } } });
     sheet.cells.set(1, 1, { value: 4, style: { borders: { bottom: line, right: line } } });
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'borders.xlsx',
-      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
       options: { compatibilityTarget: 'B' },
     });
     const importedSheet = imported.snapshot.sheets[0]!;
@@ -218,9 +238,9 @@ describe('exchange-excel-ooxml', () => {
       },
     });
 
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'alignment.xlsx',
-      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
       options: { compatibilityTarget: 'B' },
     });
     const style = imported.snapshot.sheets[0]?.cells['0']?.['0']?.style;
@@ -236,7 +256,7 @@ describe('exchange-excel-ooxml', () => {
     const workbook = new WorkbookModel('wb-alignment-unsupported', 'Alignment Unsupported');
     const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, { value: 'native', style: { horizontalAlignment: 'left' } });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const stylesXml = strFromU8(output.packageGraph.parts['xl/styles.xml']!);
     const alignment = stylesXml.match(/<alignment\s+[^>]*\/>/)?.[0];
     assert.ok(alignment, 'export must contain a cell alignment node');
@@ -245,9 +265,9 @@ describe('exchange-excel-ooxml', () => {
       '<alignment horizontal="vendorAlignment" vertical="vendorVertical" foo="preserve-me" shrinkToFit="1"/>',
     ));
 
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'alignment-unsupported.xlsx',
-      buffer: zipXlsxPartsBuffer(output.packageGraph.parts),
+      buffer: zipOpcPartsBuffer(output.packageGraph.parts),
       options: { compatibilityTarget: 'B' },
     });
     const style = imported.snapshot.sheets[0]?.cells['0']?.['0']?.style;
@@ -255,9 +275,9 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(style?.unsupportedAlignment?.vertical, 'vendorVertical');
     assert.equal(style?.unsupportedAlignment?.attributes?.foo, 'preserve-me');
     assert.equal(style?.shrinkToFit, true);
-    const preserved = await exportXlsx({
+    const preserved = await exportOoxmlDocument({
       snapshot: imported.snapshot,
-      nativePackage: imported.nativePackage,
+      artifact: imported.artifact,
       fileName: 'alignment-unsupported-roundtrip.xlsx',
       options: { compatibilityTarget: 'B' },
     });
@@ -269,7 +289,7 @@ describe('exchange-excel-ooxml', () => {
     const malformed = strFromU8(output.packageGraph.parts['xl/styles.xml']!).replace('shrinkToFit="1"', 'shrinkToFit="maybe"');
     output.packageGraph.parts['xl/styles.xml'] = strToU8(malformed);
     await assert.rejects(
-      importXlsx({ fileName: 'alignment-malformed.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } }),
+      importOoxmlDocument({ fileName: 'alignment-malformed.xlsx', buffer: zipOpcPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } }),
       /Invalid OOXML alignment shrinkToFit/,
     );
   });
@@ -282,9 +302,9 @@ describe('exchange-excel-ooxml', () => {
       allow: { selectLocked: true, selectUnlocked: true, formatCells: true, sort: true, autoFilter: false },
     });
     sheet.cells.set(0, 0, { value: '=SUM(A2:A3)', formula: '=SUM(A2:A3)', style: { locked: false, formulaHidden: true } });
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'protection.xlsx',
-      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
       options: { compatibilityTarget: 'B' },
     });
     const importedSheet = imported.snapshot.sheets[0]!;
@@ -306,10 +326,10 @@ describe('exchange-excel-ooxml', () => {
     sheet.drawingPayloads.set('camera', {
       kind: 'camera', sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 999_999, startColumn: 0, endColumn: 999_999 }, refreshPolicy: 'live',
     });
-    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
 
     await assert.rejects(
-      importXlsx({ fileName: 'malicious.xlsx', buffer, options: { compatibilityTarget: 'B' } }),
+      importOoxmlDocument({ fileName: 'malicious.xlsx', buffer, options: { compatibilityTarget: 'B' } }),
       /Camera source range/,
     );
   });
@@ -320,13 +340,13 @@ describe('exchange-excel-ooxml', () => {
     sheet.cells.set(0, 0, { value: 'Amount' });
     sheet.cells.set(1, 0, { value: 10 });
     sheet.cells.set(2, 0, { value: 20 });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     output.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(output.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace(
       '</worksheet>',
       '<conditionalFormatting sqref="A2:A3"><cfRule type="iconSet" priority="1"><iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="50"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting><autoFilter ref="A1:A3"><filterColumn colId="0"><iconFilter iconSet="3TrafficLights1" iconId="1"/></filterColumn></autoFilter></worksheet>',
     ));
 
-    const imported = await importXlsx({ fileName: 'icon-filter.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'icon-filter.xlsx', buffer: zipOpcPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
 
     assert.deepEqual(imported.snapshot.sheets[0]?.cells['1']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 0 });
     assert.deepEqual(imported.snapshot.sheets[0]?.cells['2']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 2 });
@@ -337,13 +357,13 @@ describe('exchange-excel-ooxml', () => {
     const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, { value: 'Amount' });
     sheet.cells.set(1, 0, { value: 10 });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     output.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(output.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace(
       '</worksheet>',
       '<conditionalFormatting sqref="A1:XFD1048576"><cfRule type="iconSet" priority="1"><iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="50"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting><autoFilter ref="A1:A2"><filterColumn colId="0"><iconFilter iconSet="3TrafficLights1" iconId="0"/></filterColumn></autoFilter></worksheet>',
     ));
 
-    const imported = await importXlsx({ fileName: 'full-sheet-icon-filter.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'full-sheet-icon-filter.xlsx', buffer: zipOpcPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
 
     assert.deepEqual(imported.snapshot.sheets[0]?.cells['1']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 0 });
   });
@@ -371,10 +391,10 @@ describe('exchange-excel-ooxml', () => {
       columns: [{ id: 'category', name: 'Category' }, { id: 'amount', name: 'Amount' }],
       styleName: 'TableStyleMedium2',
     });
-    const imported = await importXlsx({ fileName: 'table.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'table.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.sheetTables?.[0]?.name, 'SalesTable');
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'tables')?.status, 'editable');
-    const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'table.xlsx', options: { compatibilityTarget: 'B' } });
+    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'table.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadOpcPackageGraph(exported.buffer);
     assert.ok(output.files['xl/tables/table1.xml']);
     assert.match(strFromU8(output.files['[Content_Types].xml']!), /spreadsheetml\.table\+xml/);
@@ -391,11 +411,11 @@ describe('exchange-excel-ooxml', () => {
     sheet.hyperlinks.set('1:0', { id: 'link-2', target: { kind: 'email', address: 'team@example.com', subject: 'Review' } });
     sheet.hyperlinks.set('2:0', { id: 'link-3', target: { kind: 'sheet', sheetId: targetSheet.id, address: 'B2' } });
     sheet.hyperlinks.set('3:0', { id: 'link-4', target: { kind: 'name', name: 'SalesTotal' } });
-    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
     const emitted = loadOpcPackageGraph(buffer);
     assert.match(strFromU8(emitted.files['xl/worksheets/sheet1.xml']!), /<hyperlink ref="A1"/);
     assert.match(strFromU8(emitted.files['xl/worksheets/_rels/sheet1.xml.rels']!), /https:\/\/openai\.com\//);
-    const imported = await importXlsx({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
@@ -431,7 +451,7 @@ describe('exchange-excel-ooxml', () => {
         displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: false, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false },
       },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     assert.equal(output.packageGraph.nativePivotGraph?.caches.length, 1);
     assert.equal(output.packageGraph.nativePivotGraph?.tables.length, 1);
     const cacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
@@ -445,7 +465,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /showMissing="1" missingCaption="—" showError="0" errorCaption="ERR" preserveFormatting="1"/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /<dataField[^>]*numFmtId="164"/);
     assert.match(strFromU8(output.files['xl/styles.xml']!), /<numFmt numFmtId="164" formatCode="0\.000"\/>/);
-    const imported = parseLoadedXlsx(output).snapshot;
+    const imported = parseLoadedOoxml(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
     assert.equal(imported.sheets[0]?.pivots[0]?.layout.values[0]?.numberFormat, '0.000');
     assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, {
@@ -468,7 +488,7 @@ describe('exchange-excel-ooxml', () => {
       layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: `value:${'amount'}`, fieldId: 'amount', summarizeBy: 'sum', numberFormat: '[Red' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
-    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unterminated/);
+    assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), /unterminated/);
   });
 
   it('round-trips native Difference From base field and typed base item coordinates', () => {
@@ -481,12 +501,12 @@ describe('exchange-excel-ooxml', () => {
       layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: 'value:amount', fieldId: 'amount', summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: 'category', baseItem: { type: 'text', value: 'A' } } }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const tableXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(tableXml, /showDataAs="difference"/);
     assert.match(tableXml, /baseField="0"/);
     assert.match(tableXml, /baseItem="0"/);
-    const imported = parseLoadedXlsx(output).snapshot;
+    const imported = parseLoadedOoxml(output).snapshot;
     assert.deepEqual(imported.sheets[0]?.pivots[0]?.layout.values[0]?.showAs, { kind: 'difference', baseFieldId: 'native:cache:1:field:0', baseItem: { type: 'text', value: 'A' } });
   });
 
@@ -514,12 +534,12 @@ describe('exchange-excel-ooxml', () => {
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const cacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
     assert.match(cacheXml, /<fieldGroup base="0"><rangePr groupBy="months" startDate="2024-01-01T00:00:00.000Z" endDate="2024-12-31T00:00:00.000Z"\/>/);
     assert.match(cacheXml, /<fieldGroup base="1"><rangePr groupBy="range" groupInterval="10" startNum="0" endNum="100"\/>/);
     assert.match(cacheXml, /<fieldGroup base="2"><discretePr count="3"><x v="0"\/><x v="0"\/><x v="1"\/><\/discretePr><groupItems count="2"><s v="AB"\/><s v="C"\/><\/groupItems><\/fieldGroup>/);
-    const imported = parseLoadedXlsx(output).snapshot;
+    const imported = parseLoadedOoxml(output).snapshot;
     const pivot = imported.sheets[0]?.pivots[0];
     assert.equal(pivot?.layout.rows[0]?.group?.kind, 'date');
     assert.deepEqual(pivot?.layout.rows[0]?.group, { kind: 'date', unit: 'month', start: '2024-01-01T00:00:00.000Z', end: '2024-12-31T00:00:00.000Z' });
@@ -555,7 +575,7 @@ describe('exchange-excel-ooxml', () => {
     );
     sheet.drawingPayloads.set('category-slicer', { kind: 'slicer', pivotId: 'control-pivot', fieldId: 'category', filter: { mode: 'all', memberKeys: [] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' }, settings: { showHeader: true, caption: 'Category', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } });
     sheet.drawingPayloads.set('date-timeline', { kind: 'timeline', pivotId: 'control-pivot', fieldId: 'date', period: { start: '2024-01-01T00:00:00Z', end: '2024-12-31T00:00:00Z' }, level: 'years', selectionLevel: 'days', showHeader: false, showSelectionLabel: true, showTimeLevel: false, showHorizontalScrollbar: true, scrollPosition: '1895-01-01T00:00:00Z', bounds: { start: '1890-01-01T00:00:00Z', end: '2201-12-31T00:00:00Z' }, filterType: 'dateBetween', caption: 'Fiscal Window', styleName: 'TimelineStyleDark3', style: { theme: 'dark', fill: '#111827', border: '#374151', textColor: '#f9fafb', accentColor: '#60a5fa' } });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     assert.ok(output.files['xl/slicerCaches/slicerCache1.xml']);
     assert.ok(output.files['xl/slicers/slicer1.xml']);
     assert.ok(output.files['xl/timelineCaches/timelineCache1.xml']);
@@ -582,7 +602,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/_rels/workbook.xml.rels']!), /relationships\/timelineCache/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /slicerList/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /timelineRefs/);
-    const imported = parseLoadedXlsx(output).snapshot;
+    const imported = parseLoadedOoxml(output).snapshot;
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'slicer').length, 1);
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'timeline').length, 1);
     const importedTimeline = Object.values(imported.sheets[0]?.drawingPayloads ?? {}).find((payload) => payload.kind === 'timeline');
@@ -600,9 +620,9 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(importedTimeline.styleName, 'TimelineStyleDark3');
     const preservedFiles: Record<string, Uint8Array> = Object.fromEntries(Object.entries(output.files).map(([name, bytes]) => [name, bytes.slice()]));
     preservedFiles['xl/timelines/timeline1.xml'] = strToU8(strFromU8(preservedFiles['xl/timelines/timeline1.xml']!).replace('<timeline ', '<timeline futureTimelineAttr="keep-me" ').replace('/></timelines>', '><extLst><ext uri="future"><futureTimelineNode/></ext></extLst></timeline></timelines>'));
-    const preservedInput = loadOpcPackageGraph(zipXlsxPartsBuffer(preservedFiles));
-    const preservedImported = parseLoadedXlsx(preservedInput).snapshot;
-    const preservedExport = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(preservedImported, preservedInput.packageGraph));
+    const preservedInput = loadOpcPackageGraph(zipOpcPartsBuffer(preservedFiles));
+    const preservedImported = parseLoadedOoxml(preservedInput).snapshot;
+    const preservedExport = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(preservedImported, preservedInput.packageGraph));
     assert.match(strFromU8(preservedExport.files['xl/timelines/timeline1.xml']!), /futureTimelineAttr="keep-me"/);
     assert.match(strFromU8(preservedExport.files['xl/timelines/timeline1.xml']!), /futureTimelineNode/);
     const importedSlicerAnchor = imported.sheets[0]?.drawings.find((drawing) => drawing.kind === 'slicer')?.anchor;
@@ -611,7 +631,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(importedSlicerAnchor?.kind === 'one-cell' ? importedSlicerAnchor.column : undefined, 4);
     assert.equal(importedTimelineAnchor?.kind === 'one-cell' ? importedTimelineAnchor.row : undefined, 10);
 
-    const controlExport = await exportXlsx({ snapshot: workbook.snapshot(), fileName: 'native-controls.xlsx', options: { compatibilityTarget: 'B' } });
+    const controlExport = await exportOoxmlDocument({ snapshot: workbook.snapshot(), fileName: 'native-controls.xlsx', options: { compatibilityTarget: 'B' } });
     assert.equal(controlExport.report.issues.some((issue) => issue.feature === 'images' && issue.status === 'unsupported'), false);
 
     const withoutControls = structuredClone(imported);
@@ -619,7 +639,7 @@ describe('exchange-excel-ooxml', () => {
     const controlDrawingIds = new Set(controlSheet.drawings.filter((drawing) => drawing.kind === 'slicer' || drawing.kind === 'timeline').map((drawing) => drawing.id));
     controlSheet.drawings = controlSheet.drawings.filter((drawing) => !controlDrawingIds.has(drawing.id));
     for (const id of controlDrawingIds) delete controlSheet.drawingPayloads[id];
-    const removedControls = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutControls, output.packageGraph));
+    const removedControls = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(withoutControls, output.packageGraph));
     const removedDrawing = removedControls.files['xl/drawings/drawing1.xml'];
     assert.ok(!removedDrawing || !/category[_-]slicer|date[_-]timeline/.test(strFromU8(removedDrawing)));
   });
@@ -659,7 +679,7 @@ describe('exchange-excel-ooxml', () => {
       },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const nativeXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(nativeXml, /<pageFields count="2"><pageField fld="3"\/><pageField fld="2"\/><\/pageFields>/);
     assert.match(nativeXml, /<pivotField axis="axisRow"[^>]*><items count="1"><item x="1" h="1"\/><\/items>/);
@@ -667,7 +687,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(nativeXml, /<pivotField axis="axisPage"[^>]*><items count="3"><item x="1" h="1"\/><item x="2" h="1"\/><item x="3" h="1"\/><\/items>/);
     assert.match(nativeXml, /<pivotFilters count="1"><filter fld="2" type="captionEqual" stringValue1="US"/);
 
-    const imported = await importXlsx({ fileName: 'pivot-visibility.xlsx', buffer: zipXlsxPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'pivot-visibility.xlsx', buffer: zipOpcPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
     const importedPivot = imported.snapshot.sheets[0]?.pivots[0];
     assert.ok(importedPivot);
     assert.deepEqual(importedPivot.layout.filters, [
@@ -676,7 +696,7 @@ describe('exchange-excel-ooxml', () => {
       { kind: 'manual', family: 'manual', fieldId: 'native:cache:1:field:3', scope: 'report', mode: 'exclude', memberKeys: [createPivotMemberKey(20), createPivotMemberKey(30), createPivotMemberKey(40)] },
       { kind: 'condition', family: 'label', fieldId: 'native:cache:1:field:2', scope: 'report', operator: 'equals', value: 'US' },
     ]);
-    const roundTrip = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'pivot-visibility-roundtrip.xlsx', options: { compatibilityTarget: 'B' } });
+    const roundTrip = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'pivot-visibility-roundtrip.xlsx', options: { compatibilityTarget: 'B' } });
     const roundTripXml = strFromU8(loadOpcPackageGraph(roundTrip.buffer).files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(roundTripXml, /<pageFields count="2"><pageField fld="3"\/><pageField fld="2"\/><\/pageFields>/);
     assert.equal((roundTripXml.match(/ h="1"/g) ?? []).length, 5);
@@ -705,7 +725,7 @@ describe('exchange-excel-ooxml', () => {
       layout: { rows: [], columns: [], filters: [{ kind: 'manual', family: 'manual', scope: 'report', fieldId: 'missing', mode: 'all', memberKeys: [] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
-    assert.throws(() => exportSnapshotToXlsxBuffer(invalidExport.snapshot()), /Pivot filter references missing field missing/);
+    assert.throws(() => exportSnapshotToOoxmlBuffer(invalidExport.snapshot()), /Pivot filter references missing field missing/);
   });
 
   it('round-trips the canonical compact, outline, and tabular report layouts', async () => {
@@ -725,12 +745,12 @@ describe('exchange-excel-ooxml', () => {
         layout: { rows: [{ fieldId: 'region' }, { fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: `value:${'amount'}`, fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout },
         refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
       });
-      const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+      const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
       const nativeXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
       assert.match(nativeXml, new RegExp(`compactData="${reportLayout === 'compact' ? '1' : '0'}"`));
       assert.match(nativeXml, new RegExp(`repeatAllLabels="${reportLayout === 'tabular' ? '1' : '0'}"`));
       assert.match(nativeXml, new RegExp(`axisRow[^>]*compact="${reportLayout === 'compact' ? '1' : '0'}"[^>]*outline="${reportLayout === 'outline' ? '1' : '0'}"`));
-      const imported = await importXlsx({ fileName: `${reportLayout}.xlsx`, buffer: zipXlsxPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
+      const imported = await importOoxmlDocument({ fileName: `${reportLayout}.xlsx`, buffer: zipOpcPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
       assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.reportLayout, reportLayout);
     }
   });
@@ -763,15 +783,15 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawings.push({ id: 'invalid-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 8, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'invalid-timeline' });
     sheet.drawingPayloads.set('invalid-timeline', { kind: 'timeline', pivotId: 'invalid-timeline-pivot', fieldId: 'date', period: {}, level: 'months', selectionLevel: 'months', showHeader: true, showSelectionLabel: true, showTimeLevel: true, showHorizontalScrollbar: true, bounds: { start: '2024-01-01T00:00:00Z', end: '2024-01-01T00:00:00Z' }, filterType: 'unknown', styleName: 'TimelineStyleLight2', style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const timelinePart = 'xl/timelines/timeline1.xml';
     const cachePart = 'xl/timelineCaches/timelineCache1.xml';
-    const invalidLevel = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const invalidLevel = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     invalidLevel.files[timelinePart] = strToU8(strFromU8(invalidLevel.files[timelinePart]!).replace('level="2"', 'level="9"'));
-    assert.throws(() => parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(invalidLevel.files))), /level must be one of/);
-    const invalidBounds = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    assert.throws(() => parseLoadedOoxml(loadOpcPackageGraph(zipOpcPartsBuffer(invalidLevel.files))), /level must be one of/);
+    const invalidBounds = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     invalidBounds.files[cachePart] = strToU8(strFromU8(invalidBounds.files[cachePart]!).replace(/ endDate="[^"]+"/, ''));
-    assert.throws(() => parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(invalidBounds.files))), /bounds requires startDate and endDate/);
+    assert.throws(() => parseLoadedOoxml(loadOpcPackageGraph(zipOpcPartsBuffer(invalidBounds.files))), /bounds requires startDate and endDate/);
     assert.ok(output.files[timelinePart]);
   });
 
@@ -787,11 +807,11 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawings.push({ id: 'typed-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'typed-slicer-payload' });
     sheet.drawingPayloads.set('typed-slicer-payload', { kind: 'slicer', pivotId: 'typed-slicer-pivot', fieldId: 'member', filter: { mode: 'include', memberKeys: [createPivotMemberKey('1')] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' }, settings: { showHeader: true, caption: 'Member', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const cacheXml = strFromU8(output.files['xl/slicerCaches/slicerCache1.xml']!);
     assert.match(cacheXml, /<i x="0"\/>/);
     assert.match(cacheXml, /<i x="1" s="1"\/>/);
-    const imported = parseLoadedXlsx(output).snapshot;
+    const imported = parseLoadedOoxml(output).snapshot;
     const payload = Object.values(imported.sheets[0]?.drawingPayloads ?? {}).find((entry) => entry.kind === 'slicer');
     assert.equal(payload?.kind, 'slicer');
     if (!payload || payload.kind !== 'slicer') throw new Error('Typed Slicer payload is missing');
@@ -821,7 +841,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.drawings.push({ id: 'pivot-chart-drawing', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'pivot-chart-payload' });
     sheet.drawingPayloads.set('pivot-chart-payload', { kind: 'chart', chartId: 'pivot-chart-1', chartType: 'column', subtype: 'clustered', source: { kind: 'pivot', pivotId: 'pivot-chart-1' }, elements: { hiddenData: 'show', title: 'Amounts', legend: { visible: true, position: 'bottom' } } });
 
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const chartParts = Object.keys(output.files).filter((name) => name.startsWith('xl/charts/react-chart-'));
     assert.equal(chartParts.length, 1);
     const chartXml = strFromU8(output.files[chartParts[0]!]!);
@@ -832,7 +852,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /<drawing r:id=/);
     assert.match(strFromU8(output.files['[Content_Types].xml']!), /drawingml\.chart\+xml/);
     assert.ok(scanSnapshotFeatures(workbook.snapshot()).includes('pivot-chart'));
-    const report = await exportXlsx({ snapshot: workbook.snapshot(), fileName: 'pivot-chart.xlsx', options: { compatibilityTarget: 'B' } });
+    const report = await exportOoxmlDocument({ snapshot: workbook.snapshot(), fileName: 'pivot-chart.xlsx', options: { compatibilityTarget: 'B' } });
     assert.equal(report.report.issues.some((issue) => issue.feature === 'pivot-chart' && issue.status === 'editable'), true);
     assert.equal(report.report.issues.some((issue) => issue.feature === 'charts' && issue.status === 'unsupported'), false);
 
@@ -842,7 +862,7 @@ describe('exchange-excel-ooxml', () => {
       if (!payload || payload.kind !== 'chart') throw new Error('PivotChart test fixture is missing its chart payload');
       payload.chartType = type;
       payload.subtype = defaultChartSubtype(type);
-      const typedOutput = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(typed));
+      const typedOutput = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(typed));
       const typedChartPart = Object.keys(typedOutput.files).find((name) => name.startsWith('xl/charts/react-chart-'));
       assert.ok(typedChartPart);
       assert.match(strFromU8(typedOutput.files[typedChartPart!]!), new RegExp(xmlName.replace(/[<>]/g, '')));
@@ -851,7 +871,7 @@ describe('exchange-excel-ooxml', () => {
     const withoutChart = structuredClone(workbook.snapshot());
     withoutChart.sheets[0]!.drawings = [];
     withoutChart.sheets[0]!.drawingPayloads = {};
-    const removed = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutChart, output.packageGraph));
+    const removed = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(withoutChart, output.packageGraph));
     assert.equal(Object.keys(removed.files).some((name) => name.startsWith('xl/charts/react-chart-')), false);
     assert.doesNotMatch(strFromU8(removed.files['xl/worksheets/sheet1.xml']!), /<drawing r:id=/);
   });
@@ -868,8 +888,8 @@ describe('exchange-excel-ooxml', () => {
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
     sheet.drawings.push({ id: 'invalid-pivot-chart', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1, payloadId: 'invalid-pivot-chart' });
-    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'pie', subtype: 'pie', source: { kind: 'pivot', pivotId: 'pivot-invalid-chart' }, elements: { hiddenData: 'show' } });
-    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unsupported native chart type/);
+    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'map', subtype: 'filled-map', source: { kind: 'pivot', pivotId: 'pivot-invalid-chart' }, elements: { hiddenData: 'show' } });
+    assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), /authoritative geography provider/);
   });
 
   it('writes ordinary XY/Bubble charts through the same native chart chain and preserves unknown chart-space nodes', () => {
@@ -882,7 +902,7 @@ describe('exchange-excel-ooxml', () => {
       series: [{ id: 'bubble-series', name: 'Y', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, xRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, sizeRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 3, endColumn: 3 }, chartType: 'bubble' }],
       categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }, elements: { hiddenData: 'show', title: 'Bubble' },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const chartPart = Object.keys(output.files).find((name) => name.startsWith('xl/charts/react-chart-'));
     assert.ok(chartPart);
     const chartXml = strFromU8(output.files[chartPart!]!);
@@ -891,11 +911,11 @@ describe('exchange-excel-ooxml', () => {
     assert.match(chartXml, /<c:yVal>.*\$C\$2:\$C\$4/);
     assert.match(chartXml, /<c:bubbleSize>.*\$D\$2:\$D\$4/);
 
-    const preserved = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const preserved = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const preservedChartPart = Object.keys(preserved.files).find((name) => name.startsWith('xl/charts/react-chart-'));
     assert.ok(preservedChartPart);
     preserved.packageGraph.parts[preservedChartPart!] = strToU8(strFromU8(preserved.packageGraph.parts[preservedChartPart!]!).replace('</c:chartSpace>', '<c:unknownChartNode val="keep"/><c:extLst><c:ext uri="{test}"><c:unknown val="keep"/></c:ext></c:extLst></c:chartSpace>'));
-    const rewritten = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot(), preserved.packageGraph));
+    const rewritten = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), preserved.packageGraph));
     const rewrittenXml = strFromU8(rewritten.files[preservedChartPart!]!);
     assert.match(rewrittenXml, /unknownChartNode/);
     assert.match(rewrittenXml, /uri="\{test\}"/);
@@ -907,12 +927,12 @@ describe('exchange-excel-ooxml', () => {
     [[2, null, -4, 8], [1, 3, 5, 7]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex + 1, columnIndex + 1, { value })));
     sheet.sparklines.push({ id: 'spark-native', sheetId: sheet.id, anchor: { row: 1, column: 5 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 4 }, type: 'line', color: '#2563eb', negativeColor: '#ef4444', showAxis: true, showMarkers: true, lineWeight: 2, dateAxis: true, rightToLeft: true, hiddenCells: 'hide', emptyCells: 'connect', verticalAxis: { mode: 'custom', minimum: -10, maximum: 10 }, axisColor: '#475569', firstColor: '#f59e0b', lastColor: '#8b5cf6', highColor: '#16a34a', lowColor: '#dc2626', markerColor: '#0ea5e9', groupId: 'spark-group' });
     sheet.sparklineGroups.push({ id: 'spark-group', sheetId: sheet.id, type: 'line', sparklineIds: ['spark-native'], showAxis: true, showMarkers: true, lineWeight: 2, dateAxis: true, rightToLeft: true, hiddenCells: 'hide', emptyCells: 'connect', verticalAxis: { mode: 'custom', minimum: -10, maximum: 10 }, axisColor: '#475569', firstColor: '#f59e0b', lastColor: '#8b5cf6', highColor: '#16a34a', lowColor: '#dc2626', negativeColor: '#ef4444', markerColor: '#0ea5e9' });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const sheetXml = strFromU8(output.files['xl/worksheets/sheet1.xml']!);
     assert.match(sheetXml, /sparklineGroup[^>]+lineWeight="2"/);
     assert.match(sheetXml, /displayEmptyCellsAs="span"/);
     assert.match(sheetXml, /manualMin="-10"/);
-    const imported = await importXlsx({ fileName: 'native-sparkline.xlsx', buffer: zipXlsxPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'native-sparkline.xlsx', buffer: zipOpcPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
     const importedSparkline = imported.snapshot.sheets[0]?.sparklines.find((entry) => entry.id === 'spark-native');
     assert.equal(importedSparkline?.emptyCells, 'connect');
     assert.equal(importedSparkline?.rightToLeft, true);
@@ -921,7 +941,7 @@ describe('exchange-excel-ooxml', () => {
 
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
     const workbook = new WorkbookModel('wb-native-pivot', 'Native Pivot');
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const parts = generated.packageGraph.parts;
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace(
       '</sheetData>',
@@ -935,13 +955,13 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
     parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" showDataAs="difference" baseField="0" baseItem="0" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
-    const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.field, 1);
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.numberFormat, '0.00');
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.baseField, 0);
-    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.baseItem, 0);
+    const imported = await importOoxmlDocument({ fileName: 'native-pivot.xlsx', buffer: zipOpcPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.source.kind : undefined, 'worksheet-range');
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.fields[1]?.name : undefined, 'Amount');
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.tables[0]?.dataFields[0]?.field : undefined, 1);
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.tables[0]?.dataFields[0]?.numberFormat : undefined, '0.00');
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.tables[0]?.dataFields[0]?.baseField : undefined, 0);
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.tables[0]?.dataFields[0]?.baseItem : undefined, 0);
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
@@ -962,7 +982,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.showRowGrandTotals, false);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.showColumnGrandTotals, true);
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
-    const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
+    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadOpcPackageGraph(exported.buffer);
     assert.ok(output.packageGraph.nativePivotGraph?.tables.length === 1);
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /pivotCaches/);
@@ -985,7 +1005,7 @@ describe('exchange-excel-ooxml', () => {
     const editedPivot = editedSnapshot.sheets[0]?.pivots[0];
     if (!editedPivot) throw new Error('Imported Pivot fixture is missing');
     editedPivot.refreshPolicy = { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true };
-    const edited = await exportXlsx({ snapshot: editedSnapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot-edited.xlsx', options: { compatibilityTarget: 'B' } });
+    const edited = await exportOoxmlDocument({ snapshot: editedSnapshot, artifact: imported.artifact, fileName: 'native-pivot-edited.xlsx', options: { compatibilityTarget: 'B' } });
     const editedOutput = loadOpcPackageGraph(edited.buffer);
     const editedCacheXml = strFromU8(editedOutput.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
     assert.match(editedCacheXml, /refreshOnLoad="1"/);
@@ -997,7 +1017,7 @@ describe('exchange-excel-ooxml', () => {
       '<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
       '<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="1" refreshOnSave="0" saveData="0" enableRefresh="0"',
     ));
-    const flaggedImported = await importXlsx({ fileName: 'native-pivot-flags.xlsx', buffer: zipXlsxPartsBuffer(flaggedParts), options: { compatibilityTarget: 'B' } });
+    const flaggedImported = await importOoxmlDocument({ fileName: 'native-pivot-flags.xlsx', buffer: zipOpcPartsBuffer(flaggedParts), options: { compatibilityTarget: 'B' } });
     const flaggedPivot = flaggedImported.snapshot.sheets[0]?.pivots[0];
     assert.equal(flaggedPivot?.refreshPolicy.mode, 'on-open');
     assert.deepEqual(flaggedPivot?.nativeMetadata?.cacheFlags, { refreshOnLoad: true, refreshOnSave: false, saveData: false, enableRefresh: false });
@@ -1005,7 +1025,7 @@ describe('exchange-excel-ooxml', () => {
     const flaggedEditedPivot = flaggedEdited.sheets[0]?.pivots[0];
     if (!flaggedEditedPivot) throw new Error('Flagged imported Pivot fixture is missing');
     flaggedEditedPivot.refreshPolicy = { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true };
-    const flaggedExport = await exportXlsx({ snapshot: flaggedEdited, nativePackage: flaggedImported.nativePackage, fileName: 'native-pivot-flags-edited.xlsx', options: { compatibilityTarget: 'B' } });
+    const flaggedExport = await exportOoxmlDocument({ snapshot: flaggedEdited, artifact: flaggedImported.artifact, fileName: 'native-pivot-flags-edited.xlsx', options: { compatibilityTarget: 'B' } });
     const flaggedOutput = loadOpcPackageGraph(flaggedExport.buffer);
     const flaggedCacheXml = strFromU8(flaggedOutput.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
     assert.match(flaggedCacheXml, /refreshOnSave="1"/);
@@ -1014,10 +1034,10 @@ describe('exchange-excel-ooxml', () => {
 
     const malformedParts = structuredClone(parts);
     malformedParts['xl/pivotTables/pivotTable1.xml'] = strToU8(strFromU8(malformedParts['xl/pivotTables/pivotTable1.xml']!).replace('<filter fld="0" type="captionEqual"', '<filter type="captionEqual"'));
-    await assert.rejects(importXlsx({ fileName: 'native-pivot-malformed-filter.xlsx', buffer: zipXlsxPartsBuffer(malformedParts), options: { compatibilityTarget: 'B' } }), /pivotFilters\.filter\[0\]\.fld/);
+    await assert.rejects(importOoxmlDocument({ fileName: 'native-pivot-malformed-filter.xlsx', buffer: zipOpcPartsBuffer(malformedParts), options: { compatibilityTarget: 'B' } }), /pivotFilters\.filter\[0\]\.fld/);
     const missingBaseFieldParts = structuredClone(parts);
     missingBaseFieldParts['xl/pivotTables/pivotTable1.xml'] = strToU8(strFromU8(missingBaseFieldParts['xl/pivotTables/pivotTable1.xml']!).replace(' baseField="0"', ''));
-    await assert.rejects(importXlsx({ fileName: 'native-pivot-missing-base-field.xlsx', buffer: zipXlsxPartsBuffer(missingBaseFieldParts), options: { compatibilityTarget: 'B' } }), /missing baseField/);
+    await assert.rejects(importOoxmlDocument({ fileName: 'native-pivot-missing-base-field.xlsx', buffer: zipOpcPartsBuffer(missingBaseFieldParts), options: { compatibilityTarget: 'B' } }), /missing baseField/);
   });
 
   it('round-trips native Difference/%Difference/Running Total operands and Previous/Next sentinels', () => {
@@ -1051,7 +1071,7 @@ describe('exchange-excel-ooxml', () => {
 
     const snapshot = workbook.snapshot();
     snapshot.sheets[0]!.pivots.push(percentDifference);
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(snapshot));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot));
     const xml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(xml, /<dataField[^>]*showDataAs="percentDiff"[^>]*baseField="0"[^>]*baseItem="1048829"/);
 
@@ -1073,7 +1093,7 @@ describe('exchange-excel-ooxml', () => {
       layout: { rows: [{ fieldId: 'month' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: 'value:amount', fieldId: 'amount', summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: 'month', baseItem: createPivotMemberKey('Jan') } }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
-    const reorderedOutput = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(reordered.snapshot()));
+    const reorderedOutput = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(reordered.snapshot()));
     assert.match(strFromU8(reorderedOutput.files['xl/pivotTables/pivotTable1.xml']!), /<dataField[^>]*fld="0"[^>]*showDataAs="difference"[^>]*baseField="1"[^>]*baseItem="0"/);
   });
 
@@ -1144,7 +1164,7 @@ describe('exchange-excel-ooxml', () => {
       { schema: 'PivotDefinition', id: 'shared-manual', source, target: { sheetId: sheet.id, anchor: { row: 4, column: 0 } }, fieldCatalog: fields, layout, refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false } },
       { schema: 'PivotDefinition', id: 'shared-open', source, target: { sheetId: sheet.id, anchor: { row: 10, column: 0 } }, fieldCatalog: fields, layout, refreshPolicy: { mode: 'on-open', preserveFormatting: true, refreshOnLoad: true } },
     );
-    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /conflicting refresh policies/);
+    assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), /conflicting refresh policies/);
   });
 
   it('writes canonical value sorting and value filters with stable data-field identity', () => {
@@ -1166,7 +1186,7 @@ describe('exchange-excel-ooxml', () => {
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
-    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const xml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(xml, /sortType="ascending"/);
     assert.match(xml, /<autoSortScope><pivotArea[^>]*dataOnly="1"[^>]*fieldPosition="0"/);
@@ -1175,7 +1195,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(xml, /type="valueTop10"[^>]*iMeasureFld="0"[^>]*val="25"[^>]*mode="sum"/);
     const pivot = sheet.pivots[0]!;
     pivot.layout.filters = pivot.layout.filters.map((filter) => filter.kind === 'top-items' ? { ...filter, mode: 'percent', threshold: 50 } : filter);
-    const percentXml = strFromU8(loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot())).files['xl/pivotTables/pivotTable1.xml']!);
+    const percentXml = strFromU8(loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot())).files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(percentXml, /type="valueTop10"[^>]*val="50"[^>]*mode="percent"/);
     assert.match(percentXml, /type="valueTop10"[^>]*percent="1"/);
   });
@@ -1200,12 +1220,12 @@ describe('exchange-excel-ooxml', () => {
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
-    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
     const graph = loadOpcPackageGraph(buffer);
     const tableXml = strFromU8(graph.files['xl/pivotTables/pivotTable1.xml']!);
     assert.match(tableXml, /<dataFields count="2">/);
     assert.equal((tableXml.match(/<dataField /g) ?? []).length, 2);
-    const imported = await importXlsx({ fileName: 'repeated-values.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'repeated-values.xlsx', buffer, options: { compatibilityTarget: 'B' } });
     const values = imported.snapshot.sheets[0]?.pivots[0]?.layout.values ?? [];
     assert.equal(values.length, 2);
     assert.equal(new Set(values.map((value) => value.valueId)).size, 2);
@@ -1229,8 +1249,8 @@ describe('exchange-excel-ooxml', () => {
     workbook.setCellStyleTemplate({ id: 'input-style', name: 'Input Style', style: { background: '#e3f1ff', indent: 2, numberFormat: '#,##0.00' } });
     workbook.setDefinedName({ name: 'LocalValue', formula: `=${sheet.name}!$A$1`, scope: 'sheet', sheetId: sheet.id });
     const original = workbook.snapshot();
-    const buffer = exportSnapshotToXlsxBuffer(original, undefined, { dateSystem: '1904' });
-    const imported = await importXlsx({ fileName: 'rich.xlsx', buffer, options: { compatibilityTarget: 'A' } });
+    const buffer = exportSnapshotToOoxmlBuffer(original, undefined, { dateSystem: '1904' });
+    const imported = await importOoxmlDocument({ fileName: 'rich.xlsx', buffer, options: { compatibilityTarget: 'A' } });
     const restored = imported.snapshot.sheets[0]!;
     assert.equal(imported.report.dateSystem, '1904');
     assert.equal(restored.merges.length, 1);
@@ -1248,9 +1268,9 @@ describe('exchange-excel-ooxml', () => {
     sheet.cells.set(0, 0, { value: '260' });
     sheet.cells.set(0, 1, { value: 260 });
     sheet.cells.set(0, 2, { value: 45292, numberFormat: 'm/d/yy' });
-    const imported = await importXlsx({
+    const imported = await importOoxmlDocument({
       fileName: 'cell-types.xlsx',
-      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
       options: { compatibilityTarget: 'A' },
     });
     const cells = imported.snapshot.sheets[0]!.cells['0']!;
@@ -1266,7 +1286,7 @@ describe('exchange-excel-ooxml', () => {
   it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     generated.packageGraph.parts['xl/charts/chart1.xml'] = strToU8('<chartSpace xmlns="http://schemas.openxmlformats.org/drawingml/2006/chart"><title>Keep</title></chartSpace>');
     generated.packageGraph.parts['xl/drawings/drawing1.xml'] = strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>');
     generated.packageGraph.parts['customXml/item1.bin'] = Uint8Array.from([0, 1, 2, 255]);
@@ -1279,8 +1299,8 @@ describe('exchange-excel-ooxml', () => {
     generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<drawing r:id="rIdChart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>'));
     // Rebuild through the public package writer so this test exercises the
     // same ZIP limits and relationship reader used by production imports.
-    const imported = await importXlsx({ fileName: 'opaque.xlsx', buffer: zipXlsxPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
-    const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'opaque.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
+    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
     const restored = loadOpcPackageGraph(exported.buffer);
     assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
     assert.equal(strFromU8(restored.files['xl/charts/chart1.xml']!).includes('Keep'), true);
@@ -1291,7 +1311,7 @@ describe('exchange-excel-ooxml', () => {
 
   it('rejects oversized and unsafe ZIP entries before inflation', () => {
     const workbook = new WorkbookModel('wb-limit', 'Limit');
-    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
     assert.throws(() => loadOpcPackageGraph(buffer, { maxArchiveBytes: 10 }), /archive exceeds/);
     assert.throws(() => loadOpcPackageGraph(buffer, { maxEntries: 1 }), /too many entries/);
     assert.throws(() => loadOpcPackageGraph(buffer, { maxCompressionRatio: 1 }), /compression ratio/);
@@ -1299,10 +1319,10 @@ describe('exchange-excel-ooxml', () => {
 
   it('imports native OOXML geometry, shared formulas, split panes and worksheet capabilities', async () => {
     const workbook = new WorkbookModel('wb-native-geometry', 'Native Geometry');
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     generated.packageGraph.parts['xl/styles.xml'] = strToU8('<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="18"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
     generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8('<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B2"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="2000" ySplit="3000" topLeftCell="B2" activePane="bottomRight" state="split"/></sheetView></sheetViews><sheetFormatPr defaultColWidth="8.7109375" defaultRowHeight="15"/><cols><col min="1" max="1" width="9.625" customWidth="1"/></cols><sheetData><row r="1" ht="15" customHeight="1"><c r="A1"><v>2</v></c><c r="B1" s="1"><f t="shared" si="0" ref="B1:B2">A1*2</f><v>4</v></c></row><row r="2"><c r="A2"><v>3</v></c><c r="B2"><f t="shared" si="0"/><v>6</v></c></row></sheetData><autoFilter ref="A1:B2"/><conditionalFormatting sqref="A1:A2"><cfRule type="cellIs" operator="greaterThan" priority="1"><formula>1</formula></cfRule></conditionalFormatting><dataValidations count="1"><dataValidation type="whole" operator="greaterThan" sqref="A1:A2"><formula1>0</formula1></dataValidation></dataValidations></worksheet>');
-    const imported = await importXlsx({ fileName: 'CAN配置.xlsx', buffer: zipXlsxPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' } });
+    const imported = await importOoxmlDocument({ fileName: 'CAN配置.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' } });
     const sheet = imported.snapshot.sheets[0]!;
     assert.equal(imported.snapshot.name, 'CAN配置');
     assert.ok((sheet.columnWidthsPx?.[0] ?? 0) >= 67);
@@ -1318,9 +1338,9 @@ describe('exchange-excel-ooxml', () => {
 
   it('normalizes Excel and WPS formula namespaces only for runtime and restores their source spelling on export', async () => {
     const workbook = new WorkbookModel('wb-formula-namespace', 'Formula namespace');
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8('<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetFormatPr defaultRowHeight="15"/><sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>_xlfn.SUM(A1:A1)</f><v>1</v></c><c r="C1"><f>_xlfn._xlws.FILTER(A1:A1,A1:A1&gt;0)</f><v>1</v></c><c r="D1"><f>_xlfn.SINGLE(A1)</f><v>1</v></c></row></sheetData></worksheet>');
-    const imported = await importXlsx({ fileName: 'formula-namespace.xlsx', buffer: zipXlsxPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'formula-namespace.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B' } });
     const sheet = imported.snapshot.sheets[0]!;
     assert.equal(sheet.cells['0']?.['1']?.formula, '=SUM(A1:A1)');
     assert.equal(sheet.cells['0']?.['1']?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
@@ -1329,7 +1349,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(sheet.cells['0']?.['3']?.formula, '=@(A1)');
     assert.equal(sheet.cells['0']?.['3']?.formulaMetadata?.sourceFormula, '=_xlfn.SINGLE(A1)');
 
-    const exported = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(imported.snapshot));
+    const exported = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(imported.snapshot));
     const worksheet = strFromU8(exported.files['xl/worksheets/sheet1.xml']!);
     assert.match(worksheet, /_xlfn\.SUM\(A1:A1\)/);
     assert.match(worksheet, /_xlfn\._xlws\.FILTER\(A1:A1,A1:A1&gt;0\)/);
@@ -1338,28 +1358,28 @@ describe('exchange-excel-ooxml', () => {
 
   it('accepts supported dynamic AutoFilters and rejects unknown OOXML types', () => {
     const workbook = new WorkbookModel('wb-dynamic-filter', 'Dynamic Filter');
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const worksheet = strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!);
-    const withType = (type: string): ArrayBuffer => zipXlsxPartsBuffer({
+    const withType = (type: string): ArrayBuffer => zipOpcPartsBuffer({
       ...generated.packageGraph.parts,
       'xl/worksheets/sheet1.xml': strToU8(worksheet.replace('</worksheet>', `<autoFilter ref="A1:A2"><filterColumn colId="0"><dynamicFilter type="${type}"/></filterColumn></autoFilter></worksheet>`)),
     } as Record<string, Uint8Array>);
 
-    const supported = parseLoadedXlsx(loadOpcPackageGraph(withType('today')), { canonicalReferenceDate: { year: 2026, month: 8, day: 26, hour: 12, minute: 0, second: 0, millisecond: 0 } }).snapshot;
+    const supported = parseLoadedOoxml(loadOpcPackageGraph(withType('today')), { canonicalReferenceDate: { year: 2026, month: 8, day: 26, hour: 12, minute: 0, second: 0, millisecond: 0 } }).snapshot;
     assert.deepEqual(supported.sheets[0]?.autoFilter?.columns[0]?.criterion, { kind: 'dynamic', type: 'today' });
     assert.throws(
-      () => parseLoadedXlsx(loadOpcPackageGraph(withType('attackerUnknown'))),
+      () => parseLoadedOoxml(loadOpcPackageGraph(withType('attackerUnknown'))),
       /UNSUPPORTED_FEATURE: dynamic AutoFilter type "attackerUnknown" is not supported/,
     );
   });
 
   it('round-trips typed date-group criteria and preserves unsupported date-group nodes', () => {
     const workbook = new WorkbookModel('wb-date-group-filter', 'Date Group Filter');
-    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const worksheet = strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!);
     const autoFilter = '<autoFilter ref="A1:A2"><filterColumn colId="0"><filters blank="1"><filter val="literal"/><dateGroupItem dateTimeGrouping="year" year="2026"/><dateGroupItem dateTimeGrouping="month" year="2026" month="8"/><dateGroupItem dateTimeGrouping="day" year="2026" month="8" day="15"/><dateGroupItem dateTimeGrouping="hour" year="2026" month="8" day="15" hour="13"/><dateGroupItem dateTimeGrouping="minute" year="2026" month="8" day="15" hour="13" minute="14"/><dateGroupItem dateTimeGrouping="second" year="2026" month="8" day="15" hour="13" minute="14" second="15"/><dateGroupItem dateTimeGrouping="quarter" year="2026" quarter="3"/><dateGroupItem dateTimeGrouping="year" year="2026" month="8"/></filters></filterColumn></autoFilter>';
     const parts = { ...generated.packageGraph.parts, 'xl/worksheets/sheet1.xml': strToU8(worksheet.replace('</worksheet>', `${autoFilter}</worksheet>`)) };
-    const imported = parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(parts))).snapshot;
+    const imported = parseLoadedOoxml(loadOpcPackageGraph(zipOpcPartsBuffer(parts))).snapshot;
     const column = imported.sheets[0]?.autoFilter?.columns[0];
     assert.deepEqual(column?.criterion, {
       kind: 'values',
@@ -1374,7 +1394,7 @@ describe('exchange-excel-ooxml', () => {
         { year: 2026, month: 8, day: 15, hour: 13, minute: 14, second: 15 },
       ],
     });
-    const exported = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(imported));
+    const exported = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(imported));
     const exportedWorksheet = strFromU8(exported.files['xl/worksheets/sheet1.xml']!);
     assert.match(exportedWorksheet, /dateTimeGrouping="quarter" year="2026" quarter="3"/);
     assert.match(exportedWorksheet, /dateTimeGrouping="year" year="2026" month="8"/);
@@ -1388,12 +1408,12 @@ describe('exchange-excel-ooxml', () => {
       'custom/_rels/book.xml.rels': strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSheet" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet" Target="worksheets/main.xml"/></Relationships>'),
       'custom/worksheets/main.xml': strToU8('<?xml version="1.0"?><worksheet xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"><sheetFormatPr defaultRowHeight="15" defaultColWidth="8.7109375"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ok</t></is></c></row></sheetData></worksheet>'),
     };
-    const imported = await importXlsx({ fileName: 'strict.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
-    assert.equal(imported.nativePackage.format.family, 'ooxml');
-    assert.equal(imported.nativePackage.format.profile, 'strict');
-    assert.equal(imported.nativePackage.packageGraph.workbookPart, 'custom/book.xml');
+    const imported = await importOoxmlDocument({ fileName: 'strict.xlsx', buffer: zipOpcPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
+    assert.equal(imported.artifact.format.family, 'ooxml');
+    assert.equal(imported.artifact.format.profile, 'strict');
+    assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.workbookPart : undefined, 'custom/book.xml');
     assert.equal(imported.snapshot.sheets[0]?.cells['0']?.['0']?.value, 'ok');
-    const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'strict.xlsx', options: { compatibilityTarget: 'B' } });
+    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'strict.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadOpcPackageGraph(exported.buffer, {}, 'strict.xlsx');
     assert.equal(output.packageGraph.workbookPart, 'custom/book.xml');
     assert.equal(output.packageGraph.profile, 'strict');
@@ -1408,7 +1428,7 @@ describe('exchange-excel-ooxml', () => {
       { text: '2', style: { verticalAlignment: 'subscript' } },
       { text: 'O', style: { italic: true } },
     ] });
-    const imported = await importXlsx({ fileName: 'rich-text.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'rich-text.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     const richText = imported.snapshot.sheets[0]?.cells['0']?.['0']?.richText;
     assert.equal(richText?.map((run) => run.text).join(''), 'H2O');
     assert.equal(richText?.[1]?.style?.verticalAlignment, 'subscript');
@@ -1418,7 +1438,7 @@ describe('exchange-excel-ooxml', () => {
   it('round-trips the canonical workbook editing options through owned OOXML metadata', async () => {
     const workbook = new WorkbookModel('editing-options', 'Editing Options');
     workbook.setEditingOptions({ allowEditDirectly: false, moveAfterEnter: true, enterDirection: 'right', formulaAutoComplete: false, valueAutoComplete: true, fixedDecimalPlaces: 3 });
-    const imported = await importXlsx({ fileName: 'editing-options.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'editing-options.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     assert.deepEqual(imported.snapshot.editingOptions, workbook.editingOptions);
   });
 
@@ -1426,7 +1446,7 @@ describe('exchange-excel-ooxml', () => {
     const workbook = new WorkbookModel('phonetic-roundtrip', 'Phonetic Roundtrip');
     const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, { value: '東京', phonetic: { visible: true, type: 'hiragana', alignment: 'center', fontFamily: 'Microsoft YaHei', fontSizePx: 8, runs: [{ text: 'とうきょう', start: 0, end: 2 }] } });
-    const imported = await importXlsx({ fileName: 'phonetic.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const imported = await importOoxmlDocument({ fileName: 'phonetic.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     const cell = imported.snapshot.sheets[0]?.cells['0']?.['0'];
     assert.equal(cell?.value, '東京');
     assert.deepEqual(cell?.phonetic?.runs, [{ text: 'とうきょう', start: 0, end: 2 }]);

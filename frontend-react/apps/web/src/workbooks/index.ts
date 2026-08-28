@@ -15,6 +15,7 @@ export { WorkbookTopBar } from './WorkbookTopBar';
 export { CreateWorkbookDialog } from './dialogs/CreateWorkbookDialog';
 export { DeleteWorkbookDialog } from './dialogs/DeleteWorkbookDialog';
 export { ImportWorkbookDialog } from './dialogs/ImportWorkbookDialog';
+export { SaveAsDocumentDialog } from './dialogs/SaveAsDocumentDialog';
 export { RenameWorkbookDialog } from './dialogs/RenameWorkbookDialog';
 export { ShareWorkbookDialog } from './dialogs/ShareWorkbookDialog';
 export { WorkbookInfoDialog } from './dialogs/WorkbookInfoDialog';
@@ -42,6 +43,7 @@ export type { WorkbookFilterDialogProps, WorkbookFilterValues } from './Workbook
 export type { CreateWorkbookDialogProps, CreateWorkbookDialogValue } from './dialogs/CreateWorkbookDialog';
 export type { DeleteWorkbookDialogProps } from './dialogs/DeleteWorkbookDialog';
 export type { ImportWorkbookDialogProps, ImportWorkbookDialogValue } from './dialogs/ImportWorkbookDialog';
+export type { SaveAsDocumentDialogProps } from './dialogs/SaveAsDocumentDialog';
 export type { RenameWorkbookDialogProps } from './dialogs/RenameWorkbookDialog';
 export type { ShareWorkbookDialogProps, ShareWorkbookDialogValue } from './dialogs/ShareWorkbookDialog';
 export type { WorkbookInfoDialogProps } from './dialogs/WorkbookInfoDialog';

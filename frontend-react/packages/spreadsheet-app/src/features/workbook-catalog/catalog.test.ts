@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { exchangeExportXlsx } from '../xlsx';
+import { exchangeExportDocument } from '../native-document';
 import { WorkspaceMemoryCoordinator, WorkspacePersistence } from '../persistence';
 import { LocalDataBlockStore } from '../persistence';
 import { computeBinaryChecksum } from '../persistence/checksum';
@@ -84,7 +84,7 @@ describe('WorkbookCatalogService', () => {
     const original = await catalog.create({ snapshot: createTemplateSnapshot('template', 'original') });
     const source = new WorkbookModel('source-xlsx', 'Source XLSX');
     source.getSheet(source.primarySheetId).cells.set(0, 0, { value: 'preserve' });
-    const generated = await exchangeExportXlsx(source.snapshot(), { fileName: 'source.xlsx', execution: 'inline-test' });
+    const generated = await exchangeExportDocument(source.snapshot(), { fileName: 'source.xlsx', execution: 'inline-test' });
     assert.ok(generated.buffer);
 
   const imported = await catalog.importWorkbook({ fileName: 'source.xlsx', buffer: generated.buffer!, execution: 'inline-test' });

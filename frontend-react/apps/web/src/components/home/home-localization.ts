@@ -7,9 +7,16 @@ export type HomeUiTextKey = keyof typeof enUS.homeUi;
 export const HOME_NUMBER_FORMAT_OPTIONS = [
   { value: 'general', labelKey: 'numberPresetGeneral' },
   { value: '$#,##0', labelKey: 'numberPresetCurrency' },
+  { value: '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)', labelKey: 'numberPresetAccounting' },
   { value: '0%', labelKey: 'numberPresetPercent' },
   { value: '#,##0', labelKey: 'numberPresetComma' },
   { value: '0.00', labelKey: 'numberPresetNumber' },
+  { value: 'mm/dd/yyyy', labelKey: 'numberPresetShortDate' },
+  { value: 'dddd, mmmm dd, yyyy', labelKey: 'numberPresetLongDate' },
+  { value: 'h:mm:ss AM/PM', labelKey: 'numberPresetTime' },
+  { value: '# ?/?', labelKey: 'numberPresetFraction' },
+  { value: '0.00E+00', labelKey: 'numberPresetScientific' },
+  { value: '@', labelKey: 'numberPresetText' },
 ] as const satisfies readonly { value: string; labelKey: HomeUiTextKey }[];
 
 export const HOME_CELLS_ACTIONS = [

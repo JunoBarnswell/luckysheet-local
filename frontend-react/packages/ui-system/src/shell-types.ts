@@ -15,10 +15,9 @@ export const DESIGNER_GEOMETRY = {
 } as const;
 
 /**
- * The compact Designer Ribbon is a product contract, not a per-tab styling
- * preference.  Hosts and tab renderers consume these values through the
- * shared geometry above; the named values make the control-height rules
- * explicit for visual tests and future surfaces.
+ * The Designer Ribbon geometry is a fixed product contract. Hosts and tab
+ * renderers consume these values through the shared geometry above; viewport
+ * width changes only the scroll position, never the command density.
  */
 export const RIBBON_DENSITY = {
   shellHeight: 167,

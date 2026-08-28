@@ -346,9 +346,10 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'number-format':
-        return <Select aria-label={label} data-ribbon-surface={surfaceId} className="!h-6 !w-[120px] !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
+        return <Select aria-label={label} data-ribbon-surface={surfaceId} className="!h-6 !w-[120px] !rounded-[var(--home-ribbon-radius)] !border-[var(--home-ribbon-color-border)] !px-1.5 text-[11px] leading-[13px]" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value === '__more__') { context.dispatchSessionIntent({ type: 'dialog.open', dialog: 'format-cells', formatCellsTab: 'number' }); return; } if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
           {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
           {HOME_NUMBER_FORMAT_OPTIONS.map(({ value, labelKey }) => <option key={value} value={value}>{homeText(locale, labelKey)}</option>)}
+          <option value="__more__">{homeText(locale, 'numberPresetMore')}</option>
         </Select>;
       case 'alignment-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('align-left')}>

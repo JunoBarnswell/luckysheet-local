@@ -1,4 +1,4 @@
-import { assertAssetRef, type AssetRef } from '@react-sheets/core-model';
+import { assertAssetRef, isSupportedAssetMime, type AssetRef } from '@react-sheets/core-model';
 import { WorkbookApiClient } from '@react-sheets/protocol';
 import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
 
@@ -66,7 +66,7 @@ export class LocalAssetStore implements AssetStore {
   async put(input: AssetPutInput): Promise<AssetRef> {
     if (!input.content || input.content.size <= 0) throw new Error('ASSET_EMPTY: image content is empty');
     const mimeType = input.mimeType ?? input.content.type;
-    if (!mimeType.startsWith('image/')) throw new Error(`ASSET_MIME_UNSUPPORTED: ${mimeType}`);
+    if (!isSupportedAssetMime(mimeType)) throw new Error(`ASSET_MIME_UNSUPPORTED: ${mimeType}`);
     const contentHash = await sha256(input.content);
     const ref = refFromContent(input.content, contentHash, { ...input, mimeType });
     const bytes = await input.content.arrayBuffer();
@@ -117,7 +117,7 @@ export class RemoteAssetStore implements AssetStore {
   async put(input: AssetPutInput): Promise<AssetRef> {
     if (!input.content || input.content.size <= 0) throw new Error('ASSET_EMPTY: image content is empty');
     const mimeType = input.mimeType ?? input.content.type;
-    if (!mimeType.startsWith('image/')) throw new Error(`ASSET_MIME_UNSUPPORTED: ${mimeType}`);
+    if (!isSupportedAssetMime(mimeType)) throw new Error(`ASSET_MIME_UNSUPPORTED: ${mimeType}`);
     const contentHash = await sha256(input.content);
     const ref = refFromContent(input.content, contentHash, { ...input, mimeType });
     const metadata = await this.api.putAsset(this.unitId, ref, await input.content.arrayBuffer());

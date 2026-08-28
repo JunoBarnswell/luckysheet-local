@@ -1,26 +1,26 @@
 import { parseDateSystem } from './date-system';
 import { createCompatibilityReport, refreshCompatibilitySummary } from './compatibility-report';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
-import { detectPackageFeatures, loadOpcPackageGraph, parseLoadedXlsx } from './ooxml';
+import { detectPackageFeatures, loadOpcPackageGraph, parseLoadedOoxml } from './ooxml';
 import { nativePivotFeatureStatus } from './native-pivot';
-import { createNativePackageState } from './native-package-state';
-import type { XlsxImportOptions, XlsxImportResult } from './types';
+import { createNativeDocumentArtifact } from './native-document-artifact';
+import type { NativeDocumentImportOptions, NativeDocumentImportResult } from './types';
 import { sanitizeImportedWorkbookName } from './ooxml-metrics';
 import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
 
-export interface XlsxImportRequest {
+export interface NativeDocumentImportRequest {
   fileName: string;
   buffer: ArrayBuffer | Uint8Array;
-  options: XlsxImportOptions;
+  options: NativeDocumentImportOptions;
 }
 
-/** 解析 XLSX 并生成 Compatibility Report */
-export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImportResult> {
+/** Parse an OOXML document and generate its Compatibility Report. */
+export async function importOoxmlDocument(request: NativeDocumentImportRequest): Promise<NativeDocumentImportResult> {
   const bytes = request.buffer instanceof Uint8Array ? request.buffer.slice() : new Uint8Array(request.buffer);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const loaded = loadOpcPackageGraph(buffer, request.options.limits, request.fileName);
   const importedName = sanitizeImportedWorkbookName(request.fileName);
-  const parsed = parseLoadedXlsx(loaded, { workbookName: importedName });
+  const parsed = parseLoadedOoxml(loaded, { workbookName: importedName });
   const snapshot = parsed.snapshot;
   snapshot.name = importedName;
   const dateSystem = request.options.dateSystem ?? parsed.packageGraph.dateSystem ?? parseDateSystem('');
@@ -66,14 +66,15 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
   const completedReport = refreshCompatibilitySummary({ ...report, issues: [...report.issues, ...scanFormulaPreserveIssues(snapshot)] });
   if (mode === 'strict') {
     const unsafe = completedReport.issues.filter((issue) => issue.status === 'unsupported');
-    if (unsafe.length) throw new Error(`Strict XLSX import rejected unsafe capabilities: ${unsafe.map((issue) => `${issue.feature}${issue.location ? ` at ${issue.location}` : ''}`).join(', ')}`);
+    if (unsafe.length) throw new Error(`Strict native document import rejected unsafe capabilities: ${unsafe.map((issue) => `${issue.feature}${issue.location ? ` at ${issue.location}` : ''}`).join(', ')}`);
   }
-  const nativePackage = await createNativePackageState({
+  const artifact = await createNativeDocumentArtifact({
     fileName: request.fileName,
     buffer,
     dateSystem,
-    packageGraph: parsed.packageGraph,
+    nativeGraph: { kind: 'opc', package: parsed.packageGraph },
     format: parsed.packageGraph.format,
+    snapshot,
     detectedFeatures,
     compatibility: completedReport,
   });
@@ -87,7 +88,7 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
     },
     report: completedReport,
     snapshot,
-    nativePackage,
+    artifact,
     taskId: `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   };
 }

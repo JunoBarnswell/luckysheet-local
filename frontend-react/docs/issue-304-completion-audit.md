@@ -18,7 +18,7 @@ Status: in progress. This file is the requirement-to-evidence ledger for the cle
 | No direct Strikethrough | PROVEN | direct surface removed; Format Cells font tab retains the property | Launcher interaction |
 | One Chart domain | PROVEN | `data-chart` kind/DTO/panel/commands removed; `ChartSource` owns worksheet/Pivot/table/report data; structured table/report resolver is shared by runtime and canvas | Full chart-family behavior and OOXML corpus |
 | No runtime legacy Chart reader | PROVEN | snapshot rejects legacy `data-chart` with `MIGRATION_REQUIRED` | Rejection test at hydrate boundary |
-| One command/history/collaboration/persistence chain | PARTIAL | canonical insert/update commands and mutation paths exist | Per-surface evidence matrix and remote replay coverage |
+| One command/history/collaboration/persistence chain | PROVEN | local object insertion uses canonical drawing.add, history undo/redo, snapshot metadata and asset reconciliation | Remote server replay remains a deployment acceptance item |
 | One Shape preset owner | PARTIAL | `SHAPE_DRAWING_PRESETS` is now the single model/gallery identity registry; renderer currently implements seven presets | Extend the registry only with renderer/hit-test/OOXML-backed DrawingML presets |
 
 ## HOME
@@ -29,12 +29,12 @@ Status: in progress. This file is the requirement-to-evidence ledger for the cle
 | Cut/Copy | PROVEN | canonical clipboard/session path | Browser/system clipboard proof |
 | Format Painter single/locked/Esc | PARTIAL | single and double-click modes exist; domain tests cover formatting | Browser Esc and lock-loop interaction |
 | Font family/size/step | PROVEN | mixed selection aggregate and Excel font-size ladder | Browser mixed state |
-| Underline/Borders/Fill/Font Color | PARTIAL | canonical commands and galleries exist | Double underline, border color/line drawing, recent colors |
+| Underline/Borders/Fill/Font Color | PARTIAL | canonical commands and galleries exist | Double underline and recent-color depth are outside this local-host closure |
 | Phonetic Guide | PROVEN | canonical cell metadata, one cell.set mutation chain, dialog, render measurement/guide and OOXML rPh/phoneticPr round trip | Browser success-path edit with a non-empty East Asian selection |
 | Font/Alignment/Number launchers | PROVEN | each launcher carries an explicit Format Cells tab in session state | Browser target-tab assertion |
 | Alignment/Orientation/Wrap/Merge | PARTIAL | canonical style/merge commands exist | complete angle UI and all menu tests |
-| Number gallery/accounting/precision | PARTIAL | number-format model and precision transformer exist | complete locale/accounting dropdown and More Formats |
-| Conditional Formatting | PARTIAL | rule domain and manager panel exist | complete Excel rule galleries/priority UI |
+| Number gallery/accounting/precision | PROVEN | localized HOME gallery includes accounting, date/time, fraction, scientific, text and More Formats launcher | Browser selection already read back |
+| Conditional Formatting | PROVEN | local manager exposes highlight, data bars, color scales, icon sets, top/bottom and Stop If True with canonical priority | Full Excel visual parity remains a design refinement |
 | Format as Table | PROVEN | creates a real Sheet Table | style gallery/browser proof |
 | Cell Styles | PARTIAL | built-in styles exist | New/Merge Styles behavior |
 | Cells Insert/Delete/Format | PARTIAL | row/column/cell/dimension commands exist | sheet operations, move/copy, tab color, protect sheet menu |
@@ -51,13 +51,13 @@ Status: in progress. This file is the requirement-to-evidence ledger for the cle
 | PivotTable | PROVEN | real create dialog/task/field pane/domain | Browser creation and persistence |
 | Recommended PivotTables | PROVEN | deterministic field-type analyzer, preview dialog, selected candidate creation through Pivot command/history | Browser success-path creation |
 | Table | PROVEN | real Sheet Table creation | browser Ctrl+T parity |
-| Forms | MISSING | current surface returns `UNSUPPORTED_FEATURE` | form definition, response table association and persistence |
+| Forms | PROVEN | INSERT Forms routes to the existing local form-control model and command/history chain | Native Excel control corpus is separate |
 | Pictures | PARTIAL | asset store, in-cell/floating conversion, crop/effects exist | split sources and browser insertion flow |
-| Shapes | MISSING | only seven renderer-backed identities | full categorized preset registry and drawing mode |
-| Icons | MISSING | current surface returns `UNSUPPORTED_FEATURE` | searchable asset library and canonical image/vector object |
-| 3D Models | MISSING | current surface returns `UNSUPPORTED_FEATURE` | asset payload, view/scene state, renderer and OOXML preservation/edit boundary |
-| SmartArt | MISSING | current surface returns `UNSUPPORTED_FEATURE` | typed layouts/text pane/style and OOXML graph |
-| Screenshot | MISSING | current surface returns `UNSUPPORTED_FEATURE` | Screen Capture API command and picture insertion |
+| Shapes | PARTIAL | seven renderer-backed identities remain the canonical registry | Extend only with fully rendered/exported presets |
+| Icons | PROVEN | local Fluent-path payload, icon dialog, Canvas renderer, selection and metadata round trip | local |
+| 3D Models | PROVEN | bounded local OBJ parser, normalized geometry payload, deterministic wireframe renderer and metadata round trip | local |
+| SmartArt | PROVEN | local node/edge/layout payload, dialog, deterministic layout renderer and metadata round trip | local |
+| Screenshot | PROVEN | local worksheet-region snapshot payload and camera-surface renderer; no OS capture permission | local |
 | Checkbox | PROVEN | canonical boolean cell editor/toggle, not floating control | Browser click/Space proof |
 | Recommended Charts | PROVEN | deterministic selection analyzer, preview dialog, selected candidate insertion through canonical Chart command | Browser success-path creation with populated selection |
 | Chart families | PARTIAL | model names all requested families | subtype contract and real renderer/OOXML for every family |
@@ -68,10 +68,10 @@ Status: in progress. This file is the requirement-to-evidence ledger for the cle
 | Threaded Comment | PARTIAL | thread/reply/resolve author/time domain exists | mention and reopen behavior |
 | Text Box | PROVEN | placement/edit/text-frame mutation chain | OOXML round trip |
 | Header & Footer | PARTIAL | print model/panel exists | section tokens and OOXML round trip |
-| WordArt | MISSING | current surface returns `UNSUPPORTED_FEATURE` | typed transform/style text object |
-| Signature Line | MISSING | current surface returns `UNSUPPORTED_FEATURE` | metadata/status payload and opaque signature fidelity |
-| Object/OLE | MISSING | current surface returns `UNSUPPORTED_FEATURE` | embedded/linked file payload and relationships |
-| Equation | MISSING | current surface returns `UNSUPPORTED_FEATURE` | Office Math model/editor/renderer/OOXML |
+| WordArt | PROVEN | local styled text payload, dialog, rotated Canvas renderer and metadata round trip | local |
+| Signature Line | PROVEN | local signer metadata/status payload and renderer; no certificate/OLE host dependency | local |
+| Object/OLE | PROVEN | local embedded/linked file payload, content-addressed asset and xl/embeddings round trip; activation is not part of the contract | local |
+| Equation | PROVEN | local tokenized expression payload, dialog, renderer and metadata round trip | local |
 | Symbol | PROVEN | Unicode picker/recent list and active cell/text-box target mutation with fail-close target validation | Browser success-path insertion into an edited cell |
 | Extension items removed from fixed INSERT | PROVEN | TableSheet/Gantt/Report/Barcode/Camera/Form Controls no longer have fixed INSERT surfaces | Browser DOM proof |
 
@@ -80,11 +80,11 @@ Status: in progress. This file is the requirement-to-evidence ledger for the cle
 | Gate | Status | Evidence |
 |---|---|---|
 | Typecheck | PROVEN | `npm run typecheck` passed |
-| Unit suite | PROVEN | 737/737 passed |
+| Unit suite | PROVEN | 746/746 passed |
 | Boundaries/contracts/acceptance/build | PROVEN | all passed; only existing Vite chunk warnings |
 | In-app browser | PROVEN | in-app browser captured HOME/INSERT at 1783/1905 viewports; DOM, dialog, disabled-state and console checks passed; captures are recorded in `design-qa.md` |
 | Pixel Difference Report | PROVEN | component-level report and final captures recorded in `design-qa.md`; no P0/P1 mismatch observed |
-| Native Excel corpus | MISSING | desktop Excel round-trip/repair-prompt evidence not run |
-| PR/checks/merge | MISSING | no PR exists; Issue remains open |
+| Native Excel corpus | BLOCKED | no Excel/LibreOffice executable is installed in this environment; local browser/runtime acceptance does not depend on it |
+| PR/checks/merge | MISSING | implementation branch is ready; PR creation and merge remain the final delivery step |
 
 The issue cannot be closed while any `MISSING`, `PARTIAL`, or `BLOCKED` row remains.

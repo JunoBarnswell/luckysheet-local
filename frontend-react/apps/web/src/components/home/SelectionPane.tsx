@@ -19,7 +19,7 @@ import {
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale } from './home-localization';
 
-export type SelectionPaneItemKind = 'chart' | 'camera' | 'form-control' | 'image' | 'shape' | 'textbox' | 'connector' | 'pivot-control' | 'other';
+export type SelectionPaneItemKind = 'chart' | 'camera' | 'form-control' | 'image' | 'shape' | 'textbox' | 'connector' | 'pivot-control' | 'icon' | 'model3d' | 'smartart' | 'wordart' | 'signature-line' | 'embedded-object' | 'equation' | 'screenshot' | 'other';
 export type DrawingSelectionMode = 'replace' | 'toggle' | 'extend';
 
 /**
@@ -55,6 +55,14 @@ const kindIcons: Record<SelectionPaneItemKind, IconName> = {
   textbox: 'type',
   connector: 'shape-square',
   'pivot-control': 'table-pivot',
+  icon: 'star',
+  model3d: 'shape-square',
+  smartart: 'layout',
+  wordart: 'type',
+  'signature-line': 'type',
+  'embedded-object': 'table',
+  equation: 'function',
+  screenshot: 'camera',
   other: 'shape-circle',
 };
 

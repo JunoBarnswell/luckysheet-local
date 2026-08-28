@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { exportSnapshotToXlsxBase64 } from '@react-sheets/exchange-excel-ooxml';
+import { exportSnapshotToOoxmlBase64 } from '@react-sheets/exchange-excel-ooxml';
 import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
@@ -13,7 +13,7 @@ import {
   resolveLoadTarget,
   summarizeQueryResult,
 } from './runtime';
-import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefinition, RestDataConnector, serializeQueryDefinition, TsvDataConnector, XlsxDataConnector } from './index';
+import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefinition, RestDataConnector, serializeQueryDefinition, TsvDataConnector, OoxmlDataConnector } from './index';
 import { QueryStepPipeline } from './query-steps';
 import { registerQueryCommands } from './commands';
 
@@ -56,8 +56,8 @@ describe('query runtime', () => {
     sheet.cells.set(0, 1, { value: 'Units' });
     sheet.cells.set(1, 0, { value: 'Alpha' });
     sheet.cells.set(1, 1, { value: 3 });
-    const connector = new XlsxDataConnector();
-    await connector.connect({ base64: exportSnapshotToXlsxBase64(workbook.snapshot()) });
+    const connector = new OoxmlDataConnector();
+    await connector.connect({ base64: exportSnapshotToOoxmlBase64(workbook.snapshot()) });
     assert.deepEqual(await connector.executeQuery('ignored'), { columns: ['Name', 'Units'], rows: [['Alpha', 3]], rowCount: 1 });
   });
 

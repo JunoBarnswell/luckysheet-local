@@ -1,5 +1,5 @@
 import React from 'react';
-import { createPasteSpecialSpec, isPasteSpecialSpecSupported, type PasteSpecialSpec } from '@react-sheets/sheet-features';
+import { createPasteSpecialSpec, isPasteSpecialSpecSupported, type ClipboardPayload, type PasteSpecialSpec } from '@react-sheets/sheet-features';
 import { Button, Dialog, Stack } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
@@ -29,12 +29,13 @@ const PASTE_OPTIONS: Array<{ id: string; labelKey: HomeUiTextKey; spec: PasteSpe
 
 export interface PasteSpecialDialogProps {
   open: boolean;
+  clipboard?: ClipboardPayload | null;
   locale?: Locale;
   onClose: () => void;
   onPaste: (spec: PasteSpecialSpec) => Promise<unknown>;
 }
 
-export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
+export function PasteSpecialDialog({ open, clipboard, locale, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
   const activeLocale = resolveHomeLocale(locale);
 
   return (
@@ -54,7 +55,7 @@ export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpec
             size="sm"
             variant={option.id === 'all' ? 'secondary' : 'ghost'}
             className="justify-start"
-            disabled={!isPasteSpecialSpecSupported(option.spec)}
+            disabled={!isPasteSpecialSpecSupported(option.spec, clipboard ?? undefined)}
             data-testid={`paste-special-${option.id}`}
             onClick={async () => {
               await onPaste(option.spec);

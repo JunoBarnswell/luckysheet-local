@@ -169,6 +169,9 @@ function remapDrawingPayload(
     case 'camera':
       next.sourceRange = mapRange(next.sourceRange, sourceSheetId, targetSheetId);
       break;
+    case 'screenshot':
+      next.sourceRange = mapRange(next.sourceRange, sourceSheetId, targetSheetId);
+      break;
     case 'form-control':
       if ('cellLink' in next && next.cellLink) next.cellLink = { ...next.cellLink, sheetId: mapSheetId(next.cellLink.sheetId, sourceSheetId, targetSheetId) };
       if ('inputRange' in next) next.inputRange = mapRange(next.inputRange, sourceSheetId, targetSheetId);

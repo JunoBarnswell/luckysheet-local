@@ -6,7 +6,7 @@ export type WorkspaceMemoryBucket =
   | 'operationJournals'
   | 'dataBlocks'
   | 'sparseOverlays'
-  | 'nativePackages'
+  | 'nativeDocuments'
   | 'assets';
 
 export interface WorkspaceMemoryState {
@@ -17,7 +17,7 @@ export interface WorkspaceMemoryState {
   operationJournals: Map<string, unknown>;
   dataBlocks: Map<string, unknown>;
   sparseOverlays: Map<string, unknown>;
-  nativePackages: Map<string, unknown>;
+  nativeDocuments: Map<string, unknown>;
   assets: Map<string, unknown>;
 }
 
@@ -82,7 +82,7 @@ function createState(): WorkspaceMemoryState {
     operationJournals: new Map(),
     dataBlocks: new Map(),
     sparseOverlays: new Map(),
-    nativePackages: new Map(),
+    nativeDocuments: new Map(),
     assets: new Map(),
   };
 }

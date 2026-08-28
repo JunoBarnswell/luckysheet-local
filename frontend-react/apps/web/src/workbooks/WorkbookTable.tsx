@@ -26,7 +26,7 @@ export function WorkbookTable({ items, selectedKeys, onSelectionChange, onOpen, 
       width: '38%',
       render: (item) => (
         <Inline gap="sm" className="min-w-0">
-          <FileIcon kind="xlsx" size="sm" />
+          <FileIcon kind="native-document" size="sm" />
           <Text className="min-w-0 truncate text-[14px] text-slate-800" weight="medium">{item.name}</Text>
           <Button aria-label={item.favorite ? `取消 ${item.name} 的星标` : `为 ${item.name} 添加星标`} icon="star" iconOnly onClick={(event) => { event.stopPropagation(); menuProps.onFavorite(item.unitId, !item.favorite); }} size="xs" variant="ghost" className={item.favorite ? 'h-7 w-7 text-amber-500' : 'h-7 w-7 text-slate-300 opacity-0 group-hover:opacity-100'} />
         </Inline>

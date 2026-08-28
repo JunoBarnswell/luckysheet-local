@@ -1,9 +1,9 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type {
   CompatibilityReport,
-  XlsxExportOptions,
-  XlsxImportOptions,
-  NativePackageState,
+  NativeDocumentExportOptions,
+  NativeDocumentImportOptions,
+  NativeDocumentArtifact,
 } from '@react-sheets/exchange-excel-ooxml';
 import type {
   WorkbookAclRole,
@@ -93,23 +93,23 @@ export interface WorkbookCatalogImportInput {
   destination?: 'local' | 'remote';
   folderId?: string;
   spaceId?: string;
-  options?: Partial<XlsxImportOptions>;
+  options?: Partial<NativeDocumentImportOptions>;
   execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').XlsxWorkerPort;
+  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogImportResult {
   entry: WorkbookCatalogEntry;
   snapshot: WorkbookSnapshot;
   report: CompatibilityReport;
-  nativePackage?: NativePackageState;
+  artifact: NativeDocumentArtifact;
 }
 
 export interface WorkbookCatalogExportInput {
   fileName?: string;
-  options?: Partial<XlsxExportOptions>;
+  options?: Partial<NativeDocumentExportOptions>;
   execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').XlsxWorkerPort;
+  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogExportResult {

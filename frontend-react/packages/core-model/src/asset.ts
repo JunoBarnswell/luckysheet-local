@@ -10,6 +10,11 @@ export interface AssetRef {
   height?: number;
 }
 
+/** AssetRef 覆盖本地绘图对象的文件内容；具体对象仍通过各自 payload 表达语义。 */
+export function isSupportedAssetMime(mimeType: string): boolean {
+  return /^(?:image|model|text|application|audio|video)\//i.test(mimeType.trim());
+}
+
 export function isAssetRef(value: unknown): value is AssetRef {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Partial<AssetRef>;
@@ -19,7 +24,7 @@ export function isAssetRef(value: unknown): value is AssetRef {
     && typeof candidate.contentHash === 'string'
     && /^[a-f0-9]{64}$/.test(candidate.contentHash)
     && typeof candidate.mimeType === 'string'
-    && candidate.mimeType.startsWith('image/')
+    && isSupportedAssetMime(candidate.mimeType)
     && typeof candidate.byteLength === 'number'
     && Number.isSafeInteger(candidate.byteLength)
     && candidate.byteLength >= 0

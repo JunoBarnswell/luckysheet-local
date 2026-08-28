@@ -97,13 +97,24 @@ function templateIdFromUi(kind: WorkbookTemplateKind): WorkbookTemplateId | null
   return null;
 }
 
-function downloadXlsx(buffer: ArrayBuffer, fileName: string): void {
-  const href = URL.createObjectURL(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+function downloadNativeDocument(buffer: ArrayBuffer, fileName: string): void {
+  const href = URL.createObjectURL(new Blob([buffer], { type: mimeTypeForFileName(fileName) }));
   const anchor = document.createElement('a');
   anchor.href = href;
   anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(href);
+}
+
+function mimeTypeForFileName(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
 }
 
 function isAbortError(cause: unknown): boolean {
@@ -364,7 +375,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const exportWorkbook = useCallback((unitId: string) => {
     void execute(async () => {
       const exported = await catalog.exportWorkbook(unitId);
-      downloadXlsx(exported.buffer, exported.fileName);
+      downloadNativeDocument(exported.buffer, exported.fileName);
     });
   }, [catalog, execute]);
 
@@ -491,7 +502,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       <Dialog closeLabel="关闭帮助" onClose={() => setActiveDialog(null)} open={activeDialog === 'help'} title="工作簿存储说明">
         <Stack gap="sm">
           <Text size="sm">云端工作簿由服务器保存；本地工作簿和离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
-          <Text size="sm">导入 Excel 会创建新工作簿；导出会基于最新快照和原始 XLSX 包生成副本。</Text>
+          <Text size="sm">打开 / 导入会创建新工作簿；导出会基于最新快照和原始原生文档生成副本。</Text>
           {authSnapshot.phase !== 'authenticated' ? <Button onClick={() => void auth.signIn('/workbooks')} size="sm" variant="brand">登录以使用云端文件</Button> : null}
         </Stack>
       </Dialog>
@@ -500,7 +511,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
           <Stack gap="xs">
             <Text size="sm" weight="semibold">默认位置与云端会话</Text>
             <Text size="sm">当前默认新建位置：{defaultLocationId === 'local' ? '本地文件' : '云端空间'}。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的全局偏好。</Text>
-            <Select aria-label="XLSX 导入兼容级别" disabled={!preferences || authSnapshot.phase !== 'authenticated'} value={preferences?.importCompatibility ?? 'B'} options={[{ value: 'A', label: '严格：无法安全保留则拒绝' }, { value: 'B', label: '平衡：编辑已支持部分并保留原包' }, { value: 'C', label: '尽可能转换：允许明确近似' }]} onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ importCompatibility: event.target.value as 'A' | 'B' | 'C' })); })} />
+            <Select aria-label="原生文档导入兼容级别" disabled={!preferences || authSnapshot.phase !== 'authenticated'} value={preferences?.importCompatibility ?? 'B'} options={[{ value: 'A', label: '严格：无法安全保留则拒绝' }, { value: 'B', label: '平衡：编辑已支持部分并保留原文档' }, { value: 'C', label: '转换：仅允许明确的目标格式投影' }]} onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ importCompatibility: event.target.value as 'A' | 'B' | 'C' })); })} />
             <CheckToggle checked={preferences?.autoSave ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动保存" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSave: event.target.checked })); })} />
             <CheckToggle checked={preferences?.autoSync ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动同步" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSync: event.target.checked })); })} />
             <CheckToggle checked={preferences?.offlineCache ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="离线缓存" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ offlineCache: event.target.checked })); })} />

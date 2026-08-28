@@ -38,14 +38,14 @@ export function ImportWorkbookDialog({ open, locationOptions, defaultLocationId,
       maxWidth="md"
       onClose={onClose}
       open={open}
-      title="导入 Excel 文件"
+      title="打开 / 导入原生文档"
       testId="import-workbook-dialog"
     >
       <Stack gap="md">
         <Stack gap="sm" className="items-start rounded-lg border border-dashed border-brand-line bg-brand-pale p-5">
-          <Text size="sm" weight="medium">选择 .xlsx 文件</Text>
-          <Text size="xs" tone="muted">文件大小上限 50 MiB。导入完成后会显示兼容性报告。</Text>
-          <FileButton accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" icon="upload" onFile={setFile} size="sm" variant="secondary">选择文件</FileButton>
+          <Text size="sm" weight="medium">选择原生文档</Text>
+          <Text size="xs" tone="muted">支持 XLSX、XLSM、XLTX、XLTM、XLAM、XLSB、XLS、XML、CSV、TXT、PRN、DIF、SYLK、ODS、SJS、SSJSON；DBF、XLR、HTML、MHT、PDF、XPS 会被识别并按当前本地 codec 能力明确处理。</Text>
+          <FileButton accept=".xlsx,.xlsm,.xltx,.xltm,.xlam,.xlsb,.xls,.xlt,.xla,.xlw,.xml,.csv,.txt,.prn,.dif,.slk,.ods,.sjs,.ssjson,.dbf,.xlr,.htm,.html,.mht,.mhtml,.pdf,.xps" icon="upload" onFile={setFile} size="sm" variant="secondary">选择文件</FileButton>
           {file ? <Text className="max-w-full truncate text-[12px] text-brand-dark" size="sm">已选择：{file.name}</Text> : null}
         </Stack>
         <Stack gap="xs">

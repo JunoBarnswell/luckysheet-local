@@ -401,7 +401,9 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
     if (table.sourceRange?.sheetId === sheet.id && !shiftRange(table.sourceRange)) throw new Error(`Cell shift would remove workbook table ${table.id}`);
   }
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind === 'chart') {
+    if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+      if (!shiftRange(payload.sourceRange)) throw new Error(`Cell shift would remove ${payload.kind} source range`);
+    } else if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') payload.source.ranges = payload.source.ranges.filter(shiftRange);
       else if (payload.source.kind === 'report-range' && !shiftRange(payload.source.range)) throw new Error('Cell shift would remove Chart report binding');
         if (payload.categoryRange) shiftRange(payload.categoryRange);
@@ -741,7 +743,9 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 
 function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind === 'chart') {
+    if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+      shiftRangeRef(payload.sourceRange, axis, at, count, direction);
+    } else if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) shiftRangeRef(range, axis, at, count, direction);
       else if (payload.source.kind === 'report-range') shiftRangeRef(payload.source.range, axis, at, count, direction);
       if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
@@ -1011,7 +1015,9 @@ function applyMoveRange(
     if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
   }
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind === 'chart') {
+    if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+      relocate(payload.sourceRange);
+    } else if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) relocate(range);
       else if (payload.source.kind === 'report-range') relocate(payload.source.range);
       if (payload.categoryRange) relocate(payload.categoryRange);
@@ -1173,7 +1179,9 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   for (const rule of sheet.protectionRules) if (rule.range) validateRange(rule.range, `protection ${rule.id}`);
   if (sheet.bandedRule) validateRange(sheet.bandedRule.range, 'banded rule');
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind === 'chart') {
+    if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+      validateRange(payload.sourceRange, `${payload.kind} source`);
+    } else if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) validateRange(range, 'chart source');
       else if (payload.source.kind === 'report-range') validateRange(payload.source.range, 'chart report binding');
         if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');

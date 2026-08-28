@@ -6,7 +6,7 @@ import { WorkbookSession } from './workbook-session';
 
 describe('WorkbookSession local workspace integration', () => {
   it('exposes a canonical persistence checksum in the UI projection', () => {
-    const app = new WorkbookSession();
+    const app = new WorkbookSession({ nativeDocumentExecution: 'inline-test' });
     const meta = app.getPersistenceSnapshot();
     assert.equal(meta.unitId, app['runtime'].model.unitId);
     assert.equal(meta.checksum.length, 64);
@@ -30,9 +30,12 @@ describe('WorkbookSession local workspace integration', () => {
   });
 
   it('saves locally without depending on a server role projection', async () => {
-    const app = new WorkbookSession();
+    const app = new WorkbookSession({ nativeDocumentExecution: 'inline-test' });
     await app.saveWorkbook('local save');
     assert.match(app.getUiSnapshot().notice, /checkpoint saved/i);
+    const artifact = await app['runtime'].workspacePersistence.nativeDocuments.load(app['runtime'].model.unitId);
+    assert.equal(artifact?.format.family, 'ssjson');
+    assert.equal(artifact?.fileName.endsWith('.ssjson'), true);
   });
 
   it('uses the session share token for remote workbook reads', async () => {

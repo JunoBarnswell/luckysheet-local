@@ -1,9 +1,9 @@
 import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
-import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
 import { LocalDataBlockStore } from './data-block-store';
-import { buildNativePackageRecord, LocalNativePackageStore } from './native-package-store';
+import { buildNativeDocumentRecord, LocalNativeDocumentStore } from './native-document-store';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import type { AssetStore } from './asset-store';
 import { normalizeWorkspaceRecordWithAssets } from './asset-migration';
@@ -22,7 +22,7 @@ export interface WorkspacePersistenceOptions {
 
 export type WorkspaceLifecycle = 'active' | 'trashed';
 export type WorkspaceStorageLocation = 'local' | 'remote' | 'mirrored';
-export type WorkspaceSource = 'native' | 'xlsx-import';
+export type WorkspaceSource = 'native' | 'document-import';
 export type WorkspaceRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 
 export interface WorkspaceRecordMetadata {
@@ -395,7 +395,7 @@ export class MemoryWorkspaceStore {
     await this.coordinator.transaction((transaction) => {
       transaction.delete('workspaceHeads', unitId);
       transaction.delete('workspaceCatalog', unitId);
-      transaction.delete('nativePackages', unitId);
+      transaction.delete('nativeDocuments', unitId);
       for (const snapshot of transaction.getAll<WorkspaceSnapshotRecord>('workspaceSnapshots')) {
         if (snapshot.unitId === unitId) transaction.delete('workspaceSnapshots', memoryKey(unitId, snapshot.revision));
       }
@@ -573,7 +573,7 @@ export class WorkspacePersistence {
   readonly store: LocalWorkspaceStore;
   readonly dataBlocks: LocalDataBlockStore;
   readonly sparseOverlays: LocalSparseOverlayStore;
-  readonly nativePackages: LocalNativePackageStore;
+  readonly nativeDocuments: LocalNativeDocumentStore;
   readonly coordinator: WorkspaceMemoryCoordinator;
 
   constructor(options: WorkspacePersistenceOptions = {}, operationJournal = new OperationJournalStore()) {
@@ -581,7 +581,7 @@ export class WorkspacePersistence {
     this.store = new LocalWorkspaceStore(this.coordinator);
     this.dataBlocks = new LocalDataBlockStore(this.coordinator, options.unitId);
     this.sparseOverlays = new LocalSparseOverlayStore({ coordinator: this.coordinator, unitId: options.unitId });
-    this.nativePackages = new LocalNativePackageStore(this.coordinator);
+    this.nativeDocuments = new LocalNativeDocumentStore(this.coordinator);
     this.operationJournal = operationJournal;
   }
 
@@ -638,7 +638,7 @@ export class WorkspacePersistence {
   }
 
   /**
-   * Commits the canonical workspace checkpoint and its source XLSX artifact
+   * Commits the canonical workspace checkpoint and its source native document artifact
    * in one memory transaction.
    */
   async checkpointWithArtifact(
@@ -646,7 +646,7 @@ export class WorkspacePersistence {
     localRevision: number,
     serverRevision: number,
     syncMode: 'remote' | 'local-only',
-    artifact: NativePackageState,
+    artifact: NativeDocumentArtifact,
     pendingJournal = this.operationJournal.read(snapshot.unitId),
     metadata?: Partial<WorkspaceRecordMetadata>,
     userState?: Partial<WorkspaceUserState>,
@@ -665,7 +665,7 @@ export class WorkspacePersistence {
         metadata: { ...(previous?.metadata ?? {}), ...(metadata ?? {}) },
         userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
       });
-      const artifactRecord = await buildNativePackageRecord(snapshot.unitId, artifact);
+      const artifactRecord = await buildNativeDocumentRecord(snapshot.unitId, artifact);
       return this.coordinator.transaction((transaction) => {
         const current = transaction.get<WorkspaceHeadRecord>('workspaceHeads', record.unitId);
         const currentStorageRevision = current?.storageRevision ?? 0;
@@ -682,7 +682,7 @@ export class WorkspacePersistence {
         for (const operation of saved.pending.operations) {
           transaction.set('workspaceOperations', memoryKey(saved.unitId, operation.clientSequence), { ...clone(operation), unitId: saved.unitId });
         }
-        transaction.set('nativePackages', saved.unitId, artifactRecord);
+        transaction.set('nativeDocuments', saved.unitId, artifactRecord);
         return saved;
       });
     });

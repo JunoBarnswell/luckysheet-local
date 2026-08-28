@@ -22,6 +22,14 @@ import {
   isFormControlDrawingPayload,
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  isIconDrawingPayload,
+  isModel3dDrawingPayload,
+  isSmartArtDrawingPayload,
+  isWordArtDrawingPayload,
+  isSignatureLineDrawingPayload,
+  isEmbeddedObjectDrawingPayload,
+  isEquationDrawingPayload,
+  isScreenshotDrawingPayload,
   isWorksheetSnapSettings,
   planConnectorRoute,
   recomputeConnectorRoutes,
@@ -229,6 +237,14 @@ function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (value.kind === 'textbox') return isTextBoxPayload(value);
   if (value.kind === 'shape') return isShapeDrawingPayload(value);
   if (['chart', 'camera'].includes(String(value.kind))) return true;
+  if (value.kind === 'icon') return isIconDrawingPayload(value);
+  if (value.kind === 'model3d') return isModel3dDrawingPayload(value);
+  if (value.kind === 'smartart') return isSmartArtDrawingPayload(value);
+  if (value.kind === 'wordart') return isWordArtDrawingPayload(value);
+  if (value.kind === 'signature-line') return isSignatureLineDrawingPayload(value);
+  if (value.kind === 'embedded-object') return isEmbeddedObjectDrawingPayload(value);
+  if (value.kind === 'equation') return isEquationDrawingPayload(value);
+  if (value.kind === 'screenshot') return isScreenshotDrawingPayload(value);
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
 }
 
@@ -945,7 +961,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
 
   runtime.registry.registerCommand<DrawingAddParams>({ id: 'drawing.add', execute: (params, context) => executeAdd(params, context) });
   commandIds.push('drawing.add');
-  for (const kind of ['image', 'shape', 'camera', 'textbox', 'form-control', 'slicer', 'timeline'] as const) {
+  for (const kind of ['image', 'shape', 'camera', 'screenshot', 'textbox', 'form-control', 'icon', 'model3d', 'smartart', 'wordart', 'signature-line', 'embedded-object', 'equation', 'slicer', 'timeline'] as const) {
     const id = `drawing.add.${kind}`;
     runtime.registry.registerCommand<DrawingAddParams>({ id, execute: (params, context) => executeAdd(params, context, kind) });
     commandIds.push(id);
