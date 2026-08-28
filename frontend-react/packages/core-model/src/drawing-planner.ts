@@ -13,6 +13,14 @@ import {
   isDrawingConnectorPayload,
   isDrawingGroup,
   isShapeDrawingPayload,
+  isIconDrawingPayload,
+  isModel3dDrawingPayload,
+  isSmartArtDrawingPayload,
+  isWordArtDrawingPayload,
+  isSignatureLineDrawingPayload,
+  isEmbeddedObjectDrawingPayload,
+  isEquationDrawingPayload,
+  isScreenshotDrawingPayload,
   isWorksheetSnapSettings,
 } from './domain';
 
@@ -160,6 +168,14 @@ export function validateDrawingGraph(sheet: DrawingGraphSheet): void {
   for (const drawing of sheet.drawings) {
     const payload = payloadAt(sheet, drawing.payloadId);
     if (payload?.kind === 'shape' && !isShapeDrawingPayload(payload)) throw new Error(`Shape payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'icon' && !isIconDrawingPayload(payload)) throw new Error(`Icon payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'model3d' && !isModel3dDrawingPayload(payload)) throw new Error(`3D model payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'smartart' && !isSmartArtDrawingPayload(payload)) throw new Error(`SmartArt payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'wordart' && !isWordArtDrawingPayload(payload)) throw new Error(`WordArt payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'signature-line' && !isSignatureLineDrawingPayload(payload)) throw new Error(`Signature-line payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'embedded-object' && !isEmbeddedObjectDrawingPayload(payload)) throw new Error(`Embedded-object payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'equation' && !isEquationDrawingPayload(payload)) throw new Error(`Equation payload is invalid: ${drawing.payloadId}`);
+    if (payload?.kind === 'screenshot' && !isScreenshotDrawingPayload(payload)) throw new Error(`Screenshot payload is invalid: ${drawing.payloadId}`);
     if (payload?.kind === 'connector') assertCanonicalConnector(sheet, drawing, payload);
   }
   const owned = new Set<string>();

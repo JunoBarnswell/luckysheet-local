@@ -22,6 +22,7 @@ const RecommendedChartsDialog = lazy(() => import('../components/dialogs/Recomme
 const RecommendedPivotTablesDialog = lazy(() => import('../components/dialogs/RecommendedPivotTablesDialog').then((module) => ({ default: module.RecommendedPivotTablesDialog })));
 const PhoneticGuideDialog = lazy(() => import('../components/dialogs/PhoneticGuideDialog').then((module) => ({ default: module.PhoneticGuideDialog })));
 const SymbolDialog = lazy(() => import('../components/dialogs/SymbolDialog').then((module) => ({ default: module.SymbolDialog })));
+const LocalObjectDialog = lazy(() => import('../components/dialogs/LocalObjectDialog').then((module) => ({ default: module.LocalObjectDialog })));
 
 export interface EditorDialogHostProps {
   state: UiSnapshot;
@@ -105,6 +106,7 @@ export function EditorDialogHost({
       />
       <PasteSpecialDialog
         open={state.dialogs.active === 'paste-special'}
+        clipboard={session.getClipboard()}
         locale={locale}
         onClose={session.closePasteSpecial.bind(session)}
         onPaste={(spec) => session.pasteSpecial(spec)}
@@ -228,6 +230,12 @@ export function EditorDialogHost({
           try { session.insertSymbolText(symbol); return undefined; }
           catch (error) { return error instanceof Error ? error.message : 'INVALID_SYMBOL: Symbol insertion failed'; }
         }}
+      />
+      <LocalObjectDialog
+        open={state.dialogs.active === 'local-object'}
+        kind={state.dialogs.localObjectKind}
+        onClose={session.closeActiveDialog.bind(session)}
+        onInsert={(input) => session.insertLocalObject(state.dialogs.localObjectKind ?? 'icon', input)}
       />
     </Suspense>
   );

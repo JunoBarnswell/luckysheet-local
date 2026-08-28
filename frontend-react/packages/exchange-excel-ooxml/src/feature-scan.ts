@@ -49,7 +49,15 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
         if (payload.source.kind === 'pivot') features.add('pivot-chart');
       }
       else if (payload.kind === 'camera') features.add('camera');
+      else if (payload.kind === 'screenshot') features.add('screenshot');
       else if (payload.kind === 'form-control') features.add('form-control');
+      else if (payload.kind === 'icon') features.add('icons');
+      else if (payload.kind === 'model3d') features.add('models3d');
+      else if (payload.kind === 'smartart') features.add('smartart');
+      else if (payload.kind === 'wordart') features.add('wordart');
+      else if (payload.kind === 'signature-line') features.add('signature-line');
+      else if (payload.kind === 'embedded-object') features.add('embedded-object');
+      else if (payload.kind === 'equation') features.add('equation');
       else if (payload.kind === 'slicer') features.add('slicer');
       else if (payload.kind === 'timeline') features.add('timeline');
       else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');

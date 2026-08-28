@@ -107,6 +107,26 @@ describe('exchange-excel-ooxml', () => {
     assert.ok(features.includes('images'));
   });
 
+  it('round-trips local Insert objects through owned metadata without a host', async () => {
+    const workbook = new WorkbookModel('wb-local-objects', 'Local Objects');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'capture' });
+    const entries = [
+      { kind: 'icon' as const, payload: { kind: 'icon' as const, iconName: 'star', svgPath: 'M12 2h1v20h-1z', viewBox: '0 0 24 24', fill: '#2563eb', accessibilityLabel: 'Star' } },
+      { kind: 'model3d' as const, payload: { kind: 'model3d' as const, fileName: 'triangle.obj', format: 'obj' as const, geometry: { vertices: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }], faces: [[0, 1, 2] as [number, number, number]] }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 } },
+      { kind: 'smartart' as const, payload: { kind: 'smartart' as const, layout: 'process' as const, nodes: [{ id: 'a', text: 'A' }, { id: 'b', text: 'B' }], edges: [{ from: 'a', to: 'b' }], fill: '#dbeafe', stroke: '#2563eb', textColor: '#1e3a8a' } },
+      { kind: 'wordart' as const, payload: { kind: 'wordart' as const, text: 'Local', fontFamily: 'Aptos Display', fontSize: 24, fill: '#2563eb', outline: '#1e3a8a', outlineWidth: 1, italic: false, bold: true } },
+      { kind: 'signature-line' as const, payload: { kind: 'signature-line' as const, signerName: 'Ada', status: 'unsigned' as const } },
+      { kind: 'equation' as const, payload: { kind: 'equation' as const, linearExpression: 'a^2=b^2', tokens: [{ kind: 'text' as const, value: 'a' }, { kind: 'superscript' as const, value: '2' }, { kind: 'operator' as const, value: '=' }, { kind: 'text' as const, value: 'b' }, { kind: 'superscript' as const, value: '2' }], fontSize: 24, textColor: '#1f2937' } },
+      { kind: 'screenshot' as const, payload: { kind: 'screenshot' as const, sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, includeGridlines: true, capturedAt: new Date(0).toISOString() } },
+    ];
+    entries.forEach((entry, index) => { const drawingId = `local-${entry.kind}`; const payloadId = `${drawingId}-payload`; sheet.drawings.push({ id: drawingId, sheetId: sheet.id, kind: entry.kind, anchor: { kind: 'absolute' }, transform: { x: index * 20, y: 0, width: 120, height: 80 }, zIndex: index, payloadId }); sheet.drawingPayloads.set(payloadId, entry.payload); });
+    const imported = await importXlsx({ fileName: 'local-objects.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const importedKinds = imported.snapshot.sheets[0]!.drawings.map((drawing) => drawing.kind);
+    assert.deepEqual(importedKinds, entries.map((entry) => entry.kind));
+    assert.ok(imported.report.issues.some((issue) => issue.feature === 'models3d' && issue.status === 'editable'));
+  });
+
   it('round-trips snapshot through xlsx archive import/export', async () => {
     const workbook = new WorkbookModel('wb-roundtrip', 'Roundtrip');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 'hello' });

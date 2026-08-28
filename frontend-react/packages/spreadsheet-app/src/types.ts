@@ -75,7 +75,8 @@ export interface PanelState {
   dock: 'left' | 'right';
 }
 
-export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink';
+export type LocalObjectDialogKind = 'icon' | 'model3d' | 'smartart' | 'screenshot' | 'wordart' | 'signature-line' | 'embedded-object' | 'equation';
+export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object';
 export type FindDialogMode = 'find' | 'replace';
 export type CellShiftOperation = 'insert' | 'delete';
 export type MergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
@@ -100,6 +101,7 @@ export interface DialogState {
   sheet: SheetDialogState | null;
   cellShiftOperation: CellShiftOperation;
   formatCellsTab: FormatCellsTab;
+  localObjectKind: LocalObjectDialogKind | null;
 }
 
 export interface ClipboardState {
@@ -151,7 +153,7 @@ export type ActiveContext =
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =
   | { type: 'panel.open'; panel: SidebarPanelId; notice?: string }
-  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink'; operation?: CellShiftOperation; findQuery?: string; findMode?: FindDialogMode; formatCellsTab?: FormatCellsTab; columnWidth?: { columns: number[]; defaultMode: boolean }; rowHeight?: { rows: number[] }; sheet?: SheetDialogState }
+  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object'; localObjectKind?: LocalObjectDialogKind; operation?: CellShiftOperation; findQuery?: string; findMode?: FindDialogMode; formatCellsTab?: FormatCellsTab; columnWidth?: { columns: number[]; defaultMode: boolean }; rowHeight?: { rows: number[] }; sheet?: SheetDialogState }
   | { type: 'dialog.close' }
   | { type: 'dialog.update'; value: string }
   | { type: 'command-palette.open' }
