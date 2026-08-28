@@ -531,7 +531,7 @@ export function SheetCanvas({
     }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
     return {
-      value: showFormulas && cell.formula ? cell.formula : parseCellValue(cell),
+      value: showFormulas && cell.formula ? cell.formula : cell.rawValue !== undefined ? cell.rawValue : parseCellValue(cell),
       formula: cell.formula,
       displayValue: cell.value,
       richText: cell.richText,
@@ -755,12 +755,13 @@ export function SheetCanvas({
   // Pointer, keyboard, drag-selection, and auto-scroll are implemented by useCanvasInteraction.
   // ---------- 右键菜单 ----------
 
-  const buildHeaderContextMenu = useCallback((kind: 'column' | 'row', targetIndex: number): ContextMenuItem[] => {
+  const buildHeaderContextMenu = useCallback((kind: 'column' | 'row', targetIndex: number, hiddenIndices?: readonly number[]): ContextMenuItem[] => {
     const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
     const indices = headerTargetSelected(selection, { kind, index: targetIndex }, bounds)
       ? selectedHeaderIndices(selection, kind, bounds)
       : [targetIndex];
     const commandId = kind === 'column' ? 'sheet.columns' : 'sheet.rows';
+    const unhideIndices = hiddenIndices && hiddenIndices.length > 0 ? [...hiddenIndices] : indices;
     const selectAction = (action: HeaderContextAction): (() => void) => {
       switch (action) {
         case 'cut': return onCut;
@@ -773,7 +774,7 @@ export function SheetCanvas({
         case 'format': return onOpenFormatCells;
         case 'size': return () => kind === 'column' ? onOpenColumnWidthDialog(indices) : onOpenRowHeightDialog(indices);
         case 'hide': return () => kind === 'column' ? columnDimensions.setHidden(indices, true) : columnDimensions.setRowsHidden(indices, true);
-        case 'unhide': return () => kind === 'column' ? columnDimensions.setHidden(indices, false) : columnDimensions.setRowsHidden(indices, false);
+        case 'unhide': return () => kind === 'column' ? columnDimensions.setHidden(unhideIndices, false) : columnDimensions.setRowsHidden(unhideIndices, false);
       }
     };
     return headerContextMenuCatalog(kind).map((entry) => entry.separator
@@ -810,8 +811,8 @@ export function SheetCanvas({
     if (selectedPayload?.kind === 'textbox' && selectedDrawing) {
       return [{ id: 'textbox-edit', label: 'Edit Text', onSelect: () => onBeginTextBoxEdit?.(selectedDrawing.id) }];
     }
-    if (contextHit?.kind === 'column-header') return buildHeaderContextMenu('column', contextHit.column ?? selection.activeCell.column);
-    if (contextHit?.kind === 'row-header') return buildHeaderContextMenu('row', contextHit.row ?? selection.activeCell.row);
+    if (contextHit?.kind === 'column-header') return buildHeaderContextMenu('column', contextHit.column ?? selection.activeCell.column, contextHit.hiddenIndices);
+    if (contextHit?.kind === 'row-header') return buildHeaderContextMenu('row', contextHit.row ?? selection.activeCell.row, contextHit.hiddenIndices);
     const items: ContextMenuItem[] = [
       { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: onCut },
       { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: onCopy },
@@ -861,6 +862,7 @@ export function SheetCanvas({
       ? resolveContextHit({
         sheetId,
         header: headerHit.kind === 'row' ? 'row' : 'column',
+        ...(headerHit.hiddenIndices ? { hiddenIndices: headerHit.hiddenIndices } : {}),
         cell: { row: headerHit.kind === 'row' ? headerHit.index : 0, column: headerHit.kind === 'col' ? headerHit.index : 0 },
       })
       : null);

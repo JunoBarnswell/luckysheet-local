@@ -633,7 +633,7 @@ function drawCellValue(
     return;
   }
 
-  if (wrap) {
+  if (wrap || layout.lines.length > 1) {
     drawWrapped(context, layout.lines, layout.lineHeightPx, paintRect, padding + indent, hAlign, vAlign, layout.overflowWidthPx);
     context.restore();
     return;
@@ -744,7 +744,7 @@ function layoutNeighbors(options: PaneDrawOptions, address: CellAddress, range: 
 
 function hasRenderableCellContent(cell: CellRenderData | undefined): boolean {
   if (!cell) return false;
-  if (cell.presentation || cell.formula) return true;
+  if (cell.presentation || cell.editor || cell.formula) return true;
   const value = resolveDisplayText(cell);
   return value.length > 0;
 }

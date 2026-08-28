@@ -19,12 +19,16 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const focusedRef = useRef(false);
   const editorStyle = useMemo<CSSProperties>(() => ({
+    paddingTop: `${cellStyle?.padding ?? 4}px`,
+    paddingRight: `${cellStyle?.padding ?? 4}px`,
+    paddingBottom: `${cellStyle?.padding ?? 4}px`,
+    paddingLeft: `${(cellStyle?.padding ?? 4) + Math.max(0, Math.trunc(cellStyle?.indent ?? 0)) * 12}px`,
     color: cellStyle?.textColor,
     fontFamily: cellStyle?.fontFamily,
     fontSize: cellStyle?.fontSizePx,
     fontStyle: cellStyle?.italic ? 'italic' : undefined,
     fontWeight: cellStyle?.bold ? 700 : undefined,
-    textAlign: cellStyle?.horizontalAlignment === 'center' ? 'center' : cellStyle?.horizontalAlignment === 'right' ? 'right' : 'left',
+    textAlign: cellStyle?.horizontalAlignment === 'center' || cellStyle?.horizontalAlignment === 'centerContinuous' ? 'center' : cellStyle?.horizontalAlignment === 'right' ? 'right' : 'left',
     ...(layout ? { font: layout.font, lineHeight: `${layout.lineHeightPx}px` } : {}),
   }), [cellStyle, layout]);
 

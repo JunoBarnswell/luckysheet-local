@@ -80,6 +80,28 @@ test('edit geometry grows over occupied neighbors, preserves alignment, and rema
   assert.equal(layout.horizontalAlignment, 'left');
 });
 
+test('static overflow is blocked by numeric, wrapped, presented, controlled, and merged content contracts', () => {
+  const neighbors = { left: [], right: [{ column: 1, widthPx: 120, occupied: false }] };
+  for (const candidate of [
+    cell(42, { horizontalAlignment: 'left' }),
+    { ...cell('long text', { horizontalAlignment: 'left', wrapText: true }), value: 'long text' },
+    { ...cell('long text', { horizontalAlignment: 'left' }), formula: '=A1' },
+    { ...cell('long text', { horizontalAlignment: 'left' }), presentation: { kind: 'barcode', symbology: 'qr', parameters: { symbology: 'qr' }, options: { quietZone: 1, foreground: '#000000', background: '#ffffff', showText: false, labelPosition: 'none' } } },
+    { ...cell('long text', { horizontalAlignment: 'left' }), editor: { kind: 'checkbox' } },
+  ] as CellRenderData[]) {
+    const result = resolveCellContentLayout({
+      context: context(),
+      cell: candidate,
+      theme: DEFAULT_RENDER_THEME,
+      text: String(candidate.value),
+      cellRect: { x: 0, y: 0, width: 24, height: 20 },
+      mode: 'display',
+      neighborOccupancy: neighbors,
+    });
+    assert.deepEqual(result.displayRect, { x: 0, y: 0, width: 24, height: 20 });
+  }
+});
+
 test('wrap and shrink use the same measured font metrics for editor and AutoFit geometry', () => {
   const wrapped = resolveCellContentLayout({
     context: context(),
@@ -107,6 +129,35 @@ test('wrap and shrink use the same measured font metrics for editor and AutoFit 
   assert.ok(shrunk.fontSizePx >= 8);
 });
 
+test('merged and center-across cells use their span as the layout boundary', () => {
+  const merged = resolveCellContentLayout({
+    context: context(),
+    cell: cell('merged value', { horizontalAlignment: 'center' }),
+    theme: DEFAULT_RENDER_THEME,
+    text: 'merged value',
+    cellRect: { x: 0, y: 0, width: 40, height: 20 },
+    mergedRect: { x: 0, y: 0, width: 120, height: 20 },
+    cellRange: { startColumn: 0, endColumn: 2 },
+    mode: 'display',
+    neighborOccupancy: { left: [], right: [] },
+  });
+  assert.equal(merged.displayRect.width, 120);
+  assert.equal(merged.contentRect.width, 108);
+
+  const centerAcross = resolveCellContentLayout({
+    context: context(),
+    cell: cell('across', { horizontalAlignment: 'centerContinuous' }),
+    theme: DEFAULT_RENDER_THEME,
+    text: 'across',
+    cellRect: { x: 40, y: 0, width: 40, height: 20 },
+    alignmentSpan: { x: 40, y: 0, width: 80, height: 20 },
+    cellRange: { startColumn: 1, endColumn: 2 },
+    mode: 'display',
+  });
+  assert.equal(centerAcross.displayRect.width, 80);
+  assert.equal(centerAcross.horizontalAlignment, 'centerContinuous');
+});
+
 test('rich-text runs participate in the shared font and line-height measurement', () => {
   const rich = resolveCellContentLayout({
     context: context(),
@@ -119,4 +170,26 @@ test('rich-text runs participate in the shared font and line-height measurement'
   assert.equal(rich.fontRuns.length, 2);
   assert.ok(rich.fontRuns[0]!.font.includes('700'));
   assert.ok(rich.lineHeightPx >= 25);
+});
+
+test('rotated and stacked text contribute their occupied geometry instead of using an unrotated width', () => {
+  const rotated = resolveCellContentLayout({
+    context: context(),
+    cell: cell('rotate', { textOrientation: 'rotateUp' }),
+    theme: DEFAULT_RENDER_THEME,
+    text: 'rotate',
+    cellRect: { x: 0, y: 0, width: 40, height: 20 },
+    mode: 'display',
+  });
+  assert.ok(rotated.heightPx > rotated.widthPx / 2);
+  const stacked = resolveCellContentLayout({
+    context: context(),
+    cell: cell('AB', { textOrientation: 'stacked' }),
+    theme: DEFAULT_RENDER_THEME,
+    text: 'AB',
+    cellRect: { x: 0, y: 0, width: 40, height: 20 },
+    mode: 'display',
+  });
+  assert.deepEqual(stacked.lines, ['A', 'B']);
+  assert.ok(stacked.heightPx > 20);
 });

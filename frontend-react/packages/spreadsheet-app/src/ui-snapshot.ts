@@ -87,6 +87,8 @@ export interface CanvasCellSnapshot {
   displayValue?: string;
   formula?: string;
   style?: CellStyle;
+  /** Typed model value used by render semantics; `value` remains the display projection. */
+  rawValue?: CellData['value'];
   richText?: import('@react-sheets/core-model').RichTextRun[];
   editor?: CellEditorConfig;
   presentation?: CellPresentation;
@@ -295,6 +297,7 @@ export function buildCanvasSheetSnapshot(
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
+      rawValue: modelCell?.value ?? null,
       richText: modelCell?.richText ? structuredClone(modelCell.richText) : undefined,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,

@@ -1620,7 +1620,13 @@ function buildWorksheetXml(
   }
   xml += '<sheetData>';
   const outlinedRows = sheet.outline?.groups.filter((group) => group.axis === 'row').flatMap((group) => Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset)) ?? [];
-  const rowKeys = [...new Set([...Object.keys(sheet.cells), ...Object.keys(nativeDisplayCells ?? {}), ...Object.keys(sheet.rowHeightsPx ?? {}), ...(sheet.hiddenRows ?? []), ...outlinedRows])].map(Number).sort((a, b) => a - b);
+  const rowKeys = [...new Set([
+    ...Object.keys(sheet.cells).map(Number),
+    ...Object.keys(nativeDisplayCells ?? {}).map(Number),
+    ...Object.keys(sheet.rowHeightsPx ?? {}).map(Number),
+    ...(sheet.hiddenRows ?? []),
+    ...outlinedRows,
+  ])].sort((a, b) => a - b);
   for (const row of rowKeys) {
     const cells = { ...(nativeDisplayCells?.[String(row)] ?? {}), ...(sheet.cells[String(row)] ?? {}) };
     const columns = Object.keys(cells).map(Number).sort((a, b) => a - b);

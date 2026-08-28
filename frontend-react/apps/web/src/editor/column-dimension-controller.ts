@@ -45,12 +45,22 @@ export class ColumnDimensionController {
   }
 
   setRowHeightPoints(rows: readonly number[], points: number): void {
-    if (!Number.isFinite(points) || points <= 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (points === 0) {
+      this.setRowsHidden(rows, true);
+      return;
+    }
+    this.setRowsHidden(rows, false);
     this.session.resizeRows(rows, pointsToPixels(points));
   }
 
   setRowPixels(rows: readonly number[], heightPx: number): void {
-    if (!Number.isFinite(heightPx) || heightPx <= 0) throw new Error('Row height must be positive pixels');
+    if (!Number.isFinite(heightPx) || heightPx < 0) throw new Error('Row height must be non-negative pixels');
+    if (heightPx === 0) {
+      this.setRowsHidden(rows, true);
+      return;
+    }
+    this.setRowsHidden(rows, false);
     this.session.resizeRows(rows, heightPx);
   }
 

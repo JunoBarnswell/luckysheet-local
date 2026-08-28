@@ -141,10 +141,23 @@ export class CellContentLayoutDomain {
       : style?.wrapText && availableWidthPx !== undefined
         ? wrapText(input.context, input.text, availableWidthPx)
         : input.text.split(/\r?\n/);
-    const textWidthPx = measureLines(input.context, input.cell, input.theme, input.text, lines, fontSizePx, fontRuns);
+    const textWidthPx = measureLines(input.context, input.cell, input.text, lines, fontRuns);
     const contentHeightPx = Math.max(1, lines.length) * lineHeightPx;
-    const naturalWidthPx = textWidthPx + padding * 2 + indent + reserve + borderWidth;
-    const naturalHeightPx = contentHeightPx + padding * 2 + borderHeight;
+    let naturalWidthPx = textWidthPx + padding * 2 + indent + reserve + borderWidth;
+    let naturalHeightPx = contentHeightPx + padding * 2 + borderHeight;
+    if ((style?.wrapText || style?.shrinkToFit) && availableWidthPx !== undefined) naturalWidthPx = Math.min(naturalWidthPx, baseRect.width);
+    const rotationDegrees = style?.textOrientation === 'rotateUp'
+      ? 90
+      : style?.textOrientation === 'rotateDown'
+        ? 180
+        : style?.textRotate ?? 0;
+    if (rotationDegrees !== 0) {
+      const rotation = Math.abs(rotationDegrees * Math.PI / 180);
+      const rotatedWidth = Math.abs(Math.cos(rotation)) * naturalWidthPx + Math.abs(Math.sin(rotation)) * naturalHeightPx;
+      const rotatedHeight = Math.abs(Math.sin(rotation)) * naturalWidthPx + Math.abs(Math.cos(rotation)) * naturalHeightPx;
+      naturalWidthPx = rotatedWidth;
+      naturalHeightPx = rotatedHeight;
+    }
     input.context.restore();
 
     const horizontalAlignment = resolveHorizontalAlignment(style?.horizontalAlignment, input.cell.value);
@@ -258,10 +271,8 @@ function widestLineFromRuns(context: CanvasRenderingContext2D | OffscreenCanvasR
 function measureLines(
   context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   cell: CellRenderData,
-  theme: RenderTheme,
   sourceText: string,
   lines: readonly string[],
-  baseFontSizePx: number,
   measuredRuns: readonly CellMeasuredTextRun[],
 ): number {
   if (!cell.richText || cell.richText.length === 0) return Math.max(0, ...lines.map((line) => context.measureText(line).width));
@@ -363,6 +374,8 @@ function resolveStaticDisplayRect(input: CellContentLayoutInput, baseRect: Rect,
     && !style?.shrinkToFit
     && (!style?.textOrientation || style.textOrientation === 'horizontal')
     && !input.cell.presentation
+    && !input.cell.editor
+    && !input.cell.formula
     && alignment !== 'fill'
     && alignment !== 'justify'
     && alignment !== 'distributed'
@@ -435,8 +448,9 @@ function resolveEditRect(input: CellContentLayoutInput, baseRect: Rect, naturalW
   const occupancy = input.neighborOccupancy;
   const leftAvailable = Math.max(0, baseRect.x - (input.viewportRect?.x ?? -Infinity));
   const rightAvailable = Math.max(0, (input.viewportRect ? input.viewportRect.x + input.viewportRect.width : Infinity) - (baseRect.x + baseRect.width));
-  const leftTarget = alignment === 'right' ? required : alignment === 'center' ? Math.ceil(required / 2) : 0;
-  const rightTarget = alignment === 'left' ? required : alignment === 'center' ? Math.floor(required / 2) : 0;
+  const centered = alignment === 'center' || alignment === 'centerContinuous';
+  const leftTarget = alignment === 'right' ? required : centered ? Math.ceil(required / 2) : 0;
+  const rightTarget = alignment === 'left' ? required : centered ? Math.floor(required / 2) : 0;
   const left = consumeWidth(occupancy.left, Math.min(leftTarget, leftAvailable));
   const right = consumeWidth(occupancy.right, Math.min(rightTarget, rightAvailable));
   let remaining = Math.max(0, required - left.widthPx - right.widthPx);

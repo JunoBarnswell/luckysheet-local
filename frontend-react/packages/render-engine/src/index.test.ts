@@ -492,6 +492,21 @@ test('stacked orientation renders explicitly while unsupported native alignment 
   assert.ok(textAlignValues.every((value) => value === 'left' || value === 'center' || value === 'right'));
 });
 
+test('manual newlines render as separate lines even when Wrap Text is disabled', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 1, columnCount: 1, defaultRowHeight: 60, defaultColumnWidth: 80 });
+  const range = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const { context, textCalls } = recordingContext();
+  drawCellLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: () => ({ value: 'first\nsecond', displayValue: 'first\nsecond' }),
+    theme: DEFAULT_RENDER_THEME,
+  });
+  assert.deepEqual(textCalls.map((call) => call.text), ['first', 'second']);
+});
+
 test('blank cells retain complete horizontal and vertical grid boundaries', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };

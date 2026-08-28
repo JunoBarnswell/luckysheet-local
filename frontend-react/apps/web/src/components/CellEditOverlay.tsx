@@ -28,6 +28,7 @@ export function CellEditOverlay({ cellEdit, engine, host, scrollTick, sheet }: C
       style: cellStyle,
       ...(session?.originalCell?.formula ? { formula: session.originalCell.formula } : {}),
       ...(session?.originalCell?.richText ? { richText: session.originalCell.richText } : {}),
+      ...(session?.originalCell?.phonetic ? { phonetic: session.originalCell.phonetic } : {}),
     };
     const layout = engine.cellContentLayoutAtScreen(displayTarget, draftText, 'edit', {
       ...(mergedRange ? { range: mergedRange } : {}),

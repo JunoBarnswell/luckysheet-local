@@ -50,7 +50,7 @@ function cellMapKey(row: number, column: number): string {
 
 function hasRenderableCell(cell: CellRenderData | undefined): boolean {
   if (!cell) return false;
-  if (cell.presentation || cell.formula) return true;
+  if (cell.presentation || cell.editor || cell.formula) return true;
   const value = cell.displayValue ?? cell.value;
   return value !== undefined && value !== null && String(value).length > 0;
 }
