@@ -39,6 +39,7 @@ export * from './cell-edit';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
 export type { SelectionArea, SelectionKind, SelectionMode } from './selection-service';
 export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';
+export { applyHeaderSelection, headerContextMenuCatalog, headerRange, headerTargetSelected, selectedHeaderIndices, type DimensionSelectionOptions, type HeaderBounds, type HeaderContextAction, type HeaderContextMenuDescriptor, type HeaderIntent, type HeaderTarget } from './header-interaction-domain';
 export { containsRange, expandSelectionRangeForMerges, intersectsRange, nextVisibleCell, resolveSelectionTarget, type ResolvedSelectionTarget, type SelectionTargetSurface } from './selection-target-resolver';
 export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyleFieldState, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode, LocalObjectDialogKind } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';

@@ -17,6 +17,7 @@ import type {
 } from "@react-sheets/core-model";
 import {
   createSpreadsheetShortcutRegistry,
+  applyHeaderSelection,
   expandSelectionRangeForMerges,
   resolveContextHit,
   resolveSelectionTarget,
@@ -29,6 +30,7 @@ import {
   type ResolvedContextHit,
   type SelectionGesture,
   type SelectionState,
+  type HeaderTarget,
 } from "@react-sheets/spreadsheet-app";
 import {
   claimPointerGesture,
@@ -76,6 +78,7 @@ interface DragState {
   currentColumn: number;
   additive: boolean;
   extend: boolean;
+  headerTarget?: Exclude<HeaderTarget, { kind: 'corner' }>;
   dimensionResize?: DimensionResizeGesture;
   floating?: {
     id: string;
@@ -127,6 +130,8 @@ export interface CanvasInteractionOptions {
   onResizeColumn: (column: number, widthPx: number) => void;
   onAutoFitColumn: (column: number) => void | Promise<void>;
   onAutoFitRow: (row: number) => void | Promise<void>;
+  onUnhideColumns: (columns: readonly number[]) => void;
+  onUnhideRows: (rows: readonly number[]) => void;
   formatColumnWidthPreview: (widthPx: number) => { widthPx: number; excelWidth: number };
   onFillRange: (target: CanvasFillPreview) => void;
   onExitDrawingSelectionMode?: () => void;
@@ -217,6 +222,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onResizeColumn,
     onAutoFitColumn,
     onAutoFitRow,
+    onUnhideColumns,
+    onUnhideRows,
     formatColumnWidthPreview,
     onResizeRow,
     onSelectAll,
@@ -490,7 +497,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         onSelectAll();
         return;
       }
-      if (headerHit.resizeBoundaryPx !== undefined) {
+      if (headerHit.resizeBoundaryPx !== undefined && !headerHit.hiddenIndices?.length) {
         dragRef.current = {
           kind: headerHit.kind === "col" ? "col-resize" : "row-resize",
           pointerId: event.pointerId,
@@ -515,6 +522,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         return;
       }
       const additive = event.ctrlKey || event.metaKey;
+      const extend = event.shiftKey && !additive;
+      const headerTarget: Exclude<HeaderTarget, { kind: 'corner' }> = headerHit.kind === 'row'
+        ? { kind: 'row', index: headerHit.index }
+        : { kind: 'column', index: headerHit.index };
       if (headerHit.kind === "row") {
         for (const control of sheet.outlineControls) {
           if (control.axis !== "row" || control.index !== headerHit.index) continue;
@@ -545,12 +556,13 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         pointerId: event.pointerId,
         startRow: headerHit.kind === "row" ? headerHit.index : 0,
         startColumn: headerHit.kind === "col" ? headerHit.index : 0,
-        anchorRow: headerHit.kind === "row" ? headerHit.index : 0,
-        anchorColumn: headerHit.kind === "col" ? headerHit.index : 0,
+        anchorRow: extend ? selection.anchorCell.row : headerHit.kind === "row" ? headerHit.index : 0,
+        anchorColumn: extend ? selection.anchorCell.column : headerHit.kind === "col" ? headerHit.index : 0,
         currentRow: headerHit.kind === "row" ? headerHit.index : 0,
         currentColumn: headerHit.kind === "col" ? headerHit.index : 0,
         additive,
-        extend: false,
+        extend,
+        headerTarget,
         floating: { id: headerHit.kind, kind: "shape", handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
       };
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -717,10 +729,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     drag.currentColumn = cell.column;
     const baseRange: RangeRef = {
       sheetId,
-      startRow: isRowDrag || isColDrag ? Math.min(drag.startRow, drag.currentRow) : Math.min(drag.anchorRow, drag.currentRow),
-      endRow: isRowDrag ? Math.max(drag.startRow, drag.currentRow) : isColDrag ? Math.max(0, skeleton.rowCount - 1) : Math.max(drag.anchorRow, drag.currentRow),
-      startColumn: isColDrag ? Math.min(drag.startColumn, drag.currentColumn) : Math.min(drag.anchorColumn, drag.currentColumn),
-      endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : isColDrag ? Math.max(drag.startColumn, drag.currentColumn) : Math.max(drag.anchorColumn, drag.currentColumn),
+      startRow: isRowDrag ? Math.min(drag.extend ? drag.anchorRow : drag.startRow, drag.currentRow) : isColDrag ? 0 : Math.min(drag.anchorRow, drag.currentRow),
+      endRow: isRowDrag ? Math.max(drag.extend ? drag.anchorRow : drag.startRow, drag.currentRow) : isColDrag ? Math.max(0, skeleton.rowCount - 1) : Math.max(drag.anchorRow, drag.currentRow),
+      startColumn: isColDrag ? Math.min(drag.extend ? drag.anchorColumn : drag.startColumn, drag.currentColumn) : isRowDrag ? 0 : Math.min(drag.anchorColumn, drag.currentColumn),
+      endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : isColDrag ? Math.max(drag.extend ? drag.anchorColumn : drag.startColumn, drag.currentColumn) : Math.max(drag.anchorColumn, drag.currentColumn),
     };
     const range = expandSelectionRangeForMerges(sheet, baseRange);
     queueTransientSelection({
@@ -755,6 +767,13 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (drag.kind === "row-resize") {
       if (!drag.dimensionResize) throw new Error('Row resize drag is missing its canonical gesture');
       onResizeRow(drag.dimensionResize.boundaryIndex, drag.dimensionResize.currentModelSizePx);
+      return;
+    }
+    if (drag.headerTarget) {
+      const target: HeaderTarget = drag.headerTarget.kind === 'column'
+        ? { kind: 'column', index: drag.currentColumn }
+        : { kind: 'row', index: drag.currentRow };
+      onSelectionChange(applyHeaderSelection(selection, target, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: drag.additive, extend: drag.extend }));
       return;
     }
     if (drag.kind === "textbox-placement" && drag.textBox) {
@@ -853,7 +872,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
     const headerHit = engine.headerHitAtLocal(local);
     if (headerHit?.resizeBoundaryPx !== undefined) {
-      if (headerHit.kind === 'col') void onAutoFitColumn(headerHit.index);
+      if (headerHit.kind === 'col') {
+        if (headerHit.hiddenIndices?.length) onUnhideColumns(headerHit.hiddenIndices);
+        else void onAutoFitColumn(headerHit.index);
+      } else if (headerHit.hiddenIndices?.length) onUnhideRows(headerHit.hiddenIndices);
       else void onAutoFitRow(headerHit.index);
       return;
     }
@@ -874,7 +896,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const text = sourceCell?.formula ?? (sourceCell?.value == null ? '' : String(sourceCell.value));
     const caretOffset = engine.textCaretAtLocalPoint(local, cell, text);
     cellEdit.dispatch({ type: 'begin.request', source: 'double-click', surface: 'grid', ...(caretOffset === null ? {} : { caret: { start: caretOffset, end: caretOffset } }) });
-  }, [cellEdit, drawingPayloads, drawings, engineRef, findPivotProjectionCell, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginTextBoxEdit, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onPivotShowDetails, sheet]);
+  }, [cellEdit, drawingPayloads, drawings, engineRef, findPivotProjectionCell, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginTextBoxEdit, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onPivotShowDetails, onUnhideColumns, onUnhideRows, sheet]);
 
   const handleWheel = useCallback((event: React.WheelEvent) => {
     const engine = engineRef.current;
@@ -922,6 +944,16 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     if (shortcut && onShortcut?.(shortcut.id)) { event.preventDefault(); return; }
+    if (key === ' ' && ctrl) {
+      event.preventDefault();
+      onSelectionChange(applyHeaderSelection(selection, { kind: 'column', index: selection.activeCell.column }, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: false, extend: false }));
+      return;
+    }
+    if (key === ' ' && event.shiftKey) {
+      event.preventDefault();
+      onSelectionChange(applyHeaderSelection(selection, { kind: 'row', index: selection.activeCell.row }, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: false, extend: false }));
+      return;
+    }
     const control = cellEdit.dispatch({ type: 'control.keyboard', gesture: toCanonicalKeyGesture(event) });
     if (control.handled) { if (control.preventDefault) event.preventDefault(); return; }
     if (key === 'F2') {

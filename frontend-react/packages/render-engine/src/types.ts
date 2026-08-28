@@ -1,4 +1,4 @@
-import type { CellEditorConfig, HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
+import type { CellEditorConfig, HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, RichTextRun, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
 
 export type LayerId = string;
 
@@ -91,6 +91,7 @@ export interface CellRenderData {
   value: CellValue;
   formula?: string;
   displayValue?: string;
+  richText?: RichTextRun[];
   style?: CellRenderStyle;
   editor?: CellEditorConfig;
   presentation?: import('@react-sheets/core-model').CellPresentation;
@@ -303,4 +304,6 @@ export interface HeaderHit {
   index: number;
   /** 命中位置距离可拖拽调整边界的像素数;undefined 表示不在调整热区 */
   resizeBoundaryPx?: number;
+  /** Collapsed dimensions represented by the hidden double-line indicator. */
+  hiddenIndices?: readonly number[];
 }

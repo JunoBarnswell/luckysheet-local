@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Box, Button, Dialog, Inline, Text } from '@react-sheets/ui-system';
-import type { CanvasRenderEngine } from '@react-sheets/render-engine';
+import type { CanvasRenderEngine, CellContentLayoutResult, CellRenderData } from '@react-sheets/render-engine';
 import { useCellEdit, type CanvasSheetSnapshot, type CellEditController } from '@react-sheets/spreadsheet-app';
 import { CellEditor } from './CellEditor';
 import { FormulaReferenceOverlay } from './FormulaReferenceOverlay';
@@ -13,82 +13,32 @@ export interface CellEditOverlayProps {
   sheet: CanvasSheetSnapshot;
 }
 
-interface EditorRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-function hasVisibleValue(sheet: CanvasSheetSnapshot, row: number, column: number): boolean {
-  const cell = sheet.getCell(row, column);
-  return Boolean(cell && (cell.formula || cell.value !== null && cell.value !== undefined && String(cell.displayValue ?? cell.value).length > 0));
-}
-
-function editorRect(
-  engine: CanvasRenderEngine,
-  sheet: CanvasSheetSnapshot,
-  row: number,
-  column: number,
-  mergedRange: CellEditOverlayProps['sheet']['merges'][number]['range'] | undefined,
-  draft: string,
-): EditorRect | null {
-  const range = mergedRange ?? { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column };
-  const screen = engine.contentRangeToScreenRects(range)[0];
-  if (!screen) return null;
-  const style = sheet.getCell(row, column)?.style;
-  const viewport = engine.viewport.getSnapshot();
-  const fontSize = style?.fontSizePx ?? 13;
-  const lines = draft.split('\n');
-  const multiline = lines.length > 1 || style?.wrapText === true;
-  let x = screen.x;
-  let width = screen.width;
-  let height = screen.height;
-
-  if (multiline) {
-    const estimatedLines = style?.wrapText
-      ? Math.max(lines.length, Math.ceil(Math.max(...lines.map((line) => line.length), 1) * fontSize * 0.56 / Math.max(1, screen.width - 8)))
-      : lines.length;
-    height = Math.max(height, estimatedLines * Math.ceil(fontSize * 1.35) + 6);
-  } else {
-    const desiredWidth = Math.max(screen.width, draft.length * fontSize * 0.56 + 10);
-    if (style?.horizontalAlignment === 'right') {
-      let candidate = range.startColumn - 1;
-      while (candidate >= 0 && width < desiredWidth && !hasVisibleValue(sheet, row, candidate)) {
-        const nextWidth = engine.skeleton.getColumnWidth(candidate);
-        width += nextWidth;
-        x -= nextWidth;
-        candidate -= 1;
-      }
-    } else {
-      let candidate = range.endColumn + 1;
-      while (candidate < sheet.columnCount && width < desiredWidth && !hasVisibleValue(sheet, row, candidate)) {
-        width += engine.skeleton.getColumnWidth(candidate);
-        candidate += 1;
-      }
-    }
-  }
-
-  x = Math.max(0, x);
-  width = Math.max(screen.width, Math.min(width, viewport.width - x));
-  height = Math.max(screen.height, Math.min(height, viewport.height - screen.y));
-  return { x, y: screen.y, width, height };
-}
-
 export function CellEditOverlay({ cellEdit, engine, host, scrollTick, sheet }: CellEditOverlayProps) {
   const edit = useCellEdit(cellEdit);
   const session = edit.session;
   const displayTarget = session?.target.display;
   const mergedRange = session?.target.mergedRange;
   const draftText = session?.draft.text ?? '';
-  const rect = useMemo(() => {
+  const cellStyle = session && displayTarget?.sheetId === sheet.id ? sheet.getCell(displayTarget.row, displayTarget.column)?.style : undefined;
+  const layout = useMemo<CellContentLayoutResult | null>(() => {
     void scrollTick;
     if (!engine || !displayTarget || displayTarget.sheetId !== sheet.id) return null;
-    return editorRect(engine, sheet, displayTarget.row, displayTarget.column, mergedRange, draftText);
-  }, [displayTarget, draftText, engine, mergedRange, scrollTick, sheet]);
+    const source: CellRenderData = {
+      value: session?.originalCell?.value ?? null,
+      style: cellStyle,
+      ...(session?.originalCell?.formula ? { formula: session.originalCell.formula } : {}),
+      ...(session?.originalCell?.richText ? { richText: session.originalCell.richText } : {}),
+    };
+    const layout = engine.cellContentLayoutAtScreen(displayTarget, draftText, 'edit', {
+      ...(mergedRange ? { range: mergedRange } : {}),
+      cell: source,
+      ...(session ? { caret: session.caret } : {}),
+    });
+    return layout;
+  }, [cellStyle, displayTarget, draftText, engine, mergedRange, scrollTick, session, sheet.id]);
+  const rect = layout?.editRect ?? null;
 
   if (!session) return null;
-  const cellStyle = session.target.display.sheetId === sheet.id ? sheet.getCell(session.target.display.row, session.target.display.column)?.style : undefined;
   const confirmation = session.overlay.kind === 'validation-confirmation' ? session.overlay : null;
   const editorList = session.overlay.kind === 'editor-list' ? session.overlay : null;
   const autocomplete = session.surface === 'grid' && session.overlay.kind === 'autocomplete' ? session.overlay : null;
@@ -106,7 +56,7 @@ export function CellEditOverlay({ cellEdit, engine, host, scrollTick, sheet }: C
           className="absolute z-20 overflow-visible rounded-none border border-[#5292f7] bg-white"
           style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
         >
-          <CellEditor editorSurface={session.editorSurface} cellEdit={cellEdit} cellStyle={cellStyle} draft={session.draft} caret={session.caret} />
+          <CellEditor editorSurface={session.editorSurface} cellEdit={cellEdit} cellStyle={cellStyle} draft={session.draft} caret={session.caret} layout={layout} />
         {editorList ? (
           <Box className={`absolute left-0 z-30 max-h-56 min-w-full overflow-y-auto rounded border border-[#9ba8b6] bg-white py-1 shadow-lg ${popupAnchorClass}`}>
             {editorList.items.map((item, index) => (

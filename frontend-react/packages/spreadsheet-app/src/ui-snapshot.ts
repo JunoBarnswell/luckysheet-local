@@ -87,6 +87,7 @@ export interface CanvasCellSnapshot {
   displayValue?: string;
   formula?: string;
   style?: CellStyle;
+  richText?: import('@react-sheets/core-model').RichTextRun[];
   editor?: CellEditorConfig;
   presentation?: CellPresentation;
   phonetic?: import('@react-sheets/core-model').CellPhoneticMetadata;
@@ -294,6 +295,7 @@ export function buildCanvasSheetSnapshot(
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
+      richText: modelCell?.richText ? structuredClone(modelCell.richText) : undefined,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,
       phonetic: modelCell?.phonetic ? structuredClone(modelCell.phonetic) : undefined,

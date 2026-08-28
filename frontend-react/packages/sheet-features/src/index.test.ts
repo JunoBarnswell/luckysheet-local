@@ -1043,6 +1043,28 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('selected header insert/delete commands apply non-adjacent dimensions in one history transaction', () => {
+  const workbook = new WorkbookModel('unit-selected-dimensions', 'Selected dimensions');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 1, { value: 'B' });
+  sheet.cells.set(0, 3, { value: 'D' });
+  sheet.cells.set(0, 5, { value: 'E' });
+  const history = runtime.getHistoryDepth().undo;
+  runtime.execute('sheet.columns.insert.selected', { sheetId: sheet.id, indices: [1, 3] });
+  assert.equal(sheet.columnCount, 28);
+  assert.equal(runtime.getHistoryDepth().undo, history + 1);
+  assert.equal(sheet.cells.get(0, 2)?.value, 'B');
+  assert.equal(sheet.cells.get(0, 5)?.value, 'D');
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(0, 1)?.value, 'B');
+  assert.equal(sheet.cells.get(0, 3)?.value, 'D');
+  runtime.execute('sheet.columns.delete.selected', { sheetId: sheet.id, indices: [1, 3] });
+  assert.equal(sheet.cells.get(0, 1), undefined);
+  assert.equal(sheet.cells.get(0, 3)?.value, 'E');
+});
+
 test('sheet.extent.grow expands sparse bounds without polluting edit history and rejects unsupported limits', () => {
   const workbook = new WorkbookModel('unit-extent-grow', 'Extent growth');
   const runtime = new CommandRuntime(workbook);

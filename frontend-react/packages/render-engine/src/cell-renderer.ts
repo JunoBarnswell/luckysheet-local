@@ -13,9 +13,9 @@ import {
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
 import { checkboxStateFromValue, type AssetRef, type CheckboxCellState } from '@react-sheets/core-model';
-import { cellRenderFont, resolveCellTextLayout } from './cell-text-layout';
+import { resolveCellContentLayout, type CellLayoutNeighbor } from './cell-content-layout';
 
-export { cellRenderFont } from './cell-text-layout';
+export { cellRenderFont } from './cell-content-layout';
 
 export type AssetUrlResolver = (asset: AssetRef) => Promise<string>;
 
@@ -219,6 +219,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
     }
   });
 
+  const deferredContent: Array<{ address: CellAddress; cell: CellRenderData; contentRect: Rect; spanRect: Rect }> = [];
   for (const address of addresses) {
       const { row, column } = address;
       const rect: Rect = {
@@ -273,12 +274,15 @@ export function drawCellLayer(options: PaneDrawOptions): void {
       if (cell?.invalid) drawInvalidRing(context, spanRect, theme);
 
       if (cell && (!alignmentSpan || alignmentSpan.isAnchor)) {
-        if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
-        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation, options);
-        else drawCellValue(context, skeleton, options, address, cell, contentRect);
-        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, checkboxStateFromValue(cell.editor, cell.value ?? null));
-        if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
+        deferredContent.push({ address, cell, contentRect, spanRect });
       }
+  }
+  for (const { address, cell, contentRect, spanRect } of deferredContent) {
+    if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
+    else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation, options);
+    else drawCellValue(context, skeleton, options, address, cell, contentRect);
+    if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, checkboxStateFromValue(cell.editor, cell.value ?? null));
+    if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
   }
 }
 
@@ -556,7 +560,15 @@ export function measureCellAutoFit(
   reserveFilterButton = false,
 ): AutoFitMeasurement {
   const text = resolveDisplayText(cell);
-  const layout = resolveCellTextLayout(context, cell, theme, text, availableWidthPx, reserveFilterButton);
+  const layout = resolveCellContentLayout({
+    context,
+    cell,
+    theme,
+    text,
+    cellRect: { x: 0, y: 0, width: availableWidthPx ?? 0, height: 20 },
+    mode: 'display',
+    reserveFilterButton,
+  });
   if (!cell.phonetic?.visible || cell.phonetic.runs.length === 0) return { widthPx: layout.widthPx, heightPx: layout.heightPx };
   const phoneticText = cell.phonetic.runs.map((run) => run.text).join('');
   const phoneticSize = cell.phonetic.fontSizePx ?? Math.max(7, layout.fontSizePx * 0.55);
@@ -586,50 +598,61 @@ function drawCellValue(
 
   const padding = style?.padding ?? theme.cellPadding;
   const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
-  const hAlign = resolveHorizontalAlignment(style?.horizontalAlignment, cell.value);
+  const cellRange = cell.merge?.isAnchor
+    ? { startColumn: cell.merge.startColumn, endColumn: cell.merge.endColumn }
+    : cell.alignmentSpan?.isAnchor
+      ? { startColumn: cell.alignmentSpan.startColumn, endColumn: cell.alignmentSpan.endColumn }
+      : { startColumn: address.column, endColumn: address.column };
+  const layout = resolveCellContentLayout({
+    context,
+    cell,
+    theme,
+    text,
+    cellRect: rect,
+    mode: 'display',
+    ...(cell.alignmentSpan?.isAnchor ? { alignmentSpan: rect } : {}),
+    cellRange,
+    neighborOccupancy: layoutNeighbors(options, address, cellRange),
+  });
+  const hAlign = layout.horizontalAlignment;
   const vAlign = style?.verticalAlignment ?? "middle";
+  const paintRect = layout.displayRect;
 
   context.save();
-  const maxWidth = rect.width - padding * 2 - indent;
-  const textLayout = resolveCellTextLayout(context, cell, theme, text, rect.width);
-  context.font = textLayout.font;
+  context.font = layout.font;
   context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
-  const phoneticHeight = drawPhoneticGuide(context, cell, rect, textLayout.fontSizePx, style?.fontFamily, style?.textColor ?? theme.cellText);
+  const phoneticHeight = drawPhoneticGuide(context, cell, paintRect, layout.fontSizePx, style?.fontFamily, style?.textColor ?? theme.cellText);
 
   const wrap = Boolean(style?.wrapText);
-  const measured = textLayout.rawTextWidthPx;
+  const measured = layout.rawTextWidthPx;
 
   if (style?.textOrientation === 'stacked') {
-    drawStackedText(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, vAlign);
+    drawStackedText(context, layout.lines, layout.lineHeightPx, paintRect, padding + indent, vAlign);
     context.restore();
     return;
   }
 
   if (wrap) {
-    drawWrapped(context, textLayout.lines, textLayout.lineHeightPx, rect, padding + indent, hAlign, vAlign, maxWidth);
+    drawWrapped(context, layout.lines, layout.lineHeightPx, paintRect, padding + indent, hAlign, vAlign, layout.overflowWidthPx);
     context.restore();
     return;
   }
 
-  // 溢出:左对齐文本超宽且右侧邻格为空时向右溢出
-  let overflowWidth = maxWidth;
-  if (hAlign === "left" && measured > maxWidth) {
-    const allowed = allowedOverflowWidth(options, address, text, measured, rect);
-    overflowWidth = allowed;
-  }
-
+  context.beginPath();
+  context.rect(paintRect.x, paintRect.y, paintRect.width, paintRect.height);
+  context.clip();
   let x: number;
-  if (hAlign === "center" || hAlign === "centerContinuous") x = rect.x + rect.width / 2;
-  else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
-  else x = rect.x + padding + indent;
+  if (hAlign === "center" || hAlign === "centerContinuous") x = paintRect.x + paintRect.width / 2;
+  else if (hAlign === "right") x = paintRect.x + paintRect.width - padding - indent;
+  else x = paintRect.x + padding + indent;
 
-  const fontSize = textLayout.fontSizePx;
+  const fontSize = layout.fontSizePx;
   let y = vAlign === 'top'
-    ? rect.y + padding + phoneticHeight + fontSize / 2
+    ? paintRect.y + padding + phoneticHeight + fontSize / 2
     : vAlign === 'bottom'
-      ? rect.y + rect.height - padding - fontSize / 2
-      : rect.y + rect.height / 2 + phoneticHeight * 0.25;
+      ? paintRect.y + paintRect.height - padding - fontSize / 2
+      : paintRect.y + paintRect.height / 2 + phoneticHeight * 0.25;
   const rotate = style?.textOrientation === 'rotateUp'
     ? 90
     : style?.textOrientation === 'rotateDown'
@@ -637,22 +660,23 @@ function drawCellValue(
       : style?.textRotate ?? 0;
   if (rotate !== 0) {
     const radians = (rotate * Math.PI) / 180;
-    context.translate(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    context.translate(paintRect.x + paintRect.width / 2, paintRect.y + paintRect.height / 2);
     context.rotate(-radians);
     x = 0;
     y = 0;
   }
 
-  if (hAlign === 'fill') drawFilledText(context, text, rect.x + padding + indent, y, overflowWidth);
-  else if (hAlign === 'justify' || hAlign === 'distributed') drawDistributedText(context, text, rect.x + padding + indent, y, overflowWidth, hAlign === 'distributed');
+  if (cell.richText?.length && rotate === 0 && layout.lines.length === 1 && hAlign !== 'fill' && hAlign !== 'justify' && hAlign !== 'distributed') drawRichTextRuns(context, cell.richText, layout.fontRuns, paintRect, padding, indent, hAlign, y);
+  else if (hAlign === 'fill') drawFilledText(context, text, paintRect.x + padding + indent, y, layout.overflowWidthPx);
+  else if (hAlign === 'justify' || hAlign === 'distributed') drawDistributedText(context, text, paintRect.x + padding + indent, y, layout.overflowWidthPx, hAlign === 'distributed');
   else {
     const canvasAlign = canvasTextAlign(hAlign);
     context.textAlign = canvasAlign;
-    context.fillText(text, x, y, overflowWidth);
+    context.fillText(text, x, y);
   }
 
   if (style?.underline || style?.strikethrough) {
-    const textWidth = Math.min(measured, overflowWidth);
+    const textWidth = Math.min(measured, layout.overflowWidthPx);
     const canvasAlign = canvasTextAlign(hAlign);
     let lineX1 = canvasAlign === "center" ? x - textWidth / 2 : canvasAlign === "right" ? x - textWidth : x;
     const lineX2 = lineX1 + textWidth;
@@ -675,6 +699,56 @@ function drawCellValue(
   void skeleton;
 }
 
+function drawRichTextRuns(
+  context: CanvasRenderingContext2D,
+  runs: readonly import('@react-sheets/core-model').RichTextRun[],
+  measuredRuns: readonly import('./cell-content-layout').CellMeasuredTextRun[],
+  rect: Rect,
+  padding: number,
+  indent: number,
+  alignment: import('@react-sheets/core-model').HorizontalAlignment,
+  y: number,
+): void {
+  const totalWidth = measuredRuns.reduce((sum, run) => sum + run.widthPx, 0);
+  const start = alignment === 'right'
+    ? rect.x + rect.width - padding - indent - totalWidth
+    : alignment === 'center' || alignment === 'centerContinuous'
+      ? rect.x + rect.width / 2 - totalWidth / 2
+      : rect.x + padding + indent;
+  let x = start;
+  context.textAlign = 'left';
+  for (let index = 0; index < runs.length; index += 1) {
+    const run = runs[index]!;
+    const measured = measuredRuns[index];
+    if (!measured) continue;
+    context.font = measured.font;
+    context.fillStyle = run.style?.textColor ?? context.fillStyle;
+    context.fillText(run.text, x, y);
+    x += measured.widthPx;
+  }
+}
+
+function layoutNeighbors(options: PaneDrawOptions, address: CellAddress, range: { startColumn: number; endColumn: number }): { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] } {
+  const left: CellLayoutNeighbor[] = [];
+  for (let column = range.startColumn - 1; column >= 0; column -= 1) {
+    const neighbor = options.cellProvider({ row: address.row, column });
+    left.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: hasRenderableCellContent(neighbor) });
+  }
+  const right: CellLayoutNeighbor[] = [];
+  for (let column = range.endColumn + 1; column < options.skeleton.columnCount; column += 1) {
+    const neighbor = options.cellProvider({ row: address.row, column });
+    right.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: hasRenderableCellContent(neighbor) });
+  }
+  return { left, right };
+}
+
+function hasRenderableCellContent(cell: CellRenderData | undefined): boolean {
+  if (!cell) return false;
+  if (cell.presentation || cell.formula) return true;
+  const value = resolveDisplayText(cell);
+  return value.length > 0;
+}
+
 function drawPhoneticGuide(context: CanvasRenderingContext2D, cell: CellRenderData, rect: Rect, baseFontSize: number, baseFontFamily: string | undefined, color: string): number {
   const metadata = cell.phonetic;
   if (!metadata?.visible || metadata.runs.length === 0) return 0;
@@ -689,33 +763,6 @@ function drawPhoneticGuide(context: CanvasRenderingContext2D, cell: CellRenderDa
   context.fillText(text, x, rect.y + 1, Math.max(1, rect.width - 4));
   context.restore();
   return size * 1.25;
-}
-
-/** 计算允许的溢出宽度:右侧连续空单元格宽度之和 */
-function allowedOverflowWidth(
-  options: PaneDrawOptions,
-  address: CellAddress,
-  text: string,
-  measured: number,
-  rect: Rect,
-): number {
-  const { skeleton, cellProvider } = options;
-  const firstCellWidth = rect.width - 12; // 自身边界内可用宽
-  let available = firstCellWidth;
-  let remainingNeed = measured - firstCellWidth;
-  if (remainingNeed <= 0) return measured;
-  let column = address.column + 1;
-  while (remainingNeed > 0 && column < skeleton.columnCount) {
-    const neighbor = cellProvider({ row: address.row, column });
-    const neighborText = neighbor ? resolveDisplayText(neighbor) : "";
-    if (neighborText) break;
-    const width = skeleton.getColumnWidth(column);
-    available += width;
-    remainingNeed -= width;
-    column += 1;
-  }
-  void text;
-  return Math.min(measured, available);
 }
 
 function drawWrapped(
@@ -751,14 +798,6 @@ function drawWrapped(
       context.fillText(line, x, y, maxWidth);
     }
   }
-}
-
-function resolveHorizontalAlignment(
-  alignment: import('@react-sheets/core-model').HorizontalAlignment | undefined,
-  value: CellValue,
-): import('@react-sheets/core-model').HorizontalAlignment {
-  if (alignment !== undefined && alignment !== 'general') return alignment;
-  return typeof value === 'number' || typeof value === 'boolean' ? 'right' : 'left';
 }
 
 function canvasTextAlign(

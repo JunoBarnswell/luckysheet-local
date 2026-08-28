@@ -1,9 +1,12 @@
 import type { CellRenderStyle } from '@react-sheets/render-engine';
+import type { CellPhoneticMetadata, RichTextRun } from '@react-sheets/core-model';
 
 export interface AutoFitCellInput {
   column: number;
   value: string;
   style?: CellRenderStyle;
+  richText?: RichTextRun[];
+  phonetic?: CellPhoneticMetadata;
   filterButton?: boolean;
 }
 
@@ -18,6 +21,8 @@ export interface AutoFitBlock {
   styleIndexes: Uint16Array;
   filterButtons: Uint8Array;
   styles: CellRenderStyle[];
+  richTexts: Array<RichTextRun[] | undefined>;
+  phonetics: Array<CellPhoneticMetadata | undefined>;
 }
 
 export type AutoFitWorkerRequest =
@@ -32,11 +37,15 @@ export function createAutoFitBlock(cells: readonly AutoFitCellInput[]): AutoFitB
   const filterButtons = new Uint8Array(cells.length);
   const values = new Array<string>(cells.length);
   const styles: CellRenderStyle[] = [];
+  const richTexts = new Array<RichTextRun[] | undefined>(cells.length);
+  const phonetics = new Array<CellPhoneticMetadata | undefined>(cells.length);
   const styleIndexesByKey = new Map<string, number>();
   for (let index = 0; index < cells.length; index += 1) {
     const cell = cells[index]!;
     columns[index] = cell.column;
     values[index] = cell.value;
+    richTexts[index] = cell.richText;
+    phonetics[index] = cell.phonetic;
     if (cell.filterButton) filterButtons[index] = 1;
     if (!cell.style) continue;
     const key = JSON.stringify(cell.style);
@@ -49,7 +58,7 @@ export function createAutoFitBlock(cells: readonly AutoFitCellInput[]): AutoFitB
     }
     styleIndexes[index] = styleIndex;
   }
-  return { columns, values, styleIndexes, filterButtons, styles };
+  return { columns, values, styleIndexes, filterButtons, styles, richTexts, phonetics };
 }
 
 export function autoFitBlockTransferables(block: AutoFitBlock): Transferable[] {

@@ -18,6 +18,7 @@ import {
   hasMeasurableCellContent,
 } from './index';
 import { drawCellLayer, drawGridLayer } from './cell-renderer';
+import { drawChromeLayer } from './chrome-renderer';
 import { DEFAULT_RENDER_THEME, type CellRenderData, type RenderPane } from './types';
 
 const skeleton = new SheetSkeleton({
@@ -359,6 +360,18 @@ test('hidden rows collapse layout geometry without losing model row identity', (
   assert.equal(hiddenSkeleton.totalHeight, 80);
 });
 
+test('chrome renders hidden row and column double-line indicators at the canonical collapsed boundary', () => {
+  const hiddenSkeleton = new SheetSkeleton({ rowCount: 6, columnCount: 6, defaultRowHeight: 20, defaultColumnWidth: 50, hiddenRows: new Set([1, 2]), hiddenColumns: new Set([1, 2]) });
+  const plan = calculateRenderPlan({ skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }), headerOffset: defaultHeaderOffset() });
+  const { context, lineCalls } = recordingContext();
+  drawChromeLayer({ context, skeleton: hiddenSkeleton, plan, chrome: createEmptyChromeState(), theme: DEFAULT_RENDER_THEME });
+  assert.ok(lineCalls.some(({ from, to }) => Math.abs(from[0] - 87) < 0.01 && Math.abs(to[0] - 87) < 0.01));
+  assert.ok(lineCalls.some(({ from, to }) => Math.abs(from[1] - 38) < 0.01 && Math.abs(to[1] - 38) < 0.01));
+  const engine = new CanvasRenderEngine({ skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }) });
+  assert.deepEqual(engine.headerHitAtLocal({ x: 89, y: 10 })?.hiddenIndices, [1, 2]);
+  assert.deepEqual(engine.headerHitAtLocal({ x: 10, y: 40 })?.hiddenIndices, [1, 2]);
+});
+
 function recordingContext() {
   const textCalls: Array<{ text: string; x: number; y: number }> = [];
   const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
@@ -389,6 +402,7 @@ function recordingContext() {
     rect() {},
     ellipse() {},
     roundRect() {},
+    clip() {},
     clearRect() {},
     setTransform() {},
     globalAlpha: 1,

@@ -252,6 +252,37 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(style?.textOrientation, 'stacked');
   });
 
+  it('round-trips layout-driving wrap, shrink, newline, row height, and hidden dimensions', async () => {
+    const workbook = new WorkbookModel('wb-cell-layout-roundtrip', 'Cell Layout');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'first line\nsecond line', style: { wrapText: true, shrinkToFit: false } });
+    sheet.cells.set(1, 1, { value: 'compact', style: { wrapText: false, shrinkToFit: true } });
+    sheet.columnWidthsPx[2] = 132;
+    sheet.rowHeightsPx[3] = 42;
+    sheet.hiddenColumns.add(2);
+    sheet.hiddenRows.add(3);
+
+    const original = workbook.snapshot();
+    const buffer = exportSnapshotToOoxmlBuffer(original);
+    const graph = loadOpcPackageGraph(buffer);
+    const stylesXml = strFromU8(graph.files['xl/styles.xml']!);
+    const worksheetXml = strFromU8(graph.files['xl/worksheets/sheet1.xml']!);
+    assert.match(stylesXml, /wrapText="1"/);
+    assert.match(stylesXml, /shrinkToFit="1"/);
+    assert.match(worksheetXml, /<col[^>]*min="3"[^>]*hidden="1"/);
+    assert.match(worksheetXml, /<row[^>]*r="4"[^>]*hidden="1"/);
+
+    const imported = await importOoxmlDocument({ fileName: 'cell-layout-roundtrip.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const restored = imported.snapshot.sheets[0]!;
+    assert.equal(restored.cells['0']?.['0']?.value, 'first line\nsecond line');
+    assert.equal(restored.cells['0']?.['0']?.style?.wrapText, true);
+    assert.equal(restored.cells['1']?.['1']?.style?.shrinkToFit, true);
+    assert.equal(restored.columnWidthsPx?.[2], 132);
+    assert.equal(restored.rowHeightsPx?.[3], 42);
+    assert.deepEqual(restored.hiddenColumns, [2]);
+    assert.deepEqual(restored.hiddenRows, [3]);
+  });
+
   it('preserves unsupported native alignment attributes and rejects malformed alignment values', async () => {
     const workbook = new WorkbookModel('wb-alignment-unsupported', 'Alignment Unsupported');
     const sheet = workbook.getSheet(workbook.primarySheetId);
