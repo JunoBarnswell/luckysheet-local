@@ -13,7 +13,8 @@ import type {
 } from './types';
 import { DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS } from './types';
 import type { NativeDocumentWorkerPort } from './worker-port';
-import { binaryCodec, dbfCodec, odsCodec, presentationCodec, sjsCodec, ssjsonCodec, textCodec, webCodec, worksCodec, xmlssCodec, xlsbCodec } from './native-codecs';
+import { dbfCodec, odsCodec, presentationCodec, sjsCodec, ssjsonCodec, textCodec, webCodec, worksCodec, xmlssCodec } from './native-codecs';
+import { biffCodec, detectBinaryDocumentFormat, xlsbCodec } from './binary-native';
 import { asNativeDocumentError } from './native-document-error';
 import { loadOpcPackageGraph } from './ooxml';
 
@@ -68,7 +69,7 @@ export class NativeFormatDetector {
     if (codec.family === 'works') return { family: 'works', variant: 'xlr' };
     if (codec.family === 'web') return { family: 'web', variant: fileName.toLowerCase().endsWith('.mht') || fileName.toLowerCase().endsWith('.mhtml') ? 'mht' : 'html' };
     if (codec.family === 'presentation') return { family: 'presentation', variant: fileName.toLowerCase().endsWith('.xps') ? 'xps' : 'pdf' };
-    return binaryFormat(fileName, buffer, codec.family);
+    return detectBinaryDocumentFormat(fileName, buffer);
   }
 }
 
@@ -77,7 +78,7 @@ export class NativeDocumentCodecRegistry {
   private readonly codecs: NativeDocumentCodec[];
   private readonly detector: NativeFormatDetector;
 
-  constructor(codecs: NativeDocumentCodec[] = [ooxmlCodec, textCodec, xmlssCodec, odsCodec, sjsCodec, ssjsonCodec, xlsbCodec, binaryCodec, dbfCodec, worksCodec, webCodec, presentationCodec]) {
+  constructor(codecs: NativeDocumentCodec[] = [ooxmlCodec, textCodec, xmlssCodec, odsCodec, sjsCodec, ssjsonCodec, xlsbCodec, biffCodec, dbfCodec, worksCodec, webCodec, presentationCodec]) {
     this.codecs = [...codecs];
     this.detector = new NativeFormatDetector(this.codecs);
   }
@@ -158,7 +159,8 @@ function looksLikeOoxml(fileName: string, buffer: ArrayBuffer): boolean {
       return true;
     } });
     const contentTypes = parts['[Content_Types].xml'];
-    return Boolean(contentTypes && /spreadsheetml|macroEnabled|template.main/i.test(strFromU8(contentTypes)));
+    return Boolean(contentTypes && /spreadsheetml|macroEnabled|template.main/i.test(strFromU8(contentTypes))
+      && !/binary\.macroEnabled\.main|sheet\.binary/i.test(strFromU8(contentTypes)));
   } catch {
     return false;
   }
@@ -181,14 +183,4 @@ function textFormat(fileName: string, buffer: ArrayBuffer): import('./types').Na
   if (lower.endsWith('.txt')) return { family: 'text', variant: 'txt' };
   void buffer;
   return { family: 'text', variant: 'csv' };
-}
-
-function binaryFormat(fileName: string, buffer: ArrayBuffer, family: NativeDocumentFamily): import('./types').NativeDocumentFormat {
-  const lower = fileName.toLowerCase();
-  if (family === 'xlsb' || lower.endsWith('.xlsb')) return { family: 'xlsb', variant: 'xlsb' };
-  if (lower.endsWith('.xlt')) return { family: 'biff', variant: 'xlt' };
-  if (lower.endsWith('.xla')) return { family: 'biff', variant: 'xla' };
-  if (lower.endsWith('.xlw')) return { family: 'biff', variant: 'xlw' };
-  const bytes = new Uint8Array(buffer);
-  return { family: 'biff', variant: bytes[0] === 0xd0 && bytes[1] === 0xcf ? 'xls' : 'biff5' };
 }

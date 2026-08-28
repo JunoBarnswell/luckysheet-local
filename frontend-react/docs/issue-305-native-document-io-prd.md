@@ -21,7 +21,7 @@ bytes -> NativeFormatDetector -> NativeDocumentCodecRegistry
 | ods | ODF ZIP + `content.xml` mimetype | ODF package codec | 保持 ODS package |
 | sjs | SpreadJS ZIP markers | SpreadJS SJS package codec | 保持 SJS JSON parts/unknown fields |
 | ssjson | SpreadJS JSON schema markers | SSJSON schema codec | 保持 SSJSON |
-| xlsb/biff | CFB/BIFF12 magic | 独立 binary codec boundary | 不借道 OOXML；当前 reader/writer 未实现的 record 以 typed `NATIVE_BINARY_CODEC_BLOCKED` fail-close，不生成近似 workbook |
+| xlsb/biff | CFB/BIFF12 magic | 独立 binary codec boundary | 不借道 OOXML；CFB 目录、BIFF/BIFF12 基本单元格记录和原始未知流/部件由 binary graph 原生读写，公式表达式和未拥有的结构保持 preserved-only 或 typed fail-close |
 
 每个 artifact 记录 `format`, `sourceBytes`, `checksum`, `nativeGraph`, `ownership`, `compatibility`。`WorkbookSnapshot` 只保存 canonical projection，不保存 opaque bytes。
 
@@ -52,4 +52,6 @@ bytes -> NativeFormatDetector -> NativeDocumentCodecRegistry
 
 ## 本轮明确边界
 
-BIFF5/BIFF8/CFB 与 BIFF12/XLSB 的完整 record ownership 需要真实 Excel 二进制 corpus 和独立 parser/writer 实现；本轮已经建立 detector、typed codec boundary、资源限制和拒绝路径，但不会用 OOXML 转换或伪二进制 envelope 冒充完成。该能力在 PR 验收中保持 `Blocked`，直到补齐真实 record graph 后再解除。
+BIFF5/BIFF8/CFB 与 BIFF12/XLSB 已具备独立 record/CFB/package graph：读取工作簿目录、工作表边界、数字/字符串/布尔/空白单元格、共享字符串和 BIFF12 行上下文；Save 只改写这些被明确建模的单元格，未知 record、stream、package part 原样保留。公式 token、宏执行、图表/控件、复杂 row/column 属性和其他未拥有结构不会被猜测或转换，变更触及这些结构时以 typed `NATIVE_DOCUMENT_UNSUPPORTED` 拒绝。
+
+当前仓库没有 Excel/LibreOffice 产出的真实 BIFF5/BIFF8/XLSB corpus，也没有桌面 Excel executable，因此真实 producer interoperability 验收继续标记 `Blocked`；本地 synthetic corpus、解析/重写 round-trip、资源限制和 worker 链路可作为自动化证据，但不替代该外部验收。

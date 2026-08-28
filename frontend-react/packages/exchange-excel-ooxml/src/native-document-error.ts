@@ -6,8 +6,7 @@ export type NativeDocumentErrorCode =
   | 'NATIVE_DOCUMENT_RESOURCE_LIMIT'
   | 'NATIVE_DOCUMENT_INVALID'
   | 'NATIVE_DOCUMENT_UNSUPPORTED'
-  | 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'
-  | 'NATIVE_BINARY_CODEC_BLOCKED';
+  | 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED';
 
 /** Observable failure at the native document boundary. */
 export class NativeDocumentError extends Error {
@@ -43,4 +42,3 @@ export function asNativeDocumentError(error: unknown, context: { fileName?: stri
     cause: error,
   });
 }
-

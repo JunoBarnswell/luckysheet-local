@@ -14,5 +14,6 @@ export * from './worker-entry';
 export * from './worker-port';
 export * from './codec-registry';
 export * from './native-codecs';
+export * from './binary-native';
 export * from './import';
 export * from './export';
