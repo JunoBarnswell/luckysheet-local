@@ -2,8 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Button, ColorPicker, Panel, PanelBody, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ConnectorDrawingPayload, DrawingGroup, DrawingObject, DrawingPayload, ShapeDrawingPayload, WorksheetSnapSettings } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
+import { SHAPE_DRAWING_PRESETS } from '@react-sheets/core-model';
+import { SHAPE_META } from '../insert-ribbon-catalog';
+import { insertText, type Locale } from '../../i18n';
 
 export interface ShapeEditorPanelProps {
+  locale?: Locale;
   sheetId: string;
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
@@ -16,6 +20,7 @@ export interface ShapeEditorPanelProps {
 
 /** Selected-shape projection. Creation lives in the categorized Insert gallery. */
 export function ShapeEditorPanel({
+  locale,
   sheetId,
   drawings,
   drawingPayloads,
@@ -72,13 +77,7 @@ export function ShapeEditorPanel({
               <Box>
                 <Text size="xs" weight="medium" className="mb-1 text-slate-700">Shape Type</Text>
                 <Select value={selectedEntry.payload.type} onChange={(event) => updatePayload({ type: event.target.value as ShapeDrawingPayload['type'] })} sizeVariant="sm">
-                  <option value="rectangle">Rectangle</option>
-                  <option value="rounded-rectangle">Rounded rectangle</option>
-                  <option value="ellipse">Ellipse</option>
-                  <option value="line">Line</option>
-                  <option value="arrow">Arrow</option>
-                  <option value="callout">Callout</option>
-                  <option value="star">Star</option>
+                  {SHAPE_DRAWING_PRESETS.map((preset) => <option key={preset.type} value={preset.type}>{locale ? insertText(locale, SHAPE_META[preset.type].labelKey) : preset.type}</option>)}
                 </Select>
               </Box>
               <Box>

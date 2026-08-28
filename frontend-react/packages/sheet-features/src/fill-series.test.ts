@@ -156,3 +156,56 @@ test('planner normalizes reversed range endpoints before applying axis semantics
   assert.deepEqual(plan.targetRange, range(sheet.id, 0, 4, 0, 0));
   assert.deepEqual([...writesByCoordinate(plan).entries()], [['2:0', 5], ['3:0', 7], ['4:0', 9]]);
 });
+
+test('series planner applies growth, date-unit, stop-value and autofill semantics', () => {
+  const sheet = setup();
+  sheet.cells.set(0, 0, { value: 2 });
+  sheet.cells.set(1, 0, { value: 4 });
+  const growth = planFill(sheet, {
+    sheetId: sheet.id,
+    sourceRange: range(sheet.id, 0, 1, 0, 0),
+    targetRange: range(sheet.id, 0, 4, 0, 0),
+    direction: 'down',
+    mode: 'series',
+    series: { type: 'growth', seriesIn: 'columns', stopValue: 16 },
+  });
+  assert.deepEqual([...writesByCoordinate(growth).entries()], [['2:0', 8], ['3:0', 16]]);
+
+  sheet.cells.set(0, 2, { value: '2026-01-01T00:00:00.000Z', numberFormat: 'yyyy-mm-dd' });
+  const date = planFill(sheet, {
+    sheetId: sheet.id,
+    sourceRange: range(sheet.id, 0, 0, 2, 2),
+    targetRange: range(sheet.id, 0, 2, 2, 2),
+    direction: 'down',
+    mode: 'series',
+    series: { type: 'date', seriesIn: 'columns', dateUnit: 'month', stepValue: 1 },
+  });
+  assert.deepEqual([...writesByCoordinate(date).entries()], [['1:2', '2026-02-01T00:00:00.000Z'], ['2:2', '2026-03-01T00:00:00.000Z']]);
+
+  sheet.cells.set(0, 4, { value: 'A' });
+  const auto = planFill(sheet, {
+    sheetId: sheet.id,
+    sourceRange: range(sheet.id, 0, 0, 4, 4),
+    targetRange: range(sheet.id, 0, 2, 4, 4),
+    direction: 'down',
+    mode: 'series',
+    series: { type: 'autofill' },
+  });
+  assert.deepEqual([...writesByCoordinate(auto).entries()], [['1:4', 'A'], ['2:4', 'A']]);
+});
+
+test('series planner uses least-squares trend semantics when explicitly requested', () => {
+  const sheet = setup();
+  sheet.cells.set(0, 0, { value: 1 });
+  sheet.cells.set(1, 0, { value: 3 });
+  sheet.cells.set(2, 0, { value: 8 });
+  const plan = planFill(sheet, {
+    sheetId: sheet.id,
+    sourceRange: range(sheet.id, 0, 2, 0, 0),
+    targetRange: range(sheet.id, 0, 4, 0, 0),
+    direction: 'down',
+    mode: 'series',
+    series: { trend: true },
+  });
+  assert.deepEqual([...writesByCoordinate(plan).entries()], [['3:0', 11], ['4:0', 14.5]]);
+});

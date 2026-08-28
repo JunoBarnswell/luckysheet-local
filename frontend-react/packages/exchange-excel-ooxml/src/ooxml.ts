@@ -61,7 +61,7 @@ import {
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
-import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds } from './native-number-format';
+import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,12 +86,23 @@ const REL_OFFICE_DOCUMENT = `${NS_DOC_REL}/officeDocument`;
 const REL_WORKSHEET = `${NS_DOC_REL}/worksheet`;
 const REL_STYLES = `${NS_DOC_REL}/styles`;
 const REL_SHARED_STRINGS = `${NS_DOC_REL}/sharedStrings`;
+const REL_THEME = `${NS_DOC_REL}/theme`;
+const REL_CORE_PROPERTIES = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties';
+const REL_EXTENDED_PROPERTIES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties';
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
 const REACT_SHEETS_METADATA_PART = 'customXml/react-sheets-workbook.xml';
 const OOXML_MAX_ROW_INDEX = 1_048_575;
 const OOXML_MAX_COLUMN_INDEX = 16_383;
+
+const DEFAULT_THEME_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme"><a:themeElements><a:clrScheme name="Office"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="Office"><a:majorFont><a:latin typeface="Aptos Display"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`;
+
+function defaultCorePropertiesXml(snapshot: WorkbookSnapshot): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${encodeXml(snapshot.name)}</dc:title><cp:lastModifiedBy>React Sheets</cp:lastModifiedBy></cp:coreProperties>`;
+}
+
+const DEFAULT_EXTENDED_PROPERTIES_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>React Sheets</Application><AppVersion>1.0</AppVersion></Properties>';
 
 export interface LoadedOpcPackageGraph {
   packageGraph: OpcPackageGraph;
@@ -316,6 +327,9 @@ export function exportSnapshotToOpcPackageGraph(
     : preserved?.relationships[workbookPart] ?? [];
   const stylesPart = relationshipTarget(preserved, workbookPart, REL_STYLES) ?? 'xl/styles.xml';
   const sharedStringsPart = relationshipTarget(preserved, workbookPart, REL_SHARED_STRINGS) ?? 'xl/sharedStrings.xml';
+  const themePart = relationshipTarget(preserved, workbookPart, REL_THEME) ?? 'xl/theme/theme1.xml';
+  const corePropertiesPart = relationshipTarget(preserved, '', REL_CORE_PROPERTIES) ?? 'docProps/core.xml';
+  const extendedPropertiesPart = relationshipTarget(preserved, '', REL_EXTENDED_PROPERTIES) ?? 'docProps/app.xml';
   const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
   const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
   const nativeUpdate = synchronizeNativePivotPackage({
@@ -371,6 +385,7 @@ export function exportSnapshotToOpcPackageGraph(
     [
       { id: '', type: REL_STYLES, target: relativeTarget(workbookPart, stylesPart) },
       { id: '', type: REL_SHARED_STRINGS, target: relativeTarget(workbookPart, sharedStringsPart) },
+      { id: '', type: REL_THEME, target: relativeTarget(workbookPart, themePart) },
       ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
@@ -379,11 +394,17 @@ export function exportSnapshotToOpcPackageGraph(
   files.set(REACT_SHEETS_METADATA_PART, strToU8(buildReactSheetsMetadata(snapshot)));
   const rootRelationships = mergeRelationships(
     (preserved?.relationships[''] ?? []).filter((relationship) => !isRelationshipKind(relationship.type, 'officeDocument') && relationship.type !== REL_CUSTOM_XML),
-    [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }, { id: '', type: REL_CUSTOM_XML, target: REACT_SHEETS_METADATA_PART }],
+    [
+      { id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) },
+      { id: '', type: REL_CORE_PROPERTIES, target: relativeTarget('', corePropertiesPart) },
+      { id: '', type: REL_EXTENDED_PROPERTIES, target: relativeTarget('', extendedPropertiesPart) },
+    ],
   );
   files.set('_rels/.rels', strToU8(buildRelationshipsXml(rootRelationships)));
   files.set(stylesPart, strToU8(styleOutput));
   files.set(sharedStringsPart, strToU8(sharedOutput));
+  if (!files.has(corePropertiesPart)) files.set(corePropertiesPart, strToU8(defaultCorePropertiesXml(snapshot)));
+  if (!files.has(extendedPropertiesPart)) files.set(extendedPropertiesPart, strToU8(DEFAULT_EXTENDED_PROPERTIES_XML));
   for (const [source, relationships] of Object.entries(sheetRelationships)) {
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
   }
@@ -392,7 +413,8 @@ export function exportSnapshotToOpcPackageGraph(
     const outputRelationships = options.preserveMacros === false ? filterMacroRelationships(source, relationships, preserved) : relationships;
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(outputRelationships)));
   }
-  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart, options.targetFormat?.variant)));
+  if (!files.has(themePart)) files.set(themePart, strToU8(DEFAULT_THEME_XML));
+  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart, themePart, corePropertiesPart, extendedPropertiesPart, options.targetFormat?.variant)));
 
   if (preserved?.profile === 'strict') {
     const strictParts = new Set<string>([
@@ -1185,7 +1207,7 @@ function parseStyles(
     const borderId = resolvedXfId(xf, base, 'borderId', 'applyBorder');
     const numberFormatId = resolvedXfId(xf, base, 'numFmtId', 'applyNumberFormat');
     const fontStyle = parseFontStyle(fonts[fontId], themeColors);
-    const background = parseFillColor(fills[fillId], themeColors);
+    const fillModel = parseFillModel(fills[fillId], themeColors);
     const cellBorders = parseBorders(borders[borderId], themeColors);
     const baseAlignment = child(base, 'alignment');
     const alignment = xf.attrs.applyAlignment === '0' ? baseAlignment : child(xf, 'alignment') ?? baseAlignment;
@@ -1193,7 +1215,8 @@ function parseStyles(
     const protection = xf.attrs.applyProtection === '0' ? baseProtection : child(xf, 'protection') ?? baseProtection;
     const style: CellStyle = {
       ...fontStyle,
-      ...(background ? { background } : {}),
+      ...(fillModel?.foreground ? { background: fillModel.foreground } : {}),
+      ...(fillModel ? { fill: fillModel } : {}),
       ...(cellBorders ? { borders: cellBorders } : {}),
       ...parseAlignmentAttributes(alignment),
       ...(protection?.attrs.locked !== undefined ? { locked: xmlBoolean(protection.attrs.locked) } : {}),
@@ -1212,9 +1235,11 @@ function parseStyles(
     const borderId = Number(xf.attrs.borderId ?? 0) || 0;
     const numberFormatId = Number(xf.attrs.numFmtId ?? 0) || 0;
     const alignment = child(xf, 'alignment');
+    const fillModel = parseFillModel(fills[fillId], themeColors);
     const style: CellStyle = {
       ...parseFontStyle(fonts[fontId], themeColors),
-      ...(parseFillColor(fills[fillId], themeColors) ? { background: parseFillColor(fills[fillId], themeColors)! } : {}),
+      ...(fillModel?.foreground ? { background: fillModel.foreground } : {}),
+      ...(fillModel ? { fill: fillModel } : {}),
       ...(parseBorders(borders[borderId], themeColors) ? { borders: parseBorders(borders[borderId], themeColors)! } : {}),
       ...parseAlignmentAttributes(alignment),
     };
@@ -1222,9 +1247,11 @@ function parseStyles(
     return [{ id: `ooxml-cell-style-${index + 1}`, name, style: { ...style, ...(numberFormat ? { numberFormat } : {}) } } satisfies CellStyleTemplate];
   });
   const differentialStyles = children(child(root, 'dxfs'), 'dxf').map((dxf) => {
+    const fillModel = parseFillModel(child(dxf, 'fill'), themeColors);
     const style: CellStyle = {
       ...parseFontStyle(child(dxf, 'font'), themeColors),
-      ...(parseFillColor(child(dxf, 'fill'), themeColors) ? { background: parseFillColor(child(dxf, 'fill'), themeColors)! } : {}),
+      ...(fillModel?.foreground ? { background: fillModel.foreground } : {}),
+      ...(fillModel ? { fill: fillModel } : {}),
       ...(parseBorders(child(dxf, 'border'), themeColors) ? { borders: parseBorders(child(dxf, 'border'), themeColors)! } : {}),
       ...parseAlignmentAttributes(child(dxf, 'alignment')),
     };
@@ -1299,21 +1326,54 @@ function parseFontStyle(font: XmlNode | undefined, themeColors: string[]): CellS
   const sizePt = Number(child(font, 'sz')?.attrs.val);
   const textColor = resolveColor(child(font, 'color'), themeColors);
   const rawFamily = child(font, 'name')?.attrs.val ?? child(font, 'rFont')?.attrs.val;
+  const fontTheme = child(font, 'scheme')?.attrs.val;
+  const underline = child(font, 'u');
+  const verticalAlignment = child(font, 'vertAlign')?.attrs.val;
   return {
     ...(rawFamily === undefined ? {} : { fontFamily: normalizeFontFamily(rawFamily) }),
+    ...(fontTheme === undefined ? {} : { fontTheme }),
     ...(Number.isFinite(sizePt) && sizePt > 0 ? { fontSizePx: pointsToPixels(sizePt) } : {}),
     ...(child(font, 'b') ? { bold: xmlBoolean(child(font, 'b')?.attrs.val ?? '1') } : {}),
     ...(child(font, 'i') ? { italic: xmlBoolean(child(font, 'i')?.attrs.val ?? '1') } : {}),
-    ...(child(font, 'u') ? { underline: xmlBoolean(child(font, 'u')?.attrs.val ?? '1') } : {}),
+    ...(underline ? { underline: true, underlineStyle: normalizeUnderlineStyle(underline.attrs.val) } : {}),
     ...(child(font, 'strike') ? { strikethrough: xmlBoolean(child(font, 'strike')?.attrs.val ?? '1') } : {}),
+    ...(verticalAlignment === 'superscript' ? { superscript: true } : verticalAlignment === 'subscript' ? { subscript: true } : {}),
     ...(textColor ? { textColor } : {}),
   };
 }
 
-function parseFillColor(fill: XmlNode | undefined, themeColors: string[]): string | undefined {
+function normalizeUnderlineStyle(value: string | undefined): NonNullable<CellStyle['underlineStyle']> {
+  if (value === 'double') return 'double';
+  if (value === 'singleAccounting') return 'singleAccounting';
+  if (value === 'doubleAccounting') return 'doubleAccounting';
+  return 'single';
+}
+
+function parseFillModel(fill: XmlNode | undefined, themeColors: string[]): NonNullable<CellStyle['fill']> | undefined {
+  if (!fill) return undefined;
   const pattern = child(fill, 'patternFill');
-  if (!pattern || pattern.attrs.patternType === 'none' || pattern.attrs.patternType === 'gray125') return undefined;
-  return resolveColor(child(pattern, 'fgColor') ?? child(pattern, 'bgColor'), themeColors);
+  if (pattern) {
+    const patternType = pattern.attrs.patternType;
+    if (!patternType || patternType === 'none' || patternType === 'gray125') return undefined;
+    const supportedPatterns = ['solid', 'darkDown', 'darkUp', 'darkGrid', 'darkTrellis', 'lightDown', 'lightUp', 'lightGrid', 'lightTrellis', 'gray0625', 'lightGray', 'darkGray', 'mediumGray'] as const;
+    if (!supportedPatterns.includes(patternType as typeof supportedPatterns[number])) throw new Error(`UNSUPPORTED_FEATURE: OOXML fill pattern ${patternType} has no canonical renderer`);
+    const foreground = resolveColor(child(pattern, 'fgColor'), themeColors);
+    const background = resolveColor(child(pattern, 'bgColor'), themeColors);
+    if (patternType === 'solid') return { kind: 'solid', ...(foreground ? { foreground } : {}), ...(background ? { background } : {}) };
+    return { kind: 'pattern', pattern: patternType as NonNullable<CellStyle['fill']>['pattern'], ...(foreground ? { foreground } : {}), ...(background ? { background } : {}) };
+  }
+  const gradient = child(fill, 'gradientFill');
+  if (!gradient) return undefined;
+  const stops = children(gradient, 'stop').map((stop) => {
+    const position = Number(stop.attrs.position);
+    const color = resolveColor(child(stop, 'color'), themeColors);
+    if (!Number.isFinite(position) || position < 0 || position > 1 || !color) throw new Error('UNSUPPORTED_FEATURE: OOXML gradient fill contains an invalid stop');
+    return { position, color };
+  });
+  if (stops.length < 2) throw new Error('UNSUPPORTED_FEATURE: OOXML gradient fill requires at least two stops');
+  const degree = gradient.attrs.degree === undefined ? undefined : Number(gradient.attrs.degree);
+  if (degree !== undefined && !Number.isFinite(degree)) throw new Error('UNSUPPORTED_FEATURE: OOXML gradient fill degree is invalid');
+  return { kind: 'gradient', gradientType: gradient.attrs.type === 'path' ? 'path' : 'linear', ...(degree === undefined ? {} : { degree }), stops };
 }
 
 function parseBorders(border: XmlNode | undefined, themeColors: string[]): CellStyle['borders'] | undefined {
@@ -1325,15 +1385,24 @@ function parseBorders(border: XmlNode | undefined, themeColors: string[]): CellS
     if (!style) continue;
     result[side] = { style, color: resolveColor(child(node, 'color'), themeColors) ?? '#000000' };
   }
+  const diagonal = child(border, 'diagonal');
+  const diagonalStyle = normalizeBorderStyle(diagonal?.attrs.style);
+  if (diagonalStyle) result.diagonal = { style: diagonalStyle, color: resolveColor(child(diagonal, 'color'), themeColors) ?? '#000000' };
+  if (xmlBoolean(border.attrs.diagonalUp ?? '0')) result.diagonalUp = true;
+  if (xmlBoolean(border.attrs.diagonalDown ?? '0')) result.diagonalDown = true;
   return Object.keys(result).length ? result : undefined;
 }
 
 function normalizeBorderStyle(value: string | undefined): NonNullable<NonNullable<CellStyle['borders']>['top']>['style'] | undefined {
   if (!value || value === 'none') return undefined;
+  if (value === 'hair') return 'hair';
   if (value === 'double') return 'double';
   if (value === 'thick') return 'thick';
   if (value.startsWith('medium')) return 'medium';
-  if (value === 'dashed' || value === 'dotted' || value === 'dashDot' || value === 'dashDotDot' || value === 'slantDashDot') return 'dashed';
+  if (value === 'dotted') return 'dotted';
+  if (value === 'dashDot') return 'dashDot';
+  if (value === 'dashDotDot') return 'dashDotDot';
+  if (value === 'dashed' || value === 'slantDashDot') return 'dashed';
   return 'thin';
 }
 
@@ -1429,16 +1498,17 @@ function buildSharedStrings(snapshot: WorkbookSnapshot): string {
 
 function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): string {
   const records: StyleRecord[] = [{}];
-  const templateRecords: StyleRecord[] = (snapshot.cellStyleTemplates ?? []).map((template) => ({ style: structuredClone(template.style), numberFormat: template.style.numberFormat }));
+  const templateRecords: StyleRecord[] = (snapshot.cellStyleTemplates ?? []).map((template) => ({ style: structuredClone(template.style), numberFormat: template.style.numberFormat ?? (template.style.numberFormatSpec ? numberFormatCodeFromSpec(template.style.numberFormatSpec) : undefined) }));
   const indexes = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
         if (!cell.style && !cell.numberFormat) continue;
-        const key = JSON.stringify({ style: cell.style, numberFormat: cell.numberFormat });
+        const numberFormat = cell.numberFormat ?? (cell.style?.numberFormatSpec ? numberFormatCodeFromSpec(cell.style.numberFormatSpec) : cell.style?.numberFormat);
+        const key = JSON.stringify({ style: cell.style, numberFormat });
         if (!indexes.has(key)) {
           indexes.set(key, records.length);
-          records.push({ style: cell.style, numberFormat: cell.numberFormat });
+          records.push({ style: cell.style, numberFormat });
         }
       }
     }
@@ -1453,17 +1523,18 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
   const borderRecords = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
   for (const record of [...records, ...templateRecords]) {
     const style = record.style;
-    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
+    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, underlineStyle: style?.underlineStyle, strikethrough: style?.strikethrough, superscript: style?.superscript, subscript: style?.subscript, textColor: style?.textColor, fontTheme: style?.fontTheme });
     if (!fontIndexes.has(fontKey) && style) {
       const index = fontRecords.length;
       fontIndexes.set(fontKey, index);
-      fontRecords.push(`<font><sz val="${roundMetric(pixelsToPoints(style.fontSizePx ?? pointsToPixels(11)))}"/><name val="${encodeXml(style.fontFamily ?? 'Calibri')}"/>${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</font>`);
+      fontRecords.push(`<font>${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.strikethrough ? '<strike/>' : ''}<sz val="${roundMetric(pixelsToPoints(style.fontSizePx ?? pointsToPixels(11)))}"/>${style.underline ? `<u${style.underlineStyle && style.underlineStyle !== 'single' ? ` val="${style.underlineStyle}"` : ''}/>` : ''}${style.superscript ? '<vertAlign val="superscript"/>' : style.subscript ? '<vertAlign val="subscript"/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}<name val="${encodeXml(style.fontFamily ?? 'Calibri')}"/>${style.fontTheme ? `<scheme val="${encodeXml(style.fontTheme)}"/>` : ''}</font>`);
     }
-    const fillKey = style?.background ?? '';
+    const fillValue = style?.fill ?? style?.background;
+    const fillKey = fillValue ? JSON.stringify(fillValue) : '';
     if (fillKey && !fillIndexes.has(fillKey)) {
       const index = fillRecords.length;
       fillIndexes.set(fillKey, index);
-      fillRecords.push(`<fill><patternFill patternType="solid"><fgColor rgb="${ooxmlRgb(fillKey)}"/><bgColor indexed="64"/></patternFill></fill>`);
+      fillRecords.push(serializeFill(fillValue!));
     }
     const borderKey = JSON.stringify(style?.borders ?? {});
     if (style?.borders && !borderIndexes.has(borderKey)) {
@@ -1474,10 +1545,12 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
   }
   const serializeXf = (record: StyleRecord, xfId = 0) => {
     const style = record.style;
-    const numFmtId = record.numberFormat ? (builtInNumberFormatId(record.numberFormat) ?? custom.get(record.numberFormat) ?? 0) : 0;
-    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
+    const numberFormat = record.numberFormat ?? (style?.numberFormatSpec ? numberFormatCodeFromSpec(style.numberFormatSpec) : style?.numberFormat);
+    const numFmtId = numberFormat ? (builtInNumberFormatId(numberFormat) ?? custom.get(numberFormat) ?? 0) : 0;
+    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, underlineStyle: style?.underlineStyle, strikethrough: style?.strikethrough, superscript: style?.superscript, subscript: style?.subscript, textColor: style?.textColor, fontTheme: style?.fontTheme });
     const fontId = style ? (fontIndexes.get(fontKey) ?? 0) : 0;
-    const fillId = style?.background ? (fillIndexes.get(style.background) ?? 0) : 0;
+    const fillKey = style?.fill ?? style?.background;
+    const fillId = fillKey ? (fillIndexes.get(JSON.stringify(fillKey)) ?? 0) : 0;
     const borderId = style?.borders ? (borderIndexes.get(JSON.stringify(style.borders)) ?? 0) : 0;
     const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, `borderId="${borderId}"`, `xfId="${xfId}"`, 'applyFont="1"', 'applyFill="1"', 'applyBorder="1"', 'applyNumberFormat="1"'];
     const alignment = style ? serializeAlignment(style) : '';
@@ -1493,7 +1566,7 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
   const originalTableStyles = originalRoot ? child(originalRoot, 'tableStyles') : undefined;
   const tableStyles = originalTableStyles ? serializeXml(originalTableStyles) : '';
   const cellStyleXfs = `<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>${templateXfs}`;
-  const cellStyles = `<cellStyle name="Normal" builtinId="0"/>${(snapshot.cellStyleTemplates ?? []).map((template, index) => `<cellStyle name="${encodeXml(template.name)}" xfId="${index + 1}"/>`).join('')}`;
+  const cellStyles = `<cellStyle name="Normal" xfId="0" builtinId="0"/>${(snapshot.cellStyleTemplates ?? []).map((template, index) => `<cellStyle name="${encodeXml(template.name)}" xfId="${index + 1}"/>`).join('')}`;
   return `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="${templateRecords.length + 1}">${cellStyleXfs}</cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="${templateRecords.length + 1}">${cellStyles}</cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs>${tableStyles}</styleSheet>`;
 }
 
@@ -1787,17 +1860,29 @@ function serializePhoneticMetadata(metadata: CellPhoneticMetadata | undefined): 
 }
 
 function serializeBorders(borders: NonNullable<CellStyle['borders']>): string {
-  const side = (name: keyof typeof borders): string => {
+  const side = (name: 'left' | 'right' | 'top' | 'bottom' | 'diagonal'): string => {
     const value = borders[name];
     return value ? `<${name} style="${value.style}"><color rgb="${ooxmlRgb(value.color)}"/></${name}>` : `<${name}/>`;
   };
-  return `<border>${side('left')}${side('right')}${side('top')}${side('bottom')}<diagonal/></border>`;
+  return `<border${borders.diagonalUp ? ' diagonalUp="1"' : ''}${borders.diagonalDown ? ' diagonalDown="1"' : ''}>${side('left')}${side('right')}${side('top')}${side('bottom')}${side('diagonal')}</border>`;
+}
+
+function serializeFill(fill: NonNullable<CellStyle['fill']> | string): string {
+  if (typeof fill === 'string') return `<fill><patternFill patternType="solid"><fgColor rgb="${ooxmlRgb(fill)}"/><bgColor indexed="64"/></patternFill></fill>`;
+  if (fill.kind === 'gradient') {
+    const type = fill.gradientType ?? 'linear';
+    const degree = fill.degree === undefined ? '' : ` degree="${fill.degree}"`;
+    const stops = (fill.stops ?? []).map((stop) => `<stop position="${stop.position}"><color rgb="${ooxmlRgb(stop.color)}"/></stop>`).join('');
+    return `<fill><gradientFill type="${type}"${degree}>${stops}</gradientFill></fill>`;
+  }
+  const pattern = fill.kind === 'pattern' ? fill.pattern ?? 'solid' : 'solid';
+  return `<fill><patternFill patternType="${pattern}">${fill.foreground ? `<fgColor rgb="${ooxmlRgb(fill.foreground)}"/>` : ''}${fill.background ? `<bgColor rgb="${ooxmlRgb(fill.background)}"/>` : ''}</patternFill></fill>`;
 }
 
 function serializeDifferentialStyle(style: CellStyle): string {
-  const font = style.fontFamily || style.fontSizePx || style.bold || style.italic || style.underline || style.strikethrough || style.textColor
-    ? `<font>${style.fontFamily ? `<name val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</font>` : '';
-  const fill = style.background ? `<fill><patternFill patternType="solid"><fgColor rgb="${ooxmlRgb(style.background)}"/><bgColor indexed="64"/></patternFill></fill>` : '';
+  const font = style.fontFamily || style.fontSizePx || style.bold || style.italic || style.underline || style.strikethrough || style.textColor || style.superscript || style.subscript
+    ? `<font>${style.fontFamily ? `<name val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? `<u${style.underlineStyle && style.underlineStyle !== 'single' ? ` val="${style.underlineStyle}"` : ''}/>` : ''}${style.strikethrough ? '<strike/>' : ''}${style.superscript ? '<vertAlign val="superscript"/>' : style.subscript ? '<vertAlign val="subscript"/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</font>` : '';
+  const fill = style.fill ? serializeFill(style.fill) : style.background ? serializeFill(style.background) : '';
   const border = style.borders ? serializeBorders(style.borders) : '';
   return `${font}${fill}${border}`;
 }
@@ -2005,9 +2090,15 @@ function serializeWorkbookControlExtensions(original: XmlNode | undefined, contr
 
 function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, relationships: NativeRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: OpcPackageGraph): string {
   const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget(workbookPart, relation.target) === target)?.id ?? '';
-  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
+  const originalRoot = preserved?.parts[workbookPart] ? firstElement(parseXml(strFromU8(preserved.parts[workbookPart])), 'workbook') : undefined;
+  const inheritedNamespaces = originalRoot
+    ? Object.entries(originalRoot.attrs)
+      .filter(([name]) => (name === 'xmlns' || name.startsWith('xmlns:')) && name !== 'xmlns' && name !== 'xmlns:r')
+      .map(([name, value]) => ` ${name}="${encodeXml(value)}"`)
+      .join('')
+    : '';
+  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"${inheritedNamespaces}><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
-    const target = relativeTarget(workbookPart, descriptor.part);
     const id = relationFor(descriptor.part, REL_WORKSHEET);
     const sheet = snapshot.sheets.find((candidate) => candidate.id === descriptor.id);
     xml += `<sheet name="${encodeXml(sheet?.name ?? descriptor.name)}" sheetId="${encodeXml(descriptor.id.replace(/^sheet-/, ''))}" r:id="${id}"${sheet?.hidden ? ' state="hidden"' : ''}/>`;
@@ -2043,7 +2134,6 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
   }
   // Preserve workbook-level extension/calculation metadata that this package
   // does not edit.  Sheet references and defined names above remain canonical.
-  const originalRoot = preserved?.parts[workbookPart] ? firstElement(parseXml(strFromU8(preserved.parts[workbookPart])), 'workbook') : undefined;
   if (originalRoot) {
     let hasExtensionList = false;
     for (const node of originalRoot.children) {
@@ -2058,7 +2148,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
   return `${xml}</workbook>`;
 }
 
-function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string, targetVariant?: Extract<NativeDocumentFormat, { family: 'ooxml' }>['variant']): string {
+function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string, themePart: string, corePropertiesPart: string, extendedPropertiesPart: string, targetVariant?: Extract<NativeDocumentFormat, { family: 'ooxml' }>['variant']): string {
   const defaults = new Map<string, string>([['rels', 'application/vnd.openxmlformats-package.relationships+xml'], ['xml', 'application/xml']]);
   const variant = targetVariant ?? (preserved?.format.family === 'ooxml' ? preserved.format.variant : 'xlsx');
   const mainType = variant === 'xlsm'
@@ -2074,6 +2164,9 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
     [`/${workbookPart}`, mainType],
     [`/${stylesPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
     [`/${sharedStringsPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
+    [`/${themePart}`, 'application/vnd.openxmlformats-officedocument.theme+xml'],
+    [`/${corePropertiesPart}`, 'application/vnd.openxmlformats-package.core-properties+xml'],
+    [`/${extendedPropertiesPart}`, 'application/vnd.openxmlformats-officedocument.extended-properties+xml'],
   ]);
   const original = preserved?.contentTypesXml ? firstElement(parseXml(strFromU8(preserved.contentTypesXml)), 'Types') : undefined;
   for (const node of children(original, 'Default')) if (node.attrs.Extension && node.attrs.ContentType) defaults.set(node.attrs.Extension, node.attrs.ContentType);
@@ -3159,6 +3252,8 @@ function parseAlignmentAttributes(node: XmlNode | undefined): Partial<CellStyle>
     const rotation = Number(attrs.textRotation);
     if (!Number.isInteger(rotation) || rotation < 0 || rotation > 180 && rotation !== 255) throw new Error(`Invalid OOXML alignment textRotation: ${attrs.textRotation}`);
     if (rotation === 255) style.textOrientation = 'stacked';
+    else if (rotation === 90) style.textOrientation = 'rotateUp';
+    else if (rotation === 180) style.textOrientation = 'rotateDown';
     else if (rotation > 0) style.textRotate = rotation;
   }
   for (const [key, value] of Object.entries(attrs)) if (!known.has(key)) preserved[key] = value;
@@ -3185,7 +3280,10 @@ function serializeAlignment(style: CellStyle): string {
   if (style.textOrientation === 'stacked') attrs.textRotation = '255';
   else if (style.textOrientation === 'rotateUp') attrs.textRotation = '90';
   else if (style.textOrientation === 'rotateDown') attrs.textRotation = '180';
-  else if (style.textRotate !== undefined) attrs.textRotation = String(style.textRotate);
+  else if (style.textRotate !== undefined) {
+    if (!Number.isInteger(style.textRotate) || style.textRotate < 0 || style.textRotate > 180) throw new Error(`UNSUPPORTED_FEATURE: text rotation ${style.textRotate} cannot be represented by OOXML`);
+    attrs.textRotation = String(style.textRotate);
+  }
   const serialized = Object.entries(attrs).map(([key, value]) => ` ${key}="${encodeXml(value)}"`).join('');
   return serialized ? `<alignment${serialized}/>` : '';
 }

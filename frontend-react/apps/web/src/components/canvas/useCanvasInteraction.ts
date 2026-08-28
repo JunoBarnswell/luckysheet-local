@@ -31,6 +31,11 @@ import {
   type SelectionGesture,
   type SelectionState,
   type HeaderTarget,
+  type ShortcutSequenceState,
+  isRangeBorderPoint,
+  planRangeDrag,
+  rangeDragMode,
+  type RangeDragMode,
 } from "@react-sheets/spreadsheet-app";
 import {
   claimPointerGesture,
@@ -68,7 +73,7 @@ export interface CanvasContextMenuState {
 }
 
 interface DragState {
-  kind: "select" | "fill" | "col-resize" | "row-resize" | "floating-move" | "floating-resize" | "textbox-placement";
+  kind: "select" | "fill" | "range-drag" | "drawing-marquee" | "col-resize" | "row-resize" | "floating-move" | "floating-resize" | "textbox-placement";
   pointerId: number;
   startRow: number;
   startColumn: number;
@@ -89,6 +94,8 @@ interface DragState {
     startLocal: { x: number; y: number };
   };
   textBox?: { startContent: { x: number; y: number } };
+  rangeDrag?: { sourceRange: RangeRef; mode: RangeDragMode; targetOrigin: { row: number; column: number } };
+  drawingMarquee?: { start: { x: number; y: number }; current: { x: number; y: number } };
 }
 
 export interface CanvasInteractionOptions {
@@ -125,6 +132,8 @@ export interface CanvasInteractionOptions {
   onRequestExtentGrowth: (axes: { rows?: boolean; columns?: boolean }) => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
+  onSelectAllDrawings?: () => void;
+  onCycleDrawingSelection?: (direction: 'next' | 'previous') => void;
   onExtendSelection?: (row: number, column: number) => void;
   onResizeRow: (row: number, heightPx: number) => void;
   onResizeColumn: (column: number, widthPx: number) => void;
@@ -134,6 +143,7 @@ export interface CanvasInteractionOptions {
   onUnhideRows: (rows: readonly number[]) => void;
   formatColumnWidthPreview: (widthPx: number) => { widthPx: number; excelWidth: number };
   onFillRange: (target: CanvasFillPreview) => void;
+  onRangeDragCommit?: (sourceRange: RangeRef, targetOrigin: { row: number; column: number }, mode: RangeDragMode) => void;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
@@ -172,6 +182,25 @@ function resolveDragCell(
     return hitCell ? { row: 0, column: hitCell.column } : null;
   }
   return hitCell ? resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell : null;
+}
+
+function marqueeRect(start: { x: number; y: number }, current: { x: number; y: number }): Rect {
+  return {
+    x: Math.min(start.x, current.x),
+    y: Math.min(start.y, current.y),
+    width: Math.abs(current.x - start.x),
+    height: Math.abs(current.y - start.y),
+  };
+}
+
+function intersectsScreenRect(engine: CanvasRenderEngine, bounds: Rect, marquee: Rect): boolean {
+  const topLeft = engine.contentToScreen({ x: bounds.x, y: bounds.y });
+  const right = topLeft.x + bounds.width;
+  const bottom = topLeft.y + bounds.height;
+  return topLeft.x < marquee.x + marquee.width
+    && right > marquee.x
+    && topLeft.y < marquee.y + marquee.height
+    && bottom > marquee.y;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState["selection"] {
@@ -216,6 +245,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onJumpEdge,
     onMovePrimary,
     onRequestExtentGrowth,
+    onRangeDragCommit,
     onPivotContextHit,
     onPivotControlAction,
     onPivotResolve,
@@ -229,6 +259,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     formatColumnWidthPreview,
     onResizeRow,
     onSelectAll,
+    onSelectAllDrawings,
+    onCycleDrawingSelection,
     onSelectionChange,
     onShortcut,
     onToggleOutline,
@@ -247,6 +279,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
   const dragRef = useRef<DragState | null>(null);
   const shortcutRegistryRef = useRef<ReturnType<typeof createSpreadsheetShortcutRegistry> | null>(null);
   if (!shortcutRegistryRef.current) shortcutRegistryRef.current = createSpreadsheetShortcutRegistry();
+  const shortcutSequenceRef = useRef<ShortcutSequenceState>({ active: false, index: 0 });
   const autoScrollFrameRef = useRef<number | null>(null);
   const autoScrollPointRef = useRef<{ x: number; y: number } | null>(null);
   const transientSelectionRef = useRef<{ gesture: SelectionGesture; sheetId: string } | null>(null);
@@ -311,7 +344,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const host = containerRef.current;
     const engine = engineRef.current;
     const drag = dragRef.current;
-    if (!host || !engine || !drag || (drag.kind !== "select" && drag.kind !== "fill")) {
+    if (!host || !engine || !drag || (drag.kind !== "select" && drag.kind !== "fill" && drag.kind !== "range-drag")) {
       stopAutoScroll();
       return;
     }
@@ -331,7 +364,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const point = autoScrollPointRef.current;
       const currentEngine = engineRef.current;
       const currentHost = containerRef.current;
-      if (!currentDrag || !point || !currentEngine || !currentHost || (currentDrag.kind !== "select" && currentDrag.kind !== "fill")) return;
+      if (!currentDrag || !point || !currentEngine || !currentHost || (currentDrag.kind !== "select" && currentDrag.kind !== "fill" && currentDrag.kind !== "range-drag")) return;
       const currentOrigin = currentEngine.headerOffset;
       const left = point.x < currentOrigin.x + threshold;
       const right = point.x > currentHost.clientWidth - threshold;
@@ -367,6 +400,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             startColumn: Math.min(currentDrag.startColumn, currentDrag.currentColumn),
             endColumn: Math.max(currentDrag.anchorColumn, currentDrag.currentColumn),
           });
+        } else if (currentDrag.kind === 'range-drag' && currentDrag.rangeDrag) {
+          currentDrag.rangeDrag.targetOrigin = { row: cell.row, column: cell.column };
+          const source = currentDrag.rangeDrag.sourceRange;
+          setFillPreview({ startRow: cell.row, endRow: cell.row + source.endRow - source.startRow, startColumn: cell.column, endColumn: cell.column + source.endColumn - source.startColumn });
         }
       } else {
         const isRowDrag = currentDrag.floating?.id === "row";
@@ -385,6 +422,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
           pointerId: currentDrag.pointerId,
           kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
           additive: currentDrag.additive,
+          extend: currentDrag.extend,
           expandedRange: range,
         }, sheetId);
       }
@@ -492,8 +530,26 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         return;
       }
     }
-    onFloatingSelect(null);
-    if (drawingSelectionMode) return;
+    const marqueeAdditive = event.shiftKey || event.ctrlKey || event.metaKey;
+    if (!drawingSelectionMode || !marqueeAdditive) onFloatingSelect(null);
+    if (drawingSelectionMode) {
+      dragRef.current = {
+        kind: 'drawing-marquee',
+        pointerId: event.pointerId,
+        startRow: 0,
+        startColumn: 0,
+        anchorRow: 0,
+        anchorColumn: 0,
+        currentRow: 0,
+        currentColumn: 0,
+        additive: marqueeAdditive,
+        extend: false,
+        drawingMarquee: { start: { ...local }, current: { ...local } },
+      };
+      engine.setChrome({ ...chromeState, drawingMarquee: { x: local.x, y: local.y, width: 0, height: 0 } });
+      (event.target as Element).setPointerCapture?.(event.pointerId);
+      return;
+    }
 
     const headerHit = engine.headerHitAtLocal(local);
     if (headerHit) {
@@ -525,8 +581,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         (event.target as Element).setPointerCapture?.(event.pointerId);
         return;
       }
-      const additive = event.ctrlKey || event.metaKey;
-      const extend = event.shiftKey && !additive;
+      const additive = event.ctrlKey || event.metaKey || selection.interactionMode === 'add';
+      const extend = event.shiftKey || selection.interactionMode === 'extend';
       const headerTarget: Exclude<HeaderTarget, { kind: 'corner' }> = headerHit.kind === 'row'
         ? { kind: 'row', index: headerHit.index }
         : { kind: 'column', index: headerHit.index };
@@ -576,9 +632,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const primaryRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
     const activePivotContextHit = onPivotResolve(sheet, selection.activeCell.row, selection.activeCell.column);
     if (primaryRange && !activePivotContextHit) {
-      const rect = skeleton.getRangeRect({ startRow: primaryRange.endRow, endRow: primaryRange.endRow, startColumn: primaryRange.endColumn, endColumn: primaryRange.endColumn });
-      if (rect) {
-        const screen = engine.contentToScreen({ x: rect.x + rect.width, y: rect.y + rect.height }, { row: primaryRange.endRow, column: primaryRange.endColumn });
+      const endCellRect = skeleton.getRangeRect({ startRow: primaryRange.endRow, endRow: primaryRange.endRow, startColumn: primaryRange.endColumn, endColumn: primaryRange.endColumn });
+      const selectionRect = skeleton.getRangeRect(primaryRange);
+      if (endCellRect && selectionRect) {
+        const screen = engine.contentToScreen({ x: endCellRect.x + endCellRect.width, y: endCellRect.y + endCellRect.height }, { row: primaryRange.endRow, column: primaryRange.endColumn });
         if (Math.abs(local.x - screen.x) <= 5 && Math.abs(local.y - screen.y) <= 5) {
           dragRef.current = {
             kind: "fill",
@@ -592,6 +649,26 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             additive: false,
             extend: false,
           };
+          (event.target as Element).setPointerCapture?.(event.pointerId);
+          return;
+        }
+        const contentPoint = engine.localToContent(local);
+        if (isRangeBorderPoint(contentPoint, selectionRect)) {
+          const mode = rangeDragMode({ copy: event.ctrlKey || event.metaKey, insert: event.shiftKey });
+          dragRef.current = {
+            kind: 'range-drag',
+            pointerId: event.pointerId,
+            startRow: primaryRange.startRow,
+            startColumn: primaryRange.startColumn,
+            anchorRow: primaryRange.startRow,
+            anchorColumn: primaryRange.startColumn,
+            currentRow: primaryRange.startRow,
+            currentColumn: primaryRange.startColumn,
+            additive: false,
+            extend: false,
+            rangeDrag: { sourceRange: structuredClone(primaryRange), mode, targetOrigin: { row: primaryRange.startRow, column: primaryRange.startColumn } },
+          };
+          setFillPreview({ startRow: primaryRange.startRow, endRow: primaryRange.endRow, startColumn: primaryRange.startColumn, endColumn: primaryRange.endColumn });
           (event.target as Element).setPointerCapture?.(event.pointerId);
           return;
         }
@@ -628,8 +705,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         }
       }
     }
-    const additive = event.ctrlKey || event.metaKey;
-    const extend = event.shiftKey && !additive;
+    const additive = event.ctrlKey || event.metaKey || selection.interactionMode === 'add';
+    const extend = (event.shiftKey || selection.interactionMode === 'extend') && !additive;
     if (cellEdit.getSnapshot().status === 'point') cellEdit.dispatch({ type: 'reference.gesture.begin' });
     dragRef.current = {
       kind: "select",
@@ -647,7 +724,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange(selectionFromGesture(selection, { origin: { row: cell.row, column: cell.column }, target: { row: cell.row, column: cell.column }, expandedRange: { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column } }, sheetId));
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [cellEdit, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onChartElementAction, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
+  }, [cellEdit, chromeState, containerRef, drawingSelectionMode, drawings, drawingPayloads, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onChartElementAction, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;
@@ -712,6 +789,12 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       stopAutoScroll();
       return;
     }
+    if (drag.kind === 'drawing-marquee' && drag.drawingMarquee) {
+      stopAutoScroll();
+      drag.drawingMarquee.current = { ...local };
+      engine.setChrome({ ...chromeState, drawingMarquee: marqueeRect(drag.drawingMarquee.start, drag.drawingMarquee.current) });
+      return;
+    }
     updateAutoScroll(local);
     const headerHit = engine.headerHitAtLocal(local);
     const hitCell = engine.cellAtLocalPoint(local);
@@ -727,6 +810,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       drag.currentRow = cell.row;
       drag.currentColumn = cell.column;
       setFillPreview({ startRow: Math.min(drag.startRow, drag.currentRow), endRow: Math.max(drag.anchorRow, drag.currentRow), startColumn: Math.min(drag.startColumn, drag.currentColumn), endColumn: Math.max(drag.anchorColumn, drag.currentColumn) });
+      return;
+    }
+    if (drag.kind === 'range-drag' && drag.rangeDrag) {
+      drag.currentRow = cell.row;
+      drag.currentColumn = cell.column;
+      drag.rangeDrag.targetOrigin = { row: cell.row, column: cell.column };
+      const source = drag.rangeDrag.sourceRange;
+      setFillPreview({ startRow: cell.row, endRow: cell.row + source.endRow - source.startRow, startColumn: cell.column, endColumn: cell.column + source.endColumn - source.startColumn });
       return;
     }
     drag.currentRow = cell.row;
@@ -745,6 +836,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       pointerId: drag.pointerId,
       kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
       additive: drag.additive,
+      extend: drag.extend,
       expandedRange: range,
     }, sheetId);
   }, [chromeState, containerRef, engineRef, formatColumnWidthPreview, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
@@ -758,7 +850,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const engine = engineRef.current;
     if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
     if (!drag || !engine) return;
-    if (drag.kind === "select" || drag.kind === "fill") {
+    if (drag.kind === "select" || drag.kind === "fill" || drag.kind === 'range-drag') {
       const finalCell = resolveDragCell(engine, sheet, localPointOf(event), drag);
       if (finalCell) onPivotContextHit?.(onPivotResolve(sheet, finalCell.row, finalCell.column));
     }
@@ -778,6 +870,29 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         ? { kind: 'column', index: drag.currentColumn }
         : { kind: 'row', index: drag.currentRow };
       onSelectionChange(applyHeaderSelection(selection, target, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: drag.additive, extend: drag.extend }));
+      return;
+    }
+    if (drag.kind === 'range-drag' && drag.rangeDrag) {
+      setFillPreview(null);
+      const finalCell = resolveDragCell(engine, sheet, localPointOf(event), drag);
+      if (finalCell && (finalCell.row !== drag.rangeDrag.sourceRange.startRow || finalCell.column !== drag.rangeDrag.sourceRange.startColumn)) {
+        const plan = planRangeDrag(drag.rangeDrag.sourceRange, { row: finalCell.row, column: finalCell.column }, drag.rangeDrag.mode, { rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+        onRangeDragCommit?.(plan.sourceRange, plan.targetOrigin, plan.mode);
+      }
+      return;
+    }
+    if (drag.kind === 'drawing-marquee' && drag.drawingMarquee) {
+      const rect = marqueeRect(drag.drawingMarquee.start, drag.drawingMarquee.current);
+      engine.setChrome(chromeState);
+      const selected = floatables.filter((drawable) => intersectsScreenRect(engine, drawable.bounds, rect));
+      if (drag.additive) {
+        for (const drawable of selected) onFloatingSelect({ kind: drawable.kind, id: drawable.id }, 'add');
+      } else if (selected.length > 0) {
+        onFloatingSelect({ kind: selected[0]!.kind, id: selected[0]!.id }, 'replace');
+        for (const drawable of selected.slice(1)) onFloatingSelect({ kind: drawable.kind, id: drawable.id }, 'add');
+      } else {
+        onFloatingSelect(null, 'replace');
+      }
       return;
     }
     if (drag.kind === "textbox-placement" && drag.textBox) {
@@ -806,14 +921,22 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
     if (drag.kind === "select") {
       setFillPreview(null);
+      const isRowDrag = drag.floating?.id === "row";
+      const isColDrag = drag.floating?.id === "col";
+      if (isRowDrag || isColDrag) {
+        const target = isRowDrag ? { kind: 'row' as const, index: drag.currentRow } : { kind: 'column' as const, index: drag.currentColumn };
+        const nextSelection = applyHeaderSelection(selection, target, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: drag.additive, extend: drag.extend });
+        clearTransientSelection();
+        onSelectionChange(nextSelection);
+        if (cellEdit.getSnapshot().status === 'point') cellEdit.dispatch({ type: 'reference.gesture.end' });
+        return;
+      }
       if (drag.extend) {
         clearTransientSelection();
         onExtendSelection?.(drag.currentRow, drag.currentColumn);
         if (cellEdit.getSnapshot().status === 'point') cellEdit.dispatch({ type: 'reference.gesture.end' });
         return;
       }
-      const isRowDrag = drag.floating?.id === "row";
-      const isColDrag = drag.floating?.id === "col";
       const baseRange: RangeRef = {
         sheetId,
         startRow: isRowDrag || isColDrag ? Math.min(drag.startRow, drag.currentRow) : Math.min(drag.anchorRow, drag.currentRow),
@@ -827,6 +950,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         target: { row: drag.currentRow, column: drag.currentColumn },
         kind: isRowDrag ? 'rows' : isColDrag ? 'columns' : 'cells',
         additive: drag.additive,
+        extend: drag.extend,
         expandedRange: range,
       }, sheetId);
       clearTransientSelection();
@@ -844,7 +968,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         }
       }
     }
-  }, [cellEdit, clearTransientSelection, containerRef, engineRef, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onPivotResolve, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
+  }, [cellEdit, chromeState, clearTransientSelection, containerRef, engineRef, floatables, localPointOf, onExtendSelection, onFillRange, onFloatingSelect, onPivotContextHit, onPivotResolve, onRangeDragCommit, onResizeColumn, onResizeRow, onSelectionChange, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, zoom]);
 
   const handlePointerCancel = useCallback((event: React.PointerEvent) => {
     const host = containerRef.current;
@@ -906,7 +1030,9 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const engine = engineRef.current;
     if (!engine) return;
     event.preventDefault();
-    engine.scrollBy(event.deltaX, event.deltaY);
+    // Excel's Shift+wheel is the horizontal outline/worksheet scroll gesture;
+    // keep the axis decision at the input boundary before PaneMap consumes it.
+    engine.scrollBy(event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX, event.shiftKey ? 0 : event.deltaY);
   }, [engineRef]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
@@ -927,8 +1053,19 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
     if (key === "Escape" && formatPainterActive) { event.preventDefault(); onCancelFormatPainter?.(); return; }
     if (key === "Escape" && drawingSelectionMode) { event.preventDefault(); onExitDrawingSelectionMode?.(); return; }
+    if (drawingSelectionMode && key === 'Tab') { event.preventDefault(); onCycleDrawingSelection?.(event.shiftKey ? 'previous' : 'next'); return; }
     if (textBoxPlacementActive && key === "Escape") { event.preventDefault(); onCancelTextBoxPlacement(); return; }
-    const activeScope = activePivotContextHit ? "pivot" as const : selectedFloatingId ? "drawing" as const : "grid" as const;
+    const activeScope = activePivotContextHit ? "pivot" as const : drawingSelectionMode || selectedFloatingId ? "drawing" as const : "grid" as const;
+    const sequence = shortcutRegistryRef.current?.resolveSequence(event, { scope: activeScope }, shortcutSequenceRef.current);
+    if (sequence) {
+      shortcutSequenceRef.current = sequence.state;
+      if (sequence.preventDefault) event.preventDefault();
+      if (sequence.shortcut) {
+        onShortcut?.(sequence.shortcut.id);
+        return;
+      }
+      if (sequence.state.active) return;
+    }
     const shortcut = shortcutRegistryRef.current?.resolve(event, { scope: activeScope, canRepeat }) ?? (activeScope === "grid" ? undefined : shortcutRegistryRef.current?.resolve(event, { scope: "grid", canRepeat }));
     if (shortcut?.id === "context.open") {
       event.preventDefault();
@@ -947,7 +1084,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
       return;
     }
-    if (shortcut && onShortcut?.(shortcut.id)) { event.preventDefault(); return; }
+    if (shortcut && shortcut.id !== 'navigation.pageDown' && shortcut.id !== 'navigation.pageUp' && onShortcut?.(shortcut.id)) { event.preventDefault(); return; }
     if (key === ' ' && ctrl) {
       event.preventDefault();
       onSelectionChange(applyHeaderSelection(selection, { kind: 'column', index: selection.activeCell.column }, sheetId, { rowCount: skeleton.rowCount, columnCount: skeleton.columnCount }, { additive: false, extend: false }));
@@ -981,18 +1118,18 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const activePivotProjection = activePivotContextHit ? findPivotProjectionCell(sheet, selection.activeCell.row, selection.activeCell.column)?.projection : undefined;
       if (activePivotCell?.kind === 'expand-toggle' && activePivotCell.nodeId && activePivotProjection) onPivotExpansionToggle(activePivotProjection.pivotId, activePivotCell.nodeId);
       else if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
-      else onMovePrimary(event.shiftKey ? -1 : 1, 0);
+      else onMovePrimary(event.shiftKey ? -1 : 1, 0, { extend: event.shiftKey || selection.interactionMode === 'extend' });
       return;
     }
     const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1], Tab: [0, event.shiftKey ? -1 : 1] };
-    if (key in moves && !ctrl) { event.preventDefault(); const [dr, dc] = moves[key]!; onMovePrimary(dr, dc, { extend: event.shiftKey }); return; }
-    if (key in moves && ctrl) { event.preventDefault(); const direction = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "ArrowLeft" ? "left" : "right"; onJumpEdge(direction, event.shiftKey); return; }
-    if (key === "Home") { event.preventDefault(); onMovePrimary(0, -selection.activeCell.column, { extend: event.shiftKey }); return; }
+    if (key in moves && !ctrl) { event.preventDefault(); const [dr, dc] = moves[key]!; onMovePrimary(dr, dc, { extend: event.shiftKey || selection.interactionMode === 'extend' }); return; }
+    if (key in moves && ctrl) { event.preventDefault(); const direction = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "ArrowLeft" ? "left" : "right"; onJumpEdge(direction, event.shiftKey || selection.interactionMode === 'extend'); return; }
+    if (key === "Home") { event.preventDefault(); onMovePrimary(0, -selection.activeCell.column, { extend: event.shiftKey || selection.interactionMode === 'extend' }); return; }
     if (key === "PageDown" || key === "PageUp") {
       event.preventDefault();
       const rowHeight = Math.max(1, skeleton.getRowHeight(selection.activeCell.row));
       const rows = Math.max(1, Math.floor((containerRef.current?.clientHeight ?? 600) / rowHeight) - 2);
-      onMovePrimary(key === "PageDown" ? rows : -rows, 0, { extend: event.shiftKey });
+      onMovePrimary(key === "PageDown" ? rows : -rows, 0, { extend: event.shiftKey || selection.interactionMode === 'extend' });
       return;
     }
     if (key.length === 1 && !ctrl && !event.altKey) {
@@ -1005,7 +1142,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       }
       else cellEdit.dispatch({ type: 'begin.request', source: 'direct-typing', surface: 'grid', initialText: key });
     }
-  }, [canRepeat, cellEdit, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, findPivotProjectionCell, formatPainterActive, onBeginTextBoxEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onExitDrawingSelectionMode, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onShortcut, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, cellEdit, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, findPivotProjectionCell, formatPainterActive, onBeginTextBoxEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCycleDrawingSelection, onExitDrawingSelectionMode, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onSelectAllDrawings, onShortcut, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

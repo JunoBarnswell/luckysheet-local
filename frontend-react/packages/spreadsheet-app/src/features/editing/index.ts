@@ -2,6 +2,8 @@ import type { RangeRef, SelectionSnapshot, WorkbookEditingOptions } from '@react
 import { createEmptySelection, isWorkbookEditingOptions } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 
+export * from './range-drag';
+
 export interface SetSelectionParams {
   unitId: string;
   sheetId: string;

@@ -10,7 +10,7 @@ export interface LocalObjectDialogProps {
 }
 
 const TITLES: Record<LocalObjectDialogKind, string> = {
-  icon: '本地图标', model3d: '本地 3D 模型', smartart: '本地 SmartArt', screenshot: '工作表区域截图', wordart: '本地艺术字', 'signature-line': '本地签名行', 'embedded-object': '本地文件对象', equation: '本地公式',
+  icon: '本地图标', model3d: '本地 3D 模型', smartart: '本地 SmartArt', wordart: '本地艺术字', 'signature-line': '本地签名行', 'embedded-object': '本地文件对象', equation: '本地公式',
 };
 
 export function LocalObjectDialog({ open, kind, onClose, onInsert }: LocalObjectDialogProps) {
@@ -38,7 +38,6 @@ export function LocalObjectDialog({ open, kind, onClose, onInsert }: LocalObject
         {kind === 'wordart' ? <TextInput aria-label="艺术字内容" value={text} onChange={(event) => setText(event.target.value)} placeholder="输入艺术字内容" /> : null}
         {kind === 'equation' ? <TextInput aria-label="公式表达式" value={text} onChange={(event) => setText(event.target.value)} placeholder="例如 a^2+b^2=c^2" /> : null}
         {kind === 'signature-line' ? <Stack gap="sm"><TextInput aria-label="签名人" value={signerName} onChange={(event) => setSignerName(event.target.value)} placeholder="签名人姓名" /><TextInput aria-label="职务" value={signerTitle} onChange={(event) => setSignerTitle(event.target.value)} placeholder="职务（可选）" /><TextInput aria-label="邮箱" value={signerEmail} onChange={(event) => setSignerEmail(event.target.value)} placeholder="邮箱（可选）" /></Stack> : null}
-        {kind === 'screenshot' ? <Text size="sm">将当前选区渲染为可持续刷新的本地快照对象。</Text> : null}
         {file ? <Text size="xs" tone="muted">已选择：{file.name}</Text> : null}
       </Stack>
     </Dialog>

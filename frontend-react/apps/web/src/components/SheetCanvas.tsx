@@ -48,6 +48,7 @@ import {
 import { CellEditOverlay } from "./CellEditOverlay";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { applyHeaderSelection, buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, findPivotProjectionCellAt, headerContextMenuCatalog, headerTargetSelected, intersectsRange, resolveContextHit, resolveSelectionTarget, selectedHeaderIndices, selectionFromGesture, type HeaderContextAction, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase, type CellEditController } from "@react-sheets/spreadsheet-app";
+import type { RangeDragMode } from '@react-sheets/spreadsheet-app';
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -97,12 +98,15 @@ export interface SheetCanvasProps {
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
+  onSelectAllDrawings?: () => void;
+  onCycleDrawingSelection?: (direction: 'next' | 'previous') => void;
   onExtendSelection?: (row: number, column: number) => void;
   columnDimensions: ColumnDimensionController;
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenRowHeightDialog: (rows: number[]) => void;
   onOpenFormatCells: () => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
+  onRangeDragCommit?: (sourceRange: RangeRef, targetOrigin: { row: number; column: number }, mode: RangeDragMode) => void;
   drawingSelectionMode?: boolean;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: 'replace' | 'add' | 'toggle') => void;
@@ -386,12 +390,15 @@ export function SheetCanvas({
   onEnsureSheetExtent,
   onJumpEdge,
   onSelectAll,
+  onSelectAllDrawings,
+  onCycleDrawingSelection,
   onExtendSelection,
   columnDimensions,
   onOpenColumnWidthDialog,
   onOpenRowHeightDialog,
   onOpenFormatCells,
   onFillRange,
+  onRangeDragCommit,
   drawingSelectionMode = false,
   onExitDrawingSelectionMode,
   onFloatingSelect,
@@ -645,6 +652,7 @@ export function SheetCanvas({
     onExitDrawingSelectionMode,
     onExtendSelection,
     onFillRange,
+    onRangeDragCommit,
     onFloatingMove,
     onChartElementAction,
     onTextBoxPlacementCommit: (bounds) => onTextBoxPlacementCommit?.(bounds),
@@ -691,6 +699,8 @@ export function SheetCanvas({
       columnDimensions.setRowPixels(rows, heightPx);
     },
     onSelectAll,
+    onSelectAllDrawings,
+    onCycleDrawingSelection,
     onSelectionChange,
     onShortcut,
     onToggleOutline,

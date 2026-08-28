@@ -8,7 +8,7 @@
 
 ## 2. 真实基线与问题
 
-- `render-engine/src/cell-text-layout.ts` 已经是静态文字和 AutoFit 的测量入口，但结果只描述文字布局，编辑框仍在应用层另算尺寸。
+- `render-engine/src/cell-content-layout.ts` 是静态文字、AutoFit 与编辑框的统一测量入口，结果同时描述显示、编辑和 caret 几何。
 - `cell-renderer.ts` 只把左对齐文本向右溢出；右对齐、居中、Center Across Selection、合并边界和数字/日期的阻断语义没有统一解析。
 - `CellEditOverlay.editorRect()` 仍使用 `draft.length * fontSize * 0.56` 和邻格为空条件；右侧有值时长文本会被挤压，viewport 边缘和 freeze pane 也可能发生跳变。
 - `CellEditor.tsx` 的普通文本输入使用 `overflow-hidden`，外层尺寸不足时 caret 和多行内容不可见。

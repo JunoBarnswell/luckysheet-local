@@ -329,7 +329,7 @@ export class FormulaEngine {
    * their derived projection after completion.
    */
   async recalculateAsync(
-    addressInput?: CellAddressInput,
+    addressInput?: CellAddressInput | readonly CellAddressInput[],
     taskPort: CalculationTaskPort = this.defaultTaskPort ??= this.createCalculationTaskPort(),
   ): Promise<RecalculationReport> {
     if (this.activeTaskId && this.activeTaskPort) {
@@ -342,13 +342,16 @@ export class FormulaEngine {
     this.activeTaskId = taskId;
     this.activeTaskPort = taskPort;
     const calculationEntropy = this.beginCalculationEntropy();
+    const roots = addressInput === undefined
+      ? undefined
+      : (Array.isArray(addressInput) ? addressInput : [addressInput]).map((address) => this.resolveAddress(address));
     const result = await taskPort.submit({
       protocol: 'react-sheets.formula-calculation',
       version: 1,
       taskId,
       kind: 'recalculate',
       revision,
-      ...(addressInput === undefined ? {} : { roots: [this.resolveAddress(addressInput)] }),
+      ...(roots === undefined ? {} : { roots }),
     }).finally(() => {
       if (this.activeCalculationEntropy === calculationEntropy) this.activeCalculationEntropy = undefined;
     });

@@ -1,4 +1,4 @@
-import type { CanonicalKeyGesture } from '@react-sheets/spreadsheet-app';
+import { canonicalKeyGesture, type CanonicalKeyGesture } from '@react-sheets/spreadsheet-app';
 
 export interface KeyboardGestureSource {
   key: string;
@@ -12,14 +12,14 @@ export interface KeyboardGestureSource {
 }
 /** DOM normalization only. Editing semantics remain in CellEditDomain. */
 export function toCanonicalKeyGesture(event: KeyboardGestureSource): CanonicalKeyGesture {
-  return {
+  return canonicalKeyGesture({
     key: event.key,
     code: event.code,
-    alt: event.altKey,
-    ctrl: event.ctrlKey,
-    meta: event.metaKey,
-    shift: event.shiftKey,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
     repeat: event.repeat,
     composing: Boolean(event.nativeEvent.isComposing),
-  };
+  });
 }

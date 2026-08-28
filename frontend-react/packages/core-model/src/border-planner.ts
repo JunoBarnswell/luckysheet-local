@@ -46,7 +46,7 @@ function isPlacement(value: unknown): value is BorderPlacement {
 }
 
 function isLineStyle(value: unknown): value is CellBorderSide['style'] {
-  return value === 'thin' || value === 'medium' || value === 'thick' || value === 'dashed' || value === 'double';
+  return value === 'hair' || value === 'thin' || value === 'medium' || value === 'thick' || value === 'dotted' || value === 'dashed' || value === 'dashDot' || value === 'dashDotDot' || value === 'double';
 }
 
 function validateLine(line: BorderLine | undefined, placement: BorderPlacement): BorderLine | undefined {

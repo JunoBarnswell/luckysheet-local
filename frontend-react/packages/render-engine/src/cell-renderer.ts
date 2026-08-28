@@ -13,9 +13,9 @@ import {
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
 import { checkboxStateFromValue, type AssetRef, type CheckboxCellState } from '@react-sheets/core-model';
-import { resolveCellContentLayout, type CellLayoutNeighbor } from './cell-content-layout';
+import { resolveCellContentLayout, resolveTextRotationDegrees, type CellLayoutNeighbor } from './cell-content-layout';
 
-export { cellRenderFont } from './cell-content-layout';
+export { cellRenderFont, resolveCellContentLayout, resolveTextRotationDegrees } from './cell-content-layout';
 
 export type AssetUrlResolver = (asset: AssetRef) => Promise<string>;
 
@@ -255,7 +255,8 @@ export function drawCellLayer(options: PaneDrawOptions): void {
         // 背景(含色阶)
       }
       const backgroundColor = cell?.overlay?.colorScale ?? cell?.style?.background;
-      if (backgroundColor && isAnchor) {
+      if (isAnchor && cell?.style?.fill) drawCellFill(context, spanRect, cell.style.fill, backgroundColor);
+      else if (backgroundColor && isAnchor) {
         context.fillStyle = backgroundColor;
         context.fillRect(spanRect.x, spanRect.y, spanRect.width, spanRect.height);
       }
@@ -445,6 +446,79 @@ function sumHeight(skeleton: SheetSkeleton, startRow: number, endRow: number): n
   return total;
 }
 
+function drawCellFill(
+  context: CanvasRenderingContext2D,
+  rect: Rect,
+  fill: NonNullable<CellRenderData['style']>['fill'],
+  fallback: string | undefined,
+): void {
+  if (!fill) return;
+  context.save();
+  if (fill.kind === 'solid') {
+    context.fillStyle = fill.foreground ?? fallback ?? '#ffffff';
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    context.restore();
+    return;
+  }
+  if (fill.kind === 'gradient') {
+    const degree = ((fill.degree ?? 0) * Math.PI) / 180;
+    const length = Math.hypot(rect.width, rect.height);
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    const gradient = fill.gradientType === 'path'
+      ? context.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(rect.width, rect.height) / 2)
+      : context.createLinearGradient(centerX - Math.cos(degree) * length / 2, centerY - Math.sin(degree) * length / 2, centerX + Math.cos(degree) * length / 2, centerY + Math.sin(degree) * length / 2);
+    const stops = [...(fill.stops ?? [])].sort((left, right) => left.position - right.position);
+    if (stops.length === 0) {
+      gradient.addColorStop(0, fill.foreground ?? fallback ?? '#ffffff');
+      gradient.addColorStop(1, fill.background ?? fallback ?? '#ffffff');
+    } else {
+      for (const stop of stops) gradient.addColorStop(Math.max(0, Math.min(1, stop.position)), stop.color);
+    }
+    context.fillStyle = gradient;
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    context.restore();
+    return;
+  }
+  context.fillStyle = fill.background ?? fallback ?? '#ffffff';
+  context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  context.beginPath();
+  context.rect(rect.x, rect.y, rect.width, rect.height);
+  context.clip();
+  const color = fill.foreground ?? '#94a3b8';
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = 1;
+  context.beginPath();
+  const spacing = Math.max(4, Math.min(10, Math.round(Math.min(rect.width, rect.height) / 2)));
+  switch (fill.pattern ?? 'solid') {
+    case 'darkDown': case 'lightDown':
+      for (let x = rect.x - rect.height; x < rect.x + rect.width; x += spacing) { context.moveTo(x, rect.y); context.lineTo(x + rect.height, rect.y + rect.height); }
+      break;
+    case 'darkUp': case 'lightUp':
+      for (let x = rect.x; x < rect.x + rect.width + rect.height; x += spacing) { context.moveTo(x, rect.y + rect.height); context.lineTo(x - rect.height, rect.y); }
+      break;
+    case 'darkGrid': case 'lightGrid':
+      for (let x = rect.x; x <= rect.x + rect.width; x += spacing) { context.moveTo(x, rect.y); context.lineTo(x, rect.y + rect.height); }
+      for (let y = rect.y; y <= rect.y + rect.height; y += spacing) { context.moveTo(rect.x, y); context.lineTo(rect.x + rect.width, y); }
+      break;
+    case 'darkTrellis': case 'lightTrellis':
+      for (let x = rect.x - rect.height; x < rect.x + rect.width; x += spacing) { context.moveTo(x, rect.y); context.lineTo(x + rect.height, rect.y + rect.height); context.moveTo(x, rect.y + rect.height); context.lineTo(x + rect.height, rect.y); }
+      break;
+    case 'gray0625':
+      for (let x = rect.x + 2; x < rect.x + rect.width; x += spacing) for (let y = rect.y + 2; y < rect.y + rect.height; y += spacing) context.fillRect(x, y, 1, 1);
+      break;
+    case 'darkGray': case 'mediumGray': case 'lightGray':
+      context.globalAlpha = fill.pattern === 'darkGray' ? 0.55 : fill.pattern === 'mediumGray' ? 0.35 : 0.2;
+      context.fillRect(rect.x, rect.y, rect.width, rect.height);
+      break;
+    case 'solid': case 'none': case 'gray125':
+      break;
+  }
+  context.stroke();
+  context.restore();
+}
+
 function drawDataBar(context: CanvasRenderingContext2D, rect: Rect, bar: { color: string; ratio: number }): void {
   const ratio = Math.max(0, Math.min(1, bar.ratio));
   const width = Math.max(0, (rect.width - 4) * ratio);
@@ -511,12 +585,24 @@ function drawCustomBorders(context: CanvasRenderingContext2D, rect: Rect, cell: 
     const border = borders[side];
     if (!border) continue;
     context.strokeStyle = border.color;
-    context.setLineDash(border.style === "dashed" ? [4, 3] : []);
-    context.lineWidth = border.style === "thick" ? 2 : 1;
+    context.setLineDash(border.style === "dashed" ? [4, 3] : border.style === "dotted" || border.style === "hair" ? [1, 2] : border.style === "dashDot" ? [5, 2, 1, 2] : border.style === "dashDotDot" ? [5, 2, 1, 2, 1, 2] : []);
+    context.lineWidth = border.style === "thick" ? 2 : border.style === "medium" ? 1.5 : 1;
     context.beginPath();
     context.moveTo(coordinates[0], coordinates[1]);
     context.lineTo(coordinates[2], coordinates[3]);
     context.stroke();
+  }
+  const diagonal = borders.diagonal;
+  if (diagonal && (borders.diagonalUp || borders.diagonalDown)) {
+    context.strokeStyle = diagonal.color;
+    context.setLineDash(diagonal.style === 'dashed' ? [4, 3] : diagonal.style === 'dotted' ? [1, 2] : []);
+    context.lineWidth = diagonal.style === 'thick' ? 2 : 1;
+    if (borders.diagonalUp) {
+      context.beginPath(); context.moveTo(rect.x, rect.y + rect.height); context.lineTo(rect.x + rect.width, rect.y); context.stroke();
+    }
+    if (borders.diagonalDown) {
+      context.beginPath(); context.moveTo(rect.x, rect.y); context.lineTo(rect.x + rect.width, rect.y + rect.height); context.stroke();
+    }
   }
   context.setLineDash([]);
   context.lineWidth = 1;
@@ -653,11 +739,7 @@ function drawCellValue(
     : vAlign === 'bottom'
       ? paintRect.y + paintRect.height - padding - fontSize / 2
       : paintRect.y + paintRect.height / 2 + phoneticHeight * 0.25;
-  const rotate = style?.textOrientation === 'rotateUp'
-    ? 90
-    : style?.textOrientation === 'rotateDown'
-      ? 180
-      : style?.textRotate ?? 0;
+  const rotate = resolveTextRotationDegrees(style);
   if (rotate !== 0) {
     const radians = (rotate * Math.PI) / 180;
     context.translate(paintRect.x + paintRect.width / 2, paintRect.y + paintRect.height / 2);
@@ -681,12 +763,18 @@ function drawCellValue(
     let lineX1 = canvasAlign === "center" ? x - textWidth / 2 : canvasAlign === "right" ? x - textWidth : x;
     const lineX2 = lineX1 + textWidth;
     context.strokeStyle = style.textColor ?? theme.cellText;
-    context.lineWidth = 1;
+    context.lineWidth = style.underlineStyle === 'double' || style.underlineStyle === 'doubleAccounting' ? 0.75 : 1;
     context.beginPath();
     if (style.underline) {
-      const lineY = y + 7;
+      const lineY = y + fontSize * 0.45;
+      const accounting = style.underlineStyle === 'singleAccounting' || style.underlineStyle === 'doubleAccounting';
       context.moveTo(lineX1, lineY);
       context.lineTo(lineX2, lineY);
+      if (style.underlineStyle === 'double' || style.underlineStyle === 'doubleAccounting') {
+        const secondLineY = lineY + (accounting ? 2.5 : 2);
+        context.moveTo(lineX1, secondLineY);
+        context.lineTo(lineX2, secondLineY);
+      }
     }
     if (style.strikethrough) {
       context.moveTo(lineX1, y);

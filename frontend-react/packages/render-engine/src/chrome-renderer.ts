@@ -32,6 +32,7 @@ export function drawChromeLayer(options: ChromeDrawOptions): void {
   drawOutlineControls(options);
   drawFilterFunnels(options);
   drawRemoteCursors(options);
+  drawDrawingMarquee(options);
   void theme;
 }
 
@@ -372,6 +373,20 @@ function drawRemoteCursors(options: ChromeDrawOptions): void {
   }
 }
 
+function drawDrawingMarquee(options: ChromeDrawOptions): void {
+  const marquee = options.chrome.drawingMarquee;
+  if (!marquee) return;
+  const { context } = options;
+  context.save();
+  context.fillStyle = 'rgba(37, 99, 235, 0.08)';
+  context.strokeStyle = '#2563eb';
+  context.lineWidth = 1;
+  context.setLineDash([4, 3]);
+  context.fillRect(marquee.x, marquee.y, marquee.width, marquee.height);
+  context.strokeRect(marquee.x + 0.5, marquee.y + 0.5, Math.max(0, marquee.width - 1), Math.max(0, marquee.height - 1));
+  context.restore();
+}
+
 function drawHeaderStrips(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome, theme } = options;
   const viewport = plan.viewport;
@@ -428,60 +443,55 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
     }
   }
 
-  drawHiddenDimensionIndicators(context, skeleton, plan);
-
   // 全选角块
   context.fillStyle = chrome.selection.ranges.some((range) => isSelectAllRange(range, skeleton)) ? theme.headerSelectionBackground : theme.headerBackground;
   context.fillRect(0, 0, origin.x, origin.y);
   context.strokeStyle = theme.headerBorder;
   context.strokeRect(0.5, 0.5, origin.x - 1, origin.y - 1);
   context.textAlign = "left";
+  drawHiddenDimensionIndicators(context, skeleton, plan, theme, origin);
 }
 
-function drawHiddenDimensionIndicators(context: CanvasRenderingContext2D, skeleton: SheetSkeleton, plan: RenderPlan): void {
-  const origin = defaultHeaderOffset();
+function drawHiddenDimensionIndicators(context: CanvasRenderingContext2D, skeleton: SheetSkeleton, plan: RenderPlan, theme: RenderTheme, origin: { x: number; y: number }): void {
   context.save();
-  context.strokeStyle = '#64748b';
-  context.lineWidth = 1;
-  for (const pane of plan.panes) {
-    if (!pane.visibleRange) continue;
-    const columnStart = Math.max(0, pane.visibleRange.startColumn - 1);
-    const columnEnd = Math.min(skeleton.columnCount - 1, pane.visibleRange.endColumn + 1);
-    const transform = paneTransform(pane);
-    if (pane.id === 'main' || pane.id === 'topLeft' || pane.id === 'topRight') for (let column = columnStart; column <= columnEnd; column += 1) {
-      if (!skeleton.isColumnHidden(column) || (column > 0 && skeleton.isColumnHidden(column - 1))) continue;
-      let end = column;
-      while (end + 1 < skeleton.columnCount && skeleton.isColumnHidden(end + 1)) end += 1;
-      const nextVisible = end + 1 < skeleton.columnCount ? end + 1 : -1;
-      const previousVisible = column > 0 ? column - 1 : -1;
-      const x = nextVisible >= 0 ? skeleton.getColumnLeft(nextVisible) + transform.dx : previousVisible >= 0 ? skeleton.getColumnLeft(previousVisible) + skeleton.getColumnWidth(previousVisible) + transform.dx : origin.x;
-      if (x < origin.x - 4 || x > plan.viewport.width + 4) continue;
-      context.beginPath();
-      context.moveTo(x - 2, origin.y + 4);
-      context.lineTo(x - 2, origin.y + COL_HEADER_HEIGHT - 4);
-      context.moveTo(x + 2, origin.y + 4);
-      context.lineTo(x + 2, origin.y + COL_HEADER_HEIGHT - 4);
-      context.stroke();
-    }
-    const rowStart = Math.max(0, pane.visibleRange.startRow - 1);
-    const rowEnd = Math.min(skeleton.rowCount - 1, pane.visibleRange.endRow + 1);
-    if (pane.id === 'main' || pane.id === 'topLeft' || pane.id === 'bottomLeft') for (let row = rowStart; row <= rowEnd; row += 1) {
-      if (!skeleton.isRowHidden(row) || (row > 0 && skeleton.isRowHidden(row - 1))) continue;
-      let end = row;
-      while (end + 1 < skeleton.rowCount && skeleton.isRowHidden(end + 1)) end += 1;
-      const nextVisible = end + 1 < skeleton.rowCount ? end + 1 : -1;
-      const previousVisible = row > 0 ? row - 1 : -1;
-      const y = nextVisible >= 0 ? skeleton.getRowTop(nextVisible) + transform.dy : previousVisible >= 0 ? skeleton.getRowTop(previousVisible) + skeleton.getRowHeight(previousVisible) + transform.dy : origin.y;
-      if (y < origin.y - 4 || y > plan.viewport.height + 4) continue;
-      context.beginPath();
-      context.moveTo(4, y - 2);
-      context.lineTo(origin.x - 4, y - 2);
-      context.moveTo(4, y + 2);
-      context.lineTo(origin.x - 4, y + 2);
-      context.stroke();
-    }
+  context.strokeStyle = theme.headerSelectionText;
+  context.lineWidth = 1.5;
+  for (const column of hiddenRuns(skeleton.hiddenColumns)) {
+    let next = column + 1;
+    while (next < skeleton.columnCount && skeleton.isColumnHidden(next)) next += 1;
+    let previous = column - 1;
+    while (previous >= 0 && skeleton.isColumnHidden(previous)) previous -= 1;
+    const anchor = next < skeleton.columnCount ? next : previous;
+    if (anchor < 0) continue;
+    const pane = plan.panes.find((candidate) => candidate.visibleRange && anchor >= candidate.visibleRange.startColumn && anchor <= candidate.visibleRange.endColumn);
+    if (!pane) continue;
+    const x = skeleton.getColumnLeft(anchor) + pane.screenRect.x - pane.contentOrigin.x;
+     context.beginPath();
+     context.moveTo(x - 2, origin.y + 4); context.lineTo(x - 2, origin.y + COL_HEADER_HEIGHT - 4);
+     context.moveTo(x + 2, origin.y + 4); context.lineTo(x + 2, origin.y + COL_HEADER_HEIGHT - 4);
+    context.stroke();
+  }
+  for (const row of hiddenRuns(skeleton.hiddenRows)) {
+    let next = row + 1;
+    while (next < skeleton.rowCount && skeleton.isRowHidden(next)) next += 1;
+    let previous = row - 1;
+    while (previous >= 0 && skeleton.isRowHidden(previous)) previous -= 1;
+    const anchor = next < skeleton.rowCount ? next : previous;
+    if (anchor < 0) continue;
+    const pane = plan.panes.find((candidate) => candidate.visibleRange && anchor >= candidate.visibleRange.startRow && anchor <= candidate.visibleRange.endRow);
+    if (!pane) continue;
+    const y = skeleton.getRowTop(anchor) + pane.screenRect.y - pane.contentOrigin.y;
+     context.beginPath();
+     context.moveTo(4, y - 2); context.lineTo(origin.x - 4, y - 2);
+     context.moveTo(4, y + 2); context.lineTo(origin.x - 4, y + 2);
+    context.stroke();
   }
   context.restore();
+}
+
+function hiddenRuns(indices: readonly number[]): number[] {
+  const ordered = [...indices].sort((left, right) => left - right);
+  return ordered.filter((value, index) => index === 0 || value !== ordered[index - 1]! + 1);
 }
 
 export function isColumnSelected(chrome: ChromeState, column: number): boolean {

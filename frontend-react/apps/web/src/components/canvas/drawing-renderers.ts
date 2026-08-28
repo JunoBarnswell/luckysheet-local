@@ -128,63 +128,9 @@ function drawCanonicalShapeOnCanvas(options: {
   context.fillStyle = payload.fill;
   context.strokeStyle = payload.stroke;
   context.lineWidth = payload.strokeWidth ?? 1.5;
-  if (payload.type === "rectangle") {
-    context.fillRect(0, 0, width, height);
-    context.strokeRect(0, 0, width, height);
-  } else if (payload.type === "rounded-rectangle") {
-    const radius = Math.min(8, width / 4, height / 4);
-    context.beginPath();
-    context.roundRect(0, 0, width, height, radius);
-    context.fill();
-    context.stroke();
-  } else if (payload.type === "ellipse") {
-    context.beginPath();
-    context.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-  } else if (payload.type === "line" || payload.type === "arrow") {
-    context.beginPath();
-    context.moveTo(0, height / 2);
-    context.lineTo(width - (payload.type === "arrow" ? Math.min(16, width / 3) : 0), height / 2);
-    context.stroke();
-    if (payload.type === "arrow") {
-      const head = Math.min(16, width / 3);
-      context.fillStyle = payload.stroke;
-      context.beginPath();
-      context.moveTo(width, height / 2);
-      context.lineTo(width - head, height / 2 - head / 2);
-      context.lineTo(width - head, height / 2 + head / 2);
-      context.closePath();
-      context.fill();
-    }
-  } else if (payload.type === "star") {
-    let angle = -Math.PI / 2;
-    const outer = Math.min(width, height) / 2;
-    const inner = outer / 2;
-    context.beginPath();
-    for (let index = 0; index < 10; index += 1) {
-      const radius = index % 2 === 0 ? outer : inner;
-      const pointX = width / 2 + Math.cos(angle) * radius;
-      const pointY = height / 2 + Math.sin(angle) * radius;
-      if (index === 0) context.moveTo(pointX, pointY);
-      else context.lineTo(pointX, pointY);
-      angle += Math.PI / 5;
-    }
-    context.closePath();
-    context.fill();
-    context.stroke();
-  } else {
-    const radius = 6;
-    const bodyHeight = height - 12;
-    context.beginPath();
-    context.roundRect(0, 0, width, bodyHeight, radius);
-    context.moveTo(16, bodyHeight);
-    context.lineTo(12, height);
-    context.lineTo(28, bodyHeight);
-    context.closePath();
-    context.fill();
-    context.stroke();
-  }
+  const geometry = drawShapeGeometry(context, payload.type, width, height);
+  if (geometry.fill) geometry.fillRule ? context.fill(geometry.fillRule) : context.fill();
+  context.stroke();
   if (payload.text) {
     context.globalAlpha = 1;
     context.fillStyle = payload.textColor ?? "#1e293b";
@@ -203,6 +149,197 @@ function drawCanonicalShapeOnCanvas(options: {
     }
   }
   context.restore();
+}
+
+interface ShapeGeometryResult {
+  fill: boolean;
+  fillRule?: CanvasFillRule;
+}
+
+function drawShapeGeometry(context: CanvasRenderingContext2D, type: Extract<DrawingPayload, { kind: 'shape' }>['type'], width: number, height: number): ShapeGeometryResult {
+  const polygon = (points: readonly [number, number][]): ShapeGeometryResult => {
+    context.beginPath();
+    points.forEach(([x, y], index) => index === 0 ? context.moveTo(x, y) : context.lineTo(x, y));
+    context.closePath();
+    return { fill: true };
+  };
+  const arrowHead = (x: number, y: number, direction: number, size: number): void => {
+    context.save();
+    context.translate(x, y);
+    context.rotate(direction);
+    context.moveTo(0, 0);
+    context.lineTo(-size, -size * 0.55);
+    context.lineTo(-size, size * 0.55);
+    context.closePath();
+    context.restore();
+  };
+  const line = (start: [number, number], end: [number, number], endArrow = false, startArrow = false): ShapeGeometryResult => {
+    context.beginPath();
+    context.moveTo(start[0], start[1]);
+    context.lineTo(end[0], end[1]);
+    if (endArrow || startArrow) {
+      const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+      const size = Math.max(8, Math.min(18, Math.min(width, height) * 0.35));
+      if (endArrow) arrowHead(end[0], end[1], angle, size);
+      if (startArrow) arrowHead(start[0], start[1], angle + Math.PI, size);
+    }
+    return { fill: endArrow || startArrow };
+  };
+  const star = (points: number, innerRatio: number): ShapeGeometryResult => {
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const outer = Math.min(width, height) / 2;
+    const total = points * 2;
+    const vertices: [number, number][] = [];
+    for (let index = 0; index < total; index += 1) {
+      const angle = -Math.PI / 2 + index * Math.PI / points;
+      const radius = index % 2 === 0 ? outer : outer * innerRatio;
+      vertices.push([centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius]);
+    }
+    return polygon(vertices);
+  };
+
+  switch (type) {
+    case 'rectangle':
+      context.beginPath(); context.rect(0, 0, width, height); return { fill: true };
+    case 'rounded-rectangle': {
+      const radius = Math.min(12, width / 4, height / 4);
+      context.beginPath(); context.roundRect(0, 0, width, height, radius); return { fill: true };
+    }
+    case 'ellipse':
+      context.beginPath(); context.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2); return { fill: true };
+    case 'triangle': return polygon([[width / 2, 0], [width, height], [0, height]]);
+    case 'right-triangle': return polygon([[0, 0], [width, height], [0, height]]);
+    case 'diamond': return polygon([[width / 2, 0], [width, height / 2], [width / 2, height], [0, height / 2]]);
+    case 'parallelogram': {
+      const skew = Math.min(width * 0.24, Math.max(8, height * 0.5));
+      return polygon([[skew, 0], [width, 0], [width - skew, height], [0, height]]);
+    }
+    case 'trapezoid': {
+      const inset = Math.min(width * 0.24, Math.max(8, width / 4));
+      return polygon([[inset, 0], [width - inset, 0], [width, height], [0, height]]);
+    }
+    case 'hexagon': {
+      const inset = Math.min(width * 0.2, Math.max(8, height / 2));
+      return polygon([[inset, 0], [width - inset, 0], [width, height / 2], [width - inset, height], [inset, height], [0, height / 2]]);
+    }
+    case 'octagon': {
+      const inset = Math.min(width, height) * 0.28;
+      return polygon([[inset, 0], [width - inset, 0], [width, inset], [width, height - inset], [width - inset, height], [inset, height], [0, height - inset], [0, inset]]);
+    }
+    case 'plus': {
+      const arm = Math.min(width, height) * 0.32;
+      return polygon([[arm, 0], [width - arm, 0], [width - arm, arm], [width, arm], [width, height - arm], [width - arm, height - arm], [width - arm, height], [arm, height], [arm, height - arm], [0, height - arm], [0, arm], [arm, arm]]);
+    }
+    case 'home-plate': return polygon([[0, 0], [width * 0.72, 0], [width, height / 2], [width * 0.72, height], [0, height]]);
+    case 'cube': return polygon([[width * 0.22, height * 0.18], [width * 0.72, 0], [width, height * 0.2], [width * 0.5, height * 0.38], [width * 0.22, height * 0.18], [0, height * 0.38], [width * 0.5, height * 0.58], [width, height * 0.38], [width, height * 0.82], [width * 0.5, height], [width * 0.5, height * 0.58], [0, height * 0.38], [0, height * 0.82], [width * 0.5, height], [width, height * 0.82], [width, height * 0.38], [width * 0.5, height * 0.58]]);
+    case 'cylinder': {
+      const ry = Math.min(height * 0.18, Math.max(5, width * 0.12));
+      context.beginPath();
+      context.moveTo(0, ry);
+      context.ellipse(width / 2, ry, width / 2, ry, 0, Math.PI, 0, true);
+      context.lineTo(width, height - ry);
+      context.ellipse(width / 2, height - ry, width / 2, ry, 0, 0, Math.PI, true);
+      context.closePath();
+      return { fill: true };
+    }
+    case 'sun': return star(16, 0.78);
+    case 'moon': {
+      context.beginPath();
+      context.moveTo(width * 0.72, height * 0.1);
+      context.bezierCurveTo(width * 0.28, height * 0.14, width * 0.2, height * 0.78, width * 0.7, height * 0.9);
+      context.bezierCurveTo(width * 0.44, height * 0.65, width * 0.44, height * 0.34, width * 0.72, height * 0.1);
+      context.closePath();
+      return { fill: true };
+    }
+    case 'heart': {
+      context.beginPath();
+      context.moveTo(width / 2, height * 0.92);
+      context.bezierCurveTo(width * 0.08, height * 0.64, 0, height * 0.32, width * 0.24, height * 0.16);
+      context.bezierCurveTo(width * 0.38, height * 0.07, width * 0.48, height * 0.18, width / 2, height * 0.3);
+      context.bezierCurveTo(width * 0.52, height * 0.18, width * 0.62, height * 0.07, width * 0.76, height * 0.16);
+      context.bezierCurveTo(width, height * 0.32, width * 0.92, height * 0.64, width / 2, height * 0.92);
+      context.closePath();
+      return { fill: true };
+    }
+    case 'lightning': return polygon([[width * 0.58, 0], [width * 0.12, height * 0.56], [width * 0.45, height * 0.56], [width * 0.32, height], [width * 0.88, height * 0.32], [width * 0.55, height * 0.32]]);
+    case 'cloud': {
+      context.beginPath();
+      context.moveTo(width * 0.15, height * 0.75);
+      context.bezierCurveTo(width * 0.02, height * 0.56, width * 0.13, height * 0.34, width * 0.34, height * 0.36);
+      context.bezierCurveTo(width * 0.38, height * 0.1, width * 0.72, height * 0.08, width * 0.78, height * 0.36);
+      context.bezierCurveTo(width * 1.02, height * 0.28, width * 1.03, height * 0.72, width * 0.84, height * 0.78);
+      context.lineTo(width * 0.22, height * 0.78);
+      context.closePath();
+      return { fill: true };
+    }
+    case 'frame':
+      context.beginPath(); context.rect(0, 0, width, height); context.rect(width * 0.18, height * 0.18, width * 0.64, height * 0.64); return { fill: true, fillRule: 'evenodd' };
+    case 'line': return line([0, height / 2], [width, height / 2]);
+    case 'arrow': return line([0, height / 2], [width, height / 2], true);
+    case 'left-right-arrow': return polygon([[0, height / 2], [width * 0.18, 0], [width * 0.18, height * 0.27], [width * 0.82, height * 0.27], [width * 0.82, 0], [width, height / 2], [width * 0.82, height], [width * 0.82, height * 0.73], [width * 0.18, height * 0.73], [width * 0.18, height]]);
+    case 'up-down-arrow': return polygon([[width / 2, 0], [width, height * 0.2], [width * 0.64, height * 0.2], [width * 0.64, height * 0.8], [width, height * 0.8], [width / 2, height], [0, height * 0.8], [width * 0.36, height * 0.8], [width * 0.36, height * 0.2], [0, height * 0.2]]);
+    case 'quad-arrow': return polygon([[width / 2, 0], [width * 0.68, height * 0.2], [width * 0.58, height * 0.2], [width * 0.58, height * 0.42], [width * 0.8, height * 0.42], [width * 0.8, height * 0.32], [width, height / 2], [width * 0.8, height * 0.68], [width * 0.8, height * 0.58], [width * 0.58, height * 0.58], [width * 0.58, height * 0.8], [width * 0.68, height * 0.8], [width / 2, height], [width * 0.32, height * 0.8], [width * 0.42, height * 0.8], [width * 0.42, height * 0.58], [width * 0.2, height * 0.58], [width * 0.2, height * 0.68], [0, height / 2], [width * 0.2, height * 0.32], [width * 0.2, height * 0.42], [width * 0.42, height * 0.42], [width * 0.42, height * 0.2], [width * 0.32, height * 0.2]]);
+    case 'bent-arrow': {
+      const head = Math.min(width, height) * 0.25;
+      context.beginPath(); context.moveTo(width * 0.12, height * 0.82); context.lineTo(width * 0.12, height * 0.3); context.quadraticCurveTo(width * 0.12, height * 0.12, width * 0.3, height * 0.12); context.lineTo(width * 0.76, height * 0.12); context.lineTo(width * 0.76, height * 0.02); context.lineTo(width, height * 0.22); context.lineTo(width * 0.76, height * 0.42); context.lineTo(width * 0.76, height * 0.3); context.lineTo(width * 0.34, height * 0.3); context.lineTo(width * 0.34, height * 0.82); context.closePath(); void head; return { fill: true };
+    }
+    case 'u-turn-arrow': {
+      context.beginPath(); context.moveTo(width * 0.78, height * 0.8); context.lineTo(width * 0.78, height * 0.3); context.quadraticCurveTo(width * 0.78, height * 0.14, width * 0.62, height * 0.14); context.lineTo(width * 0.32, height * 0.14); context.lineTo(width * 0.32, 0); context.lineTo(0, height * 0.27); context.lineTo(width * 0.32, height * 0.54); context.lineTo(width * 0.32, height * 0.38); context.lineTo(width * 0.55, height * 0.38); context.quadraticCurveTo(width * 0.6, height * 0.38, width * 0.6, height * 0.45); context.lineTo(width * 0.6, height * 0.8); context.closePath(); return { fill: true };
+    }
+    case 'left-brace': return brace(context, width, height, 'left');
+    case 'right-brace': return brace(context, width, height, 'right');
+    case 'left-right-brace': return brace(context, width, height, 'both');
+    case 'left-bracket': return bracket(context, width, height, 'left');
+    case 'right-bracket': return bracket(context, width, height, 'right');
+    case 'left-right-bracket': return bracket(context, width, height, 'both');
+    case 'callout': return callout(context, width, height, false, false);
+    case 'cloud-callout': return callout(context, width, height, true, false);
+    case 'wedge-rect-callout': return callout(context, width, height, false, true);
+    case 'wedge-round-rect-callout': return callout(context, width, height, false, true);
+    case 'star': return star(5, 0.48);
+    case 'star4': return star(4, 0.42);
+    case 'star5': return star(5, 0.42);
+    case 'star6': return star(6, 0.46);
+    case 'star8': return star(8, 0.5);
+    case 'star16': return star(16, 0.62);
+    case 'explosion1': return star(12, 0.34);
+    case 'explosion2': return star(20, 0.48);
+  }
+  return { fill: false };
+}
+
+function brace(context: CanvasRenderingContext2D, width: number, height: number, side: 'left' | 'right' | 'both'): ShapeGeometryResult {
+  const left = (x: number): void => { context.moveTo(x + width * 0.18, 0); context.bezierCurveTo(x, 0, x, height * 0.18, x + width * 0.18, height * 0.25); context.bezierCurveTo(x + width * 0.32, height * 0.34, x + width * 0.32, height * 0.42, x + width * 0.18, height * 0.5); context.bezierCurveTo(x + width * 0.32, height * 0.58, x + width * 0.32, height * 0.66, x + width * 0.18, height * 0.75); context.bezierCurveTo(x, height * 0.82, x, height, x + width * 0.18, height); };
+  context.beginPath();
+  if (side === 'left' || side === 'both') left(0);
+  if (side === 'both') { context.moveTo(width - width * 0.18, 0); context.bezierCurveTo(width, 0, width, height * 0.18, width - width * 0.18, height * 0.25); context.bezierCurveTo(width - width * 0.32, height * 0.34, width - width * 0.32, height * 0.42, width - width * 0.18, height * 0.5); context.bezierCurveTo(width - width * 0.32, height * 0.58, width - width * 0.32, height * 0.66, width - width * 0.18, height * 0.75); context.bezierCurveTo(width, height * 0.82, width, height, width - width * 0.18, height); }
+  if (side === 'right') { context.moveTo(width - width * 0.18, 0); context.bezierCurveTo(width, 0, width, height * 0.18, width - width * 0.18, height * 0.25); context.bezierCurveTo(width - width * 0.32, height * 0.34, width - width * 0.32, height * 0.42, width - width * 0.18, height * 0.5); context.bezierCurveTo(width - width * 0.32, height * 0.58, width - width * 0.32, height * 0.66, width - width * 0.18, height * 0.75); context.bezierCurveTo(width, height * 0.82, width, height, width - width * 0.18, height); }
+  return { fill: false };
+}
+
+function bracket(context: CanvasRenderingContext2D, width: number, height: number, side: 'left' | 'right' | 'both'): ShapeGeometryResult {
+  context.beginPath();
+  const draw = (x: number, direction: number): void => { context.moveTo(x + direction * width * 0.2, 0); context.lineTo(x, 0); context.lineTo(x, height); context.lineTo(x + direction * width * 0.2, height); };
+  if (side === 'left' || side === 'both') draw(2, 1);
+  if (side === 'right' || side === 'both') draw(width - 2, -1);
+  return { fill: false };
+}
+
+function callout(context: CanvasRenderingContext2D, width: number, height: number, cloud: boolean, wedge: boolean): ShapeGeometryResult {
+  context.beginPath();
+  if (cloud) {
+    context.moveTo(width * 0.14, height * 0.66);
+    context.bezierCurveTo(0, height * 0.5, width * 0.1, height * 0.2, width * 0.32, height * 0.3);
+    context.bezierCurveTo(width * 0.38, height * 0.04, width * 0.72, height * 0.08, width * 0.74, height * 0.32);
+    context.bezierCurveTo(width, height * 0.22, width * 1.02, height * 0.6, width * 0.82, height * 0.68);
+    context.lineTo(width * 0.34, height * 0.68); context.lineTo(width * 0.18, height); context.lineTo(width * 0.24, height * 0.66); context.closePath();
+  } else {
+    const radius = wedge ? 4 : 8;
+    context.roundRect(0, 0, width, height * 0.76, radius);
+    context.moveTo(width * 0.26, height * 0.76); context.lineTo(width * 0.18, height); context.lineTo(width * 0.42, height * 0.76); context.closePath();
+  }
+  return { fill: true };
 }
 
 /**

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Button, CheckToggle, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, ColorPicker, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ConditionalFormatOperator, ConditionalFormatRule, ConditionalFormatType, RangeRef } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { homeTemplate, homeText, resolveHomeLocale } from '../home/home-localization';
@@ -11,6 +11,8 @@ export interface ConditionalFormatPanelProps {
   rules: ConditionalFormatRule[];
   onAddRule: (rule: ConditionalFormatRule) => void;
   onRemoveRule: (id: string) => void;
+  onUpdateRule?: (id: string, patch: Partial<ConditionalFormatRule>) => void;
+  onReorderRules?: (ruleIds: readonly string[]) => void;
   onClose?: () => void;
 }
 
@@ -21,6 +23,8 @@ export function ConditionalFormatPanel({
   rules,
   onAddRule,
   onRemoveRule,
+  onUpdateRule,
+  onReorderRules,
   onClose,
 }: ConditionalFormatPanelProps) {
   const activeLocale = resolveHomeLocale(locale);
@@ -32,6 +36,8 @@ export function ConditionalFormatPanel({
   const [stopIfTrue, setStopIfTrue] = useState(false);
   const [iconSet, setIconSet] = useState('threeTrafficLights1');
   const [topBottomPercent, setTopBottomPercent] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
 
   const handleCreate = () => {
     const newRule: ConditionalFormatRule = {
@@ -92,7 +98,11 @@ export function ConditionalFormatPanel({
               <option value="equal">Equal To (=)</option>
               <option value="between">Between Range</option>
               <option value="containsText">Text Contains</option>
+              <option value="notContainsText">Text Does Not Contain</option>
               <option value="duplicate">Duplicate Values</option>
+              <option value="unique">Unique Values</option>
+              <option value="formula">Use a formula</option>
+              <option value="notEqual">Not Equal To</option>
               {type === 'topBottom' ? <><option value="top">Top</option><option value="bottom">Bottom</option></> : null}
             </Select>
           </Box>
@@ -143,25 +153,24 @@ export function ConditionalFormatPanel({
                 {homeTemplate(activeLocale, 'activeRules', { count: rules.length })}
               </Text>
               <Stack gap="xs">
-                {rules.map((r) => (
+                {[...rules].sort((left, right) => (left.priority ?? 0) - (right.priority ?? 0)).map((r, index, ordered) => (
                   <Box
                     key={r.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <Stack gap="none">
+                    <Stack gap="none" className="min-w-0">
                       <Text size="xs" weight="medium" className="text-slate-800">
-                        {r.operator} {r.value1}
+                        {r.priority ?? index + 1}. {r.operator ?? r.type} {r.value1}
                       </Text>
-                      <Text size="xs" tone="subtle">{r.type}</Text>
+                      <Text size="xs" tone="subtle">{r.type} · {homeText(activeLocale, 'appliesTo')}: {r.ranges.map((entry) => `${entry.startRow + 1}:${entry.startColumn + 1}-${entry.endRow + 1}:${entry.endColumn + 1}`).join(', ')}</Text>
+                      {editingRuleId === r.id ? <Stack gap="xs" className="mt-1"><TextInput value={editingValue} onChange={(event) => setEditingValue(event.target.value)} /><Button size="xs" variant="secondary" onClick={() => { const numeric = Number(editingValue); onUpdateRule?.(r.id, { value1: Number.isFinite(numeric) && editingValue.trim() !== '' ? numeric : editingValue }); setEditingRuleId(null); }}>{homeText(activeLocale, 'saveRule')}</Button></Stack> : null}
                     </Stack>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      icon="trash"
-                      iconOnly
-                      onClick={() => onRemoveRule(r.id)}
-                      className="text-rose-600 hover:bg-rose-50"
-                    />
+                    <Inline gap="none" className="shrink-0">
+                      <Button variant="ghost" size="xs" aria-label={homeText(activeLocale, 'moveRuleUp')} icon="chevron-up" iconOnly disabled={index === 0 || !onReorderRules} onClick={() => { if (!onReorderRules) return; const ids = ordered.map((entry) => entry.id); [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!]; onReorderRules(ids); }} />
+                      <Button variant="ghost" size="xs" aria-label={homeText(activeLocale, 'moveRuleDown')} icon="chevron-down" iconOnly disabled={index === ordered.length - 1 || !onReorderRules} onClick={() => { if (!onReorderRules) return; const ids = ordered.map((entry) => entry.id); [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!]; onReorderRules(ids); }} />
+                      <Button variant="ghost" size="xs" aria-label={homeText(activeLocale, 'editRule')} icon="pencil" iconOnly disabled={!onUpdateRule} onClick={() => { setEditingRuleId(r.id); setEditingValue(String(r.value1 ?? '')); }} />
+                      <Button variant="ghost" size="xs" icon="trash" iconOnly onClick={() => onRemoveRule(r.id)} className="text-rose-600 hover:bg-rose-50" />
+                    </Inline>
                   </Box>
                 ))}
               </Stack>

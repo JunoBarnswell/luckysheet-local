@@ -13,6 +13,7 @@ import type {
 } from "@react-sheets/core-model";
 import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
 import {
+  cellAddress,
   type SelectionState,
   type SidebarPanelId,
   type UiSessionIntent,
@@ -409,6 +410,7 @@ export function useEditorCommandController({
       case "format.italic": if (!toggleRichTextFlag('italic')) dispatchCommand({ commandId: "sheet.style.set", params: { style: { italic: !state.homeRibbon.style.italic } } }); return true;
       case "format.underline": if (!toggleRichTextFlag('underline')) dispatchCommand({ commandId: "sheet.style.set", params: { style: { underline: !state.homeRibbon.style.underline } } }); return true;
       case "range.fillDown": session.fillSelection("down"); return true;
+      case "range.flashFill": session.flashFill(); return true;
       case "range.clearContents": session.clearSelection("contents"); return true;
       case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "insert" }); return true;
       case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "delete" }); return true;
@@ -416,19 +418,60 @@ export function useEditorCommandController({
       case "find.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "find" }); return true;
       case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "replace" }); return true;
       case "commandPalette.open": dispatchSessionIntent({ type: "command-palette.open" }); return true;
+      case "print.preview": dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" }); return true;
       case "name.goto": case "navigation.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
       case "ribbon.home.keyTips": session.setRibbonTab("home"); session.notify("Home shortcuts are active"); return true;
+      case "ribbon.insert.keyTips": session.setRibbonTab("insert"); session.notify("Insert shortcuts are active"); return true;
+      case "ribbon.pageLayout.keyTips": session.setRibbonTab("pageLayout"); session.notify("Page Layout shortcuts are active"); return true;
+      case "ribbon.formulas.keyTips": session.setRibbonTab("formulas"); session.notify("Formulas shortcuts are active"); return true;
+      case "ribbon.data.keyTips": session.setRibbonTab("data"); session.notify("Data shortcuts are active"); return true;
+      case "ribbon.review.keyTips": session.setRibbonTab("review"); session.notify("Review shortcuts are active"); return true;
+      case "ribbon.view.keyTips": session.setRibbonTab("view"); session.notify("View shortcuts are active"); return true;
+      case "ribbon.keyTips": return true;
       case "format.cells": dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" }); return true;
       case "hyperlink.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "hyperlink" }); return true;
       case "row.select": session.selectActiveRow(); return true;
       case "column.select": session.selectActiveColumn(); return true;
+      case "selection.selectAll": session.selectAll(); return true;
+      case "selection.extendMode": session.setSelectionInteractionMode(session.getSelectionInteractionMode() === 'extend' ? 'normal' : 'extend'); return true;
+      case "selection.addMode": session.setSelectionInteractionMode(session.getSelectionInteractionMode() === 'add' ? 'normal' : 'add'); return true;
       case "sheet.previous": session.selectAdjacentSheet("previous"); return true;
       case "sheet.next": session.selectAdjacentSheet("next"); return true;
       case "formula.autoSum": session.autoSum(); return true;
+      case "range.fillRight": session.fillSelection("right"); return true;
+      case "row.hide": session.hideRowsAtPrimary(); return true;
+      case "column.hide": session.hideColumnsAtPrimary(); return true;
+      case "zoom.in": session.setZoom(session.getZoom() + 10); return true;
+      case "zoom.out": session.setZoom(session.getZoom() - 10); return true;
+      case "table.create": case "table.create.legacy": dispatchSessionIntent({ type: "dialog.open", dialog: "create-table" }); return true;
+      case "chart.insert": session.insertChart(); return true;
       case "edit.begin": session.cellEdit.dispatch({ type: 'begin.request', source: 'f2', surface: 'grid' }); return true;
       case "drawing.remove": session.removeSelectedDrawing(); return true;
+      case "drawing.selectAll": session.selectAllDrawings(); return true;
       case "formula.functionWizard": dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" }); return true;
       case "formula.calculate": void session.recalculateFormulas(); return true;
+      case "formula.calculateSheet": void session.recalculateFormulas('sheet'); return true;
+      case "formula.calculateFull": void session.recalculateFormulas('full'); return true;
+      case "formula.calculateRebuild": void session.recalculateFormulas('rebuild'); return true;
+      case "formulaBar.toggle": session.toggleFormulaBar(); return true;
+      case "formula.show": session.setShowFormulas(!state.formulaAudit.showFormulas); return true;
+      case "format.cells.font": dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells", formatCellsTab: "font" }); return true;
+      case "format.number.general": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "general" } } }); return true;
+      case "format.number.currency": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "$#,##0.00" } } }); return true;
+      case "format.number.percent": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "0%" } } }); return true;
+      case "format.number.scientific": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "0.00E+00" } } }); return true;
+      case "format.number.date": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "yyyy-mm-dd" } } }); return true;
+      case "format.number.time": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "hh:mm:ss" } } }); return true;
+      case "format.number.comma": dispatchCommand({ commandId: "sheet.style.set", params: { style: { numberFormat: "#,##0" } } }); return true;
+      case "cell.insertDate": session.insertCurrentDate(); return true;
+      case "cell.insertTime": session.insertCurrentTime(); return true;
+      case "navigation.home": session.selectCell(cellAddress(0, 0)); return true;
+      case "navigation.end": { const end = state.selectedSheet.usedRange; session.selectCell(cellAddress(end.endRow, end.endColumn)); return true; }
+      case "comment.note.edit": dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Edit the selected note in the Inspector." }); return true;
+      case "comment.thread.open": dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Edit the selected threaded comment in the Inspector." }); return true;
+      case "quickAnalysis.open": dispatchSessionIntent({ type: "panel.open", panel: "quickAnalysis" }); return true;
+      case "ribbon.toggle": session.toggleRibbon(); return true;
+      case "chart.sheet.insert": session.addSheet(); session.insertChart(); return true;
       case "pivot.refresh": {
         const pivotId = state.activeContext.kind === "pivot" ? state.activeContext.pivotId : undefined;
         if (!pivotId) return false;

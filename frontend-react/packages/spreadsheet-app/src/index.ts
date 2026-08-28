@@ -24,9 +24,24 @@ export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type Use
 export {
   registerSpreadsheetFeatures,
   getFeatureRegistry,
+  getExcelParityReport,
   type SpreadsheetFeatureManifest,
 } from './feature-registry';
 export * from './ui-command-catalog';
+export {
+  EXCEL_PARITY_MANIFEST,
+  EXCEL_SHORTCUT_MANIFEST,
+  assertExcelParityGate,
+  buildExcelParityReport,
+  createExcelFeatureRegistry,
+  validateExcelFeatureRegistry,
+  type ExcelFeatureRegistry,
+  type ExcelParityClass,
+  type ExcelParityItem,
+  type ExcelParityReport,
+  type ExcelParityScope,
+  type ExcelParityStatus,
+} from './excel-parity';
 export * from './features/formula-audit';
 export * from './features/pivot-controls';
 export {
@@ -66,10 +81,10 @@ export { recommendCharts, type ChartRecommendation } from './features/chart/reco
 export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 export { resolveSparklineData } from './features/sparkline/helpers';
 export * from './features/data-source';
-export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
+export { registerEditingFeatures, buildSelectionSnapshot, planRangeDrag, isRangeBorderPoint, rangeDragMode, type SetSelectionParams, type RangeDragMode, type RangeDragPlan } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export * from './cell-edit';
-export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
+export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot, type SelectionInteractionMode } from './selection-service';
 export type { SelectionArea, SelectionKind, SelectionMode } from './selection-service';
 export { reduceSelectionInteraction, selectionFromGesture, moveSelection, selectionArea, type SelectionInteractionEvent, type SelectionGesture, type SelectionBounds } from './selection-interaction-machine';
 export { applyHeaderSelection, headerContextMenuCatalog, headerRange, headerTargetSelected, selectedHeaderIndices, type DimensionSelectionOptions, type HeaderBounds, type HeaderContextAction, type HeaderContextMenuDescriptor, type HeaderIntent, type HeaderTarget } from './header-interaction-domain';
@@ -78,12 +93,26 @@ export type { HomeRibbonState, HomeSelectionValue, HomeStyleAggregate, HomeStyle
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,
+  canonicalKeyGesture,
   createSpreadsheetShortcutRegistry,
   type ShortcutBinding,
   type ShortcutContext,
   type ShortcutEventLike,
+  type ShortcutChord,
+  type ShortcutSequenceBinding,
+  type ShortcutSequenceState,
+  type ResolvedShortcutSequence,
   type ShortcutScope,
 } from './input/shortcut-registry';
+export {
+  EXCEL_KEY_TIP_BINDINGS,
+  INITIAL_KEY_TIP_STATE,
+  keyTipCandidates,
+  keyTipTransition,
+  type KeyTipBinding,
+  type KeyTipState,
+  type KeyTipTransition,
+} from './input/key-tip-state';
 export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';

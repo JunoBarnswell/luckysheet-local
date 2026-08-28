@@ -86,7 +86,7 @@ import type { HorizontalAlignment, VerticalAlignment, ReadingOrder, TextOrientat
 export type CellValue = string | number | boolean | null;
 
 export interface CellBorderSide {
-  style: 'thin' | 'medium' | 'thick' | 'dashed' | 'double';
+  style: 'hair' | 'thin' | 'medium' | 'thick' | 'dotted' | 'dashed' | 'dashDot' | 'dashDotDot' | 'double';
   color: string;
 }
 
@@ -95,6 +95,33 @@ export interface CellBorders {
   right?: CellBorderSide;
   bottom?: CellBorderSide;
   left?: CellBorderSide;
+  diagonal?: CellBorderSide;
+  diagonalUp?: boolean;
+  diagonalDown?: boolean;
+}
+
+export type CellUnderlineStyle = 'single' | 'double' | 'singleAccounting' | 'doubleAccounting';
+export type CellFillPattern = 'solid' | 'none' | 'gray125' | 'darkDown' | 'darkUp' | 'darkGrid' | 'darkTrellis' | 'lightDown' | 'lightUp' | 'lightGrid' | 'lightTrellis' | 'gray0625' | 'lightGray' | 'darkGray' | 'mediumGray';
+
+export interface CellFill {
+  kind: 'solid' | 'pattern' | 'gradient';
+  foreground?: string;
+  background?: string;
+  pattern?: CellFillPattern;
+  gradientType?: 'linear' | 'path';
+  degree?: number;
+  stops?: Array<{ position: number; color: string }>;
+}
+
+export interface CellNumberFormatSpec {
+  category?: 'general' | 'number' | 'currency' | 'accounting' | 'date' | 'time' | 'percentage' | 'fraction' | 'scientific' | 'text' | 'special' | 'custom';
+  locale?: string;
+  decimalPlaces?: number;
+  useThousandsSeparator?: boolean;
+  negativeStyle?: 'minus' | 'parentheses' | 'red-minus' | 'red-parentheses';
+  currencySymbol?: string;
+  fractionType?: 'up-to-one-digit' | 'up-to-two-digits' | 'up-to-three-digits' | 'as-halves' | 'as-quarters' | 'as-eighths' | 'as-sixteenths' | 'as-tenths' | 'as-hundredths' | 'as-thousandths';
+  sample?: string;
 }
 
 export interface CellStyle {
@@ -106,7 +133,12 @@ export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  underlineStyle?: CellUnderlineStyle;
   strikethrough?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
+  fontTheme?: string;
+  textDirection?: 'context' | 'ltr' | 'rtl';
   textColor?: string;
   background?: string;
   horizontalAlignment?: HorizontalAlignment;
@@ -120,7 +152,9 @@ export interface CellStyle {
   /** Native alignment values retained explicitly when the editor cannot execute them. */
   unsupportedAlignment?: UnsupportedCellAlignment;
   numberFormat?: string;
+  numberFormatSpec?: CellNumberFormatSpec;
   borders?: CellBorders;
+  fill?: CellFill;
   padding?: number;
   locked?: boolean;
   formulaHidden?: boolean;
@@ -411,7 +445,7 @@ export type {
   CellShiftSpec,
   StructuralTransformParams,
 } from './domain';
-export { createDefaultTextBoxTextFrame, SHAPE_DRAWING_PRESETS } from './domain';
+export { createDefaultTextBoxTextFrame, SHAPE_DRAWING_PRESETS, isShapeDrawingType } from './domain';
 export {
   createEmptySelection,
   isFormulaError,

@@ -8,7 +8,6 @@ import type {
   CellStyleTemplate,
   BarcodeSymbology,
   CameraDrawingPayload,
-  ScreenshotDrawingPayload,
   IconDrawingPayload,
   Model3dDrawingPayload,
   SmartArtDrawingPayload,
@@ -110,6 +109,7 @@ import {
   type DataRegionContext,
   type FillDirection,
   type FillMode,
+  type FillSeriesOptions,
   createCellInputInterpretationContext,
   type CellInputSourceKind,
   type FormatPainterStylePattern,
@@ -163,7 +163,7 @@ import {
   startPersistenceSession,
   type SpreadsheetRuntime,
 } from './runtime';
-import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
+import { createInitialSelection, SelectionService, parseRangeReference, type SelectionInteractionMode, type SelectionState } from './selection-service';
 import { resolveSelectionTarget } from './selection-target-resolver';
 import { cellAddress, columnLabel } from './address';
 import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipboard-browser';
@@ -301,6 +301,7 @@ import type {
 import type { FindReplaceParams } from './features/find-replace/commands';
 import type { AssetStore } from './features/persistence';
 import type { WorkbookResolution } from './features/workbook-catalog';
+import type { RangeDragMode } from './features/editing/range-drag';
 
 export interface WorkbookSessionOptions {
   unitId?: string;
@@ -411,6 +412,8 @@ export interface UiSnapshot extends DesignerState {
   activeSheetId: string;
   panels: PanelState;
   ribbonTab: RibbonTabId;
+  ribbonVisible: boolean;
+  formulaBarVisible: boolean;
   formulaDraft: string;
   editingOptions: WorkbookEditingOptions;
   groupedSheetIds: readonly string[];
@@ -723,6 +726,8 @@ export class WorkbookSession {
   private barcodeDraftSymbology: BarcodeSymbology = 'qr';
   private backstage: BackstageState = { open: false, panel: 'info' };
   private ribbonTab: RibbonTabId = 'home';
+  private ribbonVisible = true;
+  private formulaBarVisible = true;
   private zoom = 100;
   /** DrawingRuntime is the sole owner of transient object selection. */
   private get selectedDrawingIds(): readonly string[] {
@@ -1436,6 +1441,8 @@ export class WorkbookSession {
       activeSheetId: this.activeSheetId,
       panels: { ...this.panels },
       ribbonTab: this.ribbonTab,
+      ribbonVisible: this.ribbonVisible,
+      formulaBarVisible: this.formulaBarVisible,
       formulaDraft: activeFormulaHidden ? '' : this.formulaDraft,
       editingOptions: structuredClone(this.runtime.model.editingOptions),
       groupedSheetIds: [...this.groupedSheetIds],
@@ -1650,6 +1657,7 @@ export class WorkbookSession {
   private commandRequiresResolvedWrites(commandId: string): boolean {
     return commandId === 'formula.autosum'
       || commandId === 'sheet.range.fill'
+      || commandId === 'range.flashFill'
       || commandId === 'sheet.range.replace'
       || commandId === 'find.replace'
       || commandId === 'sheet.range.move'
@@ -1679,6 +1687,7 @@ export class WorkbookSession {
       || commandId === 'sheet.autoFilter.reapply'
       || commandId === 'sheetTable.autoFilter.set'
       || commandId === 'sheet.cf.add'
+      || commandId === 'sheet.cf.update'
       || commandId === 'sheet.cf.remove'
       || commandId === 'sheet.cf.clear'
       || commandId === 'sheet.dv.add'
@@ -2518,7 +2527,7 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number', localObjectKind?: LocalObjectDialogKind): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'fill-series' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace', rowHeight?: { rows: number[] }, formatCellsTab: import('./types').FormatCellsTab = 'number', localObjectKind?: LocalObjectDialogKind): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
     this.dialogs = { ...this.dialogs, active, localObjectKind: dialog === 'local-object' ? localObjectKind ?? 'icon' : null, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
@@ -3498,6 +3507,15 @@ export class WorkbookSession {
     this.emit();
   }
 
+  setSelectionInteractionMode(mode: SelectionInteractionMode): void {
+    this.selectionService.setSelectionInteractionMode(mode);
+    this.emit();
+  }
+
+  getSelectionInteractionMode(): SelectionInteractionMode {
+    return this.selectionService.getSelectionInteractionMode();
+  }
+
   selectActiveRow(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const selection = this.selectionService.getState();
@@ -3600,6 +3618,16 @@ export class WorkbookSession {
   setShowFormulas(enabled: boolean): void {
     this.runCommand('formula.audit.formulas.show', { enabled });
     this.refresh();
+  }
+
+  toggleFormulaBar(): void {
+    this.formulaBarVisible = !this.formulaBarVisible;
+    this.emit();
+  }
+
+  toggleRibbon(): void {
+    this.ribbonVisible = !this.ribbonVisible;
+    this.emit();
   }
 
   scanFormulaErrors(): void {
@@ -3904,13 +3932,6 @@ export class WorkbookSession {
   /** 所有 INSERT 本地对象共用的领域入口；成功后只提交一次 drawing.add。 */
   async insertLocalObject(kind: LocalObjectDialogKind, input: LocalObjectInsertInput = {}): Promise<void> {
     const transform: DrawingTransform = { x: 96, y: 96, width: 260, height: 150, rotation: 0 };
-    if (kind === 'screenshot') {
-      const sourceRange = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
-      const drawing = this.createInsertDrawing('screenshot', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'screenshot', transform });
-      const payload: ScreenshotDrawingPayload = { kind: 'screenshot', sourceRange, includeGridlines: true, capturedAt: new Date().toISOString() };
-      this.commitInsertDrawing({ commandId: 'drawing.add.screenshot', sheetId: this.activeSheetId, drawing, payload });
-      this.notify('工作表区域截图已插入'); this.refresh(); return;
-    }
     if (kind === 'icon') {
       const iconName = input.iconName ?? 'star';
       const icon = LOCAL_ICON_REGISTRY[iconName];
@@ -5100,6 +5121,13 @@ export class WorkbookSession {
   addConditionalFormat(rule: ConditionalFormatRule): void {
     this.dispatch({ commandId: 'sheet.cf.add', params: { sheetId: this.activeSheetId, rule } });
   }
+  updateConditionalFormat(ruleId: string, patch: Partial<ConditionalFormatRule>): void {
+    this.dispatch({ commandId: 'sheet.cf.update', params: { sheetId: this.activeSheetId, ruleId, patch } });
+  }
+  reorderConditionalFormats(ruleIds: readonly string[]): void {
+    this.runCommand('conditionalFormat.reorder', { sheetId: this.activeSheetId, ruleIds: [...ruleIds] });
+    this.refresh();
+  }
   removeConditionalFormat(ruleId: string): void {
     this.dispatch({ commandId: 'sheet.cf.remove', params: { sheetId: this.activeSheetId, ruleId } });
   }
@@ -5632,7 +5660,7 @@ export class WorkbookSession {
     } });
   }
 
-  fillSelection(direction: FillDirection, mode: FillMode = 'copy'): void {
+  fillSelection(direction: FillDirection, mode: FillMode = 'copy', series?: FillSeriesOptions): void {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const sourceRange = mode === 'series'
       ? range
@@ -5652,6 +5680,7 @@ export class WorkbookSession {
         targetRange: range,
         direction,
         mode,
+        ...(series ? { series: structuredClone(series) } : {}),
       } });
       return;
     }
@@ -5661,13 +5690,65 @@ export class WorkbookSession {
       targetRange: range,
       direction,
       mode,
+      ...(series ? { series: structuredClone(series) } : {}),
     } });
   }
 
-  fillSeries(): void {
+  fillSeries(series: FillSeriesOptions = {}): void {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
-    const direction: FillDirection = range.endRow - range.startRow >= range.endColumn - range.startColumn ? 'down' : 'right';
-    this.fillSelection(direction, 'series');
+    const direction: FillDirection = series.seriesIn === 'rows'
+      ? 'right'
+      : series.seriesIn === 'columns'
+        ? 'down'
+        : range.endRow - range.startRow >= range.endColumn - range.startColumn ? 'down' : 'right';
+    this.fillSelection(direction, 'series', series);
+  }
+
+  /**
+   * Flash Fill consumes the selected result band and the adjacent source band.
+   * The command layer owns pattern inference; this method only resolves the
+   * active worksheet geometry so keyboard, Ribbon and scripts share one path.
+   */
+  flashFill(): void {
+    const targetRange = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+    if (targetRange.startColumn !== targetRange.endColumn) {
+      this.notify('Flash Fill requires a single result column');
+      return;
+    }
+    const sourceColumn = targetRange.startColumn > 0 ? targetRange.startColumn - 1 : targetRange.endColumn + 1;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (sourceColumn < 0 || sourceColumn >= sheet.columnCount) {
+      this.notify('Flash Fill requires an adjacent source column');
+      return;
+    }
+    const sourceRange: RangeRef = {
+      sheetId: this.activeSheetId,
+      startRow: targetRange.startRow,
+      endRow: targetRange.endRow,
+      startColumn: sourceColumn,
+      endColumn: sourceColumn,
+    };
+    void this.dispatch({ commandId: 'range.flashFill', params: { sheetId: this.activeSheetId, sourceRange, targetRange } });
+  }
+
+  rangeDrag(sourceRange: RangeRef, targetOrigin: { row: number; column: number }, mode: RangeDragMode): void {
+    void this.dispatch({ commandId: 'sheet.range.move', params: {
+      sheetId: this.activeSheetId,
+      sourceRange: structuredClone(sourceRange),
+      targetOrigin: { ...targetOrigin },
+      copy: mode.startsWith('copy-'),
+      insert: mode.endsWith('-insert'),
+    } }).then((outcome) => {
+      if (outcome.status !== 'committed') {
+        this.notify(outcome.error.message);
+        return;
+      }
+      const rows = sourceRange.endRow - sourceRange.startRow;
+      const columns = sourceRange.endColumn - sourceRange.startColumn;
+      this.selectionService.selectRange({ startRow: targetOrigin.row, endRow: targetOrigin.row + rows, startColumn: targetOrigin.column, endColumn: targetOrigin.column + columns }, 'replace');
+      this.syncDraftFromPrimary();
+      this.refresh();
+    });
   }
   setSelectedFloatingId(id: string | null): void {
     this.setDrawingSelection(id ? [id] : [], 'replace');
@@ -5678,6 +5759,20 @@ export class WorkbookSession {
     this.drawingSelectionMode = enabled;
     if (!enabled) this.setDrawingSelection([], 'replace');
     else this.emit();
+  }
+
+  selectAllDrawings(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.setDrawingSelection(sheet.drawings.map((drawing) => drawing.id), 'replace');
+  }
+
+  cycleDrawingSelection(direction: 'next' | 'previous'): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const ordered = [...sheet.drawings].sort((left, right) => left.zIndex - right.zIndex || left.id.localeCompare(right.id));
+    if (ordered.length === 0) return;
+    const current = this.selectedFloatingId ? ordered.findIndex((drawing) => drawing.id === this.selectedFloatingId) : direction === 'next' ? -1 : ordered.length;
+    const next = ordered[(current + (direction === 'next' ? 1 : -1) + ordered.length) % ordered.length];
+    if (next) this.setDrawingSelection([next.id], 'replace');
   }
 
   setDrawingSelection(ids: readonly string[], mode: 'replace' | 'add' | 'toggle' = 'replace'): void {
@@ -6309,10 +6404,46 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  async recalculateFormulas(): Promise<void> {
-    await scheduleFormulaRecalculation(this.runtime, true);
+  async recalculateFormulas(scope: 'all' | 'sheet' | 'full' | 'rebuild' = 'all'): Promise<void> {
+    const roots = scope === 'sheet'
+      ? this.runtime.formula.getFormulaEntries()
+        .filter((entry) => entry.address.sheetId === this.activeSheetId)
+        .map((entry) => entry.address)
+      : undefined;
+    await scheduleFormulaRecalculation(this.runtime, true, roots);
     this.refresh();
-    this.notify('Formulas recalculated');
+    this.notify(scope === 'sheet' ? 'Active sheet formulas recalculated' : scope === 'rebuild' ? 'Formula dependencies rebuilt' : 'Formulas recalculated');
+  }
+
+  insertCurrentDate(): void {
+    this.insertCurrentTemporalValue('date');
+  }
+
+  insertCurrentTime(): void {
+    this.insertCurrentTemporalValue('time');
+  }
+
+  private insertCurrentTemporalValue(kind: 'date' | 'time'): void {
+    const active = this.selectionService.getState().activeCell;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const current = sheet.cells.get(active.row, active.column);
+    const now = new Date();
+    const value = kind === 'date'
+      ? `${now.toISOString().slice(0, 10)}T00:00:00.000Z`
+      : `1899-12-31T${now.toISOString().slice(11, 19)}.000Z`;
+    const next: CellData = {
+      ...(current ? structuredClone(current) : { value: null }),
+      value,
+      numberFormat: current?.numberFormat ?? (kind === 'date' ? 'yyyy-mm-dd' : 'hh:mm:ss'),
+    };
+    delete next.formula;
+    delete next.formulaValue;
+    delete next.formulaMetadata;
+    delete next.displayValue;
+    delete next.richText;
+    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: active.row, column: active.column, value: next });
+    this.syncDraftFromPrimary();
+    this.refresh();
   }
 
   /** Resolves after the most recent asynchronous formula projection is visible. */

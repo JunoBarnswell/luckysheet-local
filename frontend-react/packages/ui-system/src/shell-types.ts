@@ -88,9 +88,21 @@ export interface RibbonLayoutState {
   width: number;
 }
 
+export interface RibbonKeyTipState {
+  active: boolean;
+  prefix: string;
+}
+
+export interface RibbonKeyTipBinding {
+  sequence: string;
+  target: { kind: 'tab' | 'command'; id: string };
+}
+
 export interface DesignerShellProps {
   children: ReactNode;
   formulaBar: ReactNode;
+  formulaBarVisible?: boolean;
+  ribbonVisible?: boolean;
   isBusy: boolean;
   ribbon: ReactNode;
   sheetTabs: ReactNode;
