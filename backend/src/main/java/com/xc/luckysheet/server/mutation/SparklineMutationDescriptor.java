@@ -97,6 +97,7 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode next = current.deepCopy();
         patch.fields().forEachRemaining(entry -> next.set(entry.getKey(), entry.getValue().deepCopy()));
         next.put("sheetId", sheetId);
+        validateSparklineDesign(next);
         validateSparkline(root, sheetId, next);
         SnapshotMutationSupport.array(sheet, "sparklines").set(SnapshotMutationSupport.indexById(SnapshotMutationSupport.array(sheet, "sparklines"), SnapshotMutationSupport.text(params, "sparklineId")), next);
     }
@@ -142,6 +143,7 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
             copyOptional(member, sparkline, "groupId");
             copyOptional(member, sparkline, "showAxis");
             copyOptional(member, sparkline, "showMarkers");
+            for (String key : List.of("lineWeight", "dateAxis", "dataOrientation", "rightToLeft", "hiddenCells", "emptyCells", "verticalAxis", "axisColor", "firstColor", "lastColor", "highColor", "lowColor", "negativeColor", "markerColor")) copyOptional(member, sparkline, key);
         }
         validateGroupMembership(sheet, sheetId);
     }
@@ -151,6 +153,7 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
         SnapshotMutationSupport.requireEntitySheet(sparkline, sheetId);
         String type = SnapshotMutationSupport.text(sparkline, "type");
         if (!Set.of("line", "column", "win-loss").contains(type)) throw ServiceException.validation("Sparkline type is invalid");
+        validateSparklineDesign(sparkline);
         ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
         SnapshotMutationSupport.coordinate(root, sheetId, anchor);
         sourceRange(root, sparkline);
@@ -176,6 +179,7 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
         SnapshotMutationSupport.requireEntitySheet(group, sheetId);
         String type = SnapshotMutationSupport.text(group, "type");
         if (!Set.of("line", "column", "win-loss").contains(type)) throw ServiceException.validation("Sparkline group type is invalid");
+        validateSparklineDesign(group);
         ArrayNode members = SnapshotMutationSupport.requiredArray(group, "sparklineIds");
         if (members.isEmpty()) throw ServiceException.validation("Sparkline group must have members");
         Set<String> memberIds = new java.util.HashSet<>();
@@ -199,6 +203,23 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
         JsonNode value = source.get(key);
         if (value == null || value.isNull()) target.remove(key);
         else target.set(key, value.deepCopy());
+    }
+
+    private void validateSparklineDesign(ObjectNode value) {
+        JsonNode lineWeight = value.get("lineWeight");
+        if (lineWeight != null && (!lineWeight.isNumber() || !Double.isFinite(lineWeight.asDouble()) || lineWeight.asDouble() <= 0 || lineWeight.asDouble() > 20)) throw ServiceException.validation("Sparkline lineWeight is invalid");
+        JsonNode orientation = value.get("dataOrientation");
+        if (orientation != null && !Set.of("rows", "columns").contains(orientation.asText())) throw ServiceException.validation("Sparkline dataOrientation is invalid");
+        JsonNode hidden = value.get("hiddenCells");
+        if (hidden != null && !Set.of("show", "hide").contains(hidden.asText())) throw ServiceException.validation("Sparkline hiddenCells is invalid");
+        JsonNode empty = value.get("emptyCells");
+        if (empty != null && !Set.of("gap", "zero", "connect").contains(empty.asText())) throw ServiceException.validation("Sparkline emptyCells is invalid");
+        JsonNode verticalAxis = value.get("verticalAxis");
+        if (verticalAxis != null && (!verticalAxis.isObject() || !Set.of("automatic", "same-group", "custom").contains(verticalAxis.path("mode").asText()))) throw ServiceException.validation("Sparkline verticalAxis is invalid");
+        for (String key : List.of("axisColor", "firstColor", "lastColor", "highColor", "lowColor", "negativeColor", "markerColor")) {
+            JsonNode color = value.get(key);
+            if (color != null && (!color.isTextual() || !color.asText().matches("#[0-9a-fA-F]{6}"))) throw ServiceException.validation("Sparkline color is invalid: " + key);
+        }
     }
 
     private int integer(JsonNode value, String label) {

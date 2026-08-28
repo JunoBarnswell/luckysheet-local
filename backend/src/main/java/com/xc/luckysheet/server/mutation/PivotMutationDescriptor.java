@@ -171,8 +171,12 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 JsonNode payload = payloads.get(payloadId);
                 if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
                 String kind = payload.path("kind").asText();
+                JsonNode chartSource = "chart".equals(kind) ? payload.get("source") : payload;
+                if ("chart".equals(kind) && (chartSource == null || !chartSource.isObject())) {
+                    throw ServiceException.validation("Chart drawing dependency is missing its canonical source: " + drawingId);
+                }
                 boolean primary = ("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))
-                        && pivotId.equals(payload.path("pivotId").asText());
+                        && pivotId.equals(chartSource.path("pivotId").asText());
                 boolean connected = ("slicer".equals(kind) || "timeline".equals(kind))
                         && arrayContainsConnectionPivot(payload.get("connections"), pivotId);
                 if (primary || connected) throw ServiceException.conflict("Pivot has dependent drawing: " + drawingId);

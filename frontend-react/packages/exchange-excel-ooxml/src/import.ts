@@ -37,21 +37,27 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
       : undefined);
     return reason ? { ...detection, reason } : detection;
   });
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...worksheetDetections.map((entry) => entry.feature)])];
+  const preservedNativeChartDetections = parsed.packageGraph.nativeChartGraph?.charts.filter((chart) => !chart.editable).map((chart) => ({ feature: 'preserved-native-chart', location: chart.chartPart, reason: chart.reason })) ?? [];
+  const indexedNativeChartParts = new Set(parsed.packageGraph.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
+  const opaqueChartParts = Object.keys(parsed.packageGraph.opaqueParts).filter((part) => part.toLowerCase().includes('/charts/') && !indexedNativeChartParts.has(part));
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...worksheetDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(snapshot, parsed.packageGraph.nativePivotGraph);
   const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
   editableFeatures.add('defined-names');
+  if (opaqueChartParts.length && !parsed.packageGraph.nativeChartGraph?.charts.some((chart) => chart.editable) && !snapshotFeatures.includes('charts')) editableFeatures.delete('charts');
   if (nativeStatus.pivot) editableFeatures.add('pivot');
   if (nativeStatus.slicer) editableFeatures.add('slicer');
   if (nativeStatus.timeline) editableFeatures.add('timeline');
   const preservedFeatures = new Set(detectedFeatures.filter((feature) => !editableFeatures.has(feature) && capabilityFor(feature).preserve !== 'none'));
+  if (opaqueChartParts.length) preservedFeatures.add('charts');
+  if (preservedNativeChartDetections.length) preservedFeatures.add('preserved-native-chart');
   for (const feature of ['slicer', 'timeline'] as const) if (snapshotFeatures.includes(feature) && !editableFeatures.has(feature)) preservedFeatures.add(feature);
   const report = createCompatibilityReport({
     fileName: request.fileName,
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures: [...detectedFeatures, ...capabilityDetections],
+    detectedFeatures: [...detectedFeatures, ...capabilityDetections, ...preservedNativeChartDetections],
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures: detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature)),

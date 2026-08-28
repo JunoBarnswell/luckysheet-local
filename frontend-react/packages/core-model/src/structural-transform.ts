@@ -404,14 +404,22 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
     if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') payload.source.ranges = payload.source.ranges.filter(shiftRange);
       else if (payload.source.kind === 'report-range' && !shiftRange(payload.source.range)) throw new Error('Cell shift would remove Chart report binding');
-      if (payload.categoryRange) shiftRange(payload.categoryRange);
-      payload.series = payload.series?.filter((series) => {
-        const valid = shiftRange(series.range);
-        if (series.xRange) shiftRange(series.xRange);
-        if (series.yRange) shiftRange(series.yRange);
-        if (series.errorBars?.plusRange) shiftRange(series.errorBars.plusRange);
-        if (series.errorBars?.minusRange) shiftRange(series.errorBars.minusRange);
-        return valid;
+        if (payload.categoryRange) shiftRange(payload.categoryRange);
+        payload.series = payload.series?.filter((series) => {
+          const valid = shiftRange(series.range);
+          if (series.xRange) shiftRange(series.xRange);
+          if (series.yRange) shiftRange(series.yRange);
+          if (series.sizeRange) shiftRange(series.sizeRange);
+          if (series.categoryRange) shiftRange(series.categoryRange);
+          if (series.stockRoles?.open) shiftRange(series.stockRoles.open);
+          if (series.stockRoles?.high) shiftRange(series.stockRoles.high);
+          if (series.stockRoles?.low) shiftRange(series.stockRoles.low);
+          if (series.stockRoles?.close) shiftRange(series.stockRoles.close);
+          if (series.stockRoles?.volume) shiftRange(series.stockRoles.volume);
+          if (series.dataLabels?.valuesFromCells) shiftRange(series.dataLabels.valuesFromCells);
+          if (series.errorBars?.plusRange) shiftRange(series.errorBars.plusRange);
+          if (series.errorBars?.minusRange) shiftRange(series.errorBars.minusRange);
+          return valid;
       });
     }
   }
@@ -741,6 +749,14 @@ function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: n
         shiftRangeRef(series.range, axis, at, count, direction);
         if (series.xRange) shiftRangeRef(series.xRange, axis, at, count, direction);
         if (series.yRange) shiftRangeRef(series.yRange, axis, at, count, direction);
+        if (series.sizeRange) shiftRangeRef(series.sizeRange, axis, at, count, direction);
+        if (series.categoryRange) shiftRangeRef(series.categoryRange, axis, at, count, direction);
+        if (series.stockRoles?.open) shiftRangeRef(series.stockRoles.open, axis, at, count, direction);
+        if (series.stockRoles?.high) shiftRangeRef(series.stockRoles.high, axis, at, count, direction);
+        if (series.stockRoles?.low) shiftRangeRef(series.stockRoles.low, axis, at, count, direction);
+        if (series.stockRoles?.close) shiftRangeRef(series.stockRoles.close, axis, at, count, direction);
+        if (series.stockRoles?.volume) shiftRangeRef(series.stockRoles.volume, axis, at, count, direction);
+        if (series.dataLabels?.valuesFromCells) shiftRangeRef(series.dataLabels.valuesFromCells, axis, at, count, direction);
         if (series.errorBars?.plusRange) shiftRangeRef(series.errorBars.plusRange, axis, at, count, direction);
         if (series.errorBars?.minusRange) shiftRangeRef(series.errorBars.minusRange, axis, at, count, direction);
       }
@@ -1003,6 +1019,14 @@ function applyMoveRange(
         relocate(series.range);
         if (series.xRange) relocate(series.xRange);
         if (series.yRange) relocate(series.yRange);
+        if (series.sizeRange) relocate(series.sizeRange);
+        if (series.categoryRange) relocate(series.categoryRange);
+        if (series.stockRoles?.open) relocate(series.stockRoles.open);
+        if (series.stockRoles?.high) relocate(series.stockRoles.high);
+        if (series.stockRoles?.low) relocate(series.stockRoles.low);
+        if (series.stockRoles?.close) relocate(series.stockRoles.close);
+        if (series.stockRoles?.volume) relocate(series.stockRoles.volume);
+        if (series.dataLabels?.valuesFromCells) relocate(series.dataLabels.valuesFromCells);
         if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
         if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
       }
@@ -1152,11 +1176,19 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) validateRange(range, 'chart source');
       else if (payload.source.kind === 'report-range') validateRange(payload.source.range, 'chart report binding');
-      if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
+        if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
       for (const series of payload.series ?? []) {
         validateRange(series.range, 'chart series source');
         if (series.xRange) validateRange(series.xRange, 'chart x source');
         if (series.yRange) validateRange(series.yRange, 'chart y source');
+        if (series.sizeRange) validateRange(series.sizeRange, 'chart size source');
+        if (series.categoryRange) validateRange(series.categoryRange, 'chart series category source');
+        if (series.stockRoles?.open) validateRange(series.stockRoles.open, 'chart stock open source');
+        validateRange(series.stockRoles?.high ?? series.range, 'chart stock high source');
+        validateRange(series.stockRoles?.low ?? series.range, 'chart stock low source');
+        validateRange(series.stockRoles?.close ?? series.range, 'chart stock close source');
+        if (series.stockRoles?.volume) validateRange(series.stockRoles.volume, 'chart stock volume source');
+        if (series.dataLabels?.valuesFromCells) validateRange(series.dataLabels.valuesFromCells, 'chart data label source');
         if (series.errorBars?.plusRange) validateRange(series.errorBars.plusRange, 'chart error bar plus source');
         if (series.errorBars?.minusRange) validateRange(series.errorBars.minusRange, 'chart error bar minus source');
       }

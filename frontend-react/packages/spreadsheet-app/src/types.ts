@@ -75,6 +75,10 @@ export interface PanelState {
   dock: 'left' | 'right';
 }
 
+export type ChartElementSelection =
+  | { kind: 'chart-area' | 'plot-area' | 'title' | 'legend' | 'axis' | 'axis-title' | 'gridline' | 'data-table' | 'trendline' | 'error-bar'; chartId: string }
+  | { kind: 'series' | 'point' | 'data-label'; chartId: string; seriesId: string; pointIndex?: number };
+
 export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink';
 export type FindDialogMode = 'find' | 'replace';
 export type CellShiftOperation = 'insert' | 'delete';

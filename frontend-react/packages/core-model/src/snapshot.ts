@@ -8,6 +8,7 @@ import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 import { isChartSubtypeForType } from './domain';
+import type { ChartDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
 import type { ReviewStoreSnapshot } from './review-store';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
@@ -347,7 +348,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (runtimeKind === 'chart' && !['worksheet-ranges', 'pivot', 'table', 'report-range'].includes(String((payload as { source?: { kind?: string } }).source?.kind))) {
         throw new Error('MIGRATION_REQUIRED: chart payload is missing the canonical source discriminator');
       }
-      if (payload.kind === 'chart' && !isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
+      if (payload.kind === 'chart') validateChartSnapshotPayload(payload, snapshot, sheet.id);
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
       if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
     }
@@ -389,8 +390,10 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       }
     }
   }
-  const chartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
-    .flatMap((payload) => payload.kind === 'chart' && payload.source.kind === 'table' ? [payload.source.tableId] : [])));
+  const chartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads).flatMap((payload) => {
+    if (payload.kind !== 'chart' || payload.source.kind !== 'table') return [];
+    return [payload.source.tableId];
+  })));
   for (const sheet of snapshot.sheets) {
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'chart' && payload.source.kind === 'report-range') validateDrawingSourceRange(payload.source.range, snapshot, 'Chart');
@@ -472,6 +475,61 @@ function containsLegacyImageDataUrl(value: unknown): boolean {
   const record = value as Record<string, unknown>;
   if (typeof record.src === 'string' && record.src.startsWith('data:image/')) return true;
   return Object.values(record).some(containsLegacyImageDataUrl);
+}
+
+function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: WorkbookSnapshot, ownerSheetId: string): void {
+  if (!isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
+  if (payload.source.kind === 'worksheet-ranges') {
+    if (payload.source.ranges.length === 0) throw new Error(`Chart ${payload.chartId} requires at least one source range`);
+    for (const range of payload.source.ranges) validateDrawingSourceRange(range, snapshot, `Chart ${payload.chartId}`);
+  } else if (payload.source.kind === 'report-range') {
+    validateDrawingSourceRange(payload.source.range, snapshot, `Chart ${payload.chartId}`);
+  } else if (payload.source.kind === 'table') {
+    const tableSource = payload.source;
+    const table = snapshot.dataModel.tables.find((candidate) => candidate.id === tableSource.tableId);
+    if (!table) throw new Error(`Chart ${payload.chartId} references missing table ${tableSource.tableId}`);
+    if (table.sourceRange) validateDrawingSourceRange(table.sourceRange, snapshot, `Chart ${payload.chartId} table`);
+    for (const area of ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const) {
+      if (!Array.isArray(tableSource.bindings[area])) throw new Error(`Chart ${payload.chartId} binding area is invalid: ${area}`);
+      for (const binding of tableSource.bindings[area]) {
+        if (!binding.fieldId.trim() || binding.area !== area) throw new Error(`Chart ${payload.chartId} binding area is inconsistent: ${area}`);
+        if (!table.fields.some((field) => field.id === binding.fieldId)) throw new Error(`Chart ${payload.chartId} references missing table field ${binding.fieldId}`);
+      }
+    }
+  } else if (!payload.source.pivotId.trim()) {
+    throw new Error(`Chart ${payload.chartId} Pivot source is invalid`);
+  }
+  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow === series.range.endRow)) {
+    throw new Error(`Chart ${payload.chartId} row-oriented series must contain more than one column`);
+  }
+  if (payload.categoryRange) validateDrawingSourceRange(payload.categoryRange, snapshot, `Chart ${payload.chartId} category`);
+  for (const series of payload.series ?? []) {
+    validateDrawingSourceRange(series.range, snapshot, `Chart ${payload.chartId} series`);
+    for (const range of [series.xRange, series.yRange, series.sizeRange, series.categoryRange, series.errorBars?.plusRange, series.errorBars?.minusRange, series.stockRoles?.open, series.stockRoles?.high, series.stockRoles?.low, series.stockRoles?.close, series.stockRoles?.volume, series.dataLabels?.valuesFromCells]) {
+      if (range) validateDrawingSourceRange(range, snapshot, `Chart ${payload.chartId} series binding`);
+    }
+    if (series.chartType && series.subtype && !isChartSubtypeForType(series.chartType, series.subtype)) throw new Error(`Chart ${payload.chartId} series subtype ${series.subtype} does not belong to ${series.chartType}`);
+    const seriesType = series.chartType ?? payload.chartType;
+    if (payload.chartType === 'combo' && !['column', 'bar', 'line', 'area'].includes(seriesType)) {
+      throw new Error(`Chart ${payload.chartId} combo series type ${seriesType} is not supported by the canonical combo layout`);
+    }
+    if (payload.chartType !== 'combo' && series.chartType && series.chartType !== payload.chartType) {
+      throw new Error(`Chart ${payload.chartId} cannot mix ${payload.chartType} with ${series.chartType} series`);
+    }
+    if (seriesType === 'scatter' || seriesType === 'bubble') {
+      if (!series.xRange || !series.yRange || (seriesType === 'bubble' && !series.sizeRange)) {
+        throw new Error(`Chart ${payload.chartId} ${seriesType} series requires explicit X/Y${seriesType === 'bubble' ? '/Size' : ''} ranges`);
+      }
+    }
+    if (seriesType === 'stock' && (!series.stockRoles?.high || !series.stockRoles.low || !series.stockRoles.close)) {
+      throw new Error(`Chart ${payload.chartId} stock series requires explicit High/Low/Close ranges`);
+    }
+    if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) {
+      throw new Error(`Chart ${payload.chartId} custom error bars require explicit plus and minus ranges`);
+    }
+  }
+  if (payload.chartType === 'combo' && (!payload.series?.length || payload.series.some((series) => !series.chartType))) throw new Error(`Chart ${payload.chartId} Combo requires an explicit type for every series`);
+  if (ownerSheetId.trim() === '') throw new Error('Chart owner sheet is required');
 }
 
 function validateDrawingSourceRange(range: RangeRef, snapshot: WorkbookSnapshot, label: string): void {

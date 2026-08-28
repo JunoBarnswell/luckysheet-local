@@ -106,6 +106,7 @@ export interface SheetCanvasProps {
   drawingSelectionMode?: boolean;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: 'replace' | 'add' | 'toggle') => void;
+  onChartElementAction?: (drawingId: string, data: unknown) => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
   onTextBoxPlacementCommit?: (bounds: Rect) => void;
@@ -393,6 +394,7 @@ export function SheetCanvas({
   drawingSelectionMode = false,
   onExitDrawingSelectionMode,
   onFloatingSelect,
+  onChartElementAction,
   onFloatingMove,
   onFloatingRemove,
   textBoxPlacementActive = false,
@@ -641,6 +643,7 @@ export function SheetCanvas({
     onExtendSelection,
     onFillRange,
     onFloatingMove,
+    onChartElementAction,
     onTextBoxPlacementCommit: (bounds) => onTextBoxPlacementCommit?.(bounds),
     onCancelTextBoxPlacement: () => onCancelTextBoxPlacement?.(),
     onBeginTextBoxEdit: (drawingId, initialText) => onBeginTextBoxEdit?.(drawingId, initialText),

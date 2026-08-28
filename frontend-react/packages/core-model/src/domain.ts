@@ -510,15 +510,31 @@ export type ChartSubtype =
   | 'three-dimensional'
   | 'three-dimensional-stacked'
   | 'three-dimensional-percent-stacked'
+  | 'cone'
+  | 'cone-stacked'
+  | 'cone-percent-stacked'
+  | 'cylinder'
+  | 'cylinder-stacked'
+  | 'cylinder-percent-stacked'
+  | 'pyramid'
+  | 'pyramid-stacked'
+  | 'pyramid-percent-stacked'
   | 'line'
   | 'line-markers'
+  | 'stacked-markers'
+  | 'percent-stacked-markers'
   | 'area'
   | 'pie'
+  | 'exploded-pie'
+  | 'exploded-three-dimensional-pie'
   | 'pie-of-pie'
   | 'bar-of-pie'
   | 'doughnut'
+  | 'exploded-doughnut'
   | 'scatter-markers'
+  | 'scatter-smooth-lines-markers'
   | 'scatter-smooth-lines'
+  | 'scatter-straight-lines-markers'
   | 'scatter-straight-lines'
   | 'bubble'
   | 'bubble-three-dimensional'
@@ -531,22 +547,30 @@ export type ChartSubtype =
   | 'funnel'
   | 'stock-high-low-close'
   | 'stock-open-high-low-close'
+  | 'stock-volume-high-low-close'
+  | 'stock-volume-open-high-low-close'
   | 'surface-three-dimensional'
   | 'surface-wireframe'
+  | 'surface-contour'
+  | 'surface-wireframe-contour'
   | 'radar'
   | 'radar-markers'
   | 'radar-filled'
+  | 'clustered-column-line'
+  | 'clustered-column-line-secondary'
+  | 'stacked-area-clustered-column'
   | 'custom-combo'
-  | 'filled-map';
+  | 'filled-map'
+  | 'region-map';
 
 export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly ChartSubtype[]>> = {
-  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked'],
-  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked'],
-  line: ['line', 'line-markers', 'stacked', 'percent-stacked', 'three-dimensional'],
+  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'cone', 'cone-stacked', 'cone-percent-stacked', 'cylinder', 'cylinder-stacked', 'cylinder-percent-stacked', 'pyramid', 'pyramid-stacked', 'pyramid-percent-stacked'],
+  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'cone', 'cone-stacked', 'cone-percent-stacked', 'cylinder', 'cylinder-stacked', 'cylinder-percent-stacked', 'pyramid', 'pyramid-stacked', 'pyramid-percent-stacked'],
+  line: ['line', 'line-markers', 'stacked', 'stacked-markers', 'percent-stacked', 'percent-stacked-markers', 'three-dimensional'],
   area: ['area', 'stacked', 'percent-stacked', 'three-dimensional'],
-  pie: ['pie', 'three-dimensional', 'pie-of-pie', 'bar-of-pie'],
-  doughnut: ['doughnut'],
-  scatter: ['scatter-markers', 'scatter-smooth-lines', 'scatter-straight-lines'],
+  pie: ['pie', 'exploded-pie', 'three-dimensional', 'exploded-three-dimensional-pie', 'pie-of-pie', 'bar-of-pie'],
+  doughnut: ['doughnut', 'exploded-doughnut'],
+  scatter: ['scatter-markers', 'scatter-smooth-lines-markers', 'scatter-smooth-lines', 'scatter-straight-lines-markers', 'scatter-straight-lines'],
   bubble: ['bubble', 'bubble-three-dimensional'],
   treemap: ['treemap'],
   sunburst: ['sunburst'],
@@ -555,11 +579,11 @@ export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly Chart
   'box-whisker': ['box-whisker'],
   waterfall: ['waterfall'],
   funnel: ['funnel'],
-  stock: ['stock-high-low-close', 'stock-open-high-low-close'],
-  surface: ['surface-three-dimensional', 'surface-wireframe'],
+  stock: ['stock-high-low-close', 'stock-open-high-low-close', 'stock-volume-high-low-close', 'stock-volume-open-high-low-close'],
+  surface: ['surface-three-dimensional', 'surface-wireframe', 'surface-contour', 'surface-wireframe-contour'],
   radar: ['radar', 'radar-markers', 'radar-filled'],
-  map: ['filled-map'],
-  combo: ['custom-combo'],
+  map: ['filled-map', 'region-map'],
+  combo: ['clustered-column-line', 'clustered-column-line-secondary', 'stacked-area-clustered-column', 'custom-combo'],
 };
 
 export function defaultChartSubtype(type: P1ChartType): ChartSubtype {
@@ -571,26 +595,97 @@ export function isChartSubtypeForType(type: P1ChartType, subtype: ChartSubtype):
 }
 
 export function chartStackingForSubtype(subtype: ChartSubtype): 'stacked' | 'percent' | undefined {
-  return subtype === 'stacked' || subtype === 'three-dimensional-stacked' ? 'stacked' : subtype === 'percent-stacked' || subtype === 'three-dimensional-percent-stacked' ? 'percent' : undefined;
+  return ['stacked', 'three-dimensional-stacked', 'stacked-markers', 'cone-stacked', 'cylinder-stacked', 'pyramid-stacked'].includes(subtype)
+    ? 'stacked'
+    : ['percent-stacked', 'three-dimensional-percent-stacked', 'percent-stacked-markers', 'cone-percent-stacked', 'cylinder-percent-stacked', 'pyramid-percent-stacked'].includes(subtype)
+      ? 'percent'
+      : undefined;
 }
 
 export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;
 export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
 export type ChartAxisScale = 'linear' | 'logarithmic';
-export type ChartDataLabelPosition = 'best-fit' | 'center' | 'inside-end' | 'inside-base' | 'outside-end';
+export type ChartAxisType = 'category' | 'value' | 'date';
+export type ChartAxisCross = 'automatic' | 'value' | 'maximum';
+export type ChartTickMark = 'none' | 'inside' | 'outside' | 'cross';
+export type ChartTickLabelPosition = 'none' | 'low' | 'high' | 'next-to-axis';
+export type ChartDataLabelPosition = 'best-fit' | 'center' | 'inside-end' | 'inside-base' | 'outside-end' | 'above' | 'below' | 'left' | 'right';
+export type ChartDataLabelTarget = 'chart' | 'series' | 'point';
+
+export interface ChartLineStyle {
+  color?: string;
+  width?: number;
+  dash?: 'solid' | 'dash' | 'dot' | 'dash-dot';
+  transparency?: number;
+}
+
+export type ChartFillKind = 'none' | 'solid' | 'gradient' | 'picture' | 'texture' | 'pattern';
+
+export interface ChartFillModel {
+  kind: ChartFillKind;
+  color?: string;
+  secondaryColor?: string;
+  transparency?: number;
+  angle?: number;
+  pattern?: string;
+  assetId?: string;
+}
+
+export interface ChartEffectModel {
+  shadow?: { color?: string; blur?: number; angle?: number; distance?: number; transparency?: number };
+  glow?: { color?: string; radius?: number; transparency?: number };
+  softEdges?: number;
+  threeDimensional?: { bevel?: number; depth?: number; rotationX?: number; rotationY?: number };
+}
+
+export interface ChartTextModel {
+  text?: string;
+  linkedFormula?: string;
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  fill?: ChartFillModel | string;
+  line?: ChartLineStyle;
+  rotation?: number;
+  alignment?: 'left' | 'center' | 'right';
+}
 
 export interface ChartAxisModel {
   id: string;
   position: ChartAxisPosition;
   visible?: boolean;
   title?: string;
+  titleText?: ChartTextModel;
+  axisType?: ChartAxisType;
   scale?: ChartAxisScale;
+  logBase?: number;
   minimum?: number;
   maximum?: number;
+  automaticMinimum?: boolean;
+  automaticMaximum?: boolean;
   majorUnit?: number;
   minorUnit?: number;
+  reverseOrder?: boolean;
+  crosses?: ChartAxisCross;
   numberFormat?: string;
+  sourceLinkedNumberFormat?: boolean;
   crossesAt?: number;
+  crossBetween?: 'mid-category' | 'between';
+  majorTickMark?: ChartTickMark;
+  minorTickMark?: ChartTickMark;
+  tickLabelPosition?: ChartTickLabelPosition;
+  labelAngle?: number;
+  labelInterval?: number;
+  markInterval?: number;
+  displayUnits?: 'none' | 'hundreds' | 'thousands' | 'ten-thousands' | 'millions' | 'billions' | 'trillions';
+  displayUnitLabel?: string;
+  multiLevelLabels?: boolean;
+  dateBaseUnit?: 'days' | 'months' | 'years';
+  dateMajorUnit?: number;
+  dateMinorUnit?: number;
+  line?: ChartLineStyle;
   majorGridlines?: ChartGridlineModel;
   minorGridlines?: ChartGridlineModel;
 }
@@ -603,10 +698,14 @@ export interface ChartGridlineModel {
 }
 
 export interface ChartAreaStyle {
-  fill?: string;
+  /** String is the compact solid-fill form; structured fills are canonical for non-solid formats. */
+  fill?: string | ChartFillModel;
   border?: string;
   borderWidth?: number;
   borderDash?: 'solid' | 'dash' | 'dot';
+  line?: ChartLineStyle;
+  transparency?: number;
+  effects?: ChartEffectModel;
 }
 
 export interface ChartMarkerModel {
@@ -618,20 +717,33 @@ export interface ChartMarkerModel {
 }
 
 export interface ChartTrendlineModel {
-  type: 'linear' | 'exponential' | 'polynomial' | 'moving-average';
+  id?: string;
+  name?: string;
+  type: 'linear' | 'exponential' | 'logarithmic' | 'polynomial' | 'power' | 'moving-average';
   order?: number;
   period?: number;
+  forwardForecast?: number;
+  backwardForecast?: number;
+  intercept?: number;
+  displayEquation?: boolean;
+  displayRSquared?: boolean;
   color?: string;
   width?: number;
+  dash?: ChartLineStyle['dash'];
 }
 
 export interface ChartErrorBarsModel {
+  direction?: 'vertical' | 'horizontal' | 'both';
   type: 'fixed' | 'percentage' | 'standard-deviation' | 'standard-error' | 'custom';
   value?: number;
   plusRange?: RangeRef;
   minusRange?: RangeRef;
+  plusValue?: number;
+  minusValue?: number;
+  endStyle?: 'cap' | 'no-cap';
   color?: string;
   width?: number;
+  dash?: ChartLineStyle['dash'];
 }
 
 export interface ChartDataLabelsModel {
@@ -640,23 +752,91 @@ export interface ChartDataLabelsModel {
   showCategoryName?: boolean;
   showSeriesName?: boolean;
   showPercentage?: boolean;
+  showLegendKey?: boolean;
+  valuesFromCells?: RangeRef;
+  separator?: string;
+  target?: ChartDataLabelTarget;
+  callout?: boolean;
+  leaderLines?: boolean;
+  manualPositions?: Record<string, { x: number; y: number }>;
   position?: ChartDataLabelPosition;
   numberFormat?: string;
 }
 
+export interface ChartDataTableModel {
+  visible: boolean;
+  showLegendKeys?: boolean;
+  border?: ChartLineStyle;
+  font?: ChartTextModel;
+}
+
+export interface ChartPointModel {
+  visible?: boolean;
+  fill?: string | ChartFillModel;
+  line?: ChartLineStyle;
+  marker?: ChartMarkerModel;
+  dataLabel?: ChartDataLabelsModel;
+}
+
+export interface ChartStockRoles {
+  open?: RangeRef;
+  high: RangeRef;
+  low: RangeRef;
+  close: RangeRef;
+  volume?: RangeRef;
+}
+
+export interface ChartHistogramOptions {
+  mode: 'automatic' | 'by-category' | 'bin-width' | 'bin-count';
+  binWidth?: number;
+  binCount?: number;
+  overflow?: number;
+  underflow?: number;
+}
+
+export interface ChartBoxWhiskerOptions {
+  quartile: 'inclusive-median' | 'exclusive-median';
+  showInnerPoints?: boolean;
+  showOutlierPoints?: boolean;
+  showMeanMarkers?: boolean;
+  showMeanLine?: boolean;
+}
+
+export interface ChartWaterfallOptions {
+  totalPointIndexes?: number[];
+  connectorLines?: boolean;
+}
+
+export interface ChartMapOptions {
+  geography: 'country-region' | 'state-province' | 'county' | 'postal-code';
+  mapArea: 'automatic' | 'only-data' | 'world' | 'continent' | 'country' | 'state';
+  labelLevel: 'none' | 'best-fit' | 'show-all';
+  colorScale: 'sequential' | 'diverging' | 'category';
+}
+
 export interface ChartSeriesModel {
+  id?: string;
   name: string;
   range: RangeRef;
   xRange?: RangeRef;
   yRange?: RangeRef;
+  sizeRange?: RangeRef;
+  categoryRange?: RangeRef;
   color?: string;
   chartType?: ChartSeriesType;
+  subtype?: ChartSubtype;
   axis?: 'primary' | 'secondary';
   smooth?: boolean;
   marker?: ChartMarkerModel;
   dataLabels?: ChartDataLabelsModel;
-  trendline?: ChartTrendlineModel;
+  trendlines?: ChartTrendlineModel[];
   errorBars?: ChartErrorBarsModel;
+  pointOverrides?: Record<string, ChartPointModel>;
+  visible?: boolean;
+  gapWidth?: number;
+  overlap?: number;
+  invertIfNegative?: boolean;
+  stockRoles?: ChartStockRoles;
 }
 
 export type ChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
@@ -674,26 +854,47 @@ export type ChartBindings = Record<ChartBindingArea, ChartFieldBinding[]>;
 
 /** The data source is a first-class chart dimension; it never changes drawing identity. */
 export type ChartSource =
-  | { kind: 'worksheet-ranges'; ranges: RangeRef[] }
+  | { kind: 'worksheet-ranges'; ranges: RangeRef[]; identity?: string; dynamic?: boolean }
   | { kind: 'pivot'; pivotId: string }
-  | { kind: 'table'; tableId: string; bindings: ChartBindings }
-  | { kind: 'report-range'; range: RangeRef; bindings: ChartBindings };
+  | { kind: 'table'; tableId: string; bindings: ChartBindings; structuredReference?: string }
+  | { kind: 'report-range'; range: RangeRef; bindings: ChartBindings; identity?: string };
 
 /** All chart semantics live in this value object; DrawingObject only owns placement. */
 export interface ChartElementModel {
   title?: string;
+  titleText?: ChartTextModel;
+  titlePosition?: 'above' | 'centered-overlay';
   legend?: {
     visible: boolean;
-    position: 'top' | 'bottom' | 'left' | 'right';
+    position: 'top' | 'bottom' | 'left' | 'right' | 'top-right';
+    overlay?: boolean;
+    entries?: Record<string, { visible: boolean; name?: string }>;
+    text?: ChartTextModel;
   };
   dataLabels?: ChartDataLabelsModel;
+  dataTable?: ChartDataTableModel;
   categoryAxis?: ChartAxisModel;
   valueAxis?: ChartAxisModel;
   secondaryCategoryAxis?: ChartAxisModel;
   secondaryValueAxis?: ChartAxisModel;
   plotArea?: ChartAreaStyle;
   chartArea?: ChartAreaStyle;
+  effects?: ChartEffectModel;
+  chartStyleId?: number;
+  colorStyleId?: number;
+  lines?: { visible: boolean; line?: ChartLineStyle };
+  upDownBars?: { visible: boolean; up?: ChartAreaStyle; down?: ChartAreaStyle };
   hiddenData: 'show' | 'hideRows' | 'hideColumns';
+  emptyCells?: 'gap' | 'zero' | 'connect';
+}
+
+export interface ChartNativeIdentity {
+  /** Microsoft XlChartType numeric identity when it is available in the package. */
+  xlChartType?: number;
+  family: P1ChartType | string;
+  subtype: ChartSubtype | string;
+  part?: string;
+  status?: 'owned' | 'preserved-native';
 }
 
 export interface ChartDrawingPayload {
@@ -706,6 +907,12 @@ export interface ChartDrawingPayload {
   categoryRange?: RangeRef;
   stacked?: 'none' | 'stacked' | 'percent';
   elements: ChartElementModel;
+  nativeIdentity?: ChartNativeIdentity;
+  histogramOptions?: ChartHistogramOptions;
+  boxWhiskerOptions?: ChartBoxWhiskerOptions;
+  waterfallOptions?: ChartWaterfallOptions;
+  mapOptions?: ChartMapOptions;
+  dataOrientation?: 'rows' | 'columns';
 }
 
 /** A typed member filter owned by a floating Pivot slicer. */
@@ -1022,6 +1229,24 @@ export interface SparklineGroup {
   sparklineIds: string[];
   showAxis?: boolean;
   showMarkers?: boolean;
+  lineWeight?: number;
+  dateAxis?: boolean;
+  dataOrientation?: 'rows' | 'columns';
+  rightToLeft?: boolean;
+  hiddenCells?: 'show' | 'hide';
+  emptyCells?: 'gap' | 'zero' | 'connect';
+  verticalAxis?: {
+    mode: 'automatic' | 'same-group' | 'custom';
+    minimum?: number;
+    maximum?: number;
+  };
+  axisColor?: string;
+  firstColor?: string;
+  lastColor?: string;
+  highColor?: string;
+  lowColor?: string;
+  negativeColor?: string;
+  markerColor?: string;
 }
 
 /** 单格批注 — 无线程 */

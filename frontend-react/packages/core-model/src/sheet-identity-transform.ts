@@ -189,6 +189,30 @@ function remapDrawingPayload(
           : next.source.kind === 'table'
             ? { ...next.source, tableId: tableIds.get(next.source.tableId) ?? next.source.tableId }
             : { ...next.source, pivotId: pivotIds.get(next.source.pivotId) ?? next.source.pivotId };
+      if (next.categoryRange) next.categoryRange = mapRange(next.categoryRange, sourceSheetId, targetSheetId);
+      next.series = next.series?.map((series) => ({
+        ...series,
+        range: mapRange(series.range, sourceSheetId, targetSheetId),
+        xRange: series.xRange ? mapRange(series.xRange, sourceSheetId, targetSheetId) : undefined,
+        yRange: series.yRange ? mapRange(series.yRange, sourceSheetId, targetSheetId) : undefined,
+        sizeRange: series.sizeRange ? mapRange(series.sizeRange, sourceSheetId, targetSheetId) : undefined,
+        categoryRange: series.categoryRange ? mapRange(series.categoryRange, sourceSheetId, targetSheetId) : undefined,
+        stockRoles: series.stockRoles ? {
+          ...series.stockRoles,
+          open: series.stockRoles.open ? mapRange(series.stockRoles.open, sourceSheetId, targetSheetId) : undefined,
+          high: mapRange(series.stockRoles.high, sourceSheetId, targetSheetId),
+          low: mapRange(series.stockRoles.low, sourceSheetId, targetSheetId),
+          close: mapRange(series.stockRoles.close, sourceSheetId, targetSheetId),
+          volume: series.stockRoles.volume ? mapRange(series.stockRoles.volume, sourceSheetId, targetSheetId) : undefined,
+        } : undefined,
+        errorBars: series.errorBars ? {
+          ...series.errorBars,
+          plusRange: series.errorBars.plusRange ? mapRange(series.errorBars.plusRange, sourceSheetId, targetSheetId) : undefined,
+          minusRange: series.errorBars.minusRange ? mapRange(series.errorBars.minusRange, sourceSheetId, targetSheetId) : undefined,
+        } : undefined,
+        dataLabels: series.dataLabels?.valuesFromCells ? { ...series.dataLabels, valuesFromCells: mapRange(series.dataLabels.valuesFromCells, sourceSheetId, targetSheetId) } : series.dataLabels,
+        trendlines: series.trendlines ? structuredClone(series.trendlines) : undefined,
+      }));
       break;
     default:
       break;

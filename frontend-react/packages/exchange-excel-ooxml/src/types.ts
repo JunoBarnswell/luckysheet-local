@@ -269,6 +269,24 @@ export interface NativePivotGraph {
   controls?: NativePivotControlDefinition[];
 }
 
+export interface NativeChartDefinition {
+  chartPart: string;
+  drawingPart: string;
+  drawingRelationshipId: string;
+  drawingId: string;
+  sheetPart: string;
+  family: string;
+  subtype: string;
+  xlChartType?: number;
+  editable: boolean;
+  reason?: string;
+}
+
+export interface NativeChartGraph {
+  schema: 'NativeChartGraph';
+  charts: NativeChartDefinition[];
+}
+
 /**
  * The native package update is deliberately kept outside WorkbookSnapshot.
  * It carries only reachable OOXML parts/relationships and derived display
@@ -276,6 +294,7 @@ export interface NativePivotGraph {
  */
 export interface NativePivotPackageUpdate {
   graph: NativePivotGraph;
+  nativeChartGraph?: NativeChartGraph;
   files: Record<string, Uint8Array>;
   relationships: Record<string, XlsxRelationship[]>;
   displayCellsBySheetPart: Record<string, Record<string, Record<string, import('@react-sheets/core-model').CellData>>>;
@@ -300,6 +319,7 @@ export interface OpcPackageGraph {
   format: ExcelDocumentFormat;
   profile: 'transitional' | 'strict';
   nativePivotGraph?: NativePivotGraph;
+  nativeChartGraph?: NativeChartGraph;
 }
 
 export interface FeatureOwnershipResult {

@@ -28,7 +28,8 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildPivotChartData, resolveStructuredChartBindings } from "@react-sheets/spreadsheet-app";
+import { buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
   SheetSkeleton,
@@ -52,113 +53,17 @@ export type PivotControlAction =
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
-interface CanvasChartSeries {
-  name: string;
-  values: number[];
-  missing?: boolean[];
-  color?: string;
-  marker?: ChartMarkerModel;
-  chartType?: Exclude<ChartDrawingPayload['chartType'], 'combo'>;
-}
-
-function numericCellValue(value: string): number | undefined {
-  if (!value.trim()) return undefined;
-  const numeric = Number(value.replace(/[$,%]/g, ""));
-  return Number.isFinite(numeric) ? numeric : undefined;
-}
-
 function getChartSeries(
   payload: ChartDrawingPayload,
   getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
   tables: readonly WorkbookTableModel[],
-): { categories: string[]; series: CanvasChartSeries[]; brokenReference?: string } {
-  const categories: string[] = [];
-  const series: CanvasChartSeries[] = [];
-  if (payload.source.kind === 'table' || payload.source.kind === 'report-range') {
-    const structured = resolveStructuredChartBindings(payload, tables, (sheetId) => getSheet(sheetId));
-    return { categories: structured.categories, series: structured.series.map((entry) => ({ ...entry })) };
-  }
-  const pivotId = payload.source.kind === 'pivot' ? payload.source.pivotId : undefined;
-  const pivot = pivotId
-    ? pivotResults[pivotId] ?? sheets.map((candidate) => candidate.pivotResults[pivotId]).find(Boolean)
-    : undefined;
-  if (pivotId && !pivot) return { categories, series, brokenReference: `Pivot reference unavailable: ${pivotId}` };
-  if (pivot) {
-    const pivotDefinition = sheets.flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === pivot.pivotId);
-    const projected = buildPivotChartData(pivot, pivotDefinition);
-    categories.push(...projected.categories.map((category) => category.label));
-    for (const [index, entry] of projected.series.entries()) {
-      const declared = payload.series?.[index];
-      const missing = entry.values.map((value) => typeof value !== 'number' || !Number.isFinite(value));
-      series.push({
-        name: declared?.name ?? entry.name,
-        values: entry.values.map((value) => typeof value === 'number' && Number.isFinite(value) ? value : 0),
-        missing,
-        color: declared?.color,
-        marker: declared?.marker,
-        chartType: declared?.chartType,
-      });
-    }
-    return { categories, series };
-  }
-
-  const readRange = (range: RangeRef): string[][] => {
-    const sourceSheet = getSheet(range.sheetId);
-    if (!sourceSheet) return [];
-    const rows: string[][] = [];
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      if (payload.elements.hiddenData === 'hideRows' && sourceSheet.hiddenRows.includes(row)) continue;
-      const values: string[] = [];
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        if (payload.elements.hiddenData === 'hideColumns' && sourceSheet.hiddenColumns.includes(column)) continue;
-        values.push(sourceSheet.getCell(row, column)?.value ?? "");
-      }
-      rows.push(values);
-    }
-    return rows;
-  };
-
-  if (payload.series && payload.series.length > 0) {
-    for (const entry of payload.series) {
-      const values = readRange(entry.range).flat().map(numericCellValue).filter((value): value is number => value !== undefined);
-      series.push({ name: entry.name, values, color: entry.color, marker: entry.marker, chartType: entry.chartType });
-    }
-  }
-  const sourceRanges = payload.source.kind === 'worksheet-ranges' ? payload.source.ranges : [];
-  const source = sourceRanges[0];
-  if (!source) return { categories, series };
-  const matrix = readRange(source);
-  const categoryMatrix = payload.categoryRange ? readRange(payload.categoryRange) : [];
-  if (categoryMatrix.length > 0) {
-    categories.push(...categoryMatrix.flat().filter((value) => value !== ""));
-  }
-
-  if (series.length === 0 && matrix.length > 1 && (matrix[0]?.length ?? 0) > 1) {
-    const width = matrix[0]?.length ?? 0;
-    if (categories.length === 0) {
-      for (let row = 1; row < matrix.length; row += 1) categories.push(matrix[row]?.[0] ?? String(row));
-    }
-    for (let column = 1; column < width; column += 1) {
-      const values = matrix.slice(1).map((row) => numericCellValue(row?.[column] ?? "") ?? 0);
-      series.push({ name: matrix[0]?.[column] || payload.elements.title || `Series ${column}`, values });
-    }
-    return { categories, series };
-  }
-
-  if (series.length === 0) {
-    const values = matrix.flat().map(numericCellValue).filter((value): value is number => value !== undefined);
-    if (categories.length === 0) {
-      categories.push(...matrix.flat().filter((value) => numericCellValue(value) === undefined && value !== ""));
-    }
-    if (values.length > 0) series.push({ name: payload.elements.title || "Series 1", values });
-  }
-  const targetLength = Math.max(categories.length, ...series.map((entry) => entry.values.length), 1);
-  if (categories.length === 0) {
-    for (let index = 0; index < targetLength; index += 1) categories.push(String(index + 1));
-  }
-  return { categories, series };
+): ResolvedChartData {
+  const pivotSources = { ...pivotResults };
+  for (const source of sheets) for (const [pivotId, result] of Object.entries(source.pivotResults)) pivotSources[pivotId] ??= result;
+  const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
+  return data;
 }
 
 function drawCanonicalShapeOnCanvas(options: {
@@ -614,623 +519,561 @@ function drawFormControlOnCanvas(context: CanvasRenderingContext2D, payload: For
   context.restore();
 }
 
-function drawCanonicalChartOnCanvas(options: {
-  context: CanvasRenderingContext2D;
-  payload: ChartDrawingPayload;
-  bounds: Rect;
-  categories: string[];
-  series: CanvasChartSeries[];
-}): void {
-  const { context, payload, bounds, categories, series } = options;
-  const elements = payload.elements;
-  const legendPosition = elements.legend?.visible ? elements.legend.position : 'none';
-  const title = elements.title;
-  const { x, y, width, height } = bounds;
+function chartFillColor(fill: string | { kind: string; color?: string; secondaryColor?: string; transparency?: number } | undefined, fallback: string): string {
+  if (!fill) return fallback;
+  if (typeof fill === 'string') return fill;
+  if (fill.kind === 'none') return 'transparent';
+  return fill.color ?? fallback;
+}
+
+function paintChartFill(context: CanvasRenderingContext2D, fill: string | { kind: string; color?: string; secondaryColor?: string; transparency?: number; angle?: number; pattern?: string } | undefined, rect: { x: number; y: number; width: number; height: number }, fallback: string): boolean {
+  if (!fill) { context.fillStyle = fallback; return true; }
+  if (typeof fill === 'string') { context.fillStyle = fill; return true; }
+  if (fill.kind === 'none') return false;
+  if (fill.kind === 'gradient') {
+    const angle = (fill.angle ?? 90) * Math.PI / 180;
+    const x = Math.cos(angle) * rect.width;
+    const y = Math.sin(angle) * rect.height;
+    const gradient = context.createLinearGradient(rect.x, rect.y, rect.x + x, rect.y + y);
+    gradient.addColorStop(0, fill.color ?? fallback);
+    gradient.addColorStop(1, fill.secondaryColor ?? fill.color ?? fallback);
+    context.fillStyle = gradient;
+    return true;
+  }
+  context.fillStyle = fill.color ?? fallback;
+  return true;
+}
+
+function drawChartText(context: CanvasRenderingContext2D, text: string, x: number, y: number, options?: { color?: string; size?: number; bold?: boolean; align?: CanvasTextAlign }): void {
+  context.fillStyle = options?.color ?? '#334155';
+  context.font = `${options?.bold ? '600 ' : ''}${options?.size ?? 11}px Segoe UI, sans-serif`;
+  context.textAlign = options?.align ?? 'left';
+  context.textBaseline = 'middle';
+  context.fillText(text, x, y);
+}
+
+function chartScale(value: number, axis: NonNullable<ChartLayout['valueAxis']>): number {
+  const axisModel = axis.model;
+  if (axisModel.scale === 'logarithmic') {
+    const base = axisModel.logBase ?? 10;
+    const min = Math.log(Math.max(Number.MIN_VALUE, axis.minimum)) / Math.log(base);
+    const max = Math.log(Math.max(Number.MIN_VALUE, axis.maximum)) / Math.log(base);
+    return (Math.log(Math.max(Number.MIN_VALUE, value)) / Math.log(base) - min) / Math.max(Number.MIN_VALUE, max - min);
+  }
+  return (value - axis.minimum) / Math.max(Number.MIN_VALUE, axis.maximum - axis.minimum);
+}
+
+function drawChartMarker(context: CanvasRenderingContext2D, x: number, y: number, marker: ChartMarkerModel | undefined, color: string): void {
+  if (!marker?.enabled) return;
+  const radius = Math.max(2, (marker.size ?? 6) / 2);
+  const shape = marker.shape ?? 'circle';
   context.save();
-  context.translate(x, y);
-  context.fillStyle = elements.chartArea?.fill ?? "#ffffff";
-  context.fillRect(0, 0, width, height);
-  context.strokeStyle = elements.chartArea?.border ?? "#e2e8f0";
-  context.lineWidth = elements.chartArea?.borderWidth ?? 1;
-  context.strokeRect(0, 0, width, height);
-  if (title) {
-    context.fillStyle = "#1e293b";
-    context.font = "bold 14px Segoe UI, sans-serif";
-    context.textAlign = "left";
-    context.textBaseline = "top";
-    context.fillText(title, 16, 12);
-  }
-  if (payload.chartType === "pie" || payload.chartType === "doughnut") {
-    drawCanonicalPieChart(context, series[0], width, height, payload.chartType === "doughnut");
-    drawCanonicalLegend(context, series, width, height, legendPosition);
-    context.restore();
-    return;
-  }
-  const plotTop = title ? 40 : 20;
-  const plotBottom = height - (legendPosition === "bottom" ? 40 : 24);
-  const plotLeft = 48;
-  const plotRight = width - (legendPosition === "right" ? 90 : 16);
-  const plotWidth = Math.max(10, plotRight - plotLeft);
-  const plotHeight = Math.max(10, plotBottom - plotTop);
-  if (elements.plotArea?.fill) {
-    context.fillStyle = elements.plotArea.fill;
-    context.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
-  }
-  const allValues = series.flatMap((entry) => entry.values.filter((_value, index) => !entry.missing?.[index]));
-  const maxValue = Math.max(1, ...allValues.map((value) => Math.abs(value)));
-  const minValue = Math.min(0, ...allValues);
-  const maxAxis = payload.stacked === "percent" ? 100 : elements.valueAxis?.maximum ?? Math.max(1, maxValue * 1.1);
-  const minAxis = payload.stacked === "percent" ? 0 : elements.valueAxis?.minimum ?? Math.min(0, minValue);
-  const axisSpan = Math.max(1, maxAxis - minAxis);
-  context.strokeStyle = elements.valueAxis?.majorGridlines?.color ?? "#f1f5f9";
-  context.lineWidth = elements.valueAxis?.majorGridlines?.width ?? 1;
-  context.fillStyle = "#64748b";
-  context.font = "11px Segoe UI, sans-serif";
-  context.textAlign = "right";
-  context.textBaseline = "middle";
-  if (elements.valueAxis?.majorGridlines?.visible !== false) for (let index = 0; index <= 4; index += 1) {
-    const ratio = index / 4;
-    const gridY = plotTop + ratio * plotHeight;
-    const gridValue = maxAxis - ratio * axisSpan;
-    context.beginPath();
-    context.moveTo(plotLeft, gridY);
-    context.lineTo(plotRight, gridY);
-    context.stroke();
-    context.fillText(String(Math.round(gridValue)), plotLeft - 8, gridY);
-  }
-  const stackMode = payload.stacked ?? "none";
-  const stacked = stackMode !== "none";
-  const valueAt = (seriesIndex: number, categoryIndex: number): number => series[seriesIndex]?.values[categoryIndex] ?? 0;
-  const stackedValue = (seriesIndex: number, categoryIndex: number): { start: number; end: number } => {
-    const raw = valueAt(seriesIndex, categoryIndex);
-    if (!stacked) return { start: 0, end: raw };
-    const values = series.map((entry) => entry.values[categoryIndex] ?? 0);
-    if (stackMode === "percent") {
-      const total = values.reduce((sum, value) => sum + Math.abs(value), 0) || 1;
-      const normalized = (raw / total) * 100;
-      const start = values.slice(0, seriesIndex).reduce((sum, value) => sum + (value / total) * 100, 0);
-      return { start, end: start + normalized };
-    }
-    const start = values.slice(0, seriesIndex).reduce((sum, value) => sum + value, 0);
-    return { start, end: start + raw };
-  };
-  const yFor = (value: number): number => plotTop + ((maxAxis - value) / axisSpan) * plotHeight;
-  const categoryCount = Math.max(1, categories.length, ...series.map((entry) => entry.values.length));
-  if (payload.chartType === 'treemap') {
-    drawCanonicalTreemap(context, series, plotLeft, plotTop, plotWidth, plotHeight);
-    drawCanonicalLegend(context, series, width, height, legendPosition);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'sunburst') {
-    drawCanonicalSunburst(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
-    drawCanonicalLegend(context, series, width, height, legendPosition);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'histogram' || payload.chartType === 'pareto') {
-    drawCanonicalHistogram(context, series[0], plotLeft, plotTop, plotWidth, plotHeight, payload.chartType === 'pareto');
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'box-whisker') {
-    drawCanonicalBoxWhisker(context, series, plotLeft, plotTop, plotWidth, plotHeight);
-    drawCanonicalLegend(context, series, width, height, legendPosition);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'waterfall') {
-    drawCanonicalWaterfall(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'funnel') {
-    drawCanonicalFunnel(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'stock') {
-    drawCanonicalStock(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'surface') {
-    drawCanonicalSurface(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'radar') {
-    drawCanonicalRadar(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight);
-    drawCanonicalLegend(context, series, width, height, legendPosition);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === 'map') {
-    drawCanonicalMap(context, categories, series[0], plotLeft, plotTop, plotWidth, plotHeight);
-    context.restore();
-    return;
-  }
-  if (payload.chartType === "column" || payload.chartType === "bar" || payload.chartType === "combo") {
-    const categorySize = (payload.chartType === "bar" ? plotHeight : plotWidth) / categoryCount;
-    const columnSeries = payload.chartType === "combo" ? series.slice(1) : series;
-    const seriesCount = Math.max(1, stacked ? 1 : columnSeries.length);
-    for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex += 1) {
-      for (let seriesIndex = 0; seriesIndex < columnSeries.length; seriesIndex += 1) {
-        const sourceIndex = payload.chartType === "combo" ? seriesIndex + 1 : seriesIndex;
-        const range = stackedValue(sourceIndex, categoryIndex);
-        const color = columnSeries[seriesIndex]?.color ?? CHART_PALETTE[sourceIndex % CHART_PALETTE.length]!;
-        context.fillStyle = color;
-        if (payload.chartType === "bar") {
-          const barHeight = Math.max(4, categorySize * (stacked ? 0.64 : 0.62));
-          const yPosition = plotTop + categoryIndex * categorySize + (categorySize - barHeight) / 2;
-          const startX = plotLeft + (Math.min(range.start, range.end) - minAxis) / axisSpan * plotWidth;
-          const endX = plotLeft + (Math.max(range.start, range.end) - minAxis) / axisSpan * plotWidth;
-          context.fillRect(startX, yPosition, Math.max(1, endX - startX), barHeight);
-        } else {
-          const groupWidth = categorySize * 0.72;
-          const barWidth = Math.max(4, groupWidth / seriesCount);
-          const baseX = plotLeft + categoryIndex * categorySize + categorySize * 0.14;
-          const left = stacked ? baseX : baseX + seriesIndex * barWidth;
-          const topY = yFor(Math.max(range.start, range.end));
-          const bottomY = yFor(Math.min(range.start, range.end));
-          context.fillRect(left, topY, Math.max(2, stacked ? groupWidth : barWidth - 2), Math.max(1, bottomY - topY));
-          if (elements.dataLabels?.visible) {
-            context.fillStyle = "#475569";
-            context.textAlign = "center";
-            context.textBaseline = "bottom";
-            context.fillText(String(Math.round(valueAt(sourceIndex, categoryIndex))), left + (stacked ? groupWidth : barWidth) / 2, topY - 2);
-          }
-        }
-      }
-      if (payload.chartType !== "bar") {
-        context.fillStyle = "#64748b";
-        context.textAlign = "center";
-        context.textBaseline = "top";
-        context.fillText(categories[categoryIndex] ?? String(categoryIndex + 1), plotLeft + categoryIndex * categorySize + categorySize / 2, plotBottom + 6);
-      }
-    }
-    if (payload.chartType === "combo" && series.length > 0) {
-      drawCanonicalLineSeries(context, series[0]!, categories, plotLeft, plotTop, plotWidth, plotHeight, yFor, "#2563eb", false);
-    }
-  } else if (payload.chartType === 'line' || payload.chartType === 'area') {
-    for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex += 1) {
-      const current = series[seriesIndex]!;
-      const lineSeries = stacked
-        ? { ...current, values: current.values.map((_value, categoryIndex) => stackedValue(seriesIndex, categoryIndex).end) }
-        : current;
-      drawCanonicalLineSeries(context, lineSeries, categories, plotLeft, plotTop, plotWidth, plotHeight, yFor, current.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!, payload.chartType === "area");
-    }
-  }
-  if (payload.chartType === "scatter" || payload.chartType === 'bubble') {
-    for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex += 1) {
-      const current = series[seriesIndex]!;
-      context.fillStyle = current.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
-      for (let categoryIndex = 0; categoryIndex < current.values.length; categoryIndex += 1) {
-        const pointX = plotLeft + (categoryIndex / Math.max(1, categoryCount - 1)) * plotWidth;
-        const pointY = yFor(current.values[categoryIndex] ?? 0);
-        context.beginPath();
-        const radius = payload.chartType === 'bubble' ? Math.max(3, Math.min(14, Math.sqrt(Math.abs(current.values[categoryIndex] ?? 0)))) : 4;
-        context.arc(pointX, pointY, radius, 0, Math.PI * 2);
-        context.fill();
-      }
-    }
-  }
-  drawCanonicalLegend(context, series, width, height, legendPosition);
+  context.fillStyle = marker.fill ?? color;
+  context.strokeStyle = marker.border ?? color;
+  context.lineWidth = 1;
+  context.beginPath();
+  if (shape === 'square') context.rect(x - radius, y - radius, radius * 2, radius * 2);
+  else if (shape === 'diamond') { context.moveTo(x, y - radius); context.lineTo(x + radius, y); context.lineTo(x, y + radius); context.lineTo(x - radius, y); context.closePath(); }
+  else if (shape === 'triangle') { context.moveTo(x, y - radius); context.lineTo(x + radius, y + radius); context.lineTo(x - radius, y + radius); context.closePath(); }
+  else context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
   context.restore();
 }
 
-function numericSeriesValues(series: CanvasChartSeries | undefined): number[] {
-  return (series?.values ?? []).filter((value) => Number.isFinite(value));
-}
-
-function drawCanonicalTreemap(context: CanvasRenderingContext2D, series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const items = series.flatMap((entry, seriesIndex) => entry.values.map((value, valueIndex) => ({ name: `${entry.name} ${valueIndex + 1}`, value: Math.abs(value), color: entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]! }))).filter((item) => item.value > 0);
-  const total = items.reduce((sum, item) => sum + item.value, 0);
-  if (total <= 0) return;
-  let x = left;
-  for (const item of items) {
-    const itemWidth = width * (item.value / total);
-    context.fillStyle = item.color;
-    context.fillRect(x, top, Math.max(1, itemWidth - 1), height);
-    if (itemWidth > 42) {
-      context.fillStyle = '#ffffff';
-      context.font = '10px Segoe UI, sans-serif';
-      context.textAlign = 'center';
-      context.textBaseline = 'middle';
-      context.fillText(item.name, x + itemWidth / 2, top + height / 2, Math.max(8, itemWidth - 6));
-    }
-    x += itemWidth;
+function drawChartLegend(context: CanvasRenderingContext2D, layout: ChartLayout): void {
+  if (!layout.legend.visible) return;
+  const position = layout.legend.position;
+  const entries = layout.series.filter((series) => series.visible);
+  let x = position === 'left' ? 8 : position === 'right' ? layout.width - 92 : 16;
+  let y = position === 'top' || position === 'top-right' ? 22 : layout.height - 16;
+  if (position === 'top-right') { x = layout.width - 112; y = 22; }
+  for (const [index, series] of entries.entries()) {
+    context.fillStyle = series.color;
+    context.fillRect(x, y - 5, 10, 10);
+    drawChartText(context, series.name, x + 14, y, { color: '#475569', size: 10 });
+    x += Math.max(54, context.measureText(series.name).width + 32);
+    if ((position === 'left' || position === 'right') && y + 18 < layout.height - 4) y += 18;
+    else if (x > layout.width - 36 && index < entries.length - 1) { x = 16; y += 16; }
   }
 }
 
-function drawCanonicalSunburst(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const centerX = left + width / 2;
-  const centerY = top + height / 2;
-  const outerRadius = Math.max(8, Math.min(width, height) * 0.44);
-  const ringWidth = outerRadius / Math.max(1, series.length + 1);
-  series.forEach((entry, ringIndex) => {
-    const values = entry.values.map((value) => Math.abs(value));
-    const total = values.reduce((sum, value) => sum + value, 0) || 1;
-    let angle = -Math.PI / 2;
-    values.forEach((value, index) => {
-      const sweep = Math.PI * 2 * value / total;
+function drawChartAxes(context: CanvasRenderingContext2D, layout: ChartLayout, categories: readonly PivotScalar[]): void {
+  const { plot } = layout;
+  const valueAxis = layout.valueAxis;
+  if (!valueAxis) return;
+  const valueAxisModel = valueAxis.model;
+  const grid = valueAxisModel.majorGridlines;
+  for (const tick of valueAxis.ticks) {
+    const y = plot.top + plot.height * (1 - chartScale(tick, valueAxis));
+    if (grid?.visible !== false) {
+      context.save();
+      context.strokeStyle = grid?.color ?? '#e2e8f0';
+      context.lineWidth = grid?.width ?? 1;
+      if (grid?.dash === 'dash') context.setLineDash([4, 3]);
+      if (grid?.dash === 'dot') context.setLineDash([1, 3]);
       context.beginPath();
-      context.arc(centerX, centerY, ringWidth * (ringIndex + 2), angle, angle + sweep);
-      context.arc(centerX, centerY, ringWidth * (ringIndex + 1), angle + sweep, angle, true);
-      context.closePath();
-      context.fillStyle = CHART_PALETTE[(ringIndex + index) % CHART_PALETTE.length]!;
-      context.globalAlpha = Math.max(0.45, 1 - ringIndex * 0.12);
-      context.fill();
-      context.globalAlpha = 1;
-      if (ringIndex === series.length - 1 && sweep > 0.45) {
-        const mid = angle + sweep / 2;
-        context.fillStyle = '#334155';
-        context.font = '9px Segoe UI, sans-serif';
-        context.textAlign = 'center';
-        context.fillText(categories[index] ?? String(index + 1), centerX + Math.cos(mid) * outerRadius * 0.78, centerY + Math.sin(mid) * outerRadius * 0.78, ringWidth * 2.3);
-      }
-      angle += sweep;
-    });
-  });
-}
-
-function drawCanonicalHistogram(context: CanvasRenderingContext2D, series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number, pareto: boolean): void {
-  const values = numericSeriesValues(series).slice().sort((a: number, b: number) => a - b);
-  if (!values.length) return;
-  const binCount = Math.max(1, Math.min(12, Math.ceil(Math.sqrt(values.length))));
-  const minimum = values[0]!;
-  const maximum = values[values.length - 1]!;
-  const span = Math.max(1, maximum - minimum);
-  const counts = Array.from({ length: binCount }, () => 0);
-  for (const value of values) {
-    const bucket = Math.min(binCount - 1, Math.floor((value - minimum) / span * binCount));
-    counts[bucket] = (counts[bucket] ?? 0) + 1;
-  }
-  const maxCount = Math.max(1, ...counts);
-  const binWidth = width / binCount;
-  counts.forEach((count, index) => {
-    const barHeight = count / maxCount * height;
-    context.fillStyle = series?.color ?? '#3b82f6';
-    context.fillRect(left + index * binWidth, top + height - barHeight, Math.max(1, binWidth - 1), barHeight);
-  });
-  if (pareto) {
-    let cumulative = 0;
-    context.beginPath();
-    counts.forEach((count, index) => {
-      cumulative += count;
-      const x = left + (index + 0.5) * binWidth;
-      const y = top + height * (1 - cumulative / values.length);
-      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-    });
-    context.strokeStyle = '#dc2626';
-    context.lineWidth = 2;
-    context.stroke();
-  }
-}
-
-function quartile(sorted: number[], ratio: number): number {
-  if (!sorted.length) return 0;
-  const position = (sorted.length - 1) * ratio;
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-  return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (position - lower);
-}
-
-function drawCanonicalBoxWhisker(context: CanvasRenderingContext2D, series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const all = series.flatMap((entry) => numericSeriesValues(entry));
-  if (!all.length) return;
-  const min = Math.min(...all);
-  const max = Math.max(...all);
-  const span = Math.max(1, max - min);
-  const yFor = (value: number) => top + height - (value - min) / span * height;
-  const slot = width / Math.max(1, series.length);
-  series.forEach((entry, index) => {
-  const values = numericSeriesValues(entry).slice().sort((a: number, b: number) => a - b);
-    if (!values.length) return;
-    const q1 = quartile(values, 0.25);
-    const median = quartile(values, 0.5);
-    const q3 = quartile(values, 0.75);
-    const x = left + slot * (index + 0.5);
-    const boxWidth = Math.max(10, slot * 0.45);
-    context.strokeStyle = entry.color ?? CHART_PALETTE[index % CHART_PALETTE.length]!;
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(x, yFor(values[0]!));
-    context.lineTo(x, yFor(values[values.length - 1]!));
-    context.stroke();
-    context.strokeRect(x - boxWidth / 2, yFor(q3), boxWidth, Math.max(1, yFor(q1) - yFor(q3)));
-    context.beginPath();
-    context.moveTo(x - boxWidth / 2, yFor(median));
-    context.lineTo(x + boxWidth / 2, yFor(median));
-    context.stroke();
-  });
-}
-
-function drawCanonicalWaterfall(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
-  const values = numericSeriesValues(series);
-  if (!values.length) return;
-  const totals: number[] = [0];
-  for (const value of values) totals.push(totals[totals.length - 1]! + value);
-  const min = Math.min(0, ...totals);
-  const max = Math.max(0, ...totals);
-  const span = Math.max(1, max - min);
-  const yFor = (value: number) => top + height - (value - min) / span * height;
-  const slot = width / values.length;
-  values.forEach((value, index) => {
-    const start = totals[index]!;
-    const end = totals[index + 1]!;
-    context.fillStyle = value >= 0 ? '#10b981' : '#ef4444';
-    context.fillRect(left + index * slot + slot * 0.16, yFor(Math.max(start, end)), slot * 0.68, Math.max(1, Math.abs(yFor(start) - yFor(end))));
-    context.fillStyle = '#64748b';
-    context.font = '9px Segoe UI, sans-serif';
-    context.textAlign = 'center';
-    context.fillText(categories[index] ?? String(index + 1), left + (index + 0.5) * slot, top + height + 11, slot - 2);
-  });
-}
-
-function drawCanonicalFunnel(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
-  const values = numericSeriesValues(series).map(Math.abs);
-  if (!values.length) return;
-  const max = Math.max(1, ...values);
-  const bandHeight = height / values.length;
-  values.forEach((value, index) => {
-    const currentWidth = width * value / max;
-    const nextWidth = width * (values[index + 1] ?? value) / max;
-    const center = left + width / 2;
-    context.beginPath();
-    context.moveTo(center - currentWidth / 2, top + index * bandHeight);
-    context.lineTo(center + currentWidth / 2, top + index * bandHeight);
-    context.lineTo(center + nextWidth / 2, top + (index + 1) * bandHeight - 1);
-    context.lineTo(center - nextWidth / 2, top + (index + 1) * bandHeight - 1);
-    context.closePath();
-    context.fillStyle = CHART_PALETTE[index % CHART_PALETTE.length]!;
-    context.fill();
-    context.fillStyle = '#ffffff';
-    context.font = '10px Segoe UI, sans-serif';
-    context.textAlign = 'center';
-    context.fillText(`${categories[index] ?? index + 1}: ${value}`, center, top + (index + 0.55) * bandHeight, Math.max(12, currentWidth - 4));
-  });
-}
-
-function drawCanonicalStock(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const high = series[0]?.values ?? [];
-  const low = series[1]?.values ?? [];
-  const close = series[2]?.values ?? series[0]?.values ?? [];
-  const all = [...high, ...low, ...close].filter(Number.isFinite);
-  if (!all.length) return;
-  const min = Math.min(...all);
-  const max = Math.max(...all);
-  const span = Math.max(1, max - min);
-  const yFor = (value: number) => top + height - (value - min) / span * height;
-  const count = Math.max(1, categories.length, high.length, low.length);
-  const slot = width / count;
-  for (let index = 0; index < count; index += 1) {
-    const x = left + (index + 0.5) * slot;
-    const hi = high[index] ?? close[index] ?? 0;
-    const lo = low[index] ?? close[index] ?? 0;
-    const last = close[index] ?? hi;
-    context.strokeStyle = '#334155';
-    context.beginPath();
-    context.moveTo(x, yFor(hi));
-    context.lineTo(x, yFor(lo));
-    context.stroke();
-    context.fillStyle = last >= (close[index - 1] ?? last) ? '#10b981' : '#ef4444';
-    context.fillRect(x - Math.max(2, slot * 0.15), yFor(last) - 2, Math.max(4, slot * 0.3), 4);
-  }
-}
-
-function drawCanonicalSurface(context: CanvasRenderingContext2D, _categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const rows = series.length;
-  const columns = Math.max(0, ...series.map((entry) => entry.values.length));
-  const all = series.flatMap((entry) => entry.values).filter(Number.isFinite);
-  if (!rows || !columns || !all.length) return;
-  const min = Math.min(...all);
-  const max = Math.max(...all);
-  const span = Math.max(1, max - min);
-  const cellWidth = width / columns;
-  const cellHeight = height / rows;
-  series.forEach((entry, row) => entry.values.forEach((value, column) => {
-    const ratio = (value - min) / span;
-    const red = Math.round(239 * ratio + 37 * (1 - ratio));
-    const green = Math.round(68 * ratio + 99 * (1 - ratio));
-    const blue = Math.round(68 * ratio + 235 * (1 - ratio));
-    context.fillStyle = `rgb(${red},${green},${blue})`;
-    context.fillRect(left + column * cellWidth, top + row * cellHeight, Math.ceil(cellWidth), Math.ceil(cellHeight));
-  }));
-}
-
-function drawCanonicalRadar(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries[], left: number, top: number, width: number, height: number): void {
-  const count = Math.max(3, categories.length, ...series.map((entry) => entry.values.length));
-  const max = Math.max(1, ...series.flatMap((entry) => entry.values.map(Math.abs)));
-  const centerX = left + width / 2;
-  const centerY = top + height / 2;
-  const radius = Math.min(width, height) * 0.43;
-  for (let ring = 1; ring <= 4; ring += 1) {
-    context.beginPath();
-    for (let index = 0; index < count; index += 1) {
-      const angle = -Math.PI / 2 + Math.PI * 2 * index / count;
-      const r = radius * ring / 4;
-      const x = centerX + Math.cos(angle) * r;
-      const y = centerY + Math.sin(angle) * r;
-      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      context.moveTo(plot.left, y);
+      context.lineTo(plot.left + plot.width, y);
+      context.stroke();
+      context.restore();
     }
-    context.closePath();
-    context.strokeStyle = '#cbd5e1';
+    drawChartText(context, String(Math.round(tick * 100000) / 100000), plot.left - 8, y, { color: '#64748b', size: 9, align: 'right' });
+  }
+  if (valueAxisModel.visible !== false) {
+    context.strokeStyle = valueAxisModel.line?.color ?? '#94a3b8';
+    context.lineWidth = valueAxisModel.line?.width ?? 1;
+    context.beginPath();
+    context.moveTo(plot.left, plot.top);
+    context.lineTo(plot.left, plot.top + plot.height);
     context.stroke();
   }
-  series.forEach((entry, seriesIndex) => {
+  const categoryAxis = layout.categoryAxis;
+  const categoryAxisModel = categoryAxis?.model;
+  if (categoryAxisModel?.visible !== false) {
+    context.strokeStyle = categoryAxisModel?.line?.color ?? '#94a3b8';
+    context.lineWidth = categoryAxisModel?.line?.width ?? 1;
     context.beginPath();
-    for (let index = 0; index < count; index += 1) {
-      const angle = -Math.PI / 2 + Math.PI * 2 * index / count;
-      const r = radius * Math.abs(entry.values[index] ?? 0) / max;
-      const x = centerX + Math.cos(angle) * r;
-      const y = centerY + Math.sin(angle) * r;
-      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-    }
-    context.closePath();
-    context.strokeStyle = entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
-    context.globalAlpha = 0.8;
+    context.moveTo(plot.left, plot.top + plot.height);
+    context.lineTo(plot.left + plot.width, plot.top + plot.height);
     context.stroke();
-    context.globalAlpha = 0.16;
-    context.fillStyle = entry.color ?? CHART_PALETTE[seriesIndex % CHART_PALETTE.length]!;
-    context.fill();
-    context.globalAlpha = 1;
-  });
+    const interval = Math.max(1, categoryAxisModel?.labelInterval ?? 1);
+    const count = Math.max(1, categories.length);
+    categories.forEach((category, index) => {
+      if (index % interval !== 0) return;
+      const x = plot.left + (index + 0.5) * plot.width / count;
+      drawChartText(context, String(category ?? ''), x, plot.top + plot.height + 12, { color: '#64748b', size: 9, align: 'center' });
+    });
+  }
+  if (valueAxisModel.title) drawChartText(context, valueAxisModel.title, 12, plot.top + plot.height / 2, { color: '#475569', size: 10 });
+  if (categoryAxisModel?.title) drawChartText(context, categoryAxisModel.title, plot.left + plot.width / 2, layout.height - 6, { color: '#475569', size: 10, align: 'center' });
 }
 
-function drawCanonicalMap(context: CanvasRenderingContext2D, categories: string[], series: CanvasChartSeries | undefined, left: number, top: number, width: number, height: number): void {
-  context.strokeStyle = '#b91c1c';
-  context.lineWidth = 1.5;
-  context.strokeRect(left, top, width, height);
-  context.fillStyle = '#b91c1c';
-  context.font = '11px Segoe UI, sans-serif';
-  context.textAlign = 'left';
-  context.textBaseline = 'top';
-  const reason = categories.length && numericSeriesValues(series).length
-    ? 'UNSUPPORTED_FEATURE: geographic regions are not resolved'
-    : 'INVALID_CHART_SOURCE: Map requires region and numeric value fields';
-  context.fillText(reason, left + 8, top + 8, Math.max(10, width - 16));
-}
-
-function drawCanonicalLineSeries(
-  context: CanvasRenderingContext2D,
-  series: CanvasChartSeries,
-  categories: string[],
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  yFor: (value: number) => number,
-  color: string,
-  area: boolean,
-): void {
-  const points = series.values.map((value, index) => ({
-    x: left + (index / Math.max(1, Math.max(categories.length, series.values.length) - 1)) * width,
-    y: yFor(value),
-  }));
-  if (points.length === 0) return;
-  if (area) {
+function drawChartLine(context: CanvasRenderingContext2D, series: ChartLayout['series'][number], area: boolean, smooth: boolean, baseline = 0, emptyCells: NonNullable<ChartDrawingPayload['elements']['emptyCells']> = 'gap', pixelsPerValue = 1): void {
+  const points = series.points.filter((point) => point.visible);
+  if (!points.length) return;
+  const segments: typeof points[] = [];
+  if (emptyCells === 'connect') segments.push(points);
+  let current: typeof points = [];
+  if (emptyCells !== 'connect') {
+    for (const point of series.points) {
+      if (!point.visible) { if (current.length) segments.push(current); current = []; }
+      else current.push(point);
+    }
+    if (current.length) segments.push(current);
+  }
+  for (const segment of segments) {
+    if (!segment.length) continue;
     context.save();
-    context.fillStyle = `${color}22`;
-    context.beginPath();
-    context.moveTo(points[0]!.x, top + height);
-    for (const point of points) context.lineTo(point.x, point.y);
-    context.lineTo(points[points.length - 1]!.x, top + height);
-    context.closePath();
-    context.fill();
-    context.restore();
-  }
-  context.strokeStyle = color;
-  context.lineWidth = 2.5;
-  context.beginPath();
-  points.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
-  context.stroke();
-  if (series.marker?.enabled) {
-    const radius = Math.max(2, (series.marker.size ?? 6) / 2);
-    context.fillStyle = series.marker.fill ?? color;
-    context.strokeStyle = series.marker.border ?? color;
-    context.lineWidth = 1;
-    for (const point of points) {
+    context.strokeStyle = series.color;
+    context.lineWidth = 2;
+    if (area) {
+      context.fillStyle = `${series.color}22`;
       context.beginPath();
-      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      context.moveTo(segment[0]!.x, baseline);
+      segment.forEach((point) => context.lineTo(point.x, point.y));
+      context.lineTo(segment.at(-1)!.x, baseline);
+      context.closePath();
       context.fill();
+    }
+    context.beginPath();
+    context.moveTo(segment[0]!.x, segment[0]!.y);
+    for (let index = 1; index < segment.length; index += 1) {
+      const point = segment[index]!;
+      const previous = segment[index - 1]!;
+      if (smooth) {
+        const middle = (previous.x + point.x) / 2;
+        context.quadraticCurveTo(middle, previous.y, middle, (previous.y + point.y) / 2);
+        context.quadraticCurveTo(middle, point.y, point.x, point.y);
+      } else context.lineTo(point.x, point.y);
+    }
+    context.stroke();
+    for (const point of segment) drawChartMarker(context, point.x, point.y, series.subtype?.includes('markers') ? { enabled: true } : undefined, series.color);
+    for (const point of segment) if (point.errorPlus || point.errorMinus) {
+      const plus = point.errorPlus ?? 0;
+      const minus = point.errorMinus ?? 0;
+      const up = plus * pixelsPerValue;
+      const down = minus * pixelsPerValue;
+      context.strokeStyle = series.color;
+      context.beginPath();
+      context.moveTo(point.x, point.y - up); context.lineTo(point.x, point.y + down);
+      context.moveTo(point.x - 3, point.y - up); context.lineTo(point.x + 3, point.y - up);
+      context.moveTo(point.x - 3, point.y + down); context.lineTo(point.x + 3, point.y + down);
       context.stroke();
     }
+    context.restore();
+  }
+  for (const trendline of series.trendlines) {
+    const trendlineModel = trendline.model;
+    context.save();
+    context.strokeStyle = trendlineModel.color ?? series.color;
+    context.lineWidth = trendlineModel.width ?? 1.5;
+    if (trendlineModel.dash === 'dash') context.setLineDash([5, 3]);
+    if (trendlineModel.dash === 'dot') context.setLineDash([1, 3]);
+    context.beginPath();
+    trendline.points.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
+    context.stroke();
+    context.restore();
   }
 }
 
-function drawCanonicalPieChart(
-  context: CanvasRenderingContext2D,
-  series: CanvasChartSeries | undefined,
-  width: number,
-  height: number,
-  doughnut: boolean,
-): void {
-  if (!series) return;
-  const total = series.values.reduce((sum, value) => sum + Math.max(0, value), 0);
-  if (total <= 0) return;
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const radius = Math.min(width, height) / 2 - 24;
-  let angle = -Math.PI / 2;
-  for (let index = 0; index < series.values.length; index += 1) {
-    const value = Math.max(0, series.values[index] ?? 0);
-    const sweep = (value / total) * Math.PI * 2;
-    context.fillStyle = CHART_PALETTE[index % CHART_PALETTE.length]!;
-    context.beginPath();
-    context.moveTo(centerX, centerY);
-    context.arc(centerX, centerY, radius, angle, angle + sweep);
-    context.closePath();
-    context.fill();
-    angle += sweep;
+function drawScatterSeries(context: CanvasRenderingContext2D, series: ChartLayout['series'][number], bubble: boolean): void {
+  const points = series.points.filter((point) => point.visible && point.xValue !== null && (!bubble || point.sizeValue !== null));
+  if (!points.length) return;
+  const subtype = series.subtype ?? '';
+  const hasLine = subtype.includes('lines');
+  if (hasLine && points.length > 1) {
+    context.save(); context.strokeStyle = series.color; context.lineWidth = 2; context.beginPath();
+    points.forEach((point, index) => { if (index === 0) context.moveTo(point.x, point.y); else if (subtype.includes('smooth')) { const previous = points[index - 1]!; const middle = (previous.x + point.x) / 2; context.quadraticCurveTo(middle, previous.y, point.x, point.y); } else context.lineTo(point.x, point.y); });
+    context.stroke(); context.restore();
   }
-  if (doughnut) {
-    context.fillStyle = "#ffffff";
-    context.beginPath();
-    context.arc(centerX, centerY, radius * 0.55, 0, Math.PI * 2);
-    context.fill();
+  const sizes = points.map((point) => Math.abs(point.sizeValue ?? 1));
+  const maxSize = Math.max(1, ...sizes);
+  for (const point of points) {
+    const radius = bubble ? Math.max(3, Math.min(24, 3 + Math.sqrt(Math.abs(point.sizeValue ?? 0) / maxSize) * 18)) : 4;
+    context.save(); context.globalAlpha = bubble ? 0.72 : 1; context.fillStyle = series.color; context.strokeStyle = series.color; context.beginPath(); context.arc(point.x, point.y, radius, 0, Math.PI * 2); context.fill(); context.stroke(); context.restore();
   }
 }
 
-function drawCanonicalLegend(
-  context: CanvasRenderingContext2D,
-  series: readonly CanvasChartSeries[],
-  width: number,
-  height: number,
-  position: 'top' | 'bottom' | 'left' | 'right' | 'none',
-): void {
-  if (position === "none") return;
-  context.font = "11px Segoe UI, sans-serif";
-  context.textAlign = "left";
-  context.textBaseline = "middle";
-  let x = position === "left" ? 4 : 16;
-  const y = position === "bottom" ? height - 16 : 24;
-  for (const [index, entry] of series.entries()) {
-    const color = entry.color ?? CHART_PALETTE[index % CHART_PALETTE.length]!;
-    context.fillStyle = color;
-    context.fillRect(x, y - 4, 10, 10);
-    context.fillStyle = "#475569";
-    context.fillText(entry.name, x + 14, y + 1);
-    x += context.measureText(entry.name).width + 32;
-    if (x > width - 40) break;
+function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, series: ChartLayout['series'][number]): void {
+  const chartLabels = payload.elements.dataLabels;
+  for (const point of series.points) {
+    const labels = payload.series?.find((entry) => entry.id === series.id || entry.name === series.name)?.dataLabels ?? chartLabels;
+    if (!labels?.visible || point.value === null) continue;
+    const parts: string[] = [];
+    if (labels.showSeriesName) parts.push(series.name);
+    if (labels.showCategoryName) parts.push(String(point.category));
+    if (labels.showValue !== false) parts.push(String(point.value));
+    if (labels.showPercentage) parts.push(`${Math.round(Math.abs(point.value) * 100) / 100}%`);
+    if (!parts.length) parts.push(String(point.value));
+    const position = labels.position === 'inside-base' ? { x: point.x, y: point.y + 10 } : labels.position === 'below' ? { x: point.x, y: point.y + 14 } : { x: point.x, y: point.y - 10 };
+    drawChartText(context, parts.join(labels.separator ?? ', '), position.x, position.y, { color: '#334155', size: 9, align: 'center' });
   }
+}
+
+function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
+  const { plot } = layout;
+  if (layout.kind === 'pie') {
+    const centerX = plot.left + plot.width / 2;
+    const centerY = plot.top + plot.height / 2;
+    for (const slice of layout.pieSlices ?? []) {
+      const mid = (slice.startAngle + slice.endAngle) / 2;
+      const offsetX = Math.cos(mid) * slice.explosion;
+      const offsetY = Math.sin(mid) * slice.explosion;
+      context.save();
+      context.translate(offsetX, offsetY);
+      context.fillStyle = slice.color;
+      context.beginPath();
+      context.moveTo(centerX + Math.cos(slice.startAngle) * slice.innerRadius, centerY + Math.sin(slice.startAngle) * slice.innerRadius);
+      context.arc(centerX, centerY, slice.outerRadius, slice.startAngle, slice.endAngle);
+      if (slice.innerRadius > 0) context.arc(centerX, centerY, slice.innerRadius, slice.endAngle, slice.startAngle, true);
+      else context.lineTo(centerX, centerY);
+      context.closePath();
+      context.fill();
+      context.restore();
+    }
+    return;
+  }
+  if (layout.kind === 'histogram') {
+    const bins = layout.histogramBins ?? [];
+    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
+    const width = plot.width / Math.max(1, bins.length);
+    bins.forEach((bin, index) => {
+      const barHeight = bin.count / maximum * plot.height;
+      context.fillStyle = '#2563eb';
+      context.fillRect(plot.left + index * width, plot.top + plot.height - barHeight, Math.max(1, width - 1), barHeight);
+      drawChartText(context, bin.label, plot.left + (index + 0.5) * width, plot.top + plot.height + 12, { size: 8, align: 'center' });
+    });
+    if (layout.paretoPoints?.length) {
+      context.strokeStyle = '#dc2626';
+      context.lineWidth = 2;
+      context.beginPath();
+      layout.paretoPoints.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
+      context.stroke();
+    }
+    return;
+  }
+  if (layout.kind === 'box-whisker') {
+    const boxes = layout.boxes ?? [];
+    const all = boxes.flatMap((box) => [box.minimum, box.maximum, ...box.outliers]);
+    const minimum = Math.min(0, ...all);
+    const maximum = Math.max(1, ...all);
+    const axis = { minimum, maximum, model: { scale: 'linear' } } as NonNullable<ChartLayout['valueAxis']>;
+    const y = (value: number) => plot.top + plot.height * (1 - chartScale(value, axis));
+    const slot = plot.width / Math.max(1, boxes.length);
+    boxes.forEach((box, index) => {
+      const x = plot.left + slot * (index + 0.5);
+      context.strokeStyle = box.color;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.moveTo(x, y(box.lowerWhisker)); context.lineTo(x, y(box.upperWhisker));
+      context.moveTo(x - slot * 0.12, y(box.lowerWhisker)); context.lineTo(x + slot * 0.12, y(box.lowerWhisker));
+      context.moveTo(x - slot * 0.12, y(box.upperWhisker)); context.lineTo(x + slot * 0.12, y(box.upperWhisker));
+      context.stroke();
+      context.fillStyle = `${box.color}33`;
+      context.fillRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
+      context.strokeRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
+      context.beginPath(); context.moveTo(x - slot * 0.24, y(box.median)); context.lineTo(x + slot * 0.24, y(box.median)); context.stroke();
+      for (const outlier of box.outliers) { context.fillStyle = box.color; context.beginPath(); context.arc(x, y(outlier), 2, 0, Math.PI * 2); context.fill(); }
+    });
+    return;
+  }
+  if (layout.kind === 'waterfall') {
+    const bars = layout.waterfallBars ?? [];
+    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
+    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
+    const span = Math.max(1, maximum - minimum);
+    const slot = plot.width / Math.max(1, bars.length);
+    bars.forEach((bar) => {
+      const x = plot.left + bar.index * slot + slot * 0.16;
+      const top = plot.top + plot.height * (1 - (bar.end - minimum) / span);
+      const bottom = plot.top + plot.height * (1 - (bar.start - minimum) / span);
+      context.fillStyle = bar.color;
+      context.fillRect(x, Math.min(top, bottom), slot * 0.68, Math.max(1, Math.abs(bottom - top)));
+      if (payload.waterfallOptions?.connectorLines !== false && bar.index > 0) { context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(x - slot * 0.16, bottom); context.lineTo(x, bottom); context.stroke(); }
+    });
+    return;
+  }
+  if (layout.kind === 'funnel') {
+    const stages = layout.funnelStages ?? [];
+    const maximum = Math.max(1, ...stages.map((stage) => stage.value));
+    const band = plot.height / Math.max(1, stages.length);
+    stages.forEach((stage) => {
+      const current = plot.width * stage.value / maximum;
+      const next = plot.width * stage.nextValue / maximum;
+      const center = plot.left + plot.width / 2;
+      context.fillStyle = stage.color;
+      context.beginPath();
+      context.moveTo(center - current / 2, plot.top + stage.index * band);
+      context.lineTo(center + current / 2, plot.top + stage.index * band);
+      context.lineTo(center + next / 2, plot.top + (stage.index + 1) * band);
+      context.lineTo(center - next / 2, plot.top + (stage.index + 1) * band);
+      context.closePath(); context.fill();
+      drawChartText(context, `${stage.label}: ${stage.value}`, center, plot.top + (stage.index + 0.5) * band, { color: '#fff', size: 9, align: 'center' });
+    });
+    return;
+  }
+  if (layout.kind === 'stock') {
+    const points = layout.stockPoints ?? [];
+    const values = points.flatMap((point) => [point.high, point.low, point.close, point.open ?? point.close]);
+    const minimum = Math.min(...values, 0);
+    const maximum = Math.max(...values, 1);
+    const span = Math.max(1, maximum - minimum);
+    const slot = plot.width / Math.max(1, points.length);
+    for (const point of points) {
+      const x = plot.left + (point.index + 0.5) * slot;
+      const y = (value: number) => plot.top + plot.height * (1 - (value - minimum) / span);
+      context.strokeStyle = point.color;
+      context.beginPath(); context.moveTo(x, y(point.high)); context.lineTo(x, y(point.low)); context.stroke();
+      if (point.open !== undefined) { const top = Math.min(y(point.open), y(point.close)); context.fillStyle = point.color; context.fillRect(x - slot * 0.2, top, Math.max(2, slot * 0.4), Math.max(1, Math.abs(y(point.open) - y(point.close)))); }
+      else { context.fillStyle = point.color; context.fillRect(x - 2, y(point.close) - 2, 4, 4); }
+    }
+    return;
+  }
+  if (layout.kind === 'surface') {
+    const cells = layout.surfaceCells ?? [];
+    const rows = Math.max(1, ...cells.map((cell) => cell.row + 1));
+    const columns = Math.max(1, ...cells.map((cell) => cell.column + 1));
+    for (const cell of cells) { context.fillStyle = cell.color; context.fillRect(plot.left + cell.column * plot.width / columns, plot.top + cell.row * plot.height / rows, Math.ceil(plot.width / columns), Math.ceil(plot.height / rows)); }
+    return;
+  }
+  if (layout.kind === 'radar') {
+    const radar = layout.radar;
+    if (!radar) return;
+    const centerX = plot.left + plot.width / 2;
+    const centerY = plot.top + plot.height / 2;
+    const radius = Math.min(plot.width, plot.height) * 0.42;
+    for (let ring = 1; ring <= 4; ring += 1) {
+      context.strokeStyle = '#cbd5e1'; context.beginPath();
+      for (let index = 0; index < radar.count; index += 1) { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * ring / 4; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); }
+      context.closePath(); context.stroke();
+    }
+    for (const entry of radar.points) {
+      context.strokeStyle = entry.color; context.fillStyle = `${entry.color}22`; context.beginPath();
+      entry.values.forEach((value, index) => { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * Math.abs(value) / radar.maximum; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); });
+      context.closePath(); context.fill(); context.stroke();
+    }
+    return;
+  }
+  if (layout.kind === 'treemap') {
+    const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => ({ value: Math.max(0, point.value ?? 0), label: String(point.category), color: series.color })));
+    const total = values.reduce((sum, entry) => sum + entry.value, 0) || 1;
+    let x = plot.left;
+    for (const [index, entry] of values.entries()) { const width = plot.width * entry.value / total; context.fillStyle = entry.color ?? '#2563eb'; context.fillRect(x, plot.top, Math.max(1, width - 1), plot.height); drawChartText(context, entry.label, x + width / 2, plot.top + plot.height / 2, { color: '#fff', size: 9, align: 'center' }); x += width; void index; }
+    return;
+  }
+  if (layout.kind === 'sunburst') {
+    const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => Math.max(0, point.value ?? 0)));
+    const total = values.reduce((sum, value) => sum + value, 0) || 1;
+    const centerX = plot.left + plot.width / 2;
+    const centerY = plot.top + plot.height / 2;
+    const radius = Math.min(plot.width, plot.height) * 0.42;
+    let angle = -Math.PI / 2;
+    values.forEach((value, index) => { const sweep = value / total * Math.PI * 2; context.fillStyle = CHART_PALETTE[index % CHART_PALETTE.length]!; context.beginPath(); context.moveTo(centerX, centerY); context.arc(centerX, centerY, radius, angle, angle + sweep); context.closePath(); context.fill(); angle += sweep; });
+    context.fillStyle = '#fff'; context.beginPath(); context.arc(centerX, centerY, radius * 0.42, 0, Math.PI * 2); context.fill();
+    return;
+  }
+}
+
+function drawChartLayoutOnCanvas(options: { context: CanvasRenderingContext2D; payload: ChartDrawingPayload; bounds: Rect; layout: ChartLayout }): void {
+  const { context, payload, bounds, layout } = options;
+  context.save();
+  context.translate(bounds.x, bounds.y);
+  const chartArea = payload.elements.chartArea;
+  const fill = chartArea?.fill;
+  const chartHasFill = paintChartFill(context, fill, { x: 0, y: 0, width: bounds.width, height: bounds.height }, '#fff');
+  if (chartHasFill) { context.globalAlpha = 1 - (chartArea?.transparency ?? 0); context.fillRect(0, 0, bounds.width, bounds.height); context.globalAlpha = 1; }
+  context.strokeStyle = chartArea?.line?.color ?? chartArea?.border ?? '#cbd5e1';
+  context.lineWidth = chartArea?.line?.width ?? chartArea?.borderWidth ?? 1;
+  if (chartArea?.line?.dash === 'dash' || chartArea?.borderDash === 'dash') context.setLineDash([5, 3]);
+  if (chartArea?.line?.dash === 'dot' || chartArea?.borderDash === 'dot') context.setLineDash([1, 3]);
+  context.strokeRect(0.5, 0.5, Math.max(0, bounds.width - 1), Math.max(0, bounds.height - 1));
+  context.setLineDash([]);
+  if (layout.title) drawChartText(context, layout.title.text, layout.title.x, layout.title.y, { color: payload.elements.titleText?.color ?? '#1e293b', size: payload.elements.titleText?.fontSize ?? 14, bold: payload.elements.titleText?.bold !== false });
+  if (layout.status.kind !== 'ready') {
+    context.strokeStyle = '#dc2626'; context.setLineDash([4, 3]); context.strokeRect(6, Math.max(6, layout.plot.top), Math.max(0, bounds.width - 12), Math.max(12, bounds.height - layout.plot.top - 8)); context.setLineDash([]);
+    drawChartText(context, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`, 14, Math.min(bounds.height - 16, layout.plot.top + 18), { color: '#b91c1c', size: 11 });
+    context.restore();
+    return;
+  }
+  const plotArea = payload.elements.plotArea;
+  const plotHasFill = paintChartFill(context, plotArea?.fill, { x: layout.plot.left, y: layout.plot.top, width: layout.plot.width, height: layout.plot.height }, 'transparent');
+  if (plotHasFill) { context.globalAlpha = 1 - (plotArea?.transparency ?? 0); context.fillRect(layout.plot.left, layout.plot.top, layout.plot.width, layout.plot.height); context.globalAlpha = 1; }
+  if (layout.kind === 'cartesian') {
+    const categories = layout.series[0]?.points.map((point) => point.category) ?? [];
+    drawChartAxes(context, layout, categories);
+    for (const series of layout.series) {
+      if (!series.visible) continue;
+      if (series.bars.length) for (const bar of series.bars) { if (!bar.visible) continue; context.fillStyle = bar.color; context.fillRect(bar.x, bar.y, bar.width, bar.height); }
+      if (series.chartType === 'line' || series.chartType === 'area') {
+        const valueAxis = series.axis === 'secondary' ? layout.secondaryValueAxis ?? layout.valueAxis : layout.valueAxis;
+        const pixelsPerValue = valueAxis ? layout.plot.height / Math.max(Number.EPSILON, valueAxis.maximum - valueAxis.minimum) : 1;
+        drawChartLine(context, series, series.chartType === 'area' || payload.chartType === 'area', series.subtype?.includes('smooth') === true || series.smooth === true, layout.plot.top + layout.plot.height, payload.elements.emptyCells ?? 'gap', pixelsPerValue);
+      }
+      if (payload.chartType === 'scatter' || payload.chartType === 'bubble') drawScatterSeries(context, series, payload.chartType === 'bubble');
+      drawChartDataLabels(context, payload, series);
+    }
+  } else drawChartSpecial(context, payload, layout);
+  if (payload.elements.dataTable?.visible) {
+    const y = Math.min(bounds.height - 8, layout.plot.top + layout.plot.height + 28);
+    drawChartText(context, payload.elements.dataTable.showLegendKeys === false ? 'Chart Data Table' : 'Chart Data Table · Legend Keys', 8, y, { color: '#475569', size: 9 });
+  }
+  drawChartLegend(context, layout);
+  context.restore();
+}
+
+function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, dataTableVisible = false): { action: string; data: unknown } | null {
+  if (layout.title && point.y <= layout.title.y + 18) return { action: 'chart.select-element', data: { kind: 'title' } };
+  if (layout.legend.visible) {
+    const legendBand = layout.legend.position === 'bottom' ? { left: 0, top: layout.height - 30, right: layout.width, bottom: layout.height }
+      : layout.legend.position === 'top' || layout.legend.position === 'top-right' ? { left: 0, top: 0, right: layout.width, bottom: 34 }
+        : layout.legend.position === 'left' ? { left: 0, top: 0, right: layout.plot.left - 8, bottom: layout.height }
+          : { left: layout.plot.left + layout.plot.width + 8, top: 0, right: layout.width, bottom: layout.height };
+    if (point.x >= legendBand.left && point.x <= legendBand.right && point.y >= legendBand.top && point.y <= legendBand.bottom) return { action: 'chart.select-element', data: { kind: 'legend' } };
+  }
+  if (dataTableVisible && point.y >= layout.plot.top + layout.plot.height + 18) return { action: 'chart.select-element', data: { kind: 'data-table' } };
+  if (layout.kind === 'pie') {
+    const centerX = layout.plot.left + layout.plot.width / 2;
+    const centerY = layout.plot.top + layout.plot.height / 2;
+    const radius = Math.hypot(point.x - centerX, point.y - centerY);
+    const angle = Math.atan2(point.y - centerY, point.x - centerX);
+    for (const slice of layout.pieSlices ?? []) {
+      let normalized = angle;
+      while (normalized < slice.startAngle) normalized += Math.PI * 2;
+      if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius + slice.explosion) {
+        const series = layout.series[slice.seriesIndex];
+        if (series) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: slice.pointIndex } };
+      }
+    }
+  }
+  for (const series of layout.series) {
+    for (const chartPoint of series.points) {
+      if (!chartPoint.visible) continue;
+      if (Math.hypot(point.x - chartPoint.x, point.y - chartPoint.y) <= 7) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: chartPoint.index } };
+    }
+    for (const bar of series.bars) if (bar.visible && point.x >= bar.x && point.x <= bar.x + bar.width && point.y >= bar.y && point.y <= bar.y + bar.height) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: bar.index } };
+    for (const trendline of series.trendlines) {
+      for (let index = 1; index < trendline.points.length; index += 1) {
+        const start = trendline.points[index - 1]!;
+        const end = trendline.points[index]!;
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy || 1;
+        const ratio = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+        if (Math.hypot(point.x - (start.x + ratio * dx), point.y - (start.y + ratio * dy)) <= 5) return { action: 'chart.select-element', data: { kind: 'trendline', seriesId: series.id } };
+      }
+    }
+    if (series.points.some((candidate) => candidate.visible && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 10)) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
+  }
+  if (layout.valueAxis && point.x >= layout.plot.left - 12 && point.x <= layout.plot.left + 12 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.categoryAxis && point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'plot-area' } };
+  return { action: 'chart.select-element', data: { kind: 'chart-area' } };
 }
 
 function drawCanonicalSparklineOnCanvas(options: {
   context: CanvasRenderingContext2D;
   sparkline: SparklineModel;
-  values: number[];
+  group?: import('@react-sheets/core-model').SparklineGroup;
+  values: Array<number | null>;
+  minimum?: number;
+  maximum?: number;
   rect: Rect;
 }): void {
-  const { context, sparkline, values, rect } = options;
+  const { context, values, rect } = options;
+  const group = options.group;
+  const sparkline: SparklineModel = {
+    ...options.sparkline,
+    ...(group?.type ? { type: group.type } : {}),
+    ...(group?.showAxis === undefined ? {} : { showAxis: group.showAxis }),
+    ...(group?.showMarkers === undefined ? {} : { showMarkers: group.showMarkers }),
+    ...(group?.lineWeight === undefined ? {} : { lineWeight: group.lineWeight }),
+    ...(group?.emptyCells === undefined ? {} : { emptyCells: group.emptyCells }),
+    ...(group?.axisColor === undefined ? {} : { axisColor: group.axisColor }),
+    ...(group?.firstColor === undefined ? {} : { firstColor: group.firstColor }),
+    ...(group?.lastColor === undefined ? {} : { lastColor: group.lastColor }),
+    ...(group?.highColor === undefined ? {} : { highColor: group.highColor }),
+    ...(group?.lowColor === undefined ? {} : { lowColor: group.lowColor }),
+    ...(group?.negativeColor === undefined ? {} : { negativeColor: group.negativeColor }),
+    ...(group?.markerColor === undefined ? {} : { markerColor: group.markerColor }),
+  };
   const { x, y, width, height } = rect;
-  if (values.length === 0) return;
-  const max = Math.max(...values, 0);
-  const min = Math.min(...values, 0);
+  if (values.every((value) => value === null)) return;
+  const numbers = values.filter((value): value is number => value !== null);
+  const max = options.maximum ?? Math.max(...numbers, 0);
+  const min = options.minimum ?? Math.min(...numbers, 0);
   const span = Math.max(1, max - min);
   context.save();
   context.translate(x, y);
   if (sparkline.type === "line") {
     context.strokeStyle = sparkline.color || "#2563eb";
-    context.lineWidth = 1.5;
-    context.beginPath();
+    context.lineWidth = sparkline.lineWeight ?? 1.5;
+    const connect = sparkline.emptyCells === 'connect';
+    let started = false;
     values.forEach((value, index) => {
+      if (value === null && !connect) { started = false; return; }
+      const previous = value === null ? values.slice(0, index).reverse().find((candidate): candidate is number => candidate !== null) : value;
+      if (previous === undefined) return;
       const px = (index / Math.max(1, values.length - 1)) * width;
-      const py = height - ((value - min) / span) * height;
-      if (index === 0) context.moveTo(px, py);
+      const py = height - ((previous - min) / span) * height;
+      if (!started) { context.beginPath(); context.moveTo(px, py); started = true; }
       else context.lineTo(px, py);
     });
     context.stroke();
   } else {
     const barWidth = width / Math.max(1, values.length);
     values.forEach((value, index) => {
-      const barHeight = Math.max(1, ((value - min) / span) * height);
+      if (value === null) return;
+      const zero = height - ((0 - min) / span) * height;
+      const valueY = height - ((value - min) / span) * height;
+      const top = sparkline.type === 'win-loss' ? Math.min(zero, value >= 0 ? zero - Math.max(1, barWidth * 0.55) : zero) : Math.min(zero, valueY);
+      const bottom = sparkline.type === 'win-loss' ? Math.max(zero, value < 0 ? zero + Math.max(1, barWidth * 0.55) : zero) : Math.max(zero, valueY);
       context.fillStyle = value < 0 ? sparkline.negativeColor || "#ef4444" : sparkline.color || "#2563eb";
-      context.fillRect(index * barWidth + 1, height - barHeight, Math.max(1, barWidth - 2), barHeight);
+      context.fillRect(index * barWidth + 1, top, Math.max(1, barWidth - 2), Math.max(1, bottom - top));
     });
   }
   if (sparkline.showAxis) {
-    context.strokeStyle = "#cbd5e1";
+    context.strokeStyle = sparkline.axisColor || "#cbd5e1";
     context.lineWidth = 1;
     const axisY = height - ((0 - min) / span) * height;
     context.beginPath();
@@ -1238,8 +1081,9 @@ function drawCanonicalSparklineOnCanvas(options: {
     context.lineTo(width, axisY);
     context.stroke();
   }
-  if (sparkline.showMarkers || sparkline.highlightMax || sparkline.highlightMin || sparkline.highlightFirst || sparkline.highlightLast) {
+  if (sparkline.showMarkers || sparkline.highlightMax || sparkline.highlightMin || sparkline.highlightFirst || sparkline.highlightLast || sparkline.highlightNegative) {
     const marker = (index: number, color: string): void => {
+      if (index < 0 || index >= values.length || values[index] === null) return;
       const px = (index / Math.max(1, values.length - 1)) * width;
       const py = height - ((values[index]! - min) / span) * height;
       context.fillStyle = color;
@@ -1247,11 +1091,18 @@ function drawCanonicalSparklineOnCanvas(options: {
       context.arc(px, py, 2, 0, Math.PI * 2);
       context.fill();
     };
-    if (sparkline.showMarkers) values.forEach((_value, index) => marker(index, sparkline.color || "#2563eb"));
-    if (sparkline.highlightMax) marker(values.indexOf(max), "#16a34a");
-    if (sparkline.highlightMin) marker(values.indexOf(min), "#dc2626");
-    if (sparkline.highlightFirst) marker(0, "#f59e0b");
-    if (sparkline.highlightLast) marker(values.length - 1, "#f59e0b");
+    if (sparkline.showMarkers) values.forEach((_value, index) => marker(index, sparkline.markerColor || sparkline.color || "#2563eb"));
+    const extremumIndex = (direction: 'max' | 'min'): number => values.reduce<number>((best, value, index) => {
+      if (value === null) return best;
+      const previous = best >= 0 ? values[best] : null;
+      if (previous === null || previous === undefined) return index;
+      return direction === 'max' ? value > previous ? index : best : value < previous ? index : best;
+    }, -1);
+    if (sparkline.highlightMax) marker(extremumIndex('max'), sparkline.highColor || "#16a34a");
+    if (sparkline.highlightMin) marker(extremumIndex('min'), sparkline.lowColor || "#dc2626");
+    if (sparkline.highlightFirst) marker(values.findIndex((value) => value !== null), sparkline.firstColor || "#f59e0b");
+    if (sparkline.highlightLast) marker(values.reduce<number>((last, value, index) => value === null ? last : index, -1), sparkline.lastColor || "#f59e0b");
+    if (sparkline.highlightNegative) values.forEach((value, index) => { if (value !== null && value < 0) marker(index, sparkline.negativeColor || '#ef4444'); });
   }
   context.restore();
 }
@@ -1454,29 +1305,17 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
       const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables);
-      if (data.brokenReference) {
-        drawables.push({
-          kind: 'shape',
-          id: drawing.id,
-          bounds,
-          draw: (context, rect) => {
-            context.save();
-            context.fillStyle = '#b91c1c';
-            context.strokeStyle = '#b91c1c';
-            context.strokeRect(rect.x, rect.y, rect.width, rect.height);
-            context.font = '12px Segoe UI, sans-serif';
-            context.fillText(data.brokenReference!, rect.x + 8, rect.y + Math.min(rect.height / 2, 24), Math.max(10, rect.width - 16));
-            context.restore();
-          },
-        });
+      const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      if (layout.status.kind !== 'ready') {
+        drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });
         continue;
       }
-      const series = data.series.map((entry, index) => ({ ...entry, color: entry.color ?? CHART_PALETTE[index % CHART_PALETTE.length]! }));
       drawables.push({
         kind: "chart",
         id: drawing.id,
         bounds,
-        draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload, bounds: rect, categories: data.categories, series }),
+        draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload, bounds: rect, layout }),
+        hitTest: (point) => chartHitTest(layout, point, payload.elements.dataTable?.visible === true),
       });
       continue;
     }
@@ -1575,28 +1414,33 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       });
     }
   }
-  const getSparklineValues = (sparkline: SparklineModel): number[] => {
-    const values: number[] = [];
-    const source = sparkline.sourceRange;
-    const sourceSheet = (allSheets.find((candidate) => candidate.id === source.sheetId) ?? sheet);
-    for (let row = source.startRow; row <= source.endRow; row += 1) {
-      for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-        const cell = sourceSheet.getCell(row, column);
-        if (!cell) continue;
-        const numeric = Number(cell.value.replace(/[$,%]/g, ""));
-        if (Number.isFinite(numeric) && cell.value !== "") values.push(numeric);
-      }
-    }
-    return values;
-  };
+  const sparklineGroups = sheet.sparklineGroups ?? [];
+  const groupBounds = new Map<string, { min: number; max: number }>();
+  for (const group of sparklineGroups) {
+    const values = group.sparklineIds.flatMap((id) => {
+      const member = sparklines.find((entry) => entry.id === id);
+      if (!member) return [];
+      try { return resolveSparklineData(member, (sheetId) => getSheet(sheetId), group).values.filter((value): value is number => value !== null); } catch { return []; }
+    });
+    if (values.length) groupBounds.set(group.id, { min: Math.min(0, ...values), max: Math.max(0, ...values) });
+  }
   for (const sparkline of sparklines) {
     const rect = skeleton.getCellRect(sparkline.anchor.row, sparkline.anchor.column);
     if (!rect) continue;
+    const group = sparkline.groupId ? sparklineGroups.find((entry) => entry.id === sparkline.groupId) : undefined;
     drawables.push({
       kind: "shape",
       id: sparkline.id,
       bounds: rect,
-      draw: (context, target) => drawCanonicalSparklineOnCanvas({ context, sparkline, values: getSparklineValues(sparkline), rect: target }),
+      draw: (context, target) => {
+        try {
+          const resolved = resolveSparklineData(sparkline, (sheetId) => getSheet(sheetId), group);
+          const bounds = group?.verticalAxis?.mode === 'same-group' && groupBounds.get(group.id) ? groupBounds.get(group.id)! : { min: resolved.min, max: resolved.max };
+          drawCanonicalSparklineOnCanvas({ context, sparkline, group, values: resolved.values, minimum: group?.verticalAxis?.mode === 'custom' ? group.verticalAxis.minimum : bounds.min, maximum: group?.verticalAxis?.mode === 'custom' ? group.verticalAxis.maximum : bounds.max, rect: target });
+        } catch (error) {
+          drawUnsupportedDrawingOnCanvas(context, target, error instanceof Error ? error.message : 'INVALID_CHART_SOURCE: Sparkline data is unavailable');
+        }
+      },
     });
   }
   return drawables;
