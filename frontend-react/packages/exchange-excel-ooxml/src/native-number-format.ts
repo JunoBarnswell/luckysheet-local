@@ -1,4 +1,4 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import type { CellNumberFormatSpec, WorkbookSnapshot } from '@react-sheets/core-model';
 
 /** Excel's built-in number-format codes used by cell styles and Pivot dataFields. */
 const BUILT_IN_NUMBER_FORMATS: ReadonlyMap<number, string> = new Map([
@@ -34,13 +34,62 @@ export function collectCustomNumberFormatIds(snapshot: WorkbookSnapshot): Map<st
     next += 1;
   };
   for (const sheet of snapshot.sheets) {
-    for (const row of Object.values(sheet.cells)) for (const cell of Object.values(row)) add(cell.numberFormat);
+    for (const row of Object.values(sheet.cells)) for (const cell of Object.values(row)) {
+      add(cell.numberFormat);
+      if (cell.style?.numberFormatSpec) add(numberFormatCodeFromSpec(cell.style.numberFormatSpec));
+    }
   }
-  for (const template of snapshot.cellStyleTemplates ?? []) add(template.style.numberFormat);
+  for (const template of snapshot.cellStyleTemplates ?? []) {
+    add(template.style.numberFormat);
+    if (template.style.numberFormatSpec) add(numberFormatCodeFromSpec(template.style.numberFormatSpec));
+  }
   for (const sheet of snapshot.sheets) for (const pivot of sheet.pivots) for (const value of pivot.layout.values) add(value.numberFormat);
   return custom;
 }
 
 export function numberFormatId(format: string, custom: ReadonlyMap<string, number>): number | undefined {
   return builtInNumberFormatId(format) ?? custom.get(format);
+}
+
+/** Convert the typed Format Cells number contract into one native Excel code. */
+export function numberFormatCodeFromSpec(spec: CellNumberFormatSpec): string {
+  const category = spec.category ?? 'general';
+  if (spec.sample?.trim() && ['custom', 'special', 'date', 'time'].includes(category)) return spec.sample.trim();
+  const decimalPlaces = spec.decimalPlaces ?? 2;
+  const decimal = decimalPlaces > 0 ? `.${'0'.repeat(decimalPlaces)}` : '';
+  const integer = spec.useThousandsSeparator === false ? '0' : '#,##0';
+  const numeric = `${integer}${decimal}`;
+  const negative = spec.negativeStyle;
+  const negativeSection = negative === 'parentheses' ? `(${numeric})`
+    : negative === 'red-minus' ? `[Red]-${numeric}`
+      : negative === 'red-parentheses' ? `[Red](${numeric})`
+        : `-${numeric}`;
+  switch (category) {
+    case 'general': return 'General';
+    case 'number': return `${numeric};${negativeSection}`;
+    case 'currency': {
+      const symbol = spec.currencySymbol ?? '$';
+      return `"${symbol}"${numeric};"${symbol}"${negativeSection}`;
+    }
+    case 'accounting': {
+      const symbol = spec.currencySymbol ?? '$';
+      return `_(${JSON.stringify(symbol)}* ${numeric}_);_(${JSON.stringify(symbol)}* ${negativeSection}_);_(${JSON.stringify(symbol)}* "-"_);_(@_)`;
+    }
+    case 'percentage': return `${numeric}%`;
+    case 'scientific': return `0${decimal || '.00'}E+00`;
+    case 'fraction': {
+      const denominatorDigits = spec.fractionType === 'up-to-one-digit' || spec.fractionType === 'as-halves' ? 1
+        : spec.fractionType === 'up-to-three-digits' || spec.fractionType === 'as-eighths' || spec.fractionType === 'as-sixteenths' || spec.fractionType === 'as-tenths' || spec.fractionType === 'as-hundredths' || spec.fractionType === 'as-thousandths' ? 3
+          : 2;
+      return `# ?/${'?'.repeat(denominatorDigits)}`;
+    }
+    case 'date': return spec.locale === 'zh-CN' ? 'yyyy-mm-dd' : 'm/d/yy';
+    case 'time': return 'h:mm:ss AM/PM';
+    case 'text': return '@';
+    case 'special':
+    case 'custom':
+      throw new Error(`UNSUPPORTED_FEATURE: number format category ${category} requires a native format sample`);
+    default:
+      throw new Error(`UNSUPPORTED_FEATURE: number format category ${category} is not supported`);
+  }
 }

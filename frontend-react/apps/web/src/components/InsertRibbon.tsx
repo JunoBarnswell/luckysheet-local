@@ -1,6 +1,6 @@
 import React from 'react';
 import { AssetIcon, Button, DropdownMenu, Inline, Stack, Text, type IconName, type RibbonLayoutState } from '@react-sheets/ui-system';
-import { type RibbonCommandId, type RibbonSurfaceDefinition } from '@react-sheets/spreadsheet-app';
+import { EXCEL_KEY_TIP_BINDINGS, type RibbonCommandId, type RibbonSurfaceDefinition } from '@react-sheets/spreadsheet-app';
 import type { ChartDrawingPayload, DrawingConnectorType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
 import { insertText } from '../i18n';
@@ -23,8 +23,12 @@ const FLUENT_ASSETS: Partial<Record<IconName, string>> = { table: '/icons/fluent
 const FLUENT_SURFACE_ASSETS: Record<string, string> = { 'illustrations.icons': '/icons/fluent/ic_fluent_icons_24_regular.svg', 'illustrations.models3d': '/icons/fluent/ic_fluent_cube_24_regular.svg', 'illustrations.smartart': '/icons/fluent/ic_fluent_flowchart_24_regular.svg', 'illustrations.screenshot': '/icons/fluent/ic_fluent_screenshot_24_regular.svg', 'tables.forms': '/icons/fluent/ic_fluent_form_24_regular.svg', 'controls.checkbox': '/icons/fluent/ic_fluent_form_24_regular.svg', 'filters.timeline': '/icons/fluent/ic_fluent_timeline_24_regular.svg' };
 function fluentIcon(icon: React.ComponentProps<typeof Button>['icon'], size: 'sm' | 'md' | 'lg' | 'xl' = 'lg'): React.ReactNode { const src = typeof icon === 'string' ? FLUENT_ASSETS[icon] : undefined; return src ? <AssetIcon src={src} size={size} aria-hidden="true" /> : undefined; }
 function fluentSurfaceIcon(surfaceId: string, size: 'sm' | 'md' | 'lg' | 'xl' = 'lg'): React.ReactNode { const src = FLUENT_SURFACE_ASSETS[surfaceId]; return src ? <AssetIcon src={src} size={size} aria-hidden="true" /> : undefined; }
-function RibbonLarge({ children, compact = false, icon, iconNode, disabled, surfaceId, title, onClick, className }: { children: React.ReactNode; compact?: boolean; icon?: React.ComponentProps<typeof Button>['icon']; iconNode?: React.ReactNode; disabled?: boolean; surfaceId: string; title: string; onClick?: () => void; className?: string }) {
-  return <Button aria-label={title} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={iconNode ? undefined : icon} iconNode={iconNode} onClick={onClick} size="sm" variant="ghost" className={`${compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[104px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[13px] leading-4 !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>img]:!h-8 [&>img]:!w-8 [&>img]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
+function keyTipFor(commandId: string): string | undefined {
+  return EXCEL_KEY_TIP_BINDINGS.find((binding) => binding.target.kind === 'command' && binding.target.id === commandId)?.sequence;
+}
+
+function RibbonLarge({ children, compact = false, icon, iconNode, disabled, surfaceId, title, onClick, className, keyTip }: { children: React.ReactNode; compact?: boolean; icon?: React.ComponentProps<typeof Button>['icon']; iconNode?: React.ReactNode; disabled?: boolean; surfaceId: string; title: string; onClick?: () => void; className?: string; keyTip?: string }) {
+  return <Button aria-label={title} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={iconNode ? undefined : icon} iconNode={iconNode} onClick={onClick} size="sm" variant="ghost" className={`${compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[104px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[13px] leading-4 !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>img]:!h-8 [&>img]:!w-8 [&>img]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
 }
 
 function variantButton({ id, icon, label, onSelect, surfaceId, disabled }: { id: string; icon: React.ComponentProps<typeof Button>['icon']; label: string; onSelect: () => void; surfaceId: string; disabled?: boolean }) {
@@ -91,7 +95,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       const familyLabel = insertText(locale, family.labelKey);
       return <Inline key={family.id} gap="none" className="items-stretch">
         <Button aria-label={familyLabel} data-ribbon-surface={surfaceId} data-ribbon-variant={family.id} title={familyLabel} icon={fluentIcon(family.icon, 'md') ? undefined : family.icon} iconNode={fluentIcon(family.icon, 'md')} iconOnly disabled={disabled} size="sm" variant="ghost" className={CHART_ICON_BTN} onClick={() => onInsertChart(primary.chartType, primary.subtype)} />
-        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} icon="chevron-down" iconOnly disabled={disabled} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
+        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={disabled} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
           {chartFamilyMenu(locale, family, disabled, surfaceId, onInsertChart)}
         </DropdownMenu>
       </Inline>;
@@ -110,7 +114,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
 
   const renderSplitGallery = (surface: RibbonSurfaceDefinition, title: string, icon: React.ComponentProps<typeof Button>['icon'], variants: React.ReactNode[], onSelect: () => void): React.ReactNode => (
     <Inline key={surface.id} gap="none" className="items-stretch">
-      <RibbonLarge compact={isNarrow} disabled={disabled} icon={icon} onClick={onSelect} surfaceId={surface.id} title={title}>
+      <RibbonLarge compact={isNarrow} disabled={disabled} icon={icon} keyTip={keyTipFor(surface.commandId ?? '')} onClick={onSelect} surfaceId={surface.id} title={title}>
         {title}
       </RibbonLarge>
       <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[104px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
@@ -149,7 +153,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
         return renderSplitGallery(surface, title, 'sparkline', variants, () => onInsertSparkline(first.value));
       }
       const icon = surface.commandId === 'chartBuilder' ? 'chart-column' : 'shape-square';
-      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={disabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
+      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={disabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} keyTip={keyTipFor(surface.commandId)} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
     }
 
     // SpreadJS parity: 'large', 'tile', 'gallery', and 'split' all render as full-height tiles.

@@ -129,7 +129,7 @@ export function RibbonHost({
       onToggleViewHeadings={() => session.toggleViewHeadings()}
       onTogglePrintHeadings={() => session.togglePrintHeadings()}
       onAutoSum={(functionName) => session.autoSum(functionName)}
-      onFill={(direction, mode) => mode === 'series' ? session.fillSeries() : session.fillSelection(direction)}
+      onFill={(direction, mode) => mode === 'series' ? dispatchSessionIntent({ type: 'dialog.open', dialog: 'fill-series' }) : session.fillSelection(direction)}
       onFreezeAtPrimary={() => session.freezeAtPrimary()}
       onOpenColumnWidth={() => onOpenColumnWidthDialog(selectedColumns)}
       onAutoFitColumns={() => { void columnDimensions.autoFit(selectedColumns); }}

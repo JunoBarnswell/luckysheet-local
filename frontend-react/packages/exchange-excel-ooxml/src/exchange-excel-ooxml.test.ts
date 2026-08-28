@@ -124,7 +124,7 @@ describe('exchange-excel-ooxml', () => {
     const imported = await importOoxmlDocument({ fileName: 'local-objects.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
     const importedKinds = imported.snapshot.sheets[0]!.drawings.map((drawing) => drawing.kind);
     assert.deepEqual(importedKinds, entries.map((entry) => entry.kind));
-    assert.ok(imported.report.issues.some((issue) => issue.feature === 'models3d' && issue.status === 'editable'));
+    assert.ok(imported.report.issues.some((issue) => issue.feature === 'models3d' && issue.status === 'preserved-only'));
   });
 
   it('round-trips snapshot through xlsx archive import/export', async () => {
@@ -898,6 +898,19 @@ describe('exchange-excel-ooxml', () => {
       assert.ok(typedChartPart);
       assert.match(strFromU8(typedOutput.files[typedChartPart!]!), new RegExp(xmlName.replace(/[<>]/g, '')));
     }
+
+    const lineSnapshot = structuredClone(workbook.snapshot());
+    const linePayload = lineSnapshot.sheets[0]!.drawingPayloads['pivot-chart-payload'];
+    if (!linePayload || linePayload.kind !== 'chart') throw new Error('Line chart fixture is missing its chart payload');
+    linePayload.chartType = 'line';
+    linePayload.subtype = 'line-markers';
+    const lineOutput = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(lineSnapshot));
+    const lineChartPart = Object.keys(lineOutput.files).find((name) => name.startsWith('xl/charts/react-chart-'));
+    if (!lineChartPart) throw new Error('Line chart fixture did not produce a chart part');
+    const lineXml = strFromU8(lineOutput.files[lineChartPart]!);
+    assert.match(lineXml, /<c:grouping val="standard"\/>/);
+    assert.match(lineXml, /<\/c:plotArea><c:legend>/);
+    assert.doesNotMatch(lineXml, /val="-20[123]"/);
 
     const withoutChart = structuredClone(workbook.snapshot());
     withoutChart.sheets[0]!.drawings = [];

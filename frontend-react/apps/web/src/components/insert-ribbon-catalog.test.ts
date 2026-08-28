@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import enUS from '../locales/en-US.json';
 import zhCN from '../locales/zh-CN.json';
-import { INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { CHART_SUBTYPES_BY_TYPE, isChartSubtypeForType } from '@react-sheets/core-model';
+import { INSERT_CHART_FAMILIES, INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 import { getRibbonSurfaces } from '@react-sheets/spreadsheet-app';
 
 const variants = [
@@ -40,9 +41,12 @@ describe('INSERT variant catalog localization', () => {
 
   it('keeps the shape gallery categorized and limited to renderer-backed identities', () => {
     assert.deepEqual(INSERT_SHAPE_GALLERY.map((category) => category.id), ['basic-shapes', 'lines', 'callouts-and-stars']);
-    assert.deepEqual(INSERT_SHAPE_GALLERY.flatMap((category) => category.variants.map((variant) => variant.value)), [
-      'rectangle', 'rounded-rectangle', 'ellipse', 'line', 'arrow', 'callout', 'star',
-    ]);
+    const shapeTypes = INSERT_SHAPE_GALLERY.flatMap((category) => category.variants.map((variant) => variant.value));
+    assert.equal(shapeTypes.length, 45);
+    assert.equal(new Set(shapeTypes).size, shapeTypes.length);
+    assert.ok(shapeTypes.includes('triangle'));
+    assert.ok(shapeTypes.includes('left-right-arrow'));
+    assert.ok(shapeTypes.includes('explosion2'));
   });
 
   it('keeps every semantic INSERT group and surface reachable at every responsive breakpoint', () => {
@@ -54,5 +58,17 @@ describe('INSERT variant catalog localization', () => {
       assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[1]), `${group} compact surface drift`);
       assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[2]), `${group} narrow surface drift`);
     }
+  });
+
+  it('keeps every Excel chart subtype reachable from one typed gallery family', () => {
+    const chartVariants = INSERT_CHART_FAMILIES.flatMap((family) => family.variants);
+    const ids = chartVariants.map((variant) => variant.id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.equal(chartVariants.length, Object.values(CHART_SUBTYPES_BY_TYPE).flat().length);
+    for (const variant of chartVariants) assert.equal(isChartSubtypeForType(variant.chartType, variant.subtype), true, variant.id);
+    assert.deepEqual(
+      [...new Set(chartVariants.map((variant) => variant.chartType))].sort(),
+      Object.keys(CHART_SUBTYPES_BY_TYPE).sort(),
+    );
   });
 });

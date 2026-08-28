@@ -20,7 +20,8 @@ import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSp
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
-import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
+import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillSeriesOptions, type FillWrite } from './fill-series';
+import { isFlashFillParams, isFlashFillPlan, isFlashFillWrite, planFlashFill, type FlashFillOperation, type FlashFillParams, type FlashFillPlan, type FlashFillWrite } from './flash-fill';
 import { AUTO_SUM_FUNCTIONS, type AutoSumFunctionName } from './auto-sum-contract';
 
 /**
@@ -42,6 +43,7 @@ export interface HomeFillParams {
   direction: FillDirection;
   mode: FillMode;
   dateSystem?: '1900' | '1904';
+  series?: FillSeriesOptions;
 }
 
 interface FillMutationWrite {
@@ -53,6 +55,11 @@ interface FillMutationWrite {
 
 interface FillMutationParams extends HomeFillParams {
   writes: FillMutationWrite[];
+}
+
+interface FlashFillMutationParams extends FlashFillParams {
+  operation: FlashFillOperation;
+  writes: FlashFillWrite[];
 }
 
 export interface AutoSumParams {
@@ -134,6 +141,8 @@ export interface RangeMoveParams {
   sheetId: string;
   sourceRange: RangeRef;
   targetOrigin: { row: number; column: number };
+  copy?: boolean;
+  insert?: boolean;
 }
 
 export interface FormatPainterCell {
@@ -348,9 +357,18 @@ function isValidAutoSumParams(value: unknown): value is AutoSumParams {
 
 function isValidFillParams(value: unknown): value is HomeFillParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange) || !isRange(value.targetRange)) return false;
+  const series = value.series;
+  const validSeries = series === undefined || (isRecord(series)
+    && (series.seriesIn === undefined || series.seriesIn === 'rows' || series.seriesIn === 'columns')
+    && (series.type === undefined || ['linear', 'growth', 'date', 'autofill'].includes(String(series.type)))
+    && (series.dateUnit === undefined || ['day', 'weekday', 'month', 'year'].includes(String(series.dateUnit)))
+    && (series.stepValue === undefined || (typeof series.stepValue === 'number' && Number.isFinite(series.stepValue)))
+    && (series.stopValue === undefined || (typeof series.stopValue === 'number' && Number.isFinite(series.stopValue)))
+    && (series.trend === undefined || typeof series.trend === 'boolean'));
   return ['down', 'up', 'right', 'left'].includes(String(value.direction))
     && (value.mode === 'copy' || value.mode === 'series')
-    && (value.dateSystem === undefined || value.dateSystem === '1900' || value.dateSystem === '1904');
+    && (value.dateSystem === undefined || value.dateSystem === '1900' || value.dateSystem === '1904')
+    && validSeries;
 }
 
 function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
@@ -400,7 +418,9 @@ function isValidFormatPainterParams(value: unknown): value is FormatPainterParam
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column);
+    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
+    && (value.copy === undefined || typeof value.copy === 'boolean')
+    && (value.insert === undefined || typeof value.insert === 'boolean');
 }
 
 function isCellSnapshot(value: unknown): value is { row: number; column: number; cell: CellData } {
@@ -517,7 +537,16 @@ function isValidFillMutationParams(value: unknown): value is FillMutationParams 
     && candidate.writes.every(isFillMutationWrite);
 }
 
+function isValidFlashFillMutationParams(value: unknown): value is FlashFillMutationParams {
+  if (!isFlashFillPlan(value)) return false;
+  return value.writes.every(isFlashFillWrite);
+}
+
 function fillAffectedRanges(params: FillMutationParams): RangeRef[] {
+  return [structuredClone(params.targetRange)];
+}
+
+function flashFillAffectedRanges(params: FlashFillMutationParams): RangeRef[] {
   return [structuredClone(params.targetRange)];
 }
 
@@ -560,6 +589,7 @@ function applyFillMutation(params: FillMutationParams, context: CommandContext, 
     direction: params.direction,
     mode: params.mode,
     dateSystem: params.dateSystem,
+    series: params.series,
   };
   const validated = validateFillPlan(sheet, planParams);
   if (canonical) {
@@ -572,6 +602,49 @@ function applyFillMutation(params: FillMutationParams, context: CommandContext, 
     }
     const current = sheet.cells.get(write.row, write.column);
     if (!cellsEqual(current, write.before)) throw new Error(`Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
+  }
+  for (const write of params.writes) {
+    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
+    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
+  }
+}
+
+function flashFillWritesEqual(expected: readonly FlashFillWrite[], actual: readonly FlashFillWrite[]): boolean {
+  if (expected.length !== actual.length) return false;
+  return expected.every((entry, index) => {
+    const candidate = actual[index];
+    return candidate !== undefined
+      && entry.row === candidate.row
+      && entry.column === candidate.column
+      && cellsEqual(entry.before, candidate.before)
+      && cellsEqual(entry.after, candidate.after);
+  });
+}
+
+function applyFlashFillMutation(params: FlashFillMutationParams, context: CommandContext, canonical: boolean): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const source = normalizeRange(params.sourceRange, params.sheetId);
+  const target = normalizeRange(params.targetRange, params.sheetId);
+  assertNoDataRegionIntersection(sheet, source, 'Flash Fill');
+  assertNoDataRegionIntersection(sheet, target, 'Flash Fill');
+  assertFillProtection(sheet, target);
+  if (canonical) {
+    const plan: FlashFillPlan = planFlashFill(sheet, {
+      sheetId: params.sheetId,
+      sourceRange: source,
+      targetRange: target,
+    });
+    if (JSON.stringify(plan.operation) !== JSON.stringify(params.operation) || !flashFillWritesEqual(plan.writes, params.writes)) {
+      throw new Error('Flash Fill mutation does not match the canonical inferred pattern');
+    }
+  }
+  for (const write of params.writes) {
+    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
+      throw new Error('Flash Fill mutation contains a write outside its target range');
+    }
+    if (!cellsEqual(sheet.cells.get(write.row, write.column), write.before)) {
+      throw new Error(`Flash Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
+    }
   }
   for (const write of params.writes) {
     if (write.after === undefined) sheet.cells.delete(write.row, write.column);
@@ -767,6 +840,83 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       inverseIds: ['fill.restored'],
     },
   });
+  runtime.registry.registerMutation<FlashFillMutationParams>({
+    id: 'flashFill.applied',
+    handler: (item, context) => {
+      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.applied mutation payload');
+      applyFlashFillMutation(item.params, context, true);
+    },
+    metadata: {
+      schema: { name: 'FlashFillApplied', validate: isValidFlashFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
+      inverseIds: ['flashFill.restored'],
+    },
+  });
+  runtime.registry.registerMutation<FlashFillMutationParams>({
+    id: 'flashFill.restored',
+    handler: (item, context) => {
+      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.restored mutation payload');
+      applyFlashFillMutation(item.params, context, false);
+    },
+    metadata: {
+      schema: { name: 'FlashFillRestored', validate: isValidFlashFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
+      inverseIds: ['flashFill.applied'],
+    },
+  });
+  runtime.registry.registerCommand<FlashFillParams>({
+    id: 'range.flashFill',
+    execute: (params, context) => {
+      if (!isFlashFillParams(params)) throw new Error('Invalid Flash Fill parameters');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const target = normalizeRange(params.targetRange, params.sheetId);
+      assertNoDataRegionIntersection(sheet, normalizeRange(params.sourceRange, params.sheetId), 'Flash Fill');
+      assertNoDataRegionIntersection(sheet, target, 'Flash Fill');
+      assertFillProtection(sheet, target);
+      const plan = planFlashFill(sheet, params);
+      if (plan.writes.length === 0) return homeResult(context, [target]);
+      const mutationParams: FlashFillMutationParams = {
+        sheetId: plan.sheetId,
+        sourceRange: plan.sourceRange,
+        targetRange: plan.targetRange,
+        operation: structuredClone(plan.operation),
+        writes: plan.writes.map((write) => ({
+          row: write.row,
+          column: write.column,
+          ...(write.before === undefined ? {} : { before: structuredClone(write.before) }),
+          ...(write.after === undefined ? {} : { after: structuredClone(write.after) }),
+        })),
+      };
+      const affectedRanges = flashFillAffectedRanges(mutationParams);
+      const inverseParams: FlashFillMutationParams = {
+        ...mutationParams,
+        writes: mutationParams.writes.map((write) => ({
+          row: write.row,
+          column: write.column,
+          ...(write.after === undefined ? {} : { before: structuredClone(write.after) }),
+          ...(write.before === undefined ? {} : { after: structuredClone(write.before) }),
+        })),
+      };
+      context.applyMutation({
+        id: 'flashFill.applied',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: mutationParams,
+        affectedRanges,
+        inverse: [{
+          id: 'flashFill.restored',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: inverseParams,
+          affectedRanges,
+        }],
+        apply: () => applyFlashFillMutation(mutationParams, context, true),
+      });
+      return homeResult(context, affectedRanges, 1);
+    },
+  });
   runtime.registry.registerMutation<FillMutationParams>({
     id: 'fill.restored',
     handler: (item, context) => {
@@ -885,15 +1035,42 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
       assertNoDataRegionIntersection(sheet, targetRange, 'Range move');
       const clipboard = copyRangeToClipboardData(context.workbook, sourceRange);
-      clipboard.transfer = 'move';
+      const copy = params.copy === true;
+      const insert = params.insert === true;
       const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
       const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
       if (targetEndRow >= sheet.rowCount || targetEndColumn >= sheet.columnCount) throw new Error('Range move exceeds worksheet bounds');
+      if (targetRange.startRow === sourceRange.startRow && targetRange.startColumn === sourceRange.startColumn) throw new Error('Range drag cannot target the source range');
+      if (!copy && rangesIntersect(sourceRange, targetRange)) throw new Error('Range move cannot overlap its source range');
+      if (insert && params.targetOrigin.row !== sourceRange.startRow && params.targetOrigin.column !== sourceRange.startColumn) throw new Error('Range drag insert must move along one axis');
+      let pasteSource = sourceRange;
+      if (insert) {
+        const axis = params.targetOrigin.row !== sourceRange.startRow ? 'row' as const : 'column' as const;
+        const count = axis === 'row' ? targetRange.endRow - targetRange.startRow + 1 : targetRange.endColumn - targetRange.startColumn + 1;
+        runtime.execute('sheet.cells.insert', {
+          sheetId: params.sheetId,
+          range: axis === 'row'
+            ? { sheetId: params.sheetId, startRow: targetRange.startRow, endRow: targetRange.endRow, startColumn: sourceRange.startColumn, endColumn: sourceRange.endColumn }
+            : { sheetId: params.sheetId, startRow: sourceRange.startRow, endRow: sourceRange.endRow, startColumn: targetRange.startColumn, endColumn: targetRange.endColumn },
+          operation: 'insert',
+          axis,
+        });
+        if (!copy) {
+          pasteSource = axis === 'row' && sourceRange.startRow >= targetRange.startRow
+            ? { ...sourceRange, startRow: sourceRange.startRow + count, endRow: sourceRange.endRow + count }
+            : axis === 'column' && sourceRange.startColumn >= targetRange.startColumn
+              ? { ...sourceRange, startColumn: sourceRange.startColumn + count, endColumn: sourceRange.endColumn + count }
+              : sourceRange;
+        }
+      }
+      clipboard.transfer = copy ? 'copy' : 'move';
       return runtime.execute('sheet.range.paste', {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
-        transfer: 'move',
+        sourceRange: copy ? undefined : pasteSource,
+        clearSource: copy ? false : true,
+        transfer: copy ? 'copy' : 'move',
         spec: createPasteSpecialSpec(),
       });
     },
@@ -1039,6 +1216,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         direction: params.direction,
         mode: params.mode,
         dateSystem: params.dateSystem,
+        series: params.series,
       });
       if (plan.writes.length === 0) return homeResult(context, rangeAffected(target));
       const writes: FillMutationWrite[] = plan.writes.map((write) => ({
@@ -1060,6 +1238,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         direction: params.direction,
         mode: params.mode,
         dateSystem: params.dateSystem,
+        ...(params.series ? { series: structuredClone(params.series) } : {}),
         writes,
       };
       const inverseParams: FillMutationParams = { ...mutationParams, writes: inverseWrites };

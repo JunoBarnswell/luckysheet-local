@@ -1,6 +1,6 @@
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
+import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   WorkbookApiClient,
@@ -280,6 +280,8 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'range.set',
   'fill.applied',
   'fill.restored',
+  'flashFill.applied',
+  'flashFill.restored',
   'range.clear',
   'range.paste',
   'style.preset.set',
@@ -338,6 +340,8 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'range.set',
   'fill.applied',
   'fill.restored',
+  'flashFill.applied',
+  'flashFill.restored',
   'range.clear',
   'range.paste',
   'cells.inserted',
@@ -406,6 +410,7 @@ interface FormulaQueueState {
   scheduled: boolean;
   epoch: number;
   force: boolean;
+  roots?: readonly CellAddressInput[];
 }
 
 const formulaQueueStates = new WeakMap<SpreadsheetRuntime, FormulaQueueState>();
@@ -421,17 +426,20 @@ function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').S
  * the active task and advances the epoch, so a late worker result cannot
  * mutate spills or render projections for an older workbook state.
  */
-export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false): Promise<void> {
+export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false, roots?: readonly CellAddressInput[]): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
   const state = formulaQueueStates.get(runtime) ?? {
     tail: Promise.resolve(),
     scheduled: false,
     epoch: 0,
     force: false,
+    roots: undefined,
   } satisfies FormulaQueueState;
   formulaQueueStates.set(runtime, state);
   state.epoch += 1;
   state.force ||= force;
+  if (roots !== undefined) state.roots = [...roots];
+  else state.roots = undefined;
   runtime.formula.cancelCalculation();
   if (state.scheduled) return runtime.formulaCalculation;
 
@@ -443,7 +451,9 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       state.scheduled = false;
       const epoch = state.epoch;
       const forceCalculation = state.force;
+      const calculationRoots = state.roots;
       state.force = false;
+      state.roots = undefined;
       const engine = runtime.formula;
       const workbook = runtime.model;
       const formulaCount = loadFormulaInputs(engine, workbook);
@@ -460,7 +470,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
 
       runtime.handlers.onSaveState?.('calculating');
       try {
-        await engine.recalculateAsync();
+        await engine.recalculateAsync(calculationRoots);
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
         syncWorkbookSpills(engine, workbook);
         void checkpointWorkspace(runtime, false).catch((error: unknown) => {

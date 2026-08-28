@@ -409,6 +409,25 @@ export class CanvasRenderEngine {
     return Math.max(0, Math.min(text.length, (lineStart < 0 ? textOffset : lineStart) + lineOffset));
   }
 
+  /** Resolve display/edit geometry through the same content layout owner. */
+  cellContentLayout(cell: CellAddress, text: string, mergedRange?: CellRange, caretOffset?: number): CellContentLayoutResult | null {
+    const data = this.cellProvider(cell);
+    const rect = this.skeletonModel.getRangeRect(mergedRange ?? { startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column });
+    const context = this.scene.getLayer('content')?.renderingContext;
+    if (!data || !rect || !context) return null;
+    return resolveCellContentLayout({
+      context,
+      cell: data,
+      theme: this.theme,
+      text,
+      cellRect: rect,
+      mergedRect: mergedRange ? rect : undefined,
+      mode: 'edit',
+      zoom: this.viewport.devicePixelRatio,
+      ...(caretOffset === undefined ? {} : { caret: { start: caretOffset, end: caretOffset } }),
+    });
+  }
+
   /** 表头命中:角块/行头/列头 + 调整热区 */
   headerHitAtLocal(local: Point): HeaderHit | null {
     const origin = this.headerOrigin;

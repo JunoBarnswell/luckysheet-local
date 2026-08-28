@@ -152,14 +152,14 @@ function buildSeriesXml(payload: ChartDrawingPayload, series: ChartSeriesModel, 
   if (type === 'scatter' || type === 'bubble') {
     if (!series.xRange || !series.yRange || (type === 'bubble' && !series.sizeRange)) throw new Error(`INVALID_CHART_SOURCE: ${type} series ${name} requires X/Y${type === 'bubble' ? '/Size' : ''} range bindings`);
     const size = series.sizeRange ? `<c:bubbleSize>${numRefXml(series.sizeRange, sheetNameForId)}</c:bubbleSize>` : '';
-    return `${common}<c:xVal>${numRefXml(series.xRange, sheetNameForId)}</c:xVal><c:yVal>${numRefXml(series.yRange, sheetNameForId)}</c:yVal>${size}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}</c:ser>`;
+    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}<c:xVal>${numRefXml(series.xRange, sheetNameForId)}</c:xVal><c:yVal>${numRefXml(series.yRange, sheetNameForId)}</c:yVal>${size}</c:ser>`;
   }
   if (type === 'stock') {
     const roles = series.stockRoles;
     if (!roles) throw new Error(`INVALID_CHART_SOURCE: Stock series ${name} requires explicit role bindings`);
-    return `${common}${stockRoleXml(roles, sheetNameForId)}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}</c:ser>`;
+    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}${stockRoleXml(roles, sheetNameForId)}</c:ser>`;
   }
-  return `${common}<c:cat>${category}</c:cat><c:val>${numOrStringRefXml(valueRange, sheetNameForId, false)}</c:val>${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}</c:ser>`;
+  return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}<c:cat>${category}</c:cat><c:val>${numOrStringRefXml(valueRange, sheetNameForId, false)}</c:val></c:ser>`;
 }
 
 function stockRoleXml(roles: NonNullable<ChartSeriesModel['stockRoles']>, sheetNameForId: (sheetId: string) => string): string {
@@ -205,17 +205,17 @@ function buildPivotChartXml(payload: ChartDrawingPayload, drawingId: string, she
 }
 
 function buildChartSpace(payload: ChartDrawingPayload, drawingId: string, sheet: SheetSnapshot, seriesXml: string, snapshot: WorkbookSnapshot, pivot?: NativePivotTableDefinition): string {
-  const bodies = chartBodies(payload, seriesXml);
+  const dataLabels = payload.elements.dataLabels?.visible ? `<c:dLbls>${payload.elements.dataLabels.showValue === false ? '' : '<c:showVal val="1"/>'}${payload.elements.dataLabels.showCategoryName ? '<c:showCatName val="1"/>' : ''}${payload.elements.dataLabels.showSeriesName ? '<c:showSerName val="1"/>' : ''}${payload.elements.dataLabels.showPercentage ? '<c:showPercent val="1"/>' : ''}${payload.elements.dataLabels.showLegendKey ? '<c:showLegendKey val="1"/>' : ''}<c:showLeaderLines val="${payload.elements.dataLabels.leaderLines ? 1 : 0}"/></c:dLbls>` : '';
+  const bodies = chartBodies(payload, seriesXml, dataLabels);
   const title = payload.elements.title ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${encodeXml(payload.elements.title)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>` : '<c:autoTitleDeleted val="1"/>';
   const legend = payload.elements.legend?.visible === false ? '' : `<c:legend><c:legendPos val="${legendPosition(payload.elements.legend?.position)}"/><c:layout/><c:overlay val="${payload.elements.legend?.overlay ? 1 : 0}"/></c:legend>`;
   const axes = ['pie', 'doughnut', 'funnel', 'treemap', 'sunburst', 'histogram', 'box-whisker', 'waterfall', 'stock', 'surface', 'radar', 'map'].includes(payload.chartType) ? '' : axisXml(payload);
   const pivotSource = pivot ? `<c:pivotSource><c:name>${encodeXml(pivot.name)}</c:name><c:fmtId val="0"/></c:pivotSource>` : '';
   const blank = payload.elements.emptyCells === 'zero' ? 'zero' : payload.elements.emptyCells === 'connect' ? 'span' : 'gap';
-  const dataLabels = payload.elements.dataLabels?.visible ? `<c:dLbls>${payload.elements.dataLabels.showValue === false ? '' : '<c:showVal val="1"/>'}${payload.elements.dataLabels.showCategoryName ? '<c:showCatName val="1"/>' : ''}${payload.elements.dataLabels.showSeriesName ? '<c:showSerName val="1"/>' : ''}${payload.elements.dataLabels.showPercentage ? '<c:showPercent val="1"/>' : ''}${payload.elements.dataLabels.showLegendKey ? '<c:showLegendKey val="1"/>' : ''}<c:showLeaderLines val="${payload.elements.dataLabels.leaderLines ? 1 : 0}"/></c:dLbls>` : '';
-  return withXmlDeclaration(`<c:chartSpace xmlns:c="${NS_CHART}" xmlns:a="${NS_DRAWING_MAIN}" xmlns:r="${NS_DOC_REL}">${pivotSource}<c:chart>${title}<c:plotArea><c:layout/>${bodies}${axes}${legend}${dataLabels}${payload.elements.dataTable?.visible ? '<c:dTable><c:showHorzBorder val="1"/><c:showVertBorder val="1"/><c:showOutline val="1"/><c:showKeys val="1"/></c:dTable>' : ''}</c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="${blank}"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings>${chartAreaXml(payload)}</c:chartSpace>`);
+  return withXmlDeclaration(`<c:chartSpace xmlns:c="${NS_CHART}" xmlns:a="${NS_DRAWING_MAIN}" xmlns:r="${NS_DOC_REL}">${pivotSource}<c:chart>${title}<c:plotArea><c:layout/>${bodies}${axes}${payload.elements.dataTable?.visible ? '<c:dTable><c:showHorzBorder val="1"/><c:showVertBorder val="1"/><c:showOutline val="1"/><c:showKeys val="1"/></c:dTable>' : ''}</c:plotArea>${legend}<c:plotVisOnly val="1"/><c:dispBlanksAs val="${blank}"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings>${chartAreaXml(payload)}</c:chartSpace>`);
 }
 
-function chartBodies(payload: ChartDrawingPayload, seriesXml: string): string {
+function chartBodies(payload: ChartDrawingPayload, seriesXml: string, dataLabels: string): string {
   const type = payload.chartType;
   const subtype = payload.subtype;
   if (type === 'combo') {
@@ -223,34 +223,34 @@ function chartBodies(payload: ChartDrawingPayload, seriesXml: string): string {
     const grouped = new Map<string, string>();
     const all = [...seriesXml.matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)].map((match) => match[0]);
     series.forEach((entry, index) => { const chartType = entry.chartType ?? 'column'; grouped.set(chartType, `${grouped.get(chartType) ?? ''}${all[index] ?? ''}`); });
-    return [...grouped.entries()].map(([chartType, xml]) => chartBodyFor(chartType as Exclude<ChartDrawingPayload['chartType'], 'combo'>, subtype, xml, payload.waterfallOptions)).join('');
+    return [...grouped.entries()].map(([chartType, xml]) => chartBodyFor(chartType as Exclude<ChartDrawingPayload['chartType'], 'combo'>, subtype, xml, payload.waterfallOptions, dataLabels)).join('');
   }
-  return chartBodyFor(type, subtype, seriesXml, payload.waterfallOptions);
+  return chartBodyFor(type, subtype, seriesXml, payload.waterfallOptions, dataLabels);
 }
 
-function chartBodyFor(type: Exclude<ChartDrawingPayload['chartType'], 'combo'>, subtype: ChartDrawingPayload['subtype'], seriesXml: string, waterfallOptions?: ChartDrawingPayload['waterfallOptions']): string {
-  const grouping = subtype.includes('percent') ? 'percentStacked' : subtype.includes('stacked') ? 'stacked' : 'clustered';
-  const axes = '<c:axId val="-201"/><c:axId val="-202"/>';
+function chartBodyFor(type: Exclude<ChartDrawingPayload['chartType'], 'combo'>, subtype: ChartDrawingPayload['subtype'], seriesXml: string, waterfallOptions?: ChartDrawingPayload['waterfallOptions'], dataLabels = ''): string {
+  const grouping = subtype.includes('percent') ? 'percentStacked' : subtype.includes('stacked') ? 'stacked' : type === 'line' || type === 'area' ? 'standard' : 'clustered';
+  const axes = '<c:axId val="201"/><c:axId val="202"/>';
   if (type === 'column' || type === 'bar') {
     const shape = ['cone', 'cylinder', 'pyramid'].find((value) => subtype.startsWith(value));
     const tag = subtype.startsWith('three-dimensional') || Boolean(shape) ? 'bar3DChart' : 'barChart';
-    return `<c:${tag}><c:barDir val="${type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${shape ? `<c:shape val="${shape}"/>` : ''}${axes}</c:${tag}>`;
+    return `<c:${tag}><c:barDir val="${type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${dataLabels}${shape ? `<c:shape val="${shape}"/>` : ''}${axes}</c:${tag}>`;
   }
-  if (type === 'line') { const tag = subtype === 'three-dimensional' ? 'line3DChart' : 'lineChart'; return `<c:${tag}><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${axes}</c:${tag}>`; }
-  if (type === 'area') { const tag = subtype === 'three-dimensional' ? 'area3DChart' : 'areaChart'; return `<c:${tag}><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${axes}</c:${tag}>`; }
-  if (type === 'pie') return subtype === 'pie-of-pie' || subtype === 'bar-of-pie' ? `<c:ofPieChart><c:ofPieType val="${subtype === 'bar-of-pie' ? 'bar' : 'pie'}"/>${seriesXml}<c:splitType val="auto"/><c:secondPieSize val="75"/></c:ofPieChart>` : `<c:${subtype.includes('three-dimensional') ? 'pie3DChart' : 'pieChart'}><c:varyColors val="1"/>${seriesXml}<c:firstSliceAng val="0"/></c:${subtype.includes('three-dimensional') ? 'pie3DChart' : 'pieChart'}>`;
-  if (type === 'doughnut') return `<c:doughnutChart><c:varyColors val="1"/>${seriesXml}<c:firstSliceAng val="0"/><c:holeSize val="55"/></c:doughnutChart>`;
-  if (type === 'scatter') { const style = subtype.includes('smooth') ? subtype.includes('markers') ? 'smoothMarker' : 'smooth' : subtype.includes('straight') ? subtype.includes('markers') ? 'lineMarker' : 'line' : 'marker'; return `<c:scatterChart><c:scatterStyle val="${style}"/><c:varyColors val="0"/>${seriesXml}${axes}</c:scatterChart>`; }
-  if (type === 'bubble') return `<c:bubbleChart><c:varyColors val="0"/>${seriesXml}<c:bubble3D val="${subtype === 'bubble-three-dimensional' ? '1' : '0'}"/><c:bubbleScale val="100"/><c:showNegBubbles val="0"/><c:sizeRepresents val="area"/>${axes}</c:bubbleChart>`;
-  if (type === 'radar') return `<c:radarChart><c:radarStyle val="${subtype === 'radar-filled' ? 'filled' : subtype === 'radar-markers' ? 'marker' : 'standard'}"/><c:varyColors val="0"/>${seriesXml}${axes}</c:radarChart>`;
-  if (type === 'stock') return `<c:stockChart>${seriesXml}${axes}</c:stockChart>`;
-  if (type === 'surface') return `<c:${subtype.includes('contour') ? 'surfaceChart' : 'surface3DChart'}><c:wireframe val="${subtype.includes('wireframe') ? '1' : '0'}"/>${seriesXml}${axes}</c:${subtype.includes('contour') ? 'surfaceChart' : 'surface3DChart'}>`;
-  if (type === 'treemap') return `<c:treemapChart>${seriesXml}</c:treemapChart>`;
-  if (type === 'sunburst') return `<c:sunburstChart>${seriesXml}</c:sunburstChart>`;
-  if (type === 'histogram' || type === 'pareto') return `<c:histogramChart>${seriesXml}${type === 'pareto' ? '<c:paretoLine val="1"/>' : ''}${axes}</c:histogramChart>`;
-  if (type === 'box-whisker') return `<c:boxWhiskerChart>${seriesXml}<c:quartileMethod val="${subtype}"/>${axes}</c:boxWhiskerChart>`;
-  if (type === 'waterfall') return `<c:waterfallChart>${seriesXml}<c:connectorLines val="${waterfallOptions?.connectorLines === false ? '0' : '1'}"/><c:reverseOrder val="0"/>${axes}</c:waterfallChart>`;
-  if (type === 'funnel') return `<c:funnelChart>${seriesXml}<c:gapWidth val="150"/></c:funnelChart>`;
+  if (type === 'line') { const tag = subtype === 'three-dimensional' ? 'line3DChart' : 'lineChart'; return `<c:${tag}><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${dataLabels}${axes}</c:${tag}>`; }
+  if (type === 'area') { const tag = subtype === 'three-dimensional' ? 'area3DChart' : 'areaChart'; return `<c:${tag}><c:grouping val="${grouping}"/><c:varyColors val="0"/>${seriesXml}${dataLabels}${axes}</c:${tag}>`; }
+  if (type === 'pie') return subtype === 'pie-of-pie' || subtype === 'bar-of-pie' ? `<c:ofPieChart><c:ofPieType val="${subtype === 'bar-of-pie' ? 'bar' : 'pie'}"/>${seriesXml}${dataLabels}<c:splitType val="auto"/><c:secondPieSize val="75"/></c:ofPieChart>` : `<c:${subtype.includes('three-dimensional') ? 'pie3DChart' : 'pieChart'}><c:varyColors val="1"/>${seriesXml}${dataLabels}<c:firstSliceAng val="0"/></c:${subtype.includes('three-dimensional') ? 'pie3DChart' : 'pieChart'}>`;
+  if (type === 'doughnut') return `<c:doughnutChart><c:varyColors val="1"/>${seriesXml}${dataLabels}<c:firstSliceAng val="0"/><c:holeSize val="55"/></c:doughnutChart>`;
+  if (type === 'scatter') { const style = subtype.includes('smooth') ? subtype.includes('markers') ? 'smoothMarker' : 'smooth' : subtype.includes('straight') ? subtype.includes('markers') ? 'lineMarker' : 'line' : 'marker'; return `<c:scatterChart><c:scatterStyle val="${style}"/><c:varyColors val="0"/>${seriesXml}${dataLabels}${axes}</c:scatterChart>`; }
+  if (type === 'bubble') return `<c:bubbleChart><c:varyColors val="0"/>${seriesXml}${dataLabels}<c:bubble3D val="${subtype === 'bubble-three-dimensional' ? '1' : '0'}"/><c:bubbleScale val="100"/><c:showNegBubbles val="0"/><c:sizeRepresents val="area"/>${axes}</c:bubbleChart>`;
+  if (type === 'radar') return `<c:radarChart><c:radarStyle val="${subtype === 'radar-filled' ? 'filled' : subtype === 'radar-markers' ? 'marker' : 'standard'}"/><c:varyColors val="0"/>${seriesXml}${dataLabels}${axes}</c:radarChart>`;
+  if (type === 'stock') return `<c:stockChart>${seriesXml}${dataLabels}${axes}</c:stockChart>`;
+  if (type === 'surface') return `<c:${subtype.includes('contour') ? 'surfaceChart' : 'surface3DChart'}><c:wireframe val="${subtype.includes('wireframe') ? '1' : '0'}"/>${seriesXml}${dataLabels}${axes}</c:${subtype.includes('contour') ? 'surfaceChart' : 'surface3DChart'}>`;
+  if (type === 'treemap') return `<c:treemapChart>${seriesXml}${dataLabels}</c:treemapChart>`;
+  if (type === 'sunburst') return `<c:sunburstChart>${seriesXml}${dataLabels}</c:sunburstChart>`;
+  if (type === 'histogram' || type === 'pareto') return `<c:histogramChart>${seriesXml}${dataLabels}${type === 'pareto' ? '<c:paretoLine val="1"/>' : ''}${axes}</c:histogramChart>`;
+  if (type === 'box-whisker') return `<c:boxWhiskerChart>${seriesXml}${dataLabels}<c:quartileMethod val="${subtype}"/>${axes}</c:boxWhiskerChart>`;
+  if (type === 'waterfall') return `<c:waterfallChart>${seriesXml}${dataLabels}<c:connectorLines val="${waterfallOptions?.connectorLines === false ? '0' : '1'}"/><c:reverseOrder val="0"/>${axes}</c:waterfallChart>`;
+  if (type === 'funnel') return `<c:funnelChart>${seriesXml}${dataLabels}<c:gapWidth val="150"/></c:funnelChart>`;
   if (type === 'map') throw new Error('UNSUPPORTED_FEATURE: Geographic map export requires an authoritative geography provider');
   return `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>${seriesXml}${axes}</c:barChart>`;
 }
@@ -267,7 +267,7 @@ function axisXml(payload: ChartDrawingPayload): string {
     const minor = model.minorUnit === undefined ? '' : `<c:minorUnit val="${model.minorUnit}"/>`;
     return `<c:${valueAxis ? 'valAx' : 'catAx'}><c:axId val="${id}"/><c:scaling><c:orientation val="${model.reverseOrder ? 'maxMin' : 'minMax'}"/>${model.scale === 'logarithmic' ? `<c:logBase val="${model.logBase ?? 10}"/>` : ''}${min}${max}</c:scaling><c:delete val="${model.visible === false ? 1 : 0}"/><c:axPos val="${pos}"/>${major}${minor}<c:majorTickMark val="${model.majorTickMark === 'none' ? 'none' : 'out'}"/><c:minorTickMark val="${model.minorTickMark === 'none' ? 'none' : 'out'}"/><c:tickLblPos val="${model.tickLabelPosition === 'none' ? 'none' : 'nextTo'}"/><c:crossAx val="${cross}"/><c:crosses val="${model.crosses === 'maximum' ? 'max' : 'autoZero'}"/>${model.crossesAt === undefined ? '' : `<c:crossesAt val="${model.crossesAt}"/>`}${valueAxis && model.crossBetween ? `<c:crossBetween val="${model.crossBetween === 'mid-category' ? 'midCat' : 'between'}/> ` : ''}</c:${valueAxis ? 'valAx' : 'catAx'}>`;
   };
-  return `${axis(category, -201, -202, category?.position === 'top' ? 't' : 'b', false)}${axis(value, -202, -201, value?.position === 'right' ? 'r' : 'l', true)}${axis(secondary, -203, -201, 'r', true)}`;
+  return `${axis(category, 201, 202, category?.position === 'top' ? 't' : 'b', false)}${axis(value, 202, 201, value?.position === 'right' ? 'r' : 'l', true)}${axis(secondary, 203, 201, 'r', true)}`;
 }
 
 function chartAreaXml(payload: ChartDrawingPayload): string {

@@ -19,6 +19,7 @@ import {
 } from './index';
 import { drawCellLayer, drawGridLayer } from './cell-renderer';
 import { drawChromeLayer } from './chrome-renderer';
+import { resolveCellContentLayout } from './cell-content-layout';
 import { DEFAULT_RENDER_THEME, type CellRenderData, type RenderPane } from './types';
 
 const skeleton = new SheetSkeleton({
@@ -753,4 +754,48 @@ test('AutoFit content gate preserves typed zero, FALSE, formatted text and error
   assert.equal(hasMeasurableCellContent({ value: false, displayValue: 'FALSE' }), true);
   assert.equal(hasMeasurableCellContent({ value: null, displayValue: '#DIV/0!' }), true);
   assert.equal(hasMeasurableCellContent({ value: 'raw', displayValue: '' }), false);
+});
+
+test('CellContentLayout shares aligned overflow and edit expansion geometry', () => {
+  const { context } = recordingContext();
+  const cell = { value: 'long text value', style: { horizontalAlignment: 'left' as const } };
+  const cellRect = { x: 40, y: 20, width: 40, height: 20 };
+  const display = resolveCellContentLayout({
+    context,
+    cell,
+    theme: DEFAULT_RENDER_THEME,
+    text: 'long text value',
+    cellRect,
+    mode: 'display',
+    neighborOccupancy: { left: [], right: [{ column: 1, widthPx: 60, occupied: false }, { column: 2, widthPx: 60, occupied: true }] },
+  });
+  assert.ok(display.overflowWidthPx > cellRect.width);
+  assert.equal(display.displayRect.x, cellRect.x);
+  const right = resolveCellContentLayout({
+    context,
+    cell: { value: 'long text value', style: { horizontalAlignment: 'right' as const } },
+    theme: DEFAULT_RENDER_THEME,
+    text: 'long text value',
+    cellRect,
+    mode: 'edit',
+    neighborOccupancy: { left: [{ column: 0, widthPx: 60, occupied: false }], right: [] },
+    caret: { start: 15, end: 15 },
+  });
+  assert.ok(right.editRect.width > cellRect.width);
+  assert.ok(right.editRect.x < cellRect.x);
+  assert.ok(right.caretGeometry);
+  const wrapped = resolveCellContentLayout({
+    context: {
+      save() {},
+      restore() {},
+      measureText(value: string) { return { width: value.length * 8 }; },
+      font: '',
+    } as unknown as CanvasRenderingContext2D,
+    cell: { value: '中文 mixed text', style: { wrapText: true } },
+    theme: DEFAULT_RENDER_THEME,
+    text: '中文 mixed text',
+    cellRect,
+    mode: 'display',
+  });
+  assert.ok(wrapped.lines.length > 1);
 });

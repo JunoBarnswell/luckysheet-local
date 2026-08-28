@@ -66,6 +66,7 @@ import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
 import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
 import { TableDesignPanel } from './panels/TableDesignPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
+import { QuickAnalysisPanel } from './panels/QuickAnalysisPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
   FormulaAuditPanel,
@@ -148,6 +149,8 @@ export interface FeatureSidebarProps {
   onInsertChart: (type: import('@react-sheets/core-model').ChartDrawingPayload['chartType'], subtype: import('@react-sheets/core-model').ChartDrawingPayload['subtype'], sourceRange: RangeRef, title: string, stacked: NonNullable<import('@react-sheets/core-model').ChartDrawingPayload['stacked']>) => void;
   onAddConditionalFormat: (rule: ConditionalFormatRule) => void;
   onRemoveConditionalFormat: (id: string) => void;
+  onUpdateConditionalFormat?: (id: string, patch: Partial<ConditionalFormatRule>) => void;
+  onReorderConditionalFormats?: (ruleIds: readonly string[]) => void;
   onAddDataValidation: (rule: DataValidationRule) => void;
   onRemoveDataValidation: (id: string) => void;
   onPrint: (layout: PrintLayout) => void;
@@ -198,6 +201,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'extended', label: 'Extended', icon: 'sparkles' },
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'data', label: 'Tables', icon: 'table' },
+  { id: 'quickAnalysis', label: 'Quick Analysis', icon: 'sparkles' },
 ];
 
 function InsightRow({ label, tone = 'muted', value }: { label: string; tone?: 'accent' | 'muted' | 'success'; value: string }) {
@@ -365,6 +369,8 @@ export function FeatureSidebar({
   onInsertChart,
   onAddConditionalFormat,
   onRemoveConditionalFormat,
+  onUpdateConditionalFormat,
+  onReorderConditionalFormats,
   onAddDataValidation,
   onRemoveDataValidation,
   onPrint,
@@ -545,6 +551,7 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'shape' ? (
           <ShapeEditorPanel
+            locale={locale}
             sheetId={sheetId}
             drawings={drawings}
             drawingPayloads={drawingPayloads}
@@ -554,6 +561,9 @@ export function FeatureSidebar({
             onSelectDrawing={(drawingId) => onSelectDrawing(drawingId, 'replace')}
             onCommand={onCommand}
           />
+        ) : null}
+        {phase === 'ready' && activePanel === 'quickAnalysis' && selectedRange ? (
+          <QuickAnalysisPanel locale={locale} sheet={sheet} range={{ sheetId, ...selectedRange }} onPanelChange={onPanelChange} />
         ) : null}
         {phase === 'ready' && activePanel === 'textbox' ? (
           <TextBoxEditorPanel
@@ -626,6 +636,8 @@ export function FeatureSidebar({
             rules={conditionalFormats}
             onAddRule={onAddConditionalFormat}
             onRemoveRule={onRemoveConditionalFormat}
+            onUpdateRule={onUpdateConditionalFormat}
+            onReorderRules={onReorderConditionalFormats}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'dataValidation' ? (

@@ -1,4 +1,4 @@
-import React, { createContext, useContext } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import {
   Button,
@@ -25,6 +25,10 @@ import {
   type RibbonMergeOperation,
   type RibbonPivotActions,
   type UiSessionIntent,
+  EXCEL_KEY_TIP_BINDINGS,
+  INITIAL_KEY_TIP_STATE,
+  keyTipTransition,
+  type KeyTipState,
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import { translate, translateRibbonTab, translateRibbonText, type Locale } from '../i18n';
@@ -190,6 +194,7 @@ function CatalogButton({
   const compactTile = isNarrow && textBelow;
   const active = !mixed && Boolean(definition.active?.(context));
   const mixedLabel = mixed ? `${label} (${homeText(locale, 'mixed')})` : label;
+  const keyTip = EXCEL_KEY_TIP_BINDINGS.find((binding) => binding.target.kind === 'command' && binding.target.id === id)?.sequence;
   return (
     <Button
       aria-label={mixedLabel}
@@ -197,6 +202,7 @@ function CatalogButton({
       title={mixedLabel}
       data-testid={testId}
       data-ribbon-command={id}
+      data-ribbon-keytip={keyTip}
       data-ribbon-layout-node={ribbonLayoutNodeId}
       data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
@@ -320,6 +326,54 @@ export function Ribbon({
   onCloseCommandPalette,
   onInsertConnectorType,
 }: RibbonProps) {
+  const [keyTipState, setKeyTipState] = useState<KeyTipState>(INITIAL_KEY_TIP_STATE);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      const editingSurface = target?.closest('input, textarea, [contenteditable="true"]');
+      if (!keyTipState.active) {
+        if (editingSurface) return;
+        if (event.key !== 'Alt' && !(event.key === 'F10' && !event.shiftKey)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setKeyTipState({ active: true, prefix: '' });
+        return;
+      }
+      if (event.key === 'Alt' || (event.key === 'F10' && !event.shiftKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setKeyTipState(INITIAL_KEY_TIP_STATE);
+        return;
+      }
+      const transition = keyTipTransition(keyTipState, event.key);
+      if (event.key === 'Escape' || transition.state !== keyTipState || transition.action) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      setKeyTipState(transition.state);
+      if (!transition.action) return;
+      if (transition.action.kind === 'tab') {
+        onTabChange(transition.action.id as RibbonTabId);
+        return;
+      }
+      const sequence = `${keyTipState.prefix}${event.key.toLocaleUpperCase()}`;
+      const node = document.querySelector<HTMLElement>(`[data-ribbon-keytip="${sequence}"]`);
+      if (node) {
+        node.click();
+        return;
+      }
+      // Menu members are rendered in a portal only after their menu opens.
+      // Resolve those commands through the same catalog builder instead of
+      // silently dropping a valid KeyTip when its visual member is not mounted.
+      const commandId = transition.action.id as RibbonCommandId;
+      if (RIBBON_COMMAND_CATALOG.some((definition) => definition.id === commandId)) {
+        const result = buildRibbonCommand(commandId, catalogContext);
+        if (result) executeCatalogResult(result);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => document.removeEventListener('keydown', handleKeyDown, true);
+  }, [keyTipState, onTabChange]);
   const disabled = phase !== 'ready';
   const cellStyle = homeState.style;
   const canFormat = (style: Record<string, unknown>): boolean => !disabled && homeState.canFormat
@@ -468,6 +522,8 @@ export function Ribbon({
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}
         onTabChange={onTabChange}
         tabLabel={(tab) => translateRibbonTab(locale, tab)}
+        keyTipState={keyTipState}
+        keyTipBindings={EXCEL_KEY_TIP_BINDINGS}
         status={(
           <>
             <Icon name="cloud-check" size="sm" className={disabled ? 'text-slate-300' : 'text-emerald-500'} />

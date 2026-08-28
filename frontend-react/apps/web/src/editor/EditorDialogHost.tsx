@@ -9,6 +9,7 @@ const FindReplaceDialog = lazy(() => import("../components/dialogs/FindReplaceDi
 const GoToDialog = lazy(() => import("../components/dialogs/GoToDialog").then((module) => ({ default: module.GoToDialog })));
 const PasteSpecialDialog = lazy(() => import("../components/dialogs/PasteSpecialDialog").then((module) => ({ default: module.PasteSpecialDialog })));
 const FormatCellsDialog = lazy(() => import("../components/dialogs/FormatCellsDialog").then((module) => ({ default: module.FormatCellsDialog })));
+const FillSeriesDialog = lazy(() => import("../components/dialogs/FillSeriesDialog").then((module) => ({ default: module.FillSeriesDialog })));
 const ShiftCellsDialog = lazy(() => import("../components/dialogs/ShiftCellsDialog").then((module) => ({ default: module.ShiftCellsDialog })));
 const MergeConfirmDialog = lazy(() => import("../components/dialogs/MergeConfirmDialog").then((module) => ({ default: module.MergeConfirmDialog })));
 const CreatePivotTableDialog = lazy(() => import("../components/dialogs/CreatePivotTableDialog").then((module) => ({ default: module.CreatePivotTableDialog })));
@@ -118,6 +119,12 @@ export function EditorDialogHost({
         locale={locale}
         onClose={session.closeFormatCells.bind(session)}
         onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style, border: draft.border })}
+      />
+      <FillSeriesDialog
+        open={state.dialogs.active === 'fill-series'}
+        locale={locale}
+        onClose={session.closeActiveDialog.bind(session)}
+        onApply={(options) => session.fillSeries(options)}
       />
       <ShiftCellsDialog
         open={state.dialogs.active === 'shift-cells'}

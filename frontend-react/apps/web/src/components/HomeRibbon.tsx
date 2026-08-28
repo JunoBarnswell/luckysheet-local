@@ -19,6 +19,7 @@ import {
   type RibbonControlId,
   type RibbonSurfaceDefinition,
   type RibbonMergeOperation,
+  EXCEL_KEY_TIP_BINDINGS,
 } from '@react-sheets/spreadsheet-app';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import type { Locale } from '../i18n';
@@ -272,17 +273,18 @@ export function HomeRibbon({
 
   const renderControl = (controlId: RibbonControlId, mode: RibbonLayoutState['mode'] | 'menu', surfaceId: string): React.ReactNode => {
     const label = surfaceLabel(locale, controlId);
+    const keyTip = EXCEL_KEY_TIP_BINDINGS.find((binding) => binding.target.kind === 'command' && binding.target.id === controlId)?.sequence;
     const compactMenu = controlId === 'font-borders-menu' || controlId === 'orientation-menu';
     const menuTrigger = (iconName: HomeRibbonIconName, presentation: 'tile' | 'inline' | 'editing-inline' | 'style' | 'cell' = 'tile') => mode !== 'menu'
       ? compactMenu
-        ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} iconOnly size="sm" variant="ghost" className={controlId === 'orientation-menu' ? HOME_SMALL_ACTION_CLASS : HOME_SMALL_ACTION_CLASS} />
+        ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} iconOnly size="sm" variant="ghost" className={controlId === 'orientation-menu' ? HOME_SMALL_ACTION_CLASS : HOME_SMALL_ACTION_CLASS} />
         : presentation === 'inline' || presentation === 'editing-inline'
-          ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-16' : '!w-14'}` : `${HOME_INLINE_ACTION_CLASS} ${mode === 'wide' ? '!w-[97px]' : '!w-[84px]'}`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
+          ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-16' : '!w-14'}` : `${HOME_INLINE_ACTION_CLASS} ${mode === 'wide' ? '!w-[97px]' : '!w-[84px]'}`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
         : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="xl" />} type="button" className={presentation === 'style' ? `${mode === 'wide' ? '!w-[86px] !min-w-[86px]' : '!w-[70px] !min-w-[70px]'}` : presentation === 'cell' ? `${mode === 'wide' ? '!w-[50px] !min-w-[50px]' : '!w-[44px] !min-w-[44px]'}` : undefined}><Inline gap="none" className="gap-0.5">{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Inline></HomeTile>
       : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
-        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} iconNode={<HomeRibbonIcon name="paintbrush-2" size="md" />} iconOnly={false} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? `${HOME_INLINE_ACTION_CLASS} !w-16` : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{label}</Button>;
+        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-keytip="HFP" data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} iconNode={<HomeRibbonIcon name="paintbrush-2" size="md" />} iconOnly={false} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? `${HOME_INLINE_ACTION_CLASS} !w-16` : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{label}</Button>;
       case 'font-family':
         return <Box data-ribbon-surface={surfaceId} className={mode === 'menu' ? 'w-full' : mode === 'wide' ? 'w-[214px] shrink-0' : 'w-[100px] shrink-0'}><FontFamilyControl
           value={cellStyle.fontFamily}
@@ -336,7 +338,7 @@ export function HomeRibbon({
         return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode !== 'menu' ? '!h-[19px] !min-h-0 !w-[25px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px] text-[11px] font-bold leading-[13px] text-black' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: pointsToPixels(adjacentExcelFontSize(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)), controlId === 'font-increase' ? 1 : -1)) })}>{mode !== 'menu' ? (controlId === 'font-increase' ? 'A↑' : 'A↓') : label}</Button>;
       case 'font-color':
       case 'fill-color':
-        return <DropdownMenu disabled={!canFormat} trigger={mode !== 'menu' ? <Button aria-label={label} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
+        return <DropdownMenu disabled={!canFormat} trigger={mode !== 'menu' ? <Button aria-label={label} data-ribbon-keytip={keyTip} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
           {({ close }) => <ColorPicker color={controlId === 'font-color' ? cellStyle.textColor ?? '#1e293b' : cellStyle.background ?? '#ffffff'} onChange={(color) => { onEmitStyle({ [controlId === 'font-color' ? 'textColor' : 'background']: color }); close(); }} />}
         </DropdownMenu>;
       case 'font-borders-menu':

@@ -95,6 +95,8 @@ export function EditorShell({
             phase={state.phase}
           />
         )}
+        formulaBarVisible={state.formulaBarVisible}
+        ribbonVisible={state.ribbonVisible}
         isBusy={isBusy}
         ribbon={(
           <RibbonHost
@@ -262,11 +264,14 @@ export function EditorShell({
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
+                onSelectAllDrawings={session.selectAllDrawings.bind(session)}
+                onCycleDrawingSelection={session.cycleDrawingSelection.bind(session)}
                 columnDimensions={columnDimensions}
                 onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
-                onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
                 onOpenFormatCells={() => dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" })}
+                onOpenRowHeightDialog={(rows) => dispatchSessionIntent({ type: "dialog.open", dialog: "row-height", rowHeight: { rows } })}
                 onFillRange={session.fillRange.bind(session)}
+                onRangeDragCommit={(sourceRange, targetOrigin, mode) => session.rangeDrag(sourceRange, targetOrigin, mode)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
                 onFloatingSelect={(hit, mode) => {

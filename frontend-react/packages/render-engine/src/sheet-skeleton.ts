@@ -149,7 +149,15 @@ export class SheetSkeleton {
 
   isColumnHidden(modelColumn: number): boolean {
     return this.hiddenColumnSet.has(modelColumn);
-}
+  }
+
+  get hiddenRows(): readonly number[] {
+    return [...this.hiddenRowSet].sort((left, right) => left - right);
+  }
+
+  get hiddenColumns(): readonly number[] {
+    return [...this.hiddenColumnSet].sort((left, right) => left - right);
+  }
 
   private getVirtualRowHeight(row: number): number {
     return normalizeSize((this.rowHeightOverrides.get(row) ?? this.defaultRowHeight) * this.zoom, 0);

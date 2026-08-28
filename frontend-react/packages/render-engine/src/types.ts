@@ -36,7 +36,7 @@ export type VerticalAlignment = CanonicalVerticalAlignment;
 
 export interface BorderStyle {
   color: string;
-  style: "thin" | "medium" | "thick" | "dashed" | "double";
+  style: "hair" | "thin" | "medium" | "thick" | "dotted" | "dashed" | "dashDot" | "dashDotDot" | "double";
 }
 
 export interface CellBorders {
@@ -44,6 +44,9 @@ export interface CellBorders {
   right?: BorderStyle;
   bottom?: BorderStyle;
   left?: BorderStyle;
+  diagonal?: BorderStyle;
+  diagonalUp?: boolean;
+  diagonalDown?: boolean;
 }
 
 export interface CellRenderStyle {
@@ -54,7 +57,11 @@ export interface CellRenderStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  underlineStyle?: import('@react-sheets/core-model').CellUnderlineStyle;
   strikethrough?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
+  textDirection?: 'context' | 'ltr' | 'rtl';
   font?: string;
   horizontalAlignment?: HorizontalAlignment;
   verticalAlignment?: VerticalAlignment;
@@ -68,6 +75,8 @@ export interface CellRenderStyle {
   wrapText?: boolean;
   borders?: CellBorders;
   numberFormat?: string;
+  numberFormatSpec?: import('@react-sheets/core-model').CellNumberFormatSpec;
+  fill?: import('@react-sheets/core-model').CellFill;
   /** 文字旋转角度(度,顺时针) */
   textRotate?: number;
 }
@@ -246,6 +255,7 @@ export interface ChromeState {
   remoteCursors: readonly ChromeRemoteCursor[];
   resizePreview: ResizePreview | null;
   selectedFloatingId: string | null;
+  drawingMarquee: Rect | null;
 }
 
 export function createEmptyChromeState(): ChromeState {
@@ -259,6 +269,7 @@ export function createEmptyChromeState(): ChromeState {
     remoteCursors: [],
     resizePreview: null,
     selectedFloatingId: null,
+    drawingMarquee: null,
   };
 }
 

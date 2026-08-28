@@ -10,6 +10,7 @@ export interface SelectionCell {
 
 export type SelectionKind = 'cells' | 'rows' | 'columns' | 'sheet';
 export type SelectionMode = 'normal' | 'formulaReference';
+export type SelectionInteractionMode = 'normal' | 'extend' | 'add';
 export interface SelectionArea {
   kind: SelectionKind;
   range: RangeRef;
@@ -27,6 +28,7 @@ export interface SelectionState {
   anchorCell: SelectionCell;
   selectionKind?: SelectionKind;
   mode?: SelectionMode;
+  interactionMode?: SelectionInteractionMode;
 }
 
 export interface SelectionSnapshot {
@@ -38,6 +40,7 @@ export interface SelectionSnapshot {
   anchorCell: SelectionCell;
   selectionKind?: SelectionKind;
   mode?: SelectionMode;
+  interactionMode?: SelectionInteractionMode;
 }
 
 export function createInitialSelection(sheetId: SheetId): SelectionState {
@@ -75,6 +78,7 @@ export class SelectionService {
       anchorCell: { ...state.anchorCell },
       selectionKind: state.selectionKind,
       mode: state.mode,
+      ...(state.interactionMode ? { interactionMode: state.interactionMode } : {}),
     };
   }
 
@@ -86,6 +90,7 @@ export class SelectionService {
       anchorCell: { ...this.state.anchorCell },
       selectionKind: this.state.selectionKind,
       mode: this.state.mode,
+      ...(this.state.interactionMode ? { interactionMode: this.state.interactionMode } : {}),
     };
   }
 
@@ -200,6 +205,14 @@ export class SelectionService {
     this.applyState(reduceSelectionInteraction(this.state, { type: mode === 'formulaReference' ? 'formula-reference.enter' : 'formula-reference.exit' }));
   }
 
+  setSelectionInteractionMode(mode: SelectionInteractionMode): void {
+    this.applyState({ ...this.state, interactionMode: mode });
+  }
+
+  getSelectionInteractionMode(): SelectionInteractionMode {
+    return this.state.interactionMode ?? 'normal';
+  }
+
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
     const bounds = this.getSheetBounds();
     this.applyState(moveSelection(this.state, rowDelta, columnDelta, Boolean(opts?.extend), bounds));
@@ -238,6 +251,7 @@ export class SelectionService {
       anchorCell,
       selectionKind: selection.selectionKind ?? this.state.selectionKind ?? 'cells',
       mode: selection.mode ?? this.state.mode ?? 'normal',
+      ...((selection.interactionMode ?? this.state?.interactionMode) ? { interactionMode: selection.interactionMode ?? this.state?.interactionMode } : {}),
     };
   }
 

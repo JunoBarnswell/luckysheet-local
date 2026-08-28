@@ -79,6 +79,7 @@ export * from './home-commands';
 export * from './phonetic-commands';
 export * from './auto-sum-contract';
 export * from './fill-series';
+export * from './flash-fill';
 export * from './find-replace';
 export * from './cell-template-commands';
 export * from './clear-planner';
@@ -292,6 +293,19 @@ export interface SortRangeParams {
 export interface AddConditionalFormatParams {
   sheetId: string;
   rule: ConditionalFormatRule;
+}
+
+export interface UpdateConditionalFormatParams {
+  sheetId: string;
+  ruleId: string;
+  patch: Partial<ConditionalFormatRule>;
+}
+
+interface ConditionalFormatUpdateMutationParams {
+  sheetId: string;
+  before: ConditionalFormatRule;
+  after: ConditionalFormatRule;
+  ranges: RangeRef[];
 }
 
 export interface AddDataValidationParams {
@@ -594,11 +608,42 @@ function isCellStylePatch(value: unknown): value is Partial<CellStyle> {
   if (value.horizontalAlignment !== undefined && !isHorizontalAlignment(value.horizontalAlignment)) return false;
   if (value.verticalAlignment !== undefined && !isVerticalAlignment(value.verticalAlignment)) return false;
   if (value.shrinkToFit !== undefined && typeof value.shrinkToFit !== 'boolean') return false;
+  for (const key of ['bold', 'italic', 'underline', 'strikethrough', 'superscript', 'subscript', 'wrapText', 'locked', 'formulaHidden'] as const) if (value[key] !== undefined && typeof value[key] !== 'boolean') return false;
+  if (value.underlineStyle !== undefined && !['single', 'double', 'singleAccounting', 'doubleAccounting'].includes(String(value.underlineStyle))) return false;
+  if (value.textDirection !== undefined && !['context', 'ltr', 'rtl'].includes(String(value.textDirection))) return false;
   if (value.readingOrder !== undefined && !isReadingOrder(value.readingOrder)) return false;
   if (value.textOrientation !== undefined && !['horizontal', 'stacked', 'rotateUp', 'rotateDown'].includes(String(value.textOrientation))) return false;
   if (value.indent !== undefined && (!Number.isInteger(value.indent) || Number(value.indent) < 0 || Number(value.indent) > 250)) return false;
-  if (value.textRotate !== undefined && (typeof value.textRotate !== 'number' || !Number.isFinite(value.textRotate) || value.textRotate < -180 || value.textRotate > 180)) return false;
+  if (value.textRotate !== undefined && (typeof value.textRotate !== 'number' || !Number.isFinite(value.textRotate) || value.textRotate < 0 || value.textRotate > 180)) return false;
+  if (value.fill !== undefined && !isCellFill(value.fill)) return false;
+  if (value.numberFormatSpec !== undefined && !isCellNumberFormatSpec(value.numberFormatSpec)) return false;
   return value.unsupportedAlignment === undefined;
+}
+
+function isCellFill(value: unknown): value is NonNullable<CellStyle['fill']> {
+  if (!isRecord(value) || !['solid', 'pattern', 'gradient'].includes(String(value.kind))) return false;
+  if (value.foreground !== undefined && typeof value.foreground !== 'string') return false;
+  if (value.background !== undefined && typeof value.background !== 'string') return false;
+  if (value.kind === 'pattern' && !['solid', 'none', 'gray125', 'darkDown', 'darkUp', 'darkGrid', 'darkTrellis', 'lightDown', 'lightUp', 'lightGrid', 'lightTrellis', 'gray0625', 'lightGray', 'darkGray', 'mediumGray'].includes(String(value.pattern))) return false;
+  if (value.kind === 'gradient') {
+    if (value.gradientType !== undefined && value.gradientType !== 'linear' && value.gradientType !== 'path') return false;
+    if (value.degree !== undefined && (typeof value.degree !== 'number' || !Number.isFinite(value.degree))) return false;
+    if (!Array.isArray(value.stops) || value.stops.length < 2 || !value.stops.every((stop) => isRecord(stop) && typeof stop.color === 'string' && typeof stop.position === 'number' && Number.isFinite(stop.position) && stop.position >= 0 && stop.position <= 1)) return false;
+  }
+  return true;
+}
+
+function isCellNumberFormatSpec(value: unknown): value is NonNullable<CellStyle['numberFormatSpec']> {
+  if (!isRecord(value)) return false;
+  const categories = ['general', 'number', 'currency', 'accounting', 'date', 'time', 'percentage', 'fraction', 'scientific', 'text', 'special', 'custom'];
+  if (value.category !== undefined && !categories.includes(String(value.category))) return false;
+  if (value.locale !== undefined && typeof value.locale !== 'string') return false;
+  if (value.decimalPlaces !== undefined && (!Number.isSafeInteger(value.decimalPlaces) || Number(value.decimalPlaces) < 0 || Number(value.decimalPlaces) > 30)) return false;
+  if (value.useThousandsSeparator !== undefined && typeof value.useThousandsSeparator !== 'boolean') return false;
+  if (value.negativeStyle !== undefined && !['minus', 'parentheses', 'red-minus', 'red-parentheses'].includes(String(value.negativeStyle))) return false;
+  if (value.currencySymbol !== undefined && typeof value.currencySymbol !== 'string') return false;
+  if (value.sample !== undefined && typeof value.sample !== 'string') return false;
+  return true;
 }
 
 function normalizeStyleFontFamily(style: Partial<CellStyle> | undefined): Partial<CellStyle> | undefined {
@@ -813,6 +858,17 @@ function isConditionalAddMutation(value: unknown): value is AddConditionalFormat
   return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.rule)
     && typeof value.rule.id === 'string' && typeof value.rule.sheetId === 'string'
     && Array.isArray(value.rule.ranges) && value.rule.ranges.length > 0 && value.rule.ranges.every(isRange);
+}
+
+function isConditionalFormatUpdateParams(value: unknown): value is UpdateConditionalFormatParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && typeof value.ruleId === 'string' && value.ruleId.length > 0 && isRecord(value.patch);
+}
+
+function isConditionalFormatUpdateMutation(value: unknown): value is ConditionalFormatUpdateMutationParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && isConditionalAddMutation({ sheetId: value.sheetId, rule: value.before })
+    && isConditionalAddMutation({ sheetId: value.sheetId, rule: value.after })
+    && Array.isArray(value.ranges) && value.ranges.every(isRange);
 }
 
 function isRuleRemoveMutation(value: unknown): value is { sheetId: string; ruleId: string } {
@@ -2792,6 +2848,48 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerMutation<ConditionalFormatUpdateMutationParams>({
+    id: 'cf.update',
+    handler: (item, context) => {
+      if (!isConditionalFormatUpdateMutation(item.params)) throw new Error('Invalid cf.update mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === item.params.before.id);
+      if (index < 0 || JSON.stringify(sheet.conditionalFormats[index]) !== JSON.stringify(item.params.before)) throw new Error(`Conditional format ${item.params.before.id} changed before update`);
+      sheet.conditionalFormats[index] = structuredClone(item.params.after);
+    },
+    metadata: {
+      schema: { name: 'ConditionalFormatUpdate', validate: isConditionalFormatUpdateMutation },
+      permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'declared' },
+      inverseIds: ['cf.update'],
+    },
+  });
+  runtime.registry.registerCommand<UpdateConditionalFormatParams>({
+    id: 'sheet.cf.update',
+    execute: (params, context) => {
+      if (!isConditionalFormatUpdateParams(params)) throw new Error('Invalid conditional format update parameters');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
+      if (index < 0) throw new Error(`Unknown conditional format rule: ${params.ruleId}`);
+      const before = structuredClone(sheet.conditionalFormats[index]!);
+      const after = normalizeConditionalFormatRule({ ...before, ...structuredClone(params.patch), id: before.id, sheetId: before.sheetId, ranges: structuredClone(params.patch.ranges ?? before.ranges) }, before.priority ?? index + 1);
+      const ranges = [...before.ranges, ...after.ranges].map((range) => structuredClone(range));
+      context.applyMutation({
+        id: 'cf.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, before, after, ranges },
+        affectedRanges: ranges,
+        inverse: [{ id: 'cf.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, before: after, after: before, ranges }, affectedRanges: ranges }],
+        apply: () => {
+          const current = sheet.conditionalFormats.findIndex((rule) => rule.id === before.id);
+          if (current < 0 || JSON.stringify(sheet.conditionalFormats[current]) !== JSON.stringify(before)) throw new Error(`Conditional format ${before.id} changed before update`);
+          sheet.conditionalFormats[current] = structuredClone(after);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
     },
   });
   runtime.registry.registerCommand<{ sheetId: string; ruleId: string }>({

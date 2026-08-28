@@ -11,6 +11,7 @@ import { registerReviewFeature } from './features/review/commands';
 import { registerSparklineFeature } from './features/sparkline';
 import { registerInsertCommands } from './features/insert';
 import { registerFindReplaceFeature } from './features/find-replace/commands';
+import { buildExcelParityReport, createExcelFeatureRegistry, type ExcelParityReport } from './excel-parity';
 
 export interface SpreadsheetFeatureManifest {
   id: string;
@@ -21,6 +22,7 @@ export interface SpreadsheetFeatureManifest {
   ribbon?: ReadonlyArray<{ id: string; tab: string; group: string; label: string; commandId: string; icon: string }>;
   contextualTabs?: ReadonlyArray<{ id: string; tab: string; group: string; label: string; commandId: string; icon: string }>;
   permissions?: string[];
+  parity?: ExcelParityReport;
 }
 
 const CORE_MANIFEST: SpreadsheetFeatureManifest = {
@@ -30,6 +32,7 @@ const CORE_MANIFEST: SpreadsheetFeatureManifest = {
 };
 
 let registeredManifests: SpreadsheetFeatureManifest[] = [CORE_MANIFEST];
+let parityReport: ExcelParityReport = buildExcelParityReport();
 
 /**
  * Register every spreadsheet feature against one CommandRuntime.
@@ -52,6 +55,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
   const findReplaceManifest = registerFindReplaceFeature(runtime);
   const insertCommandIds = registerInsertCommands(runtime);
   const platformCommandIds = registerPlatformFeatures(runtime);
+  parityReport = buildExcelParityReport(createExcelFeatureRegistry().features);
 
   CORE_MANIFEST.commandIds = [...runtime.registry.listCommandIds()];
   registeredManifests = [
@@ -71,10 +75,15 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
       commandIds: platformCommandIds,
       permissions: ['history.restore', 'persistence.write', 'print.export', 'document.exchange', 'query.execute'],
     },
+    { id: 'excel-parity', version: '1.0.0', commandIds: [], parity: parityReport },
   ];
   return registeredManifests;
 }
 
 export function getFeatureRegistry(): SpreadsheetFeatureManifest[] {
   return registeredManifests;
+}
+
+export function getExcelParityReport(): ExcelParityReport {
+  return structuredClone(parityReport);
 }

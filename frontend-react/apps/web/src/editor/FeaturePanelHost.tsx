@@ -134,6 +134,8 @@ export function FeaturePanelHost({
           onInsertChart={(type, subtype, sourceRange, title, stacked) => session.insertChartFromPanel(type, sourceRange, title, stacked, subtype)}
           onAddConditionalFormat={session.addConditionalFormat.bind(session)}
           onRemoveConditionalFormat={session.removeConditionalFormat.bind(session)}
+          onUpdateConditionalFormat={session.updateConditionalFormat.bind(session)}
+          onReorderConditionalFormats={session.reorderConditionalFormats.bind(session)}
           onAddDataValidation={session.addDataValidation.bind(session)}
           onRemoveDataValidation={session.removeDataValidation.bind(session)}
           onPrint={session.printWorkbook.bind(session)}

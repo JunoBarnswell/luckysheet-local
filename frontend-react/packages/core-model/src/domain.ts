@@ -171,7 +171,15 @@ export interface ImageDrawingPayload {
 }
 
 /** Renderer-backed auto-shape identity shared by gallery, payload, and export. */
-export type ShapeDrawingType = 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+export type ShapeDrawingType =
+  | 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'triangle' | 'right-triangle' | 'diamond'
+  | 'parallelogram' | 'trapezoid' | 'hexagon' | 'octagon' | 'plus' | 'home-plate' | 'cube'
+  | 'cylinder' | 'sun' | 'moon' | 'heart' | 'lightning' | 'cloud' | 'frame'
+  | 'line' | 'arrow' | 'left-right-arrow' | 'up-down-arrow' | 'quad-arrow' | 'bent-arrow'
+  | 'u-turn-arrow' | 'left-brace' | 'right-brace' | 'left-right-brace' | 'left-bracket'
+  | 'right-bracket' | 'left-right-bracket'
+  | 'callout' | 'cloud-callout' | 'wedge-rect-callout' | 'wedge-round-rect-callout'
+  | 'star' | 'star4' | 'star5' | 'star6' | 'star8' | 'star16' | 'explosion1' | 'explosion2';
 
 export type ShapeDrawingCategory = 'basic-shapes' | 'lines' | 'callouts-and-stars';
 
@@ -180,11 +188,55 @@ export const SHAPE_DRAWING_PRESETS: readonly { category: ShapeDrawingCategory; t
   { category: 'basic-shapes', type: 'rectangle' },
   { category: 'basic-shapes', type: 'rounded-rectangle' },
   { category: 'basic-shapes', type: 'ellipse' },
+  { category: 'basic-shapes', type: 'triangle' },
+  { category: 'basic-shapes', type: 'right-triangle' },
+  { category: 'basic-shapes', type: 'diamond' },
+  { category: 'basic-shapes', type: 'parallelogram' },
+  { category: 'basic-shapes', type: 'trapezoid' },
+  { category: 'basic-shapes', type: 'hexagon' },
+  { category: 'basic-shapes', type: 'octagon' },
+  { category: 'basic-shapes', type: 'plus' },
+  { category: 'basic-shapes', type: 'home-plate' },
+  { category: 'basic-shapes', type: 'cube' },
+  { category: 'basic-shapes', type: 'cylinder' },
+  { category: 'basic-shapes', type: 'sun' },
+  { category: 'basic-shapes', type: 'moon' },
+  { category: 'basic-shapes', type: 'heart' },
+  { category: 'basic-shapes', type: 'lightning' },
+  { category: 'basic-shapes', type: 'cloud' },
+  { category: 'basic-shapes', type: 'frame' },
   { category: 'lines', type: 'line' },
   { category: 'lines', type: 'arrow' },
+  { category: 'lines', type: 'left-right-arrow' },
+  { category: 'lines', type: 'up-down-arrow' },
+  { category: 'lines', type: 'quad-arrow' },
+  { category: 'lines', type: 'bent-arrow' },
+  { category: 'lines', type: 'u-turn-arrow' },
+  { category: 'lines', type: 'left-brace' },
+  { category: 'lines', type: 'right-brace' },
+  { category: 'lines', type: 'left-right-brace' },
+  { category: 'lines', type: 'left-bracket' },
+  { category: 'lines', type: 'right-bracket' },
+  { category: 'lines', type: 'left-right-bracket' },
   { category: 'callouts-and-stars', type: 'callout' },
+  { category: 'callouts-and-stars', type: 'cloud-callout' },
+  { category: 'callouts-and-stars', type: 'wedge-rect-callout' },
+  { category: 'callouts-and-stars', type: 'wedge-round-rect-callout' },
   { category: 'callouts-and-stars', type: 'star' },
+  { category: 'callouts-and-stars', type: 'star4' },
+  { category: 'callouts-and-stars', type: 'star5' },
+  { category: 'callouts-and-stars', type: 'star6' },
+  { category: 'callouts-and-stars', type: 'star8' },
+  { category: 'callouts-and-stars', type: 'star16' },
+  { category: 'callouts-and-stars', type: 'explosion1' },
+  { category: 'callouts-and-stars', type: 'explosion2' },
 ] as const;
+
+const SHAPE_DRAWING_TYPES = new Set<string>(SHAPE_DRAWING_PRESETS.map((preset) => preset.type));
+
+export function isShapeDrawingType(value: unknown): value is ShapeDrawingType {
+  return typeof value === 'string' && SHAPE_DRAWING_TYPES.has(value);
+}
 
 export type ShapeTextDirection = 'horizontal' | 'vertical';
 export type ShapeTextHorizontalAlignment = 'left' | 'center' | 'right';
@@ -1221,7 +1273,7 @@ export function isDrawingGroup(value: unknown): value is DrawingGroup {
 
 export function isShapeDrawingPayload(value: unknown): value is ShapeDrawingPayload {
   if (!isRecord(value) || value.kind !== 'shape') return false;
-  if (!['rectangle', 'rounded-rectangle', 'ellipse', 'line', 'arrow', 'callout', 'star'].includes(String(value.type))) return false;
+  if (!isShapeDrawingType(value.type)) return false;
   if (typeof value.fill !== 'string' || value.fill.trim().length === 0 || typeof value.stroke !== 'string' || value.stroke.trim().length === 0) return false;
   if (value.strokeWidth !== undefined && (typeof value.strokeWidth !== 'number' || !Number.isFinite(value.strokeWidth) || value.strokeWidth <= 0 || value.strokeWidth > 100)) return false;
   if (value.text !== undefined && typeof value.text !== 'string') return false;

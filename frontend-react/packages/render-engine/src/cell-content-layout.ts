@@ -141,16 +141,12 @@ export class CellContentLayoutDomain {
       : style?.wrapText && availableWidthPx !== undefined
         ? wrapText(input.context, input.text, availableWidthPx)
         : input.text.split(/\r?\n/);
-    const textWidthPx = measureLines(input.context, input.cell, input.text, lines, fontRuns);
+    const textWidthPx = Math.max(measureLines(input.context, input.cell, input.text, lines, fontRuns), rawTextWidthPx);
     const contentHeightPx = Math.max(1, lines.length) * lineHeightPx;
     let naturalWidthPx = textWidthPx + padding * 2 + indent + reserve + borderWidth;
     let naturalHeightPx = contentHeightPx + padding * 2 + borderHeight;
     if ((style?.wrapText || style?.shrinkToFit) && availableWidthPx !== undefined) naturalWidthPx = Math.min(naturalWidthPx, baseRect.width);
-    const rotationDegrees = style?.textOrientation === 'rotateUp'
-      ? 90
-      : style?.textOrientation === 'rotateDown'
-        ? 180
-        : style?.textRotate ?? 0;
+    const rotationDegrees = resolveTextRotationDegrees(style);
     if (rotationDegrees !== 0) {
       const rotation = Math.abs(rotationDegrees * Math.PI / 180);
       const rotatedWidth = Math.abs(Math.cos(rotation)) * naturalWidthPx + Math.abs(Math.sin(rotation)) * naturalHeightPx;
@@ -212,6 +208,13 @@ export function cellRenderFont(style: CellRenderData['style'], theme: RenderThem
   const weight = style?.bold ? '700' : '400';
   const slant = style?.italic ? ' italic' : '';
   return `${slant} ${weight} ${fontSizePx}px ${family}`;
+}
+
+/** Resolve the canonical text rotation used by layout, Canvas, and OOXML. */
+export function resolveTextRotationDegrees(style: CellRenderData['style']): number {
+  if (style?.textOrientation === 'rotateUp') return -90;
+  if (style?.textOrientation === 'rotateDown') return 90;
+  return style?.textRotate ?? 0;
 }
 
 function measureTextRuns(

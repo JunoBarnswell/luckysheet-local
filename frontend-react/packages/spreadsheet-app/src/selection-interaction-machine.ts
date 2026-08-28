@@ -15,6 +15,7 @@ export interface SelectionGesture {
   pointerId?: number;
   kind?: SelectionKind;
   additive?: boolean;
+  extend?: boolean;
   expandedRange?: RangeRef;
   bounds?: SelectionBounds;
 }
@@ -44,11 +45,15 @@ export function reduceSelectionInteraction(state: SelectionState, event: Selecti
 
 export function selectionFromGesture(state: SelectionState, gesture: SelectionGesture, sheetId: string): SelectionState {
   const kind = gesture.kind ?? 'cells';
-  const range = gesture.expandedRange ?? rangeFromCells(gesture.origin, gesture.target, kind, sheetId, gesture.bounds);
+  const extend = Boolean(gesture.extend || state.interactionMode === 'extend') && !gesture.additive;
+  const range = extend
+    ? rangeFromCells(state.anchorCell, gesture.target, kind, sheetId, gesture.bounds)
+    : gesture.expandedRange ?? rangeFromCells(gesture.origin, gesture.target, kind, sheetId, gesture.bounds);
+  const additive = Boolean(gesture.additive || (state.interactionMode === 'add' && kind === 'cells'));
   return {
     ...state,
-    ranges: gesture.additive ? [...state.ranges, range] : [range],
-    primaryRangeIndex: gesture.additive ? state.ranges.length : 0,
+    ranges: additive ? [...state.ranges, range] : [range],
+    primaryRangeIndex: additive ? state.ranges.length : 0,
     activeCell: { ...gesture.target },
     anchorCell: { ...gesture.origin },
     selectionKind: kind,

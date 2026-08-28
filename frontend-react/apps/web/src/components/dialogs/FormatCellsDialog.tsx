@@ -223,9 +223,19 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply, ini
                     <TextInput
                       aria-label={homeText(activeLocale, 'rotation')}
                       type="number"
+                      min="0"
+                      max="180"
                       value={String(style.textRotate ?? 0)}
                       onChange={(event) => setStyle({ textRotate: Number(event.target.value) || 0 })}
                     />
+                  </Stack>
+                  <Stack gap="xs">
+                    <Text size="xs" tone="subtle">Reading order</Text>
+                    <Select sizeVariant="sm" value={style.readingOrder ?? 'context'} onChange={(event) => setStyle({ readingOrder: event.target.value as CellStyle['readingOrder'] })}>
+                      <option value="context">Context</option>
+                      <option value="ltr">Left-to-right</option>
+                      <option value="rtl">Right-to-left</option>
+                    </Select>
                   </Stack>
                 </Stack>
               ) : null}
@@ -258,13 +268,37 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply, ini
                     <CheckToggle checked={Boolean(style.italic)} label={homeText(activeLocale, 'italic')} onChange={(event) => setStyle({ italic: event.target.checked })} />
                     <CheckToggle checked={Boolean(style.underline)} label={homeText(activeLocale, 'underline')} onChange={(event) => setStyle({ underline: event.target.checked })} />
                     <CheckToggle checked={Boolean(style.strikethrough)} label={homeText(activeLocale, 'strikethrough')} onChange={(event) => setStyle({ strikethrough: event.target.checked })} />
+                    <CheckToggle checked={Boolean(style.superscript)} label="Superscript" onChange={(event) => setStyle({ superscript: event.target.checked, ...(event.target.checked ? { subscript: false } : {}) })} />
+                    <CheckToggle checked={Boolean(style.subscript)} label="Subscript" onChange={(event) => setStyle({ subscript: event.target.checked, ...(event.target.checked ? { superscript: false } : {}) })} />
                   </Inline>
+                  <Stack gap="xs">
+                    <Text size="xs" tone="subtle">Underline style</Text>
+                    <Select sizeVariant="sm" value={style.underlineStyle ?? 'single'} onChange={(event) => setStyle({ underline: true, underlineStyle: event.target.value as CellStyle['underlineStyle'] })}>
+                      <option value="single">Single</option>
+                      <option value="double">Double</option>
+                      <option value="singleAccounting">Single accounting</option>
+                      <option value="doubleAccounting">Double accounting</option>
+                    </Select>
+                  </Stack>
                   <Stack gap="xs">
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'textColor')}</Text>
                     <ColorPicker
                       color={style.textColor ?? '#0f172a'}
                       onChange={(color) => setStyle({ textColor: color })}
                     />
+                  </Stack>
+                  <Stack gap="xs">
+                    <Text size="xs" tone="subtle">Border line style</Text>
+                    <Select sizeVariant="sm" value={draft.border?.line?.style ?? 'thin'} onChange={(event) => setDraft((prev) => ({ ...prev, border: { placement: prev.border?.placement ?? 'all', line: { style: event.target.value as NonNullable<BorderLine>['style'], color: prev.border?.line?.color ?? '#334155' } } }))}>
+                      <option value="hair">Hair</option>
+                      <option value="thin">Thin</option>
+                      <option value="medium">Medium</option>
+                      <option value="thick">Thick</option>
+                      <option value="dotted">Dotted</option>
+                      <option value="dashed">Dashed</option>
+                      <option value="dashDot">Dash-dot</option>
+                      <option value="double">Double</option>
+                    </Select>
                   </Stack>
                 </Stack>
               ) : null}
@@ -305,10 +339,16 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply, ini
               {tab === 'fill' ? (
                 <Stack gap="md">
                   <Text size="xs" tone="subtle">{homeText(activeLocale, 'fillBackground')}</Text>
+                  <Select sizeVariant="sm" value={style.fill?.kind ?? 'solid'} onChange={(event) => setStyle({ fill: { kind: event.target.value as NonNullable<CellStyle['fill']>['kind'], foreground: style.background ?? '#ffffff', pattern: event.target.value === 'pattern' ? 'darkDown' : undefined } })}>
+                    <option value="solid">Solid</option>
+                    <option value="pattern">Pattern</option>
+                    <option value="gradient">Gradient</option>
+                  </Select>
                   <ColorPicker
                     color={style.background ?? '#ffffff'}
-                    onChange={(color) => setStyle({ background: color })}
+                    onChange={(color) => setStyle({ background: color, fill: { ...(style.fill ?? { kind: 'solid' }), foreground: color } })}
                   />
+                  {style.fill?.kind === 'pattern' ? <Select sizeVariant="sm" value={style.fill.pattern ?? 'darkDown'} onChange={(event) => setStyle({ fill: { ...style.fill!, pattern: event.target.value as NonNullable<CellStyle['fill']>['pattern'] } })}><option value="darkDown">Dark down</option><option value="darkUp">Dark up</option><option value="darkGrid">Dark grid</option><option value="lightDown">Light down</option><option value="lightUp">Light up</option><option value="lightGrid">Light grid</option></Select> : null}
                 </Stack>
               ) : null}
 

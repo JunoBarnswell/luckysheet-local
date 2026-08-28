@@ -33,14 +33,32 @@ export type FreezePreset = 'none' | 'firstRow' | 'firstColumn' | 'both';
 export type GoToSpecialKind =
   | 'blanks'
   | 'constants'
+  | 'constant-numbers'
+  | 'constant-text'
+  | 'constant-logical'
+  | 'constant-errors'
   | 'formulas'
+  | 'formula-numbers'
+  | 'formula-text'
+  | 'formula-logical'
+  | 'formula-errors'
   | 'comments'
+  | 'notes'
   | 'comments-notes'
   | 'visible'
   | 'errors'
   | 'conditional-format'
+  | 'conditional-format-all'
+  | 'conditional-format-same'
   | 'data-validation'
+  | 'data-validation-all'
+  | 'data-validation-same'
   | 'current-region'
+  | 'current-array'
+  | 'row-differences'
+  | 'column-differences'
+  | 'precedents'
+  | 'dependents'
   | 'last-cell'
   | 'objects';
 
@@ -352,6 +370,93 @@ function detectCurrentRegion(sheet: WorksheetModel, row: number, column: number)
   return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
 }
 
+function rangeContainsAddress(range: RangeRef, address: { row: number; column: number }): boolean {
+  return range.startRow <= address.row && range.endRow >= address.row && range.startColumn <= address.column && range.endColumn >= address.column;
+}
+
+function parseA1RangeInSheet(value: string, sheetId: string): RangeRef | undefined {
+  const [first, second = first] = value.split(':');
+  const parseCell = (input: string | undefined): { row: number; column: number } | undefined => {
+    const match = input?.trim().match(/^\$?([A-Z]+)\$?(\d+)$/i);
+    if (!match) return undefined;
+    let column = 0;
+    for (const character of match[1]!.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64;
+    const row = Number(match[2]) - 1;
+    return Number.isSafeInteger(row) && row >= 0 ? { row, column: column - 1 } : undefined;
+  };
+  const start = parseCell(first);
+  const end = parseCell(second);
+  if (!start || !end) return undefined;
+  return { sheetId, startRow: Math.min(start.row, end.row), endRow: Math.max(start.row, end.row), startColumn: Math.min(start.column, end.column), endColumn: Math.max(start.column, end.column) };
+}
+
+function isErrorCell(cell: CellData | undefined): boolean {
+  const value = cell?.formulaValue;
+  return Boolean((typeof cell?.value === 'string' && cell.value.startsWith('#')) || (value && typeof value === 'object' && 'kind' in value && (value as { kind?: string }).kind === 'error'));
+}
+
+function cellComparisonKey(cell: CellData | undefined): string {
+  return JSON.stringify(cell?.formulaValue ?? cell?.value ?? null);
+}
+
+function resolveDimensionDifferences(sheet: WorksheetModel, range: RangeRef, axis: 'row' | 'column'): RangeRef[] {
+  const hits: RangeRef[] = [];
+  if (axis === 'row') {
+    const baseline = Array.from({ length: range.endColumn - range.startColumn + 1 }, (_, offset) => cellComparisonKey(sheet.cells.get(range.startRow, range.startColumn + offset)));
+    for (let row = range.startRow + 1; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      if (cellComparisonKey(sheet.cells.get(row, column)) !== baseline[column - range.startColumn]) hits.push({ sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
+    }
+  } else {
+    const baseline = Array.from({ length: range.endRow - range.startRow + 1 }, (_, offset) => cellComparisonKey(sheet.cells.get(range.startRow + offset, range.startColumn)));
+    for (let column = range.startColumn + 1; column <= range.endColumn; column += 1) for (let row = range.startRow; row <= range.endRow; row += 1) {
+      if (cellComparisonKey(sheet.cells.get(row, column)) !== baseline[row - range.startRow]) hits.push({ sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
+    }
+  }
+  return hits;
+}
+
+interface FormulaReference {
+  sheetId: string;
+  row: number;
+  column: number;
+}
+
+function formulaReferences(workbook: WorkbookModel, owner: WorksheetModel, formula: string): FormulaReference[] {
+  const references: FormulaReference[] = [];
+  const pattern = /(?:(?:'([^']+)'|([A-Za-z_][A-Za-z0-9_. ]*))!)?\$?([A-Z]{1,3})\$?(\d+)/g;
+  for (const match of formula.matchAll(pattern)) {
+    let column = 0;
+    for (const character of match[3]!.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64;
+    const row = Number(match[4]) - 1;
+    if (!Number.isSafeInteger(row) || row < 0) continue;
+    const referencedSheet = match[1] || match[2] ? workbook.getSheetByName((match[1] || match[2]!).trim()) : owner;
+    if (!referencedSheet) continue;
+    references.push({ sheetId: referencedSheet.id, row, column: column - 1 });
+  }
+  return references;
+}
+
+function resolveFormulaPrecedents(workbook: WorkbookModel, sheet: WorksheetModel, range: RangeRef): RangeRef[] {
+  const hits: RangeRef[] = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    const formula = sheet.cells.get(row, column)?.formula;
+    if (!formula) continue;
+    for (const reference of formulaReferences(workbook, sheet, formula)) hits.push({ sheetId: reference.sheetId, startRow: reference.row, endRow: reference.row, startColumn: reference.column, endColumn: reference.column });
+  }
+  return hits;
+}
+
+function resolveFormulaDependents(workbook: WorkbookModel, sheet: WorksheetModel, range: RangeRef): RangeRef[] {
+  const targets = new Set<string>();
+  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) targets.add(`${sheet.id}:${row}:${column}`);
+  const hits: RangeRef[] = [];
+  for (const candidate of workbook.getSheets()) candidate.cells.forEach((cell, row, column) => {
+    if (!cell.formula) return;
+    if (formulaReferences(workbook, candidate, cell.formula).some((reference) => targets.has(`${reference.sheetId}:${reference.row}:${reference.column}`))) hits.push({ sheetId: candidate.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
+  });
+  return hits;
+}
+
 export function resolveGoToSpecial(
   workbook: WorkbookModel,
   params: GoToSpecialParams,
@@ -364,8 +469,23 @@ export function resolveGoToSpecial(
     startColumn: Math.min(params.range.startColumn, params.range.endColumn),
     endColumn: Math.max(params.range.startColumn, params.range.endColumn),
   };
+  const anchor = { row: normalizedRange.startRow, column: normalizedRange.startColumn };
+  if (params.kind === 'current-array') {
+    const spill = sheet.spillRanges.find((candidate) => rangeContainsAddress(candidate.range, anchor));
+    if (spill) return [structuredClone(spill.range)];
+    const cell = sheet.cells.get(anchor.row, anchor.column);
+    if (cell?.formulaMetadata?.kind === 'array' && cell.formulaMetadata.range) {
+      const arrayRange = parseA1RangeInSheet(cell.formulaMetadata.range, params.sheetId);
+      if (arrayRange) return [arrayRange];
+    }
+    return [];
+  }
+  if (params.kind === 'row-differences' || params.kind === 'column-differences') {
+    return resolveDimensionDifferences(sheet, normalizedRange, params.kind === 'row-differences' ? 'row' : 'column');
+  }
+  if (params.kind === 'precedents') return resolveFormulaPrecedents(workbook, sheet, normalizedRange);
+  if (params.kind === 'dependents') return resolveFormulaDependents(workbook, sheet, normalizedRange);
   if (params.kind === 'current-region') {
-    const anchor = { row: normalizedRange.startRow, column: normalizedRange.startColumn };
     return [detectCurrentRegion(sheet, anchor.row, anchor.column)];
   }
   if (params.kind === 'last-cell') {
@@ -383,8 +503,10 @@ export function resolveGoToSpecial(
   }
   const hits: RangeRef[] = [];
   const conditionalCells = new Set<string>();
-  if (params.kind === 'conditional-format') {
+  if (params.kind === 'conditional-format' || params.kind === 'conditional-format-all' || params.kind === 'conditional-format-same') {
+    const firstType = sheet.conditionalFormats[0]?.type;
     for (const rule of sheet.conditionalFormats) {
+      if (params.kind === 'conditional-format-same' && firstType && rule.type !== firstType) continue;
       for (const range of rule.ranges) {
         const startRow = Math.max(normalizedRange.startRow, range.startRow);
         const endRow = Math.min(normalizedRange.endRow, range.endRow);
@@ -395,8 +517,10 @@ export function resolveGoToSpecial(
     }
   }
   const validationCells = new Set<string>();
-  if (params.kind === 'data-validation') {
+  if (params.kind === 'data-validation' || params.kind === 'data-validation-all' || params.kind === 'data-validation-same') {
+    const firstType = sheet.dataValidations[0]?.type;
     for (const rule of sheet.dataValidations) {
+      if (params.kind === 'data-validation-same' && firstType && rule.type !== firstType) continue;
       for (const range of rule.ranges) {
         const startRow = Math.max(normalizedRange.startRow, range.startRow);
         const endRow = Math.min(normalizedRange.endRow, range.endRow);
@@ -417,23 +541,56 @@ export function resolveGoToSpecial(
         case 'constants':
           match = Boolean(cell && cell.value != null && cell.value !== '' && !cell.formula);
           break;
+        case 'constant-numbers':
+          match = Boolean(cell && typeof cell.value === 'number' && !cell.formula);
+          break;
+        case 'constant-text':
+          match = Boolean(cell && typeof cell.value === 'string' && cell.value !== '' && !cell.formula);
+          break;
+        case 'constant-logical':
+          match = Boolean(cell && typeof cell.value === 'boolean' && !cell.formula);
+          break;
+        case 'constant-errors':
+          match = isErrorCell(cell) && !cell?.formula;
+          break;
         case 'formulas':
           match = Boolean(cell?.formula);
           break;
+        case 'formula-numbers':
+          match = Boolean(cell?.formula && typeof cell.formulaValue === 'number');
+          break;
+        case 'formula-text':
+          match = Boolean(cell?.formula && typeof cell.formulaValue === 'string');
+          break;
+        case 'formula-logical':
+          match = Boolean(cell?.formula && typeof cell.formulaValue === 'boolean');
+          break;
+        case 'formula-errors':
+          match = Boolean(cell?.formula && isErrorCell(cell));
+          break;
         case 'comments':
+          match = sheet.review.getThreadsAt(row, column).length > 0;
+          break;
+        case 'notes':
+          match = sheet.review.hasNoteAt(row, column);
+          break;
         case 'comments-notes':
           match = sheet.review.getThreadsAt(row, column).length > 0 || sheet.review.hasNoteAt(row, column);
           break;
         case 'errors':
-          match = Boolean(typeof cell?.value === 'string' && cell.value.startsWith('#'));
+          match = isErrorCell(cell);
           break;
         case 'visible':
           match = !sheet.hiddenRows.has(row) && !sheet.hiddenColumns.has(column);
           break;
         case 'conditional-format':
+        case 'conditional-format-all':
+        case 'conditional-format-same':
           match = conditionalCells.has(`${row}:${column}`);
           break;
         case 'data-validation':
+        case 'data-validation-all':
+        case 'data-validation-same':
           match = validationCells.has(`${row}:${column}`);
           break;
         case 'objects':

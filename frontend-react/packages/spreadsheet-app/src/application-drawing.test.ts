@@ -93,7 +93,7 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
   });
 
-  it('inserts every local-only Insert object through the canonical drawing history', async () => {
+  it('inserts local objects and workbook snapshots through their canonical drawing history', async () => {
     const app = new WorkbookSession();
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     await app.insertLocalObject('icon', { iconName: 'heart' });
@@ -101,14 +101,14 @@ describe('WorkbookSession drawing integration', () => {
     await app.insertLocalObject('wordart', { text: 'Local only' });
     await app.insertLocalObject('signature-line', { signerName: 'Ada Lovelace', signerTitle: 'Engineer' });
     await app.insertLocalObject('equation', { text: 'a^2+b^2=c^2' });
-    await app.insertLocalObject('screenshot');
+    app.insertCamera();
     const objKinds = sheet.drawings.map((drawing) => drawing.kind);
-    assert.deepEqual(objKinds, ['icon', 'smartart', 'wordart', 'signature-line', 'equation', 'screenshot']);
+    assert.deepEqual(objKinds, ['icon', 'smartart', 'wordart', 'signature-line', 'equation', 'camera']);
     assert.equal(sheet.drawingPayloads.size, 6);
     assert.equal(app.getUiSnapshot().selectedFloatingId, sheet.drawings.at(-1)?.id);
     assert.equal(app.getUiSnapshot().historyEntries.at(-1)?.redo[0]?.id, 'drawing.add');
     app.undo();
-    assert.equal(sheet.drawings.some((drawing) => drawing.kind === 'screenshot'), false);
+    assert.equal(sheet.drawings.some((drawing) => drawing.kind === 'camera'), false);
   });
 
   it('parses local OBJ files and rejects malformed geometry before mutation', async () => {
