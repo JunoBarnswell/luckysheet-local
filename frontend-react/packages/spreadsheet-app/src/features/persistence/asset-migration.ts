@@ -1,4 +1,4 @@
-import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
+import { migrateStoredWorkbookSnapshot, WORKBOOK_SNAPSHOT_SCHEMA_REVISION, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { AssetStore } from './asset-store';
 import { computeChecksum } from './checksum';
 import type { WorkspaceRecord } from './storage';
@@ -6,7 +6,9 @@ import type { WorkspaceRecord } from './storage';
 /** One-time boundary migration for v6 snapshots that embedded image bytes. */
 export async function migrateLegacyImageAssets(value: unknown, assetStore: AssetStore): Promise<WorkbookSnapshot> {
   const input = structuredClone(value) as Record<string, unknown>;
-  await assetizeImageRecords(input, assetStore);
+  // A current-version snapshot is already on the canonical runtime contract;
+  // legacy image bytes are rejected by validation instead of repaired here.
+  if (input.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) await assetizeImageRecords(input, assetStore);
   return migrateStoredWorkbookSnapshot(input);
 }
 

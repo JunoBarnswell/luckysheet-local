@@ -206,12 +206,17 @@ components:
         updatedAt: { type: string, format: date-time }
     WorkbookSnapshot:
       type: object
-      required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics]
+      required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics, calculationSettings, editingOptions, definedNameModels]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 8 }
+        version: { const: 10 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
+        collationContext: { type: object }
+        calculationSettings: { type: object }
+        editingOptions: { type: object }
+        theme: { type: object }
+        definedNameModels: { type: array, items: { $ref: '#/components/schemas/DefinedNameModel' } }
         dimensionMetrics:
           type: object
           required: [normalFontFamily, normalFontSizePx, maximumDigitWidthPx]
@@ -228,7 +233,22 @@ components:
             tables: { type: array, items: { type: object } }
             relationships: { type: array, items: { type: object } }
             views: { type: array, items: { type: object } }
+        printDocuments: { type: array, items: { type: object } }
+        queryDefinitions: { type: array, items: { type: object } }
         cellStyleTemplates: { type: array, items: { type: object } }
+      additionalProperties: false
+    DefinedNameModel:
+      type: object
+      required: [name, formula, scope]
+      properties:
+        name: { type: string, minLength: 1 }
+        formula: { type: string, minLength: 1 }
+        scope: { enum: [workbook, sheet] }
+        sheetId: { type: string, minLength: 1 }
+        anchor: { type: object }
+        hidden: { type: boolean }
+        comment: { type: string }
+      additionalProperties: false
     WorksheetPane:
       oneOf:
         - type: object
@@ -253,16 +273,28 @@ components:
         range: { type: object }
         columns: { type: object, additionalProperties: { type: object } }
         sortState: { type: object }
-        additionalProperties: false
+      additionalProperties: false
     WorksheetSnapshot:
       type: object
-      required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, review, defaultRowHeightPx, defaultColumnWidthPx]
+      required: [kind, id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, review, defaultRowHeightPx, defaultColumnWidthPx]
       properties:
+        kind: { enum: [worksheet, table-sheet, gantt-sheet, report-sheet] }
         id: { type: string, minLength: 1 }
         name: { type: string, minLength: 1 }
         rowCount: { type: integer, minimum: 1, maximum: 1048576 }
         columnCount: { type: integer, minimum: 1, maximum: 16384 }
-        cells: { type: object, additionalProperties: { type: object } }
+        cells:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              not:
+                anyOf:
+                  - required: [hyperlink]
+                  - required: [hyperlinkDetail]
+                  - required: [note]
+                  - required: [comment]
         merges: { type: array, items: { type: object } }
         pane: { $ref: '#/components/schemas/WorksheetPane' }
         autoFilter: { $ref: '#/components/schemas/AutoFilter' }
@@ -283,6 +315,29 @@ components:
         defaultColumnWidthPx: { type: number, exclusiveMinimum: 0 }
         rowHeightsPx: { type: object, additionalProperties: { type: number, exclusiveMinimum: 0 } }
         columnWidthsPx: { type: object, additionalProperties: { type: number, exclusiveMinimum: 0 } }
+        dataRegions: { type: array }
+        sparklineGroups: { type: array }
+        conditionalFormats: { type: array }
+        dataValidations: { type: array }
+        hiddenRows: { type: array, items: { type: integer, minimum: 0 } }
+        hiddenColumns: { type: array, items: { type: integer, minimum: 0 } }
+        tabColor: { type: string }
+        bandedRule: { type: object }
+        sheetTables: { type: array }
+        spillRanges: { type: array }
+        protectionRules: { type: array }
+        showGridlines: { type: boolean }
+        showHeaders: { type: boolean }
+        zoom: { type: number, exclusiveMinimum: 0 }
+        hidden: { type: boolean }
+        outline: { type: object }
+        tableSheet: { type: object }
+        ganttSheet: { type: object }
+        reportSheet: { type: object }
+        drawingGroups: { type: array }
+        snapSettings: { type: object }
+        hyperlinks: { type: array }
+      additionalProperties: false
     CreateWorkbookRequest:
       type: object
       required: [unitId, name, snapshot]

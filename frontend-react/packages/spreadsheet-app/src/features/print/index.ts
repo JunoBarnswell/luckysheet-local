@@ -1,4 +1,4 @@
-import { normalizePrintDocumentSnapshot, type PrintDocumentSnapshot, type RangeRef, type SheetId, type WorkbookModel } from '@react-sheets/core-model';
+import { normalizePrintDocumentSnapshot, type AssetRef, type CellData, type DrawingObject, type DrawingPayload, type PrintDocumentSnapshot, type RangeRef, type SheetId, type WorkbookModel } from '@react-sheets/core-model';
 
 export type PaperSize = PrintDocumentSnapshot['pageSetup']['paperSize'];
 export type PageOrientation = PrintDocumentSnapshot['pageSetup']['orientation'];
@@ -126,6 +126,57 @@ export interface PrintPageInfo {
   heightPx: number;
   repeatRows?: { start: number; end: number };
   repeatColumns?: { start: number; end: number };
+  /** Effective fit-to-page transform. A renderer must apply these values. */
+  scaleX?: number;
+  scaleY?: number;
+  contentWidthPx?: number;
+  contentHeightPx?: number;
+}
+
+export const PRINT_PROJECTION_SCHEMA = 'PrintProjection' as const;
+
+export interface PrintProjectionCell {
+  row: number;
+  column: number;
+  value: CellData['value'];
+  displayValue: string;
+  formula?: string;
+  style?: CellData['style'];
+  rowOffsetPx: number;
+  columnOffsetPx: number;
+  widthPx: number;
+  heightPx: number;
+  image?: { asset: AssetRef; bytes?: Uint8Array; url?: string };
+}
+
+export interface PrintProjectionDrawing {
+  drawing: DrawingObject;
+  payload: DrawingPayload;
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  image?: { asset: AssetRef; bytes?: Uint8Array; url?: string };
+  chart?: PrintChartProjection;
+}
+
+export interface PrintChartProjection {
+  categories: string[];
+  series: Array<{ id: string; name: string; values: Array<number | null>; color?: string }>;
+}
+
+/** Real page content consumed by browser and Node print writers. */
+export interface PrintProjection {
+  schema: typeof PRINT_PROJECTION_SCHEMA;
+  page: PrintPageInfo;
+  cells: PrintProjectionCell[];
+  drawings: PrintProjectionDrawing[];
+  visibleRows: number[];
+  visibleColumns: number[];
+  scaleX: number;
+  scaleY: number;
+  contentWidthPx: number;
+  contentHeightPx: number;
 }
 
 export interface PrintPaginationOptions {
@@ -227,20 +278,52 @@ export function computePrintPages(layout: PrintLayoutModel, rowHeight = 20, colW
           let heightPx = 0;
           for (let column = columnPage.start; column <= columnPage.end; column += 1) if (!hiddenColumns.has(column)) widthPx += columns[column] ?? colWidth;
           for (let row = rowPage.start; row <= rowPage.end; row += 1) if (!hiddenRows.has(row)) heightPx += rows[row] ?? rowHeight;
+          const pageColumnWidthPx = visibleColumnWidth(columnPage, columns, colWidth, hiddenColumns);
+          const pageRowHeightPx = visibleRowHeight(rowPage, rows, rowHeight, hiddenRows);
+          const repeatColumnWidthPx = layout.repeatColumns && (layout.repeatColumns.start < columnPage.start || layout.repeatColumns.end > columnPage.end)
+            ? visibleColumnWidth({ start: layout.repeatColumns.start, end: layout.repeatColumns.end }, columns, colWidth, hiddenColumns)
+            : 0;
+          const repeatRowHeightPx = layout.repeatRows && (layout.repeatRows.start < rowPage.start || layout.repeatRows.end > rowPage.end)
+            ? visibleRowHeight({ start: layout.repeatRows.start, end: layout.repeatRows.end }, rows, rowHeight, hiddenRows)
+            : 0;
+          const contentWidthPx = pageColumnWidthPx + repeatColumnWidthPx;
+          const contentHeightPx = pageRowHeightPx + repeatRowHeightPx;
+          const fitScaleX = layout.pageSetup.fitToWidth
+            ? Math.min(1, capacity.width / Math.max(0.01, contentWidthPx * 0.75 * scale))
+            : 1;
+          const fitScaleY = layout.pageSetup.fitToHeight
+            ? Math.min(1, capacity.height / Math.max(0.01, contentHeightPx * 0.75 * scale))
+            : 1;
           pages.push({
             pageIndex: pages.length,
             sheetId: area.sheetId,
             range: { sheetId: area.sheetId, startRow: rowPage.start, endRow: rowPage.end, startColumn: columnPage.start, endColumn: columnPage.end },
-            widthPx,
-            heightPx,
+            widthPx: widthPx + repeatColumnWidthPx || contentWidthPx,
+            heightPx: heightPx + repeatRowHeightPx || contentHeightPx,
             repeatRows: layout.repeatRows,
             repeatColumns: layout.repeatColumns,
+            scaleX: scale * fitScaleX,
+            scaleY: scale * fitScaleY,
+            contentWidthPx,
+            contentHeightPx,
           });
         }
       }
     }
   }
   return pages;
+}
+
+function visibleColumnWidth(segment: { start: number; end: number }, widths: Readonly<Record<number, number>>, fallback: number, hidden: ReadonlySet<number>): number {
+  let total = 0;
+  for (let column = segment.start; column <= segment.end; column += 1) if (!hidden.has(column)) total += widths[column] ?? fallback;
+  return total;
+}
+
+function visibleRowHeight(segment: { start: number; end: number }, heights: Readonly<Record<number, number>>, fallback: number, hidden: ReadonlySet<number>): number {
+  let total = 0;
+  for (let row = segment.start; row <= segment.end; row += 1) if (!hidden.has(row)) total += heights[row] ?? fallback;
+  return total;
 }
 
 export * from './pdf-export';

@@ -18,7 +18,6 @@ import {
 } from './content-query';
 import {
   applyDataRegionMaterialization,
-  migrateDataRegionCellPatches,
   prepareDataRegionMaterialization,
   resolveCell,
   restoreDataRegionMaterialization,
@@ -188,7 +187,7 @@ test('invalid ranges and fields are errors, while empty ranges are ready and emp
   assert.deepEqual(empty.value, []);
 });
 
-test('one-time overlay migration preserves block values before canonical resolution', async () => {
+test('canonical overlay patches preserve immutable block values', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   const block = await buildBlock(sourceId, 'resolved-block', 0, [['A', 10], ['B', 20]]);
@@ -207,15 +206,13 @@ test('one-time overlay migration preserves block values before canonical resolut
     revision: 0,
   });
 
-  // This is the legacy shape produced by the large-data import path.  Its
-  // value is stale by design; migrate it once before entering the resolver.
   sheet.cells.set(1, 1, { value: 999, style: { bold: true } });
   assert.throws(
     () => resolveCell(sheet, 1, 1, new Map([[sourceId, query]])),
     /non-canonical cell overlay/,
   );
-  assert.equal(migrateDataRegionCellPatches(sheet), 1);
-  assert.equal(migrateDataRegionCellPatches(sheet), 0);
+  sheet.cells.delete(1, 1);
+  writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'inherit' }, style: { kind: 'set', value: { bold: true } } });
   await query.getRowValues(0);
   const loaded = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
   assert.equal(loaded?.source, 'data-block-overlay');

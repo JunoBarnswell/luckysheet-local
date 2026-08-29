@@ -44,11 +44,12 @@ function cloneReply(reply: CommentReply): CommentReply {
  */
 export class ReviewStore {
   private readonly notesByCell = new Map<ReviewCellKey, string>();
+  private readonly noteCellById = new Map<string, ReviewCellKey>();
   private readonly notesById = new Map<string, CellNote>();
   private readonly threadIdsByCell = new Map<ReviewCellKey, string[]>();
   private readonly threadsById = new Map<string, CommentThread>();
 
-  constructor(readonly sheetId: string) {
+  constructor(public sheetId: string) {
     if (!sheetId.trim()) throw new Error('ReviewStore requires a sheet id');
   }
 
@@ -76,11 +77,15 @@ export class ReviewStore {
     const key = cellKey(row, column);
     if (!note.id.trim()) throw new Error('Review note requires an id');
     const previousId = this.notesByCell.get(key);
-    const existingKey = [...this.notesByCell.entries()].find(([, id]) => id === note.id)?.[0];
+    const existingKey = this.noteCellById.get(note.id);
     if (existingKey !== undefined && existingKey !== key) throw new Error(`Review note identity already belongs to ${existingKey}: ${note.id}`);
-    if (previousId !== undefined && previousId !== note.id) this.notesById.delete(previousId);
+    if (previousId !== undefined && previousId !== note.id) {
+      this.notesById.delete(previousId);
+      this.noteCellById.delete(previousId);
+    }
     this.notesByCell.set(key, note.id);
     this.notesById.set(note.id, structuredClone(note));
+    this.noteCellById.set(note.id, key);
   }
 
   removeNote(row: number, column: number): CellNote | undefined {
@@ -91,6 +96,7 @@ export class ReviewStore {
     if (!note) throw new Error(`Review note index is dangling: ${id}`);
     this.notesByCell.delete(key);
     this.notesById.delete(id);
+    this.noteCellById.delete(id);
     return structuredClone(note);
   }
 
@@ -175,6 +181,7 @@ export class ReviewStore {
 
   replaceNotes(entries: ReadonlyArray<{ row: number; column: number; note: CellNote }>): void {
     this.notesByCell.clear();
+    this.noteCellById.clear();
     this.notesById.clear();
     for (const entry of entries) this.setNote(entry.row, entry.column, entry.note);
   }
@@ -235,8 +242,15 @@ export class ReviewStore {
       sheetId: targetSheetId,
       replies: thread.replies.map((reply) => ({ ...cloneReply(reply), id: allocateId(reply.id) })),
     }));
-    this.replaceNotes(notes);
-    this.replaceThreads(threads);
+    const previousSheetId = this.sheetId;
+    this.sheetId = targetSheetId;
+    try {
+      this.replaceNotes(notes);
+      this.replaceThreads(threads);
+    } catch (error) {
+      this.sheetId = previousSheetId;
+      throw error;
+    }
   }
 
   toSnapshot(): ReviewStoreSnapshot {
@@ -263,6 +277,7 @@ export class ReviewStore {
       if (!store.notesById.has(id) || indexedNoteIds.has(id)) throw new Error(`Review note cell index is invalid: ${key}`);
       indexedNoteIds.add(id);
       store.notesByCell.set(key, id);
+      store.noteCellById.set(id, key);
     }
     if (indexedNoteIds.size !== store.notesById.size) throw new Error('Review note store contains an unindexed note');
     for (const [id, thread] of Object.entries(snapshot.threadsById)) {

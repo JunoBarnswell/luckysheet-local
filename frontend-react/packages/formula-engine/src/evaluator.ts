@@ -1,10 +1,10 @@
 import type { BinaryOperator, CellAddress, FormulaAst, FormulaReferenceNode, SpillReferenceNode } from './ast';
 import { formatFormula } from './ast-format';
-import { resolveCellReference, resolveRangeReference } from './dependencies';
-import { getBuiltinFunction } from './functions';
+import { collectFormulaDependencies, resolveCellReference, resolveRangeReference } from './dependencies';
+import { getBuiltinFunction, getFunctionCapability } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
-import type { RangeDependency } from './range-index';
+import type { FormulaDependency, RangeDependency } from './range-index';
 import { createFormulaError, isArrayValue, isFormulaError, isReferenceValue, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
 import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
 import type { ExcelNumericContext } from './numeric';
@@ -49,6 +49,12 @@ export interface FormulaEvaluationContext {
   readonly random?: (functionName: string, occurrence?: string, elementIndex?: number) => number | FormulaError;
   /** Evaluate a formula AST while overriding one or more input cells. */
   readonly evaluateWithCellOverrides?: (ast: FormulaAst, overrides: readonly FormulaCellOverride[]) => FormulaValue;
+  /**
+   * Dynamic references are discovered during evaluation (INDIRECT/OFFSET).
+   * They are added to the same dependency index as static AST references;
+   * callers must not maintain a second dependency graph.
+   */
+  readonly registerDynamicDependency?: (dependency: FormulaDependency) => void;
 }
 
 export interface FormulaCellOverride {
@@ -330,6 +336,9 @@ function evaluateFunction(
   const native = evaluateReferenceFunction(name, argumentsList, context, trace);
   if (native !== undefined) return native;
 
+  const lazy = evaluateLazyFunction(name, argumentsList, context, trace, volatileOccurrence);
+  if (lazy !== undefined) return lazy;
+
   const fn = getBuiltinFunction(name);
   const evaluatedArgs: FormulaValue[] = [];
   const rawRanges: EvaluationValue[] = [];
@@ -369,7 +378,118 @@ function evaluateFunction(
   });
   if (advanced !== undefined) return advanced;
 
-  return createFormulaError('#NAME?', `Unknown function: ${name}`);
+  const capability = getFunctionCapability(name);
+  return createFormulaError('#NAME?', capability.status === 'unsupported'
+    ? `UNSUPPORTED_FUNCTION: ${capability.id}`
+    : `Function ${capability.id} is not executable in the current evaluator`);
+}
+
+/**
+ * Evaluate control-flow functions without materialising branches that cannot
+ * affect the result. Besides matching Excel semantics this prevents expensive
+ * ranges, volatile calls and invalid references in an unselected branch from
+ * polluting the current dependency closure.
+ */
+function evaluateLazyFunction(
+  name: string,
+  args: readonly FormulaAst[],
+  context: FormulaEvaluationContext,
+  trace?: EvaluationTraceSink,
+  volatileOccurrence?: string,
+): FormulaValue | undefined {
+  const normalized = name.trim().toUpperCase();
+  const evaluate = (index: number): EvaluationValue => evaluateNode(args[index]!, context, trace);
+  const materialize = (value: EvaluationValue): FormulaValue => isEvaluationRange(value) || isEvaluationReference(value)
+    ? materializeEvaluationValue(value, context)
+    : value;
+  const truthy = (value: FormulaValue): boolean => {
+    if (isFormulaError(value)) return false;
+    if (value === null || value === false || value === '') return false;
+    if (typeof value === 'number') return value !== 0;
+    if (isArrayValue(value)) return truthy(value[0]?.[0] ?? null);
+    return true;
+  };
+
+  if (normalized === 'IF') {
+    if (args.length < 2 || args.length > 3) return createFormulaError('#VALUE!', 'IF requires two or three arguments');
+    const condition = materialize(evaluate(0));
+    if (isFormulaError(condition)) return condition;
+    const selected = truthy(condition) ? 1 : 2;
+    if (selected >= args.length) return false;
+    return materialize(evaluate(selected));
+  }
+
+  if (normalized === 'IFERROR' || normalized === 'IFNA') {
+    if (args.length !== 2) return createFormulaError('#VALUE!', `${normalized} requires two arguments`);
+    const first = materialize(evaluate(0));
+    const shouldReplace = isFormulaError(first) && (normalized === 'IFERROR' || first.code === '#N/A');
+    return shouldReplace ? materialize(evaluate(1)) : first;
+  }
+
+  if (normalized === 'IFS') {
+    if (args.length === 0 || args.length % 2 !== 0) return createFormulaError('#VALUE!', 'IFS requires pairs of condition and value');
+    for (let index = 0; index < args.length; index += 2) {
+      const condition = materialize(evaluate(index));
+      if (isFormulaError(condition)) return condition;
+      if (truthy(condition)) return materialize(evaluate(index + 1));
+    }
+    return createFormulaError('#N/A', 'No condition matched in IFS');
+  }
+
+  if (normalized === 'SWITCH') {
+    if (args.length < 3) return createFormulaError('#VALUE!', 'SWITCH requires target, value, result');
+    const target = materialize(evaluate(0));
+    if (isFormulaError(target)) return target;
+    const hasDefault = args.length % 2 === 0;
+    const pairEnd = hasDefault ? args.length - 1 : args.length;
+    for (let index = 1; index + 1 < pairEnd; index += 2) {
+      const candidate = materialize(evaluate(index));
+      if (isFormulaError(candidate)) return candidate;
+      if (compareValues(target, candidate, '=')) return materialize(evaluate(index + 1));
+    }
+    return hasDefault ? materialize(evaluate(args.length - 1)) : createFormulaError('#N/A', 'No matching case in SWITCH');
+  }
+
+  if (normalized === 'CHOOSE') {
+    if (args.length < 2) return createFormulaError('#VALUE!', 'CHOOSE requires an index and a value');
+    const indexValue = materialize(evaluate(0));
+    const index = toNumber(indexValue);
+    if (isFormulaError(index) || !Number.isInteger(index) || index < 1 || index >= args.length) return createFormulaError('#VALUE!', 'CHOOSE index is out of bounds');
+    return materialize(evaluate(index));
+  }
+
+  if (normalized === 'AND' || normalized === 'OR') {
+    if (args.length === 0) return createFormulaError('#VALUE!', `${normalized} requires arguments`);
+    const values: FormulaValue[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const value = materialize(evaluate(index));
+      if (isFormulaError(value)) return value;
+      values.push(value);
+      if (normalized === 'AND' && !truthy(value)) return false;
+      if (normalized === 'OR' && truthy(value)) return true;
+    }
+    return normalized === 'AND' ? values.every(truthy) : values.some(truthy);
+  }
+
+  if (normalized === 'XLOOKUP') {
+    if (args.length < 3 || args.length > 6) return createFormulaError('#VALUE!', 'XLOOKUP requires three to six arguments');
+    const values: FormulaValue[] = [];
+    for (let index = 0; index < Math.min(3, args.length); index += 1) values.push(materialize(evaluate(index)));
+    const fn = getBuiltinFunction(normalized);
+    if (!fn) return createFormulaError('#NAME?', `Unknown function: ${name}`);
+    let result: FormulaValue;
+    try { result = fn(values, volatileOccurrence === undefined ? context : { ...context, volatileOccurrence }); }
+    catch (error) { return createFormulaError('#VALUE!', error instanceof Error ? error.message : 'Function evaluation error'); }
+    if (isFormulaError(result) && result.code === '#N/A' && args[3]) {
+      const fallback = materialize(evaluate(3));
+      values.push(fallback);
+      try { result = fn(values, volatileOccurrence === undefined ? context : { ...context, volatileOccurrence }); }
+      catch (error) { return createFormulaError('#VALUE!', error instanceof Error ? error.message : 'Function evaluation error'); }
+    }
+    return result;
+  }
+
+  return undefined;
 }
 
 function aggregateIdentifierArgument(
@@ -470,13 +590,15 @@ function evaluateReferenceFunction(
       const endRow = startRow + Math.max(1, height as number) - 1;
       const endColumn = startColumn + Math.max(1, width as number) - 1;
       if (startRow < 0 || startColumn < 0) return createFormulaError('#REF!', 'OFFSET out of bounds');
+      const dynamicRange: RangeDependency = {
+        kind: 'range',
+        start: { sheetId: anchorCell.sheetId, row: startRow, column: startColumn },
+        end: { sheetId: anchorCell.sheetId, row: endRow, column: endColumn },
+      };
+      context.registerDynamicDependency?.(dynamicRange);
       return {
         kind: 'range',
-        range: {
-          kind: 'range',
-          start: { sheetId: anchorCell.sheetId, row: startRow, column: startColumn },
-          end: { sheetId: anchorCell.sheetId, row: endRow, column: endColumn },
-        },
+        range: dynamicRange,
       };
     }
     case 'INDIRECT': {
@@ -487,6 +609,7 @@ function evaluateReferenceFunction(
       if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
       try {
         const parsed = parseFormula('=' + value);
+        for (const dependency of collectFormulaDependencies(parsed, context.currentCell)) context.registerDynamicDependency?.(dependency);
         const resolved = evaluateNode(parsed, context, trace);
         return resolved;
       } catch {

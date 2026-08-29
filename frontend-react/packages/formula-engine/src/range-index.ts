@@ -44,6 +44,9 @@ export class RangeIndex {
   private readonly cellDependents = new Map<string, Set<string>>();
   private readonly rangeDependencies = new Map<string, readonly RangeDependency[]>();
   private readonly rangeTrees = new Map<string, RangeTreeNode | undefined>();
+  /** Sheets whose interval tree is stale. Updates no longer rebuild every
+   * worksheet's tree; the affected tree is rebuilt only on the next query. */
+  private readonly dirtyRangeTrees = new Set<string>();
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
     assertCellAddress(owner);
@@ -68,7 +71,8 @@ export class RangeIndex {
       }
     }
     if (ranges.length > 0) this.rangeDependencies.set(ownerKey, ranges);
-    this.rebuildRangeTrees();
+    this.dirtyRangeTrees.add(owner.sheetId);
+    for (const range of ranges) this.dirtyRangeTrees.add(range.start.sheetId);
   }
 
   add(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
@@ -79,6 +83,7 @@ export class RangeIndex {
     const ownerKey = cellAddressKey(owner);
     const entry = this.entries.get(ownerKey);
     if (!entry) return false;
+    const previousRanges = this.rangeDependencies.get(ownerKey) ?? [];
 
     for (const dependency of entry.dependencies) {
       if (dependency.kind !== 'cell') continue;
@@ -89,7 +94,8 @@ export class RangeIndex {
     }
     this.entries.delete(ownerKey);
     this.rangeDependencies.delete(ownerKey);
-    this.rebuildRangeTrees();
+    for (const range of previousRanges) this.dirtyRangeTrees.add(range.start.sheetId);
+    this.dirtyRangeTrees.add(entry.owner.sheetId);
     return true;
   }
 
@@ -102,6 +108,7 @@ export class RangeIndex {
     const addressKey = cellAddressKey(address);
     const dependentKeys = new Set<string>(this.cellDependents.get(addressKey) ?? []);
 
+    this.ensureRangeTree(address.sheetId);
     const tree = this.rangeTrees.get(address.sheetId);
     for (const ownerKey of queryRangeTree(tree, address)) dependentKeys.add(ownerKey);
     for (const entry of this.entries.values()) {
@@ -124,23 +131,28 @@ export class RangeIndex {
     this.cellDependents.clear();
     this.rangeDependencies.clear();
     this.rangeTrees.clear();
+    this.dirtyRangeTrees.clear();
   }
 
   get size(): number {
     return this.entries.size;
   }
 
-  private rebuildRangeTrees(): void {
+  private ensureRangeTree(sheetId: string): void {
+    if (!this.dirtyRangeTrees.has(sheetId)) return;
     const bySheet = new Map<string, RangeEntry[]>();
     for (const [ownerKey, ranges] of this.rangeDependencies) {
       for (const range of ranges) {
+        if (range.start.sheetId !== sheetId) continue;
         const entries = bySheet.get(range.start.sheetId) ?? [];
         entries.push({ ownerKey, range });
-        bySheet.set(range.start.sheetId, entries);
+        bySheet.set(sheetId, entries);
       }
     }
-    this.rangeTrees.clear();
-    for (const [sheetId, entries] of bySheet) this.rangeTrees.set(sheetId, buildRangeTree(entries));
+    const entries = bySheet.get(sheetId) ?? [];
+    if (entries.length === 0) this.rangeTrees.delete(sheetId);
+    else this.rangeTrees.set(sheetId, buildRangeTree(entries));
+    this.dirtyRangeTrees.delete(sheetId);
   }
 }
 

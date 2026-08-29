@@ -13,7 +13,7 @@ import {
   resolveLoadTarget,
   summarizeQueryResult,
 } from './runtime';
-import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefinition, RestDataConnector, serializeQueryDefinition, TsvDataConnector, OoxmlDataConnector } from './index';
+import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefinition, serializeQueryDefinition, TsvDataConnector, OoxmlDataConnector } from './index';
 import { QueryStepPipeline } from './query-steps';
 import { registerQueryCommands } from './commands';
 
@@ -61,10 +61,10 @@ describe('query runtime', () => {
     assert.deepEqual(await connector.executeQuery('ignored'), { columns: ['Name', 'Units'], rows: [['Alpha', 3]], rowCount: 1 });
   });
 
-  it('registers only local connectors and rejects server-only execution', async () => {
+  it('registers typed local and server connector manifests while rejecting server execution in the local pipeline', async () => {
     const registry = createDefaultConnectorRegistry();
-    assert.deepEqual(registry.list().map((connector) => connector.id), ['json', 'csv', 'tsv', 'xlsx']);
-    registry.register(new RestDataConnector());
+    assert.deepEqual(registry.list().map((connector) => connector.id), ['json', 'csv', 'tsv', 'xlsx', 'rest', 'sqlite', 'jdbc']);
+    assert.equal(registry.get('rest').manifest.execution, 'server');
     await assert.rejects(
       () => executeQueryDefinition(registry, { id: 'remote', name: 'Remote', connectorId: 'rest', connectorConfig: {}, steps: [] }),
       /server-only/i,

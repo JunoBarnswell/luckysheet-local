@@ -1409,7 +1409,7 @@ export interface DrawingObject {
   sheetId: SheetId;
   kind: DrawingKind;
   name?: string;
-  /** Persisted visibility state; omitted means visible for legacy snapshots. */
+  /** Canonical optional visibility override; absence means visible. */
   visible?: boolean;
   anchor: DrawingAnchor;
   transform: DrawingTransform;

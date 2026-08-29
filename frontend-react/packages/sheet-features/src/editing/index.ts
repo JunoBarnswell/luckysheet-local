@@ -872,7 +872,9 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
   if (params.spec.metadata.hyperlinks) {
     const hyperlinks = after.hyperlinks ?? [];
     for (const entry of metadata.hyperlinks) {
-      hyperlinks.push({ key: keyFor(targetRange.startRow + entry.rowOffset, targetRange.startColumn + entry.columnOffset), value: structuredClone(entry.value) });
+      const row = targetRange.startRow + (params.spec.transpose ? entry.columnOffset : entry.rowOffset);
+      const column = targetRange.startColumn + (params.spec.transpose ? entry.rowOffset : entry.columnOffset);
+      hyperlinks.push({ key: keyFor(row, column), value: structuredClone(entry.value) });
     }
     after.hyperlinks = hyperlinks;
   }
@@ -1083,11 +1085,6 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             column - sourceColumn,
             sourceAddress,
           );
-          if (params.spec.metadata.hyperlinks && (source.hyperlink || source.hyperlinkDetail)) {
-            next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
-            if (source.hyperlink) next.hyperlink = source.hyperlink;
-            if (source.hyperlinkDetail) next.hyperlinkDetail = structuredClone(source.hyperlinkDetail);
-          }
           if (next !== undefined) setAfterCell(row, column, next);
       }
       after.cells = [...afterCells.values()];

@@ -36,7 +36,10 @@ export interface ShortcutContext {
 }
 
 export interface ShortcutBinding {
+  /** Unique physical gesture binding identity. */
   id: string;
+  /** Canonical command dispatched by this gesture. Defaults to id. */
+  commandId?: string;
   scopes: readonly ShortcutScope[];
   key: string;
   primary?: boolean;
@@ -143,7 +146,7 @@ export class ShortcutRegistry {
       if (Boolean(binding.shift) !== Boolean(event.shiftKey)) continue;
       if (Boolean(binding.alt) !== Boolean(event.altKey)) continue;
       if (binding.when && !binding.when(context)) continue;
-      return { id: binding.id, preventDefault: true, scope: context.scope };
+      return { id: binding.commandId ?? binding.id, preventDefault: true, scope: context.scope };
     }
     return undefined;
   }
@@ -246,7 +249,7 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'context.open', scopes: grid, key: 'F10', shift: true });
   registry.register({ id: 'quickAnalysis.open', scopes: grid, key: 'q', primary: true });
   registry.register({ id: 'table.create', scopes: grid, key: 't', primary: true });
-  registry.register({ id: 'table.create.legacy', scopes: grid, key: 'l', primary: true });
+  registry.register({ id: 'table.create.ctrl-l', commandId: 'table.create', scopes: grid, key: 'l', primary: true });
   registry.register({ id: 'chart.insert', scopes: grid, key: 'F1', alt: true });
   registry.register({ id: 'chart.sheet.insert', scopes: grid, key: 'F11' });
   registry.register({ id: 'zoom.in', scopes: grid, key: '=', primary: true, alt: true });
@@ -258,6 +261,6 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'pivot.refresh', scopes: ['pivot'], key: 'F5', alt: true });
   registry.register({ id: 'drawing.remove', scopes: ['drawing'], key: 'Delete' });
   registry.register({ id: 'drawing.selectAll', scopes: ['drawing'], key: ' ', primary: true, shift: true });
-  registry.registerSequence({ id: 'clipboard.pasteSpecial.legacy', commandId: 'clipboard.pasteSpecial', scopes: grid, chords: [{ key: 'e', alt: true }, { key: 's' }] });
+  registry.registerSequence({ id: 'clipboard.pasteSpecial.alt-e-s', commandId: 'clipboard.pasteSpecial', scopes: grid, chords: [{ key: 'e', alt: true }, { key: 's' }] });
   return registry;
 }

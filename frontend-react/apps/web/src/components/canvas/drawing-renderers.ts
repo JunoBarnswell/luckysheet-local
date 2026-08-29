@@ -36,7 +36,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import { buildChartLayout, ChartDataCache, ChartLayoutCache, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
 import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
@@ -67,11 +67,12 @@ function getChartSeries(
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
   tables: readonly WorkbookTableModel[],
+  chartDataCache?: ChartDataCache,
 ): ResolvedChartData {
   const pivotSources = { ...pivotResults };
   for (const source of sheets) for (const [pivotId, result] of Object.entries(source.pivotResults)) pivotSources[pivotId] ??= result;
-  const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
-  return data;
+  return chartDataCache?.resolve(payload, (sheetId) => getSheet(sheetId), pivotSources, tables)
+    ?? resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
 }
 
 function drawCanonicalShapeOnCanvas(options: {
@@ -536,6 +537,7 @@ function cameraCellProvider(source: CanvasSheetSnapshot, range: RangeRef): CellP
   const mergeAt = (row: number, column: number) => merges.find((merge) => row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn);
   return ({ row, column }): CellRenderData | undefined => {
     const cell = source.getCell(row, column);
+    const hyperlink = cell?.hyperlink;
     const merge = mergeAt(row, column);
     if (!cell && !merge) return undefined;
     const value: CellRenderData = {
@@ -545,6 +547,7 @@ function cameraCellProvider(source: CanvasSheetSnapshot, range: RangeRef): CellP
       style: cell?.style,
       editor: cell?.editor,
       presentation: cell?.presentation,
+      ...(hyperlink ? { hyperlink } : {}),
       hasComment: cell?.hasComment,
       invalid: cell?.invalid,
       overlay: cell?.overlay,
@@ -1508,6 +1511,8 @@ export interface CanvasFloatingRendererInput {
   imageCache: Map<string, HTMLImageElement>;
   requestRender: () => void;
   tables: readonly WorkbookTableModel[];
+  chartDataCache?: ChartDataCache;
+  chartLayoutCache?: ChartLayoutCache;
   resolveAssetUrl?: (asset: AssetRef) => Promise<string>;
   assetUrlCache?: Map<string, string>;
   assetUrlPending?: Set<string>;
@@ -1516,7 +1521,7 @@ export interface CanvasFloatingRendererInput {
 
 /** Build the render-engine floating scene without coupling it to SheetCanvas state. */
 export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput): FloatingDrawable[] {
-  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
+  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, chartDataCache, chartLayoutCache, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
   const drawables: FloatingDrawable[] = [];
   const sheets = allSheets.length > 0 ? allSheets : [sheet];
   const getSheet = (sheetId: string): CanvasSheetSnapshot | undefined =>
@@ -1527,8 +1532,9 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables);
-      const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, chartDataCache);
+      const layout = chartLayoutCache?.resolve(payload, data, bounds.width, bounds.height)
+        ?? buildChartLayout(payload, data, bounds.width, bounds.height);
       if (layout.status.kind !== 'ready') {
         drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });
         continue;
@@ -1627,7 +1633,10 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
             if (resolveAssetUrl && assetUrlPending && !assetUrlPending.has(assetId) && !assetUrlErrors?.has(assetId)) {
               assetUrlPending.add(assetId);
               void resolveAssetUrl(payload.asset)
-                .then((url) => assetUrlCache?.set(assetId, url))
+                .then((url) => {
+                  if (!url.trim()) throw new Error(`ASSET_RESOLVE_EMPTY: ${assetId}`);
+                  assetUrlCache?.set(assetId, url);
+                })
                 .catch((error) => assetUrlErrors?.set(assetId, error instanceof Error ? error.message : `ASSET_RESOLVE_FAILED: ${assetId}`))
                 .finally(() => {
                   assetUrlPending.delete(assetId);
@@ -1646,6 +1655,10 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
             img.src = assetUrl;
             imageCache.set(assetId, img);
             img.onload = requestRender;
+            img.onerror = () => {
+              assetUrlErrors?.set(assetId, `ASSET_LOAD_FAILED: ${assetId}`);
+              requestRender();
+            };
           }
           if (img.complete && img.naturalWidth > 0) {
             const crop = payload.crop ?? { left: 0, top: 0, right: 0, bottom: 0 };

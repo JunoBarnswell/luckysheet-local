@@ -9,6 +9,8 @@ export * from './native-document-artifact';
 export * from './native-document-error';
 export * from './native-pivot';
 export * from './native-chart';
+export * from './drawingml';
+export * from './review-ooxml';
 export * from './worker-protocol';
 export * from './worker-entry';
 export * from './worker-port';

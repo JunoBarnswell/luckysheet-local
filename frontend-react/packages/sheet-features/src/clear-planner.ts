@@ -121,15 +121,13 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
     return;
   }
   if (params.family === 'hyperlinks') {
-    for (const entry of cells) {
-      const { row, column, cell: current } = entry;
-      if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
-        const next = { ...current };
-        delete next.hyperlink;
-        delete next.hyperlinkDetail;
-        sheet.cells.set(row, column, next);
+    for (const key of [...sheet.hyperlinks.keys()]) {
+      const [rowText, columnText] = key.split(':');
+      const row = Number(rowText);
+      const column = Number(columnText);
+      if (Number.isSafeInteger(row) && Number.isSafeInteger(column) && contains(range, row, column)) {
+        sheet.hyperlinks.delete(key);
       }
-      sheet.hyperlinks.delete(`${row}:${column}`);
     }
     return;
   }

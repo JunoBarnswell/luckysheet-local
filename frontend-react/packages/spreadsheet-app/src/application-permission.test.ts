@@ -37,8 +37,8 @@ describe('WorkbookSession permission integration', () => {
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    app.addComment('Visible to reviewers');
-    assert.equal(app.getUiSnapshot().selectedSheet.getCell(0, 0)?.commentText, 'Visible to reviewers');
+    app.saveComment('Visible to reviewers');
+    assert.equal(app.getUiSnapshot().selectedSheet.getCell(0, 0)?.comments?.[0]?.text, 'Visible to reviewers');
   });
 
   it('protects and unprotects the current selection through sheet.protect commands', () => {

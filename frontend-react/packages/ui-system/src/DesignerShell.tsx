@@ -14,7 +14,7 @@ export function DesignerShell({ children, floatingOverlay, formulaBar, formulaBa
       as="main"
       aria-busy={isBusy}
       aria-label="Spreadsheet Designer"
-      className="designer-shell flex h-screen min-h-[680px] min-w-[960px] flex-col overflow-hidden bg-white text-slate-800"
+      className="designer-shell flex h-screen min-h-[600px] min-w-[840px] flex-col overflow-hidden bg-white text-slate-800"
       data-testid="designer-shell"
       data-workspace-phase={workspacePhase}
       role="application"
@@ -22,7 +22,7 @@ export function DesignerShell({ children, floatingOverlay, formulaBar, formulaBa
       <Box as="section" className={`${ribbonVisible ? RIBBON_DENSITY_CLASSES.shell : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-ribbon" aria-hidden={!ribbonVisible}>
         {ribbon}
       </Box>
-      <Box as="section" className={`${formulaBarVisible ? 'h-[48px]' : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-formula-bar" aria-hidden={!formulaBarVisible}>
+      <Box as="section" className={`${formulaBarVisible ? 'h-[clamp(36px,4.4vh,48px)]' : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-formula-bar" aria-hidden={!formulaBarVisible}>
         {formulaBar}
       </Box>
       <Box as="section" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white" data-testid="designer-workspace">

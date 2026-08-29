@@ -17,9 +17,11 @@ import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExce
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
+import { resolveValidationRule } from './rule-index';
+import { RuleIntervalIndex } from './rule-index';
+import type { ResolvedCellReader } from './rules-runtime';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
-  evaluateFormula,
   formatFormula,
   isArrayValue,
   isFormulaError,
@@ -32,6 +34,7 @@ import {
   type FormulaValue,
   type ScalarValue,
 } from "@react-sheets/formula-engine";
+import { FormulaEngine } from '@react-sheets/formula-engine';
 
 // ---------- 基础 ----------
 
@@ -330,7 +333,8 @@ function cellText(resolved: FilterCellValue | undefined): string {
   return resolved?.text ?? '';
 }
 
-function cellStorageText(cell: CellData | undefined): string {
+function cellStorageText(cell: CellData | undefined, resolvedValue?: unknown): string {
+  if (resolvedValue !== undefined && resolvedValue !== null && (typeof resolvedValue === 'string' || typeof resolvedValue === 'number' || typeof resolvedValue === 'boolean')) return String(resolvedValue);
   return resolveFilterCellValue(cell).text;
 }
 
@@ -357,7 +361,8 @@ function canonicalFilterDate(resolved: FilterCellValue | undefined, dateSystem: 
   return null;
 }
 
-function numericOf(cell: CellData | undefined): number | undefined {
+function numericOf(cell: CellData | undefined, resolvedValue?: unknown): number | undefined {
+  if (typeof resolvedValue === 'number') return Number.isFinite(resolvedValue) ? resolvedValue : undefined;
   const text = cellStorageText(cell);
   if (!text) return undefined;
   const cleaned = text.replace(/[$,%\s]/g, "");
@@ -403,13 +408,13 @@ function conditionalRangeKey(range: RangeRef): string {
   return `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
 }
 
-function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalFormatRule, range: RangeRef): ConditionalRangeStats {
+function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalFormatRule, range: RangeRef, resolvedCells?: ResolvedCellReader): ConditionalRangeStats {
   const values: number[] = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const value = numericOf(sheet.cells.get(row, column));
-      if (value !== undefined) values.push(value);
-    }
+  for (const { cell, row, column } of sheet.cells.entries()) {
+    if (row < range.startRow || row > range.endRow || column < range.startColumn || column > range.endColumn) continue;
+    const resolved = resolvedCells?.resolve(sheet.id, row, column);
+    const value = numericOf(resolved?.cell ?? cell, resolved?.value);
+    if (value !== undefined) values.push(value);
   }
   const min = values.length === 0 ? 0 : values.reduce((current, value) => Math.min(current, value), Number.POSITIVE_INFINITY);
   const max = values.length === 0 ? 1 : values.reduce((current, value) => Math.max(current, value), Number.NEGATIVE_INFINITY);
@@ -429,20 +434,28 @@ function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalForm
 
 /**
  * Compiles rule formulas once and evaluates only requested cells/ranges. The
- * compatibility computeConditionalOverlays wrapper below intentionally uses
- * this same runtime, so there is one evaluator and no top/bottom inner scan.
+ * public overlay projection below uses this same runtime, so there is one
+ * evaluator and no top/bottom inner scan.
  */
 export class ConditionalFormatRuntime {
   private readonly rules: ConditionalFormatRule[];
-  private readonly valueCounts: Map<string, number>;
+  private valueCounts: Map<string, number>;
+  private readonly ruleIndex = new RuleIntervalIndex<ConditionalFormatRule>();
   private readonly stats = new Map<string, ConditionalRangeStats>();
   private readonly compiledFormulas = new Map<string, FormulaAst | null>();
   private readonly cellCache = new Map<string, ConditionalOverlay | undefined>();
+  private readonly formulaEngine: FormulaEngine;
 
-  constructor(private readonly sheet: WorksheetModel) {
+  constructor(
+    private readonly sheet: WorksheetModel,
+    private readonly resolvedCells?: ResolvedCellReader,
+    formulaEngine?: FormulaEngine,
+  ) {
+    this.formulaEngine = formulaEngine ?? createRuleFormulaEngine(sheet, resolvedCells);
     this.rules = [...sheet.conditionalFormats].sort((left, right) =>
       (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER));
-    this.valueCounts = buildValueCounts(sheet, this.rules);
+    for (const rule of this.rules) for (const range of rule.ranges) this.ruleIndex.add(range, rule);
+    this.valueCounts = buildValueCounts(sheet, this.rules, this.resolvedCells);
     for (const rule of this.rules) {
       if (rule.operator === 'formula') {
         try {
@@ -455,7 +468,22 @@ export class ConditionalFormatRuntime {
       for (const range of rule.ranges) {
         if (range.sheetId !== sheet.id) continue;
         if (rule.type === 'dataBar' || rule.type === 'colorScale' || rule.type === 'iconSet' || rule.type === 'topBottom') {
-          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(sheet, rule, range));
+          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(sheet, rule, range, this.resolvedCells));
+        }
+      }
+    }
+  }
+
+  /** Invalidate only derived rule state after a cell/rule mutation. */
+  invalidate(): void {
+    this.cellCache.clear();
+    this.stats.clear();
+    this.valueCounts = buildValueCounts(this.sheet, this.rules, this.resolvedCells);
+    for (const rule of this.rules) {
+      for (const range of rule.ranges) {
+        if (range.sheetId !== this.sheet.id) continue;
+        if (rule.type === 'dataBar' || rule.type === 'colorScale' || rule.type === 'iconSet' || rule.type === 'topBottom') {
+          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(this.sheet, rule, range, this.resolvedCells));
         }
       }
     }
@@ -466,21 +494,24 @@ export class ConditionalFormatRuntime {
     if (this.cellCache.has(key)) return this.cellCache.get(key);
     let overlay: ConditionalOverlay | undefined;
     let stoppedByRule = false;
-    for (const rule of this.rules) {
+    for (const rule of [...this.ruleIndex.query(this.sheet.id, row, column)].sort((left, right) =>
+      (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))) {
       const range = rule.ranges.find((candidate) => candidate.sheetId === this.sheet.id
         && row >= candidate.startRow && row <= candidate.endRow
         && column >= candidate.startColumn && column <= candidate.endColumn);
       if (!range || stoppedByRule) continue;
-      const cell = this.sheet.cells.get(row, column);
+      const resolved = this.resolvedCells?.resolve(this.sheet.id, row, column);
+      const cell = resolved?.cell ?? this.sheet.cells.get(row, column);
+      const resolvedValue = resolved?.value;
       const stats = this.stats.get(`${rule.id}:${conditionalRangeKey(range)}`);
       let matches = false;
       switch (rule.type) {
         case 'highlight':
-          matches = evaluateHighlight(rule, cell, this.sheet, row, column, this.valueCounts, this.compiledFormulas.get(rule.id));
+          matches = evaluateHighlight(rule, cell, this.sheet, row, column, this.valueCounts, this.compiledFormulas.get(rule.id), resolvedValue, this.resolvedCells, this.formulaEngine);
           if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
           break;
         case 'dataBar': {
-          const numeric = numericOf(cell);
+          const numeric = numericOf(cell, resolvedValue);
           if (numeric !== undefined && stats) {
             matches = true;
             const span = stats.max - stats.min || 1;
@@ -489,7 +520,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'colorScale': {
-          const numeric = numericOf(cell);
+          const numeric = numericOf(cell, resolvedValue);
           if (numeric !== undefined && stats) {
             matches = true;
             const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
@@ -502,7 +533,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'iconSet': {
-          const numeric = numericOf(cell);
+          const numeric = numericOf(cell, resolvedValue);
           if (numeric !== undefined && stats) {
             matches = true;
             const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
@@ -511,7 +542,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'topBottom': {
-          matches = matchesTopBottom(rule, cell, stats);
+          matches = matchesTopBottom(rule, cell, stats, resolvedValue);
           if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
           break;
         }
@@ -538,16 +569,16 @@ export class ConditionalFormatRuntime {
   }
 }
 
-export function createConditionalFormatRuntime(sheet: WorksheetModel): ConditionalFormatRuntime {
-  return new ConditionalFormatRuntime(sheet);
+export function createConditionalFormatRuntime(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): ConditionalFormatRuntime {
+  return new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine);
 }
 
-export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, ConditionalOverlay> {
-  return new ConditionalFormatRuntime(sheet).resolveAll();
+export function computeConditionalOverlays(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): Map<string, ConditionalOverlay> {
+  return new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine).resolveAll();
 }
 
-function createDefaultConditionalVisualResolver(sheet: WorksheetModel): FilterVisualResolver {
-  const runtime = new ConditionalFormatRuntime(sheet);
+function createDefaultConditionalVisualResolver(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader): FilterVisualResolver {
+  const runtime = new ConditionalFormatRuntime(sheet, resolvedCells);
   return createEffectiveFilterVisualResolver((row, column) => runtime.resolveCell(row, column));
 }
 
@@ -555,10 +586,11 @@ function matchesTopBottom(
   rule: ConditionalFormatRule,
   cell: CellData | undefined,
   stats: ConditionalRangeStats | undefined,
+  resolvedValue?: unknown,
 ): boolean {
   if (!stats || !cell) return false;
   const config = rule.topBottom ?? { direction: rule.operator === 'bottom' ? 'bottom' : 'top', rank: Number(rule.value1 ?? 10) };
-  const numeric = numericOf(cell);
+  const numeric = numericOf(cell, resolvedValue);
   if (numeric === undefined) return false;
   return config.direction === 'top' ? stats.topThreshold !== undefined && numeric >= stats.topThreshold : stats.bottomThreshold !== undefined && numeric <= stats.bottomThreshold;
 }
@@ -571,9 +603,12 @@ function evaluateHighlight(
   column: number,
   valueCounts: Map<string, number>,
   compiledFormula?: FormulaAst | null,
+  resolvedValue?: unknown,
+  resolvedCells?: ResolvedCellReader,
+  formulaEngine?: FormulaEngine,
 ): boolean {
-  const text = cellStorageText(cell);
-  const numeric = numericOf(cell);
+  const text = cellStorageText(cell, resolvedValue);
+  const numeric = numericOf(cell, resolvedValue);
   const firstValue = rule.value1;
   const firstNumber = typeof firstValue === "number" ? firstValue : Number(firstValue);
   switch (rule.operator) {
@@ -591,58 +626,55 @@ function evaluateHighlight(
     case "notContainsText": return typeof firstValue === "string" && !text.toLowerCase().includes(String(firstValue).toLowerCase());
     case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
     case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
-    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), compiledFormula);
+    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), compiledFormula, resolvedCells, formulaEngine);
     default: return false;
   }
 }
 
-function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null): boolean {
+function createRuleFormulaEngine(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: sheet.id, recalculationMode: 'manual' });
+  // Values are loaded before formulas so rule predicates observe one complete
+  // workbook input set even when their target cell is itself a formula.
+  for (const { cell, row, column } of sheet.cells.entries()) {
+    if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) continue;
+    const value = resolvedCells?.resolve(sheet.id, row, column).value ?? cell.value ?? null;
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') engine.setValue({ sheetId: sheet.id, row, column }, value);
+  }
+  for (const { cell, row, column } of sheet.cells.entries()) {
+    if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula({ sheetId: sheet.id, row, column }, cell.formula);
+  }
+  engine.recalculate();
+  return engine;
+}
+
+function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): boolean {
   const source = formula.trim();
   if (!source) return false;
-  if (compiledFormula === null) return false;
+  if (compiledFormula === null) throw new Error(`CONDITIONAL_FORMAT_EVALUATION_FAILED: invalid predicate for rule ${formula}`);
   try {
     const parsed = compiledFormula ?? parseFormula(source.startsWith('=') ? source : `=${source}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    const result = evaluateFormula(ast, {
-      currentCell: { sheetId: sheet.id, row, column },
-      readCell: (address): FormulaValue => {
-        if (address.sheetId !== sheet.id) return null;
-        const target = sheet.cells.get(address.row, address.column);
-        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
-      },
-      readRange: (range): Iterable<FormulaValue> => {
-        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
-        const values: FormulaValue[] = [];
-        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
-          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
-            const target = sheet.cells.get(targetRow, targetColumn);
-            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
-          }
-        }
-        return values;
-      },
-    });
+    const evaluator = formulaEngine ?? createRuleFormulaEngine(sheet, resolvedCells);
+    const result = evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column });
     if (isFormulaError(result)) return false;
     if (isArrayValue(result)) return Boolean(result[0]?.[0]);
     return result === true || (typeof result === 'number' && result !== 0) || (typeof result === 'string' && result.length > 0);
-  } catch {
-    // An unsupported/invalid CF formula is not a successful match. Do not
-    // fall back to the current cell value, which would silently apply a rule
-    // whose authored predicate could not be evaluated.
-    return false;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('CONDITIONAL_FORMAT_EVALUATION_FAILED')) throw error;
+    throw new Error(`CONDITIONAL_FORMAT_EVALUATION_FAILED: ${error instanceof Error ? error.message : 'predicate evaluation failed'}`);
   }
 }
 
-function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[]): Map<string, number> {
+function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[], resolvedCells?: ResolvedCellReader): Map<string, number> {
   const counts = new Map<string, number>();
   for (const rule of rules) {
     if (rule.operator !== "duplicate" && rule.operator !== "unique") continue;
     for (const range of rule.ranges) {
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          const text = cellStorageText(sheet.cells.get(r, c));
-          counts.set(text, (counts.get(text) ?? 0) + 1);
-        }
+      for (const { cell, row: r, column: c } of sheet.cells.entries()) {
+        if (r < range.startRow || r > range.endRow || c < range.startColumn || c > range.endColumn) continue;
+        const resolved = resolvedCells?.resolve(sheet.id, r, c);
+        const text = cellStorageText(resolved?.cell ?? cell, resolved?.value);
+        counts.set(text, (counts.get(text) ?? 0) + 1);
       }
     }
   }
@@ -1222,14 +1254,18 @@ export interface DataValidationResult {
   alertStyle?: 'stop' | 'warning' | 'information';
 }
 
-export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
-  return sheet.dataValidations.find((rule) =>
-    rule.ranges.some((range) =>
-      row >= range.startRow && row <= range.endRow
-      && column >= range.startColumn && column <= range.endColumn));
+export interface RuleEvaluationOptions {
+  /** Canonical formula result authority shared with sorting/filtering. */
+  readonly formulaEngine?: import('@react-sheets/formula-engine').FormulaEngine;
+  /** Optional resolved-cell authority for data-block overlays. */
+  readonly readCell?: (sheet: WorksheetModel, row: number, column: number) => unknown;
 }
 
-export function validationList(rule: DataValidationRule, sheet?: WorksheetModel): string[] | undefined {
+export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
+  return resolveValidationRule(sheet, row, column);
+}
+
+export function validationList(rule: DataValidationRule, sheet?: WorksheetModel, options?: RuleEvaluationOptions): string[] | undefined {
   if (rule.type !== "list") return undefined;
   if (rule.listSource?.kind === 'values') return [...rule.listSource.values];
   if (rule.listSource?.kind === 'range' && sheet && rule.listSource.range.sheetId === sheet.id) {
@@ -1237,7 +1273,8 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel)
     const range = normalizeRangeRef(rule.listSource.range);
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const value = sheet.cells.get(row, column)?.value;
+        const resolved = options?.readCell?.(sheet, row, column);
+        const value = resolved === undefined ? sheet.cells.get(row, column)?.value : resolved;
         if (value != null && String(value) !== '') values.push(String(value));
       }
     }
@@ -1246,7 +1283,7 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel)
   const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
   if (!formula) return undefined;
   if (sheet && formula.trim().startsWith('=')) {
-    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
+    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), options);
     if (isArrayValue(evaluated)) {
       return evaluated.flat().filter((value): value is string | number | boolean =>
         value !== null && !isFormulaError(value)).map(String);
@@ -1279,32 +1316,16 @@ function evaluateValidationFormula(
   column: number,
   candidate: CellData['value'] | undefined,
   anchor?: { sheetId: string; row: number; column: number },
+  options?: RuleEvaluationOptions,
 ): FormulaValue {
   try {
     const parsed = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    return evaluateFormula(ast, {
-      currentCell: { sheetId: sheet.id, row, column },
-      readCell: (address): FormulaValue => {
-        if (address.sheetId !== sheet.id) return null;
-        if (address.row === row && address.column === column && candidate !== undefined) return candidate as FormulaValue;
-        const target = sheet.cells.get(address.row, address.column);
-        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
-      },
-      readRange: (range): Iterable<FormulaValue> => {
-        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
-        const values: FormulaValue[] = [];
-        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
-          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
-            const target = sheet.cells.get(targetRow, targetColumn);
-            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
-          }
-        }
-        return values;
-      },
-    });
-  } catch {
-    return null;
+    const evaluator = options?.formulaEngine ?? createRuleFormulaEngine(sheet);
+    const overrides = candidate === undefined ? [] : [{ address: { sheetId: sheet.id, row, column }, value: candidate }];
+    return evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column }, overrides);
+  } catch (error) {
+    throw new Error(`RULE_EVALUATION_FAILED: ${error instanceof Error ? error.message : 'validation formula evaluation failed'}`);
   }
 }
 
@@ -1317,6 +1338,7 @@ export function validateDataInput(
   row: number,
   column: number,
   value: CellData["value"],
+  options?: RuleEvaluationOptions,
 ): DataValidationResult {
   const rule = findValidationRule(sheet, row, column);
   if (!rule) return { valid: true, blocking: false };
@@ -1329,7 +1351,7 @@ export function validateDataInput(
     const valid = Boolean(rule.allowBlank ?? true);
     return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
-  const list = validationList(rule, sheet);
+  const list = validationList(rule, sheet, options);
   if (list) {
     const candidateValues = rule.multiSelect ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : [String(value)];
     const ok = candidateValues.length > 0 && candidateValues.every((candidate) =>
@@ -1400,7 +1422,7 @@ export function validateDataInput(
   }
   if (rule.type === "custom") {
     if (!rule.formula1) return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") });
-    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
+    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), options);
     const ok = evaluated === true || (typeof evaluated === 'number' && evaluated !== 0) || (typeof evaluated === 'string' && evaluated.length > 0);
     return withRule(judge(ok, rule));
   }

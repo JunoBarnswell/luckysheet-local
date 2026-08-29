@@ -69,6 +69,7 @@ export interface CommentUpdateParams {
   threadId: string;
   row: number;
   column: number;
+  previousText: string;
   text: string;
 }
 
@@ -150,6 +151,7 @@ const isCommentUpdate = (value: unknown): value is CommentUpdateParams => isReco
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId)
   && Number.isSafeInteger(value.row) && Number(value.row) >= 0
   && Number.isSafeInteger(value.column) && Number(value.column) >= 0
+  && typeof value.previousText === 'string'
   && typeof value.text === 'string';
 const isHyperlinkSet = (value: unknown): value is HyperlinkSetParams => isRecord(value) && isCellPosition(value) && isCellHyperlink((value as Record<string, unknown>).hyperlink);
 const isHyperlinkRemove = (value: unknown): value is HyperlinkRemoveParams => isCellPosition(value);
@@ -219,6 +221,7 @@ function applyReviewMutation(mutationId: string, params: unknown, context: impor
       if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
       context.workbook.getSheet(params.sheetId).review.updateThread(params.threadId, (thread) => {
         if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+        if (thread.text !== params.previousText) throw new Error(`Comment thread ${params.threadId} changed before update`);
         thread.text = params.text;
       });
       return;
@@ -500,10 +503,11 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     execute: (params, context) => {
       if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
       const thread = context.workbook.getSheet(params.sheetId).review.getThread(params.threadId);
-      if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
       const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
       if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
-      const previous: CommentUpdateParams = { sheetId: params.sheetId, threadId: params.threadId, row: thread.row, column: thread.column, text: thread.text };
+      if (thread.text !== params.previousText) throw new Error(`Comment thread ${params.threadId} changed before update`);
+      const previous: CommentUpdateParams = { sheetId: params.sheetId, threadId: params.threadId, row: thread.row, column: thread.column, previousText: params.text, text: thread.text };
       context.applyMutation({ id: 'comment.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }], apply: () => applyReviewMutation('comment.update', params, context) });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -557,13 +561,6 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
 
 export { serializeHyperlink } from './helpers';
 
-export const REVIEW_RIBBON_ENTRIES = [
-  { id: 'review-note', tab: 'Review', group: 'Comments', label: 'New Note', commandId: 'note.set', icon: 'comment' },
-  { id: 'review-comment', tab: 'Review', group: 'Comments', label: 'New Comment', commandId: 'comment.add', icon: 'comment' },
-  { id: 'review-hyperlink', tab: 'Review', group: 'Links', label: 'Insert Link', commandId: 'hyperlink.set', icon: 'link' },
-  { id: 'review-resolve', tab: 'Review', group: 'Comments', label: 'Resolve Thread', commandId: 'comment.resolve', icon: 'comment' },
-] as const;
-
 export function registerReviewFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   const commandIds = registerReviewCommands(runtime);
   return {
@@ -571,7 +568,6 @@ export function registerReviewFeature(runtime: CommandRuntime): SpreadsheetFeatu
     version: '1.0.0',
     commandIds,
     mutationIds: ['note.set', 'note.remove', 'note.visibility', 'comment.add', 'comment.reply', 'comment.reply.remove', 'comment.resolve', 'comment.remove', 'comment.update', 'hyperlink.set', 'hyperlink.remove'],
-    ribbon: [...REVIEW_RIBBON_ENTRIES],
     permissions: ['review.comment', 'review.note', 'review.hyperlink'],
   };
 }

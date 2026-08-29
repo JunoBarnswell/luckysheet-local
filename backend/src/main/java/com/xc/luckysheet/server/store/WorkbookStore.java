@@ -9,6 +9,8 @@ import com.xc.luckysheet.server.persistence.AuditEntity;
 import com.xc.luckysheet.server.persistence.AuditEntityRepository;
 import com.xc.luckysheet.server.persistence.CheckpointEntity;
 import com.xc.luckysheet.server.persistence.CheckpointEntityRepository;
+import com.xc.luckysheet.server.persistence.DataBlockEntity;
+import com.xc.luckysheet.server.persistence.DataBlockEntityRepository;
 import com.xc.luckysheet.server.persistence.OperationEntity;
 import com.xc.luckysheet.server.persistence.OperationEntityRepository;
 import com.xc.luckysheet.server.persistence.OutboxEntity;
@@ -19,14 +21,25 @@ import com.xc.luckysheet.server.persistence.WorkbookAclEntity;
 import com.xc.luckysheet.server.persistence.WorkbookAclEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookEntity;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
+import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.HexFormat;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * ORM-backed persistence boundary for workbook state.
@@ -45,7 +58,13 @@ public class WorkbookStore {
     private final CheckpointEntityRepository checkpoints;
     private final OutboxEntityRepository outbox;
     private final AuditEntityRepository audits;
+    private final DataBlockEntityRepository dataBlocks;
     private final ObjectMapper mapper;
+
+    /** Maximum number of rows materialized by any one replay query. */
+    public static final int MAX_OPERATION_TAIL_ENTRIES = 512;
+    private static final long MAX_OPERATION_TAIL_BYTES = 8L * 1024L * 1024L;
+    private static final int MAX_MANIFEST_BLOCKS = 10_000;
 
     public WorkbookStore(
             WorkbookEntityRepository workbooks,
@@ -55,6 +74,7 @@ public class WorkbookStore {
             CheckpointEntityRepository checkpoints,
             OutboxEntityRepository outbox,
             AuditEntityRepository audits,
+            DataBlockEntityRepository dataBlocks,
             ObjectMapper mapper
     ) {
         this.workbooks = workbooks;
@@ -64,6 +84,7 @@ public class WorkbookStore {
         this.checkpoints = checkpoints;
         this.outbox = outbox;
         this.audits = audits;
+        this.dataBlocks = dataBlocks;
         this.mapper = mapper;
     }
 
@@ -205,13 +226,84 @@ public class WorkbookStore {
         return rows.size();
     }
 
-    public List<OperationRow> listOperations(String unitId) {
-        return operations.findByUnitIdOrderByRevisionDesc(unitId).stream().map(this::operationRow).toList();
+    /**
+     * Reads one bounded revision interval in ascending order.  The extra row
+     * is fetched only to prove that the caller did not exceed the replay
+     * budget; it is never returned or silently truncated.
+     */
+    public OperationTail readOperationTail(String unitId, long fromExclusive, long toInclusive) {
+        if (unitId == null || unitId.isBlank()) throw ServiceException.validation("Operation tail unitId is required");
+        if (fromExclusive < 0 || toInclusive < fromExclusive) throw ServiceException.validation("Operation tail interval is invalid");
+        if (fromExclusive == toInclusive) return OperationTail.empty(unitId, fromExclusive, toInclusive);
+        List<OperationEntity> entities = operations
+                .findByUnitIdAndRevisionGreaterThanAndRevisionLessThanEqualOrderByRevisionAsc(
+                        unitId, fromExclusive, toInclusive, PageRequest.of(0, MAX_OPERATION_TAIL_ENTRIES + 1));
+        if (entities.size() > MAX_OPERATION_TAIL_ENTRIES) {
+            throw ServiceException.conflict("HISTORY_GAP: replay interval exceeds the bounded operation tail");
+        }
+        List<OperationRow> rows = entities.stream().map(this::operationRow).toList();
+        long bytes = rows.stream().mapToLong(row -> row.envelopeJson().getBytes(StandardCharsets.UTF_8).length).sum();
+        if (bytes > MAX_OPERATION_TAIL_BYTES) throw ServiceException.conflict("HISTORY_GAP: replay interval exceeds the bounded operation tail bytes");
+        return new OperationTail(unitId, fromExclusive, toInclusive, rows, bytes);
     }
 
-    public List<OperationRow> listOperationsBefore(String unitId, long beforeRevision, int limit) {
-        return operations.findByUnitIdAndRevisionLessThanOrderByRevisionDesc(unitId, beforeRevision,
-                PageRequest.of(0, limit)).stream().map(this::operationRow).toList();
+    /**
+     * Reads one bounded page for the revision log.  The lower bound is
+     * explicit even when the caller requests the newest page.
+     */
+    public List<OperationRow> readRevisionPage(String unitId, long fromInclusive, long toExclusive, int limit) {
+        if (unitId == null || unitId.isBlank()) throw ServiceException.validation("Revision page unitId is required");
+        if (fromInclusive < 0 || toExclusive < fromInclusive) throw ServiceException.validation("Revision page interval is invalid");
+        int boundedLimit = Math.max(1, Math.min(limit, MAX_OPERATION_TAIL_ENTRIES));
+        return operations.findByUnitIdAndRevisionGreaterThanEqualAndRevisionLessThanOrderByRevisionDesc(
+                unitId, fromInclusive, toExclusive, PageRequest.of(0, boundedLimit)).stream().map(this::operationRow).toList();
+    }
+
+    /**
+     * Validates the physical block bytes referenced by a manifest.  This is
+     * called only after the caller has acquired the workbook pessimistic lock,
+     * so manifest publication and its byte-level proof share one transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY, readOnly = true)
+    public void validateDataSourceManifestBlocks(String unitId, ObjectNode source) {
+        if (source == null || !source.isObject()) throw ServiceException.validation("Data source manifest is required");
+        String sourceId = source.path("id").asText("");
+        if (sourceId.isBlank()) throw ServiceException.validation("Data source manifest id is required");
+        if (!source.path("blocks").isArray()) throw ServiceException.validation("Data source manifest blocks are required");
+        if (source.path("blocks").size() > MAX_MANIFEST_BLOCKS) throw ServiceException.validation("Data source manifest has too many blocks");
+        List<ManifestBlock> manifestBlocks = new ArrayList<>();
+        Set<String> blockIds = new HashSet<>();
+        for (JsonNode raw : source.path("blocks")) {
+            if (raw == null || !raw.isObject()) throw ServiceException.validation("Data source block is invalid");
+            String blockId = raw.path("id").asText("");
+            String expectedChecksum = raw.path("checksum").asText("");
+            JsonNode expectedLengthNode = raw.get("byteLength");
+            long expectedLength = expectedLengthNode == null ? -1 : expectedLengthNode.asLong(-1);
+            if (blockId.isBlank() || !sourceId.equals(raw.path("dataSourceId").asText())
+                    || !expectedChecksum.matches("[A-Fa-f0-9]{64}") || expectedLengthNode == null
+                    || !expectedLengthNode.isIntegralNumber() || expectedLength < 1) {
+                throw ServiceException.validation("Data source block integrity metadata is invalid: " + blockId);
+            }
+            if (!blockIds.add(blockId)) throw ServiceException.validation("Data source manifest contains a duplicate block: " + blockId);
+            manifestBlocks.add(new ManifestBlock(blockId, expectedChecksum, expectedLength));
+        }
+        if (manifestBlocks.isEmpty()) return;
+        Map<String, DataBlockEntity> entities = new HashMap<>();
+        for (DataBlockEntity entity : dataBlocks.findManifestBlocks(unitId, sourceId, blockIds)) {
+            entities.put(entity.getId().getBlockId(), entity);
+        }
+        for (ManifestBlock manifestBlock : manifestBlocks) {
+            DataBlockEntity entity = entities.get(manifestBlock.blockId());
+            if (entity == null) throw ServiceException.conflict("DATA_BLOCK_MISSING: " + sourceId + "/" + manifestBlock.blockId());
+            byte[] content = entity.getContent();
+            if (content == null || entity.getByteLength() != content.length || manifestBlock.byteLength() != content.length) {
+                throw ServiceException.conflict("DATA_BLOCK_LENGTH_MISMATCH: " + sourceId + "/" + manifestBlock.blockId());
+            }
+            String actualChecksum = sha256(content);
+            if (!actualChecksum.equalsIgnoreCase(entity.getChecksum()) || !actualChecksum.equalsIgnoreCase(manifestBlock.checksum())) {
+                throw ServiceException.conflict("DATA_BLOCK_CHECKSUM_MISMATCH: " + sourceId + "/" + manifestBlock.blockId());
+            }
+        }
     }
 
     @Transactional
@@ -277,5 +369,16 @@ public class WorkbookStore {
         } catch (Exception error) {
             throw new IllegalStateException("Stored JSON is invalid", error);
         }
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException("SHA-256 is unavailable", error);
+        }
+    }
+
+    private record ManifestBlock(String blockId, String checksum, long byteLength) {
     }
 }

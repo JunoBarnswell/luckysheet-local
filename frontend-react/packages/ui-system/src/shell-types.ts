@@ -29,12 +29,12 @@ export const RIBBON_DENSITY = {
 } as const;
 
 export const RIBBON_DENSITY_CLASSES = {
-  shell: 'h-[167px]',
-  tabStrip: 'h-[32px]',
-  commandArea: 'h-[135px]',
-  groupContent: 'h-[127px]',
-  groupControls: 'h-[104px]',
-  largeCommand: '!h-[104px]',
+  shell: 'h-[clamp(118px,15.5vh,167px)]',
+  tabStrip: 'h-[clamp(28px,3vh,32px)]',
+  commandArea: 'h-[clamp(90px,12.5vh,135px)]',
+  groupContent: 'h-[clamp(84px,11.8vh,127px)]',
+  groupControls: 'h-[clamp(66px,9.6vh,104px)]',
+  largeCommand: '!h-[clamp(66px,9.6vh,104px)]',
   groupCaption: 'h-[18px] leading-[18px]',
 } as const;
 
@@ -54,8 +54,6 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'pivotAnalyze'
-  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'

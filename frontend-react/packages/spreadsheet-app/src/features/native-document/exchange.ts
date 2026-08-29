@@ -7,7 +7,7 @@ import type {
   NativeDocumentImportOptions,
   NativeDocumentWorkerPort,
 } from '@react-sheets/exchange-excel-ooxml';
-import { nativeDocumentCodecRegistry } from '@react-sheets/exchange-excel-ooxml';
+import { nativeDocumentCodecRegistry, verifyNativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import type { AssetStore } from '../persistence/asset-store';
 
 export type { CompatibilityReport, CompatibilityLevel, NativeDocumentExportOptions, NativeDocumentImportOptions };
@@ -47,6 +47,123 @@ export interface NativeDocumentExchangeResult {
   artifact: NativeDocumentArtifact;
 }
 
+export type NativeDocumentTransactionState = 'idle' | 'imported' | 'exported' | 'failed';
+
+/**
+ * The sole application-facing native I/O transaction.  Import, Save, Save As
+ * and export all pass through this serialized boundary; a failed asset or
+ * codec step never publishes a half-updated artifact.
+ */
+export class NativeDocumentTransaction {
+  private busy = false;
+  private state: NativeDocumentTransactionState = 'idle';
+  private currentArtifact: NativeDocumentArtifact | undefined;
+
+  get status(): NativeDocumentTransactionState { return this.state; }
+  get artifact(): NativeDocumentArtifact | undefined { return this.currentArtifact ? structuredClone(this.currentArtifact) : undefined; }
+
+  /** Attach a persisted artifact only after its checksum/ownership graph is verified. */
+  async attach(artifact: NativeDocumentArtifact): Promise<void> {
+    await this.run(async () => {
+      await verifyNativeDocumentArtifact(artifact);
+      this.currentArtifact = structuredClone(artifact);
+      this.state = 'imported';
+    });
+  }
+
+  async import(params: NativeDocumentImportParams): Promise<NativeDocumentExchangeResult> {
+    return this.run(async () => {
+      const result = await exchangeImportDocument(params);
+      this.currentArtifact = structuredClone(result.artifact);
+      this.state = 'imported';
+      return result;
+    });
+  }
+
+  async export(snapshot: WorkbookSnapshot, params: NativeDocumentExportParams = {}): Promise<NativeDocumentExchangeResult> {
+    const updatesBaseline = params.mode === 'save' || params.mode === undefined;
+    return this.run(async () => {
+      const artifact = params.artifact ?? this.currentArtifact;
+      const result = await exchangeExportDocument(snapshot, { ...params, ...(artifact ? { artifact } : {}) });
+      // Save As / Export produce a copy and never retarget the workbook's
+      // shared source identity. Only an explicit Save establishes a baseline.
+      if (updatesBaseline) {
+        this.currentArtifact = structuredClone(result.artifact);
+        this.state = 'exported';
+      }
+      return result;
+    }, updatesBaseline);
+  }
+
+  async save(snapshot: WorkbookSnapshot, params: Omit<NativeDocumentExportParams, 'mode' | 'artifact'> & { fileName?: string } = {}): Promise<NativeDocumentExchangeResult> {
+    return this.run(async () => {
+      if (!this.currentArtifact) throw new Error('NATIVE_DOCUMENT_TRANSACTION_ARTIFACT_REQUIRED: Save requires a successful import or export transaction');
+      const result = await exchangeSaveDocument(snapshot, this.currentArtifact, params);
+      this.currentArtifact = structuredClone(result.artifact);
+      this.state = 'exported';
+      return result;
+    });
+  }
+
+  private async run<T>(work: () => Promise<T>, invalidateBaselineOnFailure = true): Promise<T> {
+    if (this.busy) throw new Error('NATIVE_DOCUMENT_TRANSACTION_BUSY: native document transactions are serialized');
+    this.busy = true;
+    try {
+      return await work();
+    } catch (error) {
+      if (invalidateBaselineOnFailure) {
+        this.state = 'failed';
+        // A failed baseline-changing transaction cannot prove that the
+        // previous source still matches the live workbook.
+        this.currentArtifact = undefined;
+      }
+      throw error;
+    } finally {
+      this.busy = false;
+    }
+  }
+}
+
+export function createNativeDocumentTransaction(): NativeDocumentTransaction {
+  return new NativeDocumentTransaction();
+}
+
+/**
+ * Instance-scoped transaction ownership.  Catalog and session callers for a
+ * unit resolve the same transaction here; there is intentionally no module
+ * singleton and no second artifact cache.
+ */
+export class NativeDocumentTransactionRegistry {
+  private readonly transactions = new Map<string, NativeDocumentTransaction>();
+
+  get(unitId: string): NativeDocumentTransaction | undefined {
+    assertTransactionUnitId(unitId);
+    return this.transactions.get(unitId);
+  }
+
+  getOrCreate(unitId: string): NativeDocumentTransaction {
+    assertTransactionUnitId(unitId);
+    const current = this.transactions.get(unitId);
+    if (current) return current;
+    const created = createNativeDocumentTransaction();
+    this.transactions.set(unitId, created);
+    return created;
+  }
+
+  delete(unitId: string): boolean {
+    assertTransactionUnitId(unitId);
+    return this.transactions.delete(unitId);
+  }
+
+  clear(): void {
+    this.transactions.clear();
+  }
+}
+
+function assertTransactionUnitId(unitId: string): void {
+  if (typeof unitId !== 'string' || !unitId.trim()) throw new Error('NATIVE_DOCUMENT_TRANSACTION_UNIT_REQUIRED: transaction registry requires a unit id');
+}
+
 export function buildNativeDocumentImportOptions(overrides: Partial<NativeDocumentImportOptions> = {}): NativeDocumentImportOptions {
   return {
     compatibilityTarget: overrides.compatibilityTarget ?? DEFAULT_NATIVE_COMPATIBILITY,
@@ -77,7 +194,10 @@ export async function exchangeImportDocument(params: NativeDocumentImportParams)
     revision: params.revision,
   };
   const result = await nativeDocumentCodecRegistry.import(request);
-  if (result.snapshot && params.assetStore) await materializeImportedAssets(result.snapshot, result.artifact.nativeGraph.kind === 'opc' ? result.artifact.nativeGraph.package.parts : {}, params.assetStore);
+  if (result.snapshot && params.assetStore) {
+    const graph = result.artifact.nativeGraph.kind === 'opc' ? result.artifact.nativeGraph.package : undefined;
+    await materializeImportedAssets(result.snapshot, graph?.parts ?? {}, graph?.assetPartById ?? {}, params.assetStore);
+  }
   else if (result.snapshot && result.report.issues.some((issue) => issue.feature === 'images') && collectAssetRefs(result.snapshot).length === 0) {
     throw new Error('ASSET_IMPORT_UNSUPPORTED: native image drawing has no canonical AssetRef metadata');
   }
@@ -88,11 +208,12 @@ export async function exchangeImportDocument(params: NativeDocumentImportParams)
   };
 }
 
-async function materializeImportedAssets(snapshot: WorkbookSnapshot, parts: Record<string, Uint8Array>, assetStore: AssetStore): Promise<void> {
+async function materializeImportedAssets(snapshot: WorkbookSnapshot, parts: Record<string, Uint8Array>, assetPartById: Record<string, string>, assetStore: AssetStore): Promise<void> {
   const refs = collectAssetRefs(snapshot);
   for (const ref of refs) {
-    const media = Object.entries(parts).find(([name]) => name.startsWith(`xl/media/${ref.assetId}.`) || name.startsWith(`xl/embeddings/${ref.assetId}.`))?.[1];
-    if (!media) throw new Error(`ASSET_IMPORT_MISSING: ${ref.assetId}`);
+    const part = assetPartById[ref.assetId];
+    const media = part ? parts[part] : undefined;
+    if (!part || !media) throw new Error(`ASSET_IMPORT_MISSING: ${ref.assetId}`);
     const stored = await assetStore.put({ content: new Blob([Uint8Array.from(media).buffer], { type: ref.mimeType }), mimeType: ref.mimeType, width: ref.width, height: ref.height });
     if (stored.assetId !== ref.assetId || stored.contentHash !== ref.contentHash) throw new Error(`ASSET_IMPORT_MISMATCH: ${ref.assetId}`);
   }

@@ -70,12 +70,13 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
           calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
+          definedNameModels: [],
           dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1',
@@ -115,12 +116,13 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
           calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
+          definedNameModels: [],
           dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
@@ -224,12 +226,13 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
     calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
     editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
+    definedNameModels: [],
     dataModel: { sources: [], tables: [], relationships: [], views: [] },
     sheets: [{
       kind: 'worksheet', id: 'sheet-1',
@@ -248,7 +251,29 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
       drawingPayloads: {},
       review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
     }],
-  }), /legacy drawing collections/);
+  }), /unsupported field: charts/);
+});
+
+test('snapshot v10 protocol rejects removed defined-name and cell hyperlink fields', () => {
+  const base = {
+    schema: 'WorkbookSnapshot',
+    version: 10,
+    unitId: 'unit-1',
+    name: 'Workbook',
+    dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
+    calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
+    editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
+    dataModel: { sources: [], tables: [], relationships: [], views: [] },
+    definedNameModels: [],
+    sheets: [{
+      kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
+      pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
+      cells: {}, merges: [], pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+      review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
+    }],
+  } as any;
+  assert.throws(() => validateWorkbookSnapshot({ ...base, definedNames: {} }), /unsupported field: definedNames/);
+  assert.throws(() => validateWorkbookSnapshot({ ...base, sheets: [{ ...base.sheets[0], cells: { '0': { '0': { value: 'x', hyperlink: 'https://example.test' } } } }] }), /legacy hyperlink metadata/);
 });
 
 test('Pivot subtotal contract rejects malformed custom functions and accepts field-owned modes', () => {

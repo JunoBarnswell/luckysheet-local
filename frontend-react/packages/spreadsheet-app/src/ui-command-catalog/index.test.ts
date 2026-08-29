@@ -6,6 +6,7 @@ import {
   buildRibbonCommand,
   getRibbonSurfaces,
   getRibbonCommandDefinition,
+  getRibbonCommandDisabledReason,
   getRibbonGroupDefinition,
   HOME_RIBBON_SURFACES,
   INSERT_RIBBON_SURFACES,
@@ -83,6 +84,7 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onCreateAdvancedSheet: () => undefined,
     onApplyBarcode: () => undefined,
     onCreateCamera: () => undefined,
+    onCaptureScreenshot: () => undefined,
     onCreateFormControl: () => undefined,
     onApplyCheckbox: () => undefined,
     onCreateTextBox: () => undefined,
@@ -180,11 +182,8 @@ describe('Ribbon UI command catalog', () => {
         onLayoutChange: (layout) => calls.push(`layout:${layout}`),
       },
     });
-    assert.equal(getRibbonCommandDefinition('pivotFieldList').placements[0]?.tab, 'pivotAnalyze');
-    assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').placements[0]?.tab, 'pivotDesign');
     assert.deepEqual(INSERT_RIBBON_SURFACES.find((surface) => surface.id === 'filters.slicer')?.commandId, 'pivotSlicer');
     assert.deepEqual(getRibbonCommandDefinition('pivotSlicer').placements, [
-      { tab: 'pivotAnalyze', group: 'pivotAnalyze' },
       { tab: 'insert', group: 'filters' },
     ]);
     for (const id of ['pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
@@ -296,6 +295,28 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), forbidden), false);
     assert.equal(buildRibbonCommand('bold', forbidden), undefined);
     assert.equal(buildRibbonCommand('pivotTable', context()), undefined);
+  });
+
+  it('routes Forms and Screenshot through canonical executable host actions', () => {
+    let forms = 0;
+    let screenshots = 0;
+    const current = context({
+      actions: {
+        ...context().actions,
+        onCreateFormControl: () => { forms += 1; },
+        onCaptureScreenshot: () => { screenshots += 1; },
+      },
+    });
+    for (const id of ['forms', 'screenshot'] as const) {
+      const definition = getRibbonCommandDefinition(id);
+      assert.equal(isRibbonCommandEnabled(definition, current), true);
+      assert.equal(getRibbonCommandDisabledReason(definition, current), undefined);
+      const result = buildRibbonCommand(id, current);
+      assert.equal(result?.type, 'callback');
+      if (result?.type === 'callback') result.invoke();
+    }
+    assert.equal(forms, 1);
+    assert.equal(screenshots, 1);
   });
 
   it('keeps every Home Ribbon surface reachable through one registered command or control', () => {

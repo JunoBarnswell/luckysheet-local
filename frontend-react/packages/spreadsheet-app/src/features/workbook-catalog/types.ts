@@ -132,8 +132,9 @@ export interface WorkbookResolutionBinding {
 export interface WorkbookResolution {
   schema: 'WorkbookResolution';
   unitId: string;
-  source: 'local' | 'remote' | 'mirrored' | 'shared';
-  mode: 'local' | 'remote' | 'offline';
+  /** Resolution source identifies the authoritative owner, never a cache. */
+  source: 'local' | 'remote' | 'shared';
+  mode: 'local' | 'remote';
   lifecycle: 'active';
   binding: WorkbookResolutionBinding;
   snapshot: WorkbookSnapshot;

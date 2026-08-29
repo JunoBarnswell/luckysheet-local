@@ -7,7 +7,7 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-08-24";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 9;
+    public static final int SNAPSHOT_VERSION = 10;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
@@ -40,6 +40,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("query.load.workbook-table", new MutationCapability("remote", true, "QueryLoadDataSource", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("style.preset.set", new MutationCapability("remote", true, "CellStylePreset", "editor", "range", true, "format", true, "declared", "range")),
         Map.entry("cf.reorder", new MutationCapability("remote", true, "ConditionalFormatReorder", "editor", "exact", true, "format", true, "declared", "range")),
+        Map.entry("comment.update", new MutationCapability("remote", true, "CommentUpdateParams", "commenter", "exact", true, "none", false, "none", "workbook")),
         Map.entry("drawing.visibility.set", new MutationCapability("remote", true, "DrawingVisibilitySet", "editor", "exact", true, "edit-objects", true, "declared", "drawing")),
         Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true, "edit-objects", true, "declared", "drawing"))
     );
@@ -79,6 +80,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("comment.reply", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("comment.reply.remove", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("comment.resolve", new PermissionPolicy("comment", "none", false, "none", "workbook")),
+        Map.entry("comment.update", new PermissionPolicy("comment", "none", false, "none", "workbook")),
         Map.entry("dataRegion.add", new PermissionPolicy("structure", "format", true, "declared", "range")),
         Map.entry("dataRegion.remove", new PermissionPolicy("structure", "format", true, "declared", "range")),
         Map.entry("dataSource.add", new PermissionPolicy("structure", "format", true, "declared", "range")),

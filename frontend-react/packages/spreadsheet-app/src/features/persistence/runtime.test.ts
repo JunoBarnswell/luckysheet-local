@@ -85,14 +85,16 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.localOnly, true);
   });
 
-  it('starts a usable local workbook when the connected backend returns a server error', async () => {
+  it('fails closed when the authoritative backend returns a server error', async () => {
     const runtime = createSpreadsheetRuntime({
       authTokenProvider: () => 'verified-host-token',
     });
     const phases: string[] = [];
     const saveStates: string[] = [];
+    const failures: string[] = [];
     runtime.handlers.onPhaseChange = (phase) => phases.push(phase);
     runtime.handlers.onSaveState = (state) => saveStates.push(state);
+    runtime.handlers.onRuntimeFailure = (failure) => failures.push(failure.code);
     runtime.api = {
       getSnapshot: async () => { throw new ApiRequestError('Backend is unavailable', 503, 'INTERNAL_ERROR'); },
       getAccess: async () => { throw new Error('getAccess must not run after a failed snapshot'); },
@@ -103,10 +105,11 @@ describe('local workspace runtime persistence', () => {
     await runtime.persistenceReady;
     dispose();
 
-    assert.equal(runtime.localOnly, true);
+    assert.equal(runtime.localOnly, false);
     assert.equal(runtime.remoteConnected, false);
-    assert.equal(runtime.workspaceRecord?.syncMode, 'local-only');
-    assert.deepEqual(phases, ['ready']);
-    assert.equal(saveStates.at(-1), 'offline');
+    assert.equal(runtime.workspaceRecord, null);
+    assert.deepEqual(failures, ['REMOTE_WORKBOOK_UNAVAILABLE']);
+    assert.deepEqual(phases, ['error']);
+    assert.equal(saveStates.at(-1), 'error');
   });
 });

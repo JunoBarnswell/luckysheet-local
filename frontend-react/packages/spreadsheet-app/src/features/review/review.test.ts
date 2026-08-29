@@ -43,7 +43,7 @@ describe('review feature', () => {
     assert.equal(getCellNote(sheet, 0, 0)?.text, 'Check total');
     assert.equal(sheet.review.threadCount, 1);
     assert.equal(getCellHyperlink(sheet, 1, 0)?.target.kind, 'url');
-    assert.match(manifest.ribbon?.find((entry) => entry.id === 'review-hyperlink')?.commandId ?? '', /hyperlink\.set/);
+    assert.match(manifest.ribbon?.find((entry) => entry.id === 'review-hyperlink')?.requiredCommandId ?? '', /hyperlink\.set/);
     assert.equal(serializeHyperlink({ id: 'h1', target: { kind: 'name', name: 'SalesTotal' } }), '#name:SalesTotal');
   });
 

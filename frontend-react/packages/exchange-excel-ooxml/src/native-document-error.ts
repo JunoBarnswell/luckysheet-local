@@ -35,8 +35,14 @@ export class NativeDocumentError extends Error {
 export function asNativeDocumentError(error: unknown, context: { fileName?: string; format?: NativeDocumentFormat } = {}): NativeDocumentError {
   if (error instanceof NativeDocumentError) return error;
   const message = error instanceof Error ? error.message : String(error);
+  const prefixedCode = /^([A-Z][A-Z0-9_]+):\s*/.exec(message)?.[1];
+  const code = prefixedCode === 'NATIVE_DOCUMENT_RESOURCE_LIMIT' || /(?:archive|uncompressed|compression ratio|XML part|materializes .* cells|output contains more than)/i.test(message)
+    ? 'NATIVE_DOCUMENT_RESOURCE_LIMIT'
+    : prefixedCode === 'UNSUPPORTED_FEATURE' || prefixedCode?.startsWith('NATIVE_DRAWING_') || prefixedCode?.startsWith('ASSET_')
+      ? 'NATIVE_DOCUMENT_UNSUPPORTED'
+      : 'NATIVE_DOCUMENT_CODEC_FAILED';
   return new NativeDocumentError({
-    code: 'NATIVE_DOCUMENT_CODEC_FAILED',
+    code,
     message: context.fileName ? `${context.fileName}: ${message}` : message,
     format: context.format,
     cause: error,

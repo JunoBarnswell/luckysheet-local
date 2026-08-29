@@ -80,10 +80,10 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           const normalized = id.replaceAll('\\', '/');
-          if (normalized.includes('/packages/formula-engine/') || normalized.includes('/packages/render-engine/')) return 'sheet-engine';
+          if (normalized.includes('/packages/formula-engine/')) return 'formula-engine';
+          if (normalized.includes('/packages/render-engine/')) return 'sheet-render';
           if (normalized.includes('/packages/core-model/') || normalized.includes('/packages/command-runtime/')) return 'sheet-model';
           if (normalized.includes('/packages/ui-system/')) return 'ui-system';
-          if (normalized.includes('/packages/spreadsheet-app/')) return 'workbook-runtime';
           return undefined;
         },
       },

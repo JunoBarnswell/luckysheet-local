@@ -39,8 +39,6 @@ export interface CellPatch {
   richText?: CellPatchField<NonNullable<CellData['richText']>>;
   formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
   formulaValue?: CellPatchField<NonNullable<CellData['formulaValue']>>;
-  hyperlink?: CellPatchField<NonNullable<CellData['hyperlink']>>;
-  hyperlinkDetail?: CellPatchField<NonNullable<CellData['hyperlinkDetail']>>;
   filterMetadata?: CellPatchField<NonNullable<CellData['filterMetadata']>>;
 }
 
@@ -109,8 +107,6 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'editor',
   'numberFormat',
   'formulaValue',
-  'hyperlink',
-  'hyperlinkDetail',
   'filterMetadata',
   'phonetic',
 ];
@@ -164,53 +160,6 @@ export function readCellPatch(cell: CellData | undefined): CellPatch | undefined
   const candidate = (cell as CellPatchCarrier | undefined)?.__cellPatch;
   if (!candidate) return undefined;
   return normalizeCellPatch(candidate);
-}
-
-/**
- * Convert the pre-CellPatch sparse shape into a canonical patch. This helper
- * is used only by the explicit import/snapshot migration below.
- */
-function legacyCellPatch(cell: CellData): CellPatch {
-  const carrier = readCellPatch(cell);
-  if (carrier) return carrier;
-  const hasMetadata = PATCH_FIELDS.some((key) => cell[key] !== undefined);
-  const patch: CellPatch = { schema: 'CellPatch' };
-  patch.value = hasMetadata ? { kind: 'inherit' } : { kind: 'set', value: clone(cell.value) };
-  for (const key of PATCH_FIELDS) {
-    const value = cell[key];
-    if (value !== undefined) {
-      patch[key] = { kind: 'set', value: clone(value) } as never;
-    }
-  }
-  return patch;
-}
-
-const migratedRegionSets = new WeakMap<WorksheetModel, Set<string>>();
-
-/**
- * One-time import/snapshot migration for pre-CellPatch data-region overlays.
- * The steady-state resolver never interprets the legacy CellData shape.
- */
-export function migrateDataRegionCellPatches(sheet: WorksheetModel): number {
-  let migratedRegions = migratedRegionSets.get(sheet);
-  if (!migratedRegions) {
-    migratedRegions = new Set<string>();
-    migratedRegionSets.set(sheet, migratedRegions);
-  }
-  let migrated = 0;
-  for (const region of sheet.dataRegions) {
-    if (migratedRegions.has(region.id)) continue;
-    for (let row = region.headerRow + 1; row <= region.range.endRow; row += 1) {
-      for (let column = region.range.startColumn; column <= region.range.endColumn; column += 1) {
-        const cell = sheet.cells.get(row, column);
-        if (!cell || readCellPatch(cell)) continue;
-        sheet.cells.set(row, column, cellDataForPatch(legacyCellPatch(cell)));
-        migrated += 1;
-      }
-    }
-    migratedRegions.add(region.id);
-  }
-  return migrated;
 }
 
 function fieldValue<T>(field: CellPatchField<T> | undefined, base: T | undefined): T | undefined {
@@ -525,7 +474,7 @@ export function writeCellPatch(
   if (region) {
     const current = readCellPatch(existing);
     if (existing && !current) {
-      throw new Error(`Data region ${region.id} contains a non-canonical cell overlay; migrate it before writing`);
+      throw new Error(`Data region ${region.id} contains a non-canonical cell overlay; snapshot migration is required`);
     }
     const merged = mergeCellPatches(current, normalized);
     if (!hasPatchEffect(merged)) {

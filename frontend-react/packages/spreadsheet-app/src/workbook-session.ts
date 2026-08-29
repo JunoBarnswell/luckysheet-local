@@ -115,7 +115,7 @@ import {
   type FormatPainterStylePattern,
   isCellEntryError,
 } from '@react-sheets/sheet-features';
-import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
+import { isArrayValue, isFormulaError, isReferenceValue, isSpillChild, type CalculationSessionPort, type CanonicalExcelDateParts, type ExcelDateSystem, type FormulaValue, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
   CellEditDomain,
   CellEditError,
@@ -148,6 +148,7 @@ import { PermissionService, type PermissionCapabilities, type ShareRole } from '
 import {
   canExecuteCommand,
   findProtectionRuleCoveringRange,
+  resolveCommandPermission,
 } from './features/permission';
 import {
   createSpreadsheetRuntime,
@@ -161,8 +162,10 @@ import {
   setRuntimeDateContext,
   startCollaborationSession,
   startPersistenceSession,
+  type RuntimeFailure,
   type SpreadsheetRuntime,
 } from './runtime';
+import type { CompiledFeatureSurfaceSchema, FeatureLifecyclePhase } from './feature-registry';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionInteractionMode, type SelectionState } from './selection-service';
 import { resolveSelectionTarget } from './selection-target-resolver';
 import { cellAddress, columnLabel } from './address';
@@ -170,6 +173,7 @@ import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipbo
 import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
 import { pivotIdsToRefresh, type PivotRefreshTrigger } from './features/pivot/refresh-coordinator';
 import { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
+import { resolveChartDataFromSources } from './features/chart';
 import { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 import {
   findDrawingByPayloadId,
@@ -198,14 +202,15 @@ import {
   prepareDataRegionMaterialization,
   createWorkbookCellResolver,
   encodeSheetDataRegion,
+  preprocessRange,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
   buildCellNote,
   buildCommentReply,
   buildCommentThread,
-  findCommentThreadAt,
   getCellHyperlink,
+  validateHyperlinkTarget,
 } from './features/review';
 import {
   buildSparklineDataLocationParams,
@@ -223,9 +228,15 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
+import {
+  createNativeDocumentTransaction,
+  summarizeCompatibilityReport,
+  type NativeDocumentExchangeResult,
+  type NativeDocumentTransaction,
+} from './features/native-document';
 import {
   buildPrintSnapshot,
+  buildPrintProjection,
   getPrintDocument,
   pageSetupToPrintLayout,
   summarizePrintSnapshot,
@@ -233,6 +244,9 @@ import {
   type PrintPageBreak,
   type PrintPageSnapshot,
   type PrintSnapshot,
+  type PrintProjection,
+  type PrintProjectionOptions,
+  type PrintChartProjection,
 } from './features/print';
 import { browserPrintHook, PdfExportService, type PrintLayout } from './features/print';
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
@@ -245,6 +259,7 @@ import {
   summarizeQueryResult,
   type QueryResultSnapshot,
   type QuerySessionEntry,
+  type ConnectorManifest,
 } from './features/query';
 import type {
   GoalSeekParams,
@@ -264,6 +279,50 @@ function nativeDocumentMimeType(fileName: string): string {
           : extension === 'sjs' ? 'application/zip'
             : extension === 'ssjson' ? 'application/json'
               : 'application/octet-stream';
+}
+
+async function decodeImageDimensions(file: Blob): Promise<{ width: number; height: number }> {
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await createImageBitmap(file);
+    try {
+      if (bitmap.width <= 0 || bitmap.height <= 0) throw new Error('IMAGE_DIMENSIONS_INVALID: decoded image has no dimensions');
+      return { width: bitmap.width, height: bitmap.height };
+    } finally {
+      bitmap.close();
+    }
+  }
+  if (typeof Image === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new Error('IMAGE_DECODER_UNAVAILABLE: the host cannot decode image dimensions');
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise<{ width: number; height: number }>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => image.naturalWidth > 0 && image.naturalHeight > 0
+        ? resolve({ width: image.naturalWidth, height: image.naturalHeight })
+        : reject(new Error('IMAGE_DIMENSIONS_INVALID: decoded image has no dimensions'));
+      image.onerror = () => reject(new Error('IMAGE_DECODE_FAILED: image dimensions could not be decoded'));
+      image.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function encodeCanvasJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => canvas.toBlob(
+    (blob) => blob ? resolve(blob) : reject(new Error('SCREENSHOT_ENCODE_FAILED: the captured frame could not be encoded')),
+    'image/jpeg',
+    0.92,
+  ));
+}
+
+function cellFormulaValue(value: FormulaValue): Exclude<CellData['formulaValue'], undefined> {
+  if (isFormulaError(value)) return { kind: 'error', code: value.code, message: value.message };
+  if (isReferenceValue(value)) throw new Error('RESOLVED_CELL_REFERENCE_UNMATERIALIZED: formula returned a reference value');
+  if (isArrayValue(value)) return cellFormulaValue(value[0]?.[0] ?? null);
+  if (Array.isArray(value)) return null;
+  return value;
 }
 import {
   HistoryPreviewSession,
@@ -318,9 +377,13 @@ export interface WorkbookSessionOptions {
   /** Workbook calendar and one fixed calculation-cycle clock basis. */
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  /** Node/SSR callers must inject the explicit persistent formula session port. */
+  calculationSessionPort?: CalculationSessionPort;
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   nativeDocumentExecution?: 'worker' | 'inline-test';
+  /** Catalog and editor resolve the same unit-scoped native transaction. */
+  nativeDocumentTransaction?: NativeDocumentTransaction;
   /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
   pivotTaskPort?: PivotTaskPort;
   pivotExecution?: 'worker' | 'inline-test';
@@ -445,6 +508,9 @@ export interface UiSnapshot extends DesignerState {
   hasPendingOperations: boolean;
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
+  featurePhase: FeatureLifecyclePhase;
+  featureSurfaceSchema: CompiledFeatureSurfaceSchema;
+  runtimeFailure: Pick<RuntimeFailure, 'code' | 'message' | 'recovery'> | null;
   tables: readonly WorkbookTableModel[];
   relationships: readonly import('@react-sheets/core-model').DataRelationship[];
   dataSources: readonly DataSourceManifest[];
@@ -456,10 +522,11 @@ export interface UiSnapshot extends DesignerState {
   formatPainter: 'once' | 'locked' | null;
   printLayout: PrintLayout;
   printPages: readonly PrintPageSnapshot[];
+  printProjections: readonly import('./features/print').PrintProjection[];
   printPageCount: number;
   printArea: RangeRef | null;
   lastQueryResult: QueryResultSnapshot | null;
-  queryConnectors: readonly string[];
+  queryConnectors: readonly ConnectorManifest[];
   loadedQueries: readonly QueryResultSnapshot[];
   lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
   formulaAudit: FormulaAuditProjection;
@@ -545,6 +612,12 @@ export type PivotTaskState =
   | { status: 'idle' }
   | { status: 'running'; taskId: string }
   | { status: 'failed'; error: PivotTaskError };
+
+interface ActivePivotTask {
+  generation: number;
+  taskId: string;
+  sourceTaskId?: string;
+}
 
 class PivotTaskExecutionError extends Error {
   constructor(readonly taskError: PivotTaskError) {
@@ -718,6 +791,7 @@ export class WorkbookSession {
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
   private notice = 'Workbook engine ready';
+  private runtimeFailure: Pick<RuntimeFailure, 'code' | 'message' | 'recovery'> | null = null;
   private pivotCreateTask: PivotCreateTaskState = { status: 'idle' };
   private version = 0;
   private activeSheetId: string;
@@ -750,8 +824,9 @@ export class WorkbookSession {
   private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
-  /** The sole native package baseline paired with this workbook snapshot. */
-  private nativeArtifact: NativeDocumentArtifact | undefined;
+  /** The sole native package baseline and serialized import/export owner. */
+  private readonly nativeDocumentTransaction: NativeDocumentTransaction;
+  private get nativeArtifact(): NativeDocumentArtifact | undefined { return this.nativeDocumentTransaction.artifact; }
   private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, rowHeight: null, sheet: null, cellShiftOperation: 'insert', formatCellsTab: 'number', localObjectKind: null };
   /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
   private findCursor: FindCursor | null = null;
@@ -772,19 +847,32 @@ export class WorkbookSession {
     margin: { top: 20, right: 20, bottom: 20, left: 20 },
   };
   private printSnapshot: PrintSnapshot | null = null;
+  private printProjectionCache: { key: string; projections: PrintProjection[] } | null = null;
   private querySessions = new Map<string, QuerySessionEntry>();
   private lastQueryResult: QueryResultSnapshot | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
+  /** Worker generations are global because source registrations are shared
+   * across PivotTables. Per-pivot generations alone make a new PivotTable
+   * with the same source look older than an existing one. */
+  private pivotTaskGenerationSequence = 0;
   private readonly pivotTaskPort: PivotTaskPort;
-  private readonly registeredPivotSources = new Map<string, string>();
-  private readonly activePivotTasks = new Map<string, string>();
+  private readonly registeredPivotSources = new Map<string, { revision: string; epoch: number }>();
+  /**
+   * One logical Pivot run owns both source registration and calculation.  The
+   * source-register request deliberately has a different task id from the
+   * calculate request, so retaining only the latter made an in-flight source
+   * acquisition uncancellable.  Keeping both ids under one generation gives
+   * refresh, layout edits, and disposal the same cancellation boundary.
+   */
+  private readonly activePivotTasks = new Map<string, ActivePivotTask>();
   private readonly pendingPivotCommitResults = new Map<string, import('@react-sheets/core-model').PivotResultTree>();
   private pivotCreateAbort: AbortController | null = null;
   private pivotOpenRefreshStarted = false;
   private readonly insertCoordinator = new InsertCoordinator(nextId);
   private readonly assetUrls = new Map<string, string>();
+  private readonly assetUrlLoads = new Map<string, Promise<string>>();
 
   private get formulaDraft(): string {
     const active = this.cellEditDomain.getSnapshot().session;
@@ -824,8 +912,11 @@ export class WorkbookSession {
   private readonly sheetProjectionRevisions = new Map<string, SheetProjectionRevision>();
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
+  private refreshBatchDepth = 0;
+  private refreshBatchPending = false;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, calculationSessionPort, collaborationUrl, nativeDocumentExecution = 'worker', nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+    this.nativeDocumentTransaction = nativeDocumentTransaction ?? createNativeDocumentTransaction();
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -839,6 +930,7 @@ export class WorkbookSession {
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
       canonicalReferenceDate,
+      calculationSessionPort,
       collaborationUrl,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
@@ -853,6 +945,7 @@ export class WorkbookSession {
     if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
     this.pivotTaskPort = resolvedPivotTaskPort;
     this.onReady = onReady;
+    this.permission.setLocalOnly(this.runtime.localOnly);
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
@@ -983,6 +1076,13 @@ export class WorkbookSession {
       this.notice = message;
       this.emit();
     };
+    this.runtime.handlers.onRuntimeFailure = (failure) => {
+      this.runtimeFailure = { code: failure.code, message: failure.message, recovery: failure.recovery };
+      this.saveState = 'error';
+      this.phase = 'error';
+      this.notice = `${failure.code}: ${failure.message} ${failure.recovery}`;
+      this.emit();
+    };
     this.runtime.handlers.onMutationsApplied = () => {
       const mutations = this.runtime.drainPivotMutations();
       this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
@@ -1003,6 +1103,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
       this.phase = phase;
+      if (phase === 'ready') this.runtimeFailure = null;
       this.emit();
       if (phase === 'ready' && this.saveState !== 'error') this.runReadyCallback();
     };
@@ -1031,6 +1132,7 @@ export class WorkbookSession {
         this.permission.setOnline(true);
       } else {
         this.permission.clearServerAccess();
+        this.permission.setLocalOnly(this.runtime.localOnly);
         this.permission.setOnline(false);
       }
       this.emit();
@@ -1062,7 +1164,7 @@ export class WorkbookSession {
       }
       const artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
-        this.nativeArtifact = artifact;
+        await this.nativeDocumentTransaction.attach(artifact);
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
         this.invalidateAllSheetProjections();
         this.emit();
@@ -1080,7 +1182,12 @@ export class WorkbookSession {
         );
       }
     }).catch((error: unknown) => {
-      if (!this.disposed && generation === this.lifecycleGeneration) this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
+      if (!this.disposed && generation === this.lifecycleGeneration) {
+        this.saveState = 'error';
+        this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
+        this.runtime.handlers.onPhaseChange?.('error');
+        this.emit();
+      }
     });
   }
 
@@ -1096,6 +1203,7 @@ export class WorkbookSession {
     this.persistenceDispose = null;
     for (const url of this.assetUrls.values()) URL.revokeObjectURL(url);
     this.assetUrls.clear();
+    this.assetUrlLoads.clear();
     this.pivotTaskPort.dispose();
     this.activePivotTasks.clear();
     this.registeredPivotSources.clear();
@@ -1124,21 +1232,43 @@ export class WorkbookSession {
   }
 
   private refresh(): void {
+    if (this.refreshBatchDepth > 0) {
+      this.refreshBatchPending = true;
+      return;
+    }
     this.syncPersistenceMeta();
     this.version += 1;
     this.emit();
   }
 
+  private withRefreshBatch<T>(action: () => T): T {
+    this.refreshBatchDepth += 1;
+    try {
+      return action();
+    } finally {
+      this.refreshBatchDepth -= 1;
+      if (this.refreshBatchDepth === 0 && this.refreshBatchPending) {
+        this.refreshBatchPending = false;
+        this.refresh();
+      }
+    }
+  }
+
   private syncPersistenceMeta(): void {
     if (!this.persistenceMetaDirty) return;
-    const meta = buildPersistenceMeta(
-      this.runtime.model.snapshot(),
-      this.runtime.remoteRevision,
-      this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
-      this.runtime.workspaceRecord,
-    );
-    this.hasPendingOperations = meta.hasPendingOperations;
-    this.persistenceChecksum = meta.checksum;
+    const record = this.runtime.workspaceRecord;
+    const pendingCount = (this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0)
+      + this.runtime.pendingMutations.length
+      + (record?.pending.operations.length ?? 0);
+    this.hasPendingOperations = pendingCount > 0 || this.runtime.pendingLocalCheckpoint;
+    if (record?.checksum) this.persistenceChecksum = record.checksum;
+    // A new in-memory workbook has no persisted record yet, but the UI
+    // contract still exposes a canonical checksum. Compute it once during the
+    // initial session bootstrap; subsequent mutation refreshes use the stored
+    // baseline and pending state instead of serializing the whole workbook.
+    if (!this.persistenceChecksum && !record) {
+      this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, 0).checksum;
+    }
     this.persistenceMetaDirty = false;
   }
 
@@ -1164,6 +1294,19 @@ export class WorkbookSession {
   /** The sole worksheet read path for session-level Home behavior. */
   private readResolvedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
     return this.cellResolver.resolve(sheet, row, column)?.cell;
+  }
+
+  /** Formula/spill-aware extension of the canonical block/authored cell read. */
+  private readCalculatedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
+    const cell = this.readResolvedCell(sheet, row, column);
+    const spill = this.runtime.formula.getSpillValueAt(sheet.id, row, column);
+    if (spill !== undefined) return { ...(cell ? structuredClone(cell) : { value: null }), formulaValue: cellFormulaValue(spill) };
+    if (cell?.formula !== undefined && !cell.formulaMetadata?.preservedOnly) {
+      const result = this.runtime.formula.getCellResult({ sheetId: sheet.id, row, column });
+      if (!result) throw new Error(`RESOLVED_CELL_FORMULA_UNAVAILABLE: ${sheet.id}!${row}:${column}`);
+      return { ...structuredClone(cell), formulaValue: cellFormulaValue(result.value) };
+    }
+    return cell ? structuredClone(cell) : undefined;
   }
 
   /** Filter menus use the FormulaEngine/spill result, never authored storage. */
@@ -1427,7 +1570,7 @@ export class WorkbookSession {
       notice: this.notice,
       pivotCreateTask: structuredClone(this.pivotCreateTask),
       pivotTaskStates: Object.fromEntries(modelSheets.flatMap((sheet) => sheet.pivots.map((pivot) => {
-        const taskId = this.activePivotTasks.get(pivot.id);
+        const taskId = this.activePivotTasks.get(pivot.id)?.taskId;
         const error = this.runtime.pivotErrors[pivot.id];
         return [pivot.id, taskId
           ? { status: 'running' as const, taskId }
@@ -1472,6 +1615,9 @@ export class WorkbookSession {
       hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
+      featurePhase: this.runtime.featureRuntime.getPhase(),
+      featureSurfaceSchema: this.runtime.featureRuntime.getSurfaceSchema(),
+      runtimeFailure: this.runtimeFailure ? { ...this.runtimeFailure } : null,
       tables: [...this.runtime.model.dataModel.tables.values()].map((table) => structuredClone(table)),
       relationships: [...this.runtime.model.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
       dataSources: [...this.runtime.model.dataModel.sources.values()].map((source) => structuredClone(source)),
@@ -1493,10 +1639,17 @@ export class WorkbookSession {
       formatPainter: this.formatPainter?.mode ?? null,
       printLayout: this.printLayout,
       printPages: this.printSnapshot?.pageSnapshots ?? [],
+      printProjections: this.dialogs.active === 'print-preview' && this.printSnapshot
+        ? this.printProjectionsForSnapshot(this.printSnapshot)
+        : [],
       printPageCount: this.printSnapshot?.pageCount ?? 0,
       printArea: this.printSnapshot?.printArea ?? null,
       lastQueryResult: this.lastQueryResult,
-      queryConnectors: this.runtime.connectors.list().map((connector) => connector.id),
+      queryConnectors: this.runtime.connectors.list().map((connector) => ({
+        ...structuredClone(connector.manifest),
+        available: connector.execution === 'local' || !this.runtime.localOnly,
+        ...(connector.execution === 'server' && this.runtime.localOnly ? { unavailableReason: 'This connector requires the Java backend.' } : {}),
+      })),
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
@@ -1860,6 +2013,7 @@ export class WorkbookSession {
           this.pendingPivotCommitResults.delete(pivot.id);
           this.runtime.pivotResults[pivot.id] = preparedResult;
           delete this.runtime.pivotErrors[pivot.id];
+          this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
         } else if (!pivotResultMatchesRevision(this.runtime.model, pivot, this.runtime.pivotResults[pivot.id], this.runtime.formula)) {
           this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: pivot.id });
         }
@@ -1872,6 +2026,8 @@ export class WorkbookSession {
           this.pendingPivotCommitResults.delete(updateParams.pivotId);
           this.runtime.pivotResults[updateParams.pivotId] = preparedResult;
           delete this.runtime.pivotErrors[updateParams.pivotId];
+          const updatedPivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === updateParams.pivotId);
+          if (updatedPivot) this.invalidateSheetProjection(updatedPivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
         } else {
           const updatedPivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === updateParams.pivotId);
           if (updatedPivot && !pivotResultMatchesRevision(this.runtime.model, updatedPivot, this.runtime.pivotResults[updateParams.pivotId], this.runtime.formula)) {
@@ -1879,6 +2035,12 @@ export class WorkbookSession {
           }
         }
       }
+    } else if (commandId.startsWith('pivot.control.')) {
+      // Control mutations can change a linked Pivot's filter revision without
+      // changing its source. Reuse the normal refresh coordinator so only
+      // revisions that actually changed recalculate; default all/empty
+      // controls remain ready because their semantic revision is unchanged.
+      this.refreshPivotsForTrigger({ kind: 'explicit-all' });
     }
     if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh' && commandId !== 'sheet.extent.grow') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
@@ -1911,7 +2073,10 @@ export class WorkbookSession {
   }
 
   canExecute(commandId: string, params?: unknown): boolean {
-    if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    // Host operations such as native document export have a protocol
+    // permission contract but no mutating CommandRuntime handler. Their
+    // authority is still resolved through the same permission policy.
+    if (!this.runtime.commands.registry.hasCommand(commandId) && !resolveCommandPermission(commandId)) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
       this.permission,
@@ -2066,9 +2231,8 @@ export class WorkbookSession {
     this.activeContext = next;
     if (pivotId !== null) {
       this.panels = { ...this.panels, active: 'pivot', open: true };
-      this.ribbonTab = 'pivotAnalyze';
-    } else if (this.ribbonTab === 'pivotAnalyze' || this.ribbonTab === 'pivotDesign') {
-      this.ribbonTab = 'home';
+    } else if (this.panels.active === 'pivot') {
+      this.panels = { ...this.panels, active: 'inspector', open: false };
     }
     this.emit();
   }
@@ -2130,6 +2294,42 @@ export class WorkbookSession {
 
   getActiveContext(): ActiveContext {
     return structuredClone(this.activeContext);
+  }
+
+  /** Canonical feature surface consumed by Ribbon/UI renderers. */
+  getFeatureSurfaceSchema(): CompiledFeatureSurfaceSchema {
+    return this.runtime.featureRuntime.getSurfaceSchema();
+  }
+
+  getFeatureLifecyclePhase(): FeatureLifecyclePhase {
+    return this.runtime.featureRuntime.getPhase();
+  }
+
+  /** UI-owned lifecycle boundary; repeated calls are idempotent for StrictMode mounts. */
+  advanceFeatureLifecycle(phase: Extract<FeatureLifecyclePhase, 'rendered' | 'steady'>): boolean {
+    const order: readonly FeatureLifecyclePhase[] = ['starting', 'ready', 'rendered', 'steady'];
+    const current = this.runtime.featureRuntime.getPhase();
+    if (current === 'failed' || current === 'disposed') {
+      this.runtimeFailure = { code: 'FEATURE_LIFECYCLE_FAILED', message: `Feature lifecycle is ${current}`, recovery: 'Recreate the workbook runtime before mounting the editor.' };
+      this.saveState = 'error';
+      this.phase = 'error';
+      this.notice = `FEATURE_LIFECYCLE_INVALID: ${this.runtimeFailure.message}`;
+      this.emit();
+      return false;
+    }
+    if (order.indexOf(current) >= order.indexOf(phase)) return true;
+    try {
+      this.runtime.featureRuntime.advance(phase);
+      this.emit();
+      return true;
+    } catch (error) {
+      this.runtimeFailure = { code: 'FEATURE_LIFECYCLE_FAILED', message: error instanceof Error ? error.message : 'Feature lifecycle failed', recovery: 'Recreate the workbook runtime and retry the lifecycle boundary.' };
+      this.saveState = 'error';
+      this.phase = 'error';
+      this.notice = `FEATURE_LIFECYCLE_FAILED: ${this.runtimeFailure.message}`;
+      this.emit();
+      return false;
+    }
   }
 
   getSelection(): SelectionState {
@@ -2271,8 +2471,10 @@ export class WorkbookSession {
     try {
       this.remoteRevisions = await this.runtime.api.listRevisions(this.runtime.model.unitId);
       this.emit();
-    } catch {
-      this.notify('Failed to refresh revision log');
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error('HISTORY_REVISION_LIST_FAILED: revision log refresh failed');
+      this.notify(failure.message);
+      throw failure;
     }
   }
 
@@ -2322,10 +2524,10 @@ export class WorkbookSession {
     this.clearHistoryPreview();
     this.notify(`Restored workbook to revision ${revision}`);
     this.refresh();
-    await this.refreshRevisionLog();
+    await this.refreshRevisionLog().catch(() => undefined);
   }
 
-  async previewRevision(revision: number): Promise<HistoryPreviewSession | null> {
+  async previewRevision(revision: number): Promise<HistoryPreviewSession> {
     try {
       const response = await this.runtime.api.getRevisionSnapshot(this.runtime.model.unitId, revision);
       const record = this.remoteRevisions.find((entry) => entry.revision === revision);
@@ -2338,13 +2540,14 @@ export class WorkbookSession {
           description: `Revision ${revision}`,
         };
       this.historyPreview?.dispose();
-      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot, this.pivotTaskPort);
+      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot, this.pivotTaskPort, this.runtime.calculationSessionPort);
       this.notify(`Previewing revision #${revision}`);
       this.emit();
       return this.historyPreview;
-    } catch {
-      this.notify('Failed to load revision preview');
-      return null;
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error('HISTORY_PREVIEW_FAILED: revision preview failed');
+      this.notify(failure.message);
+      throw failure;
     }
   }
 
@@ -2380,7 +2583,6 @@ export class WorkbookSession {
       if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
       const nativeExport = await this.exportNativeDocumentForSave();
       if (!nativeExport.buffer || !nativeExport.fileName) throw new Error('Native document export did not produce a file');
-      this.nativeArtifact = nativeExport.artifact;
       const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
       if (remoteWorkbook && !this.runtime.remoteConnected) {
         await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
@@ -2414,13 +2616,20 @@ export class WorkbookSession {
     }
   }
 
-  private exportNativeDocumentForSave(): Promise<Awaited<ReturnType<typeof exchangeExportDocument>>> {
-    return exchangeSaveDocument(this.runtime.model.snapshot(), this.nativeArtifact, {
+  private exportNativeDocumentForSave(): Promise<NativeDocumentExchangeResult> {
+    if (this.nativeDocumentTransaction.status === 'failed') {
+      throw new Error('NATIVE_DOCUMENT_TRANSACTION_RECOVERY_REQUIRED: reload the verified source artifact or use Save As with an explicit target format');
+    }
+    const snapshot = this.runtime.model.snapshot();
+    const params = {
       fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
       execution: this.nativeDocumentExecution,
       revision: this.version,
       assetStore: this.runtime.assetStore,
-    });
+    } as const;
+    return this.nativeArtifact
+      ? this.nativeDocumentTransaction.save(snapshot, params)
+      : this.nativeDocumentTransaction.export(snapshot, { ...params, mode: 'save' });
   }
 
   private runReadyCallback(): void {
@@ -2533,8 +2742,9 @@ export class WorkbookSession {
     this.dialogs = { ...this.dialogs, active, localObjectKind: dialog === 'local-object' ? localObjectKind ?? 'icon' : null, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, formatCellsTab: dialog === 'format-cells' ? formatCellsTab : this.dialogs.formatCellsTab, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, rowHeight: dialog === 'row-height' ? structuredClone(rowHeight ?? { rows: [] }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
-      this.rebuildPrintSnapshot();
+      const snapshot = this.rebuildPrintSnapshot();
       this.panels = { ...this.panels, active: 'print', open: true };
+      void this.preparePrintAssetUrls(snapshot).catch((error) => this.notify(error instanceof Error ? error.message : 'Print asset loading failed'));
     }
     this.emit();
   }
@@ -2613,6 +2823,7 @@ export class WorkbookSession {
   };
   setShowPrintPreview = (open: boolean): void => {
     this.dialogs = { ...this.dialogs, active: open ? 'print-preview' : null };
+    if (open && this.printSnapshot) void this.preparePrintAssetUrls(this.printSnapshot).catch((error) => this.notify(error instanceof Error ? error.message : 'Print asset loading failed'));
     this.setFocusState(open ? 'dialog' : 'grid', open ? 'dialog' : 'grid');
     this.emit();
   };
@@ -3747,6 +3958,7 @@ export class WorkbookSession {
       this.ribbonTab = 'reportSheetDesign';
     } else {
       this.activeContext = { kind: 'none' };
+      if (this.panels.active === 'pivot') this.panels = { ...this.panels, active: 'inspector', open: false };
       if (this.ribbonTab === 'tableSheetDesign' || ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'].includes(this.ribbonTab) || this.ribbonTab === 'reportSheetDesign') this.ribbonTab = 'home';
     }
     this.runtime.drawing.deselect(sheetId);
@@ -3927,6 +4139,63 @@ export class WorkbookSession {
     this.commitInsertDrawing({ commandId: 'drawing.add.camera', sheetId: this.activeSheetId, drawing, payload });
     this.notify('区域快照已插入');
     this.refresh();
+  }
+
+  /** Host screen capture is normalized immediately into the canonical image-asset drawing chain. */
+  async captureScreenshot(): Promise<void> {
+    if (!this.canExecute('drawing.add.image')) {
+      const error = new Error('SCREENSHOT_PERMISSION_DENIED: you do not have permission to add drawings');
+      this.notify(error.message);
+      throw error;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia || typeof document === 'undefined') {
+      const error = new Error('SCREENSHOT_HOST_UNAVAILABLE: this host does not expose screen capture');
+      this.notify(error.message);
+      throw error;
+    }
+    let stream: MediaStream | undefined;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error('SCREENSHOT_DECODE_FAILED: the selected surface did not produce a video frame'));
+      });
+      await video.play();
+      if (video.videoWidth <= 0 || video.videoHeight <= 0) throw new Error('SCREENSHOT_DIMENSIONS_INVALID: captured surface has no dimensions');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('SCREENSHOT_CANVAS_UNAVAILABLE: 2D capture context is unavailable');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const content = await encodeCanvasJpeg(canvas);
+      const asset = await this.runtime.assetStore.put({ content, mimeType: 'image/jpeg', width: canvas.width, height: canvas.height });
+      try {
+        const maximumWidth = 480;
+        const maximumHeight = 320;
+        const scale = Math.min(maximumWidth / canvas.width, maximumHeight / canvas.height, 1);
+        const drawing = this.createInsertDrawing('image', this.activeSheetId, { kind: 'absolute' }, {
+          payloadPrefix: 'screenshot',
+          transform: { x: 96, y: 96, width: Math.max(1, Math.round(canvas.width * scale)), height: Math.max(1, Math.round(canvas.height * scale)), rotation: 0 },
+        });
+        const payload: ImageDrawingPayload = { kind: 'image', asset, name: `Screenshot ${new Date().toISOString()}`, altText: 'Screen capture' };
+        this.commitInsertDrawing({ commandId: 'drawing.add.image', sheetId: this.activeSheetId, drawing, payload });
+      } catch (error) {
+        await this.runtime.assetStore.release(asset);
+        throw error;
+      }
+      this.notify('屏幕截图已插入');
+      this.refresh();
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'SCREENSHOT_CAPTURE_FAILED: screen capture failed');
+      throw error instanceof Error ? error : new Error('SCREENSHOT_CAPTURE_FAILED: screen capture failed');
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+    }
   }
 
   /** 所有 INSERT 本地对象共用的领域入口；成功后只提交一次 drawing.add。 */
@@ -4317,9 +4586,39 @@ export class WorkbookSession {
     return { code, message, pivotId: pivot.id, sourceIdentity: `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`, sourceRevision, recovery };
   }
 
+  private nextPivotTaskGeneration(pivotId: string): number {
+    const generation = Math.max(
+      this.pivotTaskGenerationSequence + 1,
+      (this.pivotTaskGeneration.get(pivotId) ?? 0) + 1,
+    );
+    this.pivotTaskGenerationSequence = generation;
+    this.pivotTaskGeneration.set(pivotId, generation);
+    return generation;
+  }
+
+  private cancelPivotTask(task: ActivePivotTask): void {
+    // Source acquisition is not a worker request, but once it reaches the
+    // port it has its own request id. Cancel that id first so a superseding
+    // layout edit cannot leave registration queued ahead of the new run.
+    if (task.sourceTaskId) this.pivotTaskPort.cancel(task.sourceTaskId);
+    this.pivotTaskPort.cancel(task.taskId);
+  }
+
+  private async submitPivotSourceRegistration(
+    request: Parameters<PivotTaskPort['submit']>[0],
+    task?: ActivePivotTask,
+  ): Promise<Awaited<ReturnType<PivotTaskPort['submit']>>> {
+    if (task) task.sourceTaskId = request.taskId;
+    try {
+      return await this.pivotTaskPort.submit(request);
+    } finally {
+      if (task?.sourceTaskId === request.taskId) task.sourceTaskId = undefined;
+    }
+  }
+
   private async rememberRegisteredPivotSource(pivot: PivotModel, sourceIdentity: string, sourceRevision: string, generation: number): Promise<void> {
     this.registeredPivotSources.delete(sourceIdentity);
-    this.registeredPivotSources.set(sourceIdentity, sourceRevision);
+    this.registeredPivotSources.set(sourceIdentity, { revision: sourceRevision, epoch: this.pivotTaskPort.sourceRegistrationEpoch });
     if (this.registeredPivotSources.size <= MAX_REGISTERED_PIVOT_SOURCES) return;
     const active = new Set(this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots.map((entry) => `${this.runtime.model.unitId}:${pivotSourceIdentity(entry.source)}`)));
     const evict = [...this.registeredPivotSources.keys()].find((identity) => identity !== sourceIdentity && !active.has(identity));
@@ -4328,13 +4627,13 @@ export class WorkbookSession {
       await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-release:${generation}`, generation, sourceIdentity, sourceRevision));
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Pivot source cache exceeds ${String(MAX_REGISTERED_PIVOT_SOURCES)} active sources`, 'fix-source', sourceRevision));
     }
-    const evictRevision = this.registeredPivotSources.get(evict)!;
+    const evictRevision = this.registeredPivotSources.get(evict)!.revision;
     this.registeredPivotSources.delete(evict);
     const released = await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-evict:${generation}`, generation, evict, evictRevision));
     if (released.status === 'failed') throw new PivotTaskExecutionError(released.error);
   }
 
-  private async prepareRegisteredPivotTask(pivot: PivotModel, generation: number) {
+  private async prepareRegisteredPivotTask(pivot: PivotModel, generation: number, task?: ActivePivotTask) {
     const sourceIdentity = `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`;
     if (pivot.source.kind === 'data-source') {
       const sourceId = pivot.source.dataSourceId;
@@ -4350,9 +4649,13 @@ export class WorkbookSession {
       if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
       const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
       descriptor.revisions.sourceRevision = `${loaded.state.sourceId}:${loaded.sourceRevision}`;
-      if (this.registeredPivotSources.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
+      const registered = this.registeredPivotSources.get(sourceIdentity);
+      if (registered?.revision !== descriptor.revisions.sourceRevision || registered.epoch !== this.pivotTaskPort.sourceRegistrationEpoch) {
         const taskId = `${pivot.id}:source:${generation}`;
-        const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source));
+        const registration = await this.submitPivotSourceRegistration(
+          createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source),
+          task,
+        );
         if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
           ? registration.error
           : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', descriptor.revisions.sourceRevision));
@@ -4361,10 +4664,14 @@ export class WorkbookSession {
       return { sourceIdentity, descriptor };
     }
     const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
-    if (this.registeredPivotSources.get(sourceIdentity) === descriptor.revisions.sourceRevision) return { sourceIdentity, descriptor };
+    const registered = this.registeredPivotSources.get(sourceIdentity);
+    if (registered?.revision === descriptor.revisions.sourceRevision && registered.epoch === this.pivotTaskPort.sourceRegistrationEpoch) return { sourceIdentity, descriptor };
     const prepared = await preparePivotTaskInputAsync(this.runtime.model, pivot, this.runtime.formula);
     const taskId = `${pivot.id}:source:${generation}`;
-    const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source));
+    const registration = await this.submitPivotSourceRegistration(
+      createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source),
+      task,
+    );
     if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
       ? registration.error
       : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', prepared.revisions.sourceRevision));
@@ -4373,35 +4680,37 @@ export class WorkbookSession {
   }
 
   private async calculatePivotTask(pivot: PivotModel): Promise<{ result: import('@react-sheets/core-model').PivotResultTree; calculationProof: ReturnType<typeof buildPivotCalculationProof> }> {
-    const generation = (this.pivotTaskGeneration.get(pivot.id) ?? 0) + 1;
-    this.pivotTaskGeneration.set(pivot.id, generation);
-    const previousTaskId = this.activePivotTasks.get(pivot.id);
-    if (previousTaskId) this.pivotTaskPort.cancel(previousTaskId);
+    const previousTask = this.activePivotTasks.get(pivot.id);
+    if (previousTask) this.cancelPivotTask(previousTask);
+    const generation = this.nextPivotTaskGeneration(pivot.id);
     const taskId = `${pivot.id}:calculate:${generation}`;
-    this.activePivotTasks.set(pivot.id, taskId);
+    const activeTask: ActivePivotTask = { generation, taskId };
+    this.activePivotTasks.set(pivot.id, activeTask);
     delete this.runtime.pivotErrors[pivot.id];
     this.refresh();
     let prepared: Awaited<ReturnType<WorkbookSession['prepareRegisteredPivotTask']>>;
     try {
-      prepared = await this.prepareRegisteredPivotTask(pivot, generation);
+      prepared = await this.prepareRegisteredPivotTask(pivot, generation, activeTask);
     } catch (error) {
-      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+      if (this.activePivotTasks.get(pivot.id) === activeTask) this.activePivotTasks.delete(pivot.id);
       throw error;
     }
     const { sourceIdentity, descriptor } = prepared;
-    if (this.pivotTaskGeneration.get(pivot.id) !== generation) {
-      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+    if (this.pivotTaskGeneration.get(pivot.id) !== generation || this.activePivotTasks.get(pivot.id) !== activeTask) {
+      if (this.activePivotTasks.get(pivot.id) === activeTask) this.activePivotTasks.delete(pivot.id);
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was superseded by a newer generation', 'retry', descriptor.revisions.sourceRevision));
     }
-    const task = await this.pivotTaskPort.submit(createPivotCalculateRequest(taskId, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
-    if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
-    if (this.pivotTaskGeneration.get(pivot.id) !== generation || task.status === 'cancelled') {
+    const result = await this.pivotTaskPort.submit(createPivotCalculateRequest(taskId, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
+    const stillCurrent = this.activePivotTasks.get(pivot.id) === activeTask;
+    if (stillCurrent) this.activePivotTasks.delete(pivot.id);
+    if (this.pivotTaskGeneration.get(pivot.id) !== generation || !stillCurrent || result.status === 'cancelled') {
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was cancelled', 'retry', descriptor.revisions.sourceRevision));
     }
-    if (task.status !== 'completed') throw new PivotTaskExecutionError(task.status === 'failed'
-      ? task.error
+    if (result.status !== 'completed') throw new PivotTaskExecutionError(result.status === 'failed'
+      ? result.error
       : this.pivotTaskError(pivot, 'PIVOT_TASK_PROTOCOL_ERROR', 'Pivot worker returned an invalid task state', 'retry', descriptor.revisions.sourceRevision));
-    return { result: task.result, calculationProof: buildPivotCalculationProof(this.runtime.model, descriptor.definition, task.result) };
+    const calculationProof = buildPivotCalculationProof(this.runtime.model, descriptor.definition, result.result);
+    return { result: result.result, calculationProof };
   }
 
   async createPivotTable(params: CreatePivotTableParams): Promise<PivotCreateOutcome> {
@@ -4432,6 +4741,12 @@ export class WorkbookSession {
       return { status: 'rejected', error: rejected };
     }
     const pivotId = this.insertCoordinator.allocateObjectId('pivot');
+    const cancelActiveCreateTask = (): void => {
+      const active = this.activePivotTasks.get(pivotId);
+      if (active) this.cancelPivotTask(active);
+    };
+    createAbort.signal.addEventListener('abort', cancelActiveCreateTask, { once: true });
+    const removeCreateAbortListener = (): void => createAbort.signal.removeEventListener('abort', cancelActiveCreateTask);
     let targetSheetId: string;
     let targetPosition: { row: number; column: number };
     let destination: {
@@ -4496,26 +4811,38 @@ export class WorkbookSession {
         : (await preparePivotTaskInputAsync(this.runtime.model, pivotDraft, this.runtime.formula, { signal: createAbort.signal })).definition.fieldCatalog;
       const pivot: PivotModel = { ...pivotDraft, fieldCatalog };
       pendingPivot = pivot;
-      const generation = (this.pivotTaskGeneration.get(pivot.id) ?? 0) + 1;
-      this.pivotTaskGeneration.set(pivot.id, generation);
-      await this.prepareRegisteredPivotTask(pivot, generation);
-      const calculationProof = buildPivotCalculationProof(this.runtime.model, pivot);
-      this.commitInsertMutation({
-        kind: 'pivot',
-        commandId: 'pivot.create',
-        sheetId: targetSheetId,
-        params: { pivot, destination, calculationProof },
-        createdObjectIds: [pivotId, ...(destination.kind === 'new-sheet' ? [targetSheetId] : [])],
-      }, () => {
-        this.activeSheetId = targetSheetId;
-        this.selectionService.resetForSheet(targetSheetId);
-        this.setActivePivotContext(pivotId, targetSheetId);
-        this.refresh();
-      });
+      // Create and update share one complete source-register -> calculate run.
+      // Committing after a source-only registration left the newly-created
+      // Pivot in a perpetual loading state while onMutationsApplied started a
+      // second, untracked calculation.  The result is now prepared before the
+      // root command and published atomically with that command.
+      const calculated = await this.calculatePivotTask(pivot);
+      if (createAbort.signal.aborted) throw new DOMException('Pivot creation cancelled', 'AbortError');
+      this.pendingPivotCommitResults.set(pivot.id, calculated.result);
+      const calculationProof = calculated.calculationProof;
+      try {
+        this.commitInsertMutation({
+          kind: 'pivot',
+          commandId: 'pivot.create',
+          sheetId: targetSheetId,
+          params: { pivot, destination, calculationProof },
+          createdObjectIds: [pivotId, ...(destination.kind === 'new-sheet' ? [targetSheetId] : [])],
+        }, () => {
+          this.activeSheetId = targetSheetId;
+          this.selectionService.resetForSheet(targetSheetId);
+          this.setActivePivotContext(pivotId, targetSheetId);
+          this.refresh();
+        });
+      } catch (error) {
+        this.pendingPivotCommitResults.delete(pivotId);
+        throw error;
+      }
       this.pivotCreateTask = { status: 'idle' };
+      removeCreateAbortListener();
       if (this.pivotCreateAbort === createAbort) this.pivotCreateAbort = null;
       return { status: 'created', pivotId };
     } catch (error) {
+      removeCreateAbortListener();
       const taskError = error instanceof PivotTaskExecutionError
         ? error.taskError
         : error instanceof DOMException && error.name === 'AbortError'
@@ -4557,11 +4884,12 @@ export class WorkbookSession {
       schema: 'PivotDefinition',
     };
     try {
-      let previousResult = this.runtime.pivotResults[pivotId];
-      if (!pivotResultMatchesRevision(this.runtime.model, current, previousResult, this.runtime.formula)
-        && (current.layout.rows.length > 0 || current.layout.columns.length > 0 || current.layout.values.length > 0)) {
-        previousResult = (await this.calculatePivotTask(structuredClone(current))).result;
-      }
+      // The previous proof is a command-integrity guard, not a second render
+      // request.  Recalculating the old layout here serialized two full worker
+      // tasks for every first edit after opening an imported PivotTable.  A
+      // retained result is used when available; otherwise the canonical
+      // definition footprint is sufficient for the inverse proof.
+      const previousResult = this.runtime.pivotResults[pivotId] ?? getLastValidPivotResult(this.runtime.model, pivotId);
       const previousCalculationProof = buildPivotCalculationProof(this.runtime.model, current, previousResult);
       const calculated = await this.calculatePivotTask(candidate);
       this.pendingPivotCommitResults.set(pivotId, calculated.result);
@@ -4774,8 +5102,8 @@ export class WorkbookSession {
     const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
     if (!pivot || !owner) {
-      const taskId = this.activePivotTasks.get(pivotId);
-      if (taskId) this.pivotTaskPort.cancel(taskId);
+      const task = this.activePivotTasks.get(pivotId);
+      if (task) this.cancelPivotTask(task);
       this.activePivotTasks.delete(pivotId);
       delete this.runtime.pivotResults[pivotId];
       delete this.runtime.pivotErrors[pivotId];
@@ -4903,15 +5231,32 @@ export class WorkbookSession {
   async resolveAssetUrl(asset: AssetRef): Promise<string> {
     const existing = this.assetUrls.get(asset.assetId);
     if (existing) return existing;
-    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
-    const blob = await this.runtime.assetStore.get(asset);
-    const url = URL.createObjectURL(blob);
-    this.assetUrls.set(asset.assetId, url);
-    return url;
+    const pending = this.assetUrlLoads.get(asset.assetId);
+    if (pending) return pending;
+    const generation = this.lifecycleGeneration;
+    const load = (async (): Promise<string> => {
+      if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
+      const blob = await this.runtime.assetStore.get(asset);
+      if (this.disposed || generation !== this.lifecycleGeneration) throw new Error(`ASSET_SESSION_DISPOSED: ${asset.assetId}`);
+      const url = URL.createObjectURL(blob);
+      if (this.disposed || generation !== this.lifecycleGeneration) {
+        URL.revokeObjectURL(url);
+        throw new Error(`ASSET_SESSION_DISPOSED: ${asset.assetId}`);
+      }
+      this.assetUrls.set(asset.assetId, url);
+      return url;
+    })();
+    this.assetUrlLoads.set(asset.assetId, load);
+    try {
+      return await load;
+    } finally {
+      if (this.assetUrlLoads.get(asset.assetId) === load) this.assetUrlLoads.delete(asset.assetId);
+    }
   }
   async insertImageFile(file: File, placement: 'cell' | 'floating' = 'floating'): Promise<void> {
     if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
-    const asset = await this.runtime.assetStore.put({ content: file, mimeType: file.type });
+    const dimensions = await decodeImageDimensions(file);
+    const asset = await this.runtime.assetStore.put({ content: file, mimeType: file.type, ...dimensions });
     try {
       if (placement === 'cell') {
         const active = this.selectionService.getState().activeCell;
@@ -5152,15 +5497,38 @@ export class WorkbookSession {
     this.dispatch({ commandId: 'sheet.cellEditor.set', params: { sheetId: this.activeSheetId, ranges, editor } });
   }
 
-  addComment(text: string): void {
-    if (!text.trim()) return;
+  saveComment(text: string, threadId?: string): void {
+    const normalized = text.trim();
+    if (!normalized) throw new Error('COMMENT_TEXT_REQUIRED: a comment cannot be empty');
     const sel = this.selectionService.getState();
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (threadId) {
+      const existing = sheet.review.getThread(threadId);
+      if (!existing) throw new Error(`COMMENT_THREAD_NOT_FOUND: ${threadId}`);
+      if (existing.row !== sel.activeCell.row || existing.column !== sel.activeCell.column) {
+        throw new Error(`COMMENT_THREAD_CELL_MISMATCH: ${threadId}`);
+      }
+      this.runCommand('comment.update', {
+        sheetId: this.activeSheetId,
+        threadId,
+        row: existing.row,
+        column: existing.column,
+        previousText: existing.text,
+        text: normalized,
+      });
+      this.notify('Comment updated');
+      this.refresh();
+      return;
+    }
+    if (sheet.review.getThreadsAt(sel.activeCell.row, sel.activeCell.column).length > 0) {
+      throw new Error('COMMENT_THREAD_SELECTION_REQUIRED: select the thread to update');
+    }
     const thread = buildCommentThread(
       this.activeSheetId,
       sel.activeCell.row,
       sel.activeCell.column,
       this.actorId,
-      text,
+      normalized,
       nextId('thread'),
     );
     this.runCommand('comment.add', {
@@ -5310,7 +5678,7 @@ export class WorkbookSession {
       const cell = this.readResolvedCell(sheet, row, column);
       if (!cell) return undefined;
       return cell.formulaValue === undefined ? cell.value : cell.formulaValue;
-    });
+    }, this.runtime.findIndex);
     this.findCursorSignature = signature;
     return { result, signature };
   }
@@ -5537,9 +5905,10 @@ export class WorkbookSession {
 
   addSheet(): void {
     const id = this.allocateSheetId();
-    this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
-    this.selectSheet(id);
-    this.refresh();
+    this.withRefreshBatch(() => {
+      this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
+      this.selectSheet(id);
+    });
   }
   renameSheet(sheetId: string, name: string): void {
     if (!name.trim()) return;
@@ -5553,19 +5922,21 @@ export class WorkbookSession {
     const source = this.runtime.model.getSheet(sheetId);
     const newId = this.allocateSheetId();
     const newName = `${source.name} (2)`;
-    this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
-    this.selectSheet(newId);
-    this.syncDraftFromPrimary();
-    this.refresh();
+    this.withRefreshBatch(() => {
+      this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
+      this.selectSheet(newId);
+      this.syncDraftFromPrimary();
+    });
   }
   hideSheet(sheetId: string): void {
     try {
-      this.runCommand('sheet.hide', { sheetId });
-      if (this.activeSheetId === sheetId) {
-        const next = this.runtime.model.getVisibleSheets()[0];
-        if (next) this.selectSheet(next.id);
-      }
-      this.refresh();
+      this.withRefreshBatch(() => {
+        this.runCommand('sheet.hide', { sheetId });
+        if (this.activeSheetId === sheetId) {
+          const next = this.runtime.model.getVisibleSheets()[0];
+          if (next) this.selectSheet(next.id);
+        }
+      });
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Cannot hide sheet');
     }
@@ -5574,19 +5945,19 @@ export class WorkbookSession {
     this.runCommand('sheet.tabColor.set', { sheetId, color: color || undefined });
   }
   moveSheet(sheetId: string, toIndex: number): void {
-    this.runCommand('sheet.reorder', { sheetId, toIndex });
-    this.refresh();
+    this.withRefreshBatch(() => this.runCommand('sheet.reorder', { sheetId, toIndex }));
   }
   deleteSheet(sheetId: string): void {
     try {
-      this.runCommand('sheet.remove', { id: sheetId });
-      if (this.activeSheetId === sheetId) {
-        const remaining = this.runtime.model.getSheets()[0];
-        if (remaining) this.selectSheet(remaining.id);
-      }
-      this.refresh();
-    } catch {
-      this.notify('A workbook must keep at least one sheet');
+      this.withRefreshBatch(() => {
+        this.runCommand('sheet.remove', { id: sheetId });
+        if (this.activeSheetId === sheetId) {
+          const remaining = this.runtime.model.getSheets()[0];
+          if (remaining) this.selectSheet(remaining.id);
+        }
+      });
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Worksheet removal failed');
     }
   }
   resizeRow(row: number, heightPx: number): void {
@@ -5904,31 +6275,37 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     return findValidationRule(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
   }
-  printWorkbook(layout: PrintLayout): void {
+  printWorkbook(layout: PrintLayout, scope: 'saved-area' | 'selection' | 'active-sheet' = 'saved-area'): void {
     if (!this.canExecute('print.preview')) {
-      this.notify('You do not have permission to print');
-      return;
+      const error = new Error('You do not have permission to print');
+      this.notify(error.message);
+      throw error;
     }
-    const range = this.selectionService.primaryRangeOrDefault();
-    this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, range });
+    const range = this.printRangeForScope(scope);
+    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
+    this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
     this.dialogs = { ...this.dialogs, active: 'print-preview' };
     this.setFocusState('dialog', 'dialog');
     this.notify(summarizePrintSnapshot(snapshot));
     this.emit();
+    void this.preparePrintAssetUrls(snapshot).catch((error) => this.notify(error instanceof Error ? error.message : 'Print asset loading failed'));
   }
 
-  exportPdf(layout: PrintLayout): void {
+  async exportPdf(layout: PrintLayout, scope: 'saved-area' | 'selection' | 'active-sheet' = 'saved-area'): Promise<void> {
     if (!this.canExecute('print.export')) {
-      this.notify('You do not have permission to export PDF');
-      return;
+      const error = new Error('You do not have permission to export PDF');
+      this.notify(error.message);
+      throw error;
     }
-    const range = this.selectionService.primaryRangeOrDefault();
-    this.runCommand('print.export', { layout, sheetId: this.activeSheetId, range });
+    const range = this.printRangeForScope(scope);
+    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
+    this.runCommand('print.export', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
     this.dialogs = { ...this.dialogs, active: 'print-preview' };
     this.setFocusState('dialog', 'dialog');
-    void this.executePdfExport(snapshot);
+    await this.executePdfExport(snapshot);
+    await this.preparePrintAssetUrls(snapshot);
     this.notify(summarizePrintSnapshot(snapshot));
     this.emit();
   }
@@ -6083,16 +6460,22 @@ export class WorkbookSession {
 
   private rebuildPrintSnapshot(layout?: PrintLayout, range?: RangeRef): PrintSnapshot {
     const uiLayout = layout ?? this.printLayout;
-    const selectionRange = range ?? this.selectionService.primaryRangeOrDefault();
     const snapshot = buildPrintSnapshot(
       this.runtime.model,
       this.activeSheetId,
       uiLayout,
-      selectionRange,
+      range,
     );
     this.printLayout = uiLayout;
     this.printSnapshot = snapshot;
+    this.printProjectionCache = null;
     return snapshot;
+  }
+
+  private printRangeForScope(scope: 'saved-area' | 'selection' | 'active-sheet'): RangeRef | undefined {
+    if (scope === 'saved-area') return undefined;
+    if (scope === 'selection') return { ...this.selectionService.primaryRangeOrDefault(), sheetId: this.activeSheetId };
+    return structuredClone(this.runtime.model.getSheet(this.activeSheetId).usedRange);
   }
 
   private rebuildStoredPrintSnapshot(layout?: PrintLayout): PrintSnapshot {
@@ -6100,15 +6483,90 @@ export class WorkbookSession {
     const snapshot = buildPrintSnapshot(this.runtime.model, this.activeSheetId, uiLayout);
     this.printLayout = uiLayout;
     this.printSnapshot = snapshot;
+    this.printProjectionCache = null;
     return snapshot;
+  }
+
+  private buildPrintProjectionOptions(assetBytes?: Readonly<Record<string, Uint8Array>>): PrintProjectionOptions {
+    return {
+      readCell: (sheet, row, column) => this.readCalculatedCell(sheet, row, column),
+      ...(assetBytes ? { assetBytes } : {}),
+      assetUrls: Object.fromEntries(this.assetUrls),
+      readChart: (payload): PrintChartProjection => {
+        const data = resolveChartDataFromSources(
+          payload,
+          (sheetId) => {
+            const sheet = this.runtime.model.sheets.get(sheetId);
+            return sheet ? {
+              getCell: (row: number, column: number) => {
+                const cell = this.readCalculatedCell(sheet, row, column);
+                return cell ? { ...cell, value: (cell.formulaValue ?? cell.value) as import('@react-sheets/core-model').PivotScalar } : undefined;
+              },
+              hiddenRows: sheet.hiddenRows,
+              hiddenColumns: sheet.hiddenColumns,
+              revision: sheet.cells.revision,
+            } : undefined;
+          },
+          this.runtime.pivotResults,
+          [...this.runtime.model.dataModel.tables.values()],
+        );
+        if (data.status.kind !== 'ready') throw new Error(`${data.status.code ?? 'NATIVE_PRINT_CHART_SOURCE_UNAVAILABLE'}: ${data.status.message ?? payload.chartId}`);
+        const category = (value: unknown): string => value === null || value === undefined ? '' : typeof value === 'object' && 'code' in value ? String((value as { code: unknown }).code) : String(value);
+        return {
+          categories: data.categories.map(category),
+          series: data.series.map((series) => ({
+            id: series.id,
+            name: series.name,
+            values: series.values.map((value) => typeof value === 'number' && Number.isFinite(value) ? value : null),
+            ...(series.color ? { color: series.color } : {}),
+          })),
+        };
+      },
+    };
+  }
+
+  private printProjectionsForSnapshot(snapshot: PrintSnapshot): PrintProjection[] {
+    const key = `${this.version}:${snapshot.pages.map((page) => `${page.sheetId}:${page.range.startRow}:${page.range.endRow}:${page.range.startColumn}:${page.range.endColumn}:${this.projectionRevisionForSheet(page.sheetId)}`).join('|')}`;
+    if (this.printProjectionCache?.key === key) return this.printProjectionCache.projections;
+    const options = this.buildPrintProjectionOptions();
+    const projections = snapshot.pages.map((page) => buildPrintProjection(this.runtime.model, page, options));
+    this.printProjectionCache = { key, projections };
+    return projections;
+  }
+
+  private collectPrintAssetReferences(snapshot: PrintSnapshot): AssetRef[] {
+    const references = new Map<string, AssetRef>();
+    for (const projection of this.printProjectionsForSnapshot(snapshot)) {
+      for (const cell of projection.cells) if (cell.image) references.set(cell.image.asset.assetId, cell.image.asset);
+      for (const drawing of projection.drawings) if (drawing.image) references.set(drawing.image.asset.assetId, drawing.image.asset);
+    }
+    return [...references.values()];
+  }
+
+  private async preparePrintAssetUrls(snapshot: PrintSnapshot): Promise<void> {
+    await Promise.all(this.collectPrintAssetReferences(snapshot).map((asset) => this.resolveAssetUrl(asset)));
+    this.printProjectionCache = null;
+    this.emit();
+  }
+
+  private async loadPrintAssetBytes(snapshot: PrintSnapshot): Promise<Record<string, Uint8Array>> {
+    const assets: Record<string, Uint8Array> = {};
+    await Promise.all(this.collectPrintAssetReferences(snapshot).map(async (asset) => {
+      const blob = await this.runtime.assetStore.get(asset);
+      assets[asset.assetId] = new Uint8Array(await blob.arrayBuffer());
+    }));
+    return assets;
   }
 
   private async executePdfExport(snapshot: PrintSnapshot): Promise<void> {
     const service = new PdfExportService(browserPrintHook);
     try {
+      const assetBytes = await this.loadPrintAssetBytes(snapshot);
+      const projectionOptions = this.buildPrintProjectionOptions(assetBytes);
       const output = await service.export(snapshot.model, snapshot.pages, {
         filename: `${this.runtime.model.name || 'workbook'}.pdf`,
         title: this.runtime.model.name,
+        pageProjection: (page) => buildPrintProjection(this.runtime.model, page, projectionOptions),
       });
       if (typeof document !== 'undefined' && typeof URL !== 'undefined') {
         const blob = output instanceof Blob
@@ -6126,6 +6584,7 @@ export class WorkbookSession {
       this.notify('PDF exported');
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'PDF export failed');
+      throw error;
     }
   }
 
@@ -6209,7 +6668,29 @@ export class WorkbookSession {
     config: Record<string, unknown>,
   ): Promise<{ ok: boolean; message?: string }> {
     const connector = this.runtime.connectors.get(connectorId);
-    return connector.testConnection(config);
+    if (connector.execution === 'local') return connector.testConnection(config);
+    if (this.runtime.localOnly) return { ok: false, message: `Connector ${connectorId} requires the Java backend` };
+    if (connectorId !== 'sqlite' && connectorId !== 'jdbc' && connectorId !== 'rest') return { ok: false, message: `Connector ${connectorId} has no server execution contract` };
+    try {
+      const request = this.buildServerQueryRequest(
+        nextId('query-test'),
+        `${connector.manifest.label} connection test`,
+        connectorId,
+        config,
+        [],
+      );
+      const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
+      return { ok: true, message: `${response.rowCount} row(s) returned by the configured source` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Server connection test failed' };
+    }
+  }
+
+  async cancelQuery(queryId: string): Promise<void> {
+    if (this.runtime.localOnly) throw new Error('QUERY_CANCEL_UNAVAILABLE: local connectors complete inside the current page session');
+    if (!queryId.trim()) throw new Error('QUERY_CANCEL_ID_REQUIRED: query id is required');
+    await this.runtime.api.cancelServerQuery(this.runtime.model.unitId, queryId);
+    this.notify(`Cancellation requested for ${queryId}`);
   }
 
   private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
@@ -6219,7 +6700,19 @@ export class WorkbookSession {
     if (this.runtime.localOnly) {
       throw new Error(`Connector ${query.connectorId} requires the Java backend`);
     }
-    const config = query.connectorConfig;
+    const request = this.buildServerQueryRequest(query.id, query.name, query.connectorId, query.connectorConfig, query.steps);
+    const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
+    if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
+    return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
+  }
+
+  private buildServerQueryRequest(
+    queryId: string,
+    name: string,
+    connectorId: 'sqlite' | 'jdbc' | 'rest',
+    config: Record<string, unknown>,
+    steps: QueryDefinition['steps'],
+  ): ServerQueryRequest {
     const sourceRef = typeof config.sourceRef === 'string' ? config.sourceRef.trim() : '';
     const statement = typeof config.statement === 'string'
       ? config.statement
@@ -6227,21 +6720,21 @@ export class WorkbookSession {
         ? config.query
         : '';
     if (!sourceRef || !statement) {
-      throw new Error(`Connector ${query.connectorId} requires server sourceRef and statement`);
+      throw new Error(`Connector ${connectorId} requires server sourceRef and statement`);
     }
     const method = typeof config.method === 'string' && (config.method === 'GET' || config.method === 'POST')
       ? config.method
       : undefined;
-    const request: ServerQueryRequest = {
-      queryId: query.id,
-      name: query.name,
-      connectorId: query.connectorId,
+    return {
+      queryId,
+      name,
+      connectorId,
       sourceRef,
       statement,
       ...(method === undefined ? {} : { method }),
       ...(Array.isArray(config.parameters) ? { parameters: structuredClone(config.parameters) } : {}),
       ...(config.body === undefined ? {} : { body: structuredClone(config.body) }),
-      steps: query.steps.map((step) => ({
+      steps: steps.map((step) => ({
         id: step.id,
         kind: step.kind,
         name: step.name,
@@ -6249,19 +6742,20 @@ export class WorkbookSession {
         enabled: step.enabled,
       })),
     };
-    const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
-    if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
-    return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
   }
 
   getQuerySnapshot(): {
     lastResult: QueryResultSnapshot | null;
-    connectors: string[];
+    connectors: ConnectorManifest[];
     loadedQueries: QueryResultSnapshot[];
   } {
     return {
       lastResult: this.lastQueryResult,
-      connectors: this.runtime.connectors.list().map((connector) => connector.id),
+      connectors: this.runtime.connectors.list().map((connector) => ({
+        ...structuredClone(connector.manifest),
+        available: connector.execution === 'local' || !this.runtime.localOnly,
+        ...(connector.execution === 'server' && this.runtime.localOnly ? { unavailableReason: 'This connector requires the Java backend.' } : {}),
+      })),
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
@@ -6315,36 +6809,47 @@ export class WorkbookSession {
     };
   }
 
-  async exportDocument(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string; artifact: NativeDocumentArtifact } | null> {
+  async exportDocument(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string; artifact: NativeDocumentArtifact }> {
     if (!this.canExecute('document.export')) {
-      this.notify('You do not have permission to export workbooks');
-      return null;
+      const error = new Error('You do not have permission to export workbooks');
+      this.notify(error.message);
+      throw error;
     }
     try {
+      if (!fileName && this.nativeDocumentTransaction.status === 'failed') {
+        throw new Error('NATIVE_DOCUMENT_TRANSACTION_RECOVERY_REQUIRED: reload the verified source artifact or choose an explicit Save As target');
+      }
+      const snapshot = this.runtime.model.snapshot();
       const exported = fileName
-        ? await exchangeSaveAsDocument(this.runtime.model.snapshot(), {
+        ? await this.nativeDocumentTransaction.export(snapshot, {
           fileName,
-          artifact: this.nativeArtifact,
+          mode: 'save-as',
           execution: this.nativeDocumentExecution,
           revision: this.version,
           assetStore: this.runtime.assetStore,
         })
-        : await exchangeExportDocument(this.runtime.model.snapshot(), {
-          fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
-          artifact: this.nativeArtifact,
+        : this.nativeArtifact
+        ? await this.nativeDocumentTransaction.save(snapshot, {
+          fileName: this.nativeArtifact.fileName,
+          execution: this.nativeDocumentExecution,
+          revision: this.version,
+          assetStore: this.runtime.assetStore,
+        })
+        : await this.nativeDocumentTransaction.export(snapshot, {
+          fileName: `${this.runtime.model.name || 'workbook'}.ssjson`,
+          mode: 'export',
           execution: this.nativeDocumentExecution,
           revision: this.version,
           assetStore: this.runtime.assetStore,
         });
-      if (!fileName || this.nativeArtifact?.fileName === exported.fileName) this.nativeArtifact = exported.artifact;
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
-      if (!exported.buffer || !exported.fileName) return null;
+      if (!exported.buffer || !exported.fileName) throw new Error('NATIVE_DOCUMENT_EXPORT_EMPTY: native document export did not produce a file');
       return { buffer: exported.buffer, fileName: exported.fileName, artifact: exported.artifact };
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Native document export failed');
-      return null;
+      throw error instanceof Error ? error : new Error('Native document export failed');
     }
   }
 
@@ -6742,9 +7247,19 @@ export class WorkbookSession {
 
   async createDataSourceFromSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const primaryRange = this.getPrimaryRange();
-    const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
-    await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
+    const seed = this.getPrimaryRange();
+    await this.materializeDataRegions(this.dataRegionsIntersectingRanges(seed.sheetId, [seed]));
+    const preprocessed = preprocessRange({
+      sheet,
+      seed,
+      mode: 'all',
+      readValue: (row, column) => {
+        const cell = this.readResolvedCell(sheet, row, column);
+        return (cell?.formulaValue ?? cell?.value ?? null) as import('@react-sheets/core-model').TableScalar;
+      },
+    });
+    const sourceRange = preprocessed.range;
+    if (preprocessed.headerRow === null) throw new Error('RANGE_PREPROCESS_HEADER_REQUIRED: the selected data region has no unique header row');
     const sourceId = nextId('data-source');
     const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
     if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
@@ -6759,27 +7274,27 @@ export class WorkbookSession {
     if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
     for (const block of encoded.blocks) await this.storeDataBlock(block.ref, block.payload);
     this.addDataSource(encoded.manifest);
-    this.addDataRegion(encoded.region);
-    this.notify(`Data Source ${encoded.manifest.name} created`);
+    // Creating a reusable source is a copy operation. The authored worksheet
+    // keeps cell ownership; only Query Load owns a projected data region.
+    this.notify(`Data Source ${encoded.manifest.name} created from ${sheet.name}`);
     this.refresh();
   }
 
-  replyComment(text: string): void {
-    if (!text.trim()) return;
+  replyComment(text: string, threadId?: string): void {
+    const normalized = text.trim();
+    if (!normalized) throw new Error('COMMENT_REPLY_TEXT_REQUIRED: a reply cannot be empty');
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
-    if (!thread) return;
-    const reply = buildCommentReply(this.actorId, text, nextId('reply'));
+    const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
+    const reply = buildCommentReply(this.actorId, normalized, nextId('reply'));
     this.runCommand('comment.reply', { sheetId: this.activeSheetId, threadId: thread.id, reply });
     this.notify('Reply added');
     this.refresh();
   }
-  resolveComment(): void {
+  resolveComment(threadId?: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
-    if (!thread) return;
+    const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
     const resolved = !thread.resolved;
     this.runCommand('comment.resolve', {
       sheetId: this.activeSheetId,
@@ -6790,26 +7305,46 @@ export class WorkbookSession {
     this.notify(resolved ? 'Comment resolved' : 'Comment reopened');
     this.refresh();
   }
-  removeComment(): void {
+  removeComment(threadId?: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
-    if (!thread) return;
+    const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
     this.runCommand('comment.remove', { sheetId: this.activeSheetId, threadId: thread.id });
     this.notify('Comment removed');
     this.refresh();
   }
-  addNote(text: string): void {
-    if (!text.trim()) return;
+
+  private resolveCommentThread(
+    sheet: import('@react-sheets/core-model').WorksheetModel,
+    row: number,
+    column: number,
+    threadId?: string,
+  ): import('@react-sheets/core-model').CommentThread {
+    if (threadId) {
+      const thread = sheet.review.getThread(threadId);
+      if (!thread) throw new Error(`COMMENT_THREAD_NOT_FOUND: ${threadId}`);
+      if (thread.row !== row || thread.column !== column) throw new Error(`COMMENT_THREAD_CELL_MISMATCH: ${threadId}`);
+      return thread;
+    }
+    const threads = sheet.review.getThreadsAt(row, column);
+    if (threads.length === 0) throw new Error(`COMMENT_THREAD_NOT_FOUND: ${sheet.id}!${row}:${column}`);
+    if (threads.length > 1) throw new Error(`COMMENT_THREAD_SELECTION_REQUIRED: ${sheet.id}!${row}:${column}`);
+    return threads[0]!;
+  }
+  saveNote(text: string): void {
+    const normalized = text.trim();
+    if (!normalized) throw new Error('NOTE_TEXT_REQUIRED: a note cannot be empty');
     const sel = this.selectionService.getState();
-    const note = buildCellNote(this.actorId, text, nextId('note'));
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const existing = sheet.review.getNoteAt(sel.activeCell.row, sel.activeCell.column);
+    const note = existing ? { ...existing, text: normalized } : buildCellNote(this.actorId, normalized, nextId('note'));
     this.runCommand('note.set', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
       note,
     });
-    this.notify('Note added');
+    this.notify(existing ? 'Note updated' : 'Note added');
     this.refresh();
   }
   removeNote(): void {
@@ -6835,6 +7370,43 @@ export class WorkbookSession {
   getActiveHyperlink(): CellHyperlink | undefined {
     const sel = this.selectionService.getState();
     return getCellHyperlink(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
+  }
+  activateHyperlinkAt(row: number, column: number): { kind: 'none' } | { kind: 'internal' } | { kind: 'external'; href: string } {
+    const sourceSheet = this.runtime.model.getSheet(this.activeSheetId);
+    const hyperlink = getCellHyperlink(sourceSheet, row, column);
+    if (!hyperlink) return { kind: 'none' };
+    validateHyperlinkTarget(hyperlink.target, this.runtime.model, sourceSheet.id);
+    const target = hyperlink.target;
+    if (target.kind === 'url') return { kind: 'external', href: target.url.trim() };
+    if (target.kind === 'email') {
+      const subject = target.subject?.trim();
+      return { kind: 'external', href: `mailto:${target.address.trim()}${subject ? `?subject=${encodeURIComponent(subject)}` : ''}` };
+    }
+    if (target.kind === 'sheet') {
+      this.selectSheet(target.sheetId);
+      const address = target.address?.replace(/\$/g, '')
+        ?? `${columnLabel(target.column ?? 0)}${(target.row ?? 0) + 1}`;
+      if (!this.selectAddress(address)) throw new Error(`HYPERLINK_TARGET_UNAVAILABLE: ${target.sheetId}!${address}`);
+      return { kind: 'internal' };
+    }
+    const definition = this.runtime.model.definedNameModels.find((entry) => entry.name.toLowerCase() === target.name.trim().toLowerCase()
+      && (entry.scope === 'workbook' || entry.sheetId === sourceSheet.id));
+    if (!definition) throw new Error(`HYPERLINK_NAME_NOT_FOUND: ${target.name}`);
+    const raw = definition.formula.trim().replace(/^=/, '');
+    const bang = raw.lastIndexOf('!');
+    const sheetToken = bang >= 0 ? raw.slice(0, bang) : undefined;
+    const rangeToken = (bang >= 0 ? raw.slice(bang + 1) : raw).replace(/\$/g, '');
+    const range = parseRangeReference(rangeToken);
+    if (!range) throw new Error(`HYPERLINK_NAME_TARGET_UNSUPPORTED: ${target.name}`);
+    const scopedSheetId = definition.scope === 'sheet' ? definition.sheetId : undefined;
+    const token = sheetToken?.replace(/^'|'$/g, '').replace(/''/g, "'");
+    const targetSheet = token
+      ? this.runtime.model.getSheets().find((sheet) => sheet.id === token || sheet.name === token)
+      : this.runtime.model.getSheet(scopedSheetId ?? sourceSheet.id);
+    if (!targetSheet) throw new Error(`HYPERLINK_NAME_SHEET_NOT_FOUND: ${target.name}`);
+    this.selectSheet(targetSheet.id);
+    this.selectRange(range, 'replace');
+    return { kind: 'internal' };
   }
   getSheetOptions(): readonly { id: string; name: string; rowCount: number; columnCount: number }[] {
     return this.runtime.model.getSheets().map((sheet) => ({ id: sheet.id, name: sheet.name, rowCount: sheet.rowCount, columnCount: sheet.columnCount }));

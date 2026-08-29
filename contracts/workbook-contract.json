@@ -2,7 +2,7 @@
   "apiVersion": "2026-08-24",
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
-    "snapshotVersion": 9,
+    "snapshotVersion": 10,
     "maxNameLength": 255,
     "maxDrawingSourceCells": 100000
   },
@@ -46,6 +46,7 @@
     "query.load.workbook-table": { "durability": "remote", "remote": true, "schema": "QueryLoadDataSource", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "style.preset.set": { "durability": "remote", "remote": true, "schema": "CellStylePreset", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true, "collaborationKind": "cell-style" },
     "cf.reorder": { "durability": "remote", "remote": true, "schema": "ConditionalFormatReorder", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "cell-style" },
+    "comment.update": { "durability": "remote", "remote": true, "schema": "CommentUpdateParams", "minRole": "commenter", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "comment" },
     "drawing.visibility.set": { "durability": "remote", "remote": true, "schema": "DrawingVisibilitySet", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" },
     "drawing.rename": { "durability": "remote", "remote": true, "schema": "DrawingRename", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" }
   },
@@ -155,8 +156,8 @@
       "comment.add": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.reply": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.resolve": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.update": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      "comment.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "note.set": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "note.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "note.visibility": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
@@ -273,6 +274,7 @@
       "comment.reply": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.reply.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "comment.resolve": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      "comment.update": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
       "dataRegion.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataRegion.remove": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataSource.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },

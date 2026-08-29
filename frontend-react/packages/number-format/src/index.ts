@@ -34,8 +34,6 @@ export type FormatToken =
   | { kind: 'ampm'; style: 'AM/PM' | 'A/P' }
   | { kind: 'text-placeholder' };
 
-/** Excel 序列日期起点:1899-12-30(TC) */
-const EPOCH_MS = Date.UTC(1899, 11, 30);
 const DATE_TOKEN_CHARS = new Set(['y', 'm', 'd', 'h', 's']);
 
 export function parseSections(format: string): FormatSection[] {
@@ -325,9 +323,10 @@ function scanToken(format: string, start: number): { token: FormatToken; next: n
     return { token: { kind: 'ampm', style: 'A/P' }, next: start + 3 };
   }
   if (DATE_TOKEN_CHARS.has(character.toLowerCase())) {
-    let end = start;
-    while (end < format.length && format[end]?.toLowerCase() === character.toLowerCase()) end += 1;
-    return { token: { kind: 'date', ch: character.toLowerCase() }, next: end };
+    // Keep one token per date-format character.  A run such as `yyyy` is
+    // interpreted by countRun(), and consuming the complete run here would
+    // make every year/month/day token look like a one-character format.
+    return { token: { kind: 'date', ch: character.toLowerCase() }, next };
   }
   if (character === '[') {
     const end = format.indexOf(']', start);
@@ -438,67 +437,6 @@ function pad(text: number, length: number): string {
   return String(text).padStart(length, '0');
 }
 
-function formatDateValue(serial: number, tokens: readonly FormatToken[]): string {
-  const ms = EPOCH_MS + Math.round(serial * 86400000);
-  const date = new Date(ms);
-  let output = '';
-  const hasAmPm = tokens.some((token) => token.kind === 'ampm');
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
-    switch (token.kind) {
-      case 'date': {
-        const run = countRun(tokens, i, token.ch);
-        switch (token.ch) {
-          case 'y':
-            output += run >= 3 ? String(date.getUTCFullYear()) : pad(date.getUTCFullYear() % 100, 2);
-            break;
-          case 'm': {
-            const asMinutes = previousTokenIs(tokens, i, 'h');
-            if (asMinutes) output += pad(date.getUTCMinutes(), Math.min(run, 2));
-            else if (run >= 4) output += MONTH_NAMES[date.getUTCMonth()] ?? '';
-            else if (run === 3) output += (MONTH_NAMES[date.getUTCMonth()] ?? '').slice(0, 3);
-            else output += pad(date.getUTCMonth() + 1, Math.min(run, 2));
-            break;
-          }
-          case 'd':
-            if (run >= 4) output += WEEKDAY_NAMES[date.getUTCDay()] ?? '';
-            else if (run === 3) output += (WEEKDAY_NAMES[date.getUTCDay()] ?? '').slice(0, 3);
-            else output += pad(date.getUTCDate(), Math.min(run, 2));
-            break;
-          case 'h': {
-            let hours = date.getUTCHours();
-            if (hasAmPm) hours = hours % 12 === 0 ? 12 : hours % 12;
-            output += pad(hours, Math.min(run, 2));
-            break;
-          }
-          case 's':
-            output += pad(date.getUTCSeconds(), Math.min(run, 2));
-            break;
-          default:
-            break;
-        }
-        i += run - 1;
-        break;
-      }
-      case 'ampm':
-        output += token.style === 'A/P'
-          ? (date.getUTCHours() < 12 ? 'A' : 'P')
-          : (date.getUTCHours() < 12 ? 'AM' : 'PM');
-        break;
-      case 'literal':
-        output += token.text;
-        break;
-      case 'space':
-        output += ' ';
-        break;
-      default:
-        break;
-    }
-  }
-  return output;
-}
-
 function countRun(tokens: readonly FormatToken[], start: number, ch: string): number {
   let run = 0;
   for (let i = start; i < tokens.length; i++) {
@@ -509,92 +447,334 @@ function countRun(tokens: readonly FormatToken[], start: number, ch: string): nu
   return run;
 }
 
-function previousTokenIs(tokens: readonly FormatToken[], index: number, ch: string): boolean {
-  for (let i = index - 1; i >= 0; i--) {
-    const token = tokens[i]!;
-    if (token.kind === 'literal') continue;
-    if (token.kind === 'space') continue;
-    return token.kind === 'date' ? token.ch === ch : false;
-  }
-  return false;
-}
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-const sectionCache = new Map<string, FormatSection[]>();
+/** Numeric/date display context shared by cell, formula, filter, chart and print projections. */
+export interface NumberFormatContext {
+  /** Workbook calendar. Omitting it uses the canonical Excel 1900 system. */
+  readonly dateSystem?: '1900' | '1904';
+  /** BCP-47 locale used for separators and month/day names. */
+  readonly locale?: string;
+  /** A serial date is always rendered in UTC unless a host explicitly selects local time. */
+  readonly timeZone?: 'UTC' | 'local';
+}
 
-function getSections(format: string): FormatSection[] {
-  const cached = sectionCache.get(format);
+export type NumberFormatConditionOperator = '<' | '<=' | '=' | '<>' | '>=' | '>';
+
+export interface NumberFormatCondition {
+  readonly operator: NumberFormatConditionOperator;
+  readonly value: number;
+}
+
+export interface NumberFormatSectionAst {
+  readonly source: string;
+  readonly body: string;
+  readonly tokens: readonly FormatToken[];
+  readonly condition?: NumberFormatCondition;
+  readonly color?: string;
+  readonly locale?: string;
+  readonly isText: boolean;
+  readonly isDate: boolean;
+  readonly elapsedUnit?: 'h' | 'm' | 's';
+  readonly scale: number;
+  readonly percentScale: number;
+}
+
+export interface NumberFormatAst {
+  readonly source: string;
+  readonly sections: readonly NumberFormatSectionAst[];
+}
+
+export interface FormattedNumber {
+  readonly text: string;
+  readonly color?: string;
+  readonly sectionIndex: number;
+}
+
+const NUMBER_FORMAT_CACHE = new Map<string, NumberFormatAst>();
+
+/** Parse a complete Excel format into an immutable, cache-bounded AST. */
+export function parseNumberFormat(format: string): NumberFormatAst {
+  const source = format.trim();
+  if (!source) return { source: '', sections: [{ source: '', body: '', tokens: [], isText: false, isDate: false, scale: 1, percentScale: 1 }] };
+  const cached = NUMBER_FORMAT_CACHE.get(source);
   if (cached) return cached;
-  const parsed = parseSections(format);
-  if (sectionCache.size > 512) sectionCache.clear();
-  sectionCache.set(format, parsed);
-  return parsed;
+  const sections = splitFormatSections(source).map(parseNumberFormatSection);
+  const ast = { source, sections } satisfies NumberFormatAst;
+  if (NUMBER_FORMAT_CACHE.size >= 1024) NUMBER_FORMAT_CACHE.clear();
+  NUMBER_FORMAT_CACHE.set(source, ast);
+  return ast;
+}
+
+function splitFormatSections(source: string): string[] {
+  const sections: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  let bracketed = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (quoted) { if (character === '"') quoted = false; continue; }
+    if (character === '"') { quoted = true; continue; }
+    if (bracketed) { if (character === ']') bracketed = false; continue; }
+    if (character === '[') { bracketed = true; continue; }
+    if (character === ';') { sections.push(source.slice(start, index)); start = index + 1; }
+  }
+  if (quoted || escaped || bracketed) throw new Error('NUMBER_FORMAT_INVALID: unterminated literal, escape, or directive');
+  sections.push(source.slice(start));
+  return sections;
+}
+
+function parseNumberFormatSection(source: string): NumberFormatSectionAst {
+  let cursor = 0;
+  let condition: NumberFormatCondition | undefined;
+  let color: string | undefined;
+  let locale: string | undefined;
+  let elapsedUnit: 'h' | 'm' | 's' | undefined;
+  while (source[cursor] === '[') {
+    const end = source.indexOf(']', cursor + 1);
+    if (end < 0) throw new Error('NUMBER_FORMAT_INVALID: unterminated bracket directive');
+    const directive = source.slice(cursor + 1, end).trim();
+    const conditionMatch = directive.match(/^(<=|>=|<>|=|<|>)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$/);
+    if (conditionMatch) {
+      if (condition) throw new Error('NUMBER_FORMAT_INVALID: multiple conditions in one section');
+      condition = { operator: conditionMatch[1] as NumberFormatConditionOperator, value: Number(conditionMatch[2]) };
+    } else if (/^\$-[0-9a-z]+$/i.test(directive)) {
+      locale = directive.slice(2);
+    } else if (/^[hms]$/i.test(directive)) {
+      elapsedUnit = directive.toLowerCase() as 'h' | 'm' | 's';
+    } else if (/^[A-Za-z]+$/.test(directive)) {
+      color = directive;
+    } else {
+      throw new Error(`NUMBER_FORMAT_INVALID: unsupported directive [${directive}]`);
+    }
+    cursor = end + 1;
+  }
+  const body = source.slice(cursor);
+  const parsed = parseSections(body)[0] ?? { tokens: [], hasTextPlaceholder: false };
+  const dateTokens = parsed.tokens.filter((token) => token.kind === 'date' || token.kind === 'ampm');
+  const percentScale = parsed.tokens.filter((token) => token.kind === 'percent').reduce((scale) => scale * 100, 1);
+  const scale = trailingScale(body, parsed.tokens);
+  return {
+    source,
+    body,
+    tokens: parsed.tokens,
+    ...(condition ? { condition } : {}),
+    ...(color ? { color } : {}),
+    ...(locale ? { locale } : {}),
+    isText: parsed.hasTextPlaceholder,
+    isDate: dateTokens.length > 0 || elapsedUnit !== undefined,
+    ...(elapsedUnit ? { elapsedUnit } : {}),
+    scale,
+    percentScale,
+  };
+}
+
+function trailingScale(body: string, tokens: readonly FormatToken[]): number {
+  let scale = 1;
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index]!;
+    if (token.kind === 'literal' && token.text === ',') scale *= 1000;
+    else if (token.kind === 'digit' || token.kind === 'decimal-point') break;
+    else if (token.kind !== 'literal' || token.text.trim() !== '') break;
+  }
+  // A comma between digit placeholders is grouping, not scaling.
+  return scale;
+}
+
+function conditionMatches(condition: NumberFormatCondition, value: number): boolean {
+  switch (condition.operator) {
+    case '<': return value < condition.value;
+    case '<=': return value <= condition.value;
+    case '=': return value === condition.value;
+    case '<>': return value !== condition.value;
+    case '>=': return value >= condition.value;
+    case '>': return value > condition.value;
+  }
+}
+
+function selectNumberFormatSection(ast: NumberFormatAst, value: number | string): { section: NumberFormatSectionAst; index: number } {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  if (numeric !== undefined) {
+    const conditional = ast.sections.findIndex((section) => section.condition && conditionMatches(section.condition, numeric));
+    if (conditional >= 0) return { section: ast.sections[conditional]!, index: conditional };
+    const unconditional = ast.sections.findIndex((section) => !section.condition);
+    const sections = ast.sections.filter((section) => !section.condition);
+    const position = sections.length === 1 ? 0 : sections.length === 2 ? (numeric < 0 ? 1 : 0) : numeric > 0 ? 0 : numeric < 0 ? 1 : 2;
+    const section = sections[position] ?? sections[sections.length - 1] ?? ast.sections[unconditional >= 0 ? unconditional : 0]!;
+    return { section, index: ast.sections.indexOf(section) };
+  }
+  const index = ast.sections.findIndex((section) => section.isText);
+  const fallback = index >= 0 ? index : Math.min(3, ast.sections.length - 1);
+  return { section: ast.sections[fallback]!, index: fallback };
+}
+
+function localeSeparators(locale?: string): { decimal: string; group: string } {
+  if (!locale) return { decimal: '.', group: ',' };
+  try {
+    const parts = new Intl.NumberFormat(normalizeLocale(locale)).formatToParts(1000.5);
+    return {
+      decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
+      group: parts.find((part) => part.type === 'group')?.value ?? ',',
+    };
+  } catch {
+    // Invalid host locales are rejected by Intl; retain the canonical Excel
+    // separators rather than emitting a partially localized value.
+    return { decimal: '.', group: ',' };
+  }
+}
+
+function normalizeLocale(locale: string): string {
+  const aliases: Record<string, string> = {
+    '409': 'en-US', '804': 'zh-CN', '404': 'zh-TW', '407': 'de-DE', '40c': 'fr-FR', '410': 'it-IT', '411': 'ja-JP', '412': 'ko-KR', '816': 'pt-PT', '416': 'pt-BR',
+  };
+  return aliases[locale.toLowerCase()] ?? locale;
 }
 
 function formatGeneralNumber(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
   if (Number.isInteger(value)) return String(value);
-  const text = value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
-  return text;
+  // toPrecision avoids the previous fixed-six-decimal truncation while still
+  // respecting Excel's 15 significant-digit numeric contract.
+  return Number(value.toPrecision(15)).toString();
 }
 
-/** 将数值/文本按 Excel 格式代码渲染为显示字符串 */
-export function formatValue(
-  value: number | string | boolean | null | undefined,
-  format?: string,
-): string {
-  if (value == null) return '';
-  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+function serialToDate(serial: number, dateSystem: '1900' | '1904'): Date | '1900-02-29' {
+  if (dateSystem === '1900' && serial === 60) return '1900-02-29';
+  const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 31);
+  const offset = dateSystem === '1900' && serial > 60 ? serial - 1 : serial;
+  return new Date(epoch + Math.round(offset * 86400000));
+}
 
-  const trimmedFormat = format?.trim();
+function localizedMonthName(date: Date, locale: string | undefined, short: boolean): string {
+  try { return new Intl.DateTimeFormat(normalizeLocale(locale || 'en-US'), { month: short ? 'short' : 'long', timeZone: 'UTC' }).format(date); }
+  catch { return (short ? MONTH_NAMES[date.getUTCMonth()]?.slice(0, 3) : MONTH_NAMES[date.getUTCMonth()]) ?? ''; }
+}
 
-  if (typeof value === 'string') {
-    if (!trimmedFormat || trimmedFormat.toLowerCase() === 'general') return value;
-    const sections = getSections(trimmedFormat);
-    const textSection = sections.find((section) => section.hasTextPlaceholder)
-      ?? sections[sections.length - 1];
-    if (!textSection) return value;
-    let output = '';
-    for (const token of textSection.tokens) {
-      if (token.kind === 'text-placeholder') output += value;
-      else if (token.kind === 'literal' && token.text !== ',') output += token.text;
+function localizedWeekdayName(date: Date, locale: string | undefined, short: boolean): string {
+  try { return new Intl.DateTimeFormat(normalizeLocale(locale || 'en-US'), { weekday: short ? 'short' : 'long', timeZone: 'UTC' }).format(date); }
+  catch { return (short ? WEEKDAY_NAMES[date.getUTCDay()]?.slice(0, 3) : WEEKDAY_NAMES[date.getUTCDay()]) ?? ''; }
+}
+
+function formatDateWithContext(serial: number, section: NumberFormatSectionAst, context: NumberFormatContext): string {
+  if (section.elapsedUnit) {
+    const total = Math.max(0, Math.round(Math.abs(serial) * 86400));
+    const elapsedValue = section.elapsedUnit === 'h' ? Math.floor(total / 3600) : section.elapsedUnit === 'm' ? Math.floor(total / 60) : total;
+    let output = String(elapsedValue);
+    for (let index = 0; index < section.tokens.length; index += 1) {
+      const token = section.tokens[index]!;
+      if (token.kind === 'literal') output += token.text;
+      else if (token.kind === 'space') output += ' ';
+      else if (token.kind === 'date') {
+        const run = countRun(section.tokens, index, token.ch);
+        const part = token.ch === 'h' ? Math.floor(total / 3600) % 24 : token.ch === 'm' ? Math.floor(total / 60) % 60 : token.ch === 's' ? total % 60 : 0;
+        output += pad(part, Math.min(run, 2));
+        index += run - 1;
+      }
     }
-    return output.length > 0 ? output : value;
+    return output;
   }
-
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return String(value);
-  if (!trimmedFormat || trimmedFormat.toLowerCase() === 'general') {
-    return formatGeneralNumber(numeric);
+  const date = serialToDate(Math.abs(serial), context.dateSystem ?? '1900');
+  let output = '';
+  if (date === '1900-02-29') {
+    for (let index = 0; index < section.tokens.length; index += 1) {
+      const token = section.tokens[index]!;
+      if (token.kind === 'date') {
+        const run = countRun(section.tokens, index, token.ch);
+        output += token.ch === 'd' ? pad(29, Math.min(run, 2)) : token.ch === 'm' ? pad(2, Math.min(run, 2)) : token.ch === 'y' ? '1900' : '';
+        index += run - 1;
+      } else if (token.kind === 'literal') output += token.text;
+    }
+    return output;
   }
+  const hasAmPm = section.tokens.some((token) => token.kind === 'ampm');
+  for (let index = 0; index < section.tokens.length; index += 1) {
+    const token = section.tokens[index]!;
+    if (token.kind === 'date') {
+      const run = countRun(section.tokens, index, token.ch);
+      switch (token.ch) {
+        case 'y': output += run >= 3 ? String(date.getUTCFullYear()) : pad(date.getUTCFullYear() % 100, 2); break;
+        case 'm': {
+          let previous = index - 1;
+          while (previous >= 0 && (section.tokens[previous]?.kind === 'literal' || section.tokens[previous]?.kind === 'space')) previous -= 1;
+          const previousToken = previous >= 0 ? section.tokens[previous] : undefined;
+          const minutes = previousToken?.kind === 'date' && previousToken.ch === 'h';
+          output += minutes ? pad(date.getUTCMinutes(), Math.min(run, 2)) : run >= 4 ? localizedMonthName(date, context.locale || section.locale, false) : run === 3 ? localizedMonthName(date, context.locale || section.locale, true) : pad(date.getUTCMonth() + 1, Math.min(run, 2));
+          break;
+        }
+        case 'd': output += run >= 4 ? localizedWeekdayName(date, context.locale || section.locale, false) : run === 3 ? localizedWeekdayName(date, context.locale || section.locale, true) : pad(date.getUTCDate(), Math.min(run, 2)); break;
+        case 'h': { let hours = date.getUTCHours(); if (hasAmPm) hours = hours % 12 || 12; output += pad(hours, Math.min(run, 2)); break; }
+        case 's': output += pad(date.getUTCSeconds(), Math.min(run, 2)); break;
+      }
+      index += run - 1;
+    } else if (token.kind === 'ampm') output += token.style === 'A/P' ? (date.getUTCHours() < 12 ? 'A' : 'P') : (date.getUTCHours() < 12 ? 'AM' : 'PM');
+    else if (token.kind === 'literal') output += token.text;
+    else if (token.kind === 'space') output += ' ';
+  }
+  return output;
+}
 
-  const sections = getSections(trimmedFormat);
-  let sectionIndex = 0;
-  if (sections.length >= 3 && numeric === 0) sectionIndex = 2;
-  else if (sections.length >= 2 && numeric < 0) sectionIndex = 1;
-  const section = sections[sectionIndex] ?? sections[0]!;
+function formatNumberSection(value: number, section: NumberFormatSectionAst, context: NumberFormatContext): string {
+  if (section.isDate) return formatDateWithContext(value, section, context);
+  const separators = localeSeparators(context.locale || section.locale);
+  const scaled = Math.abs(value) * section.percentScale / section.scale;
   const pattern = analyzeTokens(section.tokens);
-
-  if (pattern.isDate) {
-    return formatDateValue(Math.abs(numeric), section.tokens);
+  if (pattern.integerDigits.length === 0 && pattern.decimalDigits.length === 0) {
+    return section.tokens.map((token) => token.kind === 'literal' ? token.text : token.kind === 'space' ? ' ' : '').join('');
   }
-
-  const scaled = Math.abs(numeric) * pattern.percentScale;
   const decimals = Math.min(pattern.decimalDigits.length, 20);
   const rounded = scaled.toFixed(decimals);
   const [intRaw, decRaw = ''] = rounded.split('.');
+  const minIntegers = pattern.integerDigits.filter((digit) => digit === '0').length;
+  let integer = intRaw || '0';
+  if (scaled === 0 && minIntegers === 0) integer = '';
+  while (integer.length < minIntegers) integer = `0${integer}`;
+  if (pattern.thousands) integer = groupThousands(integer);
+  let decimal = decRaw.slice(0, pattern.decimalDigits.length);
+  while (decimal.length > 0) {
+    const position = decimal.length - 1;
+    const placeholder = pattern.decimalDigits[position];
+    if (placeholder === '#' && decimal[position] === '0') decimal = decimal.slice(0, -1);
+    else break;
+  }
+  const decimalOutput = decimal.length > 0 ? `${separators.decimal}${decimal}` : '';
+  const sign = value < 0 && !pattern.prefix.includes('-') && !pattern.prefix.includes('(') ? '-' : '';
+  const prefix = pattern.prefix.replace(/,/g, separators.group);
+  const suffix = pattern.suffix.replace(/,/g, separators.group);
+  return `${prefix}${sign}${integer.replace(/,/g, separators.group)}${decimalOutput}${suffix}`;
+}
 
-  const minIntegers = pattern.integerDigits.filter((ch) => ch === '0').length;
-  let intText = intRaw ?? '0';
-  while (intText.length < minIntegers) intText = `0${intText}`;
-  if (pattern.thousands) intText = groupThousands(intText);
+/** Format a value and expose presentation metadata such as a conditional color. */
+export function formatNumberValue(value: number | string | boolean | null | undefined, format?: string | NumberFormatAst, context: NumberFormatContext = {}): FormattedNumber {
+  if (value == null) return { text: '', sectionIndex: 0 };
+  if (typeof value === 'boolean') return { text: value ? 'TRUE' : 'FALSE', sectionIndex: 0 };
+  const ast = typeof format === 'string' ? parseNumberFormat(format) : format;
+  if (!ast || ast.source.toLowerCase() === 'general' || ast.source === '') {
+    return { text: typeof value === 'number' ? formatGeneralNumber(value) : String(value), sectionIndex: 0 };
+  }
+  const selected = selectNumberFormatSection(ast, value);
+  if (typeof value === 'string') {
+    // A numeric-only section has no defined text rendering contract.  Excel
+    // leaves text values unchanged instead of emitting the section's numeric
+    // literals (for example, `#,##0` must not turn "abc" into ",").
+    if (!selected.section.isText) return { text: value, ...(selected.section.color ? { color: selected.section.color } : {}), sectionIndex: selected.index };
+    const text = selected.section.tokens.map((token) => token.kind === 'text-placeholder' ? value : token.kind === 'literal' ? token.text : token.kind === 'space' ? ' ' : '').join('');
+    return { text: text || value, ...(selected.section.color ? { color: selected.section.color } : {}), sectionIndex: selected.index };
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return { text: String(value), sectionIndex: selected.index };
+  return { text: formatNumberSection(numeric, selected.section, context), ...(selected.section.color ? { color: selected.section.color } : {}), sectionIndex: selected.index };
+}
 
-  // 小数位裁剪到模式长度;'?' 占位允许尾部空缺(此处直接截断即可满足常见格式)
-  const maxDecimals = pattern.decimalDigits.length;
-  const decText = decRaw.slice(0, maxDecimals);
-
-  const sign = numeric < 0 ? '-' : '';
-  const decimalOutput = decText.length > 0 ? `.${decText}` : '';
-  return `${pattern.prefix}${sign}${intText}${decimalOutput}${pattern.suffix}`;
+/** Canonical display string used by all non-rendering consumers. */
+export function formatValue(
+  value: number | string | boolean | null | undefined,
+  format?: string,
+  context?: NumberFormatContext,
+): string {
+  return formatNumberValue(value, format, context).text;
 }

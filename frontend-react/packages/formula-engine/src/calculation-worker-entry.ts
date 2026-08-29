@@ -1,163 +1,185 @@
 import {
-  assertCalculationTaskRequest,
-  isCalculationTaskCancellation,
-  CALCULATION_TASK_PROTOCOL,
-  CALCULATION_TASK_VERSION,
-  type CalculationTaskCancellation,
-  type CalculationTaskRequest,
-  type CalculationTaskReport,
-  type CalculationTaskResult,
+  assertCalculationSessionRequest,
+  CALCULATION_DELTA_PROTOCOL,
+  CALCULATION_DELTA_VERSION,
+  type CalculationCancelRequest,
+  type CalculationSessionRequest,
+  type CalculationSessionResult,
 } from './calculation-task-port';
 import { FormulaEngine } from './formula-engine';
-import { assertFormulaCalculationSnapshot } from './calculation-state';
-import type { CalculationWorkerTaskRequest } from './calculation-browser-task-port';
+import { assertFormulaCalculationBootstrap } from './calculation-state';
 
 /** Minimal Worker-like surface used by the entry point; no DOM/global is required. */
 export interface CalculationWorkerScope {
   onmessage: ((event: { readonly data: unknown }) => void) | null;
-  postMessage(message: CalculationTaskResult): void;
+  postMessage(message: CalculationSessionResult): void;
 }
 
-/** Browser Worker scope that receives calculation snapshots and cancellations. */
-export interface BrowserCalculationWorkerScope extends CalculationWorkerScope {
-  postMessage(message: CalculationTaskResult): void;
-}
+export interface BrowserCalculationWorkerScope extends CalculationWorkerScope {}
 
 /**
- * Consume one structured-clone-safe task payload and return one structured
- * clone-safe result. This function is the independent worker entry contract;
- * a browser Worker, Node worker thread or a test harness can call it directly.
+ * Consume one canonical delta message in a persistent session map. The map is
+ * deliberately owned by the Worker entry; a new FormulaEngine is created only
+ * for session.open and is reused for every later delta.
  */
-export function consumeCalculationTask(engine: FormulaEngine, payload: unknown): CalculationTaskResult {
-  const request = payload as Partial<CalculationTaskRequest> | null;
+export function consumeCalculationSession(
+  sessions: Map<string, FormulaEngine>,
+  payload: unknown,
+): CalculationSessionResult {
+  const request = payload as Partial<CalculationSessionRequest> | null;
+  const sessionId = typeof request?.sessionId === 'string' && request.sessionId.length > 0 ? request.sessionId : 'invalid-session';
   const taskId = typeof request?.taskId === 'string' && request.taskId.length > 0 ? request.taskId : 'invalid-task';
-  const revision = Number.isSafeInteger(request?.revision) && (request?.revision ?? -1) >= 0
-    ? request!.revision!
-    : 0;
+  const revision = readRevision(request?.revision);
+  const generation = readRevision(request?.generation);
   try {
-    assertCalculationTaskRequest(request as CalculationTaskRequest);
-    const report = engine.executeCalculationTask(request as CalculationTaskRequest);
+    assertCalculationSessionRequest(request as CalculationSessionRequest);
+    const canonical = request as CalculationSessionRequest;
+    if (canonical.kind === 'session.open') {
+      if (sessions.has(canonical.sessionId)) throw new Error(`Calculation session already exists: ${canonical.sessionId}`);
+      assertFormulaCalculationBootstrap(canonical.bootstrap);
+      const engine = FormulaEngine.fromCalculationBootstrap(canonical.bootstrap);
+      sessions.set(canonical.sessionId, engine);
+      const report = engine.executeCalculationDelta({
+        protocol: CALCULATION_DELTA_PROTOCOL,
+        version: CALCULATION_DELTA_VERSION,
+        kind: 'calculation.delta',
+        sessionId: canonical.sessionId,
+        taskId: canonical.taskId,
+        revision: canonical.revision,
+        generation: canonical.generation,
+        delta: {},
+        forceRecalculate: true,
+      });
+      return {
+        protocol: CALCULATION_DELTA_PROTOCOL,
+        version: CALCULATION_DELTA_VERSION,
+        kind: 'calculation.result',
+        sessionId,
+        taskId,
+        revision,
+        generation,
+        status: 'completed',
+        report,
+      };
+    }
+    const engine = sessions.get(canonical.sessionId);
+    if (!engine) throw new Error(`Calculation session is not open: ${canonical.sessionId}`);
+    if (canonical.kind === 'calculation.cancel') {
+      return cancelledResult(canonical.sessionId, taskId, revision, generation);
+    }
+    if (canonical.kind === 'session.close') {
+      sessions.delete(canonical.sessionId);
+      engine.disposeCalculationTasks();
+      return {
+        protocol: CALCULATION_DELTA_PROTOCOL,
+        version: CALCULATION_DELTA_VERSION,
+        kind: 'session.closed',
+        sessionId,
+        taskId,
+        revision,
+        generation,
+        status: 'closed',
+      };
+    }
+    const report = engine.executeCalculationDelta(canonical);
     return {
-      protocol: CALCULATION_TASK_PROTOCOL,
-      version: CALCULATION_TASK_VERSION,
+      protocol: CALCULATION_DELTA_PROTOCOL,
+      version: CALCULATION_DELTA_VERSION,
+      kind: 'calculation.result',
+      sessionId,
       taskId,
       revision,
+      generation,
       status: 'completed',
       report,
     };
   } catch (error) {
     return {
-      protocol: CALCULATION_TASK_PROTOCOL,
-      version: CALCULATION_TASK_VERSION,
+      protocol: CALCULATION_DELTA_PROTOCOL,
+      version: CALCULATION_DELTA_VERSION,
+      kind: 'calculation.failed',
+      sessionId,
       taskId,
       revision,
+      generation,
       status: 'failed',
       error: {
-        code: 'CALCULATION_TASK_FAILED',
-        message: error instanceof Error ? error.message : 'Calculation task failed',
+        code: 'CALCULATION_DELTA_FAILED',
+        message: error instanceof Error ? error.message : 'Calculation delta failed',
+        recovery: 'Discard the session and reopen it with a canonical bootstrap.',
       },
     };
   }
 }
 
-/**
- * Consume a browser task using only its structured-clone-safe calculation
- * snapshot. The FormulaEngine constructed here is isolated to this Worker.
- */
-export function consumeBrowserCalculationTask(payload: unknown): CalculationTaskResult {
-  const request = payload as Partial<CalculationWorkerTaskRequest> | null;
-  const taskId = typeof request?.taskId === 'string' && request.taskId.length > 0 ? request.taskId : 'invalid-task';
-  const revision = Number.isSafeInteger(request?.revision) && (request?.revision ?? -1) >= 0
-    ? request!.revision!
-    : 0;
-  try {
-    assertCalculationTaskRequest(request as CalculationTaskRequest);
-    assertFormulaCalculationSnapshot(request?.snapshot);
-    const engine = FormulaEngine.fromCalculationSnapshot(request.snapshot);
-    return consumeCalculationTask(engine, request);
-  } catch (error) {
-    return {
-      protocol: CALCULATION_TASK_PROTOCOL,
-      version: CALCULATION_TASK_VERSION,
-      taskId,
-      revision,
-      status: 'failed',
-      error: {
-        code: 'CALCULATION_TASK_FAILED',
-        message: error instanceof Error ? error.message : 'Calculation task failed',
-      },
-    };
-  }
-}
-
-/** Install a direct `onmessage` worker entry and return an uninstall function. */
-export function installCalculationWorkerEntry(
-  engine: FormulaEngine,
-  scope: CalculationWorkerScope,
-): () => void {
-  const previous = scope.onmessage;
-  scope.onmessage = (event) => {
-    scope.postMessage(consumeCalculationTask(engine, event.data));
-  };
-  return () => {
-    scope.onmessage = previous;
-  };
-}
-
-/**
- * Install the production browser Worker entry. Cancellation removes a queued
- * result before it can be posted; the host also settles and ignores cancelled
- * tasks immediately, so a late worker message cannot update the live engine.
- */
+/** Install the production browser Worker entry with one persistent session map. */
 export function installBrowserCalculationWorkerEntry(scope: BrowserCalculationWorkerScope): () => void {
   const previous = scope.onmessage;
+  const sessions = new Map<string, FormulaEngine>();
+  const openingTasks = new Map<string, string>();
   const cancelled = new Set<string>();
   scope.onmessage = (event) => {
-    if (isCalculationTaskCancellation(event.data)) {
-      cancelled.add(event.data.taskId);
+    const request = readRequest(event.data);
+    if (isValidCancellationRequest(request)) {
+      cancelled.add(request.taskId);
+      if (openingTasks.get(request.sessionId) === request.taskId) {
+        sessions.get(request.sessionId)?.disposeCalculationTasks();
+        sessions.delete(request.sessionId);
+        openingTasks.delete(request.sessionId);
+      }
+      scope.postMessage(cancelledResult(request.sessionId, request.taskId, request.revision, request.generation));
       return;
     }
-    const taskId = readTaskId(event.data);
-    const revision = readRevision(event.data);
-    if (taskId && cancelled.delete(taskId)) {
-      scope.postMessage(cancelledResult(taskId, revision));
-      return;
-    }
-    const result = consumeBrowserCalculationTask(event.data);
+    if (request?.kind === 'session.open') openingTasks.set(request.sessionId!, request.taskId!);
+    const result = consumeCalculationSession(sessions, event.data);
+    if (request?.kind === 'session.open') openingTasks.delete(result.sessionId);
     if (cancelled.delete(result.taskId)) {
-      scope.postMessage(cancelledResult(result.taskId, result.revision));
+      scope.postMessage(cancelledResult(result.sessionId, result.taskId, result.revision, result.generation));
       return;
     }
     scope.postMessage(result);
   };
   return () => {
     scope.onmessage = previous;
+    for (const engine of sessions.values()) engine.disposeCalculationTasks();
+    sessions.clear();
+    openingTasks.clear();
   };
 }
 
-/** Type-only helper for hosts which need to construct a report in a test port. */
-export type CalculationWorkerReport = CalculationTaskReport;
-
-function readTaskId(value: unknown): string | null {
-  if (!isRecord(value) || typeof value.taskId !== 'string' || value.taskId.length === 0) return null;
-  return value.taskId;
+function readRequest(value: unknown): Partial<CalculationSessionRequest> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Partial<CalculationSessionRequest>
+    : null;
 }
 
 function readRevision(value: unknown): number {
-  if (!isRecord(value) || typeof value.revision !== 'number') return 0;
-  return Number.isSafeInteger(value.revision) && value.revision >= 0 ? value.revision : 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-function cancelledResult(taskId: string, revision: number): CalculationTaskResult {
+function isValidCancellationRequest(
+  request: Partial<CalculationSessionRequest> | null,
+): request is CalculationCancelRequest {
+  return request?.kind === 'calculation.cancel'
+    && request.protocol === CALCULATION_DELTA_PROTOCOL
+    && request.version === CALCULATION_DELTA_VERSION
+    && typeof request.sessionId === 'string'
+    && request.sessionId.trim().length > 0
+    && typeof request.taskId === 'string'
+    && request.taskId.trim().length > 0
+    && readRevision(request.revision) === request.revision
+    && readRevision(request.generation) === request.generation;
+}
+
+function cancelledResult(sessionId: string, taskId: string, revision: number, generation: number): CalculationSessionResult {
   return {
-    protocol: CALCULATION_TASK_PROTOCOL,
-    version: CALCULATION_TASK_VERSION,
+    protocol: CALCULATION_DELTA_PROTOCOL,
+    version: CALCULATION_DELTA_VERSION,
+    kind: 'calculation.result',
+    sessionId,
     taskId,
     revision,
+    generation,
     status: 'cancelled',
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -494,6 +494,18 @@ interface PivotCreatePlan {
 }
 
 function assertPivotSourceHeaders(workbook: WorkbookModel, pivot: PivotModel): void {
+  if (pivot.source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(pivot.source.dataSourceId);
+    if (manifest.fields.length === 0) throw new Error(`Pivot data source ${pivot.source.dataSourceId} has no fields`);
+    const ids = new Set<string>();
+    for (const field of manifest.fields) {
+      if (!field.id.trim() || !field.name.trim() || ids.has(field.id)) throw new Error(`Pivot data source ${pivot.source.dataSourceId} contains an invalid field catalog`);
+      ids.add(field.id);
+    }
+    const missing = pivot.fieldCatalog.fields.find((field) => !ids.has(field.fieldId));
+    if (missing) throw new Error(`Pivot data source ${pivot.source.dataSourceId} is missing field ${missing.fieldId}`);
+    return;
+  }
   const ranges = getPivotSourceRanges(workbook, pivot);
   for (const range of ranges) {
     const sheet = workbook.getSheet(range.sheetId);
@@ -576,7 +588,8 @@ function planPivotCreate(workbook: WorkbookModel, params: PivotCreateParams): Pi
   assertPivotCalculationProof(workbook, canonical, params.calculationProof);
   const occupied = params.calculationProof.occupiedRange;
   if (params.destination.kind === 'existing-sheet') {
-    assertPivotDefinition(workbook, canonical);
+    if (canonical.source.kind === 'data-source') assertDataSourcePivotDefinition(workbook, canonical);
+    else assertPivotDefinition(workbook, canonical);
     const collision = detectPivotCollision(workbook, canonical, occupied);
     if (collision.status === 'collision') {
       throw new Error(`Pivot target collision: ${collision.reasons.join(', ')}`);
@@ -599,8 +612,26 @@ function applyPivotAdd(context: CommandContext, params: PivotModel): void {
   if (context.workbook.getSheets().some((candidate) => candidate.pivots.some((entry) => entry.id === params.id))) throw new Error(`Pivot already exists: ${params.id}`);
   const definition = normalizePivotDefinitionFromCatalog(params);
   const canonical: PivotModel = structuredClone(definition);
-  assertPivotDefinition(context.workbook, canonical);
+  if (canonical.source.kind === 'data-source') assertDataSourcePivotDefinition(context.workbook, canonical);
+  else assertPivotDefinition(context.workbook, canonical);
   context.workbook.getSheet(definition.target.sheetId).pivots.push(canonical);
+}
+
+function assertDataSourcePivotDefinition(workbook: WorkbookModel, pivot: PivotModel): void {
+  if (pivot.source.kind !== 'data-source') throw new Error('Data-source Pivot definition is invalid');
+  const manifest = workbook.getDataSource(pivot.source.dataSourceId);
+  if (manifest.fields.length === 0 || manifest.rowCount < 0) throw new Error(`Pivot data source ${pivot.source.dataSourceId} is empty or invalid`);
+  const sourceFields = new Map(manifest.fields.map((field) => [field.id, field]));
+  const calculatedFieldIds = new Set((pivot.layout.calculatedFields ?? []).map((field) => field.fieldId));
+  for (const field of pivot.fieldCatalog.fields) {
+    const source = sourceFields.get(field.fieldId);
+    if (!source && calculatedFieldIds.has(field.fieldId)) continue;
+    if (!source || source.ordinal !== field.ordinal || source.name !== field.name || source.type !== field.dataType) {
+      throw new Error(`Pivot data source ${pivot.source.dataSourceId} field contract mismatch: ${field.fieldId}`);
+    }
+  }
+  workbook.getSheet(pivot.target.sheetId);
+  if (!Number.isSafeInteger(pivot.target.anchor.row) || pivot.target.anchor.row < 0 || !Number.isSafeInteger(pivot.target.anchor.column) || pivot.target.anchor.column < 0) throw new Error('Pivot target anchor is invalid');
 }
 
 interface PivotDependentRemoval {

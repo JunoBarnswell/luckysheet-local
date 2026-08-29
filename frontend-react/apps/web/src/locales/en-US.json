@@ -22,8 +22,6 @@
   "review": "Review",
   "view": "View",
   "settings": "Settings",
-  "pivotAnalyze": "PivotTable Analyze",
-  "pivotDesign": "PivotTable Design",
   "tableSheetDesign": "TableSheet Design",
   "ganttTask": "Gantt Tasks",
   "ganttProject": "Gantt Project",
@@ -509,8 +507,6 @@
       "printLayout": "Print Layout",
       "appearanceFiles": "Appearance & Files",
       "settings": "Settings",
-      "pivotAnalyze": "PivotTable",
-      "pivotDesign": "PivotTable",
       "tableSheetDesign": "TableSheet"
       ,"ganttTask": "Gantt Tasks"
       ,"ganttProject": "Gantt Project"

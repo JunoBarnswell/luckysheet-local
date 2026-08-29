@@ -75,9 +75,7 @@ import { cellAddress, columnLabel } from './address';
 import type { DataSourceContentQuery } from './features/data-source';
 import { createWorkbookCellResolver } from './features/data-source';
 import {
-  findCommentThreadAt,
   getCellHyperlink,
-  resolveHyperlinkDisplay,
   threadToCellComment,
 } from './features/review';
 
@@ -95,11 +93,10 @@ export interface CanvasCellSnapshot {
   phonetic?: import('@react-sheets/core-model').CellPhoneticMetadata;
   value: string;
   hasComment?: boolean;
-  commentText?: string;
-  comment?: CellComment;
+  comments?: CellComment[];
   note?: CellNote;
   invalid?: boolean;
-  hyperlink?: string;
+  hyperlink?: import('@react-sheets/core-model').CellHyperlink;
   overlay?: ConditionalOverlay;
 }
 
@@ -288,11 +285,10 @@ export function buildCanvasSheetSnapshot(
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
     const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
-    const thread = findCommentThreadAt(sheet, row, column);
+    const threads = sheet.review.getThreadsAt(row, column);
     const note = sheet.review.getNoteAt(row, column);
-    const comment = thread ? threadToCellComment(thread) : undefined;
-    const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
-    const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
+    const comments = threads.map(threadToCellComment);
+    const hyperlink = getCellHyperlink(resolved.owner, resolved.row, resolved.column);
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,
@@ -304,12 +300,11 @@ export function buildCanvasSheetSnapshot(
       phonetic: modelCell?.phonetic ? structuredClone(modelCell.phonetic) : undefined,
       value,
       displayValue: value,
-      hasComment: Boolean(comment || note),
-      commentText: comment?.text ?? note?.text,
-      comment,
+      hasComment: comments.length > 0 || Boolean(note),
+      comments,
       note: note ? structuredClone(note) : undefined,
       invalid: showInvalid && resolvedFilter.value != null && !validation.valid,
-      hyperlink,
+      hyperlink: hyperlink ? structuredClone(hyperlink) : undefined,
       overlay,
     };
   };

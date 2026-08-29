@@ -3,8 +3,43 @@ import { describe, it } from 'node:test';
 import { pivotSourceIdentity, WorkbookModel } from '@react-sheets/core-model';
 import { preparePivotTaskInput } from './engine';
 import { buildPivotModel } from './helpers';
-import { InlinePivotTaskPort } from './task-port';
-import { createPivotCalculateRequest, createPivotSourceRegisterRequest } from './task-protocol';
+import { BrowserPivotTaskPort, InlinePivotTaskPort, type PivotBrowserWorker } from './task-port';
+import { createPivotCalculateRequest, createPivotSourceRegisterRequest, type PivotTaskRequest } from './task-protocol';
+import { PivotTaskEvaluator } from './task-worker-entry';
+
+type WorkerListener = (event: { readonly data?: unknown; readonly message?: string }) => void;
+
+class FakePivotBrowserWorker implements PivotBrowserWorker {
+  readonly listeners = new Map<'message' | 'error' | 'messageerror', Set<WorkerListener>>();
+  terminated = false;
+  private readonly evaluator = new PivotTaskEvaluator();
+
+  constructor(private readonly calculateDelayMs: number) {}
+
+  postMessage(message: unknown): void {
+    const request = message as PivotTaskRequest;
+    const delay = request.kind === 'calculate' ? this.calculateDelayMs : 0;
+    setTimeout(() => {
+      if (this.terminated) return;
+      const result = this.evaluator.consume(request);
+      this.listeners.get('message')?.forEach((listener) => listener({ data: result }));
+    }, delay);
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: WorkerListener): void {
+    const listeners = this.listeners.get(type) ?? new Set<WorkerListener>();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: WorkerListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+}
 
 function preparedTask() {
   const workbook = new WorkbookModel('pivot-task', 'Pivot task');
@@ -50,6 +85,42 @@ describe('Pivot task port', () => {
     const pending = port.submit(createPivotCalculateRequest('calculate-3', 3, sourceIdentity, input.definition, input.controls, input.revisions, input.targetBounds));
     port.cancel('calculate-3');
     assert.equal((await pending).status, 'cancelled');
+    port.dispose();
+  });
+
+  it('interrupts an in-flight browser calculation by replacing the worker', async () => {
+    const workers: FakePivotBrowserWorker[] = [];
+    const createWorker = () => {
+      const worker = new FakePivotBrowserWorker(100);
+      workers.push(worker);
+      return worker;
+    };
+    const port = new BrowserPivotTaskPort(createWorker(), 1_000, createWorker);
+    const { input, sourceIdentity } = preparedTask();
+    assert.equal((await port.submit(createPivotSourceRegisterRequest('browser-register', 1, sourceIdentity, input.revisions.sourceRevision, input.source))).status, 'accepted');
+    const pending = port.submit(createPivotCalculateRequest('browser-cancel', 1, sourceIdentity, input.definition, input.controls, input.revisions, input.targetBounds));
+    port.cancel('browser-cancel');
+    assert.equal((await pending).status, 'cancelled');
+    assert.equal(workers[0]!.terminated, true);
+    assert.equal(port.sourceRegistrationEpoch, 1);
+    port.dispose();
+  });
+
+  it('fails timed-out browser work and releases the blocked worker turn', async () => {
+    const workers: FakePivotBrowserWorker[] = [];
+    const createWorker = () => {
+      const worker = new FakePivotBrowserWorker(100);
+      workers.push(worker);
+      return worker;
+    };
+    const port = new BrowserPivotTaskPort(createWorker(), 20, createWorker);
+    const { input, sourceIdentity } = preparedTask();
+    assert.equal((await port.submit(createPivotSourceRegisterRequest('browser-timeout-register', 1, sourceIdentity, input.revisions.sourceRevision, input.source))).status, 'accepted');
+    const timedOut = await port.submit(createPivotCalculateRequest('browser-timeout', 1, sourceIdentity, input.definition, input.controls, input.revisions, input.targetBounds));
+    assert.equal(timedOut.status, 'failed');
+    if (timedOut.status === 'failed') assert.equal(timedOut.error.code, 'PIVOT_TASK_TIMEOUT');
+    assert.equal(workers[0]!.terminated, true);
+    assert.equal(port.sourceRegistrationEpoch, 1);
     port.dispose();
   });
 });

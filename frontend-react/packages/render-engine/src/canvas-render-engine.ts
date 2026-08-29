@@ -91,6 +91,7 @@ export class CanvasRenderEngine {
   private readonly assetUrlCache: Map<string, string>;
   private readonly assetUrlPending: Set<string>;
   private readonly assetUrlErrors: Map<string, string>;
+  private readonly layoutNeighborCache = new Map<string, { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] }>();
 
   constructor(options: CanvasRenderEngineOptions = {}) {
     this.skeletonModel = options.skeleton ?? new SheetSkeleton({ rowCount: 1000, columnCount: 26 });
@@ -203,6 +204,7 @@ export class CanvasRenderEngine {
   setSkeleton(skeleton: SheetSkeleton): void {
     this.assertActive();
     this.skeletonModel = skeleton;
+    this.layoutNeighborCache.clear();
     this.viewport.clampTo(skeleton.contentSize);
     this.forceFullRedraw = true;
     this.requestRender();
@@ -211,6 +213,7 @@ export class CanvasRenderEngine {
   setCellProvider(cellProvider: CellProvider): void {
     this.assertActive();
     this.cellProvider = cellProvider;
+    this.layoutNeighborCache.clear();
     this.forceFullRedraw = true;
     this.requestRender();
   }
@@ -228,6 +231,7 @@ export class CanvasRenderEngine {
 
   invalidate(ranges?: readonly CellRange[]): void {
     this.assertActive();
+    this.layoutNeighborCache.clear();
     if (ranges === undefined) {
       this.forceFullRedraw = true;
       this.requestRender();
@@ -572,11 +576,25 @@ export class CanvasRenderEngine {
   }
 
   private layoutNeighbors(cell: CellAddress, range: CellRange): { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] } {
+    const cacheKey = `${cell.row}:${range.startColumn}:${range.endColumn}`;
+    const cached = this.layoutNeighborCache.get(cacheKey);
+    if (cached) return cached;
     const left: CellLayoutNeighbor[] = [];
-    for (let column = range.startColumn - 1; column >= 0; column -= 1) left.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied: hasRenderableCell(this.cellProvider({ row: cell.row, column })) });
+    for (let column = range.startColumn - 1; column >= 0; column -= 1) {
+      const occupied = hasRenderableCell(this.cellProvider({ row: cell.row, column }));
+      left.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied });
+      if (occupied) break;
+    }
     const right: CellLayoutNeighbor[] = [];
-    for (let column = range.endColumn + 1; column < this.skeletonModel.columnCount; column += 1) right.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied: hasRenderableCell(this.cellProvider({ row: cell.row, column })) });
-    return { left, right };
+    for (let column = range.endColumn + 1; column < this.skeletonModel.columnCount; column += 1) {
+      const occupied = hasRenderableCell(this.cellProvider({ row: cell.row, column }));
+      right.push({ column, widthPx: this.skeletonModel.getColumnWidth(column), occupied });
+      if (occupied) break;
+    }
+    const result = { left, right };
+    if (this.layoutNeighborCache.size >= 4000) this.layoutNeighborCache.clear();
+    this.layoutNeighborCache.set(cacheKey, result);
+    return result;
   }
 
   hitTestFloating(local: Point): FloatingHit | null {

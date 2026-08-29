@@ -205,12 +205,14 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   validatePermutationMetadata(sheet, plan);
   const { range, sourceRows } = plan;
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    const entries: Array<{ column: number; cell: CellData }> = [];
-    sheet.cells.forEach((cell, cellRow, column) => { if (cellRow === row && column >= range.startColumn && column <= range.endColumn) entries.push({ column, cell: structuredClone(cell) }); });
+  const occupied: Array<{ row: number; column: number }> = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    const entries = cellsByRow.get(row) ?? [];
+    entries.push({ column, cell: structuredClone(cell) });
     cellsByRow.set(row, entries);
-  }
-  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
+    occupied.push({ row, column });
+  });
+  for (const coordinate of occupied) sheet.cells.delete(coordinate.row, coordinate.column);
   sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
   sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));

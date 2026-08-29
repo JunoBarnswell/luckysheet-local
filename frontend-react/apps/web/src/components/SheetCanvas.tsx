@@ -63,6 +63,16 @@ import { planSheetExtentGrowth } from './canvas/sheet-extent-growth';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
 
+const MAX_CELL_RENDER_CACHE_ENTRIES = 50_000;
+
+function cacheCellRenderData(cache: Map<string, CellRenderData | undefined>, key: string, value: CellRenderData | undefined): void {
+  if (!cache.has(key) && cache.size >= MAX_CELL_RENDER_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
+}
+
 export interface SheetCanvasProps {
   locale: Locale;
   sheet: CanvasSheetSnapshot;
@@ -92,6 +102,7 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
+  onActivateHyperlink?: (row: number, column: number) => boolean;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
@@ -384,6 +395,7 @@ export function SheetCanvas({
   getPivotContextMenuItems,
   onPivotShowDetails,
   onPivotExpansionToggle,
+  onActivateHyperlink,
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
@@ -514,9 +526,18 @@ export function SheetCanvas({
     return { startColumn, endColumn, isAnchor: column === anchorColumn };
   };
 
+  /** One immutable sheet projection owns one render-data cache generation. */
+  const cellRenderCache = useMemo(() => new Map<string, CellRenderData | undefined>(), [locale, sheet, showFormulas]);
+
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
+    const cacheKey = `${row}:${column}`;
+    if (cellRenderCache.has(cacheKey)) return cellRenderCache.get(cacheKey);
     const pivotCell = findPivotProjectionCell(sheet, row, column);
-    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
+    if (pivotCell) {
+      const projected = pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
+      cacheCellRenderData(cellRenderCache, cacheKey, projected);
+      return projected;
+    }
 
     const cell = sheet.getCell(row, column);
     const merge = findMerge(row, column);
@@ -524,8 +545,11 @@ export function SheetCanvas({
     // can suppress the merge's internal boundaries. Returning undefined here
     // made blank merged areas look like ordinary cells.
     if (!cell) {
-      if (!merge) return undefined;
-      return {
+      if (!merge) {
+        cacheCellRenderData(cellRenderCache, cacheKey, undefined);
+        return undefined;
+      }
+      const projected: CellRenderData = {
         value: undefined,
         merge: {
           startRow: merge.range.startRow,
@@ -535,9 +559,11 @@ export function SheetCanvas({
           isAnchor: merge.anchor.row === row && merge.anchor.column === column,
         },
       };
+      cacheCellRenderData(cellRenderCache, cacheKey, projected);
+      return projected;
     }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
-    return {
+    const projected: CellRenderData = {
       value: showFormulas && cell.formula ? cell.formula : cell.rawValue !== undefined ? cell.rawValue : parseCellValue(cell),
       formula: cell.formula,
       displayValue: cell.value,
@@ -554,6 +580,7 @@ export function SheetCanvas({
           }
         : undefined,
       hasComment: cell.hasComment,
+      hyperlink: cell.hyperlink,
       invalid: cell.invalid,
       merge: merge
         ? {
@@ -565,7 +592,9 @@ export function SheetCanvas({
           }
         : undefined,
     };
-  }, [findMerge, locale, sheet, showFormulas]);
+    cacheCellRenderData(cellRenderCache, cacheKey, projected);
+    return projected;
+  }, [cellRenderCache, findMerge, locale, sheet, showFormulas]);
 
   const pivotStatusProjections = useMemo(
     () => Object.values(sheet.pivotProjections).filter((projection) =>
@@ -665,6 +694,7 @@ export function SheetCanvas({
     onPivotContextHit,
     onPivotControlAction,
     onPivotExpansionToggle,
+    onActivateHyperlink,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
     onResizeColumn: (column, widthPx) => {

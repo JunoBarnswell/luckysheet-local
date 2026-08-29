@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { formatValue, transformNumberFormatPrecision } from './index';
+import { formatNumberValue, formatValue, parseNumberFormat, transformNumberFormatPrecision } from './index';
 
 describe('number-format', () => {
   it('formats thousands separator', () => {
@@ -25,6 +25,22 @@ describe('number-format', () => {
   it('uses general formatting without a format code', () => {
     assert.equal(formatValue(3.5), '3.5');
     assert.equal(formatValue(1000), '1000');
+  });
+
+  it('parses conditional/color/locale sections into one AST and selects them deterministically', () => {
+    const ast = parseNumberFormat('[Red][>=100]#,##0.00;[Blue]#,##0.00');
+    assert.equal(ast.sections[0]?.condition?.operator, '>=');
+    assert.equal(ast.sections[0]?.color, 'Red');
+    assert.equal(formatNumberValue(1250.5, ast).text, '1,250.50');
+    assert.equal(formatNumberValue(1250.5, ast).color, 'Red');
+    assert.equal(formatNumberValue(12.5, ast).color, 'Blue');
+  });
+
+  it('uses the workbook date system and locale context instead of a fixed epoch', () => {
+    assert.equal(formatValue(1, 'yyyy-mm-dd', { dateSystem: '1900' }), '1900-01-01');
+    assert.equal(formatValue(0, 'yyyy-mm-dd', { dateSystem: '1904' }), '1904-01-01');
+    assert.equal(formatValue(1234.5, '#,##0.0', { locale: 'de-DE' }), '1.234,5');
+    assert.equal(formatValue(48.5, '[h]:mm', { dateSystem: '1900' }), '1164:00');
   });
 
   it('changes only decimal placeholders in ordinary numeric formats', () => {

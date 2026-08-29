@@ -45,7 +45,7 @@ export function FeaturePanelHost({
 }: FeaturePanelHostProps): ReactNode {
   const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
   return (
-    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
+    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} contentOverflow={state.panels.active === 'pivot' ? 'hidden' : 'auto'} width={state.panels.active === 'pivot' ? 360 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 340 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
         <FeatureSidebar
           activeCell={state.activeCell}
@@ -70,6 +70,7 @@ export function FeaturePanelHost({
           drawings={state.selectedSheet.drawings}
           drawingPayloads={state.selectedSheet.drawingPayloads}
           selectedDrawingIds={state.selectedDrawingIds}
+          printLayout={state.printLayout}
           initialBarcodeSymbology={session.getBarcodeDraftSymbology()}
           onSelectDrawing={(drawingId, mode) => session.setDrawingSelection([drawingId], mode === "extend" ? "add" : mode)}
           onSetDrawingVisibility={(drawingId, visible) => session.setDrawingVisibility(drawingId, visible)}
@@ -108,9 +109,9 @@ export function FeaturePanelHost({
           canRestoreHistory={state.permissions.restore}
           onUndoToHistory={session.undoToHistoryIndex.bind(session)}
           onRestoreRevision={(revision) => { void session.restoreToRevision(revision); }}
-          onPreviewRevision={(revision) => { void session.previewRevision(revision); }}
+          onPreviewRevision={(revision) => { void session.previewRevision(revision).catch(() => undefined); }}
           onClearHistoryPreview={session.clearHistoryPreview.bind(session)}
-          onRefreshRevisions={() => { void session.refreshRevisionLog(); }}
+          onRefreshRevisions={() => { void session.refreshRevisionLog().catch(() => undefined); }}
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}
@@ -147,6 +148,7 @@ export function FeaturePanelHost({
           canQuery={state.permissions.query}
           onLoadQuery={session.loadQuery.bind(session)}
           onRefreshQuery={session.refreshQuery.bind(session)}
+          onCancelQuery={session.cancelQuery.bind(session)}
           onTestQueryConnection={session.testQueryConnection.bind(session)}
           lastWhatIfMessage={state.lastWhatIfResult && "message" in state.lastWhatIfResult
             ? state.lastWhatIfResult.message
@@ -161,11 +163,11 @@ export function FeaturePanelHost({
             changingCells: [{ row: params.changingCell.row, column: params.changingCell.column, value: params.changingValue }],
             resultCells: [{ row: params.resultCell.row, column: params.resultCell.column }],
           })}
-          onAddComment={session.addComment.bind(session)}
+          onSaveComment={session.saveComment.bind(session)}
           onReplyComment={session.replyComment.bind(session)}
           onResolveComment={session.resolveComment.bind(session)}
           onRemoveComment={session.removeComment.bind(session)}
-          onAddNote={session.addNote.bind(session)}
+          onSaveNote={session.saveNote.bind(session)}
           onRemoveNote={session.removeNote.bind(session)}
         />
       </Suspense>

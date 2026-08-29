@@ -238,12 +238,34 @@ function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, result
   throw new Error(`Query target ${target.kind} does not project to a worksheet region`);
 }
 
+function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
+    && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+}
+
+function assertQueryTargetIsOwnedOrEmpty(workbook: WorkbookModel, sourceId: string, range: RangeRef): void {
+  const sheet = workbook.getSheet(range.sheetId);
+  const owned = sheet.dataRegions.filter((region) => region.sourceId === sourceId);
+  const foreign = sheet.dataRegions.find((region) => region.sourceId !== sourceId && rangesOverlap(region.range, range));
+  if (foreign) throw new Error(`QUERY_TARGET_OWNED: target overlaps data region ${foreign.id}`);
+  let conflict: string | undefined;
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (_cell, row, column) => {
+    if (owned.some((region) => row >= region.range.startRow && row <= region.range.endRow && column >= region.range.startColumn && column <= region.range.endColumn)) return;
+    conflict ??= `${row}:${column}`;
+  });
+  if (conflict) throw new Error(`QUERY_TARGET_NOT_EMPTY: target contains authored cell ${range.sheetId}!${conflict}; choose an empty range or explicitly materialize/clear it first`);
+  const merge = sheet.merges.find((entry) => rangesOverlap(entry.range, range));
+  if (merge) throw new Error('QUERY_TARGET_MERGED: query output cannot replace merged cells');
+}
+
 export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: QueryDefinition, target: LoadTarget, result: QueryResult): Promise<PreparedQueryLoad> {
   validateQueryDefinition(query);
   validateQueryResult(result);
   const sourceId = sourceIdForQuery(query.id);
   const previousSource = workbook.dataModel.sources.get(sourceId);
   const revision = (previousSource?.revision ?? -1) + 1;
+  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result);
+  if (sourceRange) assertQueryTargetIsOwnedOrEmpty(workbook, sourceId, sourceRange);
   const fields = result.columns.map((name, ordinal) => ({ id: `${sourceId}:field:${ordinal}`, name, ordinal, type: inferDataSourceFieldType(result.rows.map((row) => row[ordinal] ?? null)) }));
   const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
   for (let startRow = 0; startRow < result.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
@@ -252,7 +274,6 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
     const blockId = `${sourceId}:r${revision}:b${startRow}`;
     blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
   }
-  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result);
   const source: DataSourceManifest = { schema: 'DataSourceManifest', version: 1, id: sourceId, name: query.name, kind: 'chunked-table', ...(sourceRange ? { sourceSheetId: sourceRange.sheetId, sourceRange: structuredClone(sourceRange) } : {}), rowCount: result.rows.length, fields, blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT, blocks: blocks.map((entry) => entry.ref), revision };
   const definition = serializeQueryDefinition({ ...query, sourceRevision: revision });
   if (target.kind === 'workbook-table') {

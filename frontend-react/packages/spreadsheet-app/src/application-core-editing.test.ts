@@ -369,6 +369,17 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app['runtime'].commands.getHistoryDepth().undo, 1);
   });
 
+  it('adds an empty worksheet without a full find-index rebuild', () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    let fullRebuilds = 0;
+    const originalRebuild = runtime.findIndex.rebuild.bind(runtime.findIndex);
+    runtime.findIndex.rebuild = () => { fullRebuilds += 1; originalRebuild(); };
+    app.addSheet();
+    assert.equal(fullRebuilds, 0);
+    assert.equal(app.getUiSnapshot().selectedSheet.name, 'Sheet2');
+  });
+
   it('builds Canvas projection only for the active sheet until a visible dependency needs another sheet', () => {
     const app = new WorkbookSession();
     const firstSheetId = app.getActiveSheetId();

@@ -15,7 +15,7 @@ describe('WorkbookSession query integration', () => {
     const snapshot = app.getUiSnapshot();
     assert.equal(snapshot.lastQueryResult?.rowCount, 2);
     assert.equal(snapshot.loadedQueries.length, 1);
-    assert.equal(snapshot.queryConnectors.includes('json'), true);
+    assert.equal(snapshot.queryConnectors.some((connector) => connector.id === 'json'), true);
 
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Region');

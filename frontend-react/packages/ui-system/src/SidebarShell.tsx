@@ -16,6 +16,7 @@ export interface SidebarShellProps {
   title?: string;
   width?: number;
   showHeader?: boolean;
+  contentOverflow?: 'auto' | 'hidden';
 }
 
 export function SidebarShell({
@@ -28,6 +29,7 @@ export function SidebarShell({
   title,
   width = DEFAULT_WIDTH,
   showHeader = true,
+  contentOverflow = 'auto',
 }: SidebarShellProps) {
   const [localWidth, setLocalWidth] = useState(width);
   const dragging = useRef(false);
@@ -65,7 +67,7 @@ export function SidebarShell({
     <Box
       as="aside"
       aria-label={title ?? 'Context sidebar'}
-      className="relative flex shrink-0 flex-col border-l border-slate-200 bg-slate-50/70"
+      className="relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-l border-slate-200 bg-slate-50/70"
       data-sidebar-shell
       data-testid="sidebar-shell"
       style={{ width: localWidth }}
@@ -92,7 +94,7 @@ export function SidebarShell({
             variant="ghost"
           />
         </Inline> : null}
-        <Box className="min-h-0 flex-1 overflow-auto">{children}</Box>
+        <Box className={`min-h-0 flex-1 overflow-${contentOverflow}`}>{children}</Box>
       </Stack>
     </Box>
   );

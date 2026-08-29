@@ -57,7 +57,7 @@ export function parseOoxmlXmlToSnapshot(files: Record<string, string>): Workbook
 export function exportSnapshotToOoxmlBase64(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }>; limits?: Partial<NativeDocumentResourceLimits> } = {},
 ): string {
   return bytesToBase64(new Uint8Array(exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
@@ -65,6 +65,7 @@ export function exportSnapshotToOoxmlBase64(
     preserveMacros: options.preserveMacros ?? true,
     assetBytes: options.assetBytes,
     targetFormat: options.targetFormat,
+    limits: options.limits,
   }, preserved)));
 }
 
@@ -72,7 +73,7 @@ export function exportSnapshotToOoxmlBase64(
 export function exportSnapshotToOoxmlBuffer(
   snapshot: WorkbookSnapshot,
   preserved?: OpcPackageGraph,
-  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> } = {},
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }>; limits?: Partial<NativeDocumentResourceLimits> } = {},
 ): ArrayBuffer {
   return exportSnapshotToOpcPackageGraph(snapshot, {
     dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
@@ -80,6 +81,7 @@ export function exportSnapshotToOoxmlBuffer(
     preserveMacros: options.preserveMacros ?? true,
     assetBytes: options.assetBytes,
     targetFormat: options.targetFormat,
+    limits: options.limits,
   }, preserved);
 }
 

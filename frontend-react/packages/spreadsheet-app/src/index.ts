@@ -23,9 +23,21 @@ export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWr
 export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
+  activateSpreadsheetFeatures,
+  advanceSpreadsheetFeatures,
+  createSpreadsheetFeatureRuntime,
+  compileFeatureSurfaceSchema,
   getFeatureRegistry,
   getExcelParityReport,
+  SpreadsheetFeatureRuntime,
   type SpreadsheetFeatureManifest,
+  type SpreadsheetFeatureSurface,
+  type FeatureLifecyclePhase,
+  type FeatureLifecycleContext,
+  type FeatureLifecycleHooks,
+  type FeatureRuntimeActivation,
+  type CompiledFeatureSurfaceEntry,
+  type CompiledFeatureSurfaceSchema,
 } from './feature-registry';
 export * from './ui-command-catalog';
 export {
@@ -46,6 +58,8 @@ export * from './features/formula-audit';
 export * from './features/pivot-controls';
 export {
   buildPivotChartData,
+  chartSourceRevision,
+  ChartDataCache,
   chartNumericValue,
   resolveChartData,
   resolveChartDataFromSources,
@@ -66,6 +80,7 @@ export {
 } from './features/chart/data';
 export {
   buildChartLayout,
+  ChartLayoutCache,
   type ChartLayout,
   type ChartLayoutBar,
   type ChartLayoutPoint,
@@ -117,11 +132,11 @@ export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction }
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
-  exchangeExportDocument,
-  exchangeImportDocument,
-  exchangeSaveAsDocument,
-  exchangeSaveDocument,
+  createNativeDocumentTransaction,
+  NativeDocumentTransactionRegistry,
   summarizeCompatibilityReport,
+  type NativeDocumentExchangeResult,
+  type NativeDocumentTransaction,
 } from './features/native-document';
 export * from './features/workbook-catalog';
 export {
@@ -157,6 +172,7 @@ export {
 } from './features/persistence';
 export {
   buildPrintSnapshot,
+  buildPrintProjection,
   summarizePrintSnapshot,
   printLayoutToPageSetup,
   pageSetupToPrintLayout,
@@ -177,6 +193,12 @@ export {
   type PrintArea,
   type PrintPageBreak,
   type PrintTitleSpan,
+  type PrintCellReader,
+  type PrintProjectionOptions,
+  type PrintProjection,
+  type PrintProjectionCell,
+  type PrintProjectionDrawing,
+  type PrintChartProjection,
 } from './features/print';
 export {
   FormulaAuditController,
@@ -214,7 +236,7 @@ export {
   type QueryLoadCommandPayload,
 } from './features/query';
 export type { QueryDefinition, LoadTarget, QueryStep } from './features/query/query-steps';
-export type { ConnectorKind, QueryResult, DataConnector } from './features/query';
+export type { ConnectorKind, ConnectorManifest, ConnectorInputField, QueryResult, DataConnector } from './features/query';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
 export {
   runGoalSeek,

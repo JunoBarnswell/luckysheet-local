@@ -92,10 +92,14 @@ function mutationPolicyOverride(value: { capability: string; protectionAction: P
 export class PermissionService {
   private workbook: WorkbookModel | null = null;
   private serverRole: ShareRole | null = null;
+  /** Local workbooks have an explicit owner authority. This must not be
+   * inferred from a disconnected remote session, which is fail-closed. */
+  private localOnly = false;
   private online = false;
 
   /** Consume the server-calculated projection; no UI or command can set it. */
   applyServerAccess(role: ShareRole): void {
+    this.localOnly = false;
     this.serverRole = role;
   }
 
@@ -107,12 +111,22 @@ export class PermissionService {
     this.online = online;
   }
 
+  /** Select the workbook authority before any command or host operation runs. */
+  setLocalOnly(localOnly: boolean): void {
+    this.localOnly = localOnly;
+    if (localOnly) {
+      this.serverRole = null;
+      this.online = false;
+    }
+  }
+
   getShareRole(): ShareRole | null {
-    return this.serverRole;
+    return this.localOnly ? 'owner' : this.serverRole;
   }
 
   getCapabilities(): PermissionCapabilities {
-    if (!this.online) return LOCAL_CAPABILITIES;
+    if (this.localOnly) return LOCAL_CAPABILITIES;
+    if (!this.online) return UNKNOWN_REMOTE_CAPABILITIES;
     return this.serverRole ? buildPermissionCapabilities(this.serverRole) : UNKNOWN_REMOTE_CAPABILITIES;
   }
 

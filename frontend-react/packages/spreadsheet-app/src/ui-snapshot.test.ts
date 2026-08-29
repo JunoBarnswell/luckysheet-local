@@ -10,7 +10,7 @@ import {
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
   DataSourceContentQuery,
-  migrateDataRegionCellPatches,
+  writeCellPatch,
 } from './features/data-source';
 
 describe('canonical drawing UI projection', () => {
@@ -215,10 +215,8 @@ describe('canonical drawing UI projection', () => {
       headerRow: 0,
       revision: 0,
     });
-    // Legacy sparse metadata entry contains the source value but must not
-    // shadow the immutable block value after the block is loaded.
-    sheet.cells.set(1, 1, { value: 999, style: { bold: true } });
-    migrateDataRegionCellPatches(sheet);
+    // Canonical metadata patch must not shadow the immutable block value.
+    writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'inherit' }, style: { kind: 'set', value: { bold: true } } });
     await query.getRowValues(0);
 
     const snapshot = buildCanvasSheetSnapshot(
@@ -262,8 +260,9 @@ describe('canonical drawing UI projection', () => {
 
     const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
     const cell = snapshot.getCell(0, 0);
-    assert.equal(cell?.hyperlink, 'https://canonical.invalid');
-    assert.equal(cell?.comment?.id, 'thread-1');
-    assert.equal(cell?.comment?.text, 'Review');
+    assert.equal(cell?.hyperlink?.id, 'canonical');
+    assert.deepEqual(cell?.hyperlink?.target, { kind: 'url', url: 'https://canonical.invalid' });
+    assert.equal(cell?.comments?.[0]?.id, 'thread-1');
+    assert.equal(cell?.comments?.[0]?.text, 'Review');
   });
 });

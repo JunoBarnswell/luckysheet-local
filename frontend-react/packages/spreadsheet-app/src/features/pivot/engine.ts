@@ -167,12 +167,20 @@ interface LastValidPivotProjection {
   result: PivotResultTree;
 }
 
+interface BlockPivotResultCacheEntry {
+  sourceRevision: string;
+  layoutRevision: string;
+  filterRevision: string;
+  result: PivotResultTree;
+}
+
 /**
  * Render state is ephemeral and belongs to a workbook session. It is not part
  * of PivotDefinition, WorkbookSnapshot, or collaborative operations. A
  * collision/load failure must never destroy the last successful projection.
  */
 const lastValidPivotProjections = new WeakMap<WorkbookModel, Map<string, LastValidPivotProjection>>();
+const blockPivotResultCaches = new WeakMap<WorkbookModel, Map<string, BlockPivotResultCacheEntry>>();
 
 const same = (left: PivotScalar, right: PivotScalar): boolean => {
   if ((left == null || left === '') && (right == null || right === '')) return true;
@@ -246,7 +254,22 @@ function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): un
     const payload = sheet.drawingPayloads.get(drawing.payloadId);
     if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return undefined;
     const linked = [payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)];
-    return linked.includes(pivot.id) ? { drawingId: drawing.id, payload } : undefined;
+    if (!linked.includes(pivot.id)) return undefined;
+    // A newly-created control with its default "all"/empty period has no
+    // semantic effect on the aggregate.  Its drawing identity and styling
+    // must not invalidate a completed Pivot result; only an active filter or
+    // period, together with its report connections, belongs in filterRevision.
+    const active = payload.kind === 'slicer'
+      ? payload.filter.mode !== 'all' && payload.filter.memberKeys.length > 0
+      : payload.period.start !== undefined || payload.period.end !== undefined;
+    if (!active) return undefined;
+    return {
+      kind: payload.kind,
+      pivotId: payload.pivotId,
+      fieldId: payload.fieldId,
+      ...(payload.kind === 'slicer' ? { filter: payload.filter } : { period: payload.period, level: payload.level }),
+      connections: payload.connections ?? [],
+    };
   })).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
@@ -354,8 +377,11 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: Form
   }
   if (source.kind === 'data-source') {
     const manifest = workbook.getDataSource(source.dataSourceId);
-    if (!manifest.sourceRange) throw new Error(`Pivot data source ${source.dataSourceId} has no worksheet range`);
-    return [manifest.sourceRange];
+    // A block-backed source is not required to have a worksheet materializing
+    // range.  The async block acquisition path owns its rows and returns an
+    // explicit source index; callers that need structural overlap receive no
+    // fabricated worksheet range.
+    return manifest.sourceRange ? [manifest.sourceRange] : [];
   }
   return [resolveNamedRange(workbook, source.name, source.sheetId, formula ?? createPivotFormulaEngine(workbook))];
 }
@@ -2659,6 +2685,36 @@ export function preparePivotTaskInput(workbook: WorkbookModel, pivot: PivotModel
   };
 }
 
+/**
+ * Bind a validated block/columnar source to the normal Pivot task contract.
+ * Data-source Pivots never fabricate a worksheet range or an empty table;
+ * their source index and revision are explicit inputs to the worker.
+ */
+export function preparePivotTaskInputFromBlockSource(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  source: PivotSourceIndex,
+  sourceRevision: string | number,
+): PivotTaskEvaluationInput {
+  if (pivot.source.kind !== 'data-source') throw new Error('Block source calculation requires a data-source Pivot');
+  if (typeof sourceRevision === 'number' && !Number.isSafeInteger(sourceRevision)) throw new Error('Block source revision is invalid');
+  assertPivotSourceIndex(source);
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
+  const sourceFieldIds = new Set(source.fields.map((field) => field.fieldId));
+  const calculatedFieldIds = new Set((definition.layout.calculatedFields ?? []).map((field) => field.fieldId));
+  const missing = definition.fieldCatalog.fields.find((field) => !sourceFieldIds.has(field.fieldId) && !calculatedFieldIds.has(field.fieldId));
+  if (missing) throw new Error(`Block source is missing Pivot field ${missing.fieldId}`);
+  const revision = String(sourceRevision);
+  if (!revision.trim()) throw new Error('Block source revision is required');
+  return {
+    definition,
+    source,
+    controls: collectPivotTaskControls(workbook, pivot),
+    revisions: { ...getPivotRevisionKey(workbook, definition), sourceRevision: revision },
+    targetBounds: pivotTargetBounds(workbook, definition),
+  };
+}
+
 /** Product source acquisition: bounded main-thread chunks, cancellation, then one transferable index. */
 export async function preparePivotTaskInputAsync(
   workbook: WorkbookModel,
@@ -2739,18 +2795,28 @@ export function computePivotResultFromBlockSource(
   source: PivotSourceTableInput,
   sourceRevision: string,
 ): PivotResultTree {
-  const definition = normalizePivotDefinitionFromCatalog(pivot);
-  if (definition.source.kind !== 'data-source') throw new Error('Block source calculation requires a data-source Pivot');
-  return evaluatePivotTask({
-    definition,
-    source,
-    controls: collectPivotTaskControls(workbook, pivot),
-    revisions: { ...getPivotRevisionKey(workbook, pivot), sourceRevision },
-    targetBounds: {
-      rowCount: workbook.getSheet(pivot.target.sheetId).rowCount,
-      columnCount: workbook.getSheet(pivot.target.sheetId).columnCount,
-    },
-  });
+  const input = preparePivotTaskInputFromBlockSource(workbook, pivot, source, sourceRevision);
+  const cached = blockPivotResultCaches.get(workbook)?.get(pivot.id);
+  if (cached && cached.sourceRevision === input.revisions.sourceRevision
+    && cached.layoutRevision === input.revisions.layoutRevision
+    && cached.filterRevision === input.revisions.filterRevision) return structuredClone(cached.result);
+  const result = evaluatePivotTask(input);
+  const cache = blockPivotResultCaches.get(workbook) ?? new Map<string, BlockPivotResultCacheEntry>();
+  cache.set(pivot.id, { sourceRevision: input.revisions.sourceRevision, layoutRevision: input.revisions.layoutRevision, filterRevision: input.revisions.filterRevision, result: structuredClone(result) });
+  if (!blockPivotResultCaches.has(workbook)) blockPivotResultCaches.set(workbook, cache);
+  return result;
+}
+
+export function getCachedBlockPivotResult(workbook: WorkbookModel, pivotId: string): PivotResultTree | undefined {
+  const result = blockPivotResultCaches.get(workbook)?.get(pivotId)?.result;
+  return result ? structuredClone(result) : undefined;
+}
+
+export function clearBlockPivotResultCache(workbook: WorkbookModel, pivotId?: string): void {
+  const cache = blockPivotResultCaches.get(workbook);
+  if (!cache) return;
+  if (pivotId === undefined) cache.clear();
+  else cache.delete(pivotId);
 }
 
 function nodeExpanded(node: PivotResultNode, layout: PivotLayout): boolean {
@@ -3192,10 +3258,16 @@ export function buildPivotGridProjection(
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
   const revision = getPivotRevisionKey(workbook, pivot, options.formula);
+  const sourceRevisionMismatch = pivot.source.kind === 'data-source'
+    && options.sourceState?.sourceRevision !== undefined
+    && cachedResult !== undefined
+    && cachedResult.sourceRevision !== String(options.sourceState.sourceRevision);
   const blockResultReady = pivot.source.kind === 'data-source'
     && options.sourceState?.availability === 'ready'
+    && !sourceRevisionMismatch
     && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula);
   const staleResult = pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula)
+    && !sourceRevisionMismatch
     && cachedResult.sourceRevision !== revision.sourceRevision;
   let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult, options.formula) || staleResult || blockResultReady ? cachedResult : undefined;
   const candidate = buildPivotGridProjectionCandidate(workbook, pivot, effectiveResult, options);

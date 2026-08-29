@@ -15,10 +15,6 @@ export function registerDrawingFeature(runtime: CommandRuntime, runtimeState = n
     version: '1.0.0',
     commandIds,
     mutationIds: [...DRAWING_MUTATION_IDS],
-    contextualTabs: [
-      { id: 'drawing-format', tab: 'Format', group: 'Arrange', label: 'Bring Forward', commandId: 'drawing.zorder', icon: 'shape' },
-      { id: 'drawing-remove', tab: 'Format', group: 'Arrange', label: 'Remove', commandId: 'drawing.remove', icon: 'shape' },
-    ],
     permissions: ['drawing.edit', 'drawing.arrange'],
   };
 }

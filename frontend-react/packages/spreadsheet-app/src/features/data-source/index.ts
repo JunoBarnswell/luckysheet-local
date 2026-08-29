@@ -5,3 +5,4 @@ export type { TableRowsResponse } from './table-rows';
 export * from './import';
 export * from './overlay-store';
 export * from './resolved-cell';
+export * from './range-preprocess';

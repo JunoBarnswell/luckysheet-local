@@ -176,6 +176,20 @@ export function EditorShell({
                 textBoxPlacementActive={state.textBoxPlacement}
                 textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
+                onActivateHyperlink={(row, column) => {
+                  try {
+                    const result = session.activateHyperlinkAt(row, column);
+                    if (result.kind === 'none') return false;
+                    if (result.kind === 'external') {
+                      const opened = window.open(result.href, '_blank', 'noopener,noreferrer');
+                      if (!opened) throw new Error('HYPERLINK_POPUP_BLOCKED: allow popups and retry');
+                    }
+                    return true;
+                  } catch (cause) {
+                    dispatchSessionIntent({ type: 'notice', message: cause instanceof Error ? cause.message : 'Hyperlink activation failed' });
+                    return true;
+                  }
+                }}
                 onPivotContextHit={(hit) => {
                   const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
                   if (pivotId) {

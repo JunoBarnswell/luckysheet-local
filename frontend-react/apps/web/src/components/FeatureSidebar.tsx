@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, useEffect, useState } from 'react';
 import {
   Box,
   Button,
@@ -9,6 +9,7 @@ import {
   PanelBody,
   PanelHeader,
   PanelTitle,
+  Select,
   Stack,
   StatePanel,
   TabList,
@@ -39,41 +40,42 @@ import type {
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
-import type { PrintLayout } from '@react-sheets/spreadsheet-app';
-import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
+import type { ConnectorManifest, PrintLayout, QueryDefinition } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
-import { ChartPanel } from './panels/ChartPanel';
-import { BarcodePanel } from './panels/BarcodePanel';
-import { PivotPanel } from './panels/PivotPanel';
-import { SlicerEditorPanel } from './panels/SlicerEditorPanel';
-import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
-import { TextBoxEditorPanel } from './panels/TextBoxEditorPanel';
-import { FormControlPanel } from './panels/FormControlPanel';
-import { PicturePanel } from './panels/PicturePanel';
-import { SparklinePanel } from './panels/SparklinePanel';
-import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
-import { DataValidationPanel } from './panels/DataValidationPanel';
-import { PrintPanel } from './panels/PrintPanel';
-import { QueryPanel } from './panels/QueryPanel';
-import { ExtendedPanel } from './panels/ExtendedPanel';
-import { HistoryPanel } from './panels/HistoryPanel';
-import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
-import { DataSourcePanel } from './panels/DataSourcePanel';
-import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
-import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
-import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
-import { TableDesignPanel } from './panels/TableDesignPanel';
-import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
-import { QuickAnalysisPanel } from './panels/QuickAnalysisPanel';
-import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
-import {
-  FormulaAuditPanel,
-  type FormulaAuditPanelCallbacks,
-  type FormulaAuditPanelProps,
-  type FormulaAuditSectionStates,
+import type { DrawingSelectionMode } from './home/SelectionPane';
+import type {
+  FormulaAuditPanelCallbacks,
+  FormulaAuditPanelProps,
+  FormulaAuditSectionStates,
 } from './panels/FormulaAuditPanel';
+
+const ChartPanel = lazy(() => import('./panels/ChartPanel').then((module) => ({ default: module.ChartPanel })));
+const BarcodePanel = lazy(() => import('./panels/BarcodePanel').then((module) => ({ default: module.BarcodePanel })));
+const PivotPanel = lazy(() => import('./panels/PivotPanel').then((module) => ({ default: module.PivotPanel })));
+const SlicerEditorPanel = lazy(() => import('./panels/SlicerEditorPanel').then((module) => ({ default: module.SlicerEditorPanel })));
+const ShapeEditorPanel = lazy(() => import('./panels/ShapeEditorPanel').then((module) => ({ default: module.ShapeEditorPanel })));
+const TextBoxEditorPanel = lazy(() => import('./panels/TextBoxEditorPanel').then((module) => ({ default: module.TextBoxEditorPanel })));
+const FormControlPanel = lazy(() => import('./panels/FormControlPanel').then((module) => ({ default: module.FormControlPanel })));
+const PicturePanel = lazy(() => import('./panels/PicturePanel').then((module) => ({ default: module.PicturePanel })));
+const SparklinePanel = lazy(() => import('./panels/SparklinePanel').then((module) => ({ default: module.SparklinePanel })));
+const ConditionalFormatPanel = lazy(() => import('./panels/ConditionalFormatPanel').then((module) => ({ default: module.ConditionalFormatPanel })));
+const DataValidationPanel = lazy(() => import('./panels/DataValidationPanel').then((module) => ({ default: module.DataValidationPanel })));
+const PrintPanel = lazy(() => import('./panels/PrintPanel').then((module) => ({ default: module.PrintPanel })));
+const QueryPanel = lazy(() => import('./panels/QueryPanel').then((module) => ({ default: module.QueryPanel })));
+const ExtendedPanel = lazy(() => import('./panels/ExtendedPanel').then((module) => ({ default: module.ExtendedPanel })));
+const HistoryPanel = lazy(() => import('./panels/HistoryPanel').then((module) => ({ default: module.HistoryPanel })));
+const CompatibilityReportPanel = lazy(() => import('./panels/CompatibilityReportPanel').then((module) => ({ default: module.CompatibilityReportPanel })));
+const DataSourcePanel = lazy(() => import('./panels/DataSourcePanel').then((module) => ({ default: module.DataSourcePanel })));
+const TableSheetDesignerPanel = lazy(() => import('./panels/TableSheetDesignerPanel').then((module) => ({ default: module.TableSheetDesignerPanel })));
+const GanttDesignerPanel = lazy(() => import('./panels/GanttDesignerPanel').then((module) => ({ default: module.GanttDesignerPanel })));
+const ReportDesignerPanel = lazy(() => import('./panels/ReportDesignerPanel').then((module) => ({ default: module.ReportDesignerPanel })));
+const TableDesignPanel = lazy(() => import('./panels/TableDesignPanel').then((module) => ({ default: module.TableDesignPanel })));
+const DefinedNamesPanel = lazy(() => import('./panels/DefinedNamesPanel').then((module) => ({ default: module.DefinedNamesPanel })));
+const QuickAnalysisPanel = lazy(() => import('./panels/QuickAnalysisPanel').then((module) => ({ default: module.QuickAnalysisPanel })));
+const SelectionPane = lazy(() => import('./home/SelectionPane').then((module) => ({ default: module.SelectionPane })));
+const FormulaAuditPanel = lazy(() => import('./panels/FormulaAuditPanel').then((module) => ({ default: module.FormulaAuditPanel })));
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface FeatureSidebarProps {
@@ -153,15 +155,17 @@ export interface FeatureSidebarProps {
   onReorderConditionalFormats?: (ruleIds: readonly string[]) => void;
   onAddDataValidation: (rule: DataValidationRule) => void;
   onRemoveDataValidation: (id: string) => void;
-  onPrint: (layout: PrintLayout) => void;
-  onExportPdf: (layout: PrintLayout) => void;
+  onPrint: (layout: PrintLayout, scope: import('./panels/PrintPanel').PrintScope) => void;
+  onExportPdf: (layout: PrintLayout, scope: import('./panels/PrintPanel').PrintScope) => Promise<void>;
+  printLayout: PrintLayout;
   printPageCount?: number;
-  queryConnectors?: readonly string[];
+  queryConnectors?: readonly ConnectorManifest[];
   loadedQueries?: readonly { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string }[];
   lastQueryResult?: { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string } | null;
   canQuery: boolean;
   onLoadQuery: (query: QueryDefinition) => Promise<void>;
   onRefreshQuery: (queryId: string) => Promise<void>;
+  onCancelQuery: (queryId: string) => Promise<void>;
   onTestQueryConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
@@ -172,11 +176,11 @@ export interface FeatureSidebarProps {
     changingValue: number;
     resultCell: { row: number; column: number };
   }) => void;
-  onAddComment: (text: string) => void;
-  onReplyComment: (text: string) => void;
-  onResolveComment: () => void;
-  onRemoveComment: () => void;
-  onAddNote: (text: string) => void;
+  onSaveComment: (text: string, threadId?: string) => void;
+  onReplyComment: (text: string, threadId?: string) => void;
+  onResolveComment: (threadId?: string) => void;
+  onRemoveComment: (threadId?: string) => void;
+  onSaveNote: (text: string) => void;
   onRemoveNote: () => void;
 }
 
@@ -218,22 +222,22 @@ function InspectorPanel({
   sheet,
   compatibilityReport,
   onClearCompatibilityReport,
-  onAddComment,
+  onSaveComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onAddNote,
+  onSaveNote,
   onRemoveNote,
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
-  onAddComment: (text: string) => void;
-  onReplyComment: (text: string) => void;
-  onResolveComment: () => void;
-  onRemoveComment: () => void;
-  onAddNote: (text: string) => void;
+  onSaveComment: (text: string, threadId?: string) => void;
+  onReplyComment: (text: string, threadId?: string) => void;
+  onResolveComment: (threadId?: string) => void;
+  onRemoveComment: (threadId?: string) => void;
+  onSaveNote: (text: string) => void;
   onRemoveNote: () => void;
 }) {
   const selectedAddress = parseAddress(activeCell);
@@ -266,14 +270,13 @@ function InspectorPanel({
       </Panel>
 
       <CommentHyperlinkForms
-        comment={selectedCell?.comment}
-        commentText={selectedCell?.commentText ?? ''}
+        comments={selectedCell?.comments ?? []}
         note={selectedCell?.note}
-        onAddComment={onAddComment}
+        onSaveComment={onSaveComment}
         onReplyComment={onReplyComment}
         onResolveComment={onResolveComment}
         onRemoveComment={onRemoveComment}
-        onAddNote={onAddNote}
+        onSaveNote={onSaveNote}
         onRemoveNote={onRemoveNote}
       />
 
@@ -375,6 +378,7 @@ export function FeatureSidebar({
   onRemoveDataValidation,
   onPrint,
   onExportPdf,
+  printLayout,
   printPageCount = 0,
   queryConnectors = [],
   loadedQueries = [],
@@ -382,16 +386,17 @@ export function FeatureSidebar({
   canQuery,
   onLoadQuery,
   onRefreshQuery,
+  onCancelQuery,
   onTestQueryConnection,
   lastWhatIfMessage = null,
   canRunExtended,
   onGoalSeek,
   onRunScenario,
-  onAddComment,
+  onSaveComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onAddNote,
+  onSaveNote,
   onRemoveNote,
 }: FeatureSidebarProps) {
   const tableResizeRange = activeTable && selectedRange
@@ -497,11 +502,11 @@ export function FeatureSidebar({
             sheet={sheet}
             compatibilityReport={compatibilityReport}
             onClearCompatibilityReport={onClearCompatibilityReport}
-            onAddComment={onAddComment}
+            onSaveComment={onSaveComment}
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}
             onRemoveComment={onRemoveComment}
-            onAddNote={onAddNote}
+            onSaveNote={onSaveNote}
             onRemoveNote={onRemoveNote}
           />
         ) : null}
@@ -643,13 +648,14 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'dataValidation' ? (
           <DataValidationPanel
             sheetId={sheetId}
+            range={selectedRange ? { sheetId, ...selectedRange } : undefined}
             rules={dataValidations}
             onAddRule={onAddDataValidation}
             onRemoveRule={onRemoveDataValidation}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'print' ? (
-          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} />
+          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} initialLayout={printLayout} />
         ) : null}
         {phase === 'ready' && activePanel === 'extended' ? (
           <ExtendedPanel
@@ -667,6 +673,7 @@ export function FeatureSidebar({
             canQuery={canQuery}
             onLoadQuery={onLoadQuery}
             onRefreshQuery={onRefreshQuery}
+            onCancelQuery={onCancelQuery}
             onTestConnection={onTestQueryConnection}
           />
         ) : null}
@@ -703,33 +710,38 @@ export function FeatureSidebar({
 
 
 function CommentHyperlinkForms({
-  comment,
-  commentText: initialCommentText,
+  comments,
   note,
-  onAddComment,
+  onSaveComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onAddNote,
+  onSaveNote,
   onRemoveNote,
 }: {
-  comment?: CellComment;
-  commentText: string;
+  comments: CellComment[];
   note?: import('@react-sheets/core-model').CellNote;
-  onAddComment: (text: string) => void;
-  onReplyComment: (text: string) => void;
-  onResolveComment: () => void;
-  onRemoveComment: () => void;
-  onAddNote: (text: string) => void;
+  onSaveComment: (text: string, threadId?: string) => void;
+  onReplyComment: (text: string, threadId?: string) => void;
+  onResolveComment: (threadId?: string) => void;
+  onRemoveComment: (threadId?: string) => void;
+  onSaveNote: (text: string) => void;
   onRemoveNote: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
   const [noteText, setNoteText] = useState('');
   const [replyText, setReplyText] = useState('');
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(comments[0]?.id ?? null);
+  const comment = comments.find((entry) => entry.id === selectedThreadId);
 
-  useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
+  useEffect(() => {
+    setSelectedThreadId((current) => comments.some((entry) => entry.id === current) ? current : (comments[0]?.id ?? null));
+  }, [comments]);
+  useEffect(() => setCommentText(comment?.text ?? ''), [comment?.id, comment?.text]);
   useEffect(() => setNoteText(note?.text ?? ''), [note?.id, note?.text]);
-  useEffect(() => setReplyText(''), [comment?.id]);
+  useEffect(() => setReplyText(''), [selectedThreadId]);
+  useEffect(() => setReviewError(null), [selectedThreadId, note?.id]);
 
   return (
     <Stack gap="md">
@@ -750,7 +762,10 @@ function CommentHyperlinkForms({
             />
             <Inline gap="sm" className="justify-end">
               {note ? (
-                <Button size="sm" variant="ghost" onClick={() => { onRemoveNote(); setNoteText(''); }}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  try { onRemoveNote(); setNoteText(''); setReviewError(null); }
+                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Note removal failed'); }
+                }}>
                   Remove
                 </Button>
               ) : null}
@@ -759,7 +774,8 @@ function CommentHyperlinkForms({
                 variant="primary"
                 onClick={() => {
                   if (!noteText.trim()) return;
-                  onAddNote(noteText.trim());
+                  try { onSaveNote(noteText.trim()); setReviewError(null); }
+                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Note save failed'); }
                 }}
               >
                 Save note
@@ -778,6 +794,14 @@ function CommentHyperlinkForms({
         </PanelHeader>
         <PanelBody>
           <Stack gap="sm">
+            {comments.length > 1 ? (
+              <Select
+                value={selectedThreadId ?? ''}
+                onChange={(event) => setSelectedThreadId(event.target.value)}
+                sizeVariant="sm"
+                options={comments.map((entry) => ({ value: entry.id, label: `${entry.author} · ${entry.text.slice(0, 32)}` }))}
+              />
+            ) : null}
             <Textarea
               rows={3}
               placeholder="Add a comment for the selected cell"
@@ -785,7 +809,11 @@ function CommentHyperlinkForms({
               onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setCommentText(event.target.value)}
             />
             <Inline gap="sm" className="justify-end">
-              <Button size="sm" variant="ghost" onClick={() => { onRemoveComment(); }}>
+              <Button size="sm" variant="ghost" disabled={!comment} onClick={() => {
+                if (!comment) return;
+                try { onRemoveComment(comment.id); setReviewError(null); }
+                catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment removal failed'); }
+              }}>
                 Clear
               </Button>
               <Button
@@ -793,11 +821,11 @@ function CommentHyperlinkForms({
                 variant="primary"
                 onClick={() => {
                   if (!commentText.trim()) return;
-                  onAddComment(commentText.trim());
-                  setCommentText('');
+                  try { onSaveComment(commentText.trim(), comment?.id); setReviewError(null); }
+                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment save failed'); }
                 }}
               >
-                Save comment
+                {comment ? 'Update comment' : 'Add comment'}
               </Button>
             </Inline>
           </Stack>
@@ -823,13 +851,21 @@ function CommentHyperlinkForms({
               ))}
               <Textarea rows={2} aria-label="Reply to comment" placeholder="Reply to this comment" value={replyText} onChange={(event) => setReplyText(event.target.value)} />
               <Inline gap="sm" className="justify-end">
-                <Button size="xs" variant="ghost" onClick={onResolveComment}>{comment.resolved ? 'Reopen' : 'Resolve'}</Button>
-                <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => { onReplyComment(replyText.trim()); setReplyText(''); }}>Reply</Button>
+                <Button size="xs" variant="ghost" onClick={() => {
+                  try { onResolveComment(comment.id); setReviewError(null); }
+                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment state update failed'); }
+                }}>{comment.resolved ? 'Reopen' : 'Resolve'}</Button>
+                <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => {
+                  try { onReplyComment(replyText.trim(), comment.id); setReplyText(''); setReviewError(null); }
+                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment reply failed'); }
+                }}>Reply</Button>
               </Inline>
             </Stack>
           </PanelBody>
         </Panel>
       ) : null}
+
+      {reviewError ? <Text size="xs" tone="danger">{reviewError}</Text> : null}
 
     </Stack>
   );

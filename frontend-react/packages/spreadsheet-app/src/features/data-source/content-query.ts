@@ -125,6 +125,13 @@ export class DataSourceContentQuery {
         throw new Error(`Data block exceeds the source rowCount: ${block.id}`);
       }
     }
+    for (let index = 1; index < normalized.blocks.length; index += 1) {
+      const previous = normalized.blocks[index - 1]!;
+      const current = normalized.blocks[index]!;
+      if (current.startRow < previous.startRow + previous.rowCount) {
+        throw new Error(`Data source blocks overlap or are not ordered: ${previous.id}/${current.id}`);
+      }
+    }
     this.source = normalized;
     this.store = store;
     const overlayMap = new Map<string, SparseCellOverlay>();
@@ -201,14 +208,9 @@ export class DataSourceContentQuery {
   prefetchRows(startRow: number, rowCount: number): void {
     const error = this.validateRange(startRow, rowCount);
     if (error || rowCount === 0) return;
-    const scheduled = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row);
-      if (ref && !scheduled.has(ref.id)) {
-        scheduled.add(ref.id);
-        if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
-      }
-    }
+    const refs = this.blocksForRange(startRow, rowCount);
+    if (!refs) return;
+    for (const ref of refs) if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
   }
 
   async getRowValues(rowIndex: number): Promise<DataSourceContentResult<TableScalar[]>> {
@@ -245,18 +247,8 @@ export class DataSourceContentQuery {
       };
     }
 
-    const refs: DataBlockRef[] = [];
-    const seen = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row);
-      if (ref === undefined) {
-        return this.missingResult(`No data block covers source row ${String(row)}`);
-      }
-      if (!seen.has(ref.id)) {
-        seen.add(ref.id);
-        refs.push(ref);
-      }
-    }
+    const refs = this.blocksForRange(startRow, rowCount);
+    if (!refs) return this.missingResult(`No contiguous data blocks cover source rows ${startRow}-${startRow + rowCount - 1}`);
 
     const loaded = new Map<string, LoadedBlock>();
     const outcomes = await Promise.all(refs.map(async (ref) => {
@@ -276,15 +268,16 @@ export class DataSourceContentQuery {
     }
 
     const rows: TableScalar[][] = [];
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row)!;
+    const endRowExclusive = startRow + rowCount;
+    for (const ref of refs) {
       const block = loaded.get(ref.id)!;
-      const localRow = row - ref.startRow;
-      const values = block.rows[localRow];
-      if (values === undefined) {
-        return this.errorResult(`Data block ${ref.id} does not contain source row ${String(row)}`);
-      }
-      rows.push([...values]);
+      const overlapStart = Math.max(startRow, ref.startRow);
+      const overlapEnd = Math.min(endRowExclusive, ref.startRow + ref.rowCount);
+      const localStart = overlapStart - ref.startRow;
+      const localEnd = overlapEnd - ref.startRow;
+      const values = block.rows.slice(localStart, localEnd);
+      if (values.length !== localEnd - localStart) return this.errorResult(`Data block ${ref.id} does not contain its declared row interval`);
+      rows.push(...values.map((row) => [...row]));
     }
     return {
       state: state(this.source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'),
@@ -309,6 +302,11 @@ export class DataSourceContentQuery {
   }
 
   private findBlock(rowIndex: number): DataBlockRef | undefined {
+    const index = this.findBlockIndex(rowIndex);
+    return index < 0 ? undefined : this.source.blocks[index];
+  }
+
+  private findBlockIndex(rowIndex: number): number {
     let low = 0;
     let high = this.source.blocks.length - 1;
     while (low <= high) {
@@ -319,10 +317,27 @@ export class DataSourceContentQuery {
       } else if (rowIndex >= block.startRow + block.rowCount) {
         low = middle + 1;
       } else {
-        return block;
+        return middle;
       }
     }
-    return undefined;
+    return -1;
+  }
+
+  /** Resolve a logical row range to a small contiguous list of block owners. */
+  private blocksForRange(startRow: number, rowCount: number): DataBlockRef[] | undefined {
+    if (rowCount === 0) return [];
+    const firstIndex = this.findBlockIndex(startRow);
+    if (firstIndex < 0) return undefined;
+    const endRowExclusive = startRow + rowCount;
+    const refs: DataBlockRef[] = [];
+    let cursor = startRow;
+    for (let index = firstIndex; index < this.source.blocks.length && cursor < endRowExclusive; index += 1) {
+      const ref = this.source.blocks[index]!;
+      if (ref.startRow > cursor || ref.startRow + ref.rowCount <= cursor) return undefined;
+      refs.push(ref);
+      cursor = Math.min(endRowExclusive, ref.startRow + ref.rowCount);
+    }
+    return cursor === endRowExclusive ? refs : undefined;
   }
 
   private async loadBlock(ref: DataBlockRef): Promise<LoadedBlock> {

@@ -10,10 +10,10 @@ import type { WorkbookCollationContext } from './collation';
 import { assertFormulaVisibilitySnapshot, type FormulaVisibilitySnapshot } from './reference-cursor';
 
 /**
- * A data-only copy of the formula inputs required by an isolated calculation
- * task. It is transient work, never a second workbook persistence model.
+ * A data-only bootstrap for one persistent calculation session. It is sent
+ * exactly once on session.open; subsequent calculations use FormulaDelta.
  */
-export interface FormulaCalculationSnapshot {
+export interface FormulaCalculationBootstrap {
   readonly defaultSheetId: string;
   readonly calculationSettings: WorkbookCalculationSettings;
   readonly dateSystem: ExcelDateSystem;
@@ -49,32 +49,32 @@ export interface FormulaSpillSpaceSnapshot {
   readonly occupied: readonly CellAddress[];
 }
 
-export function assertFormulaCalculationSnapshot(value: unknown): asserts value is FormulaCalculationSnapshot {
-  if (!isRecord(value)) throw new Error('Calculation snapshot must be an object');
+export function assertFormulaCalculationBootstrap(value: unknown): asserts value is FormulaCalculationBootstrap {
+  if (!isRecord(value)) throw new Error('Calculation bootstrap must be an object');
   if (typeof value.defaultSheetId !== 'string' || value.defaultSheetId.length === 0) {
-    throw new Error('Calculation snapshot requires a default worksheet id');
+    throw new Error('Calculation bootstrap requires a default worksheet id');
   }
-  if (!isWorkbookCalculationSettings(value.calculationSettings)) throw new Error('Calculation snapshot has invalid calculation settings');
-  if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation snapshot has an invalid date system');
+  if (!isWorkbookCalculationSettings(value.calculationSettings)) throw new Error('Calculation bootstrap has invalid calculation settings');
+  if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation bootstrap has an invalid date system');
   if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
-    throw new Error('Calculation snapshot has an invalid canonical reference date');
+    throw new Error('Calculation bootstrap has an invalid canonical reference date');
   }
-  if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
-  if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
-  if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation snapshot has an invalid collation context');
+  if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation bootstrap has an invalid numeric context');
+  if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation bootstrap has an invalid calculation entropy');
+  if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation bootstrap has an invalid collation context');
   if (value.visibility !== undefined) assertFormulaVisibilitySnapshot(value.visibility);
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
-    throw new Error('Calculation snapshot has invalid cells');
+    throw new Error('Calculation bootstrap has invalid cells');
   }
-  if (!Array.isArray(value.definedNameModels) || !value.definedNameModels.every(isFormulaDefinedName)) throw new Error('Calculation snapshot has invalid defined names');
+  if (!Array.isArray(value.definedNameModels) || !value.definedNameModels.every(isFormulaDefinedName)) throw new Error('Calculation bootstrap has invalid defined names');
   if (!Array.isArray(value.sheetTables) || !value.sheetTables.every(isSheetTableRef)) {
-    throw new Error('Calculation snapshot has invalid sheet tables');
+    throw new Error('Calculation bootstrap has invalid sheet tables');
   }
   if (!Array.isArray(value.spillSpaces) || !value.spillSpaces.every(isFormulaSpillSpaceSnapshot)) {
-    throw new Error('Calculation snapshot has invalid spill spaces');
+    throw new Error('Calculation bootstrap has invalid spill spaces');
   }
   if (!Array.isArray(value.pendingRoots) || !value.pendingRoots.every(isCellAddress)) {
-    throw new Error('Calculation snapshot has invalid dirty roots');
+    throw new Error('Calculation bootstrap has invalid dirty roots');
   }
 }
 

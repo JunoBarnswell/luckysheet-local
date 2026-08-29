@@ -36,6 +36,7 @@ export type WorkspaceStorageErrorCode =
   | 'STORAGE_MEMORY_TRANSACTION_FAILED'
   | 'STORAGE_WRITER_UNAVAILABLE'
   | 'STORAGE_REVISION_CONFLICT'
+  | 'STORAGE_TRANSACTION_FAILED'
   | 'STORAGE_SCHEMA_INVALID';
 
 export class WorkspaceStorageError extends Error {
@@ -65,6 +66,7 @@ export function isWorkspaceStorageError(error: unknown): error is WorkspaceStora
     'STORAGE_MEMORY_TRANSACTION_FAILED',
     'STORAGE_WRITER_UNAVAILABLE',
     'STORAGE_REVISION_CONFLICT',
+    'STORAGE_TRANSACTION_FAILED',
     'STORAGE_SCHEMA_INVALID',
   ].includes(String((error as { code: unknown }).code));
 }

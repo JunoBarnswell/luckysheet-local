@@ -32,12 +32,19 @@ The workbook catalog contract is:
 - `POST /api/workbooks` creates a native workbook in the actor's personal space unless `spaceId`/`folderId` are supplied.
 - `PATCH /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/copy`, `DELETE /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/restore-from-trash`, and `DELETE /api/workbooks/{unitId}/purge` manage metadata and lifecycle. Purge requires a previously trashed owner workbook.
 - `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, autosave/sync, default cloud location, offline cache, import compatibility, language, and theme state.
-- `GET/PUT /api/workbooks/{unitId}/native-document-artifact` streams the original native document bytes with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
+- `GET/PUT /api/workbooks/{unitId}/native-document-artifact` streams the original native document bytes with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically. `nativeMetadata` must carry the exact `format`, `codecRevision`, file `checksum`, file `byteLength`, and `sourceSnapshotHash` proven against this request; mismatches are rejected before any catalog row is written.
 - `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
 
 Workbook mutations are written only through `POST /api/workbooks/{unitId}/operations`. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
 
 The request contract is `OperationEnvelope`. It contains operation identity, workbook identity, revision metadata and mutation intent only. The committed response adds server-owned `actorId`, `revision`, `committedAt` and `affectedRanges`.
+
+Revision replay is addressed by an explicit `(unitId, fromExclusive,
+toInclusive)` interval. The store reads at most 512 operation envelopes per
+tail, verifies row/envelope identity and revision continuity, and fails closed
+with `HISTORY_GAP` when a checkpoint window is missing, corrupt, or too large.
+Checkpoint threshold accounting reuses the same tail read used to build the
+current snapshot; no business path can request the complete operation log.
 
 Build and run with Java 21:
 
@@ -75,11 +82,12 @@ luckysheet:
 ```
 
 `POST /api/workbooks/{unitId}/queries/execute` requires editor ACL and applies
-server timeout, row/column/response limits, read-only SQL validation, and
-audit logging. `POST /api/workbooks/{unitId}/queries/{queryId}/cancel` cancels
-an active server execution. Local/offline database execution is unavailable
-through this backend endpoint and must not be represented as a successful
-server query.
+server timeout, row/column/response limits, a driver-enforced read-only JDBC
+session, bounded columnar query chunks, and audit logging. `POST
+/api/workbooks/{unitId}/queries/{queryId}/cancel` propagates cancellation to
+the JDBC statement or REST request future; a cancelled query never publishes a
+data region. Local/offline database execution is unavailable through this
+backend endpoint and must not be represented as a successful server query.
 
 Owners can create expiring, revocable guest share tokens with
 `POST /api/workbooks/{unitId}/shares`. Guests send the returned token in

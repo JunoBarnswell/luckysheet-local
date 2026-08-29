@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createLocalCalculationSessionPort } from '@react-sheets/formula-engine';
 import { WorkbookSession } from './workbook-session';
+
+function createExtendedSession(): WorkbookSession {
+  return new WorkbookSession({ calculationSessionPort: createLocalCalculationSessionPort() });
+}
 
 describe('WorkbookSession extended integration', () => {
   it('runs goal seek through extended.whatIf.goalSeek command path', () => {
-    const app = new WorkbookSession();
+    const app = createExtendedSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -32,7 +37,7 @@ describe('WorkbookSession extended integration', () => {
   });
 
   it('blocks goal seek for viewers', () => {
-    const app = new WorkbookSession();
+    const app = createExtendedSession();
     app['permission'].applyServerAccess('viewer');
     app['permission'].setOnline(true);
     const result = app.runGoalSeek({
@@ -45,7 +50,7 @@ describe('WorkbookSession extended integration', () => {
   });
 
   it('runs scenario analysis through extended.whatIf.scenario command path', () => {
-    const app = new WorkbookSession();
+    const app = createExtendedSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=B1*2' } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 10 } });

@@ -14,7 +14,7 @@ import {
 import {
   DESIGNER_ICON_TO_RIBBON_ICON,
   RIBBON_LAYOUT_SPECS,
-  RIBBON_TAB_SURFACES,
+  type CompiledFeatureSurfaceSchema,
   type RibbonCommandId,
   type RibbonGroupId,
   type RibbonLayoutNode,
@@ -29,6 +29,7 @@ export interface RibbonLayoutRendererProps {
   tab: RibbonLayoutSpec['tab'];
   locale: Locale;
   layout: RibbonLayoutState;
+  featureSurfaceSchema: CompiledFeatureSurfaceSchema;
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => ReactNode;
   renderSurface?: (surface: RibbonSurfaceDefinition, context: { inMenu: boolean; mode: RibbonLayoutState['mode'] | 'menu' }) => ReactNode;
 }
@@ -163,7 +164,9 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'command':
       return <React.Fragment key={node.id}>{renderCommand(node.commandId, commandOptions(node, context))}</React.Fragment>;
     case 'surface': {
-      const surface = RIBBON_TAB_SURFACES.find((candidate) => candidate.id === node.surfaceId);
+      const surface = props.featureSurfaceSchema.ribbon
+        .concat(props.featureSurfaceSchema.contextualTabs)
+        .find((candidate) => candidate.id === node.surfaceId && candidate.tab === context.tab);
       return surface && renderSurface ? <React.Fragment key={node.id}>{renderSurface(surface, { inMenu: context.inMenu, mode: context.inMenu ? 'menu' : props.layout.mode })}</React.Fragment> : null;
     }
     case 'split':

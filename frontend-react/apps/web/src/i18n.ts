@@ -28,8 +28,6 @@ export type MessageKey =
   | 'data'
   | 'review'
   | 'view'
-  | 'pivotAnalyze'
-  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'

@@ -1,4 +1,4 @@
-import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
+import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme, CellHyperlink } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
@@ -12,6 +12,7 @@ import type { ChartDrawingPayload } from './domain';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
 import type { ReviewStoreSnapshot } from './review-store';
+import { normalizeDefinedNameModel } from './domain';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 /**
@@ -22,7 +23,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, t
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 9;
+  version: 10;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -33,8 +34,7 @@ export interface WorkbookSnapshot {
   editingOptions: WorkbookEditingOptions;
   /** Workbook-owned theme identity and resolved colors. */
   theme?: WorkbookTheme;
-  definedNames?: Record<string, string>;
-  definedNameModels?: DefinedNameModel[];
+  definedNameModels: DefinedNameModel[];
   dataModel: import('./data-model').WorkbookDataModel;
   printDocuments?: PrintDocumentSnapshot[];
   queryDefinitions?: QueryDefinitionSnapshot[];
@@ -51,7 +51,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 9 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 10 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -66,31 +66,36 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
-  if (input.version === 8 && Array.isArray(input.sheets)) {
+  if (input.version === 9 && Array.isArray(input.sheets)) {
+    migrateV9ToV10(input);
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
-    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
+  if (input.version === 8 && Array.isArray(input.sheets)) {
+    input.version = 9;
+    input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version === 7 && Array.isArray(input.sheets)) {
-    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.version = 9;
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
-    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version === 6 && Array.isArray(input.sheets)) {
-    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.version = 9;
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     if (containsLegacyImageDataUrl(input)) throw new Error('ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before runtime load');
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
-    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version === 5 && Array.isArray(input.sheets)) {
-    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.version = 9;
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
-    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version === 4 && Array.isArray(input.sheets)) {
     input.version = 5;
@@ -139,6 +144,250 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.freeze;
   }
   return migrateStoredWorkbookSnapshot(input);
+}
+
+function migrateV9ToV10(snapshot: Record<string, any>): void {
+  if (!Array.isArray(snapshot.sheets)) throw new Error('SNAPSHOT_MIGRATION_CONFLICT: v9 sheets must be an array');
+
+  const models: DefinedNameModel[] = [];
+  const identities = new Map<string, DefinedNameModel>();
+  const addDefinedName = (value: unknown, source: string): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid defined name from ${source}`);
+    }
+    const raw = value as Record<string, unknown>;
+    const allowed = new Set(['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment']);
+    if (Object.keys(raw).some((key) => !allowed.has(key))) {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: unsupported defined name field from ${source}`);
+    }
+    let normalized: DefinedNameModel;
+    try {
+      normalized = normalizeDefinedNameModel(raw as unknown as DefinedNameModel);
+    } catch (error) {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid defined name from ${source}`, { cause: error });
+    }
+    const identity = `${normalized.scope}:${normalized.sheetId ?? ''}:${normalized.name.toUpperCase()}`;
+    const previous = identities.get(identity);
+    if (previous) {
+      if (source.startsWith('definedNames.') && previous.formula === normalized.formula) return;
+      if (!sameReviewValue(previous, normalized)) {
+        throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: defined name identity ${identity} has conflicting values`);
+      }
+      return;
+    }
+    identities.set(identity, normalized);
+    models.push(normalized);
+  };
+
+  if (snapshot.definedNameModels !== undefined) {
+    if (!Array.isArray(snapshot.definedNameModels)) {
+      throw new Error('SNAPSHOT_MIGRATION_CONFLICT: definedNameModels must be an array');
+    }
+    snapshot.definedNameModels.forEach((value: unknown, index: number) => addDefinedName(value, `definedNameModels[${index}]`));
+  }
+  if (snapshot.definedNames !== undefined) {
+    if (!snapshot.definedNames || typeof snapshot.definedNames !== 'object' || Array.isArray(snapshot.definedNames)) {
+      throw new Error('SNAPSHOT_MIGRATION_CONFLICT: definedNames must be an object');
+    }
+    for (const [name, formula] of Object.entries(snapshot.definedNames as Record<string, unknown>)) {
+      if (typeof formula !== 'string') throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: definedNames.${name} formula must be a string`);
+      addDefinedName({ name, formula, scope: 'workbook' }, `definedNames.${name}`);
+    }
+  }
+  snapshot.definedNameModels = models;
+  delete snapshot.definedNames;
+
+  for (const rawSheet of snapshot.sheets as Array<Record<string, any>>) {
+    if (!rawSheet || typeof rawSheet !== 'object' || Array.isArray(rawSheet)) {
+      throw new Error('SNAPSHOT_MIGRATION_CONFLICT: worksheet must be an object');
+    }
+    const entries = new Map<string, { row: number; column: number; hyperlink: CellHyperlink }>();
+    const addHyperlink = (row: unknown, column: unknown, value: unknown, source: string): void => {
+      if (!Number.isSafeInteger(row) || Number(row) < 0 || Number(row) > 1_048_575
+        || !Number.isSafeInteger(column) || Number(column) < 0 || Number(column) > 16_383) {
+        throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink coordinate from ${source}`);
+      }
+      const hyperlink = normalizeStoredHyperlink(value, source);
+      const key = `${Number(row)}:${Number(column)}`;
+      const previous = entries.get(key);
+      if (previous) {
+        if (!sameReviewValue(previous.hyperlink, hyperlink)) {
+          throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: hyperlink at ${rawSheet.id}!${key} has conflicting values`);
+        }
+        return;
+      }
+      entries.set(key, { row: Number(row), column: Number(column), hyperlink });
+    };
+
+    if (rawSheet.hyperlinks !== undefined) {
+      if (!Array.isArray(rawSheet.hyperlinks)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: hyperlinks on ${rawSheet.id} must be an array`);
+      rawSheet.hyperlinks.forEach((entry: any, index: number) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink entry on ${rawSheet.id}`);
+        addHyperlink(entry.row, entry.column, entry.hyperlink, `sheet.hyperlinks[${index}]`);
+      });
+    }
+    if (!rawSheet.cells || typeof rawSheet.cells !== 'object' || Array.isArray(rawSheet.cells)) {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: cells on ${rawSheet.id} must be an object`);
+    }
+    for (const [rowKey, rowValue] of Object.entries(rawSheet.cells as Record<string, any>)) {
+      if (!rowValue || typeof rowValue !== 'object' || Array.isArray(rowValue)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid row on ${rawSheet.id}`);
+      for (const [columnKey, cell] of Object.entries(rowValue as Record<string, any>)) {
+        if (!cell || typeof cell !== 'object' || Array.isArray(cell)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid cell on ${rawSheet.id}!${rowKey}:${columnKey}`);
+        const hasLegacyString = Object.prototype.hasOwnProperty.call(cell, 'hyperlink');
+        const hasLegacyDetail = Object.prototype.hasOwnProperty.call(cell, 'hyperlinkDetail');
+        if (!hasLegacyString && !hasLegacyDetail) continue;
+        const row = Number(rowKey);
+        const column = Number(columnKey);
+        let hyperlink: CellHyperlink;
+        if (hasLegacyDetail) hyperlink = normalizeStoredHyperlink(cell.hyperlinkDetail, `cell ${rawSheet.id}!${rowKey}:${columnKey}.hyperlinkDetail`);
+        else hyperlink = normalizeStoredHyperlink({
+          id: `legacy-hyperlink-${rawSheet.id}-${row}-${column}`,
+          target: { kind: 'url', url: cell.hyperlink },
+        }, `cell ${rawSheet.id}!${rowKey}:${columnKey}.hyperlink`);
+        if (hasLegacyString) {
+          if (typeof cell.hyperlink !== 'string' || cell.hyperlink.trim() === ''
+            || hyperlink.target.kind !== 'url' || hyperlink.target.url !== cell.hyperlink) {
+            throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: hyperlink fields disagree on ${rawSheet.id}!${rowKey}:${columnKey}`);
+          }
+        }
+        addHyperlink(row, column, hyperlink, `cell ${rawSheet.id}!${rowKey}:${columnKey}`);
+        delete cell.hyperlink;
+        delete cell.hyperlinkDetail;
+      }
+    }
+    rawSheet.hyperlinks = [...entries.values()].map((entry) => ({ row: entry.row, column: entry.column, hyperlink: entry.hyperlink }));
+    migrateDataRegionOverlays(rawSheet);
+  }
+}
+
+const CELL_PATCH_FIELDS = [
+  'formula', 'displayValue', 'styleId', 'style', 'editor', 'presentation', 'numberFormat',
+  'richText', 'phonetic', 'formulaMetadata', 'formulaValue', 'filterMetadata',
+] as const;
+const CELL_DATA_FIELDS = new Set(['value', ...CELL_PATCH_FIELDS]);
+const CELL_PATCH_KEYS = new Set(['schema', 'revision', 'value', ...CELL_PATCH_FIELDS]);
+
+type SnapshotCellPatchField =
+  | { kind: 'inherit' }
+  | { kind: 'set'; value: unknown }
+  | { kind: 'clear' };
+
+type SnapshotCellPatch = {
+  schema: 'CellPatch';
+  revision?: number;
+  value?: SnapshotCellPatchField;
+  [key: string]: unknown;
+};
+
+function migrateDataRegionOverlays(sheet: Record<string, any>): void {
+  if (sheet.dataRegions === undefined) return;
+  if (!Array.isArray(sheet.dataRegions)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: dataRegions on ${sheet.id} must be an array`);
+  if (!sheet.cells || typeof sheet.cells !== 'object' || Array.isArray(sheet.cells)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: cells on ${sheet.id} must be an object`);
+  for (const region of sheet.dataRegions as Array<Record<string, any>>) {
+    if (!region || typeof region !== 'object' || Array.isArray(region) || !region.range || typeof region.range !== 'object') {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: data region on ${sheet.id} is invalid`);
+    }
+    const range = region.range as Record<string, any>;
+    const startRow = Number(range.startRow);
+    const headerRow = Number(region.headerRow);
+    const endRow = Number(range.endRow);
+    const startColumn = Number(range.startColumn);
+    const endColumn = Number(range.endColumn);
+    if (!Number.isSafeInteger(startRow) || !Number.isSafeInteger(headerRow) || !Number.isSafeInteger(endRow) || !Number.isSafeInteger(startColumn) || !Number.isSafeInteger(endColumn)
+      || startRow < 0 || headerRow < startRow || headerRow > endRow || startColumn < 0 || startColumn > endColumn) {
+      throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: data region bounds on ${sheet.id} are invalid`);
+    }
+    for (let row = headerRow + 1; row <= endRow; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) {
+        const cell = sheet.cells[String(row)]?.[String(column)] as Record<string, any> | undefined;
+        if (!cell) continue;
+        const label = `${sheet.id}!${row}:${column}`;
+        if (Object.prototype.hasOwnProperty.call(cell, '__cellPatch')) {
+          validateCellPatchCarrier(cell, label);
+          continue;
+        }
+        if (!Object.prototype.hasOwnProperty.call(cell, 'value')) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: data region cell ${label} has no value`);
+        const unknown = Object.keys(cell).filter((key) => !CELL_DATA_FIELDS.has(key));
+        if (unknown.length > 0) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: data region cell ${label} contains unsupported fields: ${unknown.join(', ')}`);
+        const hasMetadata = CELL_PATCH_FIELDS.some((key) => cell[key] !== undefined);
+        const patch: SnapshotCellPatch = {
+          schema: 'CellPatch',
+          value: hasMetadata ? { kind: 'inherit' } : { kind: 'set', value: structuredClone(cell.value) },
+        };
+        for (const key of CELL_PATCH_FIELDS) {
+          if (cell[key] !== undefined) patch[key] = { kind: 'set', value: structuredClone(cell[key]) } satisfies SnapshotCellPatchField;
+        }
+        sheet.cells[String(row)][String(column)] = {
+          value: hasMetadata ? null : structuredClone(cell.value),
+          __cellPatch: patch,
+        };
+      }
+    }
+  }
+}
+
+export function assertCanonicalDataRegionOverlays(sheet: SheetSnapshot): void {
+  const regions = sheet.dataRegions ?? [];
+  if (!Array.isArray(regions)) throw new Error(`Worksheet ${sheet.id} dataRegions must be an array`);
+  for (const [rowKey, row] of Object.entries(sheet.cells)) {
+    const rowNumber = Number(rowKey);
+    for (const [columnKey, cell] of Object.entries(row)) {
+      const columnNumber = Number(columnKey);
+      const inBody = regions.find((region) => rowNumber > region.headerRow
+        && rowNumber <= region.range.endRow
+        && columnNumber >= region.range.startColumn
+        && columnNumber <= region.range.endColumn);
+      const hasCarrier = Object.prototype.hasOwnProperty.call(cell, '__cellPatch');
+      if (inBody && !hasCarrier) throw new Error(`Data region ${inBody.id} contains a non-canonical cell overlay at ${rowKey}:${columnKey}`);
+      if (!inBody && hasCarrier) throw new Error(`Cell patch carrier ${sheet.id}!${rowKey}:${columnKey} is outside a data region`);
+      if (hasCarrier) validateCellPatchCarrier(cell as unknown as Record<string, unknown>, `${sheet.id}!${rowKey}:${columnKey}`);
+    }
+  }
+}
+
+function validateCellPatchCarrier(cell: Record<string, unknown>, label: string): void {
+  const keys = Object.keys(cell);
+  if (keys.some((key) => key !== 'value' && key !== '__cellPatch')) throw new Error(`Data region cell ${label} mixes raw fields with its canonical CellPatch carrier`);
+  if (!Object.prototype.hasOwnProperty.call(cell, 'value')) throw new Error(`Data region cell ${label} carrier value is missing`);
+  const patch = cell.__cellPatch;
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error(`Data region cell ${label} CellPatch is invalid`);
+  const value = patch as SnapshotCellPatch;
+  if (value.schema !== 'CellPatch' || (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0))) {
+    throw new Error(`Data region cell ${label} CellPatch identity is invalid`);
+  }
+  if (Object.keys(value).some((key) => !CELL_PATCH_KEYS.has(key))) throw new Error(`Data region cell ${label} CellPatch contains unsupported fields`);
+  if (value.value !== undefined) validateCellPatchField(value.value, `${label}.value`);
+  const expectedValue = value.value?.kind === 'set' ? value.value.value : null;
+  if (!sameReviewValue(cell.value, expectedValue)) throw new Error(`Data region cell ${label} carrier value disagrees with its CellPatch`);
+  for (const key of CELL_PATCH_FIELDS) {
+    if (value[key] !== undefined) validateCellPatchField(value[key], `${label}.${key}`);
+  }
+}
+
+function validateCellPatchField(value: unknown, label: string): asserts value is SnapshotCellPatchField {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Data region CellPatch field ${label} is invalid`);
+  const field = value as Record<string, unknown>;
+  if (!['inherit', 'set', 'clear'].includes(String(field.kind)) || (field.kind === 'set' && !Object.prototype.hasOwnProperty.call(field, 'value'))) {
+    throw new Error(`Data region CellPatch field ${label} is invalid`);
+  }
+}
+
+function normalizeStoredHyperlink(value: unknown, source: string): CellHyperlink {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink from ${source}`);
+  const record = value as Record<string, any>;
+  const allowed = new Set(['id', 'target', 'tooltip']);
+  if (Object.keys(record).some((key) => !allowed.has(key)) || typeof record.id !== 'string' || record.id.trim() === ''
+    || !record.target || typeof record.target !== 'object' || Array.isArray(record.target)) {
+    throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink from ${source}`);
+  }
+  const target = record.target as Record<string, any>;
+  if (!['url', 'email', 'sheet', 'name'].includes(target.kind)) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink target from ${source}`);
+  if (target.kind === 'url' && (typeof target.url !== 'string' || target.url.trim() === '')) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid URL hyperlink from ${source}`);
+  if (target.kind === 'email' && (typeof target.address !== 'string' || target.address.trim() === '')) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid email hyperlink from ${source}`);
+  if (target.kind === 'sheet' && (typeof target.sheetId !== 'string' || target.sheetId.trim() === '')) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid sheet hyperlink from ${source}`);
+  if (target.kind === 'name' && (typeof target.name !== 'string' || target.name.trim() === '')) throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid defined-name hyperlink from ${source}`);
+  if (record.tooltip !== undefined && typeof record.tooltip !== 'string') throw new Error(`SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink tooltip from ${source}`);
+  return structuredClone(record) as CellHyperlink;
 }
 
 function emptyReviewSnapshot(): ReviewStoreSnapshot {
@@ -275,6 +524,13 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (snapshot.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) {
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
+  if (Object.prototype.hasOwnProperty.call(snapshot as object, 'definedNames')) {
+    throw new Error('Workbook snapshot contains the removed definedNames field');
+  }
+  if (!Array.isArray(snapshot.definedNameModels)) {
+    throw new Error('Workbook snapshot definedNameModels must be an array');
+  }
+  validateCanonicalDefinedNames(snapshot.definedNameModels);
   if (!snapshot.dataModel || !Array.isArray(snapshot.dataModel.sources) || !Array.isArray(snapshot.dataModel.tables)
     || !Array.isArray(snapshot.dataModel.relationships) || !Array.isArray(snapshot.dataModel.views)) {
     throw new Error('Workbook snapshot dataModel is invalid');
@@ -338,6 +594,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
     }
+    validateCanonicalHyperlinks(sheet);
     for (const pivot of sheet.pivots) {
       if (!pivot.id.trim() || pivotIds.has(pivot.id)) throw new Error(`Pivot identity is duplicated or empty: ${pivot.id}`);
       pivotIds.add(pivot.id);
@@ -366,11 +623,15 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     }
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
+        if (Object.prototype.hasOwnProperty.call(cell, 'hyperlink') || Object.prototype.hasOwnProperty.call(cell, 'hyperlinkDetail')) {
+          throw new Error(`Cell ${sheet.id} contains legacy hyperlink metadata`);
+        }
         if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
         if (cell.phonetic && !isCellPhoneticMetadata(cell.phonetic)) throw new Error(`Cell ${sheet.id} contains invalid phonetic metadata`);
         if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
       }
     }
+    assertCanonicalDataRegionOverlays(sheet);
   }
   for (const sheet of snapshot.sheets) {
     for (const drawing of sheet.drawings) {
@@ -479,6 +740,45 @@ function validateReviewSnapshot(review: ReviewStoreSnapshot, sheetId: string): v
     }
   }
   if (indexedThreads.size !== threadIds.size) throw new Error(`Review store contains an unindexed thread on ${sheetId}`);
+}
+
+function validateCanonicalDefinedNames(models: readonly DefinedNameModel[]): void {
+  const identities = new Set<string>();
+  for (const [index, value] of models.entries()) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Defined name ${index} is invalid`);
+    const allowed = new Set(['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment']);
+    if (Object.keys(value as object).some((key) => !allowed.has(key))) throw new Error(`Defined name ${index} contains unsupported fields`);
+    let normalized: DefinedNameModel;
+    try {
+      normalized = normalizeDefinedNameModel(value);
+    } catch (error) {
+      throw new Error(`Defined name ${index} is invalid`, { cause: error });
+    }
+    const identity = `${normalized.scope}:${normalized.sheetId ?? ''}:${normalized.name.toUpperCase()}`;
+    if (identities.has(identity)) throw new Error(`Defined name identity is duplicated: ${identity}`);
+    identities.add(identity);
+  }
+}
+
+function validateCanonicalHyperlinks(sheet: SheetSnapshot): void {
+  if (sheet.hyperlinks === undefined) return;
+  if (!Array.isArray(sheet.hyperlinks)) throw new Error(`Worksheet ${sheet.id} hyperlinks must be an array`);
+  const coordinates = new Set<string>();
+  for (const [index, entry] of sheet.hyperlinks.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+      || !Number.isSafeInteger(entry.row) || entry.row < 0 || entry.row > 1_048_575
+      || !Number.isSafeInteger(entry.column) || entry.column < 0 || entry.column > 16_383) {
+      throw new Error(`Worksheet ${sheet.id} hyperlink ${index} is invalid`);
+    }
+    const key = `${entry.row}:${entry.column}`;
+    if (coordinates.has(key)) throw new Error(`Worksheet ${sheet.id} contains duplicate hyperlink at ${key}`);
+    coordinates.add(key);
+    try {
+      normalizeStoredHyperlink(entry.hyperlink, `worksheet ${sheet.id}!${key}`);
+    } catch (error) {
+      throw new Error(`Worksheet ${sheet.id} hyperlink ${index} is invalid`, { cause: error });
+    }
+  }
 }
 
 function containsLegacyImageDataUrl(value: unknown): boolean {

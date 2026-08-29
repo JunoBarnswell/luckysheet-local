@@ -19,7 +19,7 @@ describe('WorkbookSession review integration', () => {
   it('addComment routes through comment.add and appears in ui snapshot', () => {
     const app = new WorkbookSession();
     selectCell(app, 1, 2);
-    app.addComment('Please review totals');
+    app.saveComment('Please review totals');
 
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const thread = findCommentThreadAt(sheet, 1, 2);
@@ -27,16 +27,18 @@ describe('WorkbookSession review integration', () => {
     assert.equal(thread.text, 'Please review totals');
 
     const cell = app.getUiSnapshot().selectedSheet.getCell(1, 2);
-    assert.equal(cell?.commentText, 'Please review totals');
+    assert.equal(cell?.comments?.[0]?.text, 'Please review totals');
     assert.equal(cell?.hasComment, true);
   });
 
   it('replyComment and resolveComment use comment.reply and comment.resolve', () => {
     const app = new WorkbookSession();
     selectCell(app, 0, 0);
-    app.addComment('Initial thread');
-    app.replyComment('Follow-up');
-    app.resolveComment();
+    app.saveComment('Initial thread');
+    const threadId = app.getUiSnapshot().selectedSheet.getCell(0, 0)?.comments?.[0]?.id;
+    assert.ok(threadId);
+    app.replyComment('Follow-up', threadId);
+    app.resolveComment(threadId);
 
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const thread = findCommentThreadAt(sheet, 0, 0);
@@ -44,15 +46,34 @@ describe('WorkbookSession review integration', () => {
     assert.equal(thread?.resolved, true);
 
     const cell = app.getUiSnapshot().selectedSheet.getCell(0, 0);
-    assert.equal(cell?.comment?.replies?.length, 1);
-    assert.equal(cell?.comment?.resolved, true);
+    assert.equal(cell?.comments?.[0]?.replies?.length, 1);
+    assert.equal(cell?.comments?.[0]?.resolved, true);
+  });
+
+  it('updates an identified thread with compare-and-set text semantics', () => {
+    const app = new WorkbookSession();
+    selectCell(app, 1, 1);
+    app.saveComment('Original');
+    const thread = app['runtime'].model.getSheet(app.getActiveSheetId()).review.getThreadsAt(1, 1)[0]!;
+    app.saveComment('Updated', thread.id);
+    assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).review.getThread(thread.id)?.text, 'Updated');
+    assert.throws(() => app.runCommand('comment.update', {
+      sheetId: app.getActiveSheetId(),
+      threadId: thread.id,
+      row: 1,
+      column: 1,
+      previousText: 'Original',
+      text: 'Stale overwrite',
+    }), /changed before update/);
   });
 
   it('removeComment deletes the thread through comment.remove', () => {
     const app = new WorkbookSession();
     selectCell(app, 3, 1);
-    app.addComment('Temporary');
-    app.removeComment();
+    app.saveComment('Temporary');
+    const threadId = app.getUiSnapshot().selectedSheet.getCell(3, 1)?.comments?.[0]?.id;
+    assert.ok(threadId);
+    app.removeComment(threadId);
 
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(findCommentThreadAt(sheet, 3, 1), undefined);
@@ -66,7 +87,7 @@ describe('WorkbookSession review integration', () => {
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(getCellHyperlink(sheet, 2, 2)?.target.kind, 'url');
     assert.equal(getCellHyperlink(sheet, 2, 2)?.tooltip, 'Documentation');
-    assert.equal(app.getUiSnapshot().selectedSheet.getCell(2, 2)?.hyperlink, 'https://example.com/docs');
+    assert.equal(app.getUiSnapshot().selectedSheet.getCell(2, 2)?.hyperlink?.target.kind, 'url');
 
     app.removeHyperlink();
     assert.equal(getCellHyperlink(sheet, 2, 2), undefined);
@@ -97,14 +118,29 @@ describe('WorkbookSession review integration', () => {
     assert.equal(getCellHyperlink(app['runtime'].model.getSheet(app.getActiveSheetId()), 0, 0), undefined);
   });
 
+  it('activates external and internal hyperlink targets without entering cell edit', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 0, 0);
+    app.setActiveHyperlink({ kind: 'url', url: 'https://example.com/docs' });
+    assert.deepEqual(app.activateHyperlinkAt(0, 0), { kind: 'external', href: 'https://example.com/docs' });
+    app.setActiveHyperlink({ kind: 'sheet', sheetId, address: 'C3' });
+    assert.deepEqual(app.activateHyperlinkAt(0, 0), { kind: 'internal' });
+    assert.deepEqual(app.getUiSnapshot().selection.activeCell, { row: 2, column: 2 });
+  });
+
   it('addNote and removeNote route through note.set and note.remove', () => {
     const app = new WorkbookSession();
     selectCell(app, 4, 0);
-    app.addNote('Audit note');
+    app.saveNote('Audit note');
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(getCellNote(sheet, 4, 0)?.text, 'Audit note');
+    const noteId = getCellNote(sheet, 4, 0)?.id;
+    app.saveNote('Updated audit note');
+    assert.equal(getCellNote(sheet, 4, 0)?.id, noteId);
+    assert.equal(getCellNote(sheet, 4, 0)?.text, 'Updated audit note');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(4, 0)?.hasComment, true);
-    assert.equal(app.getUiSnapshot().selectedSheet.getCell(4, 0)?.note?.text, 'Audit note');
+    assert.equal(app.getUiSnapshot().selectedSheet.getCell(4, 0)?.note?.text, 'Updated audit note');
 
     app.removeNote();
     assert.equal(getCellNote(sheet, 4, 0), undefined);

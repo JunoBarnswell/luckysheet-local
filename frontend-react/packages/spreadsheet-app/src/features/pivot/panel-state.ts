@@ -67,10 +67,22 @@ export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel
   workbook.getSheet(definition.target.sheetId);
   if (!Number.isSafeInteger(definition.target.anchor.row) || definition.target.anchor.row < 0 || !Number.isSafeInteger(definition.target.anchor.column) || definition.target.anchor.column < 0) throw new Error('Pivot target anchor is invalid');
   const ranges = getPivotSourceRanges(workbook, pivot);
-  if (!ranges.length) throw new Error('Pivot source range is required');
-  for (const range of ranges) {
-    const sheet = workbook.getSheet(range.sheetId);
-    if (range.startRow < 0 || range.endRow < range.startRow || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn >= sheet.columnCount) throw new Error('Pivot source range is invalid');
+  if (pivot.source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(pivot.source.dataSourceId);
+    if (manifest.fields.length === 0) throw new Error(`Pivot data source ${pivot.source.dataSourceId} has no fields`);
+    const fieldById = new Map(manifest.fields.map((field) => [field.id, field]));
+    const calculatedFieldIds = new Set((pivot.layout.calculatedFields ?? []).map((field) => field.fieldId));
+    for (const field of definition.fieldCatalog.fields) {
+      const source = fieldById.get(field.fieldId);
+      if (!source && calculatedFieldIds.has(field.fieldId)) continue;
+      if (!source || source.ordinal !== field.ordinal || source.name !== field.name || source.type !== field.dataType) throw new Error(`Pivot data source field contract mismatch: ${field.fieldId}`);
+    }
+  } else {
+    if (!ranges.length) throw new Error('Pivot source range is required');
+    for (const range of ranges) {
+      const sheet = workbook.getSheet(range.sheetId);
+      if (range.startRow < 0 || range.endRow < range.startRow || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn >= sheet.columnCount) throw new Error('Pivot source range is invalid');
+    }
   }
   if (!hasPivotHeaderData(workbook, pivot)) return;
   const fields = new Set(definition.fieldCatalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
