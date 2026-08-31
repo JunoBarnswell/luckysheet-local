@@ -25,9 +25,9 @@ describe('WorkbookSession print integration', () => {
     assert.match(snapshot.notice, /page\(s\)/i);
   });
 
-  it('runs print.export through command path', () => {
+  it('runs print.export through the real page projection path', async () => {
     const app = new WorkbookSession();
-    app.exportPdf({
+    await app.exportPdf({
       paper: 'Letter',
       orientation: 'landscape',
       margin: { top: 10, right: 10, bottom: 10, left: 10 },
@@ -36,6 +36,23 @@ describe('WorkbookSession print integration', () => {
     assert.ok(printSnapshot);
     assert.equal(printSnapshot?.layout.paper, 'Letter');
     assert.equal(printSnapshot?.layout.orientation, 'landscape');
+  });
+
+  it('keeps saved print area, current selection, and active-sheet scopes distinct', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    sheet.cells.set(0, 0, { value: 'used-start' });
+    sheet.cells.set(20, 5, { value: 'used-end' });
+    app.setPrintArea({ sheetId, startRow: 2, endRow: 6, startColumn: 1, endColumn: 3 });
+    app.selectRange({ startRow: 10, endRow: 12, startColumn: 2, endColumn: 4 });
+    const layout = { paper: 'A4' as const, orientation: 'portrait' as const, margin: { top: 20, right: 20, bottom: 20, left: 20 } };
+    app.printWorkbook(layout, 'saved-area');
+    assert.deepEqual(app.getPrintSnapshot()?.printArea, { sheetId, startRow: 2, endRow: 6, startColumn: 1, endColumn: 3 });
+    app.printWorkbook(layout, 'selection');
+    assert.deepEqual(app.getPrintSnapshot()?.printArea, { sheetId, startRow: 10, endRow: 12, startColumn: 2, endColumn: 4 });
+    app.printWorkbook(layout, 'active-sheet');
+    assert.deepEqual(app.getPrintSnapshot()?.printArea, sheet.usedRange);
   });
 
   it('updates print area through pageLayout.printArea.set', () => {

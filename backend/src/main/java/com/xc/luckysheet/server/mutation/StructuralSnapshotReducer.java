@@ -620,12 +620,6 @@ final class StructuralSnapshotReducer {
                 }
             });
         }
-        ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
-        names.fields().forEachRemaining(entry -> {
-            if (!entry.getValue().isTextual()) return;
-            String rewritten = FormulaReferenceTransformer.remapAxis(entry.getValue().asText(), target, target, axis, at, count, direction);
-            names.put(entry.getKey(), rewritten);
-        });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
             ObjectNode name = requireObject(raw, "Defined name");
             if ("sheet".equals(name.path("scope").asText()) && !target.id().equals(name.path("sheetId").asText())) continue;

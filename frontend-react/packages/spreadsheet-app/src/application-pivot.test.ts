@@ -1,7 +1,28 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { PivotModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, type PivotModel } from '@react-sheets/core-model';
 import { WorkbookSession } from './workbook-session';
+import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
+import type { PivotTaskRequest, PivotTaskResult } from './features/pivot/task-protocol';
+
+class RecordingPivotTaskPort implements PivotTaskPort {
+  readonly sourceRegistrationEpoch = 0;
+  readonly requests: Array<Exclude<PivotTaskRequest, { kind: 'cancel' }>> = [];
+  private readonly delegate = new InlinePivotTaskPort();
+
+  submit(request: Exclude<PivotTaskRequest, { kind: 'cancel' }>): Promise<PivotTaskResult> {
+    this.requests.push(request);
+    return this.delegate.submit(request);
+  }
+
+  cancel(taskId: string): void {
+    this.delegate.cancel(taskId);
+  }
+
+  dispose(): void {
+    this.delegate.dispose();
+  }
+}
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -67,7 +88,7 @@ describe('WorkbookSession PivotTable integration', () => {
     app.setActivePivotContext(pivot.id, sheetId);
     let snapshot = app.getUiSnapshot();
     assert.deepEqual(snapshot.activeContext, { kind: 'pivot', sheetId, pivotId: pivot.id });
-    assert.equal(snapshot.ribbon.activeTab, 'pivotAnalyze');
+    assert.equal(snapshot.ribbon.activeTab, 'home');
     assert.equal(snapshot.panels.active, 'pivot');
     assert.equal(snapshot.panels.open, true);
 
@@ -75,6 +96,8 @@ describe('WorkbookSession PivotTable integration', () => {
     snapshot = app.getUiSnapshot();
     assert.deepEqual(snapshot.activeContext, { kind: 'none' });
     assert.equal(snapshot.ribbon.activeTab, 'home');
+    assert.equal(snapshot.panels.open, false);
+    assert.equal(snapshot.panels.active, 'inspector');
   });
 
   it('rejects a fabricated PivotTable context without changing the active context', () => {
@@ -110,6 +133,27 @@ describe('WorkbookSession PivotTable integration', () => {
     const restoredSnapshot = app.getUiSnapshot();
     assert.equal(restoredSnapshot.selectedSheet.id, createdSheetId);
     assert.equal(restoredSnapshot.selectedSheet.pivots[0]?.id, pivotId);
+  });
+
+  it('calculates a new-sheet Pivot before commit and does not start a second refresh task', async () => {
+    const taskPort = new RecordingPivotTaskPort();
+    const app = new WorkbookSession({ pivotTaskPort: taskPort });
+    const { sheetId } = seed(app);
+    app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
+      primaryRangeIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
+    });
+
+    const created = await app.createPivotTable({ destination: { kind: 'new-sheet' } });
+    assert.equal(created.status, 'created');
+    assert.equal(taskPort.requests.filter((request) => request.kind === 'calculate').length, 1);
+    if (created.status === 'created') {
+      assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[created.pivotId]);
+    }
+    taskPort.dispose();
   });
 
   it('keeps the worksheet scope on a named-range source through create, undo, and redo', async () => {
@@ -211,6 +255,22 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
   });
 
+  it('keeps a default Pivot control ready and recomputes only after its filter becomes active', async () => {
+    const app = new WorkbookSession();
+    const { pivot } = seed(app);
+    pivot.id = 'pivot-control-filter-revision';
+    await app.addPivot(pivot);
+    const fieldId = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId;
+    app.createPivotSlicerControl(pivot.id, fieldId);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'ready');
+    const control = app.listPivotControls(pivot.id)[0]!;
+    const member = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.values![0];
+    if (member === undefined) throw new Error('Region field has no test member');
+    app.setPivotSlicerFilter(control.drawing.id, 'include', [createPivotMemberKey(member)]);
+    await waitForPivot(app, pivot.id);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'ready');
+  });
+
   it('recomputes the Pivot projection when pivot.update enters through the public dispatch path', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);
@@ -222,6 +282,37 @@ describe('WorkbookSession PivotTable integration', () => {
     const dispatch = await app.updatePivotLayout(pivot.id, nextLayout);
     assert.equal(dispatch.status, 'updated');
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
+  });
+
+  it('publishes a ready Canvas projection together with a completed layout update', async () => {
+    const app = new WorkbookSession();
+    const { pivot } = seed(app);
+    pivot.id = 'pivot-ready-projection';
+    await app.addPivot(pivot);
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.showRowGrandTotals = false;
+    const outcome = await app.updatePivotLayout(pivot.id, nextLayout);
+    assert.equal(outcome.status, 'updated');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'ready');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.pivotId, pivot.id);
+  });
+
+  it('does not recalculate the previous layout before the first edit after an imported result is missing', async () => {
+    const taskPort = new RecordingPivotTaskPort();
+    const app = new WorkbookSession({ pivotTaskPort: taskPort });
+    const { pivot } = seed(app);
+    pivot.id = 'pivot-single-update-run';
+    await app.addPivot(pivot);
+    const runtime = (app as unknown as { runtime: { pivotResults: Record<string, unknown> } }).runtime;
+    delete runtime.pivotResults[pivot.id];
+    taskPort.requests.length = 0;
+
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.showRowGrandTotals = false;
+    const outcome = await app.updatePivotLayout(pivot.id, nextLayout);
+    assert.equal(outcome.status, 'updated');
+    assert.equal(taskPort.requests.filter((request) => request.kind === 'calculate').length, 1);
+    taskPort.dispose();
   });
 
   it('keeps manual and on-open results stale until the explicit refresh command', async () => {

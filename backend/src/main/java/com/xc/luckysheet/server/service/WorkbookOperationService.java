@@ -24,6 +24,7 @@ import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.mutation.MutationPreparation;
 import com.xc.luckysheet.server.store.CheckpointRow;
+import com.xc.luckysheet.server.store.OperationTail;
 import com.xc.luckysheet.server.store.OperationRow;
 import com.xc.luckysheet.server.store.OutboxRow;
 import com.xc.luckysheet.server.store.WorkbookRow;
@@ -71,7 +72,7 @@ public class WorkbookOperationService {
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = requireWorkbook(unitId);
-        JsonNode snapshot = currentSnapshot(row);
+        JsonNode snapshot = readCurrentSnapshot(row).snapshot();
         if (snapshot.isObject()) ((ObjectNode) snapshot).put("name", row.name());
         String json = writeJson(snapshot);
         return response(unitId, snapshot, row.revision(), checksum(json));
@@ -110,16 +111,18 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Revision conflict; rebase against revision " + row.revision());
         }
 
-        JsonNode before = currentSnapshot(row);
+        SnapshotState current = readCurrentSnapshot(row);
+        JsonNode before = current.snapshot();
         JsonNode next = before;
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         for (OperationMutation mutation : operation.mutations()) {
             MutationPreparation prepared = registry.prepare(next, mutation, actorRole);
             next = prepared.descriptor().apply(next, mutation);
+            validatePhysicalDataBlocks(routeUnitId, mutation);
             committedMutations.add(CommittedOperationMutation.from(mutation, prepared.affectedRanges()));
         }
 
-        long nextRevision = row.revision() + 1;
+        long nextRevision = incrementRevision(row.revision());
         Instant committedAt = Instant.now();
         CommittedOperationEnvelope committed = CommittedOperationEnvelope.from(operation, actor, nextRevision, committedAt, committedMutations);
         String envelopeJson = writeJson(committed);
@@ -127,7 +130,7 @@ public class WorkbookOperationService {
         enqueueRevisionEvent(routeUnitId, operation.operationId(), nextRevision, envelopeJson, committedAt);
         String canonicalName = next.path("name").asText(row.name()).trim();
         store.updateWorkbookRevisionAndName(routeUnitId, nextRevision, canonicalName, committedAt);
-        if (shouldCheckpoint(row, operation, envelopeJson)) {
+        if (shouldCheckpoint(row, current.tail(), envelopeJson)) {
             String nextJson = writeJson(next);
             store.updateWorkbook(routeUnitId, nextRevision, nextJson, nextRevision, committedAt);
             store.insertCheckpoint(routeUnitId, nextRevision, nextJson, checksum(nextJson), committedAt);
@@ -163,7 +166,14 @@ public class WorkbookOperationService {
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
-        List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream().map(this::revisionRecord).toList();
+        WorkbookRow current = requireWorkbook(unitId);
+        long toExclusive = beforeRevision == Long.MAX_VALUE
+                ? incrementRevision(current.revision())
+                : Math.min(beforeRevision, incrementRevision(current.revision()));
+        long fromInclusive = Math.max(1, toExclusive - Math.max(1, limit));
+        List<OperationRow> page = store.readRevisionPage(unitId, fromInclusive, toExclusive, limit);
+        validateRevisionPage(page, fromInclusive, toExclusive);
+        List<RevisionRecord> items = page.stream().map(this::revisionRecord).toList();
         String next = items.size() == limit ? Long.toString(items.get(items.size() - 1).revision()) : null;
         return new CursorPage<>(items, next);
     }
@@ -182,13 +192,12 @@ public class WorkbookOperationService {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
         if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
-        if (row.snapshotRevision() == row.revision()) {
-            JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(row.snapshotJson()), unitId);
-            String canonicalJson = writeJson(snapshot);
-            return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(canonicalJson)), false);
-        }
-        JsonNode snapshot = currentSnapshot(row);
+        SnapshotState current = readCurrentSnapshot(row);
+        JsonNode snapshot = current.snapshot();
         String json = writeJson(snapshot);
+        if (row.snapshotRevision() == row.revision()) {
+            return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(json)), false);
+        }
         Instant now = Instant.now();
         store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
         store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
@@ -203,7 +212,7 @@ public class WorkbookOperationService {
         JsonNode target = snapshotAtRevision(row, request.targetRevision());
         WorkbookSnapshotValidator.requireCanonical(target, unitId);
         registry.require("workbook.restore", true);
-        long revision = row.revision() + 1;
+        long revision = incrementRevision(row.revision());
         Instant now = Instant.now();
         String operationId = UUID.randomUUID().toString();
         ObjectNode params = mapper.createObjectNode()
@@ -271,54 +280,121 @@ public class WorkbookOperationService {
 
     private CommittedOperationEnvelope readCommitted(OperationRow row) {
         try {
-            return mapper.readValue(row.envelopeJson(), CommittedOperationEnvelope.class);
+            CommittedOperationEnvelope committed = mapper.readValue(row.envelopeJson(), CommittedOperationEnvelope.class);
+            if (!row.operationId().equals(committed.operationId())
+                    || !row.unitId().equals(committed.unitId())
+                    || row.revision() != committed.revision()) {
+                throw historyGap("Stored operation identity does not match its revision row", null);
+            }
+            return committed;
         } catch (Exception error) {
-            throw new IllegalStateException("Stored operation envelope is invalid", error);
+            if (error instanceof ServiceException serviceException) throw serviceException;
+            throw historyGap("Stored operation envelope is invalid", error);
         }
     }
 
-    private JsonNode currentSnapshot(WorkbookRow row) {
-        JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(row.snapshotJson()), row.unitId());
-        if (row.snapshotRevision() == row.revision()) return snapshot;
-        for (OperationRow operation : store.listOperations(row.unitId()).stream()
-                .filter(entry -> entry.revision() > row.snapshotRevision() && entry.revision() <= row.revision())
-                .sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList()) {
-            CommittedOperationEnvelope committed = readCommitted(operation);
-            List<OperationMutation> mutations = committed.mutations().stream()
-                    .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
-            snapshot = registry.applyPublicMutations(snapshot, mutations);
+    private SnapshotState readCurrentSnapshot(WorkbookRow row) {
+        if (row.snapshotRevision() < 0 || row.revision() < row.snapshotRevision()) {
+            throw historyGap("Workbook snapshot revision is outside the current revision", null);
         }
-        return snapshot;
+        JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(row.snapshotJson()), row.unitId());
+        if (row.snapshotRevision() == row.revision()) return new SnapshotState(snapshot, OperationTail.empty(row.unitId(), row.revision(), row.revision()));
+        OperationTail tail = store.readOperationTail(row.unitId(), row.snapshotRevision(), row.revision());
+        return new SnapshotState(replay(snapshot, tail), tail);
     }
 
     private JsonNode snapshotAtRevision(WorkbookRow current, long targetRevision) {
-        if (targetRevision == current.revision()) return currentSnapshot(current);
+        if (targetRevision < 0 || targetRevision > current.revision()) throw ServiceException.notFound("Revision not found: " + targetRevision);
+        if (targetRevision == current.revision()) return readCurrentSnapshot(current).snapshot();
         CheckpointRow checkpoint = store.findCheckpoint(current.unitId(), targetRevision)
-                .orElseGet(() -> store.findLatestCheckpointAtOrBefore(current.unitId(), targetRevision).orElseThrow(() -> ServiceException.notFound("Snapshot checkpoint not found")));
-        JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(checkpoint.snapshotJson()), current.unitId());
-        if (checkpoint.revision() == targetRevision) return snapshot;
-        for (OperationRow operation : store.listOperations(current.unitId()).stream()
-                .filter(entry -> entry.revision() > checkpoint.revision() && entry.revision() <= targetRevision)
-                .sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList()) {
-            CommittedOperationEnvelope committed = readCommitted(operation);
-            if (committed.mutations().stream().anyMatch(mutation -> "workbook.restore".equals(mutation.id()))) {
-                throw ServiceException.conflict("Restore checkpoint is missing for revision " + operation.revision());
-            }
-            snapshot = registry.applyPublicMutations(snapshot, committed.mutations().stream()
-                    .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList());
+                .orElseGet(() -> store.findLatestCheckpointAtOrBefore(current.unitId(), targetRevision)
+                        .orElseThrow(() -> historyGap("No checkpoint covers revision " + targetRevision, null)));
+        if (checkpoint.revision() < 0 || checkpoint.revision() > targetRevision) {
+            throw historyGap("Checkpoint revision is outside the requested interval", null);
         }
-        return snapshot;
+        JsonNode snapshot = checkpointSnapshot(checkpoint, current.unitId());
+        if (checkpoint.revision() == targetRevision) return snapshot;
+        OperationTail tail = store.readOperationTail(current.unitId(), checkpoint.revision(), targetRevision);
+        return replay(snapshot, tail);
     }
 
     private WorkbookRow requireWorkbook(String unitId) {
         return store.find(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
     }
 
-    private boolean shouldCheckpoint(WorkbookRow row, OperationEnvelope operation, String envelopeJson) {
+    private boolean shouldCheckpoint(WorkbookRow row, OperationTail tail, String envelopeJson) {
         if (row.snapshotRevision() == row.revision()) return false;
-        long operationCount = store.listOperations(row.unitId()).stream().filter(entry -> entry.revision() > row.snapshotRevision()).count();
-        long bytes = store.listOperations(row.unitId()).stream().filter(entry -> entry.revision() > row.snapshotRevision()).mapToLong(entry -> entry.envelopeJson().getBytes(StandardCharsets.UTF_8).length).sum();
-        return operationCount + 1 >= CHECKPOINT_OPERATION_LIMIT || bytes + envelopeJson.getBytes(StandardCharsets.UTF_8).length >= CHECKPOINT_BYTES_LIMIT;
+        long operationCount = tail.operations().size() + 1L;
+        long bytes = tail.envelopeBytes() + envelopeJson.getBytes(StandardCharsets.UTF_8).length;
+        return operationCount >= CHECKPOINT_OPERATION_LIMIT || bytes >= CHECKPOINT_BYTES_LIMIT;
+    }
+
+    /** Replays exactly the interval carried by the tail and nothing else. */
+    private JsonNode replay(JsonNode snapshot, OperationTail tail) {
+        long expected = tail.fromExclusive() + 1;
+        for (OperationRow operation : tail.operations()) {
+            if (operation.revision() != expected || operation.revision() > tail.toInclusive()) {
+                throw historyGap("Operation history is not contiguous at revision " + expected, null);
+            }
+            CommittedOperationEnvelope committed = readCommitted(operation);
+            if (committed.mutations().stream().anyMatch(mutation -> "workbook.restore".equals(mutation.id()))) {
+                throw historyGap("Restore revision " + operation.revision() + " has no covering checkpoint", null);
+            }
+            List<OperationMutation> mutations = committed.mutations().stream()
+                    .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
+            snapshot = registry.applyPublicMutations(snapshot, mutations);
+            expected++;
+        }
+        if (expected != tail.toInclusive() + 1) {
+            throw historyGap("Operation history is missing a revision in " + (tail.fromExclusive() + 1) + ".." + tail.toInclusive(), null);
+        }
+        return snapshot;
+    }
+
+    private JsonNode checkpointSnapshot(CheckpointRow checkpoint, String unitId) {
+        if (checkpoint.snapshotJson() == null || checkpoint.checksum() == null) {
+            throw historyGap("Checkpoint payload is incomplete at revision " + checkpoint.revision(), null);
+        }
+        String actual = checksum(checkpoint.snapshotJson());
+        if (!actual.equalsIgnoreCase(checkpoint.checksum())) {
+            throw historyGap("Checkpoint checksum does not match revision " + checkpoint.revision(), null);
+        }
+        return WorkbookSnapshotValidator.migrateStored(readJson(checkpoint.snapshotJson()), unitId);
+    }
+
+    private void validateRevisionPage(List<OperationRow> page, long fromInclusive, long toExclusive) {
+        long expected = fromInclusive;
+        for (OperationRow operation : page.stream().sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList()) {
+            if (operation.revision() != expected || operation.revision() >= toExclusive) {
+                throw historyGap("Revision log is not contiguous at revision " + expected, null);
+            }
+            readCommitted(operation);
+            expected++;
+        }
+        if (!page.isEmpty() && expected != fromInclusive + page.size()) {
+            throw historyGap("Revision log contains a missing revision", null);
+        }
+    }
+
+    private void validatePhysicalDataBlocks(String unitId, OperationMutation mutation) {
+        String id = mutation.id();
+        if (!(id.equals("dataSource.add") || id.equals("dataSource.update") || id.startsWith("query.load."))) return;
+        JsonNode params = mutation.params();
+        if (params == null || !params.isObject()) throw ServiceException.validation("Mutation params must be an object");
+        JsonNode source = params.get("source");
+        if (source == null || source.isNull()) return;
+        if (!source.isObject()) throw ServiceException.validation("Data source manifest is required");
+        store.validateDataSourceManifestBlocks(unitId, (ObjectNode) source);
+    }
+
+    private long incrementRevision(long revision) {
+        if (revision == Long.MAX_VALUE) throw historyGap("Workbook revision overflowed the canonical range", null);
+        return revision + 1;
+    }
+
+    private ServiceException historyGap(String message, Throwable cause) {
+        String detail = message.startsWith("HISTORY_GAP") ? message : "HISTORY_GAP: " + message;
+        return cause == null ? new ServiceException("CONFLICT", 409, detail) : new ServiceException("CONFLICT", 409, detail, cause);
     }
 
     private void audit(String operationId, String unitId, String actor, String eventType, String outcome, String reason, JsonNode details) {
@@ -336,9 +412,12 @@ public class WorkbookOperationService {
 
     private JsonNode readJson(String json) {
         try {
-            return mapper.readTree(json);
+            JsonNode parsed = mapper.readTree(json);
+            if (parsed == null) throw new IllegalStateException("empty JSON");
+            return parsed;
         } catch (Exception error) {
-            throw new IllegalStateException("Stored snapshot JSON is invalid", error);
+            if (error instanceof ServiceException serviceException) throw serviceException;
+            throw historyGap("Stored snapshot JSON is invalid", error);
         }
     }
 
@@ -362,5 +441,8 @@ public class WorkbookOperationService {
     }
 
     public record RestoreResult(CommittedOperationEnvelope operation, WorkbookSnapshotResponse snapshot) {
+    }
+
+    private record SnapshotState(JsonNode snapshot, OperationTail tail) {
     }
 }

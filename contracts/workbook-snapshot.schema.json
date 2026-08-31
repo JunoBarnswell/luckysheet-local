@@ -3,10 +3,10 @@
   "$id": "https://react-sheets.local/contracts/workbook-snapshot.schema.json",
   "title": "WorkbookSnapshot",
   "type": "object",
-  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "calculationSettings", "editingOptions", "dataModel", "sheets"],
+  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "calculationSettings", "editingOptions", "definedNameModels", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 9 },
+    "version": { "const": 10 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -20,6 +20,7 @@
       "additionalProperties": false
     },
     "calculationSettings": { "type": "object" },
+    "collationContext": { "type": "object" },
     "editingOptions": {
       "type": "object",
       "required": ["allowEditDirectly", "moveAfterEnter", "enterDirection", "formulaAutoComplete", "valueAutoComplete", "fixedDecimalPlaces"],
@@ -44,6 +45,13 @@
       },
       "additionalProperties": false
     },
+    "definedNameModels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/definedNameModel" }
+    },
+    "theme": { "type": "object" },
+    "printDocuments": { "type": "array" },
+    "queryDefinitions": { "type": "array" },
     "cellStyleTemplates": { "type": "array" },
     "sheets": {
       "type": "array",
@@ -51,8 +59,31 @@
       "items": { "$ref": "#/$defs/worksheet" }
     }
   },
-  "additionalProperties": true,
+  "additionalProperties": false,
   "$defs": {
+    "definedNameModel": {
+      "type": "object",
+      "required": ["name", "formula", "scope"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "formula": { "type": "string", "minLength": 1 },
+        "scope": { "enum": ["workbook", "sheet"] },
+        "sheetId": { "type": "string", "minLength": 1 },
+        "anchor": {
+          "type": "object",
+          "required": ["sheetId", "row", "column"],
+          "properties": {
+            "sheetId": { "type": "string", "minLength": 1 },
+            "row": { "type": "integer", "minimum": 0 },
+            "column": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "hidden": { "type": "boolean" },
+        "comment": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "pane": {
       "oneOf": [
         { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "none" } }, "additionalProperties": false },
@@ -97,14 +128,30 @@
         "name": { "type": "string", "minLength": 1 },
         "rowCount": { "type": "integer", "minimum": 1, "maximum": 1048576 },
         "columnCount": { "type": "integer", "minimum": 1, "maximum": 16384 },
-        "cells": { "type": "object" },
+        "cells": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "not": { "anyOf": [{ "required": ["hyperlink"] }, { "required": ["hyperlinkDetail"] }, { "required": ["note"] }, { "required": ["comment"] }] }
+            }
+          }
+        },
         "merges": { "type": "array" },
         "pane": { "$ref": "#/$defs/pane" },
         "autoFilter": { "$ref": "#/$defs/autoFilter" },
+        "dataRegions": { "type": "array" },
         "pivots": { "type": "array" },
         "sparklines": { "type": "array" },
+        "sparklineGroups": { "type": "array" },
+        "conditionalFormats": { "type": "array" },
+        "dataValidations": { "type": "array" },
         "drawings": { "type": "array" },
         "drawingPayloads": { "type": "object" },
+        "drawingGroups": { "type": "array" },
+        "snapSettings": { "type": "object" },
+        "hyperlinks": { "type": "array" },
         "review": {
           "type": "object",
           "required": ["notesByCell", "notesById", "threadIdsByCell", "threadsById"],
@@ -119,9 +166,24 @@
         "defaultRowHeightPx": { "type": "number", "exclusiveMinimum": 0 },
         "defaultColumnWidthPx": { "type": "number", "exclusiveMinimum": 0 },
         "rowHeightsPx": { "$ref": "#/$defs/positiveSizeMap" },
-        "columnWidthsPx": { "$ref": "#/$defs/positiveSizeMap" }
+        "columnWidthsPx": { "$ref": "#/$defs/positiveSizeMap" },
+        "hiddenRows": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "hiddenColumns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "tabColor": { "type": "string" },
+        "bandedRule": { "type": "object" },
+        "sheetTables": { "type": "array" },
+        "spillRanges": { "type": "array" },
+        "protectionRules": { "type": "array" },
+        "showGridlines": { "type": "boolean" },
+        "showHeaders": { "type": "boolean" },
+        "zoom": { "type": "number", "exclusiveMinimum": 0 },
+        "hidden": { "type": "boolean" },
+        "outline": { "type": "object" },
+        "tableSheet": { "type": "object" },
+        "ganttSheet": { "type": "object" },
+        "reportSheet": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   }
 }

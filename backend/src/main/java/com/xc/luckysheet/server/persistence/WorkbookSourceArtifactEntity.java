@@ -67,11 +67,19 @@ public class WorkbookSourceArtifactEntity {
     public String getNativeMetadataJson() { return nativeMetadataJson; }
     public String getFormat() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"format\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(nativeMetadataJson);
-        return matcher.find() ? matcher.group(1) : "unknown";
+        if (!matcher.find() || matcher.group(1).isBlank()) throw new IllegalStateException("Native artifact format metadata is missing");
+        return matcher.group(1);
     }
     public int getCodecRevision() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"codecRevision\\\"\\s*:\\s*(\\d+)").matcher(nativeMetadataJson);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 1;
+        if (!matcher.find()) throw new IllegalStateException("Native artifact codecRevision metadata is missing");
+        try {
+            int revision = Integer.parseInt(matcher.group(1));
+            if (revision < 1) throw new IllegalStateException("Native artifact codecRevision metadata is invalid");
+            return revision;
+        } catch (NumberFormatException error) {
+            throw new IllegalStateException("Native artifact codecRevision metadata is invalid", error);
+        }
     }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

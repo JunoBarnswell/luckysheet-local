@@ -83,7 +83,6 @@ class WorkbookOperationServiceTest {
                 WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         when(store.findOperation("op-2")).thenReturn(Optional.empty());
         when(store.findOperationBySequence("book-1", "editor-1", 1)).thenReturn(Optional.empty());
-        when(store.listOperations("book-1")).thenReturn(List.of());
         OperationEnvelope operation = new OperationEnvelope(
                 OperationEnvelope.SCHEMA,
                 "op-2",

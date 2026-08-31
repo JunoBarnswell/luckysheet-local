@@ -51,6 +51,18 @@ export interface FindSearchResult {
   readonly total: number;
 }
 
+interface FindIndexEntry {
+  readonly sheetId: string;
+  readonly row: number;
+  readonly column: number;
+  readonly valueText: string;
+  readonly formula?: string;
+  readonly note?: { readonly id: string; readonly text: string };
+  readonly comments: readonly { readonly id: string; readonly text: string }[];
+}
+
+const findIndexRegistry = new WeakMap<WorkbookModel, FindIndex>();
+
 export type ReplacementValue =
   | { kind: 'empty'; value: null; numberFormatIntent?: NumberFormatIntent }
   | { kind: 'text'; value: string; numberFormatIntent?: NumberFormatIntent }
@@ -183,6 +195,7 @@ export function replaceFindText(text: string, params: Pick<FindSearchParams, 'qu
 
 function scalarText(value: unknown): string {
   if (isFormulaError(value)) return value.code;
+  if (Array.isArray(value)) return value.flat(Infinity).map((entry) => scalarText(entry)).join('\t');
   if (value === null || value === undefined) return '';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
   throw new Error(`Find resolved value has unsupported type: ${typeof value}`);
@@ -237,6 +250,114 @@ function buildFindMetadataIndex(sheet: WorksheetModel): Map<string, FindMetadata
   return index;
 }
 
+/**
+ * Revisioned sparse content index for Find/Replace. It indexes only authored
+ * cells and review metadata, so next/previous never walks the worksheet's
+ * full logical extent. A caller updates one sheet after a canonical mutation.
+ */
+export class FindIndex {
+  private readonly entries = new Map<string, FindIndexEntry[]>();
+  private revision = 0;
+
+  constructor(private readonly workbook: WorkbookModel, private readonly resolveCellValue?: FindResolveCellValue) {
+    findIndexRegistry.set(workbook, this);
+    this.rebuild();
+  }
+
+  getRevision(): number { return this.revision; }
+
+  owns(workbook: WorkbookModel): boolean { return this.workbook === workbook; }
+
+  rebuild(): void {
+    this.entries.clear();
+    for (const sheet of this.workbook.getSheets()) this.rebuildSheet(sheet.id);
+    this.revision += 1;
+  }
+
+  rebuildSheet(sheetId: string): void {
+    const sheet = this.workbook.getSheet(sheetId);
+    const metadata = buildFindMetadataIndex(sheet);
+    const keys = new Set<string>();
+    const entries: FindIndexEntry[] = [];
+    sheet.cells.forEach((cell, row, column) => {
+      const key = `${row}:${column}`;
+      keys.add(key);
+      entries.push({
+        sheetId: sheet.id,
+        row,
+        column,
+        valueText: cellValueText(sheet, row, column, this.resolveCellValue),
+        ...(cell.formula !== undefined ? { formula: cell.formula } : {}),
+        ...(metadata.get(key)?.note ? { note: { id: metadata.get(key)!.note!.id, text: metadata.get(key)!.note!.text } } : {}),
+        comments: (metadata.get(key)?.comments ?? []).map((comment) => ({ ...comment })),
+      });
+    });
+    for (const [key, bucket] of metadata) {
+      if (keys.has(key)) continue;
+      const [rowText, columnText] = key.split(':');
+      const row = Number(rowText);
+      const column = Number(columnText);
+      if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column)) continue;
+      entries.push({
+        sheetId: sheet.id,
+        row,
+        column,
+        valueText: '',
+        ...(bucket.note ? { note: { id: bucket.note.id, text: bucket.note.text } } : {}),
+        comments: bucket.comments.map((comment) => ({ ...comment })),
+      });
+    }
+    entries.sort((left, right) => left.row - right.row || left.column - right.column);
+    this.entries.set(sheet.id, entries);
+    this.revision += 1;
+  }
+
+  removeSheet(sheetId: string): void {
+    if (this.entries.delete(sheetId)) this.revision += 1;
+  }
+
+  search(params: FindSearchParams): FindSearchResult {
+    if (!params.sheetId || !params.query) throw new Error('Find requires a sheet and non-empty query');
+    if (params.searchOrder !== 'rows' && params.searchOrder !== 'columns') throw new Error('Find requires a valid search order');
+    if (params.scope === 'selection' && params.range === undefined && params.dataRegionContext === undefined) throw new Error('Selection Find requires an explicit range');
+    if (params.dataRegionContext && params.dataRegionContext.sheetId !== params.sheetId) throw new Error('Find DataRegionContext targets another sheet');
+    const targets = normalizeTargets(params.targets);
+    const targetSet = new Set(targets);
+    const selectedSheet = this.workbook.getSheet(params.sheetId);
+    const sheets = params.scope === 'workbook' ? this.workbook.getSheets() : [selectedSheet];
+    const expression = matcher(params);
+    const matches: FindMatch[] = [];
+    const matchText = (text: string): boolean => { expression.lastIndex = 0; return expression.test(text); };
+    for (const sheet of sheets) {
+      // An indexed whole-sheet/workbook search is defined by the sparse
+      // authored/review entries, not by iterating the worksheet's logical
+      // extent.  In particular, a persisted entry may extend the current
+      // viewport/extent until the next structural normalization.  Explicit
+      // selection/data-region/range searches still validate and constrain the
+      // requested bounds through the canonical range contract.
+      const constrainedRange = params.scope === 'selection' || (params.range && sheet.id === params.sheetId)
+        ? normalizeRange(params.range ?? params.dataRegionContext?.range ?? fullRange(sheet), sheet)
+        : undefined;
+      for (const entry of this.entries.get(sheet.id) ?? []) {
+        if (constrainedRange && !inRange(entry.row, entry.column, constrainedRange)) continue;
+        if (targetSet.has('values') && (entry.formula === undefined || !targetSet.has('formulas')) && matchText(entry.valueText)) addMatch(matches, sheet, entry.row, entry.column, 'values', entry.valueText);
+        if (targetSet.has('formulas') && entry.formula !== undefined && matchText(entry.formula)) addMatch(matches, sheet, entry.row, entry.column, 'formulas', entry.formula);
+        if (targetSet.has('notes') && entry.note && matchText(entry.note.text)) addMatch(matches, sheet, entry.row, entry.column, 'notes', entry.note.text, entry.note.id);
+        if (targetSet.has('comments')) for (const comment of entry.comments) if (matchText(comment.text)) addMatch(matches, sheet, entry.row, entry.column, 'comments', comment.text, comment.id);
+      }
+    }
+    const targetRank = new Map(TARGET_ORDER.map((target, index) => [target, index]));
+    const compareCoordinates = params.searchOrder === 'rows'
+      ? (a: FindMatch, b: FindMatch) => a.row - b.row || a.column - b.column
+      : (a: FindMatch, b: FindMatch) => a.column - b.column || a.row - b.row;
+    matches.sort((a, b) => {
+      const sheetOrder = sheets.indexOf(this.workbook.getSheet(a.sheetId)) - sheets.indexOf(this.workbook.getSheet(b.sheetId));
+      return sheetOrder || compareCoordinates(a, b) || (targetRank.get(a.target)! - targetRank.get(b.target)!) || a.key.localeCompare(b.key);
+    });
+    return { matches, total: matches.length };
+  }
+}
+
 function scanSheet(
   sheet: WorksheetModel,
   range: RangeRef,
@@ -244,6 +365,7 @@ function scanSheet(
   params: FindSearchParams,
   matches: FindMatch[],
   resolveCellValue?: FindResolveCellValue,
+  matchesText: (text: string) => boolean = (text) => matchesFindText(text, params),
 ): void {
   const targetSet = new Set(targets);
   const metadataIndex = buildFindMetadataIndex(sheet);
@@ -259,18 +381,18 @@ function scanSheet(
     // A values-only search still searches the resolved formula result.
     if (targetSet.has('values') && (cell.formula === undefined || !targetSet.has('formulas'))) {
       const text = cellValueText(sheet, row, column, resolveCellValue);
-      if (matchesFindText(text, params)) addMatch(matches, sheet, row, column, 'values', text);
+      if (matchesText(text)) addMatch(matches, sheet, row, column, 'values', text);
     }
-    if (targetSet.has('formulas') && cell.formula !== undefined && matchesFindText(cell.formula, params)) {
+    if (targetSet.has('formulas') && cell.formula !== undefined && matchesText(cell.formula)) {
       addMatch(matches, sheet, row, column, 'formulas', cell.formula);
     }
     if (targetSet.has('notes')) {
       const note = metadataIndex.get(`${row}:${column}`)?.note;
-      if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
+      if (note && matchesText(note.text)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
     }
     if (targetSet.has('comments')) {
       const comments = metadataIndex.get(`${row}:${column}`)?.comments ?? [];
-      for (const comment of comments) if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
+      for (const comment of comments) if (matchesText(comment.text)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
     }
   }
   // Notes/comments may be attached to an otherwise empty cell and therefore
@@ -288,18 +410,20 @@ function scanSheet(
     const metadata = metadataIndex.get(`${row}:${column}`);
     if (targetSet.has('notes')) {
       const note = metadata?.note;
-      if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
+      if (note && matchesText(note.text)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
     }
     if (targetSet.has('comments')) {
       for (const comment of metadata?.comments ?? []) {
-        if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
+        if (matchesText(comment.text)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
       }
     }
   }
 }
 
 /** Build a stable, workbook-order result set. Hidden rows remain searchable. */
-export function planFind(workbook: WorkbookModel, params: FindSearchParams, resolveCellValue?: FindResolveCellValue): FindSearchResult {
+export function planFind(workbook: WorkbookModel, params: FindSearchParams, resolveCellValue?: FindResolveCellValue, index?: FindIndex): FindSearchResult {
+  const indexed = index?.owns(workbook) ? index : findIndexRegistry.get(workbook);
+  if (indexed) return indexed.search(params);
   if (!params.sheetId || !params.query) throw new Error('Find requires a sheet and non-empty query');
   if (params.searchOrder !== 'rows' && params.searchOrder !== 'columns') throw new Error('Find requires a valid search order');
   if (params.scope === 'selection' && params.range === undefined && params.dataRegionContext === undefined) throw new Error('Selection Find requires an explicit range');
@@ -308,11 +432,13 @@ export function planFind(workbook: WorkbookModel, params: FindSearchParams, reso
   const selectedSheet = workbook.getSheet(params.sheetId);
   const sheets = params.scope === 'workbook' ? workbook.getSheets() : [selectedSheet];
   const matches: FindMatch[] = [];
+  const expression = matcher(params);
+  const matchesText = (text: string): boolean => { expression.lastIndex = 0; return expression.test(text); };
   for (const sheet of sheets) {
     const range = params.scope === 'selection' || (params.range && sheet.id === params.sheetId)
       ? normalizeRange(params.range ?? params.dataRegionContext?.range ?? fullRange(sheet), sheet)
       : fullRange(sheet);
-    scanSheet(sheet, range, targets, params, matches, resolveCellValue);
+    scanSheet(sheet, range, targets, params, matches, resolveCellValue, matchesText);
   }
   // The scan is target-major within each cell; normalize to one observable
   // order independent of map insertion and metadata storage order.
@@ -325,6 +451,10 @@ export function planFind(workbook: WorkbookModel, params: FindSearchParams, reso
     return sheetOrder || compareCoordinates(a, b) || (targetRank.get(a.target)! - targetRank.get(b.target)!) || a.key.localeCompare(b.key);
   });
   return { matches, total: matches.length };
+}
+
+export function planFindWithIndex(index: FindIndex, params: FindSearchParams): FindSearchResult {
+  return index.search(params);
 }
 
 export function findAtCursor(matches: readonly FindMatch[], cursor: FindCursor | null, direction: FindDirection): FindMatch | undefined {

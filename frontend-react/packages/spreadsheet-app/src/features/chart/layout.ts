@@ -130,6 +130,33 @@ export interface ChartLayout {
   map?: ChartMapOptions & { resolved: false; reason: string };
 }
 
+/** Revision-bound layout cache used by Canvas and print projections. */
+export class ChartLayoutCache {
+  private readonly entries = new Map<string, { key: string; layout: ChartLayout }>();
+
+  resolve(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number): ChartLayout {
+    const key = `${data.sourceRevision ?? 'unversioned'}:${width}:${height}:${stableLayoutValue(payload)}`;
+    const current = this.entries.get(payload.chartId);
+    if (current?.key === key) return structuredClone(current.layout);
+    const layout = buildChartLayout(payload, data, width, height);
+    if (layout.status.kind === 'ready') this.entries.set(payload.chartId, { key, layout: structuredClone(layout) });
+    else this.entries.delete(payload.chartId);
+    return layout;
+  }
+
+  invalidate(chartId?: string): void {
+    if (chartId === undefined) this.entries.clear();
+    else this.entries.delete(chartId);
+  }
+}
+
+function stableLayoutValue(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map(stableLayoutValue).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableLayoutValue(record[key])}`).join(',')}}`;
+}
+
 const DEFAULT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
 function numberValues(values: readonly PivotScalar[]): number[] {

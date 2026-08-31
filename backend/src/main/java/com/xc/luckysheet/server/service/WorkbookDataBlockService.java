@@ -39,10 +39,11 @@ public class WorkbookDataBlockService {
         lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
-        if (contentLength == 0 || contentLength > MAX_BLOCK_BYTES) {
+        if (contentLength < 1 || contentLength > MAX_BLOCK_BYTES) {
             throw ServiceException.validation("Data block size must be between 1 and " + MAX_BLOCK_BYTES + " bytes");
         }
         byte[] content = readBounded(contentSource);
+        if (contentLength != content.length) throw ServiceException.validation("Data block content length mismatch");
         String actualChecksum = sha256(content);
         if (!actualChecksum.equals(checksum)) throw ServiceException.validation("Data block checksum mismatch");
         Instant now = Instant.now();

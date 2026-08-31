@@ -11,6 +11,7 @@ import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.List;
 import java.util.Set;
+import java.util.HashSet;
 
 /** Reducers for the canonical DrawingObject and DrawingPayload collections. */
 final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
@@ -207,9 +208,13 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private void validatePayloadPair(ObjectNode root, ObjectNode drawing, ObjectNode payload) {
         String drawingKind = SnapshotMutationSupport.text(drawing, "kind");
         String payloadKind = SnapshotMutationSupport.text(payload, "kind");
-        if (!Set.of("image", "shape", "textbox", "chart", "camera", "form-control", "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
+        if (!Set.of("image", "shape", "connector", "chart", "camera", "screenshot", "textbox", "form-control",
+                "icon", "model3d", "smartart", "wordart", "signature-line", "embedded-object", "equation",
+                "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
             throw ServiceException.validation("Drawing and payload kinds must match");
         }
+        if (payloadKind.equals("shape")) validateShape(payload);
+        if (payloadKind.equals("connector")) validateConnector(root, drawing, payload);
         if (payloadKind.equals("chart") && !SnapshotMutationSupport.text(drawing, "payloadId").equals(SnapshotMutationSupport.text(payload, "chartId"))) {
             throw ServiceException.validation("Chart payload identity does not match drawing payloadId");
         }
@@ -222,6 +227,70 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
                     || rows * columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS) {
                 throw ServiceException.validation("Camera source range exceeds the rendering limit");
             }
+        }
+    }
+
+    private void validateShape(ObjectNode payload) {
+        String type = SnapshotMutationSupport.text(payload, "type");
+        if (!Set.of("rectangle", "rounded-rectangle", "ellipse", "triangle", "right-triangle", "diamond",
+                "parallelogram", "trapezoid", "hexagon", "octagon", "plus", "home-plate", "cube", "cylinder",
+                "sun", "moon", "heart", "lightning", "cloud", "frame", "line", "arrow", "left-right-arrow",
+                "up-down-arrow", "quad-arrow", "bent-arrow", "u-turn-arrow", "left-brace", "right-brace",
+                "left-right-brace", "left-bracket", "right-bracket", "left-right-bracket", "callout",
+                "cloud-callout", "wedge-rect-callout", "wedge-round-rect-callout", "star", "star4", "star5",
+                "star6", "star8", "star16", "explosion1", "explosion2").contains(type)) {
+            throw ServiceException.validation("Shape type is invalid: " + type);
+        }
+        validateOptionalFinitePositive(payload, "strokeWidth", 100);
+        validateOptionalFinitePositive(payload, "fontSize", Double.MAX_VALUE);
+        if (payload.has("text") && !payload.get("text").isTextual()) throw ServiceException.validation("Shape text is invalid");
+    }
+
+    private void validateConnector(ObjectNode root, ObjectNode drawing, ObjectNode payload) {
+        SnapshotMutationSupport.validateKnownKeys(payload, Set.of("kind", "connectorType", "start", "end", "stroke",
+                "strokeWidth", "startArrowhead", "endArrowhead", "route"), "Connector drawing payload");
+        if (!Set.of("straight", "elbow", "curved").contains(SnapshotMutationSupport.text(payload, "connectorType"))) {
+            throw ServiceException.validation("Connector type is invalid");
+        }
+        String drawingId = SnapshotMutationSupport.text(drawing, "id");
+        for (String endpointName : List.of("start", "end")) {
+            ObjectNode endpoint = SnapshotMutationSupport.requiredObject(payload, endpointName);
+            SnapshotMutationSupport.validateKnownKeys(endpoint, Set.of("drawingId", "connectionPoint"), "Connector endpoint");
+            String endpointDrawingId = SnapshotMutationSupport.text(endpoint, "drawingId");
+            if (drawingId.equals(endpointDrawingId)) throw ServiceException.validation("Connector cannot connect to itself");
+            if (!Set.of("top", "right", "bottom", "left", "center").contains(SnapshotMutationSupport.text(endpoint, "connectionPoint"))) {
+                throw ServiceException.validation("Connector connection point is invalid");
+            }
+            ObjectNode target = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(
+                    SnapshotMutationSupport.sheet(root, drawing.path("sheetId").asText()), "drawings"), endpointDrawingId);
+            if (target == null) throw ServiceException.notFound("Connector endpoint drawing not found: " + endpointDrawingId);
+            if ("connector".equals(target.path("kind").asText())) throw ServiceException.validation("Connector endpoint cannot target another connector");
+        }
+        SnapshotMutationSupport.text(payload, "stroke");
+        validateOptionalFinitePositive(payload, "strokeWidth", 100);
+        if (!Set.of("none", "triangle", "stealth", "diamond", "oval").contains(SnapshotMutationSupport.text(payload, "startArrowhead"))
+                || !Set.of("none", "triangle", "stealth", "diamond", "oval").contains(SnapshotMutationSupport.text(payload, "endArrowhead"))) {
+            throw ServiceException.validation("Connector arrowhead is invalid");
+        }
+        ObjectNode route = SnapshotMutationSupport.requiredObject(payload, "route");
+        SnapshotMutationSupport.validateKnownKeys(route, Set.of("points"), "Connector route");
+        if (!route.path("points").isArray() || route.path("points").size() < 2) throw ServiceException.validation("Connector route is invalid");
+        Set<String> points = new HashSet<>();
+        for (JsonNode raw : route.path("points")) {
+            if (!raw.isObject() || !raw.path("x").isNumber() || !raw.path("y").isNumber()
+                    || !Double.isFinite(raw.path("x").asDouble()) || !Double.isFinite(raw.path("y").asDouble())) {
+                throw ServiceException.validation("Connector route point is invalid");
+            }
+            points.add(raw.path("x").asText() + ":" + raw.path("y").asText());
+        }
+        if (points.size() < 2) throw ServiceException.validation("Connector route is degenerate");
+    }
+
+    private void validateOptionalFinitePositive(ObjectNode object, String property, double maximum) {
+        JsonNode value = object.get(property);
+        if (value == null || value.isNull()) return;
+        if (!value.isNumber() || !Double.isFinite(value.asDouble()) || value.asDouble() <= 0 || value.asDouble() > maximum) {
+            throw ServiceException.validation(property + " is invalid");
         }
     }
 

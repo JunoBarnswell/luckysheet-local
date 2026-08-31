@@ -330,7 +330,11 @@ function pivotTable(input: Table, config: Record<string, unknown>, stepId: strin
   const columns = [...rowFields];
   for (const columnKey of columnKeys) {
     const values = JSON.parse(columnKey!) as Scalar[];
-    for (const valueField of valueFields) columns.push(`${values.join(' / ')} · ${valueField}`);
+    for (const valueField of valueFields) {
+      const label = `${values.map((value) => value === null ? '' : typeof value === 'number' && Object.is(value, -0) ? '0' : String(value)).join(' / ')} · ${valueField}`;
+      if (columns.includes(label)) throw new Error(`Query step "${stepId}" produces duplicate pivot column "${label}"`);
+      columns.push(label);
+    }
   }
   const rows = [...groups.values()].map((group) => {
     const first = group[0]!;

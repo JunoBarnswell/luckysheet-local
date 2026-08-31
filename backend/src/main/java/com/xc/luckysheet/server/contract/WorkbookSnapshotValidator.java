@@ -11,6 +11,17 @@ import com.xc.luckysheet.server.service.ServiceException;
  * before they become a historical checkpoint.
  */
 public final class WorkbookSnapshotValidator {
+    private static final java.util.Set<String> WORKBOOK_KEYS = java.util.Set.of(
+            "schema", "version", "unitId", "name", "dimensionMetrics", "collationContext", "calculationSettings", "editingOptions", "theme",
+            "definedNameModels", "dataModel", "printDocuments", "queryDefinitions", "cellStyleTemplates", "sheets"
+    );
+    private static final java.util.Set<String> WORKSHEET_KEYS = java.util.Set.of(
+            "kind", "id", "name", "rowCount", "columnCount", "cells", "dataRegions", "merges", "pane", "pivots", "sparklines",
+            "conditionalFormats", "dataValidations", "defaultRowHeightPx", "defaultColumnWidthPx", "rowHeightsPx", "columnWidthsPx",
+            "hiddenRows", "hiddenColumns", "tabColor", "bandedRule", "autoFilter", "sheetTables", "sparklineGroups", "drawings",
+            "drawingPayloads", "drawingGroups", "snapSettings", "hyperlinks", "review", "spillRanges", "protectionRules", "showGridlines",
+            "showHeaders", "zoom", "hidden", "outline", "tableSheet", "ganttSheet", "reportSheet"
+    );
     private WorkbookSnapshotValidator() {
     }
 
@@ -24,6 +35,15 @@ public final class WorkbookSnapshotValidator {
                 || snapshot.path("version").intValue() != GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             throw ServiceException.validation("Workbook snapshot version is invalid");
         }
+        if (snapshot.has("definedNames")) {
+            throw ServiceException.validation("Workbook snapshot contains the removed definedNames field");
+        }
+        requireExactKeys(snapshot, WORKBOOK_KEYS, "Workbook snapshot");
+        validateDefinedNameModels(snapshot.get("definedNameModels"));
+        validateCalculationSettings(snapshot.get("calculationSettings"));
+        validateEditingOptions(snapshot.get("editingOptions"));
+        validateCollationContext(snapshot.get("collationContext"));
+        validateTheme(snapshot.get("theme"));
         String unitId = snapshot.path("unitId").asText().trim();
         if (unitId.isBlank() || !unitId.equals(expectedUnitId)) {
             throw ServiceException.validation("Workbook snapshot unitId does not match the request");
@@ -38,6 +58,7 @@ public final class WorkbookSnapshotValidator {
                 || !dimensionMetrics.path("maximumDigitWidthPx").isNumber() || dimensionMetrics.path("maximumDigitWidthPx").asDouble() <= 0) {
             throw ServiceException.validation("Workbook snapshot dimensionMetrics is invalid");
         }
+        requireExactKeys((ObjectNode) dimensionMetrics, java.util.Set.of("normalFontFamily", "normalFontSizePx", "maximumDigitWidthPx"), "Workbook snapshot dimensionMetrics");
         JsonNode sheets = snapshot.get("sheets");
         if (sheets == null || !sheets.isArray() || sheets.isEmpty()) {
             throw ServiceException.validation("Workbook snapshot requires at least one sheet");
@@ -47,6 +68,7 @@ public final class WorkbookSnapshotValidator {
                 || !dataModel.path("tables").isArray() || !dataModel.path("relationships").isArray() || !dataModel.path("views").isArray()) {
             throw ServiceException.validation("Workbook snapshot dataModel is invalid");
         }
+        requireExactKeys((ObjectNode) dataModel, java.util.Set.of("sources", "tables", "relationships", "views"), "Workbook snapshot dataModel");
         java.util.Set<String> sheetIds = new java.util.HashSet<>();
         java.util.Map<String, int[]> sheetDimensions = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
@@ -60,6 +82,7 @@ public final class WorkbookSnapshotValidator {
         java.util.Map<String, String> pivotSourceKeys = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
+            requireExactKeys((ObjectNode) sheet, WORKSHEET_KEYS, "Workbook snapshot sheet");
             String sheetId = sheet.path("id").asText().trim();
             String sheetName = sheet.path("name").asText().trim();
             if (sheetId.isBlank() || sheetName.isBlank() || !sheetIds.add(sheetId)) {
@@ -94,15 +117,25 @@ public final class WorkbookSnapshotValidator {
             }
             sheet.path("drawingPayloads").fields().forEachRemaining(entry -> {
                 JsonNode payload = entry.getValue();
+                if (payload == null || !payload.isObject() || !DRAWING_KINDS.contains(payload.path("kind").asText())) {
+                    throw ServiceException.validation("Workbook snapshot drawing payload kind is invalid: " + entry.getKey());
+                }
                 if ("camera".equals(payload.path("kind").asText())) {
                     validateDrawingSourceRange(payload.get("sourceRange"), sheetDimensions, "Camera");
                 }
                 if ("image".equals(payload.path("kind").asText())) validateAssetRef(payload.get("asset"), "Drawing image");
             });
             sheet.path("cells").fields().forEachRemaining(row -> row.getValue().fields().forEachRemaining(cell -> {
+                if (cell.getValue().has("hyperlink") || cell.getValue().has("hyperlinkDetail")) {
+                    throw ServiceException.validation("Workbook snapshot cell contains legacy hyperlink metadata");
+                }
+                if (cell.getValue().has("note") || cell.getValue().has("comment")) {
+                    throw ServiceException.validation("Workbook snapshot cell contains legacy review metadata");
+                }
                 JsonNode presentation = cell.getValue().get("presentation");
                 if (presentation != null && "image".equals(presentation.path("kind").asText())) validateAssetRef(presentation.get("asset"), "Cell image");
             }));
+            validateCanonicalHyperlinks((ObjectNode) sheet, sheetId);
             JsonNode pane = sheet.path("pane");
             if (!"none".equals(pane.path("kind").asText())) {
                 String state = pane.path("state").asText();
@@ -129,13 +162,30 @@ public final class WorkbookSnapshotValidator {
         for (JsonNode sheet : sheets) {
             ObjectNode sheetObject = (ObjectNode) sheet;
             ObjectNode payloads = (ObjectNode) sheetObject.path("drawingPayloads");
+            java.util.Set<String> drawingIds = new java.util.HashSet<>();
+            java.util.Set<String> referencedPayloads = new java.util.HashSet<>();
+            for (JsonNode candidate : sheetObject.path("drawings")) {
+                if (!candidate.isObject() || !drawingIds.add(candidate.path("id").asText())) {
+                    throw ServiceException.validation("Workbook snapshot drawing identity is invalid");
+                }
+            }
             for (JsonNode drawing : sheetObject.path("drawings")) {
                 if (!drawing.isObject()) throw ServiceException.validation("Workbook snapshot drawing is invalid");
                 String drawingId = drawing.path("id").asText();
                 String payloadId = drawing.path("payloadId").asText();
+                if (drawingId.isBlank() || !sheetObject.path("id").asText().equals(drawing.path("sheetId").asText())
+                        || payloadId.isBlank() || !drawing.path("anchor").isObject()
+                        || !drawing.path("transform").isObject() || !drawing.path("zIndex").isNumber()
+                        || !Double.isFinite(drawing.path("zIndex").asDouble())) {
+                    throw ServiceException.validation("Workbook snapshot drawing identity or geometry is invalid: " + drawingId);
+                }
+                validateDrawingGeometry(drawing);
+                referencedPayloads.add(payloadId);
                 JsonNode payload = payloads.get(payloadId);
                 if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
                 String kind = payload.path("kind").asText();
+                if (!kind.equals(drawing.path("kind").asText())) throw ServiceException.validation("Drawing and payload kinds do not match: " + drawingId);
+                if ("connector".equals(kind)) validateConnectorPayload(sheetObject, drawing, payload, drawingIds);
                 if (!("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))) continue;
                 JsonNode pivotSource = "chart".equals(kind) ? payload.get("source") : payload;
                 if (pivotSource == null || !pivotSource.isObject()) {
@@ -175,8 +225,94 @@ public final class WorkbookSnapshotValidator {
                     }
                 }
             }
+            if (!referencedPayloads.equals(payloadKeys(payloads))) {
+                throw ServiceException.validation("Workbook snapshot contains an orphan drawing payload");
+            }
         }
         return snapshot;
+    }
+
+    private static final java.util.Set<String> DRAWING_KINDS = java.util.Set.of(
+            "image", "shape", "connector", "chart", "camera", "screenshot", "textbox", "form-control",
+            "icon", "model3d", "smartart", "wordart", "signature-line", "embedded-object", "equation",
+            "slicer", "timeline");
+
+    private static java.util.Set<String> payloadKeys(ObjectNode payloads) {
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        payloads.fieldNames().forEachRemaining(keys::add);
+        return keys;
+    }
+
+    private static void validateDrawingGeometry(JsonNode drawing) {
+        JsonNode anchor = drawing.get("anchor");
+        String anchorKind = anchor.path("kind").asText();
+        if (!java.util.Set.of("absolute", "one-cell", "two-cell").contains(anchorKind)) {
+            throw ServiceException.validation("Workbook snapshot drawing anchor is invalid: " + drawing.path("id").asText());
+        }
+        if (!"absolute".equals(anchorKind)) {
+            requireNonNegativeInt(anchor, "row", "Drawing anchor row");
+            requireNonNegativeInt(anchor, "column", "Drawing anchor column");
+            if ("two-cell".equals(anchorKind)) {
+                requireNonNegativeInt(anchor, "endRow", "Drawing anchor endRow");
+                requireNonNegativeInt(anchor, "endColumn", "Drawing anchor endColumn");
+                if (anchor.path("endRow").asInt() < anchor.path("row").asInt()
+                        || anchor.path("endColumn").asInt() < anchor.path("column").asInt()) {
+                    throw ServiceException.validation("Workbook snapshot drawing anchor bounds are invalid");
+                }
+            }
+        }
+        JsonNode transform = drawing.get("transform");
+        for (String property : java.util.List.of("x", "y", "width", "height")) {
+            if (!transform.path(property).isNumber() || !Double.isFinite(transform.path(property).asDouble())) {
+                throw ServiceException.validation("Workbook snapshot drawing transform is invalid: " + drawing.path("id").asText());
+            }
+        }
+        if (transform.path("width").asDouble() < 0 || transform.path("height").asDouble() < 0
+                || (transform.has("rotation") && (!transform.path("rotation").isNumber() || !Double.isFinite(transform.path("rotation").asDouble())))) {
+            throw ServiceException.validation("Workbook snapshot drawing transform bounds are invalid: " + drawing.path("id").asText());
+        }
+    }
+
+    private static void requireNonNegativeInt(JsonNode object, String property, String label) {
+        JsonNode value = object.get(property);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 0) {
+            throw ServiceException.validation(label + " is invalid");
+        }
+    }
+
+    private static void validateConnectorPayload(ObjectNode sheet, JsonNode drawing, JsonNode payload, java.util.Set<String> drawingIds) {
+        if (!java.util.Set.of("straight", "elbow", "curved").contains(payload.path("connectorType").asText())
+                || !payload.path("stroke").isTextual() || payload.path("stroke").asText().isBlank()
+                || !java.util.Set.of("none", "triangle", "stealth", "diamond", "oval").contains(payload.path("startArrowhead").asText())
+                || !java.util.Set.of("none", "triangle", "stealth", "diamond", "oval").contains(payload.path("endArrowhead").asText())) {
+            throw ServiceException.validation("Workbook snapshot connector payload is invalid: " + drawing.path("id").asText());
+        }
+        String self = drawing.path("id").asText();
+        for (String endpoint : java.util.List.of("start", "end")) {
+            JsonNode value = payload.get(endpoint);
+            String target = value == null ? "" : value.path("drawingId").asText();
+            if (value == null || !value.isObject() || !drawingIds.contains(target) || self.equals(target)
+                    || !java.util.Set.of("top", "right", "bottom", "left", "center").contains(value.path("connectionPoint").asText())) {
+                throw ServiceException.validation("Workbook snapshot connector endpoint is invalid: " + self);
+            }
+        }
+        JsonNode route = payload.get("route");
+        if (route == null || !route.isObject() || !route.path("points").isArray() || route.path("points").size() < 2) {
+            throw ServiceException.validation("Workbook snapshot connector route is invalid: " + self);
+        }
+        for (JsonNode point : route.path("points")) {
+            if (!point.isObject() || !point.path("x").isNumber() || !point.path("y").isNumber()
+                    || !Double.isFinite(point.path("x").asDouble()) || !Double.isFinite(point.path("y").asDouble())) {
+                throw ServiceException.validation("Workbook snapshot connector route point is invalid: " + self);
+            }
+        }
+        for (JsonNode candidate : sheet.path("drawings")) {
+            String id = candidate.path("id").asText();
+            if ((id.equals(payload.path("start").path("drawingId").asText()) || id.equals(payload.path("end").path("drawingId").asText()))
+                    && "connector".equals(candidate.path("kind").asText())) {
+                throw ServiceException.validation("Workbook snapshot connector cannot target another connector: " + self);
+            }
+        }
     }
 
     private static JsonNode findPivotField(JsonNode pivot, String fieldId) {
@@ -250,7 +386,243 @@ public final class WorkbookSnapshotValidator {
         }
     }
 
+    private static void requireExactKeys(ObjectNode value, java.util.Set<String> allowed, String label) {
+        value.fieldNames().forEachRemaining(key -> {
+            if (!allowed.contains(key)) throw ServiceException.validation(label + " contains unsupported field: " + key);
+        });
+    }
+
+    private static void validateCalculationSettings(JsonNode value) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Workbook calculationSettings is required");
+        ObjectNode settings = (ObjectNode) value;
+        requireExactKeys(settings, java.util.Set.of("mode", "iterativeCalculation", "maximumIterations", "maximumChange", "precisionAsDisplayed", "calculateBeforeSave", "fullCalculationOnLoad"), "Workbook calculationSettings");
+        if (!java.util.Set.of("automatic", "manual", "partial").contains(settings.path("mode").asText())
+                || !settings.path("iterativeCalculation").isBoolean()
+                || !settings.path("maximumIterations").canConvertToInt() || settings.path("maximumIterations").intValue() < 1
+                || !settings.path("maximumChange").isNumber() || !Double.isFinite(settings.path("maximumChange").doubleValue()) || settings.path("maximumChange").doubleValue() < 0
+                || !settings.path("precisionAsDisplayed").isBoolean() || !settings.path("calculateBeforeSave").isBoolean() || !settings.path("fullCalculationOnLoad").isBoolean()) {
+            throw ServiceException.validation("Workbook calculationSettings is invalid");
+        }
+    }
+
+    private static void validateEditingOptions(JsonNode value) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Workbook editingOptions is required");
+        ObjectNode options = (ObjectNode) value;
+        requireExactKeys(options, java.util.Set.of("allowEditDirectly", "moveAfterEnter", "enterDirection", "formulaAutoComplete", "valueAutoComplete", "fixedDecimalPlaces"), "Workbook editingOptions");
+        JsonNode fixed = options.get("fixedDecimalPlaces");
+        if (!options.path("allowEditDirectly").isBoolean() || !options.path("moveAfterEnter").isBoolean()
+                || !java.util.Set.of("down", "up", "right", "left").contains(options.path("enterDirection").asText())
+                || !options.path("formulaAutoComplete").isBoolean() || !options.path("valueAutoComplete").isBoolean()
+                || fixed == null || !(fixed.isNull() || (fixed.canConvertToInt() && fixed.intValue() >= 0 && fixed.intValue() <= 15))) {
+            throw ServiceException.validation("Workbook editingOptions is invalid");
+        }
+    }
+
+    private static void validateCollationContext(JsonNode value) {
+        if (value == null || value.isNull()) return;
+        if (!value.isObject() || value.path("cultureId").asText().isBlank() || !value.path("typeOrder").isArray() || value.path("typeOrder").size() != 5
+                || !value.path("customLists").isArray()) throw ServiceException.validation("Workbook collationContext is invalid");
+        java.util.Set<String> order = new java.util.HashSet<>();
+        value.path("typeOrder").forEach(item -> order.add(item.asText()));
+        if (order.size() != 5) throw ServiceException.validation("Workbook collationContext typeOrder is invalid");
+        for (JsonNode list : value.path("customLists")) {
+            if (!list.isArray()) throw ServiceException.validation("Workbook collationContext customLists is invalid");
+            for (JsonNode item : list) if (!item.isTextual()) throw ServiceException.validation("Workbook collationContext custom list item is invalid");
+        }
+    }
+
+    private static void validateTheme(JsonNode value) {
+        if (value == null || value.isNull()) return;
+        if (!value.isObject() || value.path("id").asText().isBlank() || !value.path("colors").isObject()) throw ServiceException.validation("Workbook theme is invalid");
+        value.path("colors").fields().forEachRemaining(entry -> {
+            if (entry.getKey().isBlank() || !entry.getValue().isTextual() || !entry.getValue().asText().matches("#[0-9A-Fa-f]{6}")) {
+                throw ServiceException.validation("Workbook theme color is invalid: " + entry.getKey());
+            }
+        });
+    }
+
+    private static void validateDefinedNameModels(JsonNode value) {
+        if (value == null || !value.isArray()) throw ServiceException.validation("Workbook snapshot definedNameModels must be an array");
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        for (JsonNode model : value) {
+            if (!model.isObject() || !model.path("name").isTextual() || model.path("name").asText().isBlank()
+                    || !model.path("name").asText().matches("^[A-Za-z_\\\\][A-Za-z0-9_.]*$")
+                    || !model.path("formula").isTextual() || model.path("formula").asText().isBlank()
+                    || !("workbook".equals(model.path("scope").asText()) || "sheet".equals(model.path("scope").asText()))) {
+                throw ServiceException.validation("Workbook snapshot definedNameModel is invalid");
+            }
+            java.util.Set<String> allowed = java.util.Set.of("name", "formula", "scope", "sheetId", "anchor", "hidden", "comment");
+            var fields = model.fieldNames();
+            while (fields.hasNext()) if (!allowed.contains(fields.next())) throw ServiceException.validation("Workbook snapshot definedNameModel contains unsupported field");
+            if ("sheet".equals(model.path("scope").asText()) && (!model.path("sheetId").isTextual() || model.path("sheetId").asText().isBlank())) {
+                throw ServiceException.validation("Workbook snapshot sheet-scoped definedNameModel requires sheetId");
+            }
+            if ("workbook".equals(model.path("scope").asText()) && model.has("sheetId")) {
+                throw ServiceException.validation("Workbook snapshot workbook-scoped definedNameModel cannot have sheetId");
+            }
+            String identity = model.path("scope").asText() + ":" + model.path("sheetId").asText("") + ":" + model.path("name").asText().toUpperCase(java.util.Locale.ROOT);
+            if (!identities.add(identity)) throw ServiceException.validation("Workbook snapshot definedNameModel identity is duplicated");
+            JsonNode anchor = model.get("anchor");
+            if (anchor != null) {
+                if (!anchor.isObject() || !anchor.path("sheetId").isTextual() || anchor.path("sheetId").asText().isBlank()
+                        || !anchor.path("row").isIntegralNumber() || anchor.path("row").asInt(-1) < 0
+                        || !anchor.path("column").isIntegralNumber() || anchor.path("column").asInt(-1) < 0) {
+                    throw ServiceException.validation("Workbook snapshot definedNameModel anchor is invalid");
+                }
+            }
+            if (model.has("hidden") && !model.path("hidden").isBoolean()) throw ServiceException.validation("Workbook snapshot definedNameModel hidden is invalid");
+            if (model.has("comment") && !model.path("comment").isTextual()) throw ServiceException.validation("Workbook snapshot definedNameModel comment is invalid");
+        }
+    }
+
+    private static void validateCanonicalHyperlinks(ObjectNode sheet, String sheetId) {
+        JsonNode value = sheet.get("hyperlinks");
+        if (value == null) return;
+        if (!value.isArray()) throw ServiceException.validation("Workbook snapshot hyperlinks must be an array");
+        java.util.Set<String> coordinates = new java.util.HashSet<>();
+        for (JsonNode entry : value) {
+            if (!entry.isObject() || !entry.path("row").isIntegralNumber() || !entry.path("column").isIntegralNumber()) {
+                throw ServiceException.validation("Workbook snapshot hyperlink entry is invalid");
+            }
+            int row = entry.path("row").asInt(-1);
+            int column = entry.path("column").asInt(-1);
+            if (row < 0 || row > 1_048_575 || column < 0 || column > 16_383 || !coordinates.add(row + ":" + column)) {
+                throw ServiceException.validation("Workbook snapshot hyperlink coordinate is invalid");
+            }
+            validateStoredHyperlink(entry.get("hyperlink"), sheetId + "!" + row + ":" + column);
+        }
+    }
+
+    private static void validateStoredHyperlink(JsonNode value, String label) {
+        if (value == null || !value.isObject() || !value.path("id").isTextual() || value.path("id").asText().isBlank()
+                || !value.path("target").isObject()) throw ServiceException.validation("Workbook snapshot hyperlink is invalid: " + label);
+        String kind = value.path("target").path("kind").asText();
+        if (!java.util.Set.of("url", "email", "sheet", "name").contains(kind)) throw ServiceException.validation("Workbook snapshot hyperlink target is invalid: " + label);
+        if ("url".equals(kind) && (!value.path("target").path("url").isTextual() || value.path("target").path("url").asText().isBlank())) throw ServiceException.validation("Workbook snapshot URL hyperlink is invalid: " + label);
+        if ("email".equals(kind) && (!value.path("target").path("address").isTextual() || value.path("target").path("address").asText().isBlank())) throw ServiceException.validation("Workbook snapshot email hyperlink is invalid: " + label);
+        if ("sheet".equals(kind) && (!value.path("target").path("sheetId").isTextual() || value.path("target").path("sheetId").asText().isBlank())) throw ServiceException.validation("Workbook snapshot sheet hyperlink is invalid: " + label);
+        if ("name".equals(kind) && (!value.path("target").path("name").isTextual() || value.path("target").path("name").asText().isBlank())) throw ServiceException.validation("Workbook snapshot defined-name hyperlink is invalid: " + label);
+        if (value.has("tooltip") && !value.path("tooltip").isTextual()) throw ServiceException.validation("Workbook snapshot hyperlink tooltip is invalid: " + label);
+    }
+
+    private static void migrateV9ToV10(ObjectNode snapshot) {
+        ArrayNode models = snapshot.arrayNode();
+        java.util.Map<String, JsonNode> identities = new java.util.LinkedHashMap<>();
+        JsonNode existingModels = snapshot.get("definedNameModels");
+        if (existingModels != null) {
+            if (!existingModels.isArray()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: definedNameModels must be an array");
+            for (JsonNode model : existingModels) addMigratedDefinedName(models, identities, model, "definedNameModels");
+        }
+        JsonNode legacyNames = snapshot.get("definedNames");
+        if (legacyNames != null) {
+            if (!legacyNames.isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: definedNames must be an object");
+            legacyNames.fields().forEachRemaining(entry -> {
+                if (!entry.getValue().isTextual()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: definedNames formula must be a string");
+                ObjectNode model = snapshot.objectNode().put("name", entry.getKey()).put("formula", entry.getValue().asText()).put("scope", "workbook");
+                addMigratedDefinedName(models, identities, model, "definedNames." + entry.getKey());
+            });
+        }
+        snapshot.set("definedNameModels", models);
+        snapshot.remove("definedNames");
+
+        for (JsonNode raw : snapshot.path("sheets")) {
+            if (!raw.isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: worksheet must be an object");
+            ObjectNode sheet = (ObjectNode) raw;
+            java.util.Map<String, ObjectNode> links = new java.util.LinkedHashMap<>();
+            JsonNode existingLinks = sheet.get("hyperlinks");
+            if (existingLinks != null) {
+                if (!existingLinks.isArray()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlinks must be an array");
+                for (JsonNode entry : existingLinks) addMigratedHyperlink(links, sheet, entry, "sheet.hyperlinks");
+            }
+            JsonNode cells = sheet.get("cells");
+            if (cells == null || !cells.isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: cells must be an object");
+            cells.fields().forEachRemaining(rowEntry -> {
+                if (!rowEntry.getValue().isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: worksheet row is invalid");
+                rowEntry.getValue().fields().forEachRemaining(columnEntry -> {
+                    if (!columnEntry.getValue().isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: worksheet cell is invalid");
+                    ObjectNode cell = (ObjectNode) columnEntry.getValue();
+                    boolean hasString = cell.has("hyperlink");
+                    boolean hasDetail = cell.has("hyperlinkDetail");
+                    if (!hasString && !hasDetail) return;
+                    int row = parseLegacyCoordinate(rowEntry.getKey(), "row");
+                    int column = parseLegacyCoordinate(columnEntry.getKey(), "column");
+                    ObjectNode hyperlink;
+                    if (hasDetail) {
+                        if (!cell.path("hyperlinkDetail").isObject()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlinkDetail is invalid");
+                        hyperlink = (ObjectNode) cell.path("hyperlinkDetail").deepCopy();
+                    } else {
+                        if (!cell.path("hyperlink").isTextual()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlink must be a string");
+                        hyperlink = snapshot.objectNode().put("id", "legacy-hyperlink-" + sheet.path("id").asText() + "-" + row + "-" + column);
+                        hyperlink.putObject("target").put("kind", "url").put("url", cell.path("hyperlink").asText());
+                    }
+                    validateStoredHyperlink(hyperlink, "cell");
+                    if (hasString && (!cell.path("hyperlink").isTextual() || cell.path("hyperlink").asText().isBlank() || !"url".equals(hyperlink.path("target").path("kind").asText())
+                            || !cell.path("hyperlink").asText().equals(hyperlink.path("target").path("url").asText()))) {
+                        throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlink fields disagree");
+                    }
+                    addMigratedHyperlink(links, sheet, snapshot.objectNode().put("row", row).put("column", column).set("hyperlink", hyperlink), "cell");
+                    cell.remove(java.util.List.of("hyperlink", "hyperlinkDetail"));
+                });
+            });
+            ArrayNode canonicalLinks = sheet.arrayNode();
+            links.values().forEach(canonicalLinks::add);
+            sheet.set("hyperlinks", canonicalLinks);
+        }
+    }
+
+    private static void addMigratedDefinedName(ArrayNode models, java.util.Map<String, JsonNode> identities, JsonNode raw, String source) {
+        if (!raw.isObject() || !raw.path("name").isTextual() || raw.path("name").asText().isBlank()
+                || !raw.path("name").asText().matches("^[A-Za-z_\\\\][A-Za-z0-9_.]*$")
+                || !raw.path("formula").isTextual() || raw.path("formula").asText().isBlank()
+                || !("workbook".equals(raw.path("scope").asText()) || "sheet".equals(raw.path("scope").asText()))) {
+            throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: invalid defined name from " + source);
+        }
+        if ("sheet".equals(raw.path("scope").asText()) && (!raw.path("sheetId").isTextual() || raw.path("sheetId").asText().isBlank())) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: sheet defined name requires sheetId");
+        if ("workbook".equals(raw.path("scope").asText()) && raw.has("sheetId")) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: workbook defined name cannot have sheetId");
+        String identity = raw.path("scope").asText() + ":" + raw.path("sheetId").asText("") + ":" + raw.path("name").asText().toUpperCase(java.util.Locale.ROOT);
+        JsonNode previous = identities.get(identity);
+        if (previous != null) {
+            if (source.startsWith("definedNames.") && previous.path("formula").asText().trim().equals(raw.path("formula").asText().trim())) return;
+            if (!canonicalJson(previous).equals(canonicalJson(raw))) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: defined name identity " + identity);
+            return;
+        }
+        ObjectNode copy = (ObjectNode) raw.deepCopy();
+        identities.put(identity, copy);
+        models.add(copy);
+    }
+
+    private static void addMigratedHyperlink(java.util.Map<String, ObjectNode> links, ObjectNode sheet, JsonNode raw, String source) {
+        if (!raw.isObject() || !raw.path("row").isIntegralNumber() || !raw.path("column").isIntegralNumber()) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: invalid hyperlink entry from " + source);
+        int row = raw.path("row").asInt(-1);
+        int column = raw.path("column").asInt(-1);
+        if (row < 0 || row > 1_048_575 || column < 0 || column > 16_383) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlink coordinate is invalid");
+        JsonNode value = raw.get("hyperlink");
+        validateStoredHyperlink(value, source);
+        String key = row + ":" + column;
+        ObjectNode copy = (ObjectNode) raw.deepCopy();
+        ObjectNode previous = links.get(key);
+        if (previous != null) {
+            if (!canonicalJson(previous.path("hyperlink")).equals(canonicalJson(value))) throw ServiceException.validation("SNAPSHOT_MIGRATION_CONFLICT: hyperlink at " + sheet.path("id").asText() + "!" + key);
+            return;
+        }
+        links.put(key, copy);
+    }
+
     /** One-way migration used only when reading persisted v2 checkpoints. */
+    private static void putDefaultEditingOptions(ObjectNode snapshot) {
+        if (snapshot.has("editingOptions")) return;
+        snapshot.putObject("editingOptions")
+                .put("allowEditDirectly", true).put("moveAfterEnter", true).put("enterDirection", "down")
+                .put("formulaAutoComplete", true).put("valueAutoComplete", true).putNull("fixedDecimalPlaces");
+    }
+
+    private static void putDefaultCalculationSettings(ObjectNode snapshot) {
+        if (snapshot.has("calculationSettings")) return;
+        snapshot.putObject("calculationSettings")
+                .put("mode", "automatic").put("iterativeCalculation", false).put("maximumIterations", 100)
+                .put("maximumChange", 0.001).put("precisionAsDisplayed", false).put("calculateBeforeSave", true).put("fullCalculationOnLoad", false);
+    }
+
     public static ObjectNode migrateStored(JsonNode value, String expectedUnitId) {
         if (value == null || !value.isObject()) throw ServiceException.validation("Stored workbook snapshot must be an object");
         ObjectNode snapshot = ((ObjectNode) value).deepCopy();
@@ -260,29 +632,50 @@ public final class WorkbookSnapshotValidator {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
-        if (snapshot.path("version").asInt(-1) == 7 && snapshot.path("sheets").isArray()) {
+        if (snapshot.path("version").asInt(-1) == 9 && snapshot.path("sheets").isArray()) {
+            migrateV9ToV10(snapshot);
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 8 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", 9);
+            if (!snapshot.has("editingOptions")) {
+                snapshot.putObject("editingOptions")
+                        .put("allowEditDirectly", true)
+                        .put("moveAfterEnter", true)
+                        .put("enterDirection", "down")
+                        .put("formulaAutoComplete", true)
+                        .put("valueAutoComplete", true)
+                        .putNull("fixedDecimalPlaces");
+            }
+            return migrateStored(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 7 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", 9);
+            putDefaultEditingOptions(snapshot);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
                 migrateLegacyReview((ObjectNode) raw);
             }
-            return requireCanonical(snapshot, expectedUnitId);
+            return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 6 && snapshot.path("sheets").isArray()) {
             if (containsLegacyImageData(snapshot)) throw ServiceException.validation("ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before server persistence");
-            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            snapshot.put("version", 9);
+            putDefaultEditingOptions(snapshot);
+            putDefaultCalculationSettings(snapshot);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
                 migrateLegacyReview((ObjectNode) raw);
             }
-            return requireCanonical(snapshot, expectedUnitId);
+            return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 5 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", 6);
             return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 4 && snapshot.path("sheets").isArray()) {
-            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            snapshot.put("version", 5);
             ObjectNode dataModel = snapshot.putObject("dataModel");
             dataModel.set("sources", snapshot.path("dataSources").isArray() ? snapshot.path("dataSources").deepCopy() : snapshot.arrayNode());
             dataModel.set("tables", snapshot.path("tables").isArray() ? snapshot.path("tables").deepCopy() : snapshot.arrayNode());
@@ -294,7 +687,7 @@ public final class WorkbookSnapshotValidator {
                 if (!sheet.has("kind")) sheet.put("kind", "worksheet");
                 migrateLegacyReview(sheet);
             }
-            return requireCanonical(snapshot, expectedUnitId);
+            return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", 4);

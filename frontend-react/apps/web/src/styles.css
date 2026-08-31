@@ -10,6 +10,34 @@
   font-display: block;
 }
 
+@media (max-width: 1366px), (max-height: 800px) {
+  .designer-shell {
+    font-size: 12px;
+  }
+
+  .designer-shell .text-lg {
+    font-size: 14px;
+    line-height: 18px;
+  }
+
+  .designer-shell .text-sm {
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .designer-shell .text-xs {
+    font-size: 11px;
+    line-height: 14px;
+  }
+
+  .designer-shell button,
+  .designer-shell input,
+  .designer-shell select,
+  .designer-shell textarea {
+    font-size: 11px;
+  }
+}
+
 @layer base {
   :root {
     --designer-color-fg: #3d3c41;

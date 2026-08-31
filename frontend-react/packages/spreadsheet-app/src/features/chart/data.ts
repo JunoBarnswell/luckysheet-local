@@ -68,12 +68,60 @@ export interface ResolvedChartData {
   source: ChartDataSourceKind;
   binding: ChartBindingModel;
   status: ChartDataStatus;
+  /** Source revision used by chart layout/render caches. */
+  sourceRevision?: string;
 }
 
 export interface StructuredChartSheet {
   getCell(row: number, column: number): { value?: PivotScalar } | undefined;
   hiddenRows: ReadonlySet<number> | readonly number[];
   hiddenColumns: ReadonlySet<number> | readonly number[];
+  revision?: string | number;
+}
+
+export function chartSourceRevision(
+  payload: ChartDrawingPayload,
+  getSheet: (sheetId: string) => StructuredChartSheet | undefined,
+  pivotResults: Readonly<Record<string, PivotResultTree>> = {},
+  tables: readonly WorkbookTableModel[] = [],
+): string {
+  const source = payload.source;
+  const revisions: unknown[] = [source];
+  if (source.kind === 'pivot') {
+    const tree = pivotResults[source.pivotId];
+    revisions.push(tree ? { sourceRevision: tree.sourceRevision, layoutRevision: tree.layoutRevision, filterRevision: tree.filterRevision } : 'missing');
+  } else if (source.kind === 'worksheet-ranges') {
+    for (const range of source.ranges) revisions.push({ range, revision: getSheet(range.sheetId)?.revision ?? 'unknown' });
+  } else if (source.kind === 'report-range') {
+    revisions.push({ range: source.range, revision: getSheet(source.range.sheetId)?.revision ?? 'unknown' });
+  } else {
+    revisions.push({ tableId: source.tableId, revision: tables.find((table) => table.id === source.tableId)?.revision ?? 'unknown' });
+  }
+  return fingerprintChartRevision(revisions);
+}
+
+export class ChartDataCache {
+  private readonly entries = new Map<string, { revision: string; value: ResolvedChartData }>();
+
+  resolve(
+    payload: ChartDrawingPayload,
+    getSheet: (sheetId: string) => StructuredChartSheet | undefined,
+    pivotResults: Readonly<Record<string, PivotResultTree>> = {},
+    tables: readonly WorkbookTableModel[] = [],
+  ): ResolvedChartData {
+    const revision = chartSourceRevision(payload, getSheet, pivotResults, tables);
+    const cached = this.entries.get(payload.chartId);
+    if (cached?.revision === revision) return structuredClone(cached.value);
+    const value = resolveChartDataFromSources(payload, getSheet, pivotResults, tables);
+    if (value.status.kind === 'ready') this.entries.set(payload.chartId, { revision, value: structuredClone(value) });
+    else this.entries.delete(payload.chartId);
+    return value;
+  }
+
+  invalidate(chartId?: string): void {
+    if (chartId === undefined) this.entries.clear();
+    else this.entries.delete(chartId);
+  }
 }
 
 export interface StructuredChartSeries {
@@ -376,6 +424,24 @@ function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): { categ
   return { categories: projected.categories.map((category) => category.label), series };
 }
 
+function fingerprintChartRevision(value: unknown): string {
+  const serialized = stableChartSerialize(value);
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= BigInt(serialized.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+function stableChartSerialize(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map(stableChartSerialize).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableChartSerialize(record[key])}`).join(',')}}`;
+}
+
 function bindingFor(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options: Partial<Pick<ChartBindingModel, 'orientation' | 'hierarchyLevels' | 'nonContiguous' | 'dynamicRangeIdentity' | 'tableStructuredReference'>> = {}): ChartBindingModel {
   return {
     source: source.kind === 'worksheet-ranges' ? 'range' : source.kind,
@@ -389,26 +455,28 @@ function bindingFor(source: ChartSource, categories: PivotScalar[], series: Reso
   };
 }
 
-function readyData(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options?: Parameters<typeof bindingFor>[3]): ResolvedChartData {
-  return { categories, series, source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, categories, series, options), status: { kind: 'ready' } };
+function readyData(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options?: Parameters<typeof bindingFor>[3], sourceRevision?: string): ResolvedChartData {
+  return { categories, series, source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, categories, series, options), status: { kind: 'ready' }, ...(sourceRevision ? { sourceRevision } : {}) };
 }
 
-function invalidData(source: ChartSource, code: ChartDataStatus['code'], message: string): ResolvedChartData {
-  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message } };
+function invalidData(source: ChartSource, code: ChartDataStatus['code'], message: string, sourceRevision?: string): ResolvedChartData {
+  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message }, ...(sourceRevision ? { sourceRevision } : {}) };
 }
 
 /** Resolve a canonical chart against a worksheet reader without constructing a second model. */
 export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = []): ResolvedChartData {
+  let revision = 'unavailable';
+  try { revision = chartSourceRevision(payload, getSheet, pivotResults, tables); } catch { /* source validation below emits the canonical failure */ }
   try {
     if (payload.source.kind === 'pivot') {
       const tree = pivotResults[payload.source.pivotId];
-      if (!tree) return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`);
+      if (!tree) return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`, revision);
       const resolved = resolvePivotData(payload, tree);
-      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' });
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' }, revision);
     }
     if (payload.source.kind === 'worksheet-ranges') {
       const resolved = rangeSourceData(payload, getSheet);
-      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns', dynamicRangeIdentity: payload.source.identity });
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns', dynamicRangeIdentity: payload.source.identity }, revision);
     }
     const structured = resolveStructuredChartBindings(payload, tables, getSheet);
     const series = structured.series.map((entry) => ({
@@ -421,9 +489,9 @@ export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sh
     return readyData(payload.source, structured.categories, series, {
       tableStructuredReference: payload.source.kind === 'table' ? payload.source.structuredReference ?? `${payload.source.tableId}[${payload.source.bindings.values.map((entry) => entry.fieldId).join(',')}]` : undefined,
       dynamicRangeIdentity: payload.source.kind === 'report-range' ? payload.source.identity : undefined,
-    });
+    }, revision);
   } catch (error) {
-    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
+    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error), revision);
   }
 }
 
@@ -433,7 +501,7 @@ export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload,
     payload,
     (sheetId) => {
       const sheet = workbook.getSheet(sheetId);
-      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns };
+      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns, revision: sheet.cells.revision };
     },
     pivotResults,
     [...workbook.dataModel.tables.values()],

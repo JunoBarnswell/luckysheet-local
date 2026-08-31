@@ -252,6 +252,48 @@ function validateExactKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+function validateDefinedNameModels(value: unknown): void {
+  if (!Array.isArray(value)) throw new Error('WorkbookSnapshot definedNameModels must be an array');
+  const identities = new Set<string>();
+  for (const [index, raw] of value.entries()) {
+    const model = requireRecord(raw, `WorkbookSnapshot definedNameModels[${index}]`);
+    validateExactKeys(model, ['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment'], `WorkbookSnapshot definedNameModels[${index}]`);
+    if (!isNonEmptyString(model.name) || !/^[A-Za-z_\\\\][A-Za-z0-9_.]*$/.test(model.name)
+      || !isNonEmptyString(model.formula) || !['workbook', 'sheet'].includes(String(model.scope))) {
+      throw new Error(`WorkbookSnapshot definedNameModels[${index}] is invalid`);
+    }
+    if (model.scope === 'sheet' && !isNonEmptyString(model.sheetId)) throw new Error(`WorkbookSnapshot definedNameModels[${index}] sheetId is required`);
+    if (model.scope === 'workbook' && model.sheetId !== undefined) throw new Error(`WorkbookSnapshot definedNameModels[${index}] workbook name cannot have sheetId`);
+    if (model.anchor !== undefined) {
+      const anchor = requireRecord(model.anchor, `WorkbookSnapshot definedNameModels[${index}] anchor`);
+      validateExactKeys(anchor, ['sheetId', 'row', 'column'], `WorkbookSnapshot definedNameModels[${index}] anchor`);
+      if (!isNonEmptyString(anchor.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0
+        || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error(`WorkbookSnapshot definedNameModels[${index}] anchor is invalid`);
+    }
+    if (model.hidden !== undefined && typeof model.hidden !== 'boolean') throw new Error(`WorkbookSnapshot definedNameModels[${index}] hidden is invalid`);
+    if (model.comment !== undefined && typeof model.comment !== 'string') throw new Error(`WorkbookSnapshot definedNameModels[${index}] comment is invalid`);
+    const identity = `${model.scope}:${model.sheetId ?? ''}:${String(model.name).toUpperCase()}`;
+    if (identities.has(identity)) throw new Error(`WorkbookSnapshot definedNameModels identity is duplicated: ${identity}`);
+    identities.add(identity);
+  }
+}
+
+function validateSnapshotCells(value: unknown, sheetId: string): void {
+  const cells = requireRecord(value, `WorkbookSnapshot sheet ${sheetId} cells`);
+  for (const [row, rawRow] of Object.entries(cells)) {
+    const columns = requireRecord(rawRow, `WorkbookSnapshot sheet ${sheetId} row ${row}`);
+    for (const [column, rawCell] of Object.entries(columns)) {
+      const cell = requireRecord(rawCell, `WorkbookSnapshot sheet ${sheetId} cell ${row}:${column}`);
+      if (Object.prototype.hasOwnProperty.call(cell, 'hyperlink') || Object.prototype.hasOwnProperty.call(cell, 'hyperlinkDetail')) {
+        throw new Error(`WorkbookSnapshot sheet ${sheetId} cell ${row}:${column} contains legacy hyperlink metadata`);
+      }
+      if (Object.prototype.hasOwnProperty.call(cell, 'note') || Object.prototype.hasOwnProperty.call(cell, 'comment')) {
+        throw new Error(`WorkbookSnapshot sheet ${sheetId} cell ${row}:${column} contains legacy review metadata`);
+      }
+    }
+  }
+}
+
 function validateReviewSnapshot(value: unknown, sheetId: string): void {
   const review = requireRecord(value, 'WorkbookSnapshot review');
   const notesByCell = requireRecord(review.notesByCell, 'WorkbookSnapshot review notesByCell');
@@ -979,6 +1021,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     throw new Error('WorkbookSnapshot must be an object');
   }
   const input = value as Record<string, unknown>;
+  validateExactKeys(input, ['schema', 'version', 'unitId', 'name', 'dimensionMetrics', 'collationContext', 'calculationSettings', 'editingOptions', 'theme', 'definedNameModels', 'dataModel', 'printDocuments', 'queryDefinitions', 'cellStyleTemplates', 'sheets'], 'WorkbookSnapshot');
   if (input.schema !== WORKBOOK_SNAPSHOT_SCHEMA) throw new Error('Unsupported workbook snapshot schema');
   if (input.version !== WORKBOOK_SNAPSHOT_VERSION) throw new Error('Unsupported workbook snapshot version');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) {
@@ -990,6 +1033,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     || typeof dimensionMetrics.normalFontSizePx !== 'number' || !Number.isFinite(dimensionMetrics.normalFontSizePx) || dimensionMetrics.normalFontSizePx <= 0
     || typeof dimensionMetrics.maximumDigitWidthPx !== 'number' || !Number.isFinite(dimensionMetrics.maximumDigitWidthPx) || dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('WorkbookSnapshot dimensionMetrics is invalid');
   if (!isWorkbookCalculationSettings(input.calculationSettings)) throw new Error('WorkbookSnapshot calculationSettings is invalid');
+  validateDefinedNameModels(input.definedNameModels);
   if (input.theme !== undefined) {
     const theme = input.theme as Record<string, unknown>;
     if (!theme || typeof theme !== 'object' || Array.isArray(theme) || !isNonEmptyString(theme.id)
@@ -1030,6 +1074,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       throw new Error(`WorkbookSnapshot sheet[${index}] must be an object`);
     }
     const sheet = rawSheet as Record<string, unknown>;
+    validateExactKeys(sheet, ['kind', 'id', 'name', 'rowCount', 'columnCount', 'cells', 'dataRegions', 'merges', 'pane', 'pivots', 'sparklines', 'sparklineGroups', 'conditionalFormats', 'dataValidations', 'defaultRowHeightPx', 'defaultColumnWidthPx', 'rowHeightsPx', 'columnWidthsPx', 'hiddenRows', 'hiddenColumns', 'tabColor', 'bandedRule', 'autoFilter', 'sheetTables', 'drawings', 'drawingPayloads', 'drawingGroups', 'snapSettings', 'hyperlinks', 'review', 'spillRanges', 'protectionRules', 'showGridlines', 'showHeaders', 'zoom', 'hidden', 'outline', 'tableSheet', 'ganttSheet', 'reportSheet'], `WorkbookSnapshot sheet[${index}]`);
     if (!isNonEmptyString(sheet.id) || !isNonEmptyString(sheet.name)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires id and name`);
     }
@@ -1071,6 +1116,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
         throw new Error(`WorkbookSnapshot sheet[${index}] hyperlinks are invalid`);
       }
     }
+    validateSnapshotCells(sheet.cells, String(sheet.id));
     for (const pivot of sheet.pivots) validatePivotDefinition(pivot);
     if (sheet.dataRegions !== undefined) {
       if (!Array.isArray(sheet.dataRegions)) throw new Error(`WorkbookSnapshot sheet[${index}] dataRegions must be an array`);

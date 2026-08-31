@@ -6,9 +6,12 @@ import type {
   PivotScalar,
   PivotSourceRowPath,
   SheetId,
+  PivotResultTree,
+  WorkbookModel,
 } from '@react-sheets/core-model';
 import type { DataSourceContentLoadState, DataSourceContentQuery } from '../data-source/content-query';
 import { createPivotSourceIndex, type PivotSourceIndex } from './source-index';
+import { computePivotResultFromBlockSource } from './engine';
 
 export interface PivotBlockSourceField {
   fieldId: string;
@@ -50,6 +53,12 @@ export type PivotBlockSourceReadResult =
     state: PivotBlockSourceState;
     error: string;
   };
+
+export interface PivotBlockSourceCalculationResult {
+  result: PivotResultTree;
+  source: PivotSourceIndex;
+  sourceRevision: string;
+}
 
 function stateFromQuery(next: DataSourceContentLoadState): PivotBlockSourceState {
   return next.error === undefined
@@ -158,11 +167,15 @@ export async function readPivotBlockSource(
     })
     : undefined;
   try {
+    const initialRevision = queryManifest.revision;
     const columnValues = fields.map(() => [] as PivotScalar[]);
     const rowPaths: PivotSourceRowPath[][] = [];
     for (let startRow = 0; startRow < queryManifest.rowCount; startRow += chunkRowCount) {
       const rowCount = Math.min(chunkRowCount, queryManifest.rowCount - startRow);
       const result = await query.getRows(startRow, rowCount);
+      if (query.manifest.revision !== initialRevision) {
+        return failure('error', sourceId, `Data source ${sourceId} revision changed during Pivot acquisition`, result.state.blockId);
+      }
       const state = stateFromQuery(result.state);
       if (result.value === undefined) {
         const status = state.status === 'ready' ? 'error' : state.status;
@@ -203,4 +216,21 @@ export async function readPivotBlockSource(
   } finally {
     unsubscribe?.();
   }
+}
+
+/** Acquire, validate, and calculate a block-backed Pivot through one chain. */
+export async function calculatePivotFromBlockSource(
+  workbook: WorkbookModel,
+  pivot: PivotDefinition,
+  query: DataSourceContentQuery,
+  options: PivotBlockSourceReadOptions = {},
+): Promise<PivotBlockSourceCalculationResult> {
+  const loaded = await readPivotBlockSource(pivot, query, options);
+  if (loaded.status !== 'ready') throw new Error(`PIVOT_SOURCE_UNAVAILABLE: ${loaded.error}`);
+  const sourceRevision = `${loaded.state.sourceId}:${loaded.sourceRevision}`;
+  return {
+    source: loaded.source,
+    sourceRevision,
+    result: computePivotResultFromBlockSource(workbook, pivot as unknown as import('@react-sheets/core-model').PivotModel, loaded.source, sourceRevision),
+  };
 }

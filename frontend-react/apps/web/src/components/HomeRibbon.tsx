@@ -12,7 +12,7 @@ import {
   type RibbonLayoutState,
 } from '@react-sheets/ui-system';
 import {
-  getRibbonSurfaces,
+  type CompiledFeatureSurfaceSchema,
   type HomeRibbonState,
   type RibbonCommandContext,
   type RibbonCommandId,
@@ -48,6 +48,7 @@ export interface HomeRibbonProps {
   context: RibbonCommandContext;
   homeState: HomeRibbonState;
   disabled: boolean;
+  featureSurfaceSchema: CompiledFeatureSurfaceSchema;
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => React.ReactNode;
   onEmitStyle: (style: Record<string, unknown>) => void;
   onBeginFormatPainter: (locked?: boolean) => void;
@@ -154,6 +155,7 @@ export function HomeRibbon({
   context,
   homeState,
   disabled,
+  featureSurfaceSchema,
   renderCommand,
   onEmitStyle,
   onBeginFormatPainter,
@@ -198,7 +200,9 @@ export function HomeRibbon({
   const allSurfaces = (group: HomeGroup): readonly RibbonSurfaceDefinition[] => {
     const seen = new Set<string>();
     return (['wide', 'compact', 'narrow'] as const)
-      .flatMap((candidate) => getRibbonSurfaces('home', group, candidate))
+      .flatMap((candidate) => featureSurfaceSchema.ribbon
+        .filter((surface) => surface.tab === 'home' && surface.group === group && surface.breakpoints.includes(candidate))
+        .sort((left, right) => left.order - right.order))
       .filter((surface) => {
         if (seen.has(surface.id)) return false;
         seen.add(surface.id);
@@ -387,7 +391,10 @@ export function HomeRibbon({
           'unhide-columns': onUnhideColumns,
           'default-column-width': onOpenDefaultColumnWidth,
         };
-        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
+        const commandId = controlId === 'hide-columns' || controlId === 'unhide-columns' ? 'sheet.columns.visibility.set'
+          : controlId === 'default-column-width' ? 'sheet.column.defaultWidth.set' : 'sheet.dimensions.apply';
+        const permitted = !disabled && (!context.canExecute || context.canExecute(commandId));
+        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={permitted ? label : `${label} — permission denied`} disabled={!permitted} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
       case 'row-height':
       case 'auto-fit-row-height':
@@ -399,7 +406,9 @@ export function HomeRibbon({
           'hide-rows': onHideRows,
           'unhide-rows': onUnhideRows,
         };
-        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
+        const commandId = controlId === 'hide-rows' || controlId === 'unhide-rows' ? 'sheet.rows.visibility.set' : 'sheet.dimensions.apply';
+        const permitted = !disabled && (!context.canExecute || context.canExecute(commandId));
+        return <Button aria-label={label} data-ribbon-surface={surfaceId} title={permitted ? label : `${label} — permission denied`} disabled={!permitted} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
       case 'merge-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('table-cells-merge', 'inline')}>
@@ -425,6 +434,7 @@ export function HomeRibbon({
         tab="home"
         locale={locale}
         layout={layout}
+        featureSurfaceSchema={featureSurfaceSchema}
         renderCommand={renderCommand}
         renderSurface={(surface, context) => renderSurface(surface, context.mode)}
       />

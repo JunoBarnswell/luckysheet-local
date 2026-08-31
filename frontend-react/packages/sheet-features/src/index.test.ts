@@ -897,20 +897,22 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
     value: 10,
     formula: '=A1',
     style: { bold: true },
-    hyperlink: 'https://example.com',
   });
+  sheet.hyperlinks.set('0:0', { id: 'link', target: { kind: 'url', url: 'https://example.com' } });
   sheet.review.setNote(0, 0, { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
   const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'formats' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 0)?.style, undefined);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
+  const link = sheet.hyperlinks.get('0:0');
+  assert.equal(link?.target.kind, 'url');
+  assert.equal(link?.target.kind === 'url' ? link.target.url : undefined, 'https://example.com');
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'comments-and-notes' });
   assert.equal(sheet.review.hasNoteAt(0, 0), false);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);
+  assert.equal(sheet.hyperlinks.get('0:0'), undefined);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'all' });
   assert.equal(sheet.cells.get(0, 0), undefined);
   runtime.undo();

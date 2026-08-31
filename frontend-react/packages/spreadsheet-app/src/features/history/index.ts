@@ -1,6 +1,6 @@
 import { pivotSourceIdentity, WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import { FormulaEngine, type SheetTableRef } from '@react-sheets/formula-engine';
+import { FormulaEngine, type CalculationSessionPort, type SheetTableRef } from '@react-sheets/formula-engine';
 import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
 import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
 import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
@@ -53,9 +53,9 @@ export class HistoryPreviewSession {
     this.projection = projection;
   }
 
-  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot, taskPort?: PivotTaskPort): Promise<HistoryPreviewSession> {
+  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot, taskPort?: PivotTaskPort, calculationSessionPort?: CalculationSessionPort): Promise<HistoryPreviewSession> {
     const workbook = WorkbookModel.fromSnapshot(snapshot);
-    const formula = await hydratePreviewFormula(workbook);
+    const formula = await hydratePreviewFormula(workbook, calculationSessionPort);
     const derivedCache = new Map<string, PivotResultTree>();
     const pivotResults: Record<string, PivotResultTree> = {};
     const pivotErrors: Record<string, PivotTaskError> = {};
@@ -209,8 +209,11 @@ function pivotCacheKey(revision: number, pivotId: string): string {
   return `pivot:${pivotId}:source:${revision}:layout:${revision}:filter:${revision}`;
 }
 
-async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEngine> {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
+async function hydratePreviewFormula(workbook: WorkbookModel, calculationSessionPort?: CalculationSessionPort): Promise<FormulaEngine> {
+  if (!calculationSessionPort && typeof window === 'undefined') {
+    throw new Error('CALCULATION_SESSION_PORT_REQUIRED: history preview on Node requires an explicit calculation session port');
+  }
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, calculationSessionPort });
   engine.setRecalculationMode('manual');
   engine.setDefinedNameModels(workbook.definedNameModels);
   const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({

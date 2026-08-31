@@ -15,7 +15,7 @@ describe('xlsx exchange', () => {
 });
 
 describe('WorkbookSession xlsx integration', () => {
-  it('exports through document.export command path', async () => {
+  it('exports through the sole native document transaction path', async () => {
     const app = new WorkbookSession({ nativeDocumentExecution: 'inline-test' });
     app.runCommand('sheet.cell.set', {
       sheetId: app.getActiveSheetId(),

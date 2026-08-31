@@ -1,4 +1,4 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import { sha256Hex as canonicalSha256Hex, type WorkbookSnapshot } from '@react-sheets/core-model';
 import { NATIVE_DOCUMENT_CODEC_REVISION, type CompatibilityReport, type DateSystem, type NativeDocumentFormat, type FeatureOwnershipResult, type NativeDocumentArtifact, type NativeGraph, type NativeSecurityEnvelope } from './types';
 import { createCompatibilityReport } from './compatibility-report';
 import { capabilityFor } from './capability-manifest';
@@ -75,7 +75,13 @@ export async function verifyNativeDocumentArtifact(state: NativeDocumentArtifact
   if (state.compatibility.schema !== 'CompatibilityReport') throw new Error('Invalid native compatibility report');
   if (!state.nativeGraph || typeof state.nativeGraph !== 'object' || !('kind' in state.nativeGraph)) throw new Error('Invalid native document graph');
   if (!['opc', 'text', 'xml', 'ods', 'sjs', 'ssjson', 'biff', 'xlsb', 'dbf'].includes(state.nativeGraph.kind)) throw new Error('Invalid native document graph kind');
-  if (state.nativeGraph.kind === 'opc' && state.nativeGraph.package.schema !== 'OpcPackageGraph') throw new Error('Invalid OPC package graph');
+  if (state.nativeGraph.kind === 'opc') {
+    const pkg = state.nativeGraph.package;
+    if (pkg.schema !== 'OpcPackageGraph' || !pkg.assetPartById || typeof pkg.assetPartById !== 'object' || Array.isArray(pkg.assetPartById)) throw new Error('Invalid OPC package graph');
+    for (const [assetId, part] of Object.entries(pkg.assetPartById)) {
+      if (!assetId.trim() || !part.trim() || !pkg.parts[part]) throw new Error(`Invalid OPC asset part ownership: ${assetId}`);
+    }
+  }
   if (state.nativeGraph.kind === 'biff') {
     const graph = state.nativeGraph.container;
     if (graph.container !== 'cfb' || !graph.cfb || !graph.streamName || !graph.streams || !graph.sheets?.length) throw new Error('Invalid BIFF binary graph');
@@ -84,6 +90,35 @@ export async function verifyNativeDocumentArtifact(state: NativeDocumentArtifact
   if (state.nativeGraph.kind === 'xlsb') {
     const graph = state.nativeGraph.container;
     if (graph.container !== 'biff12' || !graph.package || !graph.package.workbookPart || !graph.package.parts[graph.package.workbookPart] || !graph.sheets?.length) throw new Error('Invalid XLSB binary graph');
+  }
+  if (state.nativeGraph.kind === 'opc' && state.nativeGraph.package.nativeDrawingGraph) {
+    const graph = state.nativeGraph.package.nativeDrawingGraph;
+    if (graph.schema !== 'NativeDrawingGraph' || !Array.isArray(graph.nodes)) throw new Error('Invalid native DrawingML ownership graph');
+    const identities = new Set<string>();
+    for (const node of graph.nodes) {
+      if (!node || typeof node.drawingPart !== 'string' || !node.drawingPart.trim()
+        || !Number.isSafeInteger(node.nativeObjectId) || node.nativeObjectId <= 0
+        || !['image', 'shape', 'textbox', 'connector', 'chart', 'unknown'].includes(node.kind)
+        || !['editable-owned', 'preserved-owned'].includes(node.ownership)) throw new Error('Invalid native DrawingML ownership node');
+      const identity = `${node.drawingPart}:${node.nativeObjectId}`;
+      if (identities.has(identity)) throw new Error(`Duplicate native DrawingML ownership node: ${identity}`);
+      identities.add(identity);
+      if (node.drawingId !== undefined && !node.drawingId.trim()) throw new Error(`Invalid native DrawingML canonical identity: ${identity}`);
+      if (node.ownership === 'editable-owned' && !node.drawingId) throw new Error(`Editable DrawingML node has no canonical owner: ${identity}`);
+    }
+  }
+  if (state.nativeGraph.kind === 'opc' && state.nativeGraph.package.nativeReviewGraph) {
+    const graph = state.nativeGraph.package.nativeReviewGraph;
+    if (graph.schema !== 'NativeReviewGraph' || !Array.isArray(graph.sheets)) throw new Error('Invalid native review ownership graph');
+    const sheetParts = new Set<string>();
+    for (const entry of graph.sheets) {
+      if (!entry || typeof entry.sheetPart !== 'string' || !entry.sheetPart.trim()
+        || (entry.commentsPart !== undefined && !entry.commentsPart.trim())
+        || (entry.threadedCommentsPart !== undefined && !entry.threadedCommentsPart.trim())
+        || (entry.personsPart !== undefined && !entry.personsPart.trim())) throw new Error('Invalid native review ownership entry');
+      if (sheetParts.has(entry.sheetPart)) throw new Error(`Duplicate native review ownership sheet: ${entry.sheetPart}`);
+      sheetParts.add(entry.sheetPart);
+    }
   }
   const graphFamily = state.nativeGraph.kind === 'opc' ? state.nativeGraph.package.format.family : state.nativeGraph.kind === 'xml' ? 'xmlss' : state.nativeGraph.kind;
   if (state.format.family !== graphFamily) throw new Error(`Native document format/graph mismatch: ${state.format.family}/${graphFamily}`);
@@ -111,8 +146,5 @@ function nativeSnapshotHashValue(value: string): string {
 }
 
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) throw new Error('Web Crypto SHA-256 is required for native document artifacts');
-  const digest = await subtle.digest('SHA-256', buffer);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return canonicalSha256Hex(new Uint8Array(buffer));
 }

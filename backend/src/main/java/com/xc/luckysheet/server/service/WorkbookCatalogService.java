@@ -52,6 +52,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.HexFormat;
 
@@ -59,6 +60,8 @@ import java.util.HexFormat;
 @Service
 public class WorkbookCatalogService {
     public static final long MAX_NATIVE_DOCUMENT_BYTES = 50L * 1024L * 1024L;
+    /** The server accepts one canonical exchange contract at a time. */
+    public static final int NATIVE_DOCUMENT_CODEC_REVISION = 1;
 
     private final WorkbookEntityRepository workbooks;
     private final WorkbookAclEntityRepository acl;
@@ -304,14 +307,17 @@ public class WorkbookCatalogService {
             throw ServiceException.validation("Parsed workbook snapshot is invalid");
         }
         if (snapshot == null || !snapshot.isObject()) throw ServiceException.validation("Parsed workbook snapshot must be an object");
-        String resolvedName = name == null || name.isBlank() ? file.getOriginalFilename() : name;
-        if (resolvedName == null || resolvedName.isBlank()) resolvedName = "导入的工作簿";
         byte[] content;
         try {
             content = file.getBytes();
         } catch (IOException error) {
             throw ServiceException.unavailable("Unable to read native document artifact");
         }
+        if (content.length == 0 || content.length > MAX_NATIVE_DOCUMENT_BYTES) {
+            throw ServiceException.validation("Native document size is invalid");
+        }
+        String resolvedName = name == null || name.isBlank() ? file.getOriginalFilename() : name;
+        if (resolvedName == null || resolvedName.isBlank()) resolvedName = "导入的工作簿";
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
         WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
@@ -321,15 +327,11 @@ public class WorkbookCatalogService {
         } catch (Exception error) {
             throw ServiceException.validation("Native package metadata is invalid");
         }
-        if (format == null || format.isBlank() || nativeMetadata == null || !nativeMetadata.isObject()
-                || !"NativeDocumentMetadata".equals(nativeMetadata.path("schema").asText())) {
-            throw ServiceException.validation("Native document metadata is invalid");
-        }
-        ObjectNode artifactMetadata = mapper.createObjectNode().put("schema", "NativeDocumentMetadata").put("format", format);
-        artifactMetadata.setAll((ObjectNode) nativeMetadata.deepCopy());
+        String digest = validateNativeImportBinding(nativeMetadata, format, content, snapshot);
+        ObjectNode artifactMetadata = ((ObjectNode) nativeMetadata).deepCopy();
+        artifactMetadata.put("format", format.trim().toLowerCase(java.util.Locale.ROOT));
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
                 WorkbookSource.DOCUMENT_IMPORT), actor);
-        String digest = checksum(content);
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
                 safeFileName(file.getOriginalFilename() == null ? resolvedName + ".ssjson" : file.getOriginalFilename()),
@@ -337,6 +339,90 @@ public class WorkbookCatalogService {
         artifacts.save(artifact);
         return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
                 summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));
+    }
+
+    /**
+     * Establishes the trust boundary for browser-parsed native documents.
+     * The server hashes the actual multipart bytes and the exact canonical
+     * snapshot; the browser cannot substitute a hash, format, or codec
+     * revision that was not proven against this request.
+     */
+    private String validateNativeImportBinding(JsonNode rawMetadata, String requestedFormat, byte[] content, JsonNode snapshot) {
+        if (requestedFormat == null || requestedFormat.isBlank() || rawMetadata == null || !rawMetadata.isObject()) {
+            throw ServiceException.validation("Native document metadata is invalid");
+        }
+        ObjectNode metadata = (ObjectNode) rawMetadata;
+        Set<String> allowed = Set.of("schema", "format", "codecRevision", "checksum", "byteLength", "sourceSnapshotHash", "detectedFeatures", "compatibility");
+        metadata.fieldNames().forEachRemaining(key -> {
+            if (!allowed.contains(key)) throw ServiceException.validation("Native document metadata contains an unsupported field: " + key);
+        });
+        if (!"NativeDocumentMetadata".equals(metadata.path("schema").asText())) {
+            throw ServiceException.validation("Native document metadata schema is invalid");
+        }
+        String format = requestedFormat.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!isSupportedNativeFormat(format) || !format.equals(metadata.path("format").asText("").trim().toLowerCase(java.util.Locale.ROOT))) {
+            throw ServiceException.validation("Native document format binding is invalid");
+        }
+        JsonNode codecRevision = metadata.get("codecRevision");
+        if (codecRevision == null || !codecRevision.isIntegralNumber() || codecRevision.intValue() != NATIVE_DOCUMENT_CODEC_REVISION) {
+            throw ServiceException.validation("Native document codecRevision is unsupported");
+        }
+        String actualChecksum = checksum(content);
+        if (!metadata.path("checksum").isTextual() || !actualChecksum.equalsIgnoreCase(metadata.path("checksum").asText())) {
+            throw ServiceException.validation("Native document file checksum binding is invalid");
+        }
+        if (!metadata.path("byteLength").canConvertToLong() || metadata.path("byteLength").longValue() != content.length) {
+            throw ServiceException.validation("Native document byteLength binding is invalid");
+        }
+        String expectedSnapshotHash = nativeSnapshotHash(snapshot);
+        if (!metadata.path("sourceSnapshotHash").isTextual() || !expectedSnapshotHash.equalsIgnoreCase(metadata.path("sourceSnapshotHash").asText())) {
+            throw ServiceException.validation("Native document snapshot hash binding is invalid");
+        }
+        if (metadata.has("detectedFeatures") && !metadata.get("detectedFeatures").isArray()) {
+            throw ServiceException.validation("Native document detectedFeatures is invalid");
+        }
+        if (metadata.has("compatibility") && (!metadata.get("compatibility").isObject()
+                || !"CompatibilityReport".equals(metadata.get("compatibility").path("schema").asText()))) {
+            throw ServiceException.validation("Native document compatibility report is invalid");
+        }
+        return actualChecksum;
+    }
+
+    private boolean isSupportedNativeFormat(String format) {
+        String[] parts = format.split("/", -1);
+        if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()
+                || !format.matches("[a-z0-9-]+/[a-z0-9-]+")) return false;
+        return switch (parts[0]) {
+            case "ooxml" -> Set.of("xlsx", "xlsm", "xltx", "xltm", "xlam").contains(parts[1]);
+            case "xlsb" -> parts[1].equals("xlsb");
+            case "biff" -> Set.of("xls", "xlt", "xla", "biff5", "xlw").contains(parts[1]);
+            case "xmlss" -> parts[1].equals("xml");
+            case "text" -> Set.of("csv", "txt", "prn", "dif", "sylk").contains(parts[1]);
+            case "ods", "sjs", "ssjson", "dbf" -> parts[0].equals(parts[1]);
+            case "works" -> parts[1].equals("xlr");
+            case "web" -> Set.of("html", "mht").contains(parts[1]);
+            case "presentation" -> Set.of("pdf", "xps").contains(parts[1]);
+            default -> false;
+        };
+    }
+
+    /** Same compact FNV-1a snapshot identity as the native exchange codec. */
+    private String nativeSnapshotHash(JsonNode value) {
+        ObjectNode identity = ((ObjectNode) value).deepCopy();
+        identity.put("unitId", "");
+        JsonNode printDocuments = identity.get("printDocuments");
+        if (printDocuments == null || printDocuments.isNull()) {
+            identity.putArray("printDocuments");
+        } else if (printDocuments.isArray()) {
+            for (JsonNode raw : printDocuments) if (raw.isObject()) ((ObjectNode) raw).put("unitId", "");
+        }
+        String text = writeJson(identity);
+        int hash = 0x811c9dc5;
+        for (int index = 0; index < text.length(); index++) {
+            hash ^= text.charAt(index);
+            hash *= 0x01000193;
+        }
+        return "fnv1a-" + String.format("%08x", hash);
     }
 
     private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor) {

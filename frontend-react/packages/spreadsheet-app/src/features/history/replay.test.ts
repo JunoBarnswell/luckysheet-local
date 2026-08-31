@@ -4,6 +4,7 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
 import { createCellSetMutationParams } from '@react-sheets/sheet-features';
+import { createLocalCalculationSessionPort } from '@react-sheets/formula-engine';
 import {
   buildRestoreParams,
   describeRevisionMutations,
@@ -93,7 +94,7 @@ describe('history replay', () => {
       operationId: 'op-preview',
       createdAt: '2026-01-01T00:00:00.000Z',
       description: 'preview',
-    }, source.snapshot());
+    }, source.snapshot(), undefined, createLocalCalculationSessionPort());
 
     assert.notEqual(session.workbook, source);
     assert.equal(session.formula.getCellValue({ sheetId: 'sheet-1', row: 0, column: 1 }), 5);

@@ -22,7 +22,7 @@ import type {
   SparklineGroup,
   SparklineModel,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, DEFAULT_WORKBOOK_EDITING_OPTIONS, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, DEFAULT_WORKBOOK_EDITING_OPTIONS, isDynamicFilterType, normalizeFontFamily, pivotSourceIdentity, resolveFilterCellValue, sha256Hex } from '@react-sheets/core-model';
 import {
   canonicalExcelDateDayOfWeek,
   canonicalExcelDateFromParts,
@@ -39,6 +39,7 @@ import {
   parseFormula,
 } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { parseNativeDrawingPart, readNativeDrawingGraph, writeNativeDrawingPart, type DrawingGeometryContext } from './drawingml';
 import {
   child,
   children,
@@ -57,12 +58,14 @@ import {
   type OpcPackageGraph,
   type NativeRelationship,
   type NativeDocumentResourceLimits,
+  type NativeReviewGraph,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
+import { readReviewOoxml, writeReviewOoxml } from './review-ooxml';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -91,6 +94,9 @@ const REL_CORE_PROPERTIES = 'http://schemas.openxmlformats.org/package/2006/rela
 const REL_EXTENDED_PROPERTIES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties';
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
+const REL_COMMENTS = `${NS_DOC_REL}/comments`;
+const REL_THREADED_COMMENT = 'http://schemas.microsoft.com/office/2017/10/relationships/threadedComment';
+const REL_PERSON = 'http://schemas.microsoft.com/office/2017/10/relationships/person';
 const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
 const REACT_SHEETS_METADATA_PART = 'customXml/react-sheets-workbook.xml';
 const OOXML_MAX_ROW_INDEX = 1_048_575;
@@ -179,6 +185,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
 
   const normalizedFiles: Record<string, Uint8Array> = {};
   for (const [name, data] of Object.entries(files)) normalizedFiles[normalizePartName(name)] = data;
+  assertOoxmlPackageXmlBudget(normalizedFiles, effective);
   const relationships = readRelationships(normalizedFiles);
   const rootOfficeDocument = (relationships[''] ?? []).find((relation) => isRelationshipKind(relation.type, 'officeDocument'));
   const workbookPart = rootOfficeDocument ? resolveTarget('', rootOfficeDocument.target) : 'xl/workbook.xml';
@@ -203,6 +210,8 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
     ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById, dateSystem })
     : undefined;
   const nativeChartGraph = readNativeChartGraph({ files: normalizedFiles, relationships, sheetPartById });
+  const nativeDrawingGraph = readNativeDrawingGraph(normalizedFiles, relationships, sheetPartById);
+  const nativeReviewGraph = readNativeReviewGraph(normalizedFiles, relationships, sheetPartById);
   return {
     files: normalizedFiles,
     packageGraph: {
@@ -212,14 +221,32 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
       opaqueParts,
       relationships,
       sheetPartById,
+      assetPartById: {},
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
       dateSystem,
       format,
       profile: format.family === 'ooxml' ? format.profile : 'transitional',
+      resourceLimits: structuredClone(effective),
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
       ...(nativeChartGraph ? { nativeChartGraph } : {}),
+      nativeDrawingGraph,
+      nativeReviewGraph,
     },
   };
+}
+
+function assertOoxmlPackageXmlBudget(files: Record<string, Uint8Array>, limits: NativeDocumentResourceLimits): void {
+  for (const [name, data] of Object.entries(files)) {
+    if (!name.toLowerCase().endsWith('.xml')) continue;
+    if (data.byteLength > limits.maxXmlBytes) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XML part ${name} exceeds ${limits.maxXmlBytes} bytes`);
+    const root = parseXml(strFromU8(data));
+    assertOoxmlXmlDepth(root, limits.maxXmlDepth, name);
+  }
+}
+
+function assertOoxmlXmlDepth(node: XmlNode, limit: number, part: string, depth = 0): void {
+  if (depth > limit) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XML part ${part} exceeds depth ${limit}`);
+  for (const childNode of node.children) assertOoxmlXmlDepth(childNode, limit, part, depth + 1);
 }
 
 export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLoadedOoxmlOptions = {}): ParsedOpcPackageGraph {
@@ -253,14 +280,13 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors));
+  const cellBudget = { count: 0, limit: loaded.packageGraph.resourceLimits?.maxCells ?? DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells };
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors, cellBudget));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
-  const definedNames: Record<string, string> = {};
-  for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -270,7 +296,6 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
       id: `ooxml-theme-${styles.themeColors.join('').replace(/[^0-9a-f]/gi, '').slice(0, 64) || 'default'}`,
       colors: Object.fromEntries(styles.themeColors.map((color, index) => [`color${index}`, color])),
     },
-    definedNames,
     definedNameModels,
     dataModel: { sources: [], tables: [], relationships: [], views: [] },
     cellStyleTemplates: styles.namedCellStyles,
@@ -282,11 +307,48 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
     sheets,
   };
   applyReactSheetsMetadata(snapshot, files[REACT_SHEETS_METADATA_PART], loaded.packageGraph);
+  bindNativeAssetParts(snapshot, loaded.packageGraph);
   attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
   loaded.packageGraph.nativeChartGraph = projectNativeCharts(snapshot, loaded.packageGraph.nativeChartGraph, files, relationships, loaded.packageGraph.sheetPartById, loaded.packageGraph.nativePivotGraph);
   assertCanonicalWorkbookSnapshot(snapshot);
   applyPrintDefinedNames(snapshot);
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
+}
+
+/** Bind every canonical AssetRef to one verified OPC part during import. */
+function bindNativeAssetParts(snapshot: WorkbookSnapshot, pkg: OpcPackageGraph): void {
+  const required = new Map<string, { ref: import('@react-sheets/core-model').AssetRef; prefix: 'xl/media/' | 'xl/embeddings/' }>();
+  for (const sheet of snapshot.sheets) {
+    for (const row of Object.values(sheet.cells)) for (const cell of Object.values(row)) {
+      if (cell.presentation?.kind === 'image') required.set(cell.presentation.asset.assetId, { ref: cell.presentation.asset, prefix: 'xl/media/' });
+    }
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'image') required.set(payload.asset.assetId, { ref: payload.asset, prefix: 'xl/media/' });
+      if (payload.kind === 'embedded-object') required.set(payload.asset.assetId, { ref: payload.asset, prefix: 'xl/embeddings/' });
+    }
+  }
+  const hashCache = new Map<string, string>();
+  for (const [assetId, { ref, prefix }] of required) {
+    const mapped = pkg.assetPartById[assetId];
+    if (mapped) {
+      const bytes = pkg.parts[mapped];
+      if (!bytes || bytes.byteLength !== ref.byteLength || sha256Hex(bytes) !== ref.contentHash) throw new Error(`NATIVE_ASSET_PART_MISMATCH: ${assetId}`);
+      continue;
+    }
+    const matches = Object.entries(pkg.parts)
+      .filter(([name, bytes]) => name.startsWith(prefix) && bytes.byteLength === ref.byteLength)
+      .filter(([name, bytes]) => {
+        const hash = hashCache.get(name) ?? sha256Hex(bytes);
+        hashCache.set(name, hash);
+        return hash === ref.contentHash;
+      })
+      .map(([name]) => name)
+      .sort();
+    if (matches.length === 0) throw new Error(`NATIVE_ASSET_PART_MISSING: ${assetId}`);
+    // Asset identity is content-addressed; duplicate equal-byte package parts
+    // are equivalent, and the deterministic first part becomes the owner.
+    pkg.assetPartById[assetId] = matches[0]!;
+  }
 }
 
 function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): Extract<NativeDocumentFormat, { family: 'ooxml' }> {
@@ -310,9 +372,11 @@ function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: stri
 
 export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
-  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }> },
+  options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean; assetBytes?: Record<string, Uint8Array>; targetFormat?: Extract<NativeDocumentFormat, { family: 'ooxml' }>; limits?: Partial<NativeDocumentResourceLimits> },
   preserved?: OpcPackageGraph,
 ): ArrayBuffer {
+  const resourceLimits = { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...(options.limits ?? {}) };
+  assertSnapshotCellBudget(snapshot, resourceLimits.maxCells);
   const files = new Map<string, Uint8Array>();
   if (preserved) {
     for (const [name, data] of Object.entries(preserved.parts)) {
@@ -352,7 +416,8 @@ export function exportSnapshotToOpcPackageGraph(
   nativeUpdate.files = chartUpdate.files;
   nativeUpdate.relationships = chartUpdate.relationships;
   nativeUpdate.nativeChartGraph = chartUpdate.nativeChartGraph;
-  synchronizeImageAssets(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes);
+  assertNativeDisplayCellBudget(nativeUpdate.displayCellsBySheetPart, resourceLimits.maxCells);
+  synchronizeNativeDrawings(nativeUpdate.files, nativeUpdate.relationships, snapshot, sheetPartById, options.assetBytes, preserved);
   synchronizeEmbeddedAssets(nativeUpdate.files, snapshot, options.assetBytes);
   files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
@@ -375,8 +440,9 @@ export function exportSnapshotToOpcPackageGraph(
       options.preserveMacros === false ? filterMacroRelationships(part, originalRelationships, preserved) : originalRelationships,
       [...requiredHyperlinks, ...tableParts.required],
     );
-    sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [])));
+    const reviewRelationships = synchronizeReviewParts(files, relationships, sheet, part, preserved);
+    sheetRelationships[part] = reviewRelationships;
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, reviewRelationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [])));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -425,6 +491,7 @@ export function exportSnapshotToOpcPackageGraph(
       relationshipPartName(workbookPart),
       '_rels/.rels',
       '[Content_Types].xml',
+      ...[...files.keys()].filter((name) => name.startsWith('xl/drawings/') && name.endsWith('.xml')),
       ...Object.keys(sheetRelationships).map(relationshipPartName),
       ...Object.keys(nativeUpdate.relationships).map(relationshipPartName),
     ]);
@@ -433,18 +500,74 @@ export function exportSnapshotToOpcPackageGraph(
       if (!data) continue;
       files.set(name, strToU8(strFromU8(data)
         .replaceAll(NS_MAIN, 'http://purl.oclc.org/ooxml/spreadsheetml/main')
-        .replaceAll(NS_DOC_REL, 'http://purl.oclc.org/ooxml/officeDocument/relationships')));
+        .replaceAll(NS_DOC_REL, 'http://purl.oclc.org/ooxml/officeDocument/relationships')
+        .replaceAll('http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing', 'http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing')
+        .replaceAll('http://schemas.openxmlformats.org/drawingml/2006/main', 'http://purl.oclc.org/ooxml/drawingml/main')
+        .replaceAll('http://schemas.openxmlformats.org/drawingml/2006/chart', 'http://purl.oclc.org/ooxml/drawingml/chart')));
     }
   }
 
   const zipped: Record<string, Uint8Array> = {};
   for (const [name, data] of files) zipped[name] = data;
+  assertOoxmlOutputXmlBudget(files, resourceLimits);
   const zippedBytes = zipSync(zipped, { level: 6 });
+  if (zippedBytes.byteLength > resourceLimits.maxArchiveBytes) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX output exceeds ${resourceLimits.maxArchiveBytes} bytes`);
+  assertOoxmlCompressedBudget(zippedBytes, resourceLimits);
   return zippedBytes.buffer.slice(zippedBytes.byteOffset, zippedBytes.byteOffset + zippedBytes.byteLength) as ArrayBuffer;
+}
+
+function assertSnapshotCellBudget(snapshot: WorkbookSnapshot, limit: number): void {
+  let count = 0;
+  for (const sheet of snapshot.sheets) {
+    for (const columns of Object.values(sheet.cells)) {
+      count += Object.keys(columns).length;
+      if (count > limit) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX snapshot contains more than ${limit} cells`);
+    }
+  }
+}
+
+function assertNativeDisplayCellBudget(displayCells: Record<string, Record<string, Record<string, CellData>>>, limit: number): void {
+  let count = 0;
+  for (const rows of Object.values(displayCells)) for (const columns of Object.values(rows)) {
+    count += Object.keys(columns).length;
+    if (count > limit) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX native display cells exceed ${limit}`);
+  }
+}
+
+function assertOoxmlOutputXmlBudget(files: Map<string, Uint8Array>, limits: NativeDocumentResourceLimits): void {
+  if (files.size > limits.maxEntries) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX output contains more than ${limits.maxEntries} parts`);
+  let total = 0;
+  for (const [name, data] of files) {
+    total += data.byteLength;
+    if (total > limits.maxUncompressedBytes) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX output exceeds ${limits.maxUncompressedBytes} uncompressed bytes`);
+    if (data.byteLength > limits.maxEntryBytes) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX output part ${name} exceeds ${limits.maxEntryBytes} bytes`);
+    if (!name.toLowerCase().endsWith('.xml')) continue;
+    if (data.byteLength > limits.maxXmlBytes) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX output XML part ${name} exceeds ${limits.maxXmlBytes} bytes`);
+    assertOoxmlXmlDepth(parseXml(strFromU8(data)), limits.maxXmlDepth, name);
+  }
+}
+
+function assertOoxmlCompressedBudget(bytes: Uint8Array, limits: NativeDocumentResourceLimits): void {
+  let entries = 0;
+  let total = 0;
+  unzipSync(bytes, {
+    filter(file) {
+      entries += 1;
+      total += file.originalSize;
+      if (entries > limits.maxEntries || file.originalSize > limits.maxEntryBytes || total > limits.maxUncompressedBytes) {
+        throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX compressed output exceeds resource limits');
+      }
+      if (file.originalSize > limits.maxCompressionRatio * Math.max(file.size, 1)) {
+        throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX compressed output part ${file.name} exceeds compression ratio`);
+      }
+      return false;
+    },
+  });
 }
 
 export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookSnapshot): string[] {
   const features = new Set<string>(snapshot ? ['cells', 'styles'] : []);
+  if (pkg.nativeDrawingGraph?.nodes.some((node) => node.kind === 'unknown')) features.add('unknown-extension');
   for (const name of Object.keys(pkg.parts)) {
     const lower = name.toLowerCase();
     if (lower.includes('/charts/')) features.add('charts');
@@ -454,7 +577,7 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
     if (lower.includes('/slicers/') || lower.includes('slicer')) features.add('slicer');
     if (lower.includes('/timelines/') || lower.includes('timeline')) features.add('timeline');
     if (lower.includes('/theme/')) features.add('theme');
-    if (lower.includes('/comments')) features.add('comments');
+    if (lower.includes('/comments') || lower.includes('threadedcomment')) features.add('comments');
     // A drawing part is also the container for charts and native
     // Slicer/Timeline controls; it is not evidence of an image by itself.
     if (lower.includes('/media/') || lower.includes('/images/')) features.add('images');
@@ -488,52 +611,49 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
         else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
       }
     }
-    if (snapshot.definedNameModels?.length || Object.keys(snapshot.definedNames ?? {}).length) features.add('defined-names');
+    if (snapshot.definedNameModels.length) features.add('defined-names');
   }
   return [...features];
 }
 
-/** Emits canonical image assets into native DrawingML. Bytes are supplied by
- * AssetStore at the application boundary; no binary data enters snapshots. */
-function synchronizeImageAssets(
+/**
+ * Emit the canonical floating-object collection through one DrawingML owner.
+ * Recognized source anchors are replaced as a set; every unowned/unsupported
+ * anchor remains in the original drawing part.  This is deliberately one
+ * writer for pictures, shapes, text boxes and connectors so a save cannot
+ * create a second image-only drawing path.
+ */
+function synchronizeNativeDrawings(
   files: Record<string, Uint8Array>,
   relationships: Record<string, NativeRelationship[]>,
   snapshot: WorkbookSnapshot,
   sheetPartById: Record<string, string>,
   assetBytes: Record<string, Uint8Array> | undefined,
+  preserved?: OpcPackageGraph,
 ): void {
-  const imageEntries = snapshot.sheets.flatMap((sheet) => {
-    const entries: Array<{ sheet: SheetSnapshot; id: string; row: number; column: number; endRow: number; endColumn: number; asset: import('@react-sheets/core-model').AssetRef; name?: string }> = [];
-    for (const drawing of sheet.drawings) {
-      const payload = sheet.drawingPayloads[drawing.payloadId];
-      if (payload?.kind !== 'image') continue;
-      const row = drawing.anchor.row ?? 0;
-      const column = drawing.anchor.column ?? 0;
-      entries.push({ sheet, id: drawing.id, row, column, endRow: Math.max(row + 1, drawing.anchor.endRow ?? row + Math.max(1, Math.round(drawing.transform.height / 24))), endColumn: Math.max(column + 1, drawing.anchor.endColumn ?? column + Math.max(1, Math.round(drawing.transform.width / 96))), asset: payload.asset, name: payload.name ?? payload.altText });
-    }
+  for (const sheet of snapshot.sheets) {
+    const sheetPart = sheetPartById[sheet.id];
+    if (!sheetPart) throw new Error(`NATIVE_DRAWING_SHEET_PART_MISSING: ${sheet.id}`);
+    const geometry: DrawingGeometryContext = {
+      defaultRowHeightPx: sheet.defaultRowHeightPx,
+      defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+      rowHeightsPx: sheet.rowHeightsPx,
+      columnWidthsPx: sheet.columnWidthsPx,
+    };
+    const payloads: Record<string, import('@react-sheets/core-model').DrawingPayload> = structuredClone(sheet.drawingPayloads);
+    const drawings = structuredClone(sheet.drawings);
     for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) {
       if (cell.presentation?.kind !== 'image') continue;
       const row = Number(rowKey);
       const column = Number(columnKey);
-      entries.push({ sheet, id: `cell-image-${row}-${column}`, row, column, endRow: row + 1, endColumn: column + 1, asset: cell.presentation.asset, name: cell.presentation.altText });
+      const id = `cell-image-${sheet.id}-${row}-${column}`;
+      const payloadId = `${id}-payload`;
+      payloads[payloadId] = { kind: 'image', asset: structuredClone(cell.presentation.asset), altText: cell.presentation.altText, crop: cell.presentation.crop, effects: cell.presentation.effects };
+      drawings.push({ id, sheetId: sheet.id, kind: 'image', anchor: { kind: 'one-cell', row, column }, transform: { x: columnOffsetForExport(column, geometry), y: rowOffsetForExport(row, geometry), width: sheet.columnWidthsPx?.[column] ?? sheet.defaultColumnWidthPx, height: sheet.rowHeightsPx?.[row] ?? sheet.defaultRowHeightPx }, zIndex: Number.MAX_SAFE_INTEGER - row * 16_384 - column, payloadId });
     }
-    return entries;
-  });
-  if (!imageEntries.length) return;
-  if (!assetBytes) throw new Error('ASSET_EXPORT_REQUIRED: image bytes must be resolved from AssetStore before XLSX export');
-
-  const mediaPartFor = (asset: import('@react-sheets/core-model').AssetRef): string => {
-    const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType.split('/')[1]?.toLowerCase();
-    if (!extension || !['png', 'jpg', 'gif', 'webp', 'bmp'].includes(extension)) throw new Error(`UNSUPPORTED_FEATURE: XLSX image MIME type ${asset.mimeType}`);
-    const bytes = assetBytes[asset.assetId];
-    if (!bytes || bytes.byteLength !== asset.byteLength) throw new Error(`ASSET_EXPORT_MISSING: ${asset.assetId}`);
-    const part = `xl/media/${asset.assetId}.${extension}`;
-    files[part] = bytes.slice();
-    return part;
-  };
-  const grouped = new Map<string, typeof imageEntries>();
-  for (const entry of imageEntries) grouped.set(sheetPartById[entry.sheet.id]!, [...(grouped.get(sheetPartById[entry.sheet.id]!) ?? []), entry]);
-  for (const [sheetPart, entries] of grouped) {
+    const hasOwnedPart = preserved?.nativeDrawingGraph?.nodes.some((entry) => entry.drawingPart === resolveDrawingPartForSheet(sheetPart, relationships[sheetPart] ?? []));
+    const supported = drawings.some((drawing) => ['image', 'shape', 'textbox', 'connector'].includes(drawing.kind));
+    if (!supported && !hasOwnedPart) continue;
     let sheetRelations = relationships[sheetPart] ?? [];
     let drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
     let drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : undefined;
@@ -545,25 +665,113 @@ function synchronizeImageAssets(
       drawingRelation = sheetRelations.find((relation) => isRelationshipKind(relation.type, 'drawing'));
       relationships[sheetPart] = sheetRelations;
     }
-    const original = files[drawingPart] ? strFromU8(files[drawingPart]!) : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${NS_DOC_REL}"/>`;
-    const closing = '</xdr:wsDr>';
-    const position = original.lastIndexOf(closing);
-    if (position < 0) throw new Error(`ASSET_EXPORT_INVALID_DRAWING: ${drawingPart}`);
-    let drawingXml = original.slice(0, position);
-    let drawingRelations = relationships[drawingPart] ?? [];
-    const existingIds = descendants(parseXml(original), 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isSafeInteger);
-    let objectId = Math.max(0, ...existingIds, 0) + 1;
-    for (const entry of entries) {
-      const mediaPart = mediaPartFor(entry.asset);
-      drawingRelations = mergeRelationships(drawingRelations, [{ type: `${NS_DOC_REL}/image`, target: relativeTarget(drawingPart, mediaPart) }]);
-      const imageRelation = drawingRelations.find((relation) => isRelationshipKind(relation.type, 'image') && resolveTarget(drawingPart!, relation.target) === mediaPart);
-      if (!imageRelation) throw new Error(`ASSET_EXPORT_RELATIONSHIP_MISSING: ${entry.asset.assetId}`);
-      drawingXml += `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${entry.column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${entry.endColumn}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.endRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${objectId++}" name="${encodeXml(entry.name ?? entry.id)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="${NS_DOC_REL}" r:embed="${encodeXml(imageRelation.id)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
-    }
-    files[drawingPart] = strToU8(`${drawingXml}${closing}`);
-    relationships[drawingPart] = drawingRelations;
-    files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(drawingRelations));
+    const original = files[drawingPart] ? strFromU8(files[drawingPart]!) : undefined;
+    const owners = preserved?.nativeDrawingGraph?.nodes.filter((entry) => entry.drawingPart === drawingPart) ?? [];
+    const result = writeNativeDrawingPart({ drawingPart, originalXml: original, originalRelationships: relationships[drawingPart] ?? [], drawings, drawingPayloads: payloads, geometry, assetBytes, ownership: owners });
+    files[drawingPart] = strToU8(result.xml);
+    for (const [name, data] of Object.entries(result.media)) files[name] = data;
+    relationships[drawingPart] = result.relationships;
+    files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(result.relationships));
+    files[relationshipPartName(sheetPart)] = strToU8(buildRelationshipsXml(sheetRelations));
   }
+}
+
+function resolveDrawingPartForSheet(sheetPart: string, relationships: readonly NativeRelationship[]): string | undefined {
+  const relation = relationships.find((entry) => isRelationshipKind(entry.type, 'drawing'));
+  return relation ? resolveTarget(sheetPart, relation.target) : undefined;
+}
+
+function columnOffsetForExport(column: number, geometry: DrawingGeometryContext): number {
+  let total = 0;
+  for (let index = 0; index < column; index += 1) total += geometry.columnWidthsPx?.[index] ?? geometry.defaultColumnWidthPx;
+  return total;
+}
+
+function rowOffsetForExport(row: number, geometry: DrawingGeometryContext): number {
+  let total = 0;
+  for (let index = 0; index < row; index += 1) total += geometry.rowHeightsPx?.[index] ?? geometry.defaultRowHeightPx;
+  return total;
+}
+
+/** Update canonical Notes/Comments parts without touching unrelated review resources. */
+function synchronizeReviewParts(
+  files: Map<string, Uint8Array>,
+  existingRelationships: NativeRelationship[],
+  sheet: SheetSnapshot,
+  sheetPart: string,
+  preserved?: OpcPackageGraph,
+): NativeRelationship[] {
+  const notes = Object.entries(sheet.review.notesById).map(([id, note]) => {
+    const key = Object.entries(sheet.review.notesByCell).find(([, noteId]) => noteId === id)?.[0];
+    if (!key) throw new Error(`NATIVE_REVIEW_NOTE_UNINDEXED: ${id}`);
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
+    if (!Number.isSafeInteger(row) || row < 0 || !Number.isSafeInteger(column) || column < 0) {
+      throw new Error(`NATIVE_REVIEW_NOTE_ADDRESS_INVALID: ${id}`);
+    }
+    return { row, column, note: structuredClone(note) };
+  });
+  const threads = Object.values(sheet.review.threadsById).map((thread) => structuredClone(thread));
+  const output = writeReviewOoxml({ sheetId: sheet.id, notes, threads });
+  let relationships = existingRelationships.map((entry) => ({ ...entry }));
+  const ownership = preserved?.nativeReviewGraph?.sheets.find((entry) => entry.sheetPart === sheetPart);
+  if (ownership && notes.length === 0 && ownership.commentsPart) {
+    files.delete(ownership.commentsPart);
+    relationships = relationships.filter((entry) => resolveTarget(sheetPart, entry.target) !== ownership.commentsPart || !isRelationshipKind(entry.type, 'comments'));
+  }
+  if (ownership && threads.length === 0 && ownership.threadedCommentsPart) {
+    files.delete(ownership.threadedCommentsPart);
+    files.delete(relationshipPartName(ownership.threadedCommentsPart));
+    const sharedPersons = Boolean(ownership.personsPart && preserved?.nativeReviewGraph?.sheets.some((entry) => entry !== ownership && entry.personsPart === ownership.personsPart));
+    if (!sharedPersons && ownership.personsPart) files.delete(ownership.personsPart);
+    relationships = relationships.filter((entry) => resolveTarget(sheetPart, entry.target) !== ownership.threadedCommentsPart || !isRelationshipKind(entry.type, 'threadedComment'));
+  }
+  if (output.commentsXml) {
+    const existing = relationships.find((entry) => isRelationshipKind(entry.type, 'comments'));
+    const part = existing ? resolveTarget(sheetPart, existing.target) : nextReviewPart(files, 'xl/comments/comments', '.xml');
+    if (existing && files.has(part)) assertReviewXmlRewriteSafe(strFromU8(files.get(part)!), 'comments', part);
+    files.set(part, strToU8(output.commentsXml));
+    relationships = mergeRelationships(relationships, [{ type: REL_COMMENTS, target: relativeTarget(sheetPart, part) }]);
+  }
+  if (output.threadedCommentsXml && output.personsXml) {
+    const existing = relationships.find((entry) => isRelationshipKind(entry.type, 'threadedComment'));
+    const threadedPart = existing ? resolveTarget(sheetPart, existing.target) : nextReviewPart(files, 'xl/threadedComments/threadedComment', '.xml');
+    if (existing && files.has(threadedPart)) assertReviewXmlRewriteSafe(strFromU8(files.get(threadedPart)!), 'threadedComments', threadedPart);
+    files.set(threadedPart, strToU8(output.threadedCommentsXml));
+    const threadedRelationshipsPart = relationshipPartName(threadedPart);
+    const existingThreadedRelationships = files.has(threadedRelationshipsPart)
+      ? readRelationshipsFromXml(strFromU8(files.get(threadedRelationshipsPart)!))
+      : [];
+    const existingPerson = existingThreadedRelationships.find((entry) => isRelationshipKind(entry.type, 'person'));
+    const personsPart = existingPerson ? resolveTarget(threadedPart, existingPerson.target) : 'xl/persons/person.xml';
+    files.set(personsPart, strToU8(output.personsXml));
+    const nextThreadedRelationships = mergeRelationships(existingThreadedRelationships, [{ type: REL_PERSON, target: relativeTarget(threadedPart, personsPart) }]);
+    files.set(threadedRelationshipsPart, strToU8(buildRelationshipsXml(nextThreadedRelationships)));
+    relationships = mergeRelationships(relationships, [{ type: REL_THREADED_COMMENT, target: relativeTarget(sheetPart, threadedPart) }]);
+  }
+  return relationships;
+}
+
+function assertReviewXmlRewriteSafe(xml: string, rootName: 'comments' | 'threadedComments', part: string): void {
+  const root = firstElement(parseXml(xml), rootName);
+  const allowed = rootName === 'comments' ? new Set(['authors', 'commentList']) : new Set(['threadedComment']);
+  const unknown = root.children.find((node) => !allowed.has(localName(node.name)));
+  if (unknown) throw new Error(`NATIVE_REVIEW_UNKNOWN_NODE_EDIT_UNSAFE: ${part} ${localName(unknown.name)}`);
+}
+
+function nextReviewPart(files: Map<string, Uint8Array>, prefix: string, suffix: string): string {
+  let index = 1;
+  let part = `${prefix}${index}${suffix}`;
+  while (files.has(part)) { index += 1; part = `${prefix}${index}${suffix}`; }
+  return part;
+}
+
+function readRelationshipsFromXml(xml: string): NativeRelationship[] {
+  const root = firstElement(parseXml(xml), 'Relationships');
+  return children(root, 'Relationship').flatMap((node) => node.attrs.Id && node.attrs.Type && node.attrs.Target
+    ? [{ id: node.attrs.Id, type: node.attrs.Type, target: node.attrs.Target, ...(node.attrs.TargetMode ? { targetMode: node.attrs.TargetMode } : {}) }]
+    : []);
 }
 
 /** Local embedded objects are carried as content-addressed OPC embedding parts.
@@ -593,6 +801,7 @@ function parseSheet(
   styles: StyleContext,
   canonicalReferenceDate?: CanonicalExcelDateParts,
   sheetDescriptors: readonly SheetDescriptor[] = [],
+  cellBudget?: { count: number; limit: number },
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml), 'worksheet');
@@ -629,6 +838,10 @@ function parseSheet(
       assertOoxmlAddress(address.row, address.column, `${descriptor.name}!${cellNode.attrs.r ?? ''}`);
       maxColumn = Math.max(maxColumn, address.column);
       maxRow = Math.max(maxRow, address.row);
+      if (cellBudget) {
+        cellBudget.count += 1;
+        if (cellBudget.count > cellBudget.limit) throw new Error(`NATIVE_DOCUMENT_RESOURCE_LIMIT: XLSX materializes more than ${cellBudget.limit} cells`);
+      }
       cellEntries.push({ node: cellNode, row: address.row, column: address.column });
     }
   }
@@ -697,6 +910,30 @@ function parseSheet(
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
   const rowCount = Math.max(1, maxRow + 1);
   const columnCount = Math.max(1, maxColumn + 1);
+  const drawingRelation = (pkg.relationships[descriptor.part] ?? []).find((relation) => isRelationshipKind(relation.type, 'drawing'));
+  const drawingPart = drawingRelation ? resolveTarget(descriptor.part, drawingRelation.target) : undefined;
+  const nativeDrawings = drawingPart && files[drawingPart]
+    ? parseNativeDrawingPart({
+      drawingPart,
+      sheetId: descriptor.id,
+      xml: strFromU8(files[drawingPart]),
+      relationships: pkg.relationships[drawingPart] ?? [],
+      files,
+      geometry: { defaultRowHeightPx, defaultColumnWidthPx, rowHeightsPx, columnWidthsPx },
+      existingOwnership: pkg.nativeDrawingGraph?.nodes.filter((entry) => entry.drawingPart === drawingPart),
+    })
+    : { drawings: [], drawingPayloads: {}, ownership: [], assetPartById: {} };
+  if (pkg.nativeDrawingGraph && drawingPart) {
+    pkg.nativeDrawingGraph.nodes = [
+      ...pkg.nativeDrawingGraph.nodes.filter((entry) => entry.drawingPart !== drawingPart),
+      ...nativeDrawings.ownership,
+    ];
+  }
+  for (const [assetId, part] of Object.entries(nativeDrawings.assetPartById)) {
+    const current = pkg.assetPartById[assetId];
+    if (current && current !== part) throw new Error(`NATIVE_ASSET_PART_CONFLICT: ${assetId}`);
+    pkg.assetPartById[assetId] = part;
+  }
   return {
     kind: 'worksheet',
     id: descriptor.id,
@@ -709,8 +946,8 @@ function parseSheet(
     pivots: [],
     sparklines: nativeSparklines.sparklines,
     ...(nativeSparklines.groups.length ? { sparklineGroups: nativeSparklines.groups } : {}),
-    drawings: [],
-    drawingPayloads: {},
+    drawings: nativeDrawings.drawings,
+    drawingPayloads: nativeDrawings.drawingPayloads,
     conditionalFormats,
     dataValidations,
     defaultRowHeightPx,
@@ -1674,7 +1911,13 @@ function buildWorksheetXml(
   sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [],
 ): string {
   validateOoxmlExchangeBoundary(sheet);
-  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
+  const extraNamespaces = originalRoot
+    ? Object.entries(originalRoot.attrs)
+      .filter(([key]) => key.startsWith('xmlns:') && key !== 'xmlns:r')
+      .map(([key, value]) => ` ${key}="${encodeXml(value)}"`)
+      .join('')
+    : '';
+  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"${extraNamespaces}>`;
   if (sheet.tabColor || sheet.outline?.groups.length) xml += `<sheetPr>${sheet.tabColor ? `<tabColor rgb="${ooxmlRgb(sheet.tabColor)}"/>` : ''}${sheet.outline?.groups.length ? '<outlinePr summaryBelow="1" summaryRight="1"/>' : ''}</sheetPr>`;
   const dimension = inferDimension(sheet);
   if (dimension) xml += `<dimension ref="${dimension}"/>`;
@@ -1778,6 +2021,18 @@ function buildWorksheetXml(
     else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
   } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) {
     xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+  }
+  if (originalRoot) {
+    const ownedWorksheetNodes = new Set([
+      'sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'cols', 'sheetData', 'sheetProtection',
+      'autoFilter', 'mergeCells', 'conditionalFormatting', 'dataValidations', 'hyperlinks', 'printOptions',
+      'pageMargins', 'pageSetup', 'headerFooter', 'rowBreaks', 'colBreaks', 'tableParts', 'pivotTableParts',
+      'drawing', 'legacyDrawing', 'oleObjects', 'controls', 'picture', 'extLst',
+    ]);
+    // Unknown worksheet nodes are part-owned, not discarded.  They are
+    // appended after the canonical nodes so a future owner can replace them
+    // deliberately; silently dropping them would corrupt a native package.
+    for (const node of originalRoot.children) if (!ownedWorksheetNodes.has(localName(node.name))) xml += serializeXml(node);
   }
   xml += '</worksheet>';
   return xml;
@@ -2104,7 +2359,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     xml += `<sheet name="${encodeXml(sheet?.name ?? descriptor.name)}" sheetId="${encodeXml(descriptor.id.replace(/^sheet-/, ''))}" r:id="${id}"${sheet?.hidden ? ' state="hidden"' : ''}/>`;
   }
   xml += '</sheets>';
-  const names: DefinedNameModel[] = structuredClone(snapshot.definedNameModels ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })));
+  const names: DefinedNameModel[] = structuredClone(snapshot.definedNameModels);
   for (const document of snapshot.printDocuments ?? []) {
     const sheet = snapshot.sheets.find((candidate) => candidate.id === document.sheetId);
     if (!sheet) continue;
@@ -2174,7 +2429,7 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   for (const name of files.keys()) {
     if (!name.startsWith('xl/media/')) continue;
     const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
-    const mediaTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    const mediaTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' };
     if (mediaTypes[extension]) defaults.set(extension, mediaTypes[extension]);
   }
   for (const name of files.keys()) {
@@ -2207,6 +2462,12 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
       overrides.set(`/${name}`, 'application/vnd.ms-excel.TimelineCache+xml');
     } else if (name.startsWith('xl/timelines/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.ms-excel.timeline+xml');
+    } else if (name.startsWith('xl/threadedComments/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.threadedComment+xml');
+    } else if (name.startsWith('xl/persons/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.person+xml');
+    } else if (name.startsWith('xl/comments/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml');
     }
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${[...defaults.entries()].map(([extension, type]) => `<Default Extension="${encodeXml(extension)}" ContentType="${encodeXml(type)}"/>`).join('')}${[...overrides.entries()].filter(([part]) => files.has(part.slice(1))).map(([part, type]) => `<Override PartName="${encodeXml(part)}" ContentType="${encodeXml(type)}"/>`).join('')}</Types>`;
@@ -2383,22 +2644,8 @@ function excelSheetName(name: string): string {
 }
 
 function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['review'] {
-  const review: SheetSnapshot['review'] = { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} };
-  const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
-  if (!relation) return review;
-  const part = resolveTarget(descriptor.part, relation.target);
-  const bytes = files[part];
-  if (!bytes) return review;
-  const commentsRoot = firstElement(parseXml(strFromU8(bytes)), 'comments');
-  const authors = children(child(commentsRoot, 'authors'), 'author').map(textContent);
-  for (const comment of children(child(commentsRoot, 'commentList'), 'comment')) {
-    const ref = parseA1(comment.attrs.ref ?? '');
-    if (!ref) continue;
-    const id = `note-${descriptor.id}-${ref.row}-${ref.column}`;
-    review.notesByCell[`${ref.row}:${ref.column}`] = id;
-    review.notesById[id] = { id, author: authors[Number(comment.attrs.author) || 0] ?? 'Unknown', text: descendants(comment, 't').map(textContent).join(''), createdAt: new Date(0).toISOString(), visible: false };
-  }
-  return review;
+  void root;
+  return readReviewOoxml({ sheetId: descriptor.id, sheetPart: descriptor.part, files, relationships: pkg.relationships[descriptor.part] ?? [] });
 }
 
 function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescriptor[]): DefinedNameModel[] {
@@ -2421,7 +2668,7 @@ function applyPrintDefinedNames(snapshot: WorkbookSnapshot): void {
     }
     return document;
   };
-  for (const name of snapshot.definedNameModels ?? []) {
+  for (const name of snapshot.definedNameModels) {
     if (name.scope !== 'sheet' || !name.sheetId) continue;
     const formula = name.formula.replace(/^=/, '');
     if (name.name === '_xlnm.Print_Area') {
@@ -2943,6 +3190,29 @@ function readRelationships(files: Record<string, Uint8Array>): Record<string, Na
     });
   }
   return result;
+}
+
+function readNativeReviewGraph(
+  files: Record<string, Uint8Array>,
+  relationships: Record<string, NativeRelationship[]>,
+  sheetPartById: Record<string, string>,
+): NativeReviewGraph {
+  const sheets = Object.values(sheetPartById).map((sheetPart) => {
+    const sheetRelationships = relationships[sheetPart] ?? [];
+    const comments = sheetRelationships.find((entry) => isRelationshipKind(entry.type, 'comments'));
+    const threaded = sheetRelationships.find((entry) => isRelationshipKind(entry.type, 'threadedComment'));
+    const threadedCommentsPart = threaded ? resolveTarget(sheetPart, threaded.target) : undefined;
+    const threadedRelationships = threadedCommentsPart ? relationships[threadedCommentsPart] ?? [] : [];
+    const person = threadedRelationships.find((entry) => isRelationshipKind(entry.type, 'person'));
+    return {
+      sheetPart,
+      ...(comments ? { commentsPart: resolveTarget(sheetPart, comments.target) } : {}),
+      ...(threadedCommentsPart ? { threadedCommentsPart } : {}),
+      ...(person && threadedCommentsPart ? { personsPart: resolveTarget(threadedCommentsPart, person.target) } : {}),
+    };
+  }).filter((entry) => entry.commentsPart || entry.threadedCommentsPart);
+  void files;
+  return { schema: 'NativeReviewGraph', sheets };
 }
 
 function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Record<string, NativeRelationship[]>, workbookPart: string): Record<string, string> {

@@ -12,9 +12,7 @@ import {
 } from '@react-sheets/protocol';
 import { buildOperation } from '../../collaboration/helpers';
 import {
-  exchangeImportDocument,
-  exchangeSaveAsDocument,
-  exchangeSaveDocument,
+  NativeDocumentTransactionRegistry,
 } from '../native-document';
 import {
   type WorkspaceRecord,
@@ -60,6 +58,7 @@ export interface WorkbookCatalogServiceOptions {
   unitIdFactory?: () => string;
   remoteAvailable?: () => boolean;
   shareTokenProvider?: import('@react-sheets/protocol').ShareTokenProvider;
+  nativeDocumentTransactions?: NativeDocumentTransactionRegistry;
 }
 
 export interface WorkbookCatalogMoveInput {
@@ -235,6 +234,7 @@ function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): Workboo
 }
 
 export class WorkbookCatalogService {
+  private readonly nativeTransactions: NativeDocumentTransactionRegistry;
   readonly persistence: WorkspacePersistence;
   readonly remote?: WorkbookCatalogRemoteClient;
   readonly resolver: WorkbookResolver;
@@ -248,6 +248,7 @@ export class WorkbookCatalogService {
     this.now = options.now ?? (() => new Date());
     this.unitIdFactory = options.unitIdFactory ?? (() => createWorkbookUnitId());
     this.remoteAvailable = options.remoteAvailable;
+    this.nativeTransactions = options.nativeDocumentTransactions ?? new NativeDocumentTransactionRegistry();
     this.resolver = new WorkbookResolver({
       persistence: this.persistence,
       remote: this.remote,
@@ -384,64 +385,80 @@ export class WorkbookCatalogService {
         if (!isRemoteUnavailable(error) && !(error instanceof ApiRequestError && [401, 403].includes(error.status))) throw error;
       }
     }
-    const imported = await exchangeImportDocument({
-      fileName: input.fileName,
-      buffer: input.buffer,
-      options: { ...input.options, compatibilityTarget: compatibilityTarget ?? 'B' },
-      workerPort: input.workerPort,
-      execution: input.execution,
-    });
-    if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'Native document import did not produce a workbook snapshot');
     const unitId = this.unitIdFactory();
-    const importedSnapshot = reidentifySnapshot(imported.snapshot, unitId);
-    const destination = input.destination ?? (this.remote ? 'remote' : 'local');
-    const metadata: WorkbookCreateMetadata = {
-      source: 'document-import',
-      spaceId: input.spaceId,
-      folderId: input.folderId,
-    };
-    let record: WorkspaceRecord;
-    if (destination === 'remote') {
-      const api = this.requireRemote();
-      const response = await api.createWorkbookImport({
-        artifact: new Blob([input.buffer], { type: nativeDocumentMimeType(input.fileName) }),
-        artifactFileName: input.fileName,
-        snapshot: importedSnapshot,
-        format: `${imported.artifact.format.family}/${imported.artifact.format.variant}`,
-        nativeMetadata: {
-          schema: 'NativeDocumentMetadata',
-          codecRevision: imported.artifact.codecRevision,
-          detectedFeatures: imported.artifact.detectedFeatures,
-          compatibility: imported.report,
-        },
-        ...metadata,
+    const transaction = this.nativeTransactions.getOrCreate(unitId);
+    try {
+      const imported = await transaction.import({
+        fileName: input.fileName,
+        buffer: input.buffer,
+        options: { ...input.options, compatibilityTarget: compatibilityTarget ?? 'B' },
+        workerPort: input.workerPort,
+        execution: input.execution,
       });
-      const serverSnapshot = assertSnapshotUnitId(response.snapshot, importedSnapshot.unitId);
-      record = await this.persistence.checkpointWithArtifact(serverSnapshot, 1, response.summary.revision, 'remote', imported.artifact, undefined, {
-        location: 'remote', lifecycle: 'active', source: 'document-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
-        sourceFileName: input.fileName,
-      });
-    } else {
-      record = await this.persistence.checkpointWithArtifact(importedSnapshot, 1, 0, 'local-only', imported.artifact, undefined, {
-        location: 'local', lifecycle: 'active', source: 'document-import', role: 'owner',
-        sourceFileName: input.fileName,
-      });
+      if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'Native document import did not produce a workbook snapshot');
+      const importedSnapshot = reidentifySnapshot(imported.snapshot, unitId);
+      const destination = input.destination ?? (this.remote ? 'remote' : 'local');
+      const metadata: WorkbookCreateMetadata = {
+        source: 'document-import',
+        spaceId: input.spaceId,
+        folderId: input.folderId,
+      };
+      let record: WorkspaceRecord;
+      if (destination === 'remote') {
+        const api = this.requireRemote();
+        const format = `${imported.artifact.format.family}/${imported.artifact.format.variant}`;
+        if (!imported.artifact.sourceSnapshotHash) {
+          throw new WorkbookCatalogError('invalid-input', 'Native document import did not bind the source file to its canonical snapshot');
+        }
+        const response = await api.createWorkbookImport({
+          artifact: new Blob([input.buffer], { type: nativeDocumentMimeType(input.fileName) }),
+          artifactFileName: input.fileName,
+          snapshot: importedSnapshot,
+          format,
+          nativeMetadata: {
+            schema: 'NativeDocumentMetadata',
+            format,
+            codecRevision: imported.artifact.codecRevision,
+            checksum: imported.artifact.checksum,
+            byteLength: imported.artifact.sourceBytes.byteLength,
+            sourceSnapshotHash: imported.artifact.sourceSnapshotHash,
+            detectedFeatures: imported.artifact.detectedFeatures,
+            compatibility: imported.report,
+          },
+          ...metadata,
+        });
+        const serverSnapshot = assertSnapshotUnitId(response.snapshot, importedSnapshot.unitId);
+        record = await this.persistence.checkpointWithArtifact(serverSnapshot, 1, response.summary.revision, 'remote', imported.artifact, undefined, {
+          location: 'remote', lifecycle: 'active', source: 'document-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
+          sourceFileName: input.fileName,
+        });
+      } else {
+        record = await this.persistence.checkpointWithArtifact(importedSnapshot, 1, 0, 'local-only', imported.artifact, undefined, {
+          location: 'local', lifecycle: 'active', source: 'document-import', role: 'owner',
+          sourceFileName: input.fileName,
+        });
+      }
+      return {
+        entry: localEntry(record, destination === 'remote'),
+        snapshot: clone(record.snapshot),
+        report: imported.report,
+        artifact: imported.artifact,
+      };
+    } catch (error) {
+      this.nativeTransactions.delete(unitId);
+      throw error;
     }
-    return {
-      entry: localEntry(record, destination === 'remote'),
-      snapshot: clone(record.snapshot),
-      report: imported.report,
-      artifact: imported.artifact,
-    };
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
     const resolved = await this.resolve(unitId);
+    const transaction = this.nativeTransactions.getOrCreate(unitId);
     let artifact = await this.persistence.nativeDocuments.load(unitId);
+    if (artifact && !transaction.artifact) await transaction.attach(artifact);
     if (!artifact && this.canUseRemote()) {
       try {
         const remoteArtifact = await this.requireRemote().getWorkbookSourceArtifact(unitId);
-        const imported = await exchangeImportDocument({
+        const imported = await transaction.import({
           fileName: remoteArtifact.metadata.fileName,
           buffer: await remoteArtifact.artifact.arrayBuffer(),
           execution: 'worker',
@@ -455,8 +472,10 @@ export class WorkbookCatalogService {
       }
     }
     const exported = input.fileName
-      ? await exchangeSaveAsDocument(resolved.snapshot, { ...input, fileName: input.fileName, artifact: artifact ?? undefined })
-      : await exchangeSaveDocument(resolved.snapshot, artifact ?? undefined, { ...input, fileName: artifact?.fileName ?? `${resolved.snapshot.name || 'workbook'}.ssjson` });
+      ? await transaction.export(resolved.snapshot, { ...input, fileName: input.fileName, mode: 'save-as' })
+      : transaction.artifact
+        ? await transaction.save(resolved.snapshot, { ...input, fileName: artifact?.fileName ?? transaction.artifact.fileName })
+        : await transaction.export(resolved.snapshot, { ...input, fileName: `${resolved.snapshot.name || 'workbook'}.ssjson`, mode: 'export' });
     if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', 'Native document export did not produce a file');
     return { unitId, fileName: exported.fileName, buffer: exported.buffer, report: exported.report };
   }
@@ -619,6 +638,7 @@ export class WorkbookCatalogService {
     assertRole(current, 'purge', ['owner']);
     if (this.canUseRemote()) await this.requireRemote().purgeWorkbook(unitId);
     await this.persistence.purge(unitId);
+    this.nativeTransactions.delete(unitId);
   }
 
   async setFavorite(unitId: string, favorite: boolean): Promise<WorkbookCatalogEntry> {

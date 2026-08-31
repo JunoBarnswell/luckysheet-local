@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createLocalCalculationSessionPort } from '@react-sheets/formula-engine';
 import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { WorkbookSession } from './workbook-session';
+
+function createFormulaSession(): WorkbookSession {
+  return new WorkbookSession({ calculationSessionPort: createLocalCalculationSessionPort() });
+}
 
 function cellValue(app: WorkbookSession, row: number, column: number): string {
   return app.getUiSnapshot().selectedSheet.getCell(row, column)?.value ?? '';
@@ -9,7 +14,7 @@ function cellValue(app: WorkbookSession, row: number, column: number): string {
 
 describe('WorkbookSession formula integration', () => {
   it('derives the AutoSum current region from resolved formula results', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     for (const [row, formula] of [[0, '=10'], [1, '=20'], [2, '=30']] as const) {
       app.runCommand('sheet.cell.set', { sheetId, row, column: 0, value: { formula } });
@@ -26,7 +31,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('recalculates dependent formulas automatically when source values change', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -54,7 +59,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('manual recalculation mode defers updates until recalculateFormulas()', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.setRecalculationMode('manual');
     app.runCommand('sheet.cell.set', {
@@ -69,6 +74,7 @@ describe('WorkbookSession formula integration', () => {
       column: 1,
       value: { formula: '=A1*3' },
     });
+    await app.waitForFormulaCalculation();
     assert.equal(cellValue(app, 0, 1), '6');
 
     app.runCommand('sheet.cell.set', {
@@ -84,7 +90,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('resolves defined names through workbook.name.set', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('workbook.name.set', { name: 'TaxRate', value: '0.1' });
     app.runCommand('sheet.cell.set', {
@@ -108,7 +114,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('exposes canonical defined-name CRUD and calculation state through Session APIs', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     const created = app.setDefinedName({ name: 'LocalRate', formula: '0.25', scope: 'sheet', sheetId });
     assert.equal(created.scope, 'sheet');
@@ -124,7 +130,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('resolves Go To through the active sheet scoped name before workbook scope', () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.setDefinedName({ name: 'Target', formula: 'C3', scope: 'workbook' });
     app.setDefinedName({ name: 'Target', formula: 'D4', scope: 'sheet', sheetId });
@@ -133,7 +139,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('tracks dynamic-array spill ranges and child values', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -153,7 +159,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes formulas after range paste and cell insert shifts', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 2 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A1*3', value: null } });
@@ -179,7 +185,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes clear and emits #REF! after a deleted-row reference', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { value: 7 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A2*2', value: null } });
@@ -198,7 +204,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('rejects direct writes into a dynamic-array spill child and rolls back the model', async () => {
-    const app = new WorkbookSession();
+    const app = createFormulaSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=SEQUENCE(2,2,1,1)', value: null } });
     await app.waitForFormulaCalculation();

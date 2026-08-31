@@ -13,6 +13,7 @@ import {
 interface RegisteredPivotSource {
   revision: string;
   source: PivotSourceIndex;
+  generation: number;
 }
 
 export interface PivotWorkerScope {
@@ -38,7 +39,14 @@ export class PivotTaskEvaluator {
     if (request.kind === 'source-register') {
       try {
         assertPivotSourceIndex(request.source);
-        this.sources.set(request.sourceIdentity, { revision: request.sourceRevision, source: request.source });
+        const current = this.sources.get(request.sourceIdentity);
+        if (current && request.generation < current.generation) {
+          return sourceFailure(request, new Error('Pivot source registration generation is stale'), 'PIVOT_TASK_REVISION_MISMATCH');
+        }
+        if (current && request.generation === current.generation && current.revision !== request.sourceRevision) {
+          return sourceFailure(request, new Error('Pivot source registration revision changed within one generation'), 'PIVOT_TASK_REVISION_MISMATCH');
+        }
+        this.sources.set(request.sourceIdentity, { revision: request.sourceRevision, source: request.source, generation: request.generation });
         return envelope(request, { status: 'accepted', sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision });
       } catch (error) {
         return sourceFailure(request, error, 'PIVOT_SOURCE_INVALID');
@@ -46,11 +54,12 @@ export class PivotTaskEvaluator {
     }
     if (request.kind === 'source-release') {
       const current = this.sources.get(request.sourceIdentity);
-      if (current?.revision === request.sourceRevision) this.sources.delete(request.sourceIdentity);
+      if (current?.revision === request.sourceRevision && request.generation >= current.generation) this.sources.delete(request.sourceIdentity);
       return envelope(request, { status: 'accepted', sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision });
     }
     const registered = this.sources.get(request.sourceIdentity);
     if (!registered) return pivotTaskFailure(request, new Error(`Pivot source ${request.sourceIdentity} is unavailable`), 'PIVOT_SOURCE_UNAVAILABLE');
+    if (request.generation < registered.generation) return pivotTaskFailure(request, new Error('Pivot source generation is stale'), 'PIVOT_TASK_REVISION_MISMATCH');
     if (registered.revision !== request.revisions.sourceRevision) {
       return pivotTaskFailure(request, new Error(`Pivot source revision mismatch: ${registered.revision} != ${request.revisions.sourceRevision}`), 'PIVOT_TASK_REVISION_MISMATCH');
     }
@@ -84,7 +93,7 @@ export function installPivotWorkerEntry(scope: PivotWorkerScope): () => void {
 function sourceFailure(
   request: Extract<PivotTaskRequest, { kind: 'source-register' }>,
   error: unknown,
-  code: 'PIVOT_SOURCE_INVALID',
+  code: 'PIVOT_SOURCE_INVALID' | 'PIVOT_TASK_REVISION_MISMATCH',
 ): PivotTaskResult {
   const message = error instanceof Error ? error.message : 'Pivot source registration failed';
   return {
@@ -96,7 +105,7 @@ function sourceFailure(
       pivotId: 'unbound',
       sourceIdentity: request.sourceIdentity,
       sourceRevision: request.sourceRevision,
-      recovery: 'fix-source',
+      recovery: code === 'PIVOT_TASK_REVISION_MISMATCH' ? 'retry' : 'fix-source',
     },
   };
 }

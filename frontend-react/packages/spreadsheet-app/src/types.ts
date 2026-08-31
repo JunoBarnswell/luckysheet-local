@@ -12,8 +12,6 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'pivotAnalyze'
-  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'

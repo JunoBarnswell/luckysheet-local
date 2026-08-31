@@ -1,4 +1,4 @@
-import type { CellEditorConfig, HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, RichTextRun, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
+import type { CellEditorConfig, CellHyperlink, HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, RichTextRun, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
 
 export type LayerId = string;
 
@@ -109,6 +109,8 @@ export interface CellRenderData {
   merge?: MergeInfo;
   overlay?: ConditionalRenderOverlay;
   hasComment?: boolean;
+  /** Canonical activation metadata; render/hit layers must not infer links from text. */
+  hyperlink?: CellHyperlink;
   invalid?: boolean;
   /** Center-across-selection content span; it is a render projection only. */
   alignmentSpan?: { startColumn: number; endColumn: number; isAnchor: boolean };

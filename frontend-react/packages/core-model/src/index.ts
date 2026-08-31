@@ -29,10 +29,10 @@ import type {
 } from './domain';
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
-import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
+import { assertCanonicalDataRegionOverlays, type WorkbookDimensionMetrics, type WorkbookSnapshot } from './snapshot';
 import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
-export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, isSupportedAssetMime, type AssetRef } from './asset';
+export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, isSupportedAssetMime, sha256Hex, type AssetRef } from './asset';
 export {
   checkboxStateFromValue,
   checkboxValueForState,
@@ -202,9 +202,6 @@ export interface CellData {
   formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
   formulaValue?: import('./domain').FormulaValue;
-  /** @deprecated prefer hyperlinkDetail */
-  hyperlink?: string;
-  hyperlinkDetail?: CellHyperlink;
   /** Native AutoFilter color/icon identity resolved at the import boundary. */
   filterMetadata?: {
     color?: { target: 'cell' | 'font'; dxfId?: number; value?: string };
@@ -524,6 +521,8 @@ export {
   createWorkbookSnapshot,
   migrateStoredWorkbookSnapshot,
   assertCanonicalWorkbookSnapshot,
+  assertCanonicalDataRegionOverlays,
+  WORKBOOK_SNAPSHOT_SCHEMA_REVISION,
   MAX_DRAWING_SOURCE_CELLS,
   type WorkbookSnapshot,
   type WorkbookDimensionMetrics,
@@ -956,6 +955,7 @@ class DataRegionBoundsIndex {
 
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
+  private orderedRowsCache: Row[] | null = null;
   private readonly rowBounds = new SparseAxisBounds();
   private readonly columnBounds = new SparseAxisBounds();
   private cellCount = 0;
@@ -975,6 +975,7 @@ export class CellMatrix {
     if (!rowMap) {
       rowMap = new Map<Column, CellData>();
       this.rows.set(row, rowMap);
+      this.orderedRowsCache = null;
     }
     const fontFamily = cell.style?.fontFamily;
     const normalizedCell = fontFamily === undefined
@@ -994,7 +995,10 @@ export class CellMatrix {
     const rowMap = this.rows.get(row);
     const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
-    if (rowMap?.size === 0) this.rows.delete(row);
+    if (rowMap?.size === 0) {
+      this.rows.delete(row);
+      this.orderedRowsCache = null;
+    }
     if (existed) {
       this.cellCount -= 1;
       this.rowBounds.remove(row);
@@ -1010,6 +1014,7 @@ export class CellMatrix {
   clear(): void {
     if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
+    this.orderedRowsCache = null;
     this.rowBounds.clear();
     this.columnBounds.clear();
     this.cellCount = 0;
@@ -1037,6 +1042,13 @@ export class CellMatrix {
   forEach(callback: (cell: CellData, row: Row, column: Column) => void): void {
     for (const [row, columns] of this.rows) {
       for (const [column, cell] of columns) callback(cell, row, column);
+    }
+  }
+
+  /** Iterate authored cells without exposing the backing maps or requiring a range scan. */
+  *entries(): IterableIterator<{ cell: CellData; row: Row; column: Column }> {
+    for (const [row, columns] of this.rows) {
+      for (const [column, cell] of columns) yield { cell, row, column };
     }
   }
 
@@ -1072,12 +1084,21 @@ export class CellMatrix {
     endColumn: Column,
     callback: (cell: CellData, row: Row, column: Column) => void,
   ): void {
-    for (const [row, columns] of this.rows) {
-      if (row < startRow || row > endRow) continue;
+    const orderedRows = this.orderedRows();
+    const startIndex = lowerBound(orderedRows, startRow);
+    for (let index = startIndex; index < orderedRows.length; index += 1) {
+      const row = orderedRows[index]!;
+      if (row > endRow) break;
+      const columns = this.rows.get(row);
+      if (!columns) throw new Error(`CellMatrix row index is stale: ${row}`);
       for (const [column, cell] of columns) {
         if (column >= startColumn && column <= endColumn) callback(cell, row, column);
       }
     }
+  }
+
+  private orderedRows(): readonly Row[] {
+    return this.orderedRowsCache ??= [...this.rows.keys()].sort((left, right) => left - right);
   }
 
   clone(): CellMatrix {
@@ -1154,6 +1175,17 @@ export class CellMatrix {
   placeRegion(items: ReadonlyArray<{ row: Row; column: Column; cell: CellData }>): void {
     for (const item of items) this.set(item.row, item.column, structuredClone(item.cell));
   }
+}
+
+function lowerBound(values: readonly number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (values[middle]! < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 export class WorksheetModel {
@@ -1410,7 +1442,7 @@ export class WorkbookModel {
   readonly cellStyleTemplates = new Map<string, CellStyleTemplate>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
-  /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
+  /** The sole canonical defined-name store. */
   readonly definedNameModels: DefinedNameModel[] = [];
   dimensionMetrics: WorkbookDimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
   collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
@@ -1419,20 +1451,6 @@ export class WorkbookModel {
   editingOptions: WorkbookEditingOptions = normalizeWorkbookEditingOptions(DEFAULT_WORKBOOK_EDITING_OPTIONS);
   /** The sole theme owner. Clipboard and OOXML boundaries carry a reference to this state. */
   theme: WorkbookTheme = { id: 'workbook-theme-default', colors: {} };
-
-  /**
-   * Formula engines still accept a workbook-scope string map. This is a
-   * read-only projection of `definedNameModels`, never an independently
-   * mutable source of truth. Sheet-scoped names are resolved through
-   * `getDefinedName(name, sheetId)` by callers that have a sheet context.
-   */
-  get definedNames(): Readonly<Record<string, string>> {
-    const result: Record<string, string> = {};
-    for (const entry of this.definedNameModels) {
-      if (entry.scope === 'workbook') result[entry.name] = entry.formula;
-    }
-    return result;
-  }
 
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): void {
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
@@ -1753,7 +1771,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 9,
+      version: 10,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -1761,9 +1779,6 @@ export class WorkbookModel {
       calculationSettings: structuredClone(this.calculationSettings),
       editingOptions: structuredClone(this.editingOptions),
       theme: structuredClone(this.theme),
-      // Keep the legacy formula-map field as a derived wire projection for
-      // import/export consumers. It is never hydrated as mutable state.
-      definedNames: { ...this.definedNames },
       definedNameModels: structuredClone(this.definedNameModels),
       dataModel: this.getDataModel(),
       printDocuments: this.listPrintDocuments(),
@@ -1819,7 +1834,9 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 9) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
+    if (Object.prototype.hasOwnProperty.call(snapshot as object, 'definedNames')) throw new Error('Workbook snapshot contains the removed definedNames field');
+    if (!Array.isArray(snapshot.definedNameModels)) throw new Error('Workbook snapshot definedNameModels must be an array');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
@@ -1828,17 +1845,13 @@ export class WorkbookModel {
     workbook.setCalculationSettings(snapshot.calculationSettings);
     workbook.setEditingOptions(snapshot.editingOptions);
     workbook.sheets.clear();
-    // `definedNameModels` is canonical. The optional map is accepted only as
-    // a boundary projection for older snapshots and is immediately folded
-    // into the canonical scoped collection.
-    const definedNameModels = snapshot.definedNameModels
-      ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
-    for (const entry of definedNameModels) workbook.setDefinedName(entry);
+    for (const entry of snapshot.definedNameModels) workbook.setDefinedName(entry);
     for (const table of snapshot.dataModel.tables) workbook.dataModel.tables.set(table.id, structuredClone(table));
     for (const source of snapshot.dataModel.sources) workbook.addDataSource(source);
     for (const relationship of snapshot.dataModel.relationships) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
     for (const view of snapshot.dataModel.views) workbook.dataModel.views.set(view.id, structuredClone(view));
     for (const input of snapshot.sheets) {
+      assertCanonicalDataRegionOverlays(input);
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       sheet.kind = input.kind;
       sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
@@ -1847,15 +1860,10 @@ export class WorkbookModel {
       const matrix = CellMatrix.fromJSON(input.cells);
       matrix.forEach((cell, row, column) => {
         const normalized = structuredClone(cell);
-        const legacy = normalized.hyperlinkDetail
-          ?? (normalized.hyperlink ? {
-            id: `legacy-hyperlink-${row}-${column}`,
-            target: { kind: 'url' as const, url: normalized.hyperlink },
-          } : undefined);
-        delete normalized.hyperlink;
-        delete normalized.hyperlinkDetail;
+        if ('hyperlink' in normalized || 'hyperlinkDetail' in normalized) {
+          throw new Error(`Cell ${input.id}!${row}:${column} contains legacy hyperlink metadata`);
+        }
         sheet.cells.set(row, column, normalized);
-        if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
       });
       if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
       sheet.merges.push(...structuredClone(input.merges));

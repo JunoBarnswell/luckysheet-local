@@ -9,9 +9,16 @@ import org.springframework.data.domain.Pageable;
 public interface OperationEntityRepository extends JpaRepository<OperationEntity, String> {
     Optional<OperationEntity> findByUnitIdAndActorSubjectAndClientSequence(String unitId, String actorSubject, long clientSequence);
 
-    List<OperationEntity> findByUnitIdOrderByRevisionDesc(String unitId);
+    /**
+     * The only replay query.  Both bounds are required so a checkpoint or a
+     * revision reader can never turn a local replay into a full history scan.
+     */
+    List<OperationEntity> findByUnitIdAndRevisionGreaterThanAndRevisionLessThanEqualOrderByRevisionAsc(
+            String unitId, long fromExclusive, long toInclusive, Pageable pageable);
 
-    List<OperationEntity> findByUnitIdAndRevisionLessThanOrderByRevisionDesc(String unitId, long revision, Pageable pageable);
+    /** Bounded history page used by the human-facing revision log. */
+    List<OperationEntity> findByUnitIdAndRevisionGreaterThanEqualAndRevisionLessThanOrderByRevisionDesc(
+            String unitId, long fromInclusive, long toExclusive, Pageable pageable);
 
     void deleteByUnitId(String unitId);
 }

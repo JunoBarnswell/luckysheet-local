@@ -8,6 +8,7 @@ export * from './evaluator';
 export * from './formula-engine';
 export * from './calculation-worker-entry';
 export * from './calculation-browser-task-port';
+export * from './calculation-local-task-port';
 export * from './calculation-state';
 export * from './functions';
 export * from './defined-names';

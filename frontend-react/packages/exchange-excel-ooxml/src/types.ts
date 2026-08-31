@@ -324,6 +324,37 @@ export interface NativeChartGraph {
 }
 
 /**
+ * DrawingML ownership ledger.  The package graph owns every native anchor;
+ * only entries marked `editable-owned` may be replaced by the canonical
+ * drawing collection.  All other anchors stay byte-for-byte in the source
+ * drawing part and are never projected into the workbook model.
+ */
+export interface NativeDrawingNodeOwnership {
+  drawingPart: string;
+  nativeObjectId: number;
+  kind: 'image' | 'shape' | 'textbox' | 'connector' | 'chart' | 'unknown';
+  drawingId?: string;
+  ownership: 'editable-owned' | 'preserved-owned';
+}
+
+export interface NativeDrawingGraph {
+  schema: 'NativeDrawingGraph';
+  nodes: NativeDrawingNodeOwnership[];
+}
+
+export interface NativeReviewPartOwnership {
+  sheetPart: string;
+  commentsPart?: string;
+  threadedCommentsPart?: string;
+  personsPart?: string;
+}
+
+export interface NativeReviewGraph {
+  schema: 'NativeReviewGraph';
+  sheets: NativeReviewPartOwnership[];
+}
+
+/**
  * The native package update is deliberately kept outside WorkbookSnapshot.
  * It carries only reachable OOXML parts/relationships and derived display
  * cells needed by Excel; calculation/result trees never cross this boundary.
@@ -464,12 +495,18 @@ export interface OpcPackageGraph {
   opaqueParts: Record<string, Uint8Array>;
   relationships: Record<string, NativeRelationship[]>;
   sheetPartById: Record<string, string>;
+  /** Explicit content-addressed ownership; import never guesses a part name from assetId. */
+  assetPartById: Record<string, string>;
   contentTypesXml?: Uint8Array;
   dateSystem: DateSystem;
   format: Extract<NativeDocumentFormat, { family: 'ooxml' }>;
   profile: 'transitional' | 'strict';
+  /** Effective limits used while materializing this package. */
+  resourceLimits?: NativeDocumentResourceLimits;
   nativePivotGraph?: NativePivotGraph;
   nativeChartGraph?: NativeChartGraph;
+  nativeDrawingGraph?: NativeDrawingGraph;
+  nativeReviewGraph?: NativeReviewGraph;
 }
 
 export interface FeatureOwnershipResult {

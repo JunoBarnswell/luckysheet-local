@@ -175,7 +175,13 @@ export function useEditorCommandController({
 
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
-  const pivotFields: PivotFieldDefinition[] = pivotTree?.fields.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
+  // The Pivot definition owns its field identities.  During a worker refresh
+  // `pivotTree` is temporarily absent; falling back to the active worksheet's
+  // used range at that point changes a 23-column source into the Pivot output
+  // (often a single `Column 1` field) and makes the pending layout reference
+  // unknown value fields.  Keep the catalog stable until the canonical Pivot
+  // mutation publishes a new definition.
+  const pivotFields: PivotFieldDefinition[] = activePivot?.fieldCatalog.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
   const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
@@ -443,7 +449,7 @@ export function useEditorCommandController({
       case "column.hide": session.hideColumnsAtPrimary(); return true;
       case "zoom.in": session.setZoom(session.getZoom() + 10); return true;
       case "zoom.out": session.setZoom(session.getZoom() - 10); return true;
-      case "table.create": case "table.create.legacy": dispatchSessionIntent({ type: "dialog.open", dialog: "create-table" }); return true;
+      case "table.create": dispatchSessionIntent({ type: "dialog.open", dialog: "create-table" }); return true;
       case "chart.insert": session.insertChart(); return true;
       case "edit.begin": session.cellEdit.dispatch({ type: 'begin.request', source: 'f2', surface: 'grid' }); return true;
       case "drawing.remove": session.removeSelectedDrawing(); return true;

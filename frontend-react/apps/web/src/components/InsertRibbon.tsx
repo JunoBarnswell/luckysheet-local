@@ -1,22 +1,27 @@
 import React from 'react';
 import { AssetIcon, Button, DropdownMenu, Inline, Stack, Text, type IconName, type RibbonLayoutState } from '@react-sheets/ui-system';
-import { EXCEL_KEY_TIP_BINDINGS, type RibbonCommandId, type RibbonSurfaceDefinition } from '@react-sheets/spreadsheet-app';
-import type { ChartDrawingPayload, DrawingConnectorType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import { EXCEL_KEY_TIP_BINDINGS, type CompiledFeatureSurfaceSchema, type RibbonCommandId, type RibbonSurfaceDefinition } from '@react-sheets/spreadsheet-app';
+import type { ChartDrawingPayload, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
 import { insertText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
 import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
-import { INSERT_CHART_FAMILIES, INSERT_CONNECTOR_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS, type InsertChartFamilyDefinition, type InsertChartFamilyVariant } from './insert-ribbon-catalog';
+import { INSERT_CHART_FAMILIES, INSERT_CONNECTOR_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS, type InsertChartFamilyDefinition, type InsertChartFamilyVariant } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
   layout: RibbonLayoutState;
   disabled: boolean;
+  featureSurfaceSchema: CompiledFeatureSurfaceSchema;
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => React.ReactNode;
   onInsertChart: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype']) => void;
   onInsertSparkline: (type: SparklineModel['type']) => void;
   onInsertShape: (type: ShapeDrawingPayload['type']) => void;
   onInsertConnector: (type: DrawingConnectorType) => void;
+  onInsertFormControl: (type: FormControlType) => void;
+  onOpenMoreCharts: () => void;
+  canExecute?: (commandId: string) => boolean;
+  canInsertConnector?: boolean;
 }
 
 const FLUENT_ASSETS: Partial<Record<IconName, string>> = { table: '/icons/fluent/ic_fluent_table_24_regular.svg', 'form-control': '/icons/fluent/ic_fluent_form_24_regular.svg', picture: '/icons/fluent/ic_fluent_image_24_regular.svg', 'shape-square': '/icons/fluent/ic_fluent_shapes_24_regular.svg', 'shape-circle': '/icons/fluent/ic_fluent_shapes_24_regular.svg', chart: '/icons/fluent/ic_fluent_chart_multiple_24_regular.svg', 'chart-column': '/icons/fluent/ic_fluent_data_bar_vertical_24_regular.svg', 'chart-line': '/icons/fluent/ic_fluent_data_line_24_regular.svg', 'chart-pie': '/icons/fluent/ic_fluent_data_pie_24_regular.svg', 'chart-scatter': '/icons/fluent/ic_fluent_data_scatter_24_regular.svg', filter: '/icons/fluent/ic_fluent_filter_24_regular.svg', link: '/icons/fluent/ic_fluent_link_24_regular.svg', comment: '/icons/fluent/ic_fluent_comment_24_regular.svg', checkbox: '/icons/fluent/ic_fluent_form_24_regular.svg', camera: '/icons/fluent/ic_fluent_screenshot_24_regular.svg' };
@@ -67,7 +72,7 @@ const chartGallerySections = (family: InsertChartFamilyDefinition): readonly { t
   return [{ title: [insertText('zh-CN', family.labelKey), insertText('en-US', family.labelKey)], variants: family.variants }];
 };
 
-function chartFamilyMenu(locale: Locale, family: InsertChartFamilyDefinition, disabled: boolean, surfaceId: string, onInsertChart: InsertRibbonProps['onInsertChart']): React.ReactNode {
+function chartFamilyMenu(locale: Locale, family: InsertChartFamilyDefinition, disabled: boolean, surfaceId: string, onInsertChart: InsertRibbonProps['onInsertChart'], onOpenMoreCharts: InsertRibbonProps['onOpenMoreCharts']): React.ReactNode {
   return <Stack gap="none" className="w-[284px] max-w-[284px] overflow-hidden rounded-md border border-slate-300 bg-white p-0 shadow-lg">
     {chartGallerySections(family).map((section, index) => section.variants.length > 0 ? <Stack key={`${family.id}.${index}`} gap="none" className={`${index > 0 ? 'border-t border-slate-200' : ''} px-3 pb-3 pt-3`}>
       <Text size="sm" weight="semibold" className="mb-1 text-slate-800">{section.title[locale === 'zh-CN' ? 0 : 1]}</Text>
@@ -75,12 +80,13 @@ function chartFamilyMenu(locale: Locale, family: InsertChartFamilyDefinition, di
         {section.variants.map((variant) => { const icon = variant.chartType === 'line' ? 'chart-line' : variant.chartType === 'area' ? 'chart-area' : variant.chartType === 'pie' || variant.chartType === 'doughnut' ? 'chart-pie' : variant.chartType === 'scatter' || variant.chartType === 'bubble' ? 'chart-scatter' : family.icon; const node = fluentIcon(icon, 'lg'); return <Button key={variant.id} aria-label={chartVariantLabel(locale, variant)} data-ribbon-surface={surfaceId} data-ribbon-variant={variant.id} title={chartVariantLabel(locale, variant)} disabled={disabled} icon={node ? undefined : icon} iconNode={node} size="sm" variant="ghost" className="!h-[68px] !w-[58px] !min-w-[58px] flex-col gap-0.5 rounded-none px-0 text-[10px] leading-3 [&>img]:!h-9 [&>img]:!w-9 [&>svg]:!h-9 [&>svg]:!w-9" onClick={() => onInsertChart(variant.chartType, variant.subtype)}><Text size="xs" className="max-w-[56px] truncate">{chartVariantLabel(locale, variant)}</Text></Button>; })}
       </Inline>
     </Stack> : null)}
-    <Button aria-label={locale === 'zh-CN' ? '更多图表' : 'More Charts'} iconNode={fluentIcon('chart', 'md')} iconOnly={false} disabled={disabled} size="sm" variant="ghost" className="!h-8 !w-full justify-start rounded-none border-t border-slate-200 px-3 text-xs">{locale === 'zh-CN' ? '更多图表(M)...' : 'More Charts...'}</Button>
+    <Button aria-label={locale === 'zh-CN' ? '更多图表' : 'More Charts'} iconNode={fluentIcon('chart', 'md')} iconOnly={false} disabled={disabled} size="sm" variant="ghost" className="!h-8 !w-full justify-start rounded-none border-t border-slate-200 px-3 text-xs" onClick={onOpenMoreCharts}>{locale === 'zh-CN' ? '更多图表(M)...' : 'More Charts...'}</Button>
   </Stack>;
 }
 
-export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertSparkline, onInsertShape, onInsertConnector }: InsertRibbonProps) {
+export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, renderCommand, onInsertChart, onInsertSparkline, onInsertShape, onInsertConnector, onInsertFormControl, onOpenMoreCharts, canExecute, canInsertConnector = false }: InsertRibbonProps) {
   const isNarrow = layout.mode === 'narrow';
+  const permitted = (commandId: string): boolean => !disabled && (!canExecute || canExecute(commandId));
 
   /**
    * SpreadJS parity: for chartBuilder in wide mode, render a 2-row × 4-column grid
@@ -94,9 +100,9 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       const primary = family.variants[0]!;
       const familyLabel = insertText(locale, family.labelKey);
       return <Inline key={family.id} gap="none" className="items-stretch">
-        <Button aria-label={familyLabel} data-ribbon-surface={surfaceId} data-ribbon-variant={family.id} title={familyLabel} icon={fluentIcon(family.icon, 'md') ? undefined : family.icon} iconNode={fluentIcon(family.icon, 'md')} iconOnly disabled={disabled} size="sm" variant="ghost" className={CHART_ICON_BTN} onClick={() => onInsertChart(primary.chartType, primary.subtype)} />
-        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={disabled} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
-          {chartFamilyMenu(locale, family, disabled, surfaceId, onInsertChart)}
+        <Button aria-label={familyLabel} data-ribbon-surface={surfaceId} data-ribbon-variant={family.id} title={familyLabel} icon={fluentIcon(family.icon, 'md') ? undefined : family.icon} iconNode={fluentIcon(family.icon, 'md')} iconOnly disabled={!permitted('chart.insert')} size="sm" variant="ghost" className={CHART_ICON_BTN} onClick={() => onInsertChart(primary.chartType, primary.subtype)} />
+        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={!permitted('chart.insert')} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
+          {chartFamilyMenu(locale, family, !permitted('chart.insert'), surfaceId, onInsertChart, onOpenMoreCharts)}
         </DropdownMenu>
       </Inline>;
     };
@@ -112,25 +118,26 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
     );
   };
 
-  const renderSplitGallery = (surface: RibbonSurfaceDefinition, title: string, icon: React.ComponentProps<typeof Button>['icon'], variants: React.ReactNode[], onSelect: () => void): React.ReactNode => (
+  const renderSplitGallery = (surface: RibbonSurfaceDefinition, title: string, icon: React.ComponentProps<typeof Button>['icon'], variants: React.ReactNode[], onSelect: () => void, actionDisabled = disabled): React.ReactNode => (
     <Inline key={surface.id} gap="none" className="items-stretch">
-      <RibbonLarge compact={isNarrow} disabled={disabled} icon={icon} keyTip={keyTipFor(surface.commandId ?? '')} onClick={onSelect} surfaceId={surface.id} title={title}>
+      <RibbonLarge compact={isNarrow} disabled={actionDisabled} icon={icon} keyTip={keyTipFor(surface.commandId ?? '')} onClick={onSelect} surfaceId={surface.id} title={title}>
         {title}
       </RibbonLarge>
-      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[104px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
+      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={actionDisabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[104px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
         <Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack>
       </DropdownMenu>
     </Inline>
   );
 
   const galleryItems = (commandId: RibbonCommandId, surfaceId: string): React.ReactNode[] => {
-    if (commandId === 'chartBuilder') return INSERT_CHART_FAMILIES.flatMap((family) => family.variants.map((variant) => variantButton({ id: variant.id, icon: family.icon, label: chartVariantLabel(locale, variant), disabled, onSelect: () => onInsertChart(variant.chartType, variant.subtype), surfaceId })));
-    if (commandId === 'sparkline') return INSERT_SPARKLINE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertSparkline(variant.value), surfaceId }));
+    if (commandId === 'chartBuilder') return INSERT_CHART_FAMILIES.flatMap((family) => family.variants.map((variant) => variantButton({ id: variant.id, icon: family.icon, label: chartVariantLabel(locale, variant), disabled: !permitted('chart.insert'), onSelect: () => onInsertChart(variant.chartType, variant.subtype), surfaceId })));
+    if (commandId === 'sparkline') return INSERT_SPARKLINE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('sparkline.insert'), onSelect: () => onInsertSparkline(variant.value), surfaceId }));
+    if (commandId === 'forms') return INSERT_FORM_CONTROL_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('drawing.add.form-control'), onSelect: () => onInsertFormControl(variant.value), surfaceId }));
     if (commandId === 'shapesLines') return INSERT_SHAPE_GALLERY.flatMap((category) => [
       <Text key={`${category.id}.label`} size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, category.labelKey)}</Text>,
-      ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertShape(variant.value), surfaceId })),
+      ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('drawing.add.shape'), onSelect: () => onInsertShape(variant.value), surfaceId })),
       <Text key="connectors.label" size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, 'connectorCategory')}</Text>,
-      ...INSERT_CONNECTOR_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertConnector(variant.value), surfaceId })),
+      ...INSERT_CONNECTOR_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !canInsertConnector || !permitted('drawing.add.connector'), onSelect: () => onInsertConnector(variant.value), surfaceId })),
     ]);
     return [];
   };
@@ -145,15 +152,17 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
 
     const variants = galleryItems(surface.commandId, surface.id);
     if (variants.length > 0) {
-      const title = insertText(locale, surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : 'shape');
+      const title = insertText(locale, surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : surface.commandId === 'forms' ? 'formControl' : 'shape');
       if (mode === 'menu') return <React.Fragment key={surface.id}>{variants}</React.Fragment>;
       if (surface.commandId === 'sparkline') {
-        if (mode === 'wide' && !isNarrow) return <Inline key={surface.id} gap="none" className="h-[104px] w-[181px] min-w-[181px] items-stretch justify-center">{INSERT_SPARKLINE_VARIANTS.map((variant) => <RibbonLarge key={variant.id} disabled={disabled} icon={fluentIcon(variant.icon, 'lg') ? undefined : variant.icon} iconNode={fluentIcon(variant.icon, 'lg')} surfaceId={variant.id} title={insertText(locale, variant.labelKey)} className="!w-[58px] !min-w-[58px] !max-w-[58px]" onClick={() => onInsertSparkline(variant.value)}>{insertText(locale, variant.labelKey)}</RibbonLarge>)}</Inline>;
+        if (mode === 'wide' && !isNarrow) return <Inline key={surface.id} gap="none" className="h-[104px] w-[181px] min-w-[181px] items-stretch justify-center">{INSERT_SPARKLINE_VARIANTS.map((variant) => <RibbonLarge key={variant.id} disabled={!permitted('sparkline.insert')} icon={fluentIcon(variant.icon, 'lg') ? undefined : variant.icon} iconNode={fluentIcon(variant.icon, 'lg')} surfaceId={variant.id} title={insertText(locale, variant.labelKey)} className="!w-[58px] !min-w-[58px] !max-w-[58px]" onClick={() => onInsertSparkline(variant.value)}>{insertText(locale, variant.labelKey)}</RibbonLarge>)}</Inline>;
         const first = INSERT_SPARKLINE_VARIANTS[0];
-        return renderSplitGallery(surface, title, 'sparkline', variants, () => onInsertSparkline(first.value));
+        return renderSplitGallery(surface, title, 'sparkline', variants, () => onInsertSparkline(first.value), !permitted('sparkline.insert'));
       }
+      if (surface.commandId === 'forms') return renderSplitGallery(surface, title, 'form-control', variants, () => onInsertFormControl(INSERT_FORM_CONTROL_VARIANTS[0]!.value), !permitted('drawing.add.form-control'));
       const icon = surface.commandId === 'chartBuilder' ? 'chart-column' : 'shape-square';
-      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={disabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} keyTip={keyTipFor(surface.commandId)} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
+      const galleryDisabled = surface.commandId === 'chartBuilder' ? !permitted('chart.insert') : !permitted('drawing.add.shape');
+      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={galleryDisabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} keyTip={keyTipFor(surface.commandId)} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
     }
 
     // SpreadJS parity: 'large', 'tile', 'gallery', and 'split' all render as full-height tiles.
@@ -165,5 +174,5 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
     return <React.Fragment key={surface.id}>{renderCommand(surface.commandId, mode === 'menu' ? { className: 'w-full justify-start', iconNode, ribbonSurfaceId: surface.id } : { tile: !isNarrow && tile, className: illustrationWidth, iconNode, ribbonSurfaceId: surface.id })}</React.Fragment>;
   };
 
-  return <RibbonLayoutRenderer tab="insert" locale={locale} layout={layout} renderCommand={renderCommand} renderSurface={(surface, context) => renderSurface(surface, context.mode)} />;
+  return <RibbonLayoutRenderer tab="insert" locale={locale} layout={layout} featureSurfaceSchema={featureSurfaceSchema} renderCommand={renderCommand} renderSurface={(surface, context) => renderSurface(surface, context.mode)} />;
 }

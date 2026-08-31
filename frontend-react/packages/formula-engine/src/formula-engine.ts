@@ -26,21 +26,25 @@ import { findFormulaComponents } from './circular';
 import { createSnapshotVisibilityResolver, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSettings, type WorkbookCalculationMode, type WorkbookCalculationSettings } from './calculation-settings';
 import {
-  assertCalculationTaskRequest,
-  InlineCalculationTaskPort,
-  type CalculationTaskPort,
-  type CalculationTaskReport,
-  type CalculationTaskRequest,
-  type CalculationTaskResult,
+  assertCalculationSessionRequest,
+  CALCULATION_DELTA_PROTOCOL,
+  CALCULATION_DELTA_VERSION,
+  type CalculationDeltaReport,
+  type CalculationDeltaRequest,
+  type CalculationSessionPort,
+  type CalculationSessionRequest,
+  type CalculationSessionResult,
+  type FormulaCalculationDelta,
+  type FormulaInputDelta,
 } from './calculation-task-port';
 import {
-  BrowserCalculationTaskPort,
+  BrowserCalculationSessionPort,
   createBrowserCalculationWorker,
   type CalculationBrowserWorkerFactory,
 } from './calculation-browser-task-port';
 import {
-  assertFormulaCalculationSnapshot,
-  type FormulaCalculationSnapshot,
+  assertFormulaCalculationBootstrap,
+  type FormulaCalculationBootstrap,
 } from './calculation-state';
 import {
   anchorDisplayValue,
@@ -97,13 +101,13 @@ export interface FormulaEngineOptions {
   readonly collationContext?: Partial<WorkbookCollationContext>;
   readonly calculationSettings?: Partial<WorkbookCalculationSettings>;
   readonly rowVisibilityResolver?: RowVisibilityResolver;
+  /** SSR/Node hosts must inject their explicit calculation session transport. */
+  readonly calculationSessionPort?: CalculationSessionPort;
 }
 
-export interface CalculationTaskPortOptions {
+export interface CalculationSessionPortOptions {
   /** Allows deterministic tests or a host-owned browser Worker factory. */
   readonly workerFactory?: CalculationBrowserWorkerFactory;
-  /** Set false only for explicitly synchronous hosts. */
-  readonly useWorker?: boolean;
 }
 
 export type RecalculationMode = WorkbookCalculationMode;
@@ -132,8 +136,12 @@ export class FormulaEngine {
   private calculationGeneration = 0;
   private nextTaskSequence = 0;
   private activeTaskId: string | null = null;
-  private activeTaskPort: CalculationTaskPort | null = null;
-  private defaultTaskPort: CalculationTaskPort | null = null;
+  private activeTaskPort: CalculationSessionPort | null = null;
+  private defaultTaskPort: CalculationSessionPort | null = null;
+  private readonly ownsDefaultTaskPort: boolean;
+  private calculationSessionId: string | null = null;
+  private sessionIsOpen = false;
+  private sessionPort: CalculationSessionPort | null = null;
   private readonly dateSystem: ExcelDateSystem;
   private readonly canonicalReferenceDate?: CanonicalExcelDateParts;
   private readonly numericContext: ExcelNumericContext;
@@ -141,9 +149,19 @@ export class FormulaEngine {
   private calculationCycleSequence = 0;
   private activeCalculationEntropy?: CalculationEntropyContext;
   private readonly collationContext: WorkbookCollationContext;
-  private readonly rowVisibilityResolver?: RowVisibilityResolver;
+  private rowVisibilityResolver?: RowVisibilityResolver;
   private calculationSettings: WorkbookCalculationSettings;
   private iterationFallbackValues?: ReadonlyMap<string, FormulaValue>;
+  /** Static AST dependencies and runtime-resolved dynamic dependencies share
+   * one RangeIndex but remain separated here so a new evaluation can replace
+   * only its dynamic closure. */
+  private readonly staticDependencies = new Map<string, readonly FormulaDependency[]>();
+  private readonly dynamicDependencies = new Map<string, Map<string, FormulaDependency>>();
+  private readonly pendingInputDeltas = new Map<string, FormulaInputDelta>();
+  private readonly formulaAddresses = new Map<string, CellAddress>();
+  private pendingSessionDelta: Omit<FormulaCalculationDelta, 'cells'> = {};
+  private formulaGraphDirty = true;
+  private formulaGraphNodes: readonly { readonly address: CellAddress; readonly dependencies: readonly FormulaDependency[] }[] = [];
 
   private readonly cells = new Map<string, StoredCell>();
 
@@ -161,29 +179,31 @@ export class FormulaEngine {
     this.calculationEntropySeed = options.calculationEntropySeed?.trim() || 'react-sheets-calculation';
     this.collationContext = normalizeWorkbookCollation(options.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
     this.rowVisibilityResolver = options.rowVisibilityResolver;
+    this.defaultTaskPort = options.calculationSessionPort ?? null;
+    this.ownsDefaultTaskPort = options.calculationSessionPort === undefined;
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
 
-  /** Rebuild an isolated engine from a structured-clone-safe calculation snapshot. */
-  static fromCalculationSnapshot(snapshot: FormulaCalculationSnapshot): FormulaEngine {
-    assertFormulaCalculationSnapshot(snapshot);
+  /** Rebuild a Worker-owned engine from the one-time session bootstrap. */
+  static fromCalculationBootstrap(bootstrap: FormulaCalculationBootstrap): FormulaEngine {
+    assertFormulaCalculationBootstrap(bootstrap);
     const engine = new FormulaEngine({
-      defaultSheetId: snapshot.defaultSheetId,
+      defaultSheetId: bootstrap.defaultSheetId,
       recalculationMode: 'manual',
-      calculationSettings: { ...snapshot.calculationSettings, mode: 'manual' },
-      dateSystem: snapshot.dateSystem,
-      canonicalReferenceDate: snapshot.canonicalReferenceDate,
-      numericContext: snapshot.numericContext,
-      calculationEntropySeed: snapshot.calculationEntropy.entropySeed,
-      collationContext: snapshot.collationContext,
-      rowVisibilityResolver: snapshot.visibility ? createSnapshotVisibilityResolver(snapshot.visibility) : undefined,
+      calculationSettings: { ...bootstrap.calculationSettings, mode: 'manual' },
+      dateSystem: bootstrap.dateSystem,
+      canonicalReferenceDate: bootstrap.canonicalReferenceDate,
+      numericContext: bootstrap.numericContext,
+      calculationEntropySeed: bootstrap.calculationEntropy.entropySeed,
+      collationContext: bootstrap.collationContext,
+      rowVisibilityResolver: bootstrap.visibility ? createSnapshotVisibilityResolver(bootstrap.visibility) : undefined,
     });
-    engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
-    engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
-    engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
-    engine.sheetTables = normalizeSheetTables(snapshot.sheetTables);
-    for (const spillSpace of snapshot.spillSpaces) {
+    engine.activeCalculationEntropy = structuredClone(bootstrap.calculationEntropy);
+    engine.calculationCycleSequence = bootstrap.calculationEntropy.cycleId;
+    engine.definedNameModels = normalizeDefinedNameModels(bootstrap.definedNameModels);
+    engine.sheetTables = normalizeSheetTables(bootstrap.sheetTables);
+    for (const spillSpace of bootstrap.spillSpaces) {
       const occupied = new Set(spillSpace.occupied.map(cellAddressKey));
       engine.spillEnvironments.set(spillSpace.sheetId, {
         rowCount: spillSpace.rowCount,
@@ -192,13 +212,13 @@ export class FormulaEngine {
         getOccupiedAddresses: () => spillSpace.occupied.map((address) => ({ row: address.row, column: address.column })),
       });
     }
-    for (const cell of snapshot.cells) {
+    for (const cell of bootstrap.cells) {
       if (cell.input.kind === 'formula') engine.loadFormula(cell.address, cell.input.formula);
       else engine.loadValue(cell.address, cell.input.value);
     }
-    engine.pendingRecalculationRoots = new Set(snapshot.pendingRoots.map(cellAddressKey));
-    engine.calculationSettings = structuredClone(snapshot.calculationSettings);
-    engine.recalculationMode = snapshot.calculationSettings.mode;
+    engine.pendingRecalculationRoots = new Set(bootstrap.pendingRoots.map(cellAddressKey));
+    engine.calculationSettings = structuredClone(bootstrap.calculationSettings);
+    engine.recalculationMode = bootstrap.calculationSettings.mode;
     return engine;
   }
 
@@ -209,6 +229,7 @@ export class FormulaEngine {
   setValue(addressInput: CellAddressInput, value: ScalarValue): FormulaResult {
     const address = this.resolveAddress(addressInput);
     const result = this.loadValue(address, value);
+    this.recordInputDelta({ kind: 'set-value', address: { ...address }, value: structuredClone(value) });
     this.markCalculationStateChanged();
     if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
@@ -221,6 +242,7 @@ export class FormulaEngine {
   setFormula(addressInput: CellAddressInput, formula: string): FormulaResult {
     const address = this.resolveAddress(addressInput);
     const result = this.loadFormula(address, formula);
+    this.recordInputDelta({ kind: 'set-formula', address: { ...address }, formula });
     this.markCalculationStateChanged();
     if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
@@ -235,10 +257,14 @@ export class FormulaEngine {
     const address = this.resolveAddress(addressInput);
     const key = cellAddressKey(address);
     this.dependencies.remove(address);
+    this.staticDependencies.delete(key);
+    if (this.dynamicDependencies.delete(key)) this.formulaGraphDirty = true;
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.volatileCells.delete(key);
     this.cells.delete(key);
+    this.formulaAddresses.delete(key);
+    this.recordInputDelta({ kind: 'clear', address: { ...address } });
     this.markCalculationStateChanged();
     return this.scheduleRecalculation(address) ?? { recalculated: [], results: new Map() };
   }
@@ -254,6 +280,7 @@ export class FormulaEngine {
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): RecalculationReport {
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
     this.recalculationMode = this.calculationSettings.mode;
+    this.pendingSessionDelta = { ...this.pendingSessionDelta, calculationSettings: structuredClone(this.calculationSettings) };
     this.markCalculationStateChanged();
     const affected = this.allFormulaAddresses();
     if (this.recalculationMode !== 'automatic') {
@@ -300,38 +327,31 @@ export class FormulaEngine {
   /** Advance the calculation generation when visibility changes without cell writes. */
   notifyVisibilityChanged(): void {
     this.markCalculationStateChanged();
+    const snapshot = this.rowVisibilityResolver?.snapshot?.();
+    if (snapshot) this.pendingSessionDelta = { ...this.pendingSessionDelta, visibility: structuredClone(snapshot) };
+    for (const key of this.allFormulaAddresses().keys()) this.pendingRecalculationRoots.add(key);
+  }
+
+  /** Create the one persistent browser Worker session for this engine. */
+  createCalculationSessionPort(options: CalculationSessionPortOptions = {}): CalculationSessionPort {
+    const worker = options.workerFactory?.() ?? createBrowserCalculationWorker();
+    if (!worker) throw new Error('CALCULATION_WORKER_UNAVAILABLE: a persistent calculation Worker is required');
+    return new BrowserCalculationSessionPort(worker);
   }
 
   /**
-   * Creates the actual browser Worker transport when one is available. Node
-   * and other non-browser hosts retain the explicit inline implementation.
-   */
-  createCalculationTaskPort(options: CalculationTaskPortOptions = {}): CalculationTaskPort {
-    if (options.useWorker !== false) {
-      const worker = options.workerFactory?.() ?? createBrowserCalculationWorker();
-      if (worker) {
-        return new BrowserCalculationTaskPort(
-          worker,
-          () => ({ snapshot: this.exportCalculationSnapshot(), generation: this.calculationGeneration }),
-          (result, generation) => {
-            this.applyCalculationTaskResult(result, generation);
-          },
-        );
-      }
-    }
-    return new InlineCalculationTaskPort((request) => this.executeCalculationTask(request));
-  }
-
-  /**
-   * Runs recalculation through the task transport. In a browser this posts an
-   * isolated calculation snapshot to the real Worker; it never executes the
-   * formula evaluator on the main thread. Callers must await it and refresh
-   * their derived projection after completion.
+   * Runs recalculation through the persistent session. The first request opens
+   * the Worker with a bootstrap; all later requests contain only FormulaDelta.
    */
   async recalculateAsync(
     addressInput?: CellAddressInput | readonly CellAddressInput[],
-    taskPort: CalculationTaskPort = this.defaultTaskPort ??= this.createCalculationTaskPort(),
+    sessionPort: CalculationSessionPort = this.defaultTaskPort ??= this.createCalculationSessionPort(),
   ): Promise<RecalculationReport> {
+    if (this.sessionPort !== sessionPort) {
+      this.sessionPort = sessionPort;
+      this.calculationSessionId = null;
+      this.sessionIsOpen = false;
+    }
     if (this.activeTaskId && this.activeTaskPort) {
       this.activeTaskPort.cancel(this.activeTaskId);
       this.activeCalculationEntropy = undefined;
@@ -339,53 +359,118 @@ export class FormulaEngine {
     const revision = ++this.nextTaskSequence;
     const taskId = `calculation-${revision}`;
     const generation = this.calculationGeneration;
+    const sessionId = this.calculationSessionId ??= `formula-session-${this.nextTaskSequence}`;
     this.activeTaskId = taskId;
-    this.activeTaskPort = taskPort;
+    this.activeTaskPort = sessionPort;
     const calculationEntropy = this.beginCalculationEntropy();
     const roots = addressInput === undefined
       ? undefined
       : (Array.isArray(addressInput) ? addressInput : [addressInput]).map((address) => this.resolveAddress(address));
-    const result = await taskPort.submit({
-      protocol: 'react-sheets.formula-calculation',
-      version: 1,
-      taskId,
-      kind: 'recalculate',
-      revision,
-      ...(roots === undefined ? {} : { roots }),
-    }).finally(() => {
+    const opening = !this.sessionIsOpen;
+    const delta = opening ? undefined : this.takePendingDelta();
+    const request: CalculationSessionRequest = opening
+      ? {
+        protocol: CALCULATION_DELTA_PROTOCOL,
+        version: CALCULATION_DELTA_VERSION,
+        kind: 'session.open',
+        sessionId,
+        taskId,
+        revision,
+        generation,
+        bootstrap: this.exportCalculationBootstrap(),
+      }
+      : {
+        protocol: CALCULATION_DELTA_PROTOCOL,
+        version: CALCULATION_DELTA_VERSION,
+        kind: 'calculation.delta',
+        sessionId,
+        taskId,
+        revision,
+        generation,
+        delta: delta ?? {},
+        ...(roots === undefined ? {} : { roots }),
+      };
+    // The bootstrap contains the complete current input state. Its creation
+    // consumes the queued host deltas; retaining them would duplicate the
+    // initial workbook on the first incremental request.
+    if (opening) {
+      this.pendingInputDeltas.clear();
+      this.pendingSessionDelta = {};
+    }
+    const result = await sessionPort.submit(request).finally(() => {
       if (this.activeCalculationEntropy === calculationEntropy) this.activeCalculationEntropy = undefined;
     });
     if (this.activeTaskId === taskId) {
       this.activeTaskId = null;
       this.activeTaskPort = null;
     }
-    if (result.status === 'failed') throw new Error(result.error?.message ?? 'Formula calculation failed');
+    if (result.status === 'failed') {
+      if (!opening && delta) this.restorePendingDelta(delta);
+      if (this.defaultTaskPort === sessionPort) {
+        this.defaultTaskPort = null;
+        this.sessionPort = null;
+        this.calculationSessionId = null;
+        this.sessionIsOpen = false;
+      }
+      throw new Error(`${result.error?.code ?? 'CALCULATION_DELTA_FAILED'}: ${result.error?.message ?? 'Formula calculation failed'}`);
+    }
     if (result.status === 'cancelled' || generation !== this.calculationGeneration || !result.report) {
+      if (!opening && delta) this.restorePendingDelta(delta);
       return { recalculated: [], results: new Map() };
     }
-    return this.recalculationReportFromTask(result.report);
+    this.sessionIsOpen = true;
+    if (!this.applyCalculationSessionResult(result, generation)) return { recalculated: [], results: new Map() };
+    return this.recalculationReportFromDelta(result.report);
   }
 
   cancelCalculation(): void {
     if (!this.activeTaskId || !this.activeTaskPort) return;
     this.activeTaskPort.cancel(this.activeTaskId);
+    if (!this.sessionIsOpen) this.calculationSessionId = null;
     this.activeTaskId = null;
     this.activeTaskPort = null;
     this.activeCalculationEntropy = undefined;
   }
 
-  disposeCalculationTasks(): void {
-    this.cancelCalculation();
-    const disposable = this.defaultTaskPort as (CalculationTaskPort & { dispose?: () => void }) | null;
-    disposable?.dispose?.();
-    this.defaultTaskPort = null;
+  private closeCalculationSession(): void {
+    if (!this.defaultTaskPort || !this.calculationSessionId) return;
+    const revision = ++this.nextTaskSequence;
+    const close: CalculationSessionRequest = {
+      protocol: CALCULATION_DELTA_PROTOCOL,
+      version: CALCULATION_DELTA_VERSION,
+      kind: 'session.close',
+      sessionId: this.calculationSessionId,
+      taskId: `close-${revision}`,
+      revision,
+      generation: this.calculationGeneration,
+    };
+    void this.defaultTaskPort.submit(close).catch(() => undefined);
   }
 
-  executeCalculationTask(request: CalculationTaskRequest): CalculationTaskReport {
-    assertCalculationTaskRequest(request);
+  disposeCalculationTasks(): void {
+    this.cancelCalculation();
+    this.closeCalculationSession();
+    if (this.ownsDefaultTaskPort) this.defaultTaskPort?.dispose();
+    this.defaultTaskPort = null;
+    this.sessionPort = null;
+    this.calculationSessionId = null;
+    this.sessionIsOpen = false;
+  }
+
+  executeCalculationDelta(request: CalculationDeltaRequest): CalculationDeltaReport {
+    assertCalculationSessionRequest(request);
+    if (request.kind !== 'calculation.delta') throw new Error('Worker calculation requires a delta request');
+    this.applyCalculationDelta(request.delta);
+    const hasDelta = request.forceRecalculate === true
+      || (request.delta.cells?.length ?? 0) > 0
+      || request.delta.definedNameModels !== undefined
+      || request.delta.sheetTables !== undefined
+      || request.delta.spillSpaces !== undefined
+      || request.delta.visibility !== undefined
+      || request.delta.calculationSettings !== undefined;
     const reports = request.roots && request.roots.length > 0
       ? request.roots.map((root) => this.recalculate(root))
-      : [this.recalculate()];
+      : hasDelta ? [this.recalculate()] : [{ recalculated: [], results: new Map<string, FormulaResult>() }];
     const recalculated: CellAddress[] = [];
     const seen = new Set<string>();
     const results = new Map<string, FormulaResult>();
@@ -399,7 +484,7 @@ export class FormulaEngine {
       }
       for (const [key, result] of report.results) results.set(key, result);
     }
-    const taskResults: CalculationTaskReport['results'][number][] = [];
+    const taskResults: CalculationDeltaReport['results'][number][] = [];
     for (const [key, result] of results) {
       const address = this.cells.get(key)?.address;
       if (!address) continue;
@@ -418,8 +503,63 @@ export class FormulaEngine {
     };
   }
 
-  /** Return the structured-clone-safe inputs for a Worker calculation task. */
-  exportCalculationSnapshot(): FormulaCalculationSnapshot {
+  /** Apply one wire delta to the Worker-owned engine before calculating it. */
+  applyCalculationDelta(delta: FormulaCalculationDelta): void {
+    for (const input of delta.cells ?? []) {
+      this.applyInputDeltaInternal(input, false);
+    }
+    if (delta.definedNameModels !== undefined) this.setDefinedNameModels(delta.definedNameModels);
+    if (delta.sheetTables !== undefined) {
+      this.sheetTables = normalizeSheetTables(delta.sheetTables);
+      this.dynamicDependencies.clear();
+      this.rebuildStaticDependencies();
+    }
+    if (delta.calculationSettings !== undefined) {
+      this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...delta.calculationSettings });
+      this.recalculationMode = this.calculationSettings.mode;
+    }
+    if (delta.spillSpaces !== undefined) this.applySpillSpaceSnapshots(delta.spillSpaces);
+    if (delta.visibility !== undefined) this.rowVisibilityResolver = createSnapshotVisibilityResolver(delta.visibility);
+    if (delta.sheetTables !== undefined || delta.calculationSettings !== undefined || delta.visibility !== undefined || delta.spillSpaces !== undefined) {
+      for (const key of this.allFormulaAddresses().keys()) this.pendingRecalculationRoots.add(key);
+    }
+    this.pendingInputDeltas.clear();
+    this.pendingSessionDelta = {};
+    this.markCalculationStateChanged();
+  }
+
+  /** Apply one host-authored input without running synchronous evaluation. */
+  applyInputDelta(input: FormulaInputDelta): void {
+    this.applyInputDeltaInternal(input, true);
+  }
+
+  private applyInputDeltaInternal(input: FormulaInputDelta, record: boolean): void {
+    const address = this.resolveAddress(input.address);
+    const key = cellAddressKey(address);
+    if (input.kind === 'clear') {
+      this.dependencies.remove(address);
+      this.staticDependencies.delete(key);
+      this.dynamicDependencies.delete(key);
+      this.spills.delete(spillKey(address));
+      this.detachNameReferences(key);
+      this.volatileCells.delete(key);
+      this.cells.delete(key);
+      this.formulaAddresses.delete(key);
+      this.formulaGraphDirty = true;
+    } else if (input.kind === 'set-formula') {
+      this.loadFormula(address, input.formula);
+    } else {
+      this.loadValue(address, input.value);
+    }
+    this.pendingRecalculationRoots.add(key);
+    if (record) {
+      this.recordInputDelta({ ...input, address: { ...address } });
+      this.markCalculationStateChanged();
+    }
+  }
+
+  /** Return the structured-clone-safe inputs for the one-time Worker bootstrap. */
+  exportCalculationBootstrap(): FormulaCalculationBootstrap {
     const cells = [...this.cells.values()]
       .map((cell) => ({
         address: { ...cell.address },
@@ -428,33 +568,6 @@ export class FormulaEngine {
           : { kind: 'formula' as const, formula: cell.formula },
       }))
       .sort((left, right) => compareCellAddresses(left.address, right.address));
-
-    const occupiedBySheet = new Map<string, Map<string, CellAddress>>();
-    for (const cell of this.cells.values()) {
-      if (!isOccupiedInput(cell)) continue;
-      const occupied = occupiedBySheet.get(cell.address.sheetId) ?? new Map<string, CellAddress>();
-      occupied.set(cellAddressKey(cell.address), { ...cell.address });
-      occupiedBySheet.set(cell.address.sheetId, occupied);
-    }
-    const spillSpaces = [...this.spillEnvironments.entries()]
-      .map(([sheetId, environment]) => {
-        const occupied = occupiedBySheet.get(sheetId) ?? new Map<string, CellAddress>();
-        for (const address of environment.getOccupiedAddresses?.() ?? []) {
-          if (address.row < 0 || address.column < 0) continue;
-          occupied.set(cellAddressKey({ sheetId, row: address.row, column: address.column }), {
-            sheetId,
-            row: address.row,
-            column: address.column,
-          });
-        }
-        return {
-          sheetId,
-          rowCount: environment.rowCount,
-          columnCount: environment.columnCount,
-          occupied: [...occupied.values()].sort(compareCellAddresses),
-        };
-      })
-      .sort((left, right) => left.sheetId.localeCompare(right.sheetId));
 
     return {
       defaultSheetId: this.defaultSheetId,
@@ -468,7 +581,7 @@ export class FormulaEngine {
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
-      spillSpaces,
+      spillSpaces: this.snapshotSpillSpaces(),
       pendingRoots: this.pendingCalculationRoots(),
     };
   }
@@ -477,7 +590,7 @@ export class FormulaEngine {
    * Apply only a result produced from the current calculation generation.
    * A late task cannot overwrite a newer edit, even if it reaches the port.
    */
-  applyCalculationTaskResult(result: CalculationTaskResult, generation: number): boolean {
+  applyCalculationSessionResult(result: CalculationSessionResult, generation: number): boolean {
     if (generation !== this.calculationGeneration || result.status !== 'completed' || !result.report) return false;
     for (const entry of result.report.results) {
       const key = cellAddressKey(entry.address);
@@ -489,6 +602,15 @@ export class FormulaEngine {
         ast: cell.ast,
         dependencies: entry.dependencies.map(copyDependency),
       };
+      this.dependencies.set(entry.address, entry.dependencies);
+      this.formulaGraphDirty = true;
+      const staticKeys = new Set((this.staticDependencies.get(key) ?? []).map(dependencyIdentity));
+      const dynamic = new Map<string, FormulaDependency>();
+      for (const dependency of entry.dependencies) {
+        if (!staticKeys.has(dependencyIdentity(dependency))) dynamic.set(dependencyIdentity(dependency), copyDependency(dependency));
+      }
+      if (dynamic.size > 0) this.dynamicDependencies.set(key, dynamic);
+      else this.dynamicDependencies.delete(key);
     }
     if (result.report.spills !== undefined) {
       this.spills.clear();
@@ -505,6 +627,7 @@ export class FormulaEngine {
   setRecalculationMode(mode: RecalculationMode): void {
     this.recalculationMode = mode;
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, mode });
+    this.pendingSessionDelta = { ...this.pendingSessionDelta, calculationSettings: structuredClone(this.calculationSettings) };
     this.markCalculationStateChanged();
   }
 
@@ -513,14 +636,34 @@ export class FormulaEngine {
   }
 
   setSheetTables(tables: readonly SheetTableRef[]): RecalculationReport {
-    this.sheetTables = normalizeSheetTables(tables);
+    const normalized = normalizeSheetTables(tables);
+    if (JSON.stringify([...this.sheetTables.values()]) === JSON.stringify([...normalized.values()])) return { recalculated: [], results: new Map() };
+    this.sheetTables = normalized;
+    this.pendingSessionDelta = { ...this.pendingSessionDelta, sheetTables: this.getSheetTables().map(copySheetTable) };
     this.markCalculationStateChanged();
+    this.dynamicDependencies.clear();
+    this.formulaGraphDirty = true;
+    this.rebuildStaticDependencies();
     const affected = this.allFormulaAddresses();
     if (this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
     return this.recalculateAffected(affected);
+  }
+
+  private rebuildStaticDependencies(): void {
+    for (const cell of this.cells.values()) {
+      if (cell.formula === undefined || !cell.ast) continue;
+      const dependencies = this.expandNameDependencies(
+        collectFormulaDependencies(cell.ast, cell.address, { sheetTables: this.sheetTables }),
+        cell.address,
+        new Set<string>(),
+      );
+      this.staticDependencies.set(cellAddressKey(cell.address), dependencies.map(copyDependency));
+      this.dependencies.set(cell.address, this.currentDependencies(cell.address));
+      cell.result = { ...cell.result, dependencies: this.currentDependencies(cell.address) };
+    }
   }
 
   getSheetTables(): readonly SheetTableRef[] {
@@ -541,8 +684,14 @@ export class FormulaEngine {
 
   /** Return all authored formula cells in deterministic address order. */
   listFormulaCells(): readonly CellAddress[] {
+    return [...this.formulaAddresses.values()]
+      .map((address) => ({ ...address }))
+      .sort(compareCellAddresses);
+  }
+
+  /** Return all sparse formula/value input coordinates for range synchronisation. */
+  listInputCells(): readonly CellAddress[] {
     return [...this.cells.values()]
-      .filter((cell) => cell.formula !== undefined)
       .map((cell) => ({ ...cell.address }))
       .sort(compareCellAddresses);
   }
@@ -577,6 +726,8 @@ export class FormulaEngine {
     if (!cell?.formula || !cell.ast) {
       return cell?.parseError ? { value: structuredClone(cell.parseError), steps: [] } : undefined;
     }
+    if (this.dynamicDependencies.delete(cellAddressKey(cell.address))) this.formulaGraphDirty = true;
+    this.dependencies.set(cell.address, this.staticDependencies.get(cellAddressKey(cell.address)) ?? cell.result.dependencies);
     const cache = new Map<string, FormulaValue>();
     const visiting = new Set<string>();
     let trace: FormulaEvaluationTrace;
@@ -588,8 +739,31 @@ export class FormulaEngine {
         : createFormulaError('#VALUE!', error instanceof Error ? error.message : 'Formula evaluation failed');
       trace = { value, steps: [] };
     }
-    cell.result = { value: trace.value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+    const dependencies = this.currentDependencies(cell.address);
+    this.dependencies.set(cell.address, dependencies);
+    cell.result = { value: trace.value, formula: cell.formula, ast: cell.ast, dependencies };
     return trace;
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
+    }
+  }
+
+  /** Evaluate a rule/audit AST through this engine's canonical resolver. */
+  evaluateAst(ast: FormulaAst, currentCell: CellAddress, overrides: readonly FormulaCellOverride[] = []): FormulaValue {
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    const synthetic: StoredCell = {
+      address: { ...currentCell },
+      formula: formatFormula(ast),
+      ast,
+      result: { value: null, formula: formatFormula(ast), ast, dependencies: [] },
+    };
+    try {
+      return evaluateFormula(ast, this.createEvaluationContext(synthetic, new Map<string, FormulaValue>(), new Set<string>(), overrides, undefined));
+    } catch (error) {
+      return error instanceof FormulaReferenceError
+        ? createFormulaError('#REF!', error.message)
+        : createFormulaError('#VALUE!', error instanceof Error ? error.message : 'Formula evaluation failed');
     } finally {
       if (ownsEntropy) this.activeCalculationEntropy = undefined;
     }
@@ -616,8 +790,13 @@ export class FormulaEngine {
   }
 
   setDefinedNameModels(names: readonly FormulaDefinedName[]): RecalculationReport {
-    this.definedNameModels = normalizeDefinedNameModels(names);
+    const normalized = normalizeDefinedNameModels(names);
+    if (JSON.stringify(this.definedNameModels) === JSON.stringify(normalized)) return { recalculated: [], results: new Map() };
+    this.definedNameModels = normalized;
+    this.pendingSessionDelta = { ...this.pendingSessionDelta, definedNameModels: this.getDefinedNameModels() };
     this.markCalculationStateChanged();
+    this.dynamicDependencies.clear();
+    this.formulaGraphDirty = true;
     for (const cell of this.cells.values()) {
       if (cell.formula === undefined || !cell.ast) continue;
       const dependencies = this.expandNameDependencies(
@@ -625,8 +804,9 @@ export class FormulaEngine {
         cell.address,
         new Set<string>(),
       );
+      this.staticDependencies.set(cellAddressKey(cell.address), dependencies.map(copyDependency));
       this.dependencies.set(cell.address, dependencies);
-      cell.result = { ...cell.result, dependencies };
+      cell.result = { ...cell.result, dependencies: this.currentDependencies(cell.address) };
     }
     const affected = new Map<string, CellAddress>();
     for (const refs of this.nameIndex.values()) {
@@ -646,7 +826,9 @@ export class FormulaEngine {
   setSpillEnvironment(sheetId: string, environment: SpillEnvironment | undefined): void {
     if (!environment) this.spillEnvironments.delete(sheetId);
     else this.spillEnvironments.set(sheetId, environment);
+    this.pendingSessionDelta = { ...this.pendingSessionDelta, spillSpaces: this.snapshotSpillSpaces() };
     this.markCalculationStateChanged();
+    for (const key of this.allFormulaAddresses().keys()) this.pendingRecalculationRoots.add(key);
   }
 
   getSpillsForSheet(sheetId: string): ResolvedSpill[] {
@@ -676,12 +858,24 @@ export class FormulaEngine {
 
   /** 清空全部公式与缓存(结构操作后整体重建前调用) */
   reset(): void {
+    this.cancelCalculation();
+    this.closeCalculationSession();
+    if (this.ownsDefaultTaskPort) this.defaultTaskPort?.dispose();
+    if (this.ownsDefaultTaskPort) this.defaultTaskPort = null;
+    this.calculationSessionId = null;
+    this.sessionIsOpen = false;
     this.cells.clear();
+    this.formulaAddresses.clear();
     this.spills.clear();
     this.nameIndex.clear();
     this.cellNameRefs.clear();
     this.volatileCells.clear();
+    this.staticDependencies.clear();
+    this.dynamicDependencies.clear();
+    this.formulaGraphDirty = true;
     this.pendingRecalculationRoots.clear();
+    this.pendingInputDeltas.clear();
+    this.pendingSessionDelta = {};
     this.sheetTables.clear();
     this.dependencies.clear?.();
     this.markCalculationStateChanged();
@@ -754,9 +948,8 @@ export class FormulaEngine {
   private collectAffectedFromRoots(roots: ReadonlySet<string>): Map<string, CellAddress> {
     const affected = new Map<string, CellAddress>();
     for (const key of roots) {
-      const cell = this.cells.get(key);
-      if (!cell) continue;
-      for (const [dependentKey, dependentAddress] of this.collectAffected(cell.address)) {
+      const root = this.cells.get(key)?.address ?? parseCellAddressKey(key);
+      for (const [dependentKey, dependentAddress] of this.collectAffected(root)) {
         affected.set(dependentKey, dependentAddress);
       }
     }
@@ -801,16 +994,22 @@ export class FormulaEngine {
   private loadValue(address: CellAddress, value: ScalarValue): FormulaResult {
     const key = cellAddressKey(address);
     this.dependencies.remove(address);
+    this.staticDependencies.delete(key);
+    if (this.dynamicDependencies.delete(key)) this.formulaGraphDirty = true;
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.volatileCells.delete(key);
+    this.formulaGraphDirty = true;
     const result: FormulaResult = { value, dependencies: [] };
     this.cells.set(key, { address: { ...address }, result });
+    this.formulaAddresses.delete(key);
     return result;
   }
 
   private loadFormula(address: CellAddress, formula: string): FormulaResult {
     const key = cellAddressKey(address);
+    this.dynamicDependencies.delete(key);
+    this.formulaGraphDirty = true;
     let ast: FormulaAst | undefined;
     let formulaDependencies: readonly FormulaDependency[] = [];
     let parseError: FormulaError | undefined;
@@ -819,20 +1018,85 @@ export class FormulaEngine {
       const parsed = this.parseFormula(formula);
       const extractedDependencies = collectFormulaDependencies(parsed, address, { sheetTables: this.sheetTables });
       const expandedDependencies = this.expandNameDependencies(extractedDependencies, address, new Set<string>());
+      this.staticDependencies.set(key, expandedDependencies.map(copyDependency));
       this.dependencies.set(address, expandedDependencies);
       ast = parsed;
       formulaDependencies = expandedDependencies;
     } catch (error) {
       parseError = formulaErrorFrom(error);
       this.dependencies.set(address, []);
+      this.staticDependencies.set(key, []);
     }
 
     const result: FormulaResult = parseError
       ? { value: parseError, formula, dependencies: [] }
       : { value: null, formula, ast, dependencies: formulaDependencies };
     this.cells.set(key, { address: { ...address }, formula, ast, parseError, result });
+    this.formulaAddresses.set(key, { ...address });
     this.updateFormulaMetadata(key, ast);
     return result;
+  }
+
+  private recordInputDelta(delta: FormulaInputDelta): void {
+    this.pendingInputDeltas.set(cellAddressKey(delta.address), structuredClone(delta));
+  }
+
+  private takePendingDelta(): FormulaCalculationDelta {
+    const cells = [...this.pendingInputDeltas.values()]
+      .map((delta) => structuredClone(delta))
+      .sort((left, right) => compareCellAddresses(left.address, right.address));
+    const delta: FormulaCalculationDelta = {
+      ...this.pendingSessionDelta,
+      ...(cells.length > 0 ? { cells } : {}),
+    };
+    this.pendingInputDeltas.clear();
+    this.pendingSessionDelta = {};
+    return delta;
+  }
+
+  private restorePendingDelta(delta: FormulaCalculationDelta): void {
+    for (const input of delta.cells ?? []) this.pendingInputDeltas.set(cellAddressKey(input.address), structuredClone(input));
+    const { cells: _cells, ...metadata } = delta;
+    void _cells;
+    this.pendingSessionDelta = metadata;
+  }
+
+  private snapshotSpillSpaces(): FormulaCalculationBootstrap['spillSpaces'] {
+    const occupiedBySheet = new Map<string, Map<string, CellAddress>>();
+    for (const cell of this.cells.values()) {
+      if (!isOccupiedInput(cell)) continue;
+      const occupied = occupiedBySheet.get(cell.address.sheetId) ?? new Map<string, CellAddress>();
+      occupied.set(cellAddressKey(cell.address), { ...cell.address });
+      occupiedBySheet.set(cell.address.sheetId, occupied);
+    }
+    return [...this.spillEnvironments.entries()]
+      .map(([sheetId, environment]) => {
+        const occupied = occupiedBySheet.get(sheetId) ?? new Map<string, CellAddress>();
+        for (const address of environment.getOccupiedAddresses?.() ?? []) {
+          if (address.row < 0 || address.column < 0) continue;
+          occupied.set(cellAddressKey({ sheetId, row: address.row, column: address.column }), { sheetId, row: address.row, column: address.column });
+        }
+        return {
+          sheetId,
+          rowCount: environment.rowCount,
+          columnCount: environment.columnCount,
+          occupied: [...occupied.values()].sort(compareCellAddresses),
+        };
+      })
+      .sort((left, right) => left.sheetId.localeCompare(right.sheetId));
+  }
+
+  private applySpillSpaceSnapshots(spaces: readonly FormulaCalculationBootstrap['spillSpaces'][number][]): void {
+    this.spillEnvironments.clear();
+    for (const space of spaces) {
+      const occupied = new Set(space.occupied.map(cellAddressKey));
+      this.spillEnvironments.set(space.sheetId, {
+        rowCount: space.rowCount,
+        columnCount: space.columnCount,
+        isOccupied: (row, column) => occupied.has(cellAddressKey({ sheetId: space.sheetId, row, column })),
+        getOccupiedAddresses: () => space.occupied.map((address) => ({ row: address.row, column: address.column })),
+      });
+    }
   }
 
   private pendingCalculationRoots(): CellAddress[] {
@@ -843,7 +1107,7 @@ export class FormulaEngine {
       .sort(compareCellAddresses);
   }
 
-  private recalculationReportFromTask(report: CalculationTaskReport): RecalculationReport {
+  private recalculationReportFromDelta(report: CalculationDeltaReport): RecalculationReport {
     const results = new Map<string, FormulaResult>();
     for (const entry of report.results) {
       const cell = this.cells.get(cellAddressKey(entry.address));
@@ -871,9 +1135,7 @@ export class FormulaEngine {
     const recalculated: CellAddress[] = [];
     const results = new Map<string, FormulaResult>();
 
-    const graphNodes = [...this.cells.values()]
-      .filter((cell) => cell.formula !== undefined)
-      .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
+    const graphNodes = this.getFormulaGraphNodes();
     const circularComponents = findFormulaComponents(graphNodes).filter((component) =>
       component.cyclic && component.members.some((address) => affected.has(cellAddressKey(address))),
     );
@@ -987,11 +1249,7 @@ export class FormulaEngine {
   }
 
   private allFormulaAddresses(): Map<string, CellAddress> {
-    const result = new Map<string, CellAddress>();
-    for (const [key, cell] of this.cells) {
-      if (cell.formula !== undefined) result.set(key, { ...cell.address });
-    }
-    return result;
+    return new Map([...this.formulaAddresses].map(([key, address]) => [key, { ...address }]));
   }
 
   private evaluateCell(
@@ -1026,6 +1284,8 @@ export class FormulaEngine {
     }
 
     visiting.add(key);
+    if (this.dynamicDependencies.delete(key)) this.formulaGraphDirty = true;
+    this.dependencies.set(address, this.staticDependencies.get(key) ?? cell.result.dependencies);
     let value: FormulaValue;
     try {
       value = evaluateFormula(cell.ast, this.createEvaluationContext(cell, cache, visiting, overrides));
@@ -1037,7 +1297,9 @@ export class FormulaEngine {
       visiting.delete(key);
     }
 
-    cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+    const dependencies = this.currentDependencies(address);
+    this.dependencies.set(address, dependencies);
+    cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies };
     this.refreshSpill(address, value, cache);
     const displayValue = this.cells.get(key)?.result.value ?? value;
     cache.set(key, displayValue);
@@ -1049,6 +1311,7 @@ export class FormulaEngine {
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[],
+    dynamicOwner: CellAddress | undefined = cell.address,
   ): FormulaEvaluationContext {
     return {
         currentCell: cell.address,
@@ -1083,7 +1346,8 @@ export class FormulaEngine {
           return this.evaluateCell(resolved as CellAddress, cache, visiting, overrides);
         },
         resolveReference: (reference) => this.resolveReference(reference, cell.address),
-        evaluateWithCellOverrides: (ast, nestedOverrides) => evaluateFormula(ast, this.createEvaluationContext(cell, new Map<string, FormulaValue>(), new Set<string>(), [...overrides, ...nestedOverrides])),
+        evaluateWithCellOverrides: (ast, nestedOverrides) => evaluateFormula(ast, this.createEvaluationContext(cell, new Map<string, FormulaValue>(), new Set<string>(), [...overrides, ...nestedOverrides], dynamicOwner)),
+        ...(dynamicOwner ? { registerDynamicDependency: (dependency: FormulaDependency) => this.registerDynamicDependency(dynamicOwner, dependency) } : {}),
       };
   }
 
@@ -1141,6 +1405,39 @@ export class FormulaEngine {
       bucket.add(key);
       this.nameIndex.set(name, bucket);
     }
+  }
+
+  private registerDynamicDependency(owner: CellAddress, dependency: FormulaDependency): void {
+    const key = cellAddressKey(owner);
+    const bucket = this.dynamicDependencies.get(key) ?? new Map<string, FormulaDependency>();
+    bucket.set(dependencyIdentity(dependency), copyDependency(dependency));
+    this.dynamicDependencies.set(key, bucket);
+    this.formulaGraphDirty = true;
+  }
+
+  private currentDependencies(owner: CellAddress): readonly FormulaDependency[] {
+    const key = cellAddressKey(owner);
+    const staticDependencies = this.staticDependencies.get(key) ?? [];
+    const dynamicDependencies = [...(this.dynamicDependencies.get(key)?.values() ?? [])];
+    const seen = new Set<string>();
+    const result: FormulaDependency[] = [];
+    for (const dependency of [...staticDependencies, ...dynamicDependencies]) {
+      const identity = dependencyIdentity(dependency);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      result.push(copyDependency(dependency));
+    }
+    return result;
+  }
+
+  private getFormulaGraphNodes(): readonly { readonly address: CellAddress; readonly dependencies: readonly FormulaDependency[] }[] {
+    if (this.formulaGraphDirty) {
+      this.formulaGraphNodes = [...this.cells.values()]
+        .filter((cell) => cell.formula !== undefined)
+        .map((cell) => ({ address: { ...cell.address }, dependencies: cell.result.dependencies.map(copyDependency) }));
+      this.formulaGraphDirty = false;
+    }
+    return this.formulaGraphNodes;
   }
 
   private detachNameReferences(key: string): void {
@@ -1366,6 +1663,26 @@ function copyDependency(dependency: FormulaDependency): FormulaDependency {
       : dependency.kind === 'reference'
         ? { kind: 'reference', reference: structuredClone(dependency.reference) }
         : { kind: 'name', name: dependency.name };
+}
+
+function dependencyIdentity(dependency: FormulaDependency): string {
+  return dependency.kind === 'cell'
+    ? `cell:${cellAddressKey(dependency.address)}`
+    : dependency.kind === 'range'
+      ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
+      : dependency.kind === 'reference'
+        ? `reference:${JSON.stringify(dependency.reference)}`
+        : `name:${dependency.name}`;
+}
+
+function parseCellAddressKey(key: string): CellAddress {
+  let parsed: unknown;
+  try { parsed = JSON.parse(key); }
+  catch { throw new Error(`Invalid dirty root key: ${key}`); }
+  if (!Array.isArray(parsed) || parsed.length !== 3 || typeof parsed[0] !== 'string' || !Number.isSafeInteger(parsed[1]) || !Number.isSafeInteger(parsed[2]) || parsed[1] < 0 || parsed[2] < 0) {
+    throw new Error(`Invalid dirty root key: ${key}`);
+  }
+  return { sheetId: parsed[0], row: parsed[1], column: parsed[2] };
 }
 
 function referenceMentionsSheet(reference: FormulaReferenceNode, sheetId: string): boolean {

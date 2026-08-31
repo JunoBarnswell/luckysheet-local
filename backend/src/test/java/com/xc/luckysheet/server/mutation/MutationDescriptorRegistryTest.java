@@ -270,7 +270,7 @@ class MutationDescriptorRegistryTest {
         assertEquals(Set.of(
                 "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
-                "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
+                "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove", "comment.update",
                 "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed", "workbook.editing.options.set",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
@@ -288,6 +288,27 @@ class MutationDescriptorRegistryTest {
                 "fill.applied", "fill.restored",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
+    }
+
+    @Test
+    void commentUpdateUsesPreviousTextCasForForwardAndReplay() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{"0:0":["thread-1"]},
+                    "threadsById":{"thread-1":{"id":"thread-1","sheetId":"sheet-1","row":0,"column":0,"text":"before","replies":[]}}}}]}
+                """);
+        OperationMutation update = new OperationMutation("comment.update", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"threadId\":\"thread-1\",\"row\":0,\"column\":0,\"previousText\":\"before\",\"text\":\"after\"}"));
+
+        JsonNode current = registry.prepare(snapshot, update, WorkbookAclRole.COMMENTER).descriptor().apply(snapshot, update);
+        assertEquals("after", current.path("sheets").get(0).path("review").path("threadsById").path("thread-1").path("text").asText());
+
+        OperationMutation stale = new OperationMutation("comment.update", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"threadId\":\"thread-1\",\"row\":0,\"column\":0,\"previousText\":\"before\",\"text\":\"stale\"}"));
+        ServiceException conflict = assertThrows(ServiceException.class,
+                () -> registry.prepare(current, stale, WorkbookAclRole.COMMENTER));
+        assertEquals("CONFLICT", conflict.code());
     }
 
     @Test
@@ -1033,7 +1054,7 @@ class MutationDescriptorRegistryTest {
     void structuralRowMutationMovesCellsMetadataAndParsedFormulaReferencesTogether() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"definedNames":{"Sales":"=Sheet1!A2"},"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
+                {"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
                   {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
                   {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
                 ]}
@@ -1047,7 +1068,7 @@ class MutationDescriptorRegistryTest {
         assertEquals(10, current.path("sheets").get(0).path("cells").path("2").path("0").path("value").asInt());
         assertEquals("=A3", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
-        assertEquals("=Sheet1!A3", current.path("definedNames").path("Sales").asText());
+        assertEquals("=Sheet1!A3", current.path("definedNameModels").get(0).path("formula").asText());
         assertEquals(2, current.path("sheets").get(0).path("hiddenRows").get(0).asInt());
     }
 

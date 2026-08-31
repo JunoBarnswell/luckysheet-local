@@ -162,17 +162,9 @@ export function EditorDialogHost({
       <PrintPreviewDialog
         open={state.dialogs.active === 'print-preview'}
         onClose={() => session.setShowPrintPreview(false)}
-        sheetId={state.activeSheetId}
-        rowCount={state.selectedSheet.rowCount}
-        columnCount={state.selectedSheet.columnCount}
-        columns={state.selectedSheet.columns}
-        rows={[]}
-        layout={state.printLayout}
-        pages={state.printPages}
-        getRow={(row) => state.selectedSheet.hiddenRows.includes(row) ? undefined : ({
-          rowNumber: row + 1,
-          cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? "" })),
-        })}
+        projections={state.printProjections}
+        headerText={state.printLayout.headerText}
+        footerText={state.printLayout.footerText}
       />
       <CellTemplateDialog
         open={state.dialogs.active === 'cell-template'}

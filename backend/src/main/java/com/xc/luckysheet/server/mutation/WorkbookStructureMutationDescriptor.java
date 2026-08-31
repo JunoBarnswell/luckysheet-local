@@ -783,12 +783,6 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                 }
             }
         }
-        JsonNode legacy = root.get("definedNames");
-        if (legacy != null && legacy.isObject()) {
-            ((ObjectNode) legacy).fields().forEachRemaining(entry -> {
-                if (entry.getValue().isTextual()) ((ObjectNode) legacy).put(entry.getKey(), FormulaReferenceTransformer.renameSheet(entry.getValue().asText(), previousName, nextName));
-            });
-        }
     }
 
     private void rewriteRuleFormulaFields(JsonNode values, String previousName, String nextName) {

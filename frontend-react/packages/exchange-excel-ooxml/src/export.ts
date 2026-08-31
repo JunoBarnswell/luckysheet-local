@@ -26,6 +26,9 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     && !request.artifact.nativeGraph.package.nativePivotGraph
     && request.artifact.fileName === request.fileName
     && request.artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)) {
+    // Even an untouched-save fast path must prove the requested resource
+    // budget; artifact verification alone only proves byte identity.
+    loadOpcPackageGraph(request.artifact.sourceBytes, request.options.limits, request.fileName);
     return {
       taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       report: structuredClone(request.artifact.compatibility),
@@ -40,7 +43,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
   }
   const dateSystem = request.options.dateSystem ?? sourcePackage?.dateSystem ?? (request.artifact?.dateSystem ?? '1900');
-  const buffer = exportSnapshotToOoxmlBuffer(request.snapshot, sourcePackage, { ...request.options, targetFormat });
+  const buffer = exportSnapshotToOoxmlBuffer(request.snapshot, sourcePackage, { ...request.options, targetFormat, limits: request.options.limits });
   // Report the package that was actually emitted. This prevents a deleted
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.

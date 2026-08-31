@@ -13,13 +13,86 @@ import {
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
 
-test('v8 storage migration creates the single canonical v9 editing options contract', () => {
+test('v8 storage migration creates the single canonical v10 editing options contract', () => {
   const legacy = structuredClone(new WorkbookModel('unit-v8-editing', 'Legacy').snapshot()) as unknown as Record<string, unknown>;
   legacy.version = 8;
   delete legacy.editingOptions;
   const migrated = migrateStoredWorkbookSnapshot(legacy);
-  assert.equal(migrated.version, 9);
+  assert.equal(migrated.version, 10);
   assert.deepEqual(migrated.editingOptions, { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null });
+});
+
+test('v9 storage migration folds defined names and legacy cell hyperlinks into canonical owners', () => {
+  const legacy = structuredClone(new WorkbookModel('unit-v9-legacy', 'Legacy').snapshot()) as unknown as Record<string, any>;
+  legacy.version = 9;
+  delete legacy.definedNameModels;
+  legacy.definedNames = { SalesTotal: '=Sheet1!A1' };
+  legacy.sheets[0].cells = { '0': { '0': {
+    value: 'Sales',
+    hyperlinkDetail: { id: 'link-1', target: { kind: 'url', url: 'https://example.test/sales' } },
+  } } };
+
+  const migrated = migrateStoredWorkbookSnapshot(legacy);
+  assert.equal(migrated.version, 10);
+  assert.equal(Object.prototype.hasOwnProperty.call(migrated, 'definedNames'), false);
+  assert.deepEqual(migrated.definedNameModels, [{ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' }]);
+  assert.deepEqual(migrated.sheets[0]!.hyperlinks, [{ row: 0, column: 0, hyperlink: { id: 'link-1', target: { kind: 'url', url: 'https://example.test/sales' } } }]);
+  assert.equal('hyperlinkDetail' in migrated.sheets[0]!.cells['0']!['0']!, false);
+});
+
+test('v9 storage migration fails closed when legacy and canonical representations conflict', () => {
+  const legacy = structuredClone(new WorkbookModel('unit-v9-conflict', 'Legacy').snapshot()) as unknown as Record<string, any>;
+  legacy.version = 9;
+  legacy.definedNames = { SalesTotal: '=Sheet1!A1' };
+  legacy.definedNameModels = [{ name: 'SalesTotal', formula: '=Sheet1!B1', scope: 'workbook' }];
+  assert.throws(() => migrateStoredWorkbookSnapshot(legacy), /SNAPSHOT_MIGRATION_CONFLICT/);
+
+  const hyperlinkConflict = structuredClone(new WorkbookModel('unit-v9-link-conflict', 'Legacy').snapshot()) as unknown as Record<string, any>;
+  hyperlinkConflict.version = 9;
+  hyperlinkConflict.sheets[0].cells = { '0': { '0': {
+    value: 'Sales',
+    hyperlink: 'https://example.test/a',
+    hyperlinkDetail: { id: 'link-1', target: { kind: 'url', url: 'https://example.test/b' } },
+  } } };
+  assert.throws(() => migrateStoredWorkbookSnapshot(hyperlinkConflict), /SNAPSHOT_MIGRATION_CONFLICT/);
+});
+
+test('v10 runtime rejects removed snapshot fields', () => {
+  const snapshot = new WorkbookModel('unit-v10-reject', 'Canonical').snapshot() as any;
+  snapshot.definedNames = {};
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /removed definedNames/);
+  delete snapshot.definedNames;
+  snapshot.sheets[0].cells = { '0': { '0': { value: 'x', hyperlink: 'https://example.test' } } };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /legacy hyperlink/);
+  assert.throws(() => WorkbookModel.fromSnapshot(snapshot), /legacy hyperlink/);
+});
+
+test('v9 data-region overlays migrate to canonical CellPatch carriers', () => {
+  const legacy = structuredClone(new WorkbookModel('unit-v9-patch', 'Legacy').snapshot()) as unknown as Record<string, any>;
+  legacy.version = 9;
+  legacy.sheets[0].dataRegions = [{
+    id: 'region-1', sourceId: 'source-1',
+    range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    headerRow: 0, revision: 0,
+  }];
+  legacy.sheets[0].cells = { '1': { '1': { value: 999, style: { bold: true } } } };
+  const migrated = migrateStoredWorkbookSnapshot(legacy);
+  const cell = migrated.sheets[0]!.cells['1']!['1']! as any;
+  assert.equal(cell.value, null);
+  assert.deepEqual(cell.__cellPatch, { schema: 'CellPatch', value: { kind: 'inherit' }, style: { kind: 'set', value: { bold: true } } });
+});
+
+test('v10 canonical snapshots reject raw data-region overlays and inconsistent carriers', () => {
+  const snapshot = new WorkbookModel('unit-v10-patch-reject', 'Canonical').snapshot() as any;
+  snapshot.sheets[0].dataRegions = [{
+    id: 'region-1', sourceId: 'source-1',
+    range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    headerRow: 0, revision: 0,
+  }];
+  snapshot.sheets[0].cells = { '1': { '1': { value: 999 } } };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /non-canonical cell overlay/);
+  snapshot.sheets[0].cells['1']['1'] = { value: null, __cellPatch: { schema: 'CellPatch', value: { kind: 'set', value: 999 } } };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /carrier value disagrees/);
 });
 
 test('canonical snapshots bound drawing source work', () => {
@@ -297,7 +370,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
 
   const snapshot = workbook.snapshot();
   assert.equal(snapshot.schema, 'WorkbookSnapshot');
-  assert.equal(snapshot.definedNames?.['TaxRate'], '0.15');
+  assert.deepEqual(snapshot.definedNameModels.find((entry) => entry.name === 'TaxRate'), { name: 'TaxRate', formula: '0.15', scope: 'workbook' });
   assert.equal('charts' in snapshot.sheets[0]!, false);
   assert.equal('shapes' in snapshot.sheets[0]!, false);
   assert.equal('images' in snapshot.sheets[0]!, false);
@@ -314,7 +387,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.drawingPayloads.get('shape-1')?.kind, 'shape');
   assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);
-  assert.equal(restored.definedNames['TaxRate'], '0.15');
+  assert.equal(restored.getDefinedNameExact('TaxRate', 'workbook')?.formula, '0.15');
   assert.equal(restored.getDefinedNameExact('SharedName', 'workbook')?.formula, "='Sheet1'!A1");
   assert.equal(restored.getDefinedNameExact('SharedName', 'sheet', 'sheet-1')?.formula, "='Sheet1'!B1");
   assert.equal(restored.getDefinedName('SharedName', 'sheet-1')?.scope, 'sheet');

@@ -137,7 +137,7 @@ function normalizeRegionForCommand(
   return region;
 }
 
-function sourceRanges(workbook: CommandContext['workbook'], source: DataSourceManifest, fallbackSheetId: string): RangeRef[] {
+function sourceRanges(workbook: CommandContext['workbook'], source: DataSourceManifest): RangeRef[] {
   if (source.sourceRange) return [structuredClone(source.sourceRange)];
   if (source.sourceSheetId) {
     const sheet = workbook.getSheet(source.sourceSheetId);
@@ -149,9 +149,7 @@ function sourceRanges(workbook: CommandContext['workbook'], source: DataSourceMa
       endColumn: Math.max(0, sheet.columnCount - 1),
     }];
   }
-  // A chunked source without a worksheet owner has no cell range. The
-  // mutation still carries its owning operation sheet for the protocol.
-  void fallbackSheetId;
+  // A chunked source without a worksheet owner has no cell range.
   return [];
 }
 
@@ -433,7 +431,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const params = sourceCommandParams(input, 'dataSource.add');
       const source = normalizeDataSourceForCommand(context.workbook, params.sheetId, params.source);
       if (context.workbook.dataModel.sources.has(source.id)) throw new Error(`Data source already exists: ${source.id}`);
-      const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
+      const affectedRanges = sourceRanges(context.workbook, source);
       applyDataSourceAdd(context, params.sheetId, source, affectedRanges);
       return result(context, affectedRanges);
     },
@@ -445,7 +443,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const params = sourceCommandParams(input, 'dataSource.update');
       const previous = context.workbook.getDataSource(params.source.id);
       const source = normalizeDataSourceForCommand(context.workbook, params.sheetId, params.source);
-      const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
+      const affectedRanges = sourceRanges(context.workbook, source);
       applyDataSourceUpdate(context, params.sheetId, source, previous, affectedRanges);
       return result(context, affectedRanges);
     },
@@ -456,7 +454,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
     execute(input, context): CommandResult {
       const params = removeSourceCommandParams(input);
       const source = context.workbook.getDataSource(params.sourceId);
-      const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
+      const affectedRanges = sourceRanges(context.workbook, source);
       applyDataSourceRemove(context, params.sheetId, source, affectedRanges);
       return result(context, affectedRanges);
     },

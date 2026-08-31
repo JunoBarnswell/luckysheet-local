@@ -48,20 +48,24 @@ test('FormulaEngine resolves sheet-scoped names before workbook-scoped names', (
   assert.equal(engine.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 3);
 });
 
-test('scoped names survive the calculation worker snapshot boundary', () => {
+test('scoped names survive the persistent calculation bootstrap boundary', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
   engine.setDefinedNameModels([
     { name: 'Rate', formula: '2', scope: 'workbook' },
     { name: 'Rate', formula: '4', scope: 'sheet', sheetId: 'Sheet2' },
   ]);
   engine.setFormula({ sheetId: 'Sheet2', row: 0, column: 0 }, '=Rate');
-  const restored = FormulaEngine.fromCalculationSnapshot(engine.exportCalculationSnapshot());
-  restored.executeCalculationTask({
-    protocol: 'react-sheets.formula-calculation',
+  const restored = FormulaEngine.fromCalculationBootstrap(engine.exportCalculationBootstrap());
+  restored.executeCalculationDelta({
+    protocol: 'react-sheets.formula-delta',
     version: 1,
-    taskId: 'scoped-name-snapshot',
-    kind: 'recalculate',
+    kind: 'calculation.delta',
+    sessionId: 'scoped-name-session',
+    taskId: 'scoped-name-delta',
     revision: 1,
+    generation: 1,
+    delta: {},
+    forceRecalculate: true,
   });
   assert.equal(restored.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 4);
 });

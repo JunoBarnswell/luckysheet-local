@@ -155,7 +155,7 @@ export function validateDrawingGraph(sheet: DrawingGraphSheet): void {
   const payloadIds = new Set<string>();
   for (const drawing of sheet.drawings) {
     if (!drawing.id.trim() || ids.has(drawing.id)) throw new Error(`Drawing identity is duplicated or empty: ${drawing.id}`);
-    if (drawing.sheetId !== sheet.id || !finiteTransform(drawing.transform)) throw new Error(`Drawing graph contains an invalid drawing: ${drawing.id}`);
+    if (drawing.sheetId !== sheet.id || !finiteTransform(drawing.transform) || !finiteAnchor(drawing.anchor)) throw new Error(`Drawing graph contains an invalid drawing: ${drawing.id}`);
     const payload = payloadAt(sheet, drawing.payloadId);
     if (!payload || payload.kind !== drawing.kind) throw new Error(`Drawing payload is missing or mismatched: ${drawing.id}`);
     if (payloadIds.has(drawing.payloadId)) throw new Error(`Drawing payload identity is duplicated: ${drawing.payloadId}`);
@@ -192,6 +192,15 @@ export function validateDrawingGraph(sheet: DrawingGraphSheet): void {
     }
   }
   if (sheet.snapSettings !== undefined && !isWorksheetSnapSettings(sheet.snapSettings)) throw new Error('Worksheet snap settings are invalid');
+}
+
+function finiteAnchor(anchor: DrawingObject['anchor']): boolean {
+  if (!anchor || !['absolute', 'one-cell', 'two-cell'].includes(anchor.kind)) return false;
+  if (anchor.kind === 'absolute') return anchor.row === undefined && anchor.column === undefined && anchor.endRow === undefined && anchor.endColumn === undefined;
+  if (!Number.isSafeInteger(anchor.row) || anchor.row! < 0 || !Number.isSafeInteger(anchor.column) || anchor.column! < 0) return false;
+  if (anchor.kind === 'one-cell') return anchor.endRow === undefined && anchor.endColumn === undefined;
+  return Number.isSafeInteger(anchor.endRow) && anchor.endRow! >= anchor.row!
+    && Number.isSafeInteger(anchor.endColumn) && anchor.endColumn! >= anchor.column!;
 }
 
 export function canonicalSnapSettings(value: WorksheetSnapSettings | undefined): WorksheetSnapSettings {

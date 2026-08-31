@@ -13,8 +13,6 @@ export type RibbonCatalogTabId =
   | 'review'
   | 'view'
   | 'settings'
-  | 'pivotAnalyze'
-  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'
@@ -68,8 +66,6 @@ export type RibbonGroupId =
   | 'printLayout'
   | 'appearanceFiles'
   | 'settings'
-  | 'pivotAnalyze'
-  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'
@@ -498,6 +494,7 @@ export interface RibbonCommandActions {
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateCamera: () => void;
+  onCaptureScreenshot: () => void | Promise<void>;
   onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
   onCreateTextBox: () => void;
@@ -543,7 +540,7 @@ export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
   | { type: 'intent'; intent: UiSessionIntent }
-  | { type: 'callback'; invoke: () => void };
+  | { type: 'callback'; invoke: () => void | Promise<void> };
 
 export interface RibbonCommandPlacement {
   readonly tab: RibbonCatalogTabId;
@@ -563,6 +560,7 @@ export interface CommandDefinition {
   readonly commandId?: string;
   readonly when?: (context: RibbonCommandContext) => boolean;
   readonly enabled?: (context: RibbonCommandContext) => boolean;
+  readonly disabledReason?: (context: RibbonCommandContext) => string | undefined;
   readonly active?: (context: RibbonCommandContext) => boolean;
   readonly build: (context: RibbonCommandContext) => RibbonCommandResult | undefined;
 }
@@ -752,8 +750,6 @@ export const RIBBON_TEXT = {
     printLayout: 'groups.printLayout',
     appearanceFiles: 'groups.appearanceFiles',
     settings: 'groups.settings',
-    pivotAnalyze: 'groups.pivotAnalyze',
-    pivotDesign: 'groups.pivotDesign',
     tableSheetDesign: 'groups.tableSheetDesign',
     ganttTask: 'groups.ganttTask',
     ganttProject: 'groups.ganttProject',
@@ -1066,8 +1062,6 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('printLayout', 'view', 40),
   group('appearanceFiles', 'view', 60),
   group('settings', 'settings', 10),
-  group('pivotAnalyze', 'pivotAnalyze', 10),
-  group('pivotDesign', 'pivotDesign', 10),
   group('tableSheetDesign', 'tableSheetDesign', 10),
   group('ganttTask', 'ganttTask', 10),
   group('ganttProject', 'ganttProject', 20),
@@ -1506,16 +1500,19 @@ const callback = (
   tab: RibbonCatalogTabId,
   groupId: RibbonGroupId,
   labelKey: RibbonTextKey,
-  invoke: (context: RibbonCommandContext) => void,
+  invoke: (context: RibbonCommandContext) => void | Promise<void>,
   icon?: RibbonIconName,
   additionalPlacements: readonly RibbonCommandPlacement[] = [],
+  requiredCommandId?: string,
 ): CommandDefinition => ({
   id,
   placements: [{ tab, group: groupId }, ...additionalPlacements],
+  ...(requiredCommandId ? { commandId: requiredCommandId } : {}),
   labelKey,
   icon,
   priority: 30,
   display: icon ? 'small' : 'medium',
+  ...(requiredCommandId ? { enabled: (context: RibbonCommandContext) => !context.canExecute || context.canExecute(requiredCommandId) } : {}),
   build: (context) => ({ type: 'callback', invoke: () => invoke(context) }),
 });
 
@@ -1792,11 +1789,11 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('threadedComment', 'insert', 'insertComments', RIBBON_TEXT.commands.threadedComment, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
   intent('headerFooter', 'insert', 'text', RIBBON_TEXT.commands.headerFooter, () => ({ type: 'panel.open', panel: 'print' }), 'printer'),
   intent('recommendedPivotTables', 'insert', 'tables', RIBBON_TEXT.commands.recommendedPivotTables, () => ({ type: 'dialog.open', dialog: 'recommended-pivots' }), 'table-pivot'),
-  intent('forms', 'insert', 'tables', RIBBON_TEXT.commands.forms, () => ({ type: 'notice', message: 'Microsoft Forms requires an Office host connection' }), 'form-control'),
+  callback('forms', 'insert', 'tables', RIBBON_TEXT.commands.forms, (context) => context.actions.onCreateFormControl('button'), 'form-control', [], 'drawing.add.form-control'),
   intent('icons', 'insert', 'illustrations', RIBBON_TEXT.commands.icons, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'icon' }), 'picture'),
   intent('models3d', 'insert', 'illustrations', RIBBON_TEXT.commands.models3d, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'model3d' }), 'picture'),
   intent('smartArt', 'insert', 'illustrations', RIBBON_TEXT.commands.smartArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'smartart' }), 'layout'),
-  intent('screenshot', 'insert', 'illustrations', RIBBON_TEXT.commands.screenshot, () => ({ type: 'notice', message: 'System Screenshot requires an Office host capture capability' }), 'camera'),
+  callback('screenshot', 'insert', 'illustrations', RIBBON_TEXT.commands.screenshot, (context) => context.actions.onCaptureScreenshot(), 'camera', [], 'drawing.add.image'),
   intent('recommendedCharts', 'insert', 'charts', RIBBON_TEXT.commands.recommendedCharts, () => ({ type: 'dialog.open', dialog: 'recommended-charts' }), 'chart'),
   intent('wordArt', 'insert', 'text', RIBBON_TEXT.commands.wordArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'wordart' }), 'type'),
   intent('signatureLine', 'insert', 'text', RIBBON_TEXT.commands.signatureLine, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'signature-line' }), 'type'),
@@ -1810,7 +1807,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     id: 'pivotRefresh',
-    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }],
+    placements: [{ tab: 'insert', group: 'tables' }],
     labelKey: RIBBON_TEXT.commands.pivotRefresh,
     icon: 'table-pivot',
     priority: 10,
@@ -1822,38 +1819,38 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
       : undefined,
   },
   {
-    ...intent('pivotFieldList', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
+    ...intent('pivotFieldList', 'insert', 'tables', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
     enabled: (context) => Boolean(context.activePivot)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotSlicer', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer(), 'sliders', [{ tab: 'insert', group: 'filters' }]),
-    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }, { tab: 'insert', group: 'filters' }],
+    ...callback('pivotSlicer', 'insert', 'filters', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer()),
+    placements: [{ tab: 'insert', group: 'filters' }],
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.slicer.create', context.activePivot)),
   },
   {
-    ...callback('pivotTimeline', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline(), 'history', [{ tab: 'insert', group: 'filters' }]),
+    ...callback('pivotTimeline', 'insert', 'filters', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline()),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.timeline.create', context.activePivot)),
   },
   {
-    ...callback('pivotChart', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart(), 'chart', [{ tab: 'insert', group: 'charts' }]),
+    ...callback('pivotChart', 'insert', 'charts', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart()),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.chart.create', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutCompact', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutCompact, (context) => context.pivotActions?.onLayoutChange('compact'), 'layout'),
+    ...callback('pivotLayoutCompact', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutCompact, (context) => context.pivotActions?.onLayoutChange('compact'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutOutline', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutOutline, (context) => context.pivotActions?.onLayoutChange('outline'), 'layout'),
+    ...callback('pivotLayoutOutline', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutOutline, (context) => context.pivotActions?.onLayoutChange('outline'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutTabular', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutTabular, (context) => context.pivotActions?.onLayoutChange('tabular'), 'layout'),
+    ...callback('pivotLayoutTabular', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutTabular, (context) => context.pivotActions?.onLayoutChange('tabular'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
@@ -2140,6 +2137,10 @@ export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonComma
 export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {
   if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
   return definition.build(context) !== undefined;
+}
+
+export function getRibbonCommandDisabledReason(definition: CommandDefinition, context: RibbonCommandContext): string | undefined {
+  return isRibbonCommandEnabled(definition, context) ? undefined : definition.disabledReason?.(context);
 }
 
 export function buildRibbonCommand(id: RibbonCommandId, context: RibbonCommandContext): RibbonCommandResult | undefined {

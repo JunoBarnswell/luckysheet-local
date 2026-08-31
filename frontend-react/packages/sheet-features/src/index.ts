@@ -86,6 +86,7 @@ export * from './clear-planner';
 export * from './data-region-context';
 export * from './cell-write-authority';
 export * from './cell-entry-error';
+export * from './rules-runtime';
 
 
 export interface SetCellValueParams {

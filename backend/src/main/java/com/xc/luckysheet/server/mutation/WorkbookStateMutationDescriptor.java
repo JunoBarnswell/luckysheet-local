@@ -117,8 +117,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         int existing = nameIndex(models, name, scope, sheetId);
         if (existing >= 0) models.set(existing, model.deepCopy());
         else models.add(model.deepCopy());
-        ObjectNode legacyFormulaView = SnapshotMutationSupport.object(root, "definedNames");
-        if (scope.equals("workbook")) legacyFormulaView.put(name, formula);
     }
 
     private void removeName(ObjectNode root, ObjectNode params) {
@@ -131,7 +129,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         int index = nameIndex(models, name, scope, sheetId);
         if (index < 0) throw ServiceException.notFound("Defined name not found: " + name);
         models.remove(index);
-        if (scope.equals("workbook")) SnapshotMutationSupport.object(root, "definedNames").remove(name);
     }
 
     private void setCalculationMode(ObjectNode root, ObjectNode params) {

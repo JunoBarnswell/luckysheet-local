@@ -38,11 +38,20 @@ export interface FunctionLibraryEntry extends FunctionDescriptor {
   category: FunctionLibraryCategory;
 }
 
+export type FormulaFunctionCapabilityStatus = 'builtin' | 'advanced' | 'native' | 'unsupported';
+
+export interface FormulaFunctionCapability extends FunctionDescriptor {
+  status: FormulaFunctionCapabilityStatus;
+  category: FunctionLibraryCategory;
+}
+
 const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'AGGREGATE', 'SUMPRODUCT']);
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
 const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY', 'FILTER', 'UNIQUE', 'SORT', 'SORTBY', 'SEQUENCE', 'RANDARRAY', 'HSTACK', 'VSTACK', 'TAKE', 'DROP']);
-const NATIVE_FUNCTIONS = new Set(['SJS.TABLE']);
+/** Functions implemented by the evaluator's reference-aware native path. */
+const NATIVE_FUNCTIONS = new Set(['SJS.TABLE', 'ROW', 'COLUMN', 'ADDRESS', 'OFFSET', 'INDIRECT']);
+const UNSUPPORTED_FUNCTIONS = new Set(['ROMAN']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
   [...new Set([...Object.keys(BUILTIN_FUNCTIONS), ...Object.keys(ADVANCED_FUNCTIONS), ...NATIVE_FUNCTIONS])].map((name) => {
@@ -64,9 +73,20 @@ const categoryForFunction = (name: string): FunctionLibraryCategory => {
 
 /** The only UI-facing function list; it is derived from the executable registry. */
 export const FUNCTION_LIBRARY: readonly FunctionLibraryEntry[] = [...FUNCTION_DESCRIPTORS.values()]
-  .filter((descriptor) => Object.prototype.hasOwnProperty.call(BUILTIN_FUNCTIONS, descriptor.id) || NATIVE_FUNCTIONS.has(descriptor.id))
   .map((descriptor) => ({ ...descriptor, category: categoryForFunction(descriptor.id) }))
   .sort((left, right) => left.id.localeCompare(right.id));
+
+/** Single capability source for formula UI, auditing and runtime diagnostics. */
+export const FUNCTION_CAPABILITY_MATRIX: readonly FormulaFunctionCapability[] = FUNCTION_LIBRARY.map((descriptor) => ({
+  ...descriptor,
+  status: (UNSUPPORTED_FUNCTIONS.has(descriptor.id)
+    ? 'unsupported'
+    : NATIVE_FUNCTIONS.has(descriptor.id)
+      ? 'native'
+      : Object.prototype.hasOwnProperty.call(ADVANCED_FUNCTIONS, descriptor.id)
+        ? 'advanced'
+      : 'builtin') as FormulaFunctionCapabilityStatus,
+}));
 
 export function listFunctionLibrary(category?: FunctionLibraryCategory): readonly FunctionLibraryEntry[] {
   return category ? FUNCTION_LIBRARY.filter((entry) => entry.category === category) : FUNCTION_LIBRARY;
@@ -78,4 +98,19 @@ export function getBuiltinFunction(name: string): BuiltinFunction | undefined {
 
 export function getFunctionDescriptor(name: string): FunctionDescriptor | undefined {
   return FUNCTION_DESCRIPTORS.get(name.trim().toUpperCase());
+}
+
+/** Unknown functions stay observable as an unsupported capability. */
+export function getFunctionCapability(name: string): FormulaFunctionCapability {
+  const normalized = name.trim().toUpperCase();
+  const known = FUNCTION_CAPABILITY_MATRIX.find((entry) => entry.id === normalized);
+  if (known) return known;
+  return {
+    id: normalized,
+    cost: 'external',
+    streaming: false,
+    volatile: false,
+    status: 'unsupported',
+    category: 'more-functions',
+  };
 }

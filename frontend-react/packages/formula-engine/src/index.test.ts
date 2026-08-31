@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   FormulaEngine,
+  FUNCTION_CAPABILITY_MATRIX,
+  getFunctionCapability,
   RangeIndex,
   formatFormula,
   formatCellAddress,
@@ -196,25 +198,30 @@ test('FormulaEngine returns explicit errors and propagates them through formulas
   assertError(parseError, '#PARSE!');
 });
 
-test('calculation task port is versioned and serializable without pretending to be a Worker', async () => {
+test('FormulaEngine evaluates only the selected lazy branch and tracks dynamic references', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setValue('A1', 1);
+  assert.equal(engine.setFormula('B1', '=IF(A1,10,1/0)').value, 10);
+  assert.equal(engine.setFormula('C1', '=IFERROR(1/0,42)').value, 42);
+  engine.setValue('D1', 'A1');
+  engine.setFormula('E1', '=INDIRECT(D1)');
+  assert.equal(engine.getCellValue('E1'), 1);
+  assert.equal(engine.getDependents('A1').some((address) => address.column === 4), true);
+  engine.setValue('A1', 7);
+  assert.equal(engine.getCellValue('E1'), 7);
+});
+
+test('formula capability matrix is derived from executable functions and marks unsupported entries', () => {
+  assert.equal(FUNCTION_CAPABILITY_MATRIX.some((entry) => entry.id === 'INDIRECT' && entry.status === 'native'), true);
+  assert.equal(getFunctionCapability('ROMAN').status, 'unsupported');
+  assert.equal(getFunctionCapability('NO_SUCH_FUNCTION').status, 'unsupported');
+});
+
+test('calculation sessions fail closed when a persistent Worker is unavailable', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   engine.setValue('A1', 2);
   engine.setFormula('B1', '=A1*3');
-  const port = engine.createCalculationTaskPort();
-  const result = await port.submit({
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'task-1',
-    kind: 'recalculate',
-    revision: 4,
-    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
-  });
-
-  assert.equal(result.status, 'completed');
-  assert.equal(result.protocol, 'react-sheets.formula-calculation');
-  assert.equal(result.version, 1);
-  assert.equal(result.revision, 4);
-  assert.equal(result.report?.results.some((entry) => entry.value === 6), true);
+  assert.throws(() => engine.createCalculationSessionPort(), /CALCULATION_WORKER_UNAVAILABLE/);
 });
 
 test('FormulaEngine supports qualified references and detects cycles', () => {

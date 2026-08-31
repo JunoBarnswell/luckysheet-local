@@ -39,7 +39,7 @@ public class MutationDescriptorRegistry {
             "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set", "fill.applied", "fill.restored",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
-            "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
+            "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.update",
             "dataRegion.add", "dataRegion.remove", "dataSource.add", "dataSource.remove", "dataSource.update",
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
             "dv.add", "dv.remove", "autoFilter.remove", "autoFilter.set", "freeze.set",
@@ -102,6 +102,7 @@ public class MutationDescriptorRegistry {
         register(new ReviewDescriptor("comment.reply.remove"));
         register(new ReviewDescriptor("comment.resolve"));
         register(new ReviewDescriptor("comment.remove"));
+        register(new ReviewDescriptor("comment.update"));
         register(new ProtectionDescriptor("sheet.protect.set"));
         register(new ProtectionDescriptor("sheet.protect.remove"));
         register(new WorkbookRenameDescriptor());
@@ -1045,6 +1046,7 @@ public class MutationDescriptorRegistry {
             return switch (id()) {
                 case "note.set", "note.remove", "note.visibility", "comment.add" -> List.of(SnapshotMutationSupport.cellRange(root, mutation.sheetId(), params));
                 case "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove" -> List.of(SnapshotMutationSupport.threadRange(root, mutation.sheetId(), params));
+                case "comment.update" -> List.of(validateCommentUpdate(root, mutation.sheetId(), params));
                 default -> throw ServiceException.validation("Unsupported review mutation: " + id());
             };
         }
@@ -1063,6 +1065,7 @@ public class MutationDescriptorRegistry {
                 case "comment.reply.remove" -> removeReply(sheet, params);
                 case "comment.resolve" -> resolveThread(sheet, params);
                 case "comment.remove" -> removeThread(sheet, params);
+                case "comment.update" -> updateThread(root, sheet, mutation.sheetId(), params);
                 default -> throw ServiceException.validation("Unsupported review mutation: " + id());
             }
             return root;
@@ -1134,6 +1137,33 @@ public class MutationDescriptorRegistry {
         private void removeThread(ObjectNode sheet, ObjectNode params) {
             String threadId = SnapshotMutationSupport.text(params, "threadId");
             if (!SnapshotMutationSupport.removeThread(sheet, threadId)) throw ServiceException.notFound("Comment thread not found");
+        }
+
+        private RangeRef validateCommentUpdate(ObjectNode root, String sheetId, ObjectNode params) {
+            SnapshotMutationSupport.validateKnownKeys(params,
+                    Set.of("sheetId", "threadId", "row", "column", "previousText", "text"), "comment.update");
+            SnapshotMutationSupport.text(params, "sheetId");
+            SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, params);
+            ObjectNode thread = SnapshotMutationSupport.requireThread(SnapshotMutationSupport.sheet(root, sheetId), params);
+            if (thread.path("row").asInt(-1) != coordinate.row() || thread.path("column").asInt(-1) != coordinate.column()) {
+                throw ServiceException.conflict("Comment thread moved before update");
+            }
+            JsonNode previousText = params.get("previousText");
+            JsonNode text = params.get("text");
+            if (previousText == null || !previousText.isTextual() || text == null || !text.isTextual()) {
+                throw ServiceException.validation("comment.update requires previousText and text");
+            }
+            if (thread.get("text") == null || !thread.get("text").isTextual()
+                    || !thread.get("text").asText().equals(previousText.asText())) {
+                throw ServiceException.conflict("Comment thread changed before update");
+            }
+            return new RangeRef(sheetId, coordinate.row(), coordinate.row(), coordinate.column(), coordinate.column());
+        }
+
+        private void updateThread(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            validateCommentUpdate(root, sheetId, params);
+            ObjectNode thread = SnapshotMutationSupport.requireThread(sheet, params);
+            thread.put("text", params.path("text").asText());
         }
     }
 

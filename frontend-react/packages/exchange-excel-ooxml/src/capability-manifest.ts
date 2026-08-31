@@ -74,7 +74,7 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   'unknown-extension': capability('unknown-extension', 'full', 'none', 'none', 'none', 'full'),
   'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
   'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
-  'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
+  'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'full', 'Unknown worksheet nodes are retained in their source owner part and are not interpreted by the canonical model.'),
 } as const satisfies Record<string, NativeCapabilityDeclaration>;
 
 function capability(

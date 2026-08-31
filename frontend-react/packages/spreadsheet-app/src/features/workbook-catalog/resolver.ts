@@ -67,17 +67,17 @@ function assertUnitId(unitId: string): string {
   return normalized;
 }
 
-function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): WorkbookResolution {
+function localResolution(record: WorkspaceRecord): WorkbookResolution {
   const localRecord = clone(record);
   return {
     schema: 'WorkbookResolution',
     unitId: record.unitId,
-    source: mode === 'local' ? 'local' : 'mirrored',
-    mode,
+    source: 'local',
+    mode: 'local',
     lifecycle: 'active',
     binding: {
-      location: record.metadata.location,
-      syncMode: record.syncMode,
+      location: 'local',
+      syncMode: 'local-only',
     },
     snapshot: localRecord.snapshot,
     revision: record.serverRevision,
@@ -115,12 +115,22 @@ export class WorkbookResolver {
       throw new WorkbookResolutionError('not-found', `Workbook is in trash: ${normalized}`);
     }
 
-    if (localRecord && (localRecord.syncMode === 'local-only' || localRecord.metadata.location === 'local')) {
-      return localResolution(localRecord, 'local');
+    if (localRecord && localRecord.syncMode === 'local-only' && localRecord.metadata.location === 'local') {
+      return localResolution(localRecord);
     }
 
     if (!this.canUseRemote()) {
-      if (localRecord) return localResolution(localRecord, 'offline');
+      // A remote/shared workbook may have a local mirror, but the mirror is
+      // never an authority and cannot be opened without an explicit local-only
+      // copy operation. Keep the record untouched and fail the resolution.
+      if (localRecord) throw new WorkbookResolutionError(
+        'remote-unavailable',
+        `Authoritative workbook service is unavailable; local mirror retained but not openable: ${normalized}`,
+      );
+      if (this.remote) throw new WorkbookResolutionError(
+        'remote-unavailable',
+        `Authoritative workbook service is unavailable: ${normalized}`,
+      );
       throw new WorkbookResolutionError(
         'memory-session-reset',
         `The page memory session no longer contains workbook: ${normalized}`,
@@ -137,7 +147,7 @@ export class WorkbookResolver {
       return {
         schema: 'WorkbookResolution',
         unitId: normalized,
-        source: localRecord ? 'mirrored' : isShared ? 'shared' : 'remote',
+        source: isShared ? 'shared' : 'remote',
         mode: 'remote',
         lifecycle: 'active',
         binding: { location: 'remote', syncMode: 'remote' },
@@ -147,9 +157,8 @@ export class WorkbookResolver {
         localRecord: localRecord ? clone(localRecord) : null,
       };
     } catch (error) {
-      // A cached mirrored workbook can be opened offline, but an authoritative
-      // 401/403/404 must not be hidden by stale local data.
-      if (localRecord && isRemoteUnavailable(error)) return localResolution(localRecord, 'offline');
+      // A cached mirror remains durable in persistence, but an authoritative
+      // remote failure must never be hidden by opening stale local data.
       throw toResolutionError(error, normalized);
     }
   }

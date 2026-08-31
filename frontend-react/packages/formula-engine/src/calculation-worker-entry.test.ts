@@ -1,187 +1,93 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  consumeBrowserCalculationTask,
-  consumeCalculationTask,
+  CALCULATION_DELTA_PROTOCOL,
+  CALCULATION_DELTA_VERSION,
   FormulaEngine,
-  installCalculationWorkerEntry,
+  consumeCalculationSession,
+  installBrowserCalculationWorkerEntry,
   type CalculationBrowserWorker,
-  type CalculationTaskResult,
-  type CalculationWorkerScope,
+  type CalculationSessionRequest,
+  type CalculationSessionResult,
 } from './index';
 
-test('calculation worker entry consumes valid tasks without host indirection', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
-  engine.setValue('A1', 4);
-  engine.setFormula('B1', '=A1*2');
+test('persistent calculation worker opens once and applies only canonical deltas afterwards', async () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
+  engine.setValue('A1', 2);
+  engine.setFormula('B1', '=A1*3');
+  const worker = new ImmediateCalculationWorker();
+  const port = engine.createCalculationSessionPort({ workerFactory: () => worker });
 
-  const result = consumeCalculationTask(engine, {
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'worker-task-1',
-    kind: 'recalculate',
-    revision: 9,
-    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
-  });
+  await engine.recalculateAsync(undefined, port);
+  assert.equal(worker.calculationPosts, 1);
+  assert.equal(engine.getCellValue('B1'), 6);
 
-  assert.equal(result.status, 'completed');
-  assert.equal(result.taskId, 'worker-task-1');
-  assert.equal(result.revision, 9);
-  assert.equal(result.report?.results.some((entry) => entry.value === 8), true);
-  assert.doesNotThrow(() => JSON.stringify(result));
+  engine.setValue('A1', 5);
+  await engine.recalculateAsync('A1', port);
+  assert.equal(worker.calculationPosts, 2);
+  assert.equal(engine.getCellValue('B1'), 15);
+  const delta = worker.messages[1] as CalculationSessionRequest;
+  assert.equal(delta.kind, 'calculation.delta');
+  if (delta.kind !== 'calculation.delta') throw new Error('Expected calculation delta');
+  assert.deepEqual(delta.delta.cells?.map((entry) => entry.address.row), [0]);
+  port.dispose();
 });
 
-test('calculation worker entry returns a failed result for malformed tasks', () => {
-  const result = consumeCalculationTask(new FormulaEngine(), { taskId: 'bad', revision: 2 });
+test('worker entry rejects the removed snapshot task protocol', () => {
+  const result = consumeCalculationSession(new Map(), {
+    protocol: 'react-sheets.formula-calculation',
+    version: 1,
+    taskId: 'legacy',
+    kind: 'recalculate',
+    revision: 1,
+  });
   assert.equal(result.status, 'failed');
-  assert.equal(result.taskId, 'bad');
-  assert.equal(result.revision, 2);
   assert.match(result.error?.message ?? '', /protocol/i);
 });
 
-test('calculation worker entry installs and restores a direct message handler', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
-  engine.setValue('A1', 3);
-  engine.setFormula('B1', '=A1+1');
-  const sent: CalculationTaskResult[] = [];
+test('worker entry retains one FormulaEngine per session and restores its handler', () => {
+  const sent: CalculationSessionResult[] = [];
   const previous = () => undefined;
-  const scope: CalculationWorkerScope = {
-    onmessage: previous,
-    postMessage: (message) => sent.push(message),
-  };
-
-  const uninstall = installCalculationWorkerEntry(engine, scope);
-  scope.onmessage?.({
-    data: {
-      protocol: 'react-sheets.formula-calculation',
-      version: 1,
-      taskId: 'worker-task-2',
-      kind: 'recalculate',
-      revision: 10,
-    },
-  });
+  const scope = new TestScope(sent, previous);
+  const uninstall = installBrowserCalculationWorkerEntry(scope);
+  scope.onmessage?.({ data: openRequest() });
+  scope.onmessage?.({ data: deltaRequest(2, 8) });
   assert.equal(sent[0]?.status, 'completed');
+  assert.equal(sent[1]?.status, 'completed');
+  assert.equal(sent[1]?.report?.results.some((entry) => entry.value === 24), true);
   uninstall();
   assert.equal(scope.onmessage, previous);
 });
 
-test('browser task port posts a calculation snapshot to a Worker and applies a manual partial result', async () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
-  engine.setValue('A1', 2);
-  engine.setFormula('B1', '=A1*3');
-  engine.setValue('A1', 5);
-  assert.equal(engine.getCellValue('B1'), 6);
+function openRequest(): CalculationSessionRequest {
+  const source = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
+  source.setValue('A1', 2);
+  source.setFormula('B1', '=A1*3');
+  return {
+    protocol: CALCULATION_DELTA_PROTOCOL,
+    version: CALCULATION_DELTA_VERSION,
+    kind: 'session.open',
+    sessionId: 'session-test',
+    taskId: 'task-open',
+    revision: 1,
+    generation: source.getCalculationGeneration(),
+    bootstrap: source.exportCalculationBootstrap(),
+  };
+}
 
-  const worker = new ImmediateCalculationWorker();
-  const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
-  const result = await port.submit({
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'browser-worker-task',
-    kind: 'recalculate',
-    revision: 11,
+function deltaRequest(revision: number, value: number): CalculationSessionRequest {
+  return {
+    protocol: CALCULATION_DELTA_PROTOCOL,
+    version: CALCULATION_DELTA_VERSION,
+    kind: 'calculation.delta',
+    sessionId: 'session-test',
+    taskId: `task-${revision}`,
+    revision,
+    generation: 8,
+    delta: { cells: [{ kind: 'set-value', address: { sheetId: 'Sheet1', row: 0, column: 0 }, value }] },
     roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
-  });
-
-  assert.equal(result.status, 'completed');
-  assert.equal(worker.calculationPosts, 1);
-  assert.equal(engine.getCellValue('B1'), 15);
-  port.dispose?.();
-});
-
-test('recalculateAsync uses the supplied Worker task port instead of synchronous evaluation', async () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
-  engine.setValue('A1', 2);
-  engine.setFormula('B1', '=A1*3');
-  engine.setValue('A1', 5);
-  const worker = new ImmediateCalculationWorker();
-  const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
-
-  const report = await engine.recalculateAsync('A1', port);
-
-  assert.equal(worker.calculationPosts, 1);
-  assert.equal([...report.results.values()].some((result) => result.value === 15), true);
-  assert.equal(engine.getCellValue('B1'), 15);
-  port.dispose?.();
-});
-
-test('late browser Worker output cannot overwrite a newer formula input generation', async () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
-  engine.setValue('A1', 2);
-  engine.setFormula('B1', '=A1*3');
-  engine.setValue('A1', 5);
-  const worker = new DeferredCalculationWorker();
-  const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
-  const pending = port.submit({
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'stale-worker-task',
-    kind: 'recalculate',
-    revision: 12,
-    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
-  });
-
-  engine.setValue('A1', 8);
-  worker.completeNext();
-  const result = await pending;
-
-  assert.equal(result.status, 'completed');
-  assert.equal(engine.getCellValue('B1'), 6);
-  port.dispose?.();
-});
-
-test('browser task cancellation settles immediately and ignores a late Worker result', async () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
-  engine.setValue('A1', 2);
-  engine.setFormula('B1', '=A1*3');
-  engine.setValue('A1', 5);
-  const worker = new DeferredCalculationWorker();
-  const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
-  const pending = port.submit({
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'cancelled-worker-task',
-    kind: 'recalculate',
-    revision: 13,
-    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
-  });
-
-  port.cancel('cancelled-worker-task');
-  const result = await pending;
-  worker.completeNext();
-
-  assert.equal(result.status, 'cancelled');
-  assert.equal(engine.getCellValue('B1'), 6);
-  port.dispose?.();
-});
-
-test('browser Worker snapshots calculate GROUPBY with the same default semantics', async () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
-  engine.setSpillEnvironment('Sheet1', { rowCount: 12, columnCount: 8, isOccupied: () => false });
-  engine.setValue('A1', 'East');
-  engine.setValue('A2', 'East');
-  engine.setValue('A3', 'West');
-  engine.setValue('B1', 10);
-  engine.setValue('B2', 20);
-  engine.setValue('B3', 5);
-  engine.setFormula('D1', '=GROUPBY(A1:A3,B1:B3,SUM)');
-  const worker = new ImmediateCalculationWorker();
-  const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
-
-  const result = await port.submit({
-    protocol: 'react-sheets.formula-calculation',
-    version: 1,
-    taskId: 'groupby-worker-task',
-    kind: 'recalculate',
-    revision: 14,
-    roots: [{ sheetId: 'Sheet1', row: 0, column: 3 }],
-  });
-
-  assert.equal(result.status, 'completed');
-  assert.equal(worker.calculationPosts, 1);
-  assert.deepEqual(engine.getCellResult('D1')?.value, [['East', 30], ['West', 5]]);
-  port.dispose?.();
-});
+  };
+}
 
 abstract class BaseCalculationWorker implements CalculationBrowserWorker {
   private readonly listeners = {
@@ -192,51 +98,33 @@ abstract class BaseCalculationWorker implements CalculationBrowserWorker {
 
   abstract postMessage(message: unknown): void;
 
-  terminate(): void {
-    for (const listeners of Object.values(this.listeners)) listeners.clear();
-  }
-
-  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void {
-    this.listeners[type].add(listener);
-  }
-
-  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void {
-    this.listeners[type].delete(listener);
-  }
-
-  protected emit(type: 'message' | 'error' | 'messageerror', event: { readonly data?: unknown; readonly message?: string }): void {
-    for (const listener of this.listeners[type]) listener(event);
-  }
+  terminate(): void { for (const listeners of Object.values(this.listeners)) listeners.clear(); }
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void { this.listeners[type].add(listener); }
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void { this.listeners[type].delete(listener); }
+  protected emit(type: 'message' | 'error' | 'messageerror', event: { readonly data?: unknown; readonly message?: string }): void { for (const listener of this.listeners[type]) listener(event); }
 }
 
 class ImmediateCalculationWorker extends BaseCalculationWorker {
   calculationPosts = 0;
-
+  readonly messages: unknown[] = [];
+  private readonly sessions = new Map<string, FormulaEngine>();
   postMessage(message: unknown): void {
-    if (isCalculationMessage(message)) {
-      this.calculationPosts += 1;
-      queueMicrotask(() => this.emit('message', { data: consumeBrowserCalculationTask(message) }));
-    }
+    if (!isCalculationMessage(message)) return;
+    this.calculationPosts += 1;
+    this.messages.push(structuredClone(message));
+    queueMicrotask(() => this.emit('message', { data: consumeCalculationSession(this.sessions, message) }));
   }
 }
 
-class DeferredCalculationWorker extends BaseCalculationWorker {
-  private pending: unknown[] = [];
-
-  postMessage(message: unknown): void {
-    if (isCalculationMessage(message)) this.pending.push(message);
+class TestScope {
+  onmessage: ((event: { readonly data: unknown }) => void) | null;
+  constructor(private readonly sent: CalculationSessionResult[], previous: () => void) {
+    this.onmessage = previous;
   }
-
-  completeNext(): void {
-    const message = this.pending.shift();
-    if (!message) throw new Error('Expected a queued calculation task');
-    this.emit('message', { data: consumeBrowserCalculationTask(message) });
-  }
+  postMessage(message: CalculationSessionResult): void { this.sent.push(message); }
+  terminate(): void {}
 }
 
 function isCalculationMessage(value: unknown): boolean {
-  return typeof value === 'object'
-    && value !== null
-    && 'kind' in value
-    && (value as { kind?: unknown }).kind === 'recalculate';
+  return typeof value === 'object' && value !== null && 'kind' in value && ((value as { kind?: unknown }).kind === 'session.open' || (value as { kind?: unknown }).kind === 'calculation.delta');
 }

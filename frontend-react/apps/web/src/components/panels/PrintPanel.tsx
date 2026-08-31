@@ -1,18 +1,26 @@
 import React, { useState } from 'react';
-import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 
 export interface PrintPanelProps {
-  onPrint: (layout: PrintLayout) => void;
-  onExportPdf: (layout: PrintLayout) => void;
+  onPrint: (layout: PrintLayout, scope: PrintScope) => void;
+  onExportPdf: (layout: PrintLayout, scope: PrintScope) => Promise<void>;
   pageCount?: number;
   onClose?: () => void;
+  initialLayout?: PrintLayout;
 }
 
-export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: PrintPanelProps) {
-  const [paper, setPaper] = useState<PrintLayout['paper']>('A4');
-  const [orientation, setOrientation] = useState<PrintLayout['orientation']>('portrait');
+export type PrintScope = 'saved-area' | 'selection' | 'active-sheet';
+
+export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose, initialLayout }: PrintPanelProps) {
+  const [paper, setPaper] = useState<PrintLayout['paper']>(initialLayout?.paper ?? 'A4');
+  const [orientation, setOrientation] = useState<PrintLayout['orientation']>(initialLayout?.orientation ?? 'portrait');
   const [marginType, setMarginType] = useState<'normal' | 'narrow' | 'wide'>('normal');
+  const [scope, setScope] = useState<PrintScope>('saved-area');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [headerText, setHeaderText] = useState(initialLayout?.headerText ?? '');
+  const [footerText, setFooterText] = useState(initialLayout?.footerText ?? '');
 
   const getLayout = (): PrintLayout => {
     const margins = {
@@ -25,6 +33,8 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
       paper,
       orientation,
       margin: margins,
+      ...(headerText ? { headerText } : {}),
+      ...(footerText ? { footerText } : {}),
     };
   };
 
@@ -44,11 +54,18 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               value={paper}
               onChange={(e) => setPaper(e.target.value as PrintLayout['paper'])}
               sizeVariant="sm"
-            >
-              <option value="A4">A4 (210 × 297 mm)</option>
-              <option value="Letter">Letter (8.5 × 11 in)</option>
-              <option value="Legal">Legal (8.5 × 14 in)</option>
-            </Select>
+              options={[{ value: 'A4', label: 'A4 (210 × 297 mm)' }, { value: 'Letter', label: 'Letter (8.5 × 11 in)' }, { value: 'Legal', label: 'Legal (8.5 × 14 in)' }]}
+            />
+          </Box>
+
+          <Box>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">Header</Text>
+            <TextInput aria-label="Print header" value={headerText} onChange={(event) => setHeaderText(event.currentTarget.value)} />
+          </Box>
+
+          <Box>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">Footer</Text>
+            <TextInput aria-label="Print footer" value={footerText} onChange={(event) => setFooterText(event.currentTarget.value)} />
           </Box>
 
           <Box>
@@ -59,10 +76,8 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               value={orientation}
               onChange={(e) => setOrientation(e.target.value as PrintLayout['orientation'])}
               sizeVariant="sm"
-            >
-              <option value="portrait">Portrait</option>
-              <option value="landscape">Landscape</option>
-            </Select>
+              options={[{ value: 'portrait', label: 'Portrait' }, { value: 'landscape', label: 'Landscape' }]}
+            />
           </Box>
 
           <Box>
@@ -73,11 +88,22 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               value={marginType}
               onChange={(e) => setMarginType(e.target.value as 'normal' | 'narrow' | 'wide')}
               sizeVariant="sm"
-            >
-              <option value="normal">Normal (0.75 in)</option>
-              <option value="narrow">Narrow (0.25 in)</option>
-              <option value="wide">Wide (1.0 in)</option>
-            </Select>
+              options={[{ value: 'normal', label: 'Normal (0.75 in)' }, { value: 'narrow', label: 'Narrow (0.25 in)' }, { value: 'wide', label: 'Wide (1.0 in)' }]}
+            />
+          </Box>
+
+          <Box>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">Print scope</Text>
+            <Select
+              value={scope}
+              onChange={(event) => setScope(event.target.value as PrintScope)}
+              sizeVariant="sm"
+              options={[
+                { value: 'saved-area', label: 'Saved print area (or used range)' },
+                { value: 'selection', label: 'Current selection' },
+                { value: 'active-sheet', label: 'Entire active sheet used range' },
+              ]}
+            />
           </Box>
 
           <Box className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-800">
@@ -90,11 +116,17 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
           </Box>
 
           <Stack gap="sm">
+            {error ? <Text size="xs" tone="danger">{error}</Text> : null}
             <Button
               variant="primary"
               size="sm"
               icon="printer"
-              onClick={() => onPrint(getLayout())}
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                try { onPrint(getLayout(), scope); }
+                catch (cause) { setError(cause instanceof Error ? cause.message : 'Print preview failed'); }
+              }}
             >
               Print Preview & Output
             </Button>
@@ -102,7 +134,12 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               variant="outline"
               size="sm"
               icon="download"
-              onClick={() => onExportPdf(getLayout())}
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                void onExportPdf(getLayout(), scope).catch((cause) => setError(cause instanceof Error ? cause.message : 'PDF export failed')).finally(() => setBusy(false));
+              }}
             >
               Print / Save as PDF
             </Button>

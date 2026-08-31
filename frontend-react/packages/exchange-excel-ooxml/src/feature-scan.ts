@@ -75,7 +75,7 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
   }
 
   if (hasFormula) features.add('formulas');
-  if (snapshot.definedNames && Object.keys(snapshot.definedNames).length > 0) {
+  if (snapshot.definedNameModels.length > 0) {
     features.add('defined-names');
   }
   if ((snapshot.cellStyleTemplates?.length ?? 0) > 0) features.add('cell-style-template');

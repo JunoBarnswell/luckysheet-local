@@ -50,6 +50,26 @@ describe('WorkbookCatalogService', () => {
     assert.equal((await catalog.resolve(existing.unitId)).unitId, existing.unitId);
   });
 
+  it('fails closed for a remote mirror when the authoritative service is unavailable', async () => {
+    const persistence = new WorkspacePersistence();
+    const unitId = 'remote-mirror-unavailable';
+    await persistence.checkpoint(
+      createTemplateSnapshot('blank', unitId),
+      4,
+      9,
+      'remote',
+      undefined,
+      { location: 'remote', lifecycle: 'active', source: 'native', role: 'owner' },
+    );
+    const catalog = new WorkbookCatalogService({ persistence, remoteAvailable: () => false });
+
+    await assert.rejects(
+      () => catalog.resolve(unitId),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'remote-unavailable',
+    );
+    assert.equal((await persistence.store.open(unitId))?.serverRevision, 9);
+  });
+
   it('creates independent template workbooks and keeps one local record per unitId', async () => {
     const catalog = service('identity');
     const first = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'workbook-a') });

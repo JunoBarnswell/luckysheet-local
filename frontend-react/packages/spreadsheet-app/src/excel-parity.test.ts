@@ -8,7 +8,7 @@ test('Excel feature registry has one canonical ribbon surface graph', () => {
   assert.ok(registry.ribbonCommands.length > 0);
   assert.ok(registry.ribbonSurfaces.length > 0);
   assert.ok(registry.shortcutBindings.some((binding) => binding.id === 'print.preview'));
-  assert.deepEqual(registry.shortcutSequenceBindings.find((binding) => binding.id === 'clipboard.pasteSpecial.legacy')?.chords, [{ key: 'e', alt: true }, { key: 's' }]);
+  assert.deepEqual(registry.shortcutSequenceBindings.find((binding) => binding.id === 'clipboard.pasteSpecial.alt-e-s')?.chords, [{ key: 'e', alt: true }, { key: 's' }]);
   assert.equal(registry.shortcutBindings.some((binding) => binding.id === 'commandPalette.open' && binding.key === 'p' && binding.primary && !binding.shift), false);
 });
 
