@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         "COORDINATION_MULTI_INSTANCE=false",
         "COORDINATION_REDIS_ENABLED=false"
 })
-class WorkbookDataBlockAuthorizationIntegrationTest {
+class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.server.NativeKernelIntegrationTestSupport {
     @Autowired private WorkbookCatalogService catalog;
     @Autowired private GuestShareService shares;
     @Autowired private WorkbookDataBlockCommitService commits;
@@ -44,7 +44,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
     void revokedEditorCannotCommitBytesReadBeforeTheWriteBoundary() throws Exception {
         String unitId = "block-revoked";
         String owner = "owner-revoked";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "blocked-after-revocation".getBytes(StandardCharsets.UTF_8);
 
@@ -61,7 +61,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
     void editorCommitThatCompletesBeforeRevocationRemainsPersisted() throws Exception {
         String unitId = "block-committed";
         String owner = "owner-committed";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "committed-before-revocation".getBytes(StandardCharsets.UTF_8);
 
@@ -78,10 +78,4 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
                 content.length, content, Instant.now(), Instant.now());
     }
 
-    private com.fasterxml.jackson.databind.JsonNode snapshot(String unitId) throws Exception {
-        var snapshot = mapper.readTree("{\"schema\":\"WorkbookSnapshot\",\"version\":10,\"unitId\":\"" + unitId
-                + "\",\"name\":\"Blocks\",\"dimensionMetrics\":{\"normalFontFamily\":\"Calibri\",\"normalFontSizePx\":14.6666666667,\"maximumDigitWidthPx\":7},\"calculationSettings\":{\"mode\":\"automatic\",\"iterativeCalculation\":false,\"maximumIterations\":100,\"maximumChange\":0.001,\"precisionAsDisplayed\":false,\"calculateBeforeSave\":true,\"fullCalculationOnLoad\":false},\"editingOptions\":{\"allowEditDirectly\":true,\"moveAfterEnter\":true,\"enterDirection\":\"down\",\"formulaAutoComplete\":true,\"valueAutoComplete\":true,\"fixedDecimalPlaces\":null},\"definedNameModels\":[],\"dataModel\":{\"sources\":[],\"tables\":[],\"relationships\":[],\"views\":[]},\"sheets\":[{\"kind\":\"worksheet\",\"id\":\"sheet-1\",\"name\":\"Sheet1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{},\"merges\":[],\"pane\":{\"kind\":\"none\"},\"defaultRowHeightPx\":20,\"defaultColumnWidthPx\":64,\"pivots\":[],\"sparklines\":[],\"drawings\":[],\"drawingPayloads\":{},\"review\":{\"notesByCell\":{},\"notesById\":{},\"threadIdsByCell\":{},\"threadsById\":{}}}]}");
-        ((com.fasterxml.jackson.databind.node.ObjectNode) snapshot).putArray("definedNameModels");
-        return snapshot;
-    }
 }

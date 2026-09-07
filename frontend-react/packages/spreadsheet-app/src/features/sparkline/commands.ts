@@ -159,82 +159,6 @@ function memberStateFromSparkline(sparkline: SparklineModel): SparklineMemberSta
   };
 }
 
-function applyGroupProjection(sparkline: SparklineModel, group: SparklineGroup): void {
-  sparkline.type = group.type;
-  if (group.showAxis === undefined) delete sparkline.showAxis; else sparkline.showAxis = group.showAxis;
-  if (group.showMarkers === undefined) delete sparkline.showMarkers; else sparkline.showMarkers = group.showMarkers;
-  if (group.lineWeight === undefined) delete sparkline.lineWeight; else sparkline.lineWeight = group.lineWeight;
-  if (group.dateAxis === undefined) delete sparkline.dateAxis; else sparkline.dateAxis = group.dateAxis;
-  if (group.dataOrientation === undefined) delete sparkline.dataOrientation; else sparkline.dataOrientation = group.dataOrientation;
-  if (group.rightToLeft === undefined) delete sparkline.rightToLeft; else sparkline.rightToLeft = group.rightToLeft;
-  if (group.hiddenCells === undefined) delete sparkline.hiddenCells; else sparkline.hiddenCells = group.hiddenCells;
-  if (group.emptyCells === undefined) delete sparkline.emptyCells; else sparkline.emptyCells = group.emptyCells;
-  if (group.verticalAxis === undefined) delete sparkline.verticalAxis; else sparkline.verticalAxis = structuredClone(group.verticalAxis);
-  if (group.axisColor === undefined) delete sparkline.axisColor; else sparkline.axisColor = group.axisColor;
-  if (group.firstColor === undefined) delete sparkline.firstColor; else sparkline.firstColor = group.firstColor;
-  if (group.lastColor === undefined) delete sparkline.lastColor; else sparkline.lastColor = group.lastColor;
-  if (group.highColor === undefined) delete sparkline.highColor; else sparkline.highColor = group.highColor;
-  if (group.lowColor === undefined) delete sparkline.lowColor; else sparkline.lowColor = group.lowColor;
-  if (group.negativeColor === undefined) delete sparkline.negativeColor; else sparkline.negativeColor = group.negativeColor;
-  if (group.markerColor === undefined) delete sparkline.markerColor; else sparkline.markerColor = group.markerColor;
-}
-
-function applyGroupState(params: SparklineGroupStateParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const groupIds = new Set(params.groupIds);
-  if (groupIds.size !== params.groupIds.length) throw new Error('Sparkline group state contains duplicate group ids');
-  for (const entry of params.groups) {
-    if (entry.group.sheetId !== params.sheetId) throw new Error(`Sparkline group ${entry.group.id} targets another sheet`);
-    if (!groupIds.has(entry.group.id)) throw new Error(`Sparkline group ${entry.group.id} is outside the transaction`);
-    validateGroupMembers(sheet, entry.group);
-  }
-  for (const member of params.members) {
-    if (!sheet.sparklines.some((entry) => entry.id === member.sparklineId)) throw new Error(`Unknown sparkline member: ${member.sparklineId}`);
-    if (member.groupId !== undefined && !groupIds.has(member.groupId) && !sheet.sparklineGroups.some((group) => group.id === member.groupId)) {
-      throw new Error(`Unknown sparkline group: ${member.groupId}`);
-    }
-  }
-  const affected = groupIds;
-  // Remove only the groups participating in this transition.  Their exact
-  // positions are restored from the state payload below, keeping redo and
-  // remote replay deterministic.
-  for (let index = sheet.sparklineGroups.length - 1; index >= 0; index -= 1) {
-    if (affected.has(sheet.sparklineGroups[index]!.id)) sheet.sparklineGroups.splice(index, 1);
-  }
-  const orderedGroups = [...params.groups].sort((left, right) => left.index - right.index);
-  for (const entry of orderedGroups) {
-    const index = Math.max(0, Math.min(entry.index, sheet.sparklineGroups.length));
-    sheet.sparklineGroups.splice(index, 0, structuredClone(entry.group));
-  }
-  for (const state of params.members) {
-    const sparkline = sheet.sparklines.find((entry) => entry.id === state.sparklineId);
-    if (!sparkline) throw new Error(`Unknown sparkline member: ${state.sparklineId}`);
-    sparkline.type = state.type;
-    if (state.groupId === undefined) delete sparkline.groupId;
-    else sparkline.groupId = state.groupId;
-    if (state.showAxis === undefined) delete sparkline.showAxis;
-    else sparkline.showAxis = state.showAxis;
-    if (state.showMarkers === undefined) delete sparkline.showMarkers;
-    else sparkline.showMarkers = state.showMarkers;
-    if (state.lineWeight === undefined) delete sparkline.lineWeight; else sparkline.lineWeight = state.lineWeight;
-    if (state.dateAxis === undefined) delete sparkline.dateAxis; else sparkline.dateAxis = state.dateAxis;
-    if (state.dataOrientation === undefined) delete sparkline.dataOrientation; else sparkline.dataOrientation = state.dataOrientation;
-    if (state.rightToLeft === undefined) delete sparkline.rightToLeft; else sparkline.rightToLeft = state.rightToLeft;
-    if (state.hiddenCells === undefined) delete sparkline.hiddenCells; else sparkline.hiddenCells = state.hiddenCells;
-    if (state.emptyCells === undefined) delete sparkline.emptyCells; else sparkline.emptyCells = state.emptyCells;
-    if (state.verticalAxis === undefined) delete sparkline.verticalAxis; else sparkline.verticalAxis = structuredClone(state.verticalAxis);
-    if (state.axisColor === undefined) delete sparkline.axisColor; else sparkline.axisColor = state.axisColor;
-    if (state.firstColor === undefined) delete sparkline.firstColor; else sparkline.firstColor = state.firstColor;
-    if (state.lastColor === undefined) delete sparkline.lastColor; else sparkline.lastColor = state.lastColor;
-    if (state.highColor === undefined) delete sparkline.highColor; else sparkline.highColor = state.highColor;
-    if (state.lowColor === undefined) delete sparkline.lowColor; else sparkline.lowColor = state.lowColor;
-    if (state.negativeColor === undefined) delete sparkline.negativeColor; else sparkline.negativeColor = state.negativeColor;
-    if (state.markerColor === undefined) delete sparkline.markerColor; else sparkline.markerColor = state.markerColor;
-    const group = state.groupId ? sheet.sparklineGroups.find((entry) => entry.id === state.groupId) : undefined;
-    if (group) applyGroupProjection(sparkline, group);
-  }
-}
-
 function transitionForGroup(
   sheet: ReturnType<CommandContext['workbook']['getSheet']>,
   nextGroup: SparklineGroup,
@@ -444,34 +368,6 @@ function sparklineAffectedRanges(value: unknown): ReturnType<typeof sheetRange> 
   return [];
 }
 
-function applySparklineAdd(context: CommandContext, params: SparklineInsertParams): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  if (sheet.sparklines.some((entry) => entry.id === params.sparkline.id)) throw new Error(`Sparkline already exists: ${params.sparkline.id}`);
-  if (params.sparkline.sheetId !== params.sheetId) throw new Error(`Sparkline ${params.sparkline.id} targets another sheet`);
-  if (params.sparkline.groupId !== undefined && !params.groupState) {
-    validateSparklineState(context, params.sparkline);
-    throw new Error('Insert the sparkline before assigning it to a group');
-  }
-  const sparkline = structuredClone(params.sparkline);
-  if (params.groupState) {
-    delete sparkline.groupId;
-    delete sparkline.showAxis;
-    delete sparkline.showMarkers;
-  }
-  validateSparklineState(context, sparkline);
-  sheet.sparklines.push(sparkline);
-  if (params.groupState) applyGroupState(params.groupState, context);
-}
-
-function applySparklineRemove(context: CommandContext, params: SparklineRemoveParams): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const sparkline = sheet.sparklines.find((entry) => entry.id === params.sparklineId);
-  if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
-  if (sparkline.groupId !== undefined && !params.groupState) throw new Error(`Sparkline ${params.sparklineId} requires a group transition when removed`);
-  if (params.groupState) applyGroupState(params.groupState, context);
-  if (!removeById(sheet.sparklines, params.sparklineId)) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
-}
-
 function sameSparklineValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
@@ -518,14 +414,6 @@ function editableSparklinePatch(sparkline: SparklineModel): Partial<SparklineMod
   };
 }
 
-function applySparklineUpdate(context: CommandContext, params: SparklineUpdateParams): void {
-  const sparkline = context.workbook.getSheet(params.sheetId).sparklines.find((entry) => entry.id === params.sparklineId);
-  if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
-  const next = { ...structuredClone(sparkline), ...structuredClone(params.patch), sheetId: params.sheetId };
-  validateSparklineState(context, next);
-  Object.assign(sparkline, next);
-}
-
 function executeSparklineInsert(params: SparklineInsertParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
@@ -535,7 +423,6 @@ function executeSparklineInsert(params: SparklineInsertParams, context: CommandC
     params,
     affectedRanges,
     inverse: [{ id: 'sparkline.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparkline.id }, affectedRanges }],
-    apply: () => applySparklineAdd(context, params),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -579,9 +466,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
 
   runtime.registry.registerMutation<SparklineInsertParams>({
       id: 'sparkline.add',
-      handler: (item, context) => {
-    applySparklineAdd(context, item.params);
-  },
       metadata: {
     schema: { name: 'SparklineInsertParams', validate: isSparklineInsert },
     permission: { capability: 'sparkline.edit' },
@@ -591,9 +475,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<SparklineRemoveParams>({
       id: 'sparkline.remove',
-      handler: (item, context) => {
-    applySparklineRemove(context, item.params);
-  },
       metadata: {
     schema: { name: 'SparklineRemoveParams', validate: isSparklineRemove },
     permission: { capability: 'sparkline.edit' },
@@ -603,9 +484,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<SparklineUpdateParams>({
       id: 'sparkline.update',
-      handler: (item, context) => {
-    applySparklineUpdate(context, item.params);
-  },
       metadata: {
     schema: { name: 'SparklineUpdateParams', validate: isSparklineUpdate },
     permission: { capability: 'sparkline.edit' },
@@ -615,9 +493,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
       id: 'sparkline.group.add',
-      handler: (item, context) => {
-    applyGroupState(item.params, context);
-  },
       metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
@@ -627,9 +502,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
       id: 'sparkline.group.remove',
-      handler: (item, context) => {
-    applyGroupState(item.params, context);
-  },
       metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
@@ -639,9 +511,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
       id: 'sparkline.group.replace',
-      handler: (item, context) => {
-    applyGroupState(item.params, context);
-  },
       metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
@@ -714,7 +583,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params,
         affectedRanges,
         inverse: [{ id: 'sparkline.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparklineId, patch: editableSparklinePatch(previous) }, affectedRanges }],
-        apply: () => applySparklineUpdate(context, params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -735,7 +603,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params: after,
         affectedRanges,
         inverse: [{ id: 'sparkline.group.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
-        apply: () => applyGroupState(after, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -763,7 +630,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params: after,
         affectedRanges,
         inverse: [{ id: 'sparkline.group.replace', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
-        apply: () => applyGroupState(after, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -785,7 +651,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params: after,
         affectedRanges,
         inverse: [{ id: 'sparkline.group.replace', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
-        apply: () => applyGroupState(after, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -805,7 +670,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params: after,
         affectedRanges,
         inverse: [{ id: 'sparkline.group.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
-        apply: () => applyGroupState(after, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -841,7 +705,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         params: removeParams,
         affectedRanges,
         inverse: [{ id: 'sparkline.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparkline: previous, groupState: groupTransition?.before }, affectedRanges }],
-        apply: () => applySparklineRemove(context, removeParams),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

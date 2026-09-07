@@ -45,6 +45,18 @@ export interface FormulaAuditEvaluationStep extends FormulaEvaluationTraceStep {
   readonly index: number;
 }
 
+export interface FormulaAuditFormulaPage {
+  readonly revision: number;
+  readonly entries: readonly FormulaAuditFormulaProjection[];
+  readonly nextCursor?: string | null;
+}
+
+export interface FormulaAuditErrorPage {
+  readonly revision: number;
+  readonly errors: readonly FormulaAuditError[];
+  readonly nextCursor?: string | null;
+}
+
 export interface FormulaAuditEvaluationProjection {
   readonly address: CellAddress;
   readonly formula: string;
@@ -57,6 +69,7 @@ export interface FormulaAuditProjection {
   readonly arrows: readonly FormulaAuditArrow[];
   readonly showFormulas: boolean;
   readonly formulas: readonly FormulaAuditFormulaProjection[];
+  readonly formulaPage?: FormulaAuditFormulaPage;
   readonly errors: readonly FormulaAuditError[];
   readonly evaluation?: FormulaAuditEvaluationProjection;
 }
@@ -64,6 +77,8 @@ export interface FormulaAuditProjection {
 export interface FormulaErrorScanOptions {
   readonly sheetId?: string;
   readonly range?: RangeRef;
+  readonly cursor?: string;
+  readonly limit?: number;
 }
 
 export interface FormulaAuditControllerOptions {
@@ -142,13 +157,20 @@ export class FormulaAuditController {
   }
 
   scanErrors(options: FormulaErrorScanOptions = {}): readonly FormulaAuditError[] {
-    this.errors = scanFormulaErrors(this.formula, options);
+    this.errors = this.scanErrorsPage(options).errors;
     return this.errors.map(cloneError);
+  }
+
+  scanErrorsPage(options: FormulaErrorScanOptions = {}): FormulaAuditErrorPage {
+    const page = scanFormulaErrorsPage(this.formula, options);
+    this.errors = page.errors;
+    return { revision: page.revision, errors: page.errors.map(cloneError), nextCursor: page.nextCursor };
   }
 
   evaluateStep(address: CellAddress): FormulaAuditEvaluationProjection | undefined {
     const cell = cloneAddress(address);
-    const entry = this.formula.getFormulaEntries().find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(cell));
+    const page = readFormulaPage(this.formula, { sheetId: cell.sheetId });
+    const entry = page.entries.find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(cell));
     if (!entry) {
       this.evaluation = undefined;
       return undefined;
@@ -161,11 +183,13 @@ export class FormulaAuditController {
   }
 
   getProjection(): FormulaAuditProjection {
+    const formulaPage = this.showFormulasValue ? formulaProjection(this.formula) : undefined;
     const projection: FormulaAuditProjection = {
       ...(this.selectedCell === undefined ? {} : { selectedCell: cloneAddress(this.selectedCell) }),
       arrows: this.arrows.map(cloneArrow),
       showFormulas: this.showFormulasValue,
-      formulas: this.showFormulasValue ? formulaProjection(this.formula) : [],
+      formulas: formulaPage?.entries ?? [],
+      ...(formulaPage === undefined ? {} : { formulaPage }),
       errors: this.errors.map(cloneError),
       ...(this.evaluation === undefined ? {} : { evaluation: cloneEvaluation(this.evaluation) }),
     };
@@ -188,8 +212,8 @@ export function removeFormulaAuditArrows(controller: FormulaAuditController): Fo
   return controller.removeArrows();
 }
 
-/** Project all authored formulas for a Show Formulas surface. */
-export function projectFormulaCells(formula: FormulaEngine): readonly FormulaAuditFormulaProjection[] {
+/** Project one bounded authored-formula page for the Show Formulas surface. */
+export function projectFormulaCells(formula: FormulaEngine): FormulaAuditFormulaPage {
   return formulaProjection(formula);
 }
 
@@ -198,7 +222,15 @@ export function scanFormulaErrors(
   formula: FormulaEngine,
   options: FormulaErrorScanOptions = {},
 ): readonly FormulaAuditError[] {
-  return formula.getFormulaEntries()
+  return scanFormulaErrorsPage(formula, options).errors;
+}
+
+export function scanFormulaErrorsPage(
+  formula: FormulaEngine,
+  options: FormulaErrorScanOptions = {},
+): FormulaAuditErrorPage {
+  const page = readFormulaPage(formula, { sheetId: options.sheetId, cursor: options.cursor, limit: options.limit });
+  const errors = page.entries
     .filter((entry) => matchesScan(entry.address, options))
     .flatMap((entry) => {
       const error = firstFormulaError(entry.value);
@@ -210,6 +242,7 @@ export function scanFormulaErrors(
         ...(error.position === undefined ? {} : { position: error.position }),
       }];
     });
+  return { revision: page.revision, errors, nextCursor: page.nextCursor };
 }
 
 /** Return a real AST evaluation trace for Evaluate Formula UI. */
@@ -217,7 +250,7 @@ export function evaluateFormulaStep(
   formula: FormulaEngine,
   address: CellAddress,
 ): FormulaAuditEvaluationProjection | undefined {
-  const entry = formula.getFormulaEntries().find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(address));
+  const entry = readFormulaPage(formula, { sheetId: address.sheetId }).entries.find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(address));
   const trace = formula.evaluateFormulaWithTrace(address);
   return entry && trace ? toEvaluationProjection(entry, trace) : undefined;
 }
@@ -239,10 +272,6 @@ export function registerFormulaAuditCommands(
 
   registry.registerMutation<FormulaCalculationModeParams>({
     id: 'workbook.calculation.mode.set',
-    handler: (item, context) => {
-      if (!isFormulaCalculationModeParams(item.params)) throw new Error('workbook.calculation.mode.set requires a valid calculation mode');
-      context.workbook.setCalculationSettings({ mode: item.params.mode });
-    },
     metadata: {
       schema: { name: 'WorkbookCalculationModeMutation', validate: isFormulaCalculationModeParams },
       permission: { capability: 'formula.calculation.write', roles: ['owner', 'editor'] },
@@ -323,7 +352,6 @@ export function registerFormulaAuditCommands(
           params: { mode: previous },
           affectedRanges: [],
         }],
-        apply: () => context.workbook.setCalculationSettings({ mode: params.mode }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
@@ -383,13 +411,27 @@ function buildDependentArrows(formula: FormulaEngine, address: CellAddress): For
   }));
 }
 
-function formulaProjection(formula: FormulaEngine): FormulaAuditFormulaProjection[] {
-  return formula.getFormulaEntries().map((entry) => ({
+function readFormulaPage(formula: FormulaEngine, options: { cursor?: string; limit?: number; sheetId?: string } = {}): FormulaAuditFormulaPage {
+  const limit = Math.min(Math.max(options.limit ?? 512, 1), 4096);
+  const result = formula.getFormulaEntriesPage({ cursor: options.cursor, limit, sheetId: options.sheetId }) as unknown as {
+    revision: number;
+    entries: readonly FormulaCellEntry[];
+    nextCursor?: string | null;
+  };
+  return {
+    revision: result.revision,
+    entries: result.entries.map((entry) => ({
     address: cloneAddress(entry.address),
     formula: entry.formula,
     value: structuredClone(entry.value),
     dependencies: entry.dependencies.map(cloneDependency),
-  }));
+    })),
+    nextCursor: result.nextCursor,
+  };
+}
+
+function formulaProjection(formula: FormulaEngine): FormulaAuditFormulaPage {
+  return readFormulaPage(formula);
 }
 
 function toEvaluationProjection(entry: FormulaCellEntry, trace: FormulaEvaluationTrace): FormulaAuditEvaluationProjection {
@@ -399,7 +441,6 @@ function toEvaluationProjection(entry: FormulaCellEntry, trace: FormulaEvaluatio
     value: structuredClone(trace.value),
     steps: trace.steps.map((step, index) => ({
       index,
-      node: structuredClone(step.node),
       expression: step.expression,
       value: structuredClone(step.value),
     })),
@@ -457,7 +498,6 @@ function cloneEvaluation(evaluation: FormulaAuditEvaluationProjection): FormulaA
     value: structuredClone(evaluation.value),
     steps: evaluation.steps.map((step) => ({
       index: step.index,
-      node: structuredClone(step.node),
       expression: step.expression,
       value: structuredClone(step.value),
     })),

@@ -1,43 +1,45 @@
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
 $Root = Split-Path -Parent $PSScriptRoot
+$Frontend = Join-Path $Root 'frontend-react'
+$Cargo = Join-Path $Root 'Cargo.toml'
+$Target = Join-Path $Root 'target'
+$WebKernel = Join-Path $Frontend 'apps\web\public\kernel'
+$ToolRoot = Join-Path $Root '.tools'
+$LocalJdk = Get-ChildItem (Join-Path $ToolRoot 'jdk-21') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+$JavaCommand = if ($LocalJdk) { Join-Path $LocalJdk.FullName 'bin\java.exe' } else { 'java' }
+$MavenCommand = if (Test-Path (Join-Path $ToolRoot 'maven\apache-maven-3.9.9\bin\mvn.cmd')) { Join-Path $ToolRoot 'maven\apache-maven-3.9.9\bin\mvn.cmd' } else { 'mvn' }
+if ($LocalJdk) { $env:JAVA_HOME = $LocalJdk.FullName; $env:Path = "$($LocalJdk.FullName)\bin;$env:Path" }
 
-Write-Host "==> Building Luckysheet frontend..."
-Push-Location "$Root\frontend"
-npm install
-npm run build
-Pop-Location
-
-Write-Host "==> Copying frontend dist into backend static resources..."
-$StaticDir = "$Root\backend\luckysheet\src\main\resources\static"
-if (Test-Path $StaticDir) { Remove-Item -Recurse -Force $StaticDir }
-New-Item -ItemType Directory -Path $StaticDir -Force | Out-Null
-Copy-Item -Recurse -Force "$Root\frontend\dist\*" $StaticDir
-
-Write-Host "==> Building Luckysheet backend (MySQL profile)..."
-$MavenHome = "$Root\tools\apache-maven-3.9.9"
-if (-not (Test-Path "$MavenHome\bin\mvn.cmd")) {
-    throw "Maven not found at $MavenHome. Download apache-maven-3.9.9 to tools/ first."
+function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$WorkingDirectory = $Root) {
+    Write-Host ("==> {0} {1}" -f $Command, ($Arguments -join ' '))
+    Push-Location $WorkingDirectory
+    try { & $Command @Arguments; if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Command" } }
+    finally { Pop-Location }
 }
-$env:MAVEN_HOME = $MavenHome
-$env:Path = "$MavenHome\bin;" + $env:Path
-$env:MAVEN_OPTS = @(
-    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
-    "--add-opens=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED"
-) -join ' '
 
-Push-Location "$Root\backend"
-mvn clean package -Pmysql -DskipTests
-Pop-Location
+function Require-Version([string]$Command, [string]$ExpectedPattern, [string]$DisplayName) {
+    $actual = (& $Command '--version' 2>&1 | Out-String).Trim()
+    if ($actual -notmatch $ExpectedPattern) { throw "$DisplayName must match '$ExpectedPattern'; found '$actual'" }
+    Write-Host "    $DisplayName $actual"
+}
 
-Write-Host "==> Done."
-Write-Host "Frontend dist : $Root\frontend\dist"
-Write-Host "Backend jar   : $Root\backend\luckysheet\target\web-lockysheet-mysql.jar"
+Require-Version 'node' '^v24\.18\.0' 'Node'
+Require-Version 'rustc' '^rustc 1\.97\.1' 'Rust'
+Require-Version $JavaCommand '^(openjdk|java) 21(?:\.|\s)' 'Java'
+Require-Version $MavenCommand '^Apache Maven 3\.9\.9' 'Maven'
+Invoke-Checked 'cargo' @('build', '--manifest-path', $Cargo, '-p', 'kernel-host', '--release')
+Invoke-Checked 'cargo' @('build', '--manifest-path', $Cargo, '-p', 'kernel-host', '--target', 'wasm32-unknown-unknown', '--release')
+
+$nativeName = if ($env:OS -eq 'Windows_NT') { 'workbook-kernel-host.exe' } else { 'workbook-kernel-host' }
+$native = Join-Path $Target (Join-Path 'release' $nativeName)
+$wasm = Join-Path $Target 'wasm32-unknown-unknown\release\kernel_host.wasm'
+if (-not (Test-Path $native)) { throw "Rust native artifact not found: $native" }
+if (-not (Test-Path $wasm)) { throw "Rust WASM artifact not found: $wasm" }
+New-Item -ItemType Directory -Path $WebKernel -Force | Out-Null
+Copy-Item -LiteralPath $wasm -Destination (Join-Path $WebKernel 'kernel_host.wasm') -Force
+Invoke-Checked 'node' @((Join-Path $PSScriptRoot 'write-kernel-manifest.mjs'), $WebKernel)
+Invoke-Checked 'npm' @('ci', '--ignore-scripts', '--no-audit', '--no-fund') $Frontend
+Invoke-Checked 'npm' @('run', 'build') $Frontend
+Write-Host "==> Build completed`n    native: $native`n    wasm:   $WebKernel\kernel_host.wasm"

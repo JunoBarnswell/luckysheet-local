@@ -10,7 +10,6 @@ import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
@@ -67,7 +66,7 @@ public class QueryExecutionService {
     private final QueryProperties properties;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
-    private final WorkbookStore store;
+    private final QueryExecutionProofService proofs;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
@@ -78,14 +77,14 @@ public class QueryExecutionService {
             QueryProperties properties,
             AccessControlService access,
             WorkbookLifecycleService lifecycle,
-            WorkbookStore store,
+            QueryExecutionProofService proofs,
             AuditRecorder audit,
             ObjectMapper mapper
     ) {
         this.properties = properties;
         this.access = access;
         this.lifecycle = lifecycle;
-        this.store = store;
+        this.proofs = proofs;
         this.audit = audit;
         this.mapper = mapper;
         this.workers = new ThreadPoolExecutor(properties.workerThreads(), properties.workerThreads(), 0, TimeUnit.MILLISECONDS,
@@ -110,13 +109,16 @@ public class QueryExecutionService {
             throw ServiceException.validation(error.getMessage());
         }
 
+        QueryExecutionProofService.StartedExecution execution = proofs.begin(unitId, request.queryId(), actor,
+                properties.timeout().plus(Duration.ofMinutes(15)));
         Instant started = Instant.now();
         ExecutionControl control = new ExecutionControl();
         FutureTask<QueryTable> future = new FutureTask<>(() -> executeInternal(request, source, control));
         String executionKey = unitId + ":" + request.queryId();
-        ActiveQuery running = new ActiveQuery(actor, control, future);
+        ActiveQuery running = new ActiveQuery(control, future);
         ActiveQuery previous = active.putIfAbsent(executionKey, running);
         if (previous != null) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             throw ServiceException.conflict("A query with this id is already running");
@@ -124,6 +126,7 @@ public class QueryExecutionService {
         try {
             workers.execute(future);
         } catch (RejectedExecutionException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             active.remove(executionKey, running);
             control.cancel();
             future.cancel(true);
@@ -131,31 +134,40 @@ public class QueryExecutionService {
         }
         try {
             QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            control.ensureActive();
             checkFinalSize(table);
+            com.fasterxml.jackson.databind.node.ObjectNode result = mapper.createObjectNode();
+            result.set("columns", mapper.valueToTree(table.columns));
+            result.set("rows", mapper.valueToTree(table.rows));
+            String resultHash = proofs.publish(unitId, request.queryId(), execution.executionToken(), actor, result);
             long duration = Duration.between(started, Instant.now()).toMillis();
             audit.accepted(request.queryId(), unitId, actor, "QUERY_EXECUTION", null, mapper.createObjectNode()
                     .put("connectorId", request.connectorId())
                     .put("sourceRef", request.sourceRef())
                     .put("rowCount", table.rows.size())
                     .put("durationMs", duration));
-            long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
-            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), sourceRevision,
+            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), execution.sourceRevision(),
+                    execution.executionToken(), resultHash,
                     table.columns, table.rows, table.rows.size(), Instant.now(), duration);
         } catch (TimeoutException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query timed out");
             throw ServiceException.timeout("Query timed out");
         } catch (InterruptedException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             Thread.currentThread().interrupt();
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (CancellationException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (ExecutionException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             Throwable cause = error.getCause() == null ? error : error.getCause();
             if (control.cancelled() || cause instanceof CancellationException) {
                 audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
@@ -165,6 +177,12 @@ public class QueryExecutionService {
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", reason);
             if (cause instanceof QueryFailure failure) throw failure.exception();
             throw ServiceException.validation(reason);
+        } catch (QueryFailure error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
+            throw error.exception();
+        } catch (ServiceException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
+            throw error;
         } finally {
             active.remove(executionKey, running);
         }
@@ -173,13 +191,12 @@ public class QueryExecutionService {
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         lifecycle.requireActive(unitId);
+        proofs.cancel(unitId, queryId, actor);
         ActiveQuery query = active.get(unitId + ":" + queryId);
-        if (query == null) throw ServiceException.notFound("Running query not found");
-        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
-            throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
+        if (query != null) {
+            query.control().cancel();
+            query.future().cancel(true);
         }
-        query.control().cancel();
-        query.future().cancel(true);
         audit.accepted(queryId, unitId, actor, "QUERY_CANCEL", null, mapper.createObjectNode());
     }
 
@@ -986,17 +1003,14 @@ public class QueryExecutionService {
     }
 
     private static final class ActiveQuery {
-        private final String actor;
         private final ExecutionControl control;
         private final Future<QueryTable> future;
 
-        private ActiveQuery(String actor, ExecutionControl control, Future<QueryTable> future) {
-            this.actor = actor;
+        private ActiveQuery(ExecutionControl control, Future<QueryTable> future) {
             this.control = control;
             this.future = future;
         }
 
-        private String actor() { return actor; }
         private ExecutionControl control() { return control; }
         private Future<QueryTable> future() { return future; }
     }

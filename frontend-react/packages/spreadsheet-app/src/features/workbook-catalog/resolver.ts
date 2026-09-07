@@ -67,25 +67,6 @@ function assertUnitId(unitId: string): string {
   return normalized;
 }
 
-function localResolution(record: WorkspaceRecord): WorkbookResolution {
-  const localRecord = clone(record);
-  return {
-    schema: 'WorkbookResolution',
-    unitId: record.unitId,
-    source: 'local',
-    mode: 'local',
-    lifecycle: 'active',
-    binding: {
-      location: 'local',
-      syncMode: 'local-only',
-    },
-    snapshot: localRecord.snapshot,
-    revision: record.serverRevision,
-    access: null,
-    localRecord,
-  };
-}
-
 export class WorkbookResolver {
   private readonly persistence: WorkspacePersistence;
   private readonly remote?: WorkbookCatalogRemoteClient;
@@ -115,32 +96,18 @@ export class WorkbookResolver {
       throw new WorkbookResolutionError('not-found', `Workbook is in trash: ${normalized}`);
     }
 
-    if (localRecord && localRecord.syncMode === 'local-only' && localRecord.metadata.location === 'local') {
-      return localResolution(localRecord);
-    }
-
     if (!this.canUseRemote()) {
-      // A remote/shared workbook may have a local mirror, but the mirror is
-      // never an authority and cannot be opened without an explicit local-only
-      // copy operation. Keep the record untouched and fail the resolution.
-      if (localRecord) throw new WorkbookResolutionError(
-        'remote-unavailable',
-        `Authoritative workbook service is unavailable; local mirror retained but not openable: ${normalized}`,
-      );
       if (this.remote) throw new WorkbookResolutionError(
         'remote-unavailable',
         `Authoritative workbook service is unavailable: ${normalized}`,
       );
-      throw new WorkbookResolutionError(
-        'memory-session-reset',
-        `The page memory session no longer contains workbook: ${normalized}`,
-      );
+      throw new WorkbookResolutionError('remote-unavailable', `Cloud workbook service is unavailable: ${normalized}`);
     }
 
     try {
       const remote = this.requireRemote();
-      const [snapshotResponse, access] = await Promise.all([
-        remote.getSnapshot(normalized, options),
+      const [manifest, access] = await Promise.all([
+        remote.getManifest(normalized),
         remote.getAccess(normalized, options),
       ]);
       const isShared = Boolean((await this.shareTokenProvider?.())?.trim());
@@ -151,8 +118,8 @@ export class WorkbookResolver {
         mode: 'remote',
         lifecycle: 'active',
         binding: { location: 'remote', syncMode: 'remote' },
-        snapshot: clone(snapshotResponse.snapshot),
-        revision: snapshotResponse.revision,
+        manifest: clone(manifest),
+        revision: manifest.revision,
         access,
         localRecord: localRecord ? clone(localRecord) : null,
       };

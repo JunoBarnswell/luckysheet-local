@@ -12,6 +12,7 @@ export * from './task-port';
 export * from './block-source';
 export * from './panel-state';
 export * from './writeback';
+export * from './rust-analytics';
 
 export function registerPivotFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   return {

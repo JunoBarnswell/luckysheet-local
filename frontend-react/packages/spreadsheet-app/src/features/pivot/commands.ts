@@ -715,9 +715,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
 
   runtime.registry.registerMutation<PivotModel>({
       id: 'pivot.add',
-      handler: (item, context) => {
-    applyPivotAdd(context, item.params);
-  },
       metadata: {
     schema: { name: 'PivotModel', validate: isPivotModel },
     permission: { capability: 'pivot.edit' },
@@ -727,9 +724,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<string>({
       id: 'pivot.remove',
-      handler: (item, context) => {
-    applyPivotRemove(context, item.params, item.sheetId);
-  },
       metadata: {
     schema: { name: 'PivotId', validate: isNonEmptyString },
     permission: { capability: 'pivot.delete' },
@@ -739,9 +733,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<PivotUpdateParams>({
       id: 'pivot.update',
-      handler: (item, context) => {
-    applyPivotUpdate(context, item.params);
-  },
       metadata: {
     schema: { name: 'PivotUpdateParams', validate: isPivotUpdate },
     permission: { capability: 'pivot.edit' },
@@ -775,14 +766,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
             params: { id: destination.sheetId },
             affectedRanges: [],
           }],
-          apply: () => {
-            context.workbook.addSheet(
-              sheetParams.id,
-              sheetParams.name,
-              sheetParams.rowCount,
-              sheetParams.columnCount,
-            );
-          },
         });
       }
       context.applyMutation({
@@ -798,7 +781,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: pivot.id,
           affectedRanges,
         }],
-        apply: () => applyPivotAdd(context, structuredClone(pivot)),
       });
       return { operationId: context.operationId, mutationCount: destination.kind === 'new-sheet' ? 2 : 1, affectedRanges };
     },
@@ -821,7 +803,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: { sheetId: dependency.sheetId, drawingId: dependency.drawing.id },
           affectedRanges: dependencyRanges,
           inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: dependency.sheetId, params: { sheetId: dependency.sheetId, drawing: structuredClone(dependency.drawing), payload: structuredClone(dependency.payload) }, affectedRanges: dependencyRanges }],
-          apply: () => applyDependentRemoval(context, dependency),
         });
       }
       for (const update of plan.updates) {
@@ -833,7 +814,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: structuredClone(update),
           affectedRanges: dependencyRanges,
           inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: update.sheetId, params: { ...structuredClone(update), before: structuredClone(update.after), after: structuredClone(update.before) }, affectedRanges: dependencyRanges }],
-          apply: () => applyDependentUpdate(context, update),
         });
       }
       context.applyMutation({
@@ -843,7 +823,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         params: pivotId,
         affectedRanges,
         inverse: [{ id: 'pivot.add', unitId: context.workbook.unitId, sheetId, params: structuredClone(plan.pivot), affectedRanges }],
-        apply: () => applyPivotRemove(context, pivotId, sheetId),
       });
       return { operationId: context.operationId, mutationCount: 1 + plan.removals.length + plan.updates.length, affectedRanges };
     },
@@ -865,7 +844,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         params: structuredClone(params),
         affectedRanges,
         inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => applyPivotUpdate(context, structuredClone(params)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -889,9 +867,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
 
   runtime.registry.registerMutation<PivotDrillDownParams>({
       id: 'pivot.drilldown.add',
-      handler: (item, context) => {
-    writePivotDrillDown(context, item.params);
-  },
       metadata: {
     schema: { name: 'PivotDrillDownParams', validate: isPivotDrillDown },
     permission: { capability: 'pivot.edit' },
@@ -901,10 +876,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     });
   runtime.registry.registerMutation<PivotDrillDownRemoveParams>({
       id: 'pivot.drilldown.remove',
-      handler: (item, context) => {
-    if (!context.workbook.sheets.has(item.params.targetSheetId)) throw new Error(`Unknown drill-down target: ${item.params.targetSheetId}`);
-    context.workbook.removeSheet(item.params.targetSheetId);
-  },
       metadata: {
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },
     permission: { capability: 'pivot.edit' },
@@ -941,11 +912,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: { sheetId: params.sheetId, drawingId: params.drawing.id },
           affectedRanges,
         }],
-        apply: () => {
-          const destination = context.workbook.getSheet(params.sheetId);
-          destination.drawings.push(structuredClone(params.drawing));
-          destination.drawingPayloads.set(params.drawing.payloadId, structuredClone(params.payload));
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -975,7 +941,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           params: { targetSheetId: params.targetSheetId },
           affectedRanges,
         }],
-        apply: () => writePivotDrillDown(context, structuredClone(params)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

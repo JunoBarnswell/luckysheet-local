@@ -227,7 +227,7 @@ export {
 export {
   buildQueryResultSnapshot,
   summarizeQueryResult,
-  executeQueryDefinition,
+  executeCanonicalQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
   prepareQueryLoadPayload,

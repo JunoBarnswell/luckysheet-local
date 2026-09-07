@@ -5,13 +5,14 @@ export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' 
 export const DESIGNER_GEOMETRY = {
   viewportWidth: 1920,
   viewportHeight: 1080,
-  ribbonHeight: 167,
-  formulaBarHeight: 48,
+  ribbonHeight: 104,
+  formulaBarHeight: 32,
   workspaceHeight: 843,
-  sheetTabsHeight: 29,
+  sheetTabsHeight: 28,
   statusBarHeight: 22,
-  ribbonTabHeight: 32,
-  ribbonContentHeight: 135,
+  ribbonTabHeight: 28,
+  ribbonContentHeight: 76,
+  documentBarHeight: 36,
 } as const;
 
 /**
@@ -20,22 +21,22 @@ export const DESIGNER_GEOMETRY = {
  * width changes only the scroll position, never the command density.
  */
 export const RIBBON_DENSITY = {
-  shellHeight: 167,
-  tabStripHeight: 32,
-  commandAreaHeight: 135,
-  groupContentHeight: 127,
-  largeCommandHeight: 104,
-  groupCaptionHeight: 18,
+  shellHeight: 104,
+  tabStripHeight: 28,
+  commandAreaHeight: 76,
+  groupContentHeight: 70,
+  largeCommandHeight: 58,
+  groupCaptionHeight: 16,
 } as const;
 
 export const RIBBON_DENSITY_CLASSES = {
-  shell: 'h-[clamp(118px,15.5vh,167px)]',
-  tabStrip: 'h-[clamp(28px,3vh,32px)]',
-  commandArea: 'h-[clamp(90px,12.5vh,135px)]',
-  groupContent: 'h-[clamp(84px,11.8vh,127px)]',
-  groupControls: 'h-[clamp(66px,9.6vh,104px)]',
-  largeCommand: '!h-[clamp(66px,9.6vh,104px)]',
-  groupCaption: 'h-[18px] leading-[18px]',
+  shell: 'h-[104px]',
+  tabStrip: 'h-[28px]',
+  commandArea: 'h-[76px]',
+  groupContent: 'h-[70px]',
+  groupControls: 'h-[58px]',
+  largeCommand: '!h-[58px]',
+  groupCaption: 'h-[16px] leading-[16px]',
 } as const;
 
 export interface PeerCursor {
@@ -98,6 +99,7 @@ export interface RibbonKeyTipBinding {
 
 export interface DesignerShellProps {
   children: ReactNode;
+  documentBar?: ReactNode;
   formulaBar: ReactNode;
   formulaBarVisible?: boolean;
   ribbonVisible?: boolean;

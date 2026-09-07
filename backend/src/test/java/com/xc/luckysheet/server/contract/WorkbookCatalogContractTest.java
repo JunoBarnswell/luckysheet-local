@@ -10,6 +10,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class WorkbookCatalogContractTest {
     private final ObjectMapper mapper = JsonMapper.builder().addModule(new JavaTimeModule()).build();
@@ -33,5 +34,16 @@ class WorkbookCatalogContractTest {
         assertEquals("\"document-import\"", mapper.writeValueAsString(WorkbookSource.DOCUMENT_IMPORT));
         assertEquals(WorkbookSource.DOCUMENT_IMPORT, mapper.readValue("\"document-import\"", WorkbookSource.class));
         assertEquals("\"personal\"", mapper.writeValueAsString(WorkspaceSpaceType.PERSONAL));
+    }
+
+    @Test
+    void creationAcceptsIntentAndRejectsBrowserSnapshotOrImportAuthority() throws Exception {
+        var request = mapper.readValue("{\"unitId\":\"intent-book\",\"name\":\"Intent\"}", CreateWorkbookRequest.class);
+        assertEquals(WorkbookSource.NATIVE, request.source());
+        assertEquals("intent-book", request.unitId());
+        assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class, () -> mapper.readValue(
+                "{\"unitId\":\"legacy-book\",\"name\":\"Legacy\",\"snapshot\":{}}", CreateWorkbookRequest.class));
+        assertThrows(IllegalArgumentException.class, () -> new CreateWorkbookRequest(
+                "import-book", "Import", null, null, null, WorkbookSource.DOCUMENT_IMPORT));
     }
 }

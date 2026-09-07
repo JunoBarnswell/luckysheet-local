@@ -224,7 +224,6 @@ function applyDataSourceAdd(
     params: { source },
     affectedRanges,
     inverse: [{ id: 'dataSource.remove', unitId: context.workbook.unitId, sheetId, params: { sourceId: source.id }, affectedRanges }],
-    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.add', { source }, sheetId),
   });
 }
 
@@ -242,7 +241,6 @@ function applyDataSourceUpdate(
     params: { source },
     affectedRanges,
     inverse: [{ id: 'dataSource.update', unitId: context.workbook.unitId, sheetId, params: { source: previous }, affectedRanges }],
-    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.update', { source }, sheetId),
   });
 }
 
@@ -259,7 +257,6 @@ function applyDataSourceRemove(
     params: { sourceId: source.id },
     affectedRanges,
     inverse: [{ id: 'dataSource.add', unitId: context.workbook.unitId, sheetId, params: { source }, affectedRanges }],
-    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.remove', { sourceId: source.id }, sheetId),
   });
 }
 
@@ -276,7 +273,6 @@ function applyDataRegionAdd(
     params: { region },
     affectedRanges,
     inverse: [{ id: 'dataRegion.remove', unitId: context.workbook.unitId, sheetId, params: { regionId: region.id }, affectedRanges }],
-    apply: () => applyDataSourceMutation(context.workbook, 'dataRegion.add', { region }, sheetId),
   });
 }
 
@@ -293,7 +289,6 @@ function applyDataRegionRemove(
     params: { regionId: region.id },
     affectedRanges,
     inverse: [{ id: 'dataRegion.add', unitId: context.workbook.unitId, sheetId, params: { region }, affectedRanges }],
-    apply: () => applyDataSourceMutation(context.workbook, 'dataRegion.remove', { regionId: region.id }, sheetId),
   });
 }
 
@@ -372,7 +367,6 @@ function regionRemoveSchema(value: unknown): boolean {
 function registerMutationContracts(registry: CommandRegistry): void {
   registry.registerMutation<{ source: DataSourceManifest }>({
     id: 'dataSource.add',
-    handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.add', item.params, item.sheetId),
     metadata: {
       schema: { name: 'DataSourceAddMutation', validate: sourceSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
@@ -382,7 +376,6 @@ function registerMutationContracts(registry: CommandRegistry): void {
   });
   registry.registerMutation<{ source: DataSourceManifest }>({
     id: 'dataSource.update',
-    handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.update', item.params, item.sheetId),
     metadata: {
       schema: { name: 'DataSourceUpdateMutation', validate: sourceUpdateSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
@@ -392,7 +385,6 @@ function registerMutationContracts(registry: CommandRegistry): void {
   });
   registry.registerMutation<{ sourceId: string }>({
     id: 'dataSource.remove',
-    handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.remove', item.params, item.sheetId),
     metadata: {
       schema: { name: 'DataSourceRemoveMutation', validate: sourceRemoveSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
@@ -402,7 +394,6 @@ function registerMutationContracts(registry: CommandRegistry): void {
   });
   registry.registerMutation<{ region: SheetDataRegion }>({
     id: 'dataRegion.add',
-    handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataRegion.add', item.params, item.sheetId),
     metadata: {
       schema: { name: 'DataRegionAddMutation', validate: regionAddSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
@@ -412,7 +403,6 @@ function registerMutationContracts(registry: CommandRegistry): void {
   });
   registry.registerMutation<{ regionId: string }>({
     id: 'dataRegion.remove',
-    handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataRegion.remove', item.params, item.sheetId),
     metadata: {
       schema: { name: 'DataRegionRemoveMutation', validate: regionRemoveSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },

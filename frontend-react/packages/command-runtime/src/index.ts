@@ -1,4 +1,4 @@
-import { WorkbookModel, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type KernelReplicaManifest, type KernelReplicaPagePayload, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -107,7 +107,6 @@ export interface Operation<P = unknown> {
 }
 
 export interface Mutation<P = unknown> extends MutationInfo<P> {
-  apply(context: CommandContext): void;
   inverse: MutationInfo[];
 }
 
@@ -124,7 +123,6 @@ export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: Comm
 
 export interface MutationRegistration<P = unknown> {
   readonly id: string;
-  readonly handler: MutationHandler<P>;
   readonly metadata: MutationRegistrationMetadata<P>;
 }
 
@@ -311,13 +309,9 @@ export class CommandRegistry {
     if (!candidate.id || typeof candidate.id !== 'string') {
       throw new Error('Mutation registration requires a non-empty id');
     }
-    if (typeof candidate.handler !== 'function') {
-      throw new Error(`Mutation registration requires a handler: ${candidate.id}`);
-    }
     if (this.mutations.has(candidate.id)) throw new Error(`Duplicate mutation: ${candidate.id}`);
     this.mutations.set(candidate.id, {
       id: candidate.id,
-      handler: candidate.handler as MutationHandler<unknown>,
       metadata: normalized.metadata as CanonicalMutationMetadata<unknown>,
     });
   }
@@ -332,12 +326,6 @@ export class CommandRegistry {
     const operation = this.operations.get(id);
     if (!operation) throw new Error(`Unknown operation: ${id}`);
     return operation as Operation<P>;
-  }
-
-  getMutation<P>(id: string): MutationHandler<P> {
-    const registration = this.mutations.get(id);
-    if (!registration) throw new Error(`Unknown mutation: ${id}`);
-    return registration.handler as MutationHandler<P>;
   }
 
   getMutationRegistration<P>(id: string): MutationRegistration<P> {
@@ -369,7 +357,6 @@ export class CommandRegistry {
   listMutationRegistrations(): readonly MutationRegistration[] {
     return [...this.mutations.values()].map((registration) => ({
       id: registration.id,
-      handler: registration.handler,
       metadata: registration.metadata,
     }));
   }
@@ -383,8 +370,8 @@ export class CommandRegistry {
     const issues: MutationRegistryIssue[] = [];
 
     for (const registration of this.mutations.values()) {
-      const { id, handler, metadata } = registration;
-      if (!id || typeof id !== 'string' || typeof handler !== 'function') {
+      const { id, metadata } = registration;
+      if (!id || typeof id !== 'string') {
         issues.push(issue('invalid-registration', id || '<empty>', `Invalid mutation registration: ${id || '<empty>'}`));
         continue;
       }
@@ -514,9 +501,6 @@ export interface HistoryEntry {
   affectedRanges: RangeRef[];
   status: 'active' | 'invalid';
   invalidReason?: string;
-  /** Existing consumers read these exact same arrays; they are not a second state. */
-  undo: MutationInfo[];
-  redo: MutationInfo[];
   description?: string;
   timestamp: number;
 }
@@ -715,312 +699,144 @@ export type MutationGuard = (mutation: MutationInfo, source: MutationSource) => 
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
 export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
+export interface KernelCommitRequest {
+  readonly operationId: string;
+  readonly baseRevision: number;
+  readonly mutations: readonly MutationInfo[];
+}
+export interface KernelCommittedOperation {
+  readonly operationId: string;
+  readonly baseRevision: number;
+  readonly revision: number;
+  readonly manifest: KernelReplicaManifest;
+  readonly pages: readonly KernelReplicaPagePayload[];
+  readonly removedPages: readonly { sheetId: string; pageRow: number; pageColumn: number }[];
+  readonly affectedRanges: readonly RangeRef[];
+}
+export type KernelCommitPort = (request: KernelCommitRequest) => Promise<KernelCommittedOperation>;
+
+export class CommandCommitError extends Error {
+  readonly recovery = 'reload-the-committed-cloud-revision';
+  constructor(readonly code: 'CLOUD_COMMIT_UNAVAILABLE' | 'COMMITTED_REVISION_MISMATCH' | 'KERNEL_COMMIT_IDENTITY_MISMATCH' | 'MUTATION_WORKBOOK_MISMATCH', readonly object: string) {
+    super(`${code}: ${object}`);
+    this.name = 'CommandCommitError';
+  }
+}
+
+/** Plans typed intents and publishes only server-acknowledged Rust transactions. */
 export class CommandRuntime {
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
-  private activeEntry: HistoryEntry | null = null;
-  private transactionDepth = 0;
+  private readonly invalidHistory: HistoryEntry[] = [];
   private readonly mutationListeners: MutationListener[] = [];
   private readonly commandListeners: CommandListener[] = [];
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
   private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   private mutationGuard?: MutationGuard;
   private revisionProvider?: () => number;
-  private currentRevision = 0;
-  private readonly invalidHistory: HistoryEntry[] = [];
+  private commitPort?: KernelCommitPort;
+  private serial: Promise<unknown> = Promise.resolve();
+  private transactionDepth = 0;
 
-  constructor(
-    readonly workbook: WorkbookModel,
-    readonly registry = new CommandRegistry(),
-    options: CommandRuntimeOptions = {},
-  ) {
-    this.revisionProvider = options.getRevision;
-  }
+  constructor(readonly workbook: WorkbookModel, readonly registry = new CommandRegistry(), options: CommandRuntimeOptions = {}) { this.revisionProvider = options.getRevision; }
+  setCommitPort(port: KernelCommitPort): void { this.commitPort = port; }
+  async whenIdle(): Promise<void> { await this.serial; }
+  setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void { this.cellValueResolver = resolver; }
+  setMutationGuard(guard: MutationGuard | undefined): void { this.mutationGuard = guard; }
+  setRevisionProvider(provider: (() => number) | undefined): void { this.revisionProvider = provider; }
+  setRevision(revision: number): void { if (revision !== this.workbook.revision) throw new CommandCommitError('COMMITTED_REVISION_MISMATCH', this.workbook.unitId); }
+  onMutation(listener: MutationListener): () => void { this.mutationListeners.push(listener); return () => { const i = this.mutationListeners.indexOf(listener); if (i >= 0) this.mutationListeners.splice(i, 1); }; }
+  onCommand(listener: CommandListener): () => void { this.commandListeners.push(listener); return () => { const i = this.commandListeners.indexOf(listener); if (i >= 0) this.commandListeners.splice(i, 1); }; }
+  onHistoryReplay(listener: HistoryReplayListener): () => void { this.historyReplayListeners.push(listener); return () => { const i = this.historyReplayListeners.indexOf(listener); if (i >= 0) this.historyReplayListeners.splice(i, 1); }; }
 
-  setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
-    this.cellValueResolver = resolver;
-  }
-
-  /** Guard every local, undo/redo, and remote mutation at one boundary. */
-  setMutationGuard(guard: MutationGuard | undefined): void {
-    this.mutationGuard = guard;
-  }
-
-  setRevisionProvider(provider: (() => number) | undefined): void {
-    this.revisionProvider = provider;
-  }
-
-  setRevision(revision: number): void {
-    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Revision must be a non-negative safe integer');
-    this.currentRevision = revision;
-  }
-
-  onMutation(listener: MutationListener): () => void {
-    this.mutationListeners.push(listener);
-    return () => {
-      const idx = this.mutationListeners.indexOf(listener);
-      if (idx >= 0) this.mutationListeners.splice(idx, 1);
-    };
-  }
-
-  onCommand(listener: CommandListener): () => void {
-    this.commandListeners.push(listener);
-    return () => {
-      const idx = this.commandListeners.indexOf(listener);
-      if (idx >= 0) this.commandListeners.splice(idx, 1);
-    };
-  }
-
-  onHistoryReplay(listener: HistoryReplayListener): () => void {
-    this.historyReplayListeners.push(listener);
-    return () => {
-      const idx = this.historyReplayListeners.indexOf(listener);
-      if (idx >= 0) this.historyReplayListeners.splice(idx, 1);
-    };
-  }
-
-  execute<P>(id: string, params: P): CommandResult {
-    // Resolve the command before opening a transaction. An unknown command is
-    // a protocol error and must not create an empty history entry or invoke a
-    // host fallback.
-    const command = this.registry.getCommand<P>(id);
-    this.registry.assertComplete();
-    const operationId = createOperationId();
-    const mutations: MutationInfo[] = [];
-    const isRootTransaction = this.transactionDepth === 0;
-
-    if (isRootTransaction) {
-      const inversePlan: MutationInfo[] = [];
-      const forwardMutations: MutationInfo[] = [];
-      this.activeEntry = {
-        operationId,
-        baseRevision: this.readRevision(),
-        semanticCommandDescriptor: { id, params: structuredClone(params) },
-        forwardMutations,
-        inversePlan,
-        affectedRanges: [],
-        status: 'active',
-        // Keep old public field names as references to the canonical arrays.
-        undo: inversePlan,
-        redo: forwardMutations,
-        description: id,
-        timestamp: Date.now(),
+  execute<P>(id: string, params: P): Promise<CommandResult> {
+    return this.enqueue(async () => {
+      const command = this.registry.getCommand<P>(id);
+      this.registry.assertComplete();
+      const operationId = createOperationId();
+      const entry: HistoryEntry = { operationId, baseRevision: this.readRevision(), semanticCommandDescriptor: { id, params: structuredClone(params) }, forwardMutations: [], inversePlan: [], affectedRanges: [], status: 'active', description: id, timestamp: Date.now() };
+      const context: CommandContext = {
+        workbook: this.workbook, operationId,
+        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
+        applyMutation: mutation => {
+          if (mutation.unitId !== this.workbook.unitId) throw new CommandCommitError('MUTATION_WORKBOOK_MISMATCH', mutation.unitId);
+          this.registry.assertMutation(mutation);
+          this.mutationGuard?.(mutation, 'command');
+          const info: MutationInfo = structuredClone({ id: mutation.id, unitId: mutation.unitId, sheetId: mutation.sheetId, params: mutation.params, affectedRanges: mutation.affectedRanges, ...(mutation.permission ? { permission: mutation.permission } : {}) });
+          entry.forwardMutations.push(info);
+          entry.inversePlan.unshift(...structuredClone(mutation.inverse));
+          entry.affectedRanges.push(...structuredClone(mutation.affectedRanges));
+        },
+        recordOperation: (operation, parameters) => this.registry.getOperation(operation.id).execute(parameters, context),
       };
-    }
-    this.transactionDepth += 1;
-
-    const context: CommandContext = {
-      workbook: this.workbook,
-      operationId,
-      resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
-      applyMutation: (mutation) => {
-        if (mutation.unitId !== this.workbook.unitId) {
-          throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${mutation.unitId}`);
-        }
-        // Registration and inverse validation happen before the mutation's
-        // callback is allowed to touch the workbook. This makes both local
-        // execution and every replay path fail closed on protocol drift.
-        this.registry.assertMutation(mutation);
-        this.mutationGuard?.(mutation, 'command');
-        mutation.apply(context);
-        const info: MutationInfo = {
-          id: mutation.id,
-          unitId: mutation.unitId,
-          sheetId: mutation.sheetId,
-          params: mutation.params,
-          affectedRanges: mutation.affectedRanges,
-          ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
-        };
-        mutations.push(info);
-        this.activeEntry?.inversePlan.unshift(...mutation.inverse);
-        this.activeEntry?.forwardMutations.push(info);
-        if (this.activeEntry) {
-          this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
-        }
-
-        for (const listener of this.mutationListeners) {
-          listener(info, 'command');
-        }
-      },
-      recordOperation: (operation, operationParams) => {
-        const registered = this.registry.getOperation(operation.id);
-        return registered.execute(operationParams, context);
-      },
-    };
-
-    try {
-      const commandResult = command.execute(params, context);
-      this.transactionDepth -= 1;
-
-      if (isRootTransaction) {
-        if (command.history !== 'none' && this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
-          this.undoStack.push(this.activeEntry);
-          if (this.undoStack.length > 200) this.undoStack.shift();
-          this.redoStack.length = 0;
-        }
-        this.activeEntry = null;
+      // Planning has no model writes. A rejected native/ACL transaction leaves this replica untouched.
+      const planned = command.execute(params, context);
+      if (entry.forwardMutations.length) {
+        const committed = await this.commit(entry.operationId, entry.forwardMutations, 'command');
+        entry.committedRevision = committed.revision;
+        entry.affectedRanges = [...committed.affectedRanges];
+        if (command.history !== 'none') { this.undoStack.push(entry); if (this.undoStack.length > 200) this.undoStack.shift(); this.redoStack.length = 0; }
       }
-
-      const result: CommandResult = {
-        ...commandResult,
-        operationId,
-        mutationCount: mutations.length,
-      };
-
-      for (const listener of this.commandListeners) {
-        listener(id, params, result);
-      }
-
+      const result = { ...planned, operationId, mutationCount: entry.forwardMutations.length, affectedRanges: entry.affectedRanges };
+      for (const listener of this.commandListeners) listener(id, params, result);
       return result;
-    } catch (err) {
-      this.transactionDepth -= 1;
-      if (isRootTransaction) {
-        // Rollback applied mutations in this transaction if failed
-        if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
-          this.applyHistory(this.activeEntry.inversePlan, 'undo');
-        }
-        this.activeEntry = null;
-      }
-      throw err;
-    }
+    });
   }
-
-  undo(): boolean {
-    this.registry.assertComplete();
-    const entry = this.undoStack.pop();
-    if (!entry) return false;
-    if (entry.status !== 'active') return false;
-    this.applyHistory(entry.inversePlan, 'undo');
-    this.redoStack.push(entry);
+  undo(): Promise<boolean> { return this.enqueue(async () => {
+    const entry = this.undoStack.at(-1);
+    if (!entry || entry.status !== 'active') return false;
+    await this.commit(createOperationId(), entry.inversePlan, 'undo');
+    this.undoStack.pop(); this.redoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('undo', entry);
     return true;
-  }
-
-  redo(): boolean {
-    this.registry.assertComplete();
-    const entry = this.redoStack.pop();
-    if (!entry) return false;
-    if (entry.status !== 'active') return false;
-    this.applyHistory(entry.forwardMutations, 'redo');
-    this.undoStack.push(entry);
+  }); }
+  redo(): Promise<boolean> { return this.enqueue(async () => {
+    const entry = this.redoStack.at(-1);
+    if (!entry || entry.status !== 'active') return false;
+    await this.commit(createOperationId(), entry.forwardMutations, 'redo');
+    this.redoStack.pop(); this.undoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('redo', entry);
     return true;
+  }); }
+  applyRemoteCommit(committed: KernelCommittedOperation, mutations: readonly MutationInfo[] = []): void {
+    this.assertCommit(committed, committed.operationId, this.workbook.revision);
+    this.workbook.applyCommittedManifest(committed.manifest, committed.pages);
+    for (const item of mutations) { this.transformHistoryAgainstRemote(item); for (const listener of this.mutationListeners) listener(item, 'remote'); }
   }
-
-  /**
-   * 应用来自远端协同的变更序列:执行已注册的 mutation 处理器,
-   * 以 'remote' 来源通知监听器(用于引擎同步/视图刷新),但不进入本地撤销栈。
-   */
-  applyRemoteMutations(items: readonly MutationInfo[], remoteContext: RemoteMutationContext = {}): void {
-    this.registry.assertComplete();
-    // A committed operation may contain several dependent mutations. Replay
-    // them against an isolated snapshot first so a later rejection cannot
-    // leave the live workbook partially changed.
-    const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
-    preview.applyHistory(items, 'remote');
-    this.applyHistory(items, 'remote');
-    for (const item of items) this.transformHistoryAgainstRemote(item);
-    if (remoteContext.revision !== undefined) {
-      if (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1) throw new Error('Remote revision is invalid');
-      this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
-    }
+  markOperationCommitted(operationId: string, revision: number): void { if (revision !== this.workbook.revision) throw new Error('COMMITTED_REVISION_MISMATCH'); for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) if (entry.operationId === operationId) entry.committedRevision = revision; }
+  get activeDepth(): number { return this.transactionDepth; }
+  getHistoryDepth(): { undo: number; redo: number } { return { undo: this.undoStack.length, redo: this.redoStack.length }; }
+  getUndoEntries(): readonly HistoryEntry[] { return [...this.undoStack]; }
+  getRedoEntries(): readonly HistoryEntry[] { return [...this.redoStack]; }
+  getInvalidHistoryEntries(): readonly HistoryEntry[] { return [...this.invalidHistory]; }
+  clearHistory(): void { this.undoStack.length = 0; this.redoStack.length = 0; this.invalidHistory.length = 0; }
+  private readRevision(): number { const revision = this.revisionProvider?.() ?? this.workbook.revision; if (!Number.isSafeInteger(revision) || revision < 0 || revision !== this.workbook.revision) throw new Error('COMMITTED_REVISION_MISMATCH'); return revision; }
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.serial.then(async () => { this.transactionDepth++; try { return await action(); } finally { this.transactionDepth--; } });
+    this.serial = result.then(() => undefined, () => undefined);
+    return result;
   }
-
-  markOperationCommitted(operationId: string, revision: number): void {
-    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
-    for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) {
-      if (entry.operationId === operationId) entry.committedRevision = revision;
-    }
-    this.currentRevision = Math.max(this.currentRevision, revision);
-  }
-
-  getInvalidHistoryEntries(): readonly HistoryEntry[] {
-    return [...this.invalidHistory];
-  }
-
-  /** 当前事务嵌套深度(workspace 用以判断根事务冲刷协同队列) */
-  get activeDepth(): number {
-    return this.transactionDepth;
-  }
-
-  getHistoryDepth(): { undo: number; redo: number } {
-    return { undo: this.undoStack.length, redo: this.redoStack.length };
-  }
-
-  getUndoEntries(): readonly HistoryEntry[] {
-    return [...this.undoStack];
-  }
-
-  /** Read-only projection used by hosts to preflight a permission-safe redo. */
-  getRedoEntries(): readonly HistoryEntry[] {
-    return [...this.redoStack];
-  }
-
-  clearHistory(): void {
-    this.undoStack.length = 0;
-    this.redoStack.length = 0;
-    this.invalidHistory.length = 0;
-  }
-
-  private readRevision(): number {
-    const revision = this.revisionProvider?.() ?? this.currentRevision;
-    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('History base revision is invalid');
-    this.currentRevision = Math.max(this.currentRevision, revision);
-    return revision;
-  }
-
-  private transformHistoryAgainstRemote(remote: MutationInfo): void {
-    const stacks = [this.undoStack, this.redoStack];
-    for (const stack of stacks) {
-      for (let index = stack.length - 1; index >= 0; index -= 1) {
-        const entry = stack[index]!;
-        const transformed = transformHistoryEntry(entry, remote);
-        if (!transformed.ok) {
-          stack.splice(index, 1);
-          entry.status = 'invalid';
-          entry.invalidReason = transformed.reason;
-          this.invalidHistory.push(entry);
-          continue;
-        }
-        entry.inversePlan.splice(0, entry.inversePlan.length, ...transformed.inversePlan);
-        entry.forwardMutations.splice(0, entry.forwardMutations.length, ...transformed.forwardMutations);
-        entry.affectedRanges = transformed.affectedRanges;
-      }
-    }
-  }
-
-  private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {
+  private async commit(operationId: string, mutations: readonly MutationInfo[], source: MutationSource): Promise<KernelCommittedOperation> {
+    if (!this.commitPort) throw new CommandCommitError('CLOUD_COMMIT_UNAVAILABLE', this.workbook.unitId);
     const issues: MutationRegistryIssue[] = [];
-    for (const item of items) {
-      if (item.unitId !== this.workbook.unitId) {
-        throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${item.unitId}`);
-      }
-      this.registry.validateMutationInfo(item, issues);
-    }
-    if (issues.length > 0) {
-      throw new Error(`Invalid mutation history: ${formatIssues(issues)}`);
-    }
-    for (const item of items) this.mutationGuard?.(item, source);
-    for (const item of items) {
-      const handler = this.registry.getMutation(item.id);
-      const replayContext: CommandContext = {
-        workbook: this.workbook,
-        operationId: createOperationId(),
-        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
-        applyMutation: () => {
-          throw new Error('Nested mutation application is not allowed during mutation replay');
-        },
-        recordOperation: (operation, operationParams) => {
-          const registered = this.registry.getOperation(operation.id);
-          return registered.execute(operationParams, replayContext);
-        },
-      };
-      handler(item, {
-        ...replayContext,
-      });
-      for (const listener of this.mutationListeners) {
-        listener(item, source);
-      }
+    for (const item of mutations) { this.registry.validateMutationInfo(item, issues); this.mutationGuard?.(item, source); }
+    if (issues.length) throw new Error(formatIssues(issues));
+    const baseRevision = this.readRevision();
+    const committed = await this.commitPort({ operationId, baseRevision, mutations });
+    this.assertCommit(committed, operationId, baseRevision);
+    this.workbook.applyCommittedManifest(committed.manifest, committed.pages);
+    for (const item of mutations) for (const listener of this.mutationListeners) listener(item, source);
+    return committed;
+  }
+  private assertCommit(commit: KernelCommittedOperation, operationId: string, baseRevision: number): void {
+    if (commit.operationId !== operationId || commit.baseRevision !== baseRevision || commit.revision !== baseRevision + 1 || commit.manifest.revision !== commit.revision || commit.manifest.unitId !== this.workbook.unitId) throw new CommandCommitError('KERNEL_COMMIT_IDENTITY_MISMATCH', operationId);
+  }
+  private transformHistoryAgainstRemote(remote: MutationInfo): void {
+    for (const stack of [this.undoStack, this.redoStack]) for (let index = stack.length - 1; index >= 0; index--) {
+      const entry = stack[index]!;
+      const transformed = transformHistoryEntry(entry, remote);
+      if (!transformed.ok) { stack.splice(index, 1); entry.status = 'invalid'; entry.invalidReason = transformed.reason; this.invalidHistory.push(entry); continue; }
+      entry.inversePlan = transformed.inversePlan; entry.forwardMutations = transformed.forwardMutations; entry.affectedRanges = transformed.affectedRanges;
     }
   }
 }

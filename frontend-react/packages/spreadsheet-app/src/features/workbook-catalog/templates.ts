@@ -293,6 +293,28 @@ export function createTemplateSnapshot(
   return getWorkbookTemplate(templateId).create(unitId, name);
 }
 
+/** Template creation crosses the cloud boundary as metadata plus typed cell intents. */
+export interface WorkbookTemplateCreatePlan {
+  readonly unitId: string;
+  readonly name: string;
+  readonly sheets: readonly { sheetId: string; name: string; rowCount: number; columnCount: number; metadata: Record<string, unknown> }[];
+  readonly initialMutations: readonly { id: 'cell.set'; sheetId: string; params: { row: number; column: number; cell: unknown } }[];
+}
+
+export function createTemplatePlan(templateId: WorkbookTemplateId, unitId: string, name?: string): WorkbookTemplateCreatePlan {
+  const snapshot = createTemplateSnapshot(templateId, unitId, name);
+  const initialMutations: WorkbookTemplateCreatePlan['initialMutations'][number][] = [];
+  snapshot.sheets.forEach((sheet) => sheet.cells.forEach((cell, row, column) => {
+    initialMutations.push({ id: 'cell.set', sheetId: sheet.id, params: { row, column, cell } });
+  }));
+  return {
+    unitId,
+    name: snapshot.name,
+    sheets: snapshot.sheets.map(({ cells: _cells, ...metadata }) => ({ sheetId: metadata.id, name: metadata.name, rowCount: metadata.rowCount, columnCount: metadata.columnCount, metadata })),
+    initialMutations,
+  };
+}
+
 export function createWorkbookUnitId(prefix = 'wb'): string {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${prefix}-${randomUuid}`;

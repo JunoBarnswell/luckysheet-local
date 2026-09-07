@@ -23,6 +23,8 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 class QueryExecutionServiceTest {
     @Test
@@ -33,9 +35,11 @@ class QueryExecutionServiceTest {
             connection.createStatement().execute("INSERT INTO items VALUES ('a', 3), ('b', 1)");
         }
         try {
-            WorkbookStore store = mock(WorkbookStore.class);
-            when(store.find("unit-1")).thenReturn(Optional.of(new WorkbookRow("unit-1", "test", "{}", 0, 4,
-                    WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
+            QueryExecutionProofService proofs = mock(QueryExecutionProofService.class);
+            when(proofs.begin(eq("unit-1"), eq("query-1"), eq("editor"), any()))
+                    .thenReturn(new QueryExecutionProofService.StartedExecution("execution-1", 4));
+            when(proofs.publish(eq("unit-1"), eq("query-1"), eq("execution-1"), eq("editor"), any()))
+                    .thenReturn("sealed-result-hash");
             AccessControlService access = mock(AccessControlService.class);
             when(access.require("unit-1", "editor", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
             WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
@@ -44,7 +48,7 @@ class QueryExecutionServiceTest {
                     true, 100, 20, 1_000_000, Duration.ofSeconds(5), 2,
                     Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
             );
-            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, audit, new ObjectMapper());
+            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, proofs, audit, new ObjectMapper());
             var response = service.execute("unit-1", new QueryExecutionRequest(
                     "query-1", "Items", "sqlite", "local", "SELECT name, amount FROM items WHERE amount > ?",
                     null, null, List.of(new com.fasterxml.jackson.databind.node.IntNode(1)), List.of()
@@ -53,6 +57,8 @@ class QueryExecutionServiceTest {
             assertEquals(1, response.rowCount());
             assertEquals("a", response.rows().get(0).get(0).asText());
             assertEquals(4, response.sourceRevision());
+            assertEquals("execution-1", response.executionToken());
+            assertEquals("sealed-result-hash", response.resultHash());
             service.close();
         } finally {
             Files.deleteIfExists(file);

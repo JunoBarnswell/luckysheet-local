@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["kernel/core", "kernel/formula", "kernel/analytics", "kernel/geometry", "kernel/native-document", "kernel/commands", "kernel/host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+kernel-core = { path = "kernel/core" }
+kernel-formula = { path = "kernel/formula" }
+kernel-analytics = { path = "kernel/analytics" }
+kernel-geometry = { path = "kernel/geometry" }
+kernel-native-document = { path = "kernel/native-document" }
+kernel-commands = { path = "kernel/commands" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

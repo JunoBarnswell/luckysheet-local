@@ -1,4 +1,5 @@
-import type { PivotDefinition, PivotResultTree } from '@react-sheets/core-model';
+import type { PivotDefinition, PivotResultTree, RangeRef } from '@react-sheets/core-model';
+import type { PivotAnalyticsFilterColumn, PivotAnalyticsValueFilter } from './rust-analytics';
 import type { PivotRevisionKey, PivotTaskControl } from './engine';
 import type { PivotSourceIndex } from './source-index';
 
@@ -57,6 +58,8 @@ export interface PivotCalculateRequest extends PivotTaskEnvelope {
   controls: PivotTaskControl[];
   revisions: PivotRevisionKey;
   targetBounds: { rowCount: number; columnCount: number };
+  /** Canonical Rust execution binding. When present, no source index is built or transferred. */
+  kernel?: { unitId: string; revision: number; sourceRange: RangeRef; filters?: PivotAnalyticsFilterColumn[]; valueFilters?: PivotAnalyticsValueFilter[]; viewport?: { rowOffset: number; columnOffset: number; rowLimit: number; columnLimit: number } };
 }
 
 export interface PivotTaskCancelRequest extends PivotTaskEnvelope {
@@ -107,8 +110,9 @@ export function createPivotCalculateRequest(
   controls: PivotTaskControl[],
   revisions: PivotRevisionKey,
   targetBounds: { rowCount: number; columnCount: number },
+  kernel?: PivotCalculateRequest['kernel'],
 ): PivotCalculateRequest {
-  return { protocol: PIVOT_TASK_PROTOCOL, version: PIVOT_TASK_VERSION, taskId, generation, kind: 'calculate', sourceIdentity, definition, controls, revisions, targetBounds };
+  return { protocol: PIVOT_TASK_PROTOCOL, version: PIVOT_TASK_VERSION, taskId, generation, kind: 'calculate', sourceIdentity, definition, controls, revisions, targetBounds, ...(kernel ? { kernel } : {}) };
 }
 
 export function createPivotTaskCancelRequest(taskId: string, generation: number): PivotTaskCancelRequest {

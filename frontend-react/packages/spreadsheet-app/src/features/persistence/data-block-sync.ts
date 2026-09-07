@@ -20,18 +20,18 @@ export class DataBlockSynchronizer {
   ) {}
 
   async put(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
-    await this.local.put(ref, bytes);
-    if (!this.options.isRemoteAvailable()) return;
+    if (!this.options.isRemoteAvailable()) throw new Error(`DATA_BLOCK_COMMIT_UNAVAILABLE: ${ref.id}`);
     const metadata = await this.api.putDataBlock(this.options.unitId(), ref.dataSourceId, ref.id, ref.checksum, bytes);
     if (metadata.checksum !== ref.checksum || metadata.byteLength !== ref.byteLength) {
       throw new Error(`Remote data block acknowledgement mismatched manifest: ${ref.id}`);
     }
+    await this.local.put(ref, bytes);
   }
 
   async get(ref: DataBlockRef): Promise<ArrayBuffer> {
     const local = await this.local.get(ref);
     if (local) return local.bytes;
-    if (!this.options.isRemoteAvailable()) throw new Error(`Data block is unavailable offline: ${ref.id}`);
+    if (!this.options.isRemoteAvailable()) throw new Error(`DATA_BLOCK_UNAVAILABLE: ${ref.id}`);
     const remote = await this.api.getDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
     if (remote.checksum !== ref.checksum) throw new Error(`Remote data block checksum mismatched manifest: ${ref.id}`);
     await this.local.put(ref, remote.bytes);
@@ -39,7 +39,8 @@ export class DataBlockSynchronizer {
   }
 
   async remove(ref: DataBlockRef): Promise<void> {
+    if (!this.options.isRemoteAvailable()) throw new Error(`DATA_BLOCK_COMMIT_UNAVAILABLE: ${ref.id}`);
+    await this.api.deleteDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
     await this.local.remove(ref.dataSourceId, ref.id);
-    if (this.options.isRemoteAvailable()) await this.api.deleteDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
   }
 }

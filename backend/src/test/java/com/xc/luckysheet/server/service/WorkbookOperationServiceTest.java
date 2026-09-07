@@ -1,112 +1,194 @@
 package com.xc.luckysheet.server.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xc.luckysheet.server.config.CoordinationProperties;
+import com.xc.luckysheet.server.NativeKernelIntegrationTestSupport;
+import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
+import com.xc.luckysheet.server.contract.OperationIntent;
 import com.xc.luckysheet.server.contract.OperationMutation;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.contract.WorkbookLifecycle;
-import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
-import com.xc.luckysheet.server.store.WorkbookRow;
+import com.xc.luckysheet.server.contract.ShareCreateRequest;
+import com.xc.luckysheet.server.persistence.WorkbookManifestEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookPageEntityRepository;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.context.TestPropertySource;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
 
-class WorkbookOperationServiceTest {
-    private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-
-    @Test
-    void commenterCannotCommitAnEditorMutationEvenThoughTheRequestHasNoClientRole() throws Exception {
-        WorkbookStore store = mock(WorkbookStore.class);
-        AccessControlService access = mock(AccessControlService.class);
-        AuditRecorder audit = mock(AuditRecorder.class);
-        CoordinationProperties coordination = new CoordinationProperties(
-                false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)
-        );
-        WorkbookOperationService service = new WorkbookOperationService(
-                store, access, new MutationDescriptorRegistry(), mapper, audit, coordination
-        );
-        String snapshot = canonicalSnapshot();
-        when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
-        when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
-                "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
-        )));
-        when(store.findOperation("op-1")).thenReturn(Optional.empty());
-        when(store.findOperationBySequence("book-1", "guest:share-1", 1)).thenReturn(Optional.empty());
-
-        OperationEnvelope operation = new OperationEnvelope(
-                OperationEnvelope.SCHEMA,
-                "op-1",
-                "book-1",
-                1,
-                0,
-                List.of(new OperationMutation("cell.set", "sheet-1", mapper.readTree("{\"row\":0,\"column\":0,\"value\":{\"value\":1}}"))),
-                Instant.parse("2000-01-01T00:00:00Z")
-        );
-
-        ServiceException error = assertThrows(ServiceException.class, () -> service.commit("book-1", operation, "guest:share-1"));
-        assertEquals("FORBIDDEN", error.code());
-        verify(store, never()).insertOperation(any());
-        verify(audit).rejected(eq("op-1"), eq("book-1"), eq("guest:share-1"), eq("OPERATION_COMMIT"), any());
-    }
+@TestPropertySource(properties = "DATABASE_URL=jdbc:h2:mem:native_operations;DB_CLOSE_DELAY=-1")
+class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
+    @Autowired private WorkbookCatalogService catalog;
+    @Autowired private WorkbookOperationService operations;
+    @Autowired private WorkbookStore store;
+    @Autowired private WorkbookManifestEntityRepository manifests;
+    @Autowired private WorkbookPageEntityRepository pages;
+    @Autowired private GuestShareService shares;
+    @Autowired private KernelHostClient kernel;
+    @Autowired private ObjectMapper mapper;
 
     @Test
-    void serverAddsActorTimeAndRangesOnlyAfterItHasValidatedTheMutation() throws Exception {
-        WorkbookStore store = mock(WorkbookStore.class);
-        AccessControlService access = mock(AccessControlService.class);
-        AuditRecorder audit = mock(AuditRecorder.class);
-        WorkbookOperationService service = new WorkbookOperationService(
-                store,
-                access,
-                new MutationDescriptorRegistry(),
-                mapper,
-                new AuditRecorder(store, mapper),
-                new CoordinationProperties(false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45))
-        );
-        String snapshot = canonicalSnapshot();
-        when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
-        when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
-                WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
-        when(store.findOperation("op-2")).thenReturn(Optional.empty());
-        when(store.findOperationBySequence("book-1", "editor-1", 1)).thenReturn(Optional.empty());
-        OperationEnvelope operation = new OperationEnvelope(
-                OperationEnvelope.SCHEMA,
-                "op-2",
-                "book-1",
-                1,
-                0,
-                List.of(new OperationMutation("cell.set", "sheet-1", mapper.readTree("{\"sheetId\":\"sheet-1\",\"row\":1,\"column\":2,\"value\":{\"value\":42},\"writeAuthority\":{\"kind\":\"script\",\"target\":{\"sheetId\":\"sheet-1\",\"row\":1,\"column\":2},\"candidate\":{\"value\":42},\"validationDecision\":{\"status\":\"accepted\"}}}"))),
-                Instant.parse("2000-01-01T00:00:00Z")
-        );
-
-        WorkbookOperationService.CommitResult result = service.commit("book-1", operation, "editor-1");
-
-        assertEquals(true, result.committed());
-        assertEquals("editor-1", result.operation().actorId());
+    void nativeCommitPersistsPagesAndServerMetadataAndReopensAfterProcessRestart() throws Exception {
+        String unitId = "native-commit";
+        create(unitId);
+        var submitted = operation(unitId, "native-commit-op", 1, 0, set(1, 2, 42));
+        Instant before = Instant.now();
+        var result = operations.commit(unitId, submitted, "owner");
+        assertTrue(result.committed());
+        assertEquals("owner", result.operation().actorId());
         assertEquals(result.operation().committedAt(), result.operation().createdAt());
-        assertEquals(1, result.operation().mutations().get(0).affectedRanges().get(0).startRow());
-        assertEquals(2, result.operation().mutations().get(0).affectedRanges().get(0).startColumn());
-        ArgumentCaptor<com.xc.luckysheet.server.store.OperationRow> captured = ArgumentCaptor.forClass(com.xc.luckysheet.server.store.OperationRow.class);
-        verify(store).insertOperation(captured.capture());
-        assertEquals("op-2", captured.getValue().operationId());
-        verify(store).updateWorkbookRevisionAndName(eq("book-1"), eq(1L), eq("Book"), any());
+        assertFalse(result.operation().committedAt().isBefore(before));
+        var range = result.operation().mutations().getFirst().affectedRanges().getFirst();
+        assertEquals(1, range.startRow());
+        assertEquals(2, range.startColumn());
+        assertEquals(1, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(submitted.operationId()).isPresent());
+        assertTrue(manifests.findByUnitIdAndRevision(unitId, 1).isPresent());
+
+        kernel.close();
+        var reopened = operations.open(unitId, "owner");
+        assertEquals(1, reopened.revision());
+        assertEquals(11, reopened.manifest().path("version").asInt());
+        reopenNative(unitId, "owner", true);
+        assertEquals(42, cell(unitId, 1, 1, 2).path("value").asInt());
+        var duplicate = operations.commit(unitId, submitted, "owner");
+        assertFalse(duplicate.committed());
+        assertEquals(1, store.find(unitId).orElseThrow().revision());
     }
 
-    private String canonicalSnapshot() {
-        return "{\"schema\":\"WorkbookSnapshot\",\"version\":3,\"unitId\":\"book-1\",\"name\":\"Book\",\"dimensionMetrics\":{\"normalFontFamily\":\"Calibri\",\"normalFontSizePx\":14.6666666667,\"maximumDigitWidthPx\":7},\"dataSources\":[],\"sheets\":[{\"id\":\"sheet-1\",\"name\":\"Sheet1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{},\"merges\":[],\"pane\":{\"kind\":\"none\"},\"defaultRowHeightPx\":20,\"defaultColumnWidthPx\":64,\"pivots\":[],\"sparklines\":[],\"drawings\":[],\"drawingPayloads\":{}}]}";
+    @Test
+    void commenterCannotCommitEditorMutationAndRejectionIsAudited() throws Exception {
+        String unitId = "native-role";
+        create(unitId);
+        var share = shares.create(unitId, new ShareCreateRequest("commenter", Instant.now().plusSeconds(600)), "owner");
+        String actor = "guest:" + share.shareId();
+        var request = operation(unitId, "native-role-op", 1, 0, set(0, 0, 12));
+        var error = assertThrows(ServiceException.class, () -> operations.commit(unitId, request, actor));
+        assertEquals("FORBIDDEN", error.code());
+        assertEquals(0, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(request.operationId()).isEmpty());
+        assertTrue(store.listAudit(unitId, 20).stream().anyMatch(audit ->
+                request.operationId().equals(audit.operationId()) && "REJECTED".equals(audit.outcome())));
+    }
+
+    @Test
+    void invalidNativeMutationTailRejectsWholeBatchWithoutPersistentOrNativePartialWrite() throws Exception {
+        String unitId = "native-invalid-batch";
+        create(unitId);
+        var request = operation(unitId, "native-invalid-op", 1, 0, set(0, 0, 12),
+                new OperationMutation("not.a.command", "sheet-1", mapper.createObjectNode()));
+        var error = assertThrows(KernelHostException.class, () -> operations.commit(unitId, request, "owner"));
+        assertEquals("COMMAND_UNKNOWN", error.code());
+        assertEquals(0, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(request.operationId()).isEmpty());
+        assertTrue(manifests.findByUnitIdAndRevision(unitId, 1).isEmpty());
+        reopenNative(unitId, "owner", false);
+        assertTrue(cell(unitId, 0, 0, 0).isNull());
+    }
+
+    @Test
+    void staleRevisionCannotOverwriteCommittedCell() throws Exception {
+        String unitId = "native-stale";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "native-first", 1, 0, set(0, 0, 42)), "owner");
+        var stale = operation(unitId, "native-stale-op", 2, 0, set(0, 0, 99));
+        var error = assertThrows(ServiceException.class, () -> operations.commit(unitId, stale, "owner"));
+        assertEquals("CONFLICT", error.code());
+        assertTrue(store.findOperation(stale.operationId()).isEmpty());
+        reopenNative(unitId, "owner", true);
+        assertEquals(42, cell(unitId, 1, 0, 0).path("value").asInt());
+    }
+
+    @Test
+    void undoUsesPersistedNativeHistoryInsteadOfClientSuppliedInverseCells() throws Exception {
+        String unitId = "native-undo";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "native-undo-target", 1, 0, set(0, 0, 42)), "owner");
+        kernel.close();
+        var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-undo-op", unitId, 2, 1,
+                List.of(set(0, 0, 999)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-undo-target", 0));
+
+        var result = operations.commit(unitId, undo, "owner");
+
+        assertTrue(result.committed());
+        assertEquals(2, store.find(unitId).orElseThrow().revision());
+        reopenNative(unitId, "owner", false);
+        assertTrue(cell(unitId, 2, 0, 0).isNull());
+    }
+
+    @Test
+    void undoCannotUseAnotherActorsCommittedHistory() throws Exception {
+        String unitId = "native-undo-owner";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "native-owned-history", 1, 0, set(0, 0, 42)), "owner");
+        var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), "owner");
+        var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-foreign-undo", unitId, 1, 1,
+                List.of(set(0, 0, 999)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-owned-history", 0));
+
+        var error = assertThrows(ServiceException.class, () -> operations.commit(unitId, undo, "guest:" + share.shareId()));
+
+        assertEquals("FORBIDDEN", error.code());
+        assertEquals(1, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(undo.operationId()).isEmpty());
+    }
+
+    @Test
+    void missingCommittedPageFailsClosedAtPageReadAndCommandBoundary() throws Exception {
+        String unitId = "native-page-missing";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "native-page-first", 1, 0, set(0, 0, 42)), "owner");
+        var manifest = operations.open(unitId, "owner").manifest();
+        var page = pages.findByUnitIdAndChecksum(unitId, manifest.path("pages").get(0).path("checksum").asText()).orElseThrow();
+        pages.deleteById(page.getPageId());
+        kernel.close();
+
+        var readError = assertThrows(KernelHostException.class,
+                () -> operations.page(unitId, 1, "sheet-1", 0, 0, "owner"));
+        var request = operation(unitId, "native-page-rejected", 2, 1, set(0, 0, 99));
+        var commitError = assertThrows(KernelHostException.class, () -> operations.commit(unitId, request, "owner"));
+
+        assertEquals("PAGE_MISSING", readError.code());
+        assertEquals("PAGE_MISSING", commitError.code());
+        assertEquals(1, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(request.operationId()).isEmpty());
+        assertTrue(manifests.findByUnitIdAndRevision(unitId, 2).isEmpty());
+    }
+
+    private void create(String unitId) throws Exception {
+        JsonNode sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        catalog.create(new CreateWorkbookRequest(unitId, "Book", sheets, null, null, null), "owner");
+    }
+
+    private OperationMutation set(int row, int column, int value) {
+        var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", row).put("column", column);
+        params.putObject("value").put("value", value);
+        return new OperationMutation("cell.set", "sheet-1", params);
+    }
+
+    private OperationEnvelope operation(String unitId, String id, long sequence, long revision, OperationMutation... mutations) {
+        return new OperationEnvelope(OperationEnvelope.SCHEMA, id, unitId, sequence, revision, List.of(mutations),
+                Instant.parse("2000-01-01T00:00:00Z"));
+    }
+
+    private JsonNode cell(String unitId, long revision, int row, int column) {
+        var params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision);
+        params.putObject("address").put("sheetId", "sheet-1").put("row", row).put("column", column);
+        return kernel.call("cell.get", params).path("cell");
+    }
+
+    private void reopenNative(String unitId, String actor, boolean hasPage) {
+        var opened = operations.open(unitId, actor);
+        kernel.call("open", mapper.createObjectNode().set("manifest", opened.manifest()));
+        if (hasPage) {
+            var load = mapper.createObjectNode().put("unitId", unitId).put("revision", opened.revision());
+            load.set("page", operations.page(unitId, opened.revision(), "sheet-1", 0, 0, actor));
+            kernel.call("page.load", load);
+        }
     }
 }

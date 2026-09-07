@@ -262,7 +262,6 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
 export function registerFindReplaceCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerMutation<FindReplacementMutationParams>({
     id: 'find.replaced',
-    handler: (item, context) => applyFindReplacementMutation(item.params, context),
     metadata: {
       schema: { name: 'FindReplacementMutationParams', validate: isFindReplacementMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -278,7 +277,7 @@ export function registerFindReplaceCommands(runtime: CommandRuntime): string[] {
       const affectedRanges = patches.map((patch) => patch.match.range);
       const forward: FindReplacementMutationParams = { direction: 'forward', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
       const inverse: FindReplacementMutationParams = { direction: 'reverse', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
-      context.applyMutation({ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: forward, affectedRanges: [...affectedRanges], inverse: [{ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: [...affectedRanges] }], apply: () => applyFindReplacementMutation(forward, context) });
+      context.applyMutation({ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: forward, affectedRanges: [...affectedRanges], inverse: [{ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: [...affectedRanges] }] });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges, event: { type: 'find.replaced', payload: { count: patches.length } } };
     },
   });

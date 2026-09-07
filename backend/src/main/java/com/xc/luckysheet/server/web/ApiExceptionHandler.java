@@ -14,6 +14,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class ApiExceptionHandler {
     @ExceptionHandler(ServiceException.class)
     public ResponseEntity<ApiErrorResponse> handleDomain(ServiceException error) {
+        if (error instanceof com.xc.luckysheet.server.service.KernelHostException kernel) {
+            var details = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+            details.put("object", kernel.object()); details.put("recovery", kernel.recovery());
+            return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage(), details));
+        }
         return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage()));
     }
 

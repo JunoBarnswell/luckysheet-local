@@ -1,6 +1,7 @@
-import { pivotSourceIdentity, WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
+import { pivotSourceIdentity, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import { FormulaEngine, type CalculationSessionPort, type SheetTableRef } from '@react-sheets/formula-engine';
+import { FormulaEngine } from '@react-sheets/formula-engine';
+import type { KernelPagePayload, WorkbookManifest } from '@react-sheets/protocol';
 import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
 import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
 import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
@@ -53,9 +54,10 @@ export class HistoryPreviewSession {
     this.projection = projection;
   }
 
-  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot, taskPort?: PivotTaskPort, calculationSessionPort?: CalculationSessionPort): Promise<HistoryPreviewSession> {
-    const workbook = WorkbookModel.fromSnapshot(snapshot);
-    const formula = await hydratePreviewFormula(workbook, calculationSessionPort);
+  static async fromManifest(meta: HistoryEntryMeta, manifest: WorkbookManifest, pages: readonly KernelPagePayload[], taskPort?: PivotTaskPort): Promise<HistoryPreviewSession> {
+    if (manifest.revision !== meta.revision) throw new Error(`HISTORY_REVISION_MISMATCH: manifest ${manifest.revision} does not match requested ${meta.revision}`);
+    const workbook = WorkbookModel.fromManifest(structuredClone(manifest), structuredClone(pages));
+    const formula = new FormulaEngine({ unitId: workbook.unitId, revision: () => workbook.revision, defaultSheetId: workbook.primarySheetId });
     const derivedCache = new Map<string, PivotResultTree>();
     const pivotResults: Record<string, PivotResultTree> = {};
     const pivotErrors: Record<string, PivotTaskError> = {};
@@ -127,7 +129,6 @@ export class HistoryPreviewSession {
 
   dispose(): void {
     this.disposed = true;
-    this.formula.disposeCalculationTasks();
   }
 }
 
@@ -139,7 +140,8 @@ export interface RestoreCommandParams {
 /** Server-produced mutation payload. The client command never accepts this shape. */
 export interface ServerRestoreMutationParams extends RestoreCommandParams {
   serverGenerated: true;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
+  pages: KernelPagePayload[];
 }
 
 function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMutationParams {
@@ -148,44 +150,21 @@ function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMu
   return input.serverGenerated === true
     && Number.isSafeInteger(input.targetRevision)
     && Number(input.targetRevision) >= 0
-    && Boolean(input.snapshot)
-    && (input.snapshot as { schema?: string }).schema === 'WorkbookSnapshot';
-}
-
-function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot): void {
-  const restored = WorkbookModel.fromSnapshot(snapshot);
-  target.sheets.clear();
-  target.dataModel.tables.clear();
-  target.dataModel.sources.clear();
-  target.dataModel.relationships.clear();
-  target.dataModel.views.clear();
-  target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
-  target.name = restored.name;
-  target.sheetOrder = [...restored.sheetOrder];
-  // `definedNameModels` is the canonical store; the workbook-scoped formula
-  // map is a derived read-only projection and must never be assigned.
-  for (const [id, sheet] of restored.sheets) target.sheets.set(id, sheet);
-  for (const [id, table] of restored.dataModel.tables) target.dataModel.tables.set(id, table);
-  for (const [id, source] of restored.dataModel.sources) target.dataModel.sources.set(id, source);
-  for (const [id, relationship] of restored.dataModel.relationships) target.dataModel.relationships.set(id, relationship);
-  for (const [id, view] of restored.dataModel.views) target.dataModel.views.set(id, view);
+    && Boolean(input.manifest)
+    && (input.manifest as { schema?: string; version?: number }).schema === 'WorkbookManifest'
+    && (input.manifest as { version?: number }).version === 11
+    && Array.isArray(input.pages);
 }
 
 /**
  * Register the server-authoritative restore mutation and the client request
  * command. A client request intentionally does not mutate the workbook: the
  * server resolves targetRevision, authorizes it, and broadcasts the signed
- * `workbook.restore` mutation carrying the materialized historical snapshot.
+ * `workbook.restore` mutation carrying the server-authoritative manifest/pages.
  */
 export function registerHistoryCommands(registry: CommandRegistry): void {
   registry.registerMutation<ServerRestoreMutationParams>({
     id: 'workbook.restore',
-    handler: (item, context) => {
-      if (!isServerRestoreMutationParams(item.params)) {
-        throw new Error('workbook.restore must be a server-generated targetRevision mutation');
-      }
-      applyRestoredWorkbook(context.workbook, item.params.snapshot);
-    },
     metadata: {
       schema: { name: 'ServerRestoreMutationParams', validate: isServerRestoreMutationParams },
       permission: { capability: 'history.restore' },
@@ -208,41 +187,6 @@ export function registerHistoryCommands(registry: CommandRegistry): void {
 function pivotCacheKey(revision: number, pivotId: string): string {
   return `pivot:${pivotId}:source:${revision}:layout:${revision}:filter:${revision}`;
 }
-
-async function hydratePreviewFormula(workbook: WorkbookModel, calculationSessionPort?: CalculationSessionPort): Promise<FormulaEngine> {
-  if (!calculationSessionPort && typeof window === 'undefined') {
-    throw new Error('CALCULATION_SESSION_PORT_REQUIRED: history preview on Node requires an explicit calculation session port');
-  }
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, calculationSessionPort });
-  engine.setRecalculationMode('manual');
-  engine.setDefinedNameModels(workbook.definedNameModels);
-  const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({
-    id: table.id,
-    sheetId: table.sheetId,
-    name: table.name,
-    range: table.range,
-    hasHeaderRow: table.hasHeaderRow,
-    hasTotalRow: table.hasTotalRow,
-    columns: table.columns.map((column) => ({ id: column.id, name: column.name })),
-  })));
-  engine.setSheetTables(tableRefs);
-  for (const sheet of workbook.getSheets()) {
-    engine.setSpillEnvironment(sheet.id, {
-      rowCount: sheet.rowCount,
-      columnCount: sheet.columnCount,
-      isOccupied: (row, column) => sheet.cells.get(row, column) !== undefined,
-    });
-    sheet.cells.forEach((cell, row, column) => {
-      const address = { sheetId: sheet.id, row, column };
-      if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
-      else if (cell.value !== null) engine.setValue(address, cell.value as never);
-    });
-  }
-  engine.setRecalculationMode('automatic');
-  await engine.recalculateAsync();
-  return engine;
-}
-
 export class HistoryPanelStore {
   private entries: HistoryEntryMeta[] = [];
 

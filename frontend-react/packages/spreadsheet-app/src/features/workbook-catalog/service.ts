@@ -4,11 +4,10 @@ import {
   ApiRequestError,
   AuthenticationRequiredError,
   MAX_WORKBOOK_NAME_LENGTH,
-  type OperationEnvelope,
-  type SnapshotResponse,
   type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
   type WorkbookCreateMetadata,
   type WorkbookSummary,
+  type KernelSheetManifest,
 } from '@react-sheets/protocol';
 import { buildOperation } from '../../collaboration/helpers';
 import {
@@ -97,7 +96,7 @@ function sourceFromProtocol(summary: WorkbookSummary): WorkspaceRecordMetadata['
 
 function metadataFromRemote(summary: WorkbookSummary): WorkspaceRecordMetadata {
   return {
-    location: summary.storageLocation ?? 'remote',
+    location: 'remote',
     lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
     source: sourceFromProtocol(summary),
     // An omitted server role is fail-closed. The backend contract should
@@ -141,7 +140,7 @@ function localEntry(record: WorkspaceRecord, remoteAvailable: boolean): Workbook
     name: record.snapshot.name,
     revision: record.serverRevision,
     updatedAt: record.updatedAt,
-    storage: metadata.location,
+    storage: 'remote',
     syncState: resolveWorkbookSyncState({
       storage: metadata.location,
       pendingOperationCount: record.pending.operations.length,
@@ -171,7 +170,7 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
     name: summary.name,
     revision: summary.revision,
     updatedAt: summary.updatedAt,
-    storage: summary.storageLocation ?? 'remote',
+    storage: 'remote',
     syncState: summary.syncStatus ?? 'synced',
     role: metadata.role,
     lifecycle: metadata.lifecycle,
@@ -193,7 +192,7 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
 function mergeEntries(local: WorkbookCatalogEntry, remote: WorkbookCatalogEntry): WorkbookCatalogEntry {
   return {
     ...remote,
-    storage: 'mirrored',
+    storage: 'remote',
     syncState: local.pendingOperationCount > 0 ? 'pending' : remote.syncState,
     favorite: local.favorite || remote.favorite,
     lastOpenedAt: local.lastOpenedAt ?? remote.lastOpenedAt,
@@ -271,11 +270,11 @@ export class WorkbookCatalogService {
     const local = records.map((record) => localEntry(record, this.canUseRemote()));
     const byId = new Map(local.map((entry) => [entry.unitId, entry]));
     let nextCursor: string | null = null;
-    const shouldQueryRemote = this.canUseRemote() && query.view !== 'local';
+    const shouldQueryRemote = this.canUseRemote();
     if (shouldQueryRemote) {
       try {
         const protocolQuery: ProtocolWorkbookCatalogQuery = {
-          view: query.view === 'local' ? 'all' : query.view,
+          view: query.view,
           query: query.query,
           spaceId: query.spaceId,
           folderId: query.folderId,
@@ -307,16 +306,32 @@ export class WorkbookCatalogService {
 
   async create(input: WorkbookCatalogCreateInput): Promise<WorkbookCatalogEntry> {
     const snapshot = assertSnapshotUnitId(input.snapshot, input.snapshot.unitId);
-    const destination = input.destination ?? (this.remote ? 'remote' : 'local');
+    const destination = input.destination ?? 'remote';
     const metadata = input.metadata ?? {};
     if (destination === 'remote') {
       const api = this.requireRemote();
-      const response = await api.createWorkbook(snapshot, metadata);
-      const remoteSnapshot = assertSnapshotUnitId(response.snapshot, snapshot.unitId);
+      const sheets: KernelSheetManifest[] = snapshot.sheets.map((sheet) => {
+        const { cells: _cells, ...metadata } = sheet;
+        return { sheetId: sheet.id, name: sheet.name, rowCount: sheet.rowCount, columnCount: sheet.columnCount, metadata };
+      });
+      const initialMutations: { id: 'cell.set'; sheetId: string; params: { row: number; column: number; cell: unknown } }[] = [];
+      snapshot.sheets.forEach((sheet) => sheet.cells.forEach((cell, row, column) => {
+        initialMutations.push({ id: 'cell.set', sheetId: sheet.id, params: { row, column, cell } });
+      }));
+      const opened = await api.createKernelWorkbook({
+        unitId: snapshot.unitId,
+        name: snapshot.name,
+        sheets,
+        spaceId: metadata.spaceId,
+        folderId: metadata.folderId,
+        source: input.source ?? 'native',
+        initialMutations,
+      });
+      const manifest = opened.manifest;
       const record = await this.persistence.checkpoint(
-        remoteSnapshot,
+        snapshot,
         1,
-        response.revision,
+        manifest.revision,
         'remote',
         undefined,
         {
@@ -332,15 +347,7 @@ export class WorkbookCatalogService {
       );
       return localEntry(record, true);
     }
-    const record = await this.persistence.checkpoint(snapshot, 1, 0, 'local-only', undefined, {
-      location: 'local',
-      lifecycle: 'active',
-      source: input.source ?? 'native',
-      role: normalizeRole(input.role),
-      spaceId: metadata.spaceId,
-      folderId: metadata.folderId,
-    });
-    return localEntry(record, false);
+    throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
   }
 
   resolve(unitId: string, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookResolution> {
@@ -397,7 +404,7 @@ export class WorkbookCatalogService {
       });
       if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'Native document import did not produce a workbook snapshot');
       const importedSnapshot = reidentifySnapshot(imported.snapshot, unitId);
-      const destination = input.destination ?? (this.remote ? 'remote' : 'local');
+      const destination = input.destination ?? 'remote';
       const metadata: WorkbookCreateMetadata = {
         source: 'document-import',
         spaceId: input.spaceId,
@@ -432,12 +439,7 @@ export class WorkbookCatalogService {
           location: 'remote', lifecycle: 'active', source: 'document-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
           sourceFileName: input.fileName,
         });
-      } else {
-        record = await this.persistence.checkpointWithArtifact(importedSnapshot, 1, 0, 'local-only', imported.artifact, undefined, {
-          location: 'local', lifecycle: 'active', source: 'document-import', role: 'owner',
-          sourceFileName: input.fileName,
-        });
-      }
+      } else throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
       return {
         entry: localEntry(record, destination === 'remote'),
         snapshot: clone(record.snapshot),
@@ -484,43 +486,12 @@ export class WorkbookCatalogService {
     const api = this.requireRemote();
     const record = await this.persistence.load(unitId);
     if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    let revision = record.serverRevision;
-    let checkpoint: SnapshotResponse;
-    if (record.syncMode === 'local-only' || record.metadata.location === 'local') {
-      checkpoint = await api.createWorkbook(record.snapshot, metadataToProtocol(record.metadata));
-      const artifact = await this.persistence.nativeDocuments.load(unitId);
-      if (artifact) {
-        await api.putWorkbookSourceArtifact(
-          unitId,
-          new Blob([artifact.sourceBytes], { type: 'application/octet-stream' }),
-          artifact.fileName,
-        );
-      }
-      revision = checkpoint.revision;
-    } else {
-      for (const operation of record.pending.operations) {
-        const result = await api.commitOperation(unitId, operation as OperationEnvelope);
-        revision = Math.max(revision, result.operation.revision);
-      }
-      checkpoint = (await api.checkpointWorkbook(unitId)).snapshot;
-    }
-    assertSnapshotUnitId(checkpoint.snapshot, unitId);
-    const nextSequence = record.pending.nextClientSequence;
-    this.persistence.operationJournal.write(unitId, [], nextSequence);
-    const saved = await this.persistence.checkpoint(checkpoint.snapshot, record.localRevision, checkpoint.revision, 'remote', {
-      schema: 'PendingOperationJournal', unitId, nextClientSequence: nextSequence, operations: [], checksum: '',
-    }, {
-      ...record.metadata,
-      location: 'remote',
-      lifecycle: 'active',
-      deletedAt: undefined,
-    }, record.userState);
-    // checkpoint() recomputes the journal checksum; the temporary journal
-    // above only provides the sequence watermark and is never persisted.
+    const manifest = await api.getManifest(unitId, record.serverRevision);
+    const saved = { ...record, serverRevision: manifest.revision, localRevision: manifest.revision, pending: { ...record.pending, operations: [] } };
     return {
       entry: localEntry(saved, true),
-      committedOperationCount: record.pending.operations.length,
-      revision: Math.max(revision, checkpoint.revision),
+      committedOperationCount: 0,
+      revision: manifest.revision,
     };
   }
 
@@ -540,21 +511,14 @@ export class WorkbookCatalogService {
       record.serverRevision,
       [{ id: 'workbook.renamed', sheetId: snapshot.sheets[0]!.id, params: { name: trimmed } }],
     );
-    let serverRevision = record.serverRevision;
-    const pending = [...record.pending.operations, operation];
-    if (this.canUseRemote() && record.pending.operations.length === 0) {
-      const committed = await this.requireRemote().commitOperation(unitId, operation);
-      serverRevision = committed.operation.revision;
-      pending.length = 0;
-    }
-    this.persistence.operationJournal.write(unitId, pending, nextClientSequence);
-    const saved = await this.persistence.checkpoint(
-      snapshot,
-      record.localRevision + 1,
-      serverRevision,
-      pending.length > 0 ? 'remote' : record.syncMode,
-      undefined,
-    );
+    const committed = await this.requireRemote().commitKernelOperation(unitId, {
+      operationId: operation.operationId,
+      baseRevision: record.serverRevision,
+      clientSequence: nextClientSequence,
+      mutations: operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
+      intent: { commandId: 'workbook.rename', params: { name: trimmed } },
+    });
+    const saved = { ...record, snapshot, localRevision: committed.revision, serverRevision: committed.revision, pending: { ...record.pending, operations: [] } };
     return localEntry(saved, this.canUseRemote());
   }
 
@@ -562,7 +526,8 @@ export class WorkbookCatalogService {
     const source = await this.resolve(unitId);
     const newUnitId = this.unitIdFactory();
     let snapshot = reidentifySnapshot(renameSnapshot(source.snapshot, request.name ?? `${source.snapshot.name} - 副本`), newUnitId);
-    const destination = request.destination ?? (this.canUseRemote() ? 'remote' : 'local');
+    const destination = request.destination ?? 'remote';
+    if (destination !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
     let remoteRevision = 0;
     if (destination === 'remote') {
       const api = this.requireRemote();
@@ -572,11 +537,11 @@ export class WorkbookCatalogService {
     }
     const artifact = await this.persistence.nativeDocuments.load(unitId);
     const saved = artifact
-      ? await this.persistence.checkpointWithArtifact(snapshot, 1, remoteRevision, destination === 'remote' ? 'remote' : 'local-only', artifact, undefined, {
-        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: destination === 'remote' ? 'owner' : 'owner', spaceId: request.spaceId, folderId: request.folderId,
+      ? await this.persistence.checkpointWithArtifact(snapshot, 1, remoteRevision, 'remote', artifact, undefined, {
+        location: 'remote', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
       })
-      : await this.persistence.checkpoint(snapshot, 1, remoteRevision, destination === 'remote' ? 'remote' : 'local-only', undefined, {
-        location: destination === 'remote' ? 'remote' : 'local', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
+      : await this.persistence.checkpoint(snapshot, 1, remoteRevision, 'remote', undefined, {
+        location: 'remote', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
       });
     return localEntry(saved, destination === 'remote');
   }

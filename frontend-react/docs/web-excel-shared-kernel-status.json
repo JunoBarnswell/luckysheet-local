@@ -1,0 +1,1074 @@
+{
+  "schema": "SharedKernelImplementationLedger",
+  "version": 1,
+  "integrationHandoff": {
+    "document": "shared-kernel-integration-handoff.md",
+    "sources": ["kernel/analytics/README.md", "kernel/formula/README.md", "backend/docs/native-integration-handoff.md"],
+    "evidencePolicy": "Agent-reported local results do not establish integrated acceptance or upgrade item status.",
+    "currentIntegrationEvidence": [
+      {
+        "todo": "I01",
+        "command": "cargo test -p kernel-host --lib analytics_tests",
+        "result": "2 passed; 0 failed",
+        "scope": "Workbook analytics runtime isolation, reopen/close lifecycle, stale revision rejection and cancellation recovery",
+        "limitations": "Not a full branch verification, frontend task acceptance, performance or native Excel interoperability result."
+      }
+    ]
+  },
+  "baseline": "4fa80a2a879e6f5e0ac626f2fa45b6dd983a2cd4",
+  "items": [
+    {
+      "id": "A01",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "共享内核",
+      "current": "TypeScript/Java 重复工作簿语义",
+      "solution": "Rust 同一领域内核编译 native/WASM；迁移全部消费者并删除旧算法",
+      "acceptance": "WASM/native 语义差分一致；旧算法链删除",
+      "issues": [
+        "#320",
+        "#321"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A02",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "页式单元格存储",
+      "current": "CellMatrix 嵌套 Map/逐格对象无法承载密集2000万格",
+      "solution": "1024×32列式页、页目录、有限缓存、字典/bitmap",
+      "acceptance": "百万行完整编辑且内存受预算控制",
+      "issues": [
+        "#321"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A03",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "批量事务与撤销",
+      "current": "逐格 revision、clone和全量snapshot放大成本",
+      "solution": "页版本、copy-on-write、事务revision、增量undo",
+      "acceptance": "单用户操作一次history；拒绝零部分写入",
+      "issues": [
+        "#255",
+        "#332"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A04",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "结构变换",
+      "current": "移动清除重排依赖逐格处理",
+      "solution": "统一range move/fill/clear与引用/对象变换",
+      "acceptance": "大区域可撤销、公式规则锚点一致",
+      "issues": [
+        "#277"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A05",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "云端唯一持久化",
+      "current": "local-only/mirrored/内存保存多种语义",
+      "solution": "删除本地创建和离线提交；serverack唯一保存确认",
+      "acceptance": "刷新恢复已提交内容；断线停写且无假成功",
+      "issues": [
+        "#331"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A06",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "任务调度",
+      "current": "功能分别维护generation取消预算",
+      "solution": "统一任务状态、优先级、revision和取消检查点",
+      "acceptance": "旧结果不发布，取消有界、错误可恢复",
+      "issues": [
+        "#329",
+        "#330"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A07",
+      "group": "内核、存储与加载",
+      "priority": "P1",
+      "title": "按需加载",
+      "current": "lazy面板仍依赖静态全量功能注册",
+      "solution": "按Hub/编辑器/分析/文件拆分装配",
+      "acceptance": "Hub不加载完整计算/文件内核",
+      "issues": [
+        "#320"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A08",
+      "group": "内核、存储与加载",
+      "priority": "P1",
+      "title": "页读取与预取",
+      "current": "occupied-cell/data-region可能全范围扫描",
+      "solution": "PaneMap可见页请求、预取及空间索引",
+      "acceptance": "滚动选择局部成本；隐藏格仍可读",
+      "issues": [
+        "#321"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F01",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "AND/OR",
+      "current": "数组取首值且提前返回会遗漏错误",
+      "solution": "统一标量/数组/引用和错误传播",
+      "acceptance": "TRUE/FALSE二维/文本/空白/错误与Excel一致",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F02",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "XLOOKUP",
+      "current": "lazy分支遗漏match/search参数",
+      "solution": "完整参数策略和合法惰性求值",
+      "acceptance": "精确近似通配正反向二分均正确",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F03",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "引用函数",
+      "current": "ADDRESS模式反转、INDIRECT无R1C1、ROW/COLUMN引用不完整",
+      "solution": "统一A1/R1C1 AST与引用返回",
+      "acceptance": "六个回归案例、名称跨表及越界",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F04",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "OFFSET",
+      "current": "默认尺寸1且非法尺寸钳制",
+      "solution": "继承源范围尺寸并严格验证",
+      "acceptance": "SUM(OFFSET(B1:B2,0,0))=30；非法无伪范围",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F05",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "增量依赖图",
+      "current": "持久Worker仍有全量输入扫描/副本",
+      "solution": "AST/点区间名称表索引与dirty闭包",
+      "acceptance": "单格编辑不重建全工作簿",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F06",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "大范围计算",
+      "current": "整列引用与聚合materialize风险",
+      "solution": "页游标、共享公式模板、聚合索引",
+      "acceptance": "百万SUM/COUNTIFS无百万参数对象",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F07",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "现代函数",
+      "current": "LET/LAMBDA等缺失",
+      "solution": "LET/LAMBDA/MAP/REDUCE/SCAN/BYROW/BYCOL/MAKEARRAY及动态数组",
+      "acceptance": "作用域、形状、错误、递归预算、spill",
+      "issues": [
+        "#322"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F08",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "跨域依赖",
+      "current": "spill/Table/Pivot/dynamic更新边界分散",
+      "solution": "一个依赖调度器和确定性计算上下文",
+      "acceptance": "结构更改/刷新/循环/stale均正确",
+      "issues": [
+        "#322",
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F09",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "数字日期",
+      "current": "格式类型与日期locale存在Partial项",
+      "solution": "统一1900/1904/Excel数值/格式AST，数字形文本保留文本",
+      "acceptance": "金额日期精度文本错误往返",
+      "issues": [
+        "#323"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F10",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "能力目录",
+      "current": "runtime/autocomplete/OOXML能力报告分叉",
+      "solution": "单一函数定义生成各消费者",
+      "acceptance": "完整覆盖公开入口，不支持精确定位",
+      "issues": [
+        "#322",
+        "#327"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S01",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "筛选所有者",
+      "current": "按列首匹配丢失多区域owner",
+      "solution": "全链ownerId/range/column",
+      "acceptance": "A1:B10与A20:B30独立",
+      "issues": [
+        "#324"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S02",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "筛选失败",
+      "current": "解析异常转成全表隐藏",
+      "solution": "typed failure中止事务/投影",
+      "acceptance": "损坏筛选不修改状态",
+      "issues": [
+        "#324"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S03",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "百万行筛选",
+      "current": "UI/公式/菜单重复扫描",
+      "solution": "owner/revision bitmap/列域增量索引",
+      "acceptance": "局部变更不全扫，百万筛选达标",
+      "issues": [
+        "#324"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S04",
+      "group": "筛选、排序与规则",
+      "priority": "P1",
+      "title": "筛选菜单",
+      "current": "颜色/图标候选不统一其它列条件",
+      "solution": "排除自身条件的domain query、服务端分页搜索、虚拟列表",
+      "acceptance": "值日期颜色图标候选一致",
+      "issues": [
+        "#87",
+        "#89"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S05",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "可见性链",
+      "current": "Chart/Print部分只读manual hiddenRows",
+      "solution": "按原因统一visibility projection",
+      "acceptance": "网格图表打印一致，SUBTOTAL9/109区分",
+      "issues": [
+        "#324",
+        "#328"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S06",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "导入隐藏",
+      "current": "公式缓存可能错误固化manual hidden",
+      "solution": "导入明确来源；歧义保留并限制相关编辑",
+      "acceptance": "重算clearfilter正确，不猜缓存",
+      "issues": [
+        "#85"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S07",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "排序元数据",
+      "current": "对象式重排成本及关联复杂",
+      "solution": "页式稳定排序和引用metadata统一变换",
+      "acceptance": "计算值排序，批注链接规则锚点不脱离",
+      "issues": [
+        "#254",
+        "#86"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S08",
+      "group": "筛选、排序与规则",
+      "priority": "P1",
+      "title": "验证条件格式",
+      "current": "规则读值缓存分散且成本风险",
+      "solution": "共享值/依赖/priority/stopIfTrue",
+      "acceptance": "公式变更触发，非法规则原子拒绝",
+      "issues": [
+        "#324"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P01",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "列式计算",
+      "current": "Worker仍重建SourceRow对象",
+      "solution": "rowId/dictionary/vector/bitmap唯一聚合",
+      "acceptance": "删除SourceRow主链",
+      "issues": [
+        "#300",
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P02",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "一次聚合",
+      "current": "axisGroups/resultCells/resultNodes重复扫描",
+      "solution": "一次grouped hash聚合后稀疏转置",
+      "acceptance": "成本随input/group增长",
+      "issues": [
+        "#300"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P03",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "稀疏投影",
+      "current": "全量projection.cells及固定结果cap",
+      "solution": "结果字典索引与viewport查询",
+      "acceptance": "未访问不物化；越界事前拒绝",
+      "issues": [
+        "#300"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P04",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "源缓存",
+      "current": "worksheet缓存存在但block仍重读",
+      "solution": "页版本源缓存复用field/layout/filter",
+      "acceptance": "同revision不重新获取全量",
+      "issues": [
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P05",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "结果传输",
+      "current": "普通对象树/重复provenance",
+      "solution": "二进制结果页、路径池offset",
+      "acceptance": "实际结果量成本，main无长任务",
+      "issues": [
+        "#300"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P06",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "取消",
+      "current": "terminate丢sourcecache",
+      "solution": "批次检查取消保留source",
+      "acceptance": "及时取消且旧结果不覆盖",
+      "issues": [
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P07",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "聚合语义",
+      "current": "模型广但尚需实体验收",
+      "solution": "空白/错误/Count/Sum/Avg/分组/值过滤/TopN/汇总/ShowValuesAs统一",
+      "acceptance": "Excel对照、文本不数值强转",
+      "issues": [
+        "#90",
+        "#96",
+        "#105",
+        "#160"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P08",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "生命周期",
+      "current": "定义目标关联多对象事务",
+      "solution": "一次定义+proof+collision+reference事务",
+      "acceptance": "一次history，失败无半成品",
+      "issues": [
+        "#18",
+        "#101",
+        "#120"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P09",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "透视图查询",
+      "current": "series×leaf重复find",
+      "solution": "稳定lookup及source/layout分层cache",
+      "acceptance": "局部series更新、绘制不聚合",
+      "issues": [
+        "#118",
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P10",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "明细控件",
+      "current": "大明细/切片器/时间线边界分散",
+      "solution": "分页、typedmembers、显式连接、时间粒度",
+      "acceptance": "多选日期no-data联动权限",
+      "issues": [
+        "#100",
+        "#122",
+        "#154",
+        "#159"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B01",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "权威导入",
+      "current": "browser snapshot/hash不能证明文件语义",
+      "solution": "native从原bytes解析canonicalpages",
+      "acceptance": "伪snapshot不可入库",
+      "issues": [
+        "#331"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B02",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "artifact绑定",
+      "current": "PUT无workbookrevision绑定",
+      "solution": "唯一native save transaction，删除任意替换",
+      "acceptance": "错revision/hash/format保留原文件",
+      "issues": [
+        "#327"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B03",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "格式能力",
+      "current": "edit/preserve/export混用",
+      "solution": "统一edit/preserve/export-only/unsupported",
+      "acceptance": "PDF/XPS不能冒充工作簿",
+      "issues": [
+        "#305"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B04",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "OOXML保真",
+      "current": "未知part机制缺真实producer验收",
+      "solution": "Rust packagegraph/rels/nodes/unknown/macro preserve",
+      "acceptance": "xlsx/xlsm保真，不可安全编辑拒绝",
+      "issues": [
+        "#305",
+        "#327"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B05",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "大文件",
+      "current": "50MiB限/整bytes/全JSON",
+      "solution": "chunkupload、streamZIP/XML、字典分页与直接产页",
+      "acceptance": "2000万格、预算、取消无残留",
+      "issues": [
+        "#327"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B06",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "查询流水线",
+      "current": "分块容器仍全量物化全局算子",
+      "solution": "Java批次connector+Rust投影/hashjoin/group/pivot/spillsort",
+      "acceptance": "boundedheap与首块延迟",
+      "issues": [
+        "#330"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B07",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "查询绑定",
+      "current": "结束时revision不代表读取时",
+      "solution": "起始revision/executiontoken/blockmanifest",
+      "acceptance": "旧结果及取消不可load",
+      "issues": [
+        "#330"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B08",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "页checkpoint",
+      "current": "tail有界但snapshot大对象",
+      "solution": "页checkpoint、增量log、幂等compaction",
+      "acceptance": "单格不整表clone，gap拒绝",
+      "issues": [
+        "#332"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B09",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "协作恢复",
+      "current": "PubSub不证明消息全达",
+      "solution": "outbox+lastRevision对账+bounded补读",
+      "acceptance": "丢消息重连去重乱序正确",
+      "issues": [
+        "#331"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B10",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "权限保存",
+      "current": "模式和确认状态分散",
+      "solution": "ACL控制commands/pages，serverack决定saved",
+      "acceptance": "viewer/commenter/protection无绕过",
+      "issues": [
+        "#258",
+        "#331"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B11",
+      "group": "文件、后端与协作",
+      "priority": "P1",
+      "title": "数据库审计",
+      "current": "真实三方言验证不足、无auditcursor",
+      "solution": "provider matrix及time/id游标",
+      "acceptance": "空库升级锁事务分页一致",
+      "issues": [
+        "#333"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B12",
+      "group": "文件、后端与协作",
+      "priority": "P1",
+      "title": "对象打印",
+      "current": "图形/评论/图片/打印跨链需完整验证",
+      "solution": "共享对象值可见性排版",
+      "acceptance": "公式筛选打印重复标题对象正确",
+      "issues": [
+        "#326",
+        "#328",
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U01",
+      "group": "UI与交互",
+      "priority": "P0",
+      "title": "网格列头",
+      "current": "标题下移覆盖首行",
+      "solution": "Rust PaneMap统一header/cell/select/editor",
+      "acceptance": "A1显命中编辑提交一致",
+      "issues": [
+        "#316"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U02",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "Ribbon响应式",
+      "current": "固定组宽横滚截断",
+      "solution": "唯一schema按组收纳不改command",
+      "acceptance": "1024/1366/1920无遮挡/横滚",
+      "issues": [
+        "#241",
+        "#304"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U03",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "设计tokens",
+      "current": "globalfont覆盖与局部!important互盖",
+      "solution": "Tailwind token/密度/共享组件",
+      "acceptance": "各状态排版一致",
+      "issues": [
+        "#304"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U04",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "图标",
+      "current": "Fluent/Figma/selfSVG/文字符混用",
+      "solution": "Fluent16/20/24 regular/filled语义映射",
+      "acceptance": "一致线宽光学尺寸状态",
+      "issues": [
+        "#304"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U05",
+      "group": "UI与交互",
+      "priority": "P0",
+      "title": "Hub与保存",
+      "current": "假saved，模板优先文件",
+      "solution": "cloudlogin/recent/search优先，模板入new",
+      "acceptance": "各连接保存状态真实",
+      "issues": [
+        "#286"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U06",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "公式编辑",
+      "current": "focus/引用/帮助待系统验收",
+      "solution": "统一EnterEscTabIMEPointF4completion",
+      "acceptance": "键盘闭环焦点正确",
+      "issues": [
+        "#301"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U07",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "透视面板",
+      "current": "四区已存在，信息高级项待整理",
+      "solution": "保留四区、搜索拖放键盘重复值字段defer/error",
+      "acceptance": "一次Apply，失败保留draft/lastvalid",
+      "issues": [
+        "#36",
+        "#37",
+        "#300"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U08",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "分析面板",
+      "current": "大domain/条件/task状态需一致",
+      "solution": "virtual日期层级摘要进度cancel/recovery",
+      "acceptance": "无无限loading或瞬时错误",
+      "issues": [
+        "#87",
+        "#329"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U09",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "图表对象",
+      "current": "入口与内部标签体验欠缺",
+      "solution": "context/properties/elementediting统一",
+      "acceptance": "inserteditdeleteundoreopen闭环",
+      "issues": [
+        "#311"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U10",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "a11y与语言",
+      "current": "CanvasAX及中英混用",
+      "solution": "可见语义grid、livecell、focus/keytips、locale",
+      "acceptance": "键盘读屏操作全链",
+      "issues": [
+        "#16",
+        "#22",
+        "#317"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U11",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "字体资源",
+      "current": "CJK font-display:block",
+      "solution": "UI字体分包与文档字体分离",
+      "acceptance": "首屏无空字，替代明确",
+      "issues": [
+        "#295"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D01",
+      "group": "交付",
+      "priority": "P0",
+      "title": "PRD台账",
+      "current": "历史文档完成与证据不一致",
+      "solution": "本PRD唯一执行台账，历史按被替代标记",
+      "acceptance": "每todo证据与状态唯一",
+      "issues": [
+        "#333"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D02",
+      "group": "交付",
+      "priority": "P0",
+      "title": "可复现构建",
+      "current": "lock被忽略，脚本旧目录",
+      "solution": "固定Node/Rust/Java/Maven，lock与统一构建",
+      "acceptance": "cleancheckout四端artifact",
+      "issues": [
+        "#333"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D03",
+      "group": "交付",
+      "priority": "P0",
+      "title": "CI",
+      "current": "无Actions",
+      "solution": "Rust/WASM/diff/frontend/backend/db/browser/perf",
+      "acceptance": "失败阻交付，不continue-on-error",
+      "issues": [
+        "#333"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D04",
+      "group": "交付",
+      "priority": "P0",
+      "title": "Excelcorpus",
+      "current": "上一轮真实ExcelBlocked",
+      "solution": "真实producer+hash+reopen差异",
+      "acceptance": "不能synthetic自验替代",
+      "issues": [
+        "#305",
+        "#333"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D05",
+      "group": "交付",
+      "priority": "P0",
+      "title": "一次PR交付",
+      "current": "closed不等于达标",
+      "solution": "同codex分支64项全过后一个PR",
+      "acceptance": "契约迁移证据状态整体rollback",
+      "issues": [
+        "#334"
+      ],
+      "status": "not-started",
+      "evidence": [],
+      "removedPaths": [],
+      "blocked": []
+    }
+  ]
+}

@@ -3,6 +3,11 @@ server:
   forward-headers-strategy: framework
 
 spring:
+  servlet:
+    multipart:
+      max-file-size: 1GB
+      max-request-size: 1GB
+      file-size-threshold: 0
   application:
     name: luckysheet-canonical
   datasource:
@@ -74,3 +79,13 @@ luckysheet:
   share:
     default-lifetime: ${SHARE_DEFAULT_LIFETIME:PT24H}
     max-lifetime: ${SHARE_MAX_LIFETIME:P30D}
+  kernel:
+    executable: ${KERNEL_HOST_EXECUTABLE:}
+    working-directory: ${KERNEL_HOST_WORKING_DIRECTORY:}
+    task-directory: ${KERNEL_HOST_TASK_DIRECTORY:}
+    startup-timeout: ${KERNEL_HOST_STARTUP_TIMEOUT:PT10S}
+    request-timeout: ${KERNEL_HOST_REQUEST_TIMEOUT:PT2M}
+    max-payload-bytes: ${KERNEL_HOST_MAX_PAYLOAD_BYTES:16777216}
+    max-page-bytes: ${KERNEL_HOST_MAX_PAGE_BYTES:1048576}
+    protocol-version: 1
+    manifest-version: 11

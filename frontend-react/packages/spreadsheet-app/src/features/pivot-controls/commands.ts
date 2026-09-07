@@ -175,7 +175,6 @@ function executeCreate(
       params: { sheetId: params.sheetId, drawingId: params.drawing.id },
       affectedRanges,
     }],
-    apply: () => insertDrawing(context.workbook.getSheet(params.sheetId), mutationParams),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -219,7 +218,6 @@ function executePayloadUpdate(
       },
       affectedRanges,
     }],
-    apply: () => updateDrawingPayload(context.workbook.getSheet(sheetId), mutationParams),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }

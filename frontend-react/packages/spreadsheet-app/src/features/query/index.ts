@@ -36,6 +36,29 @@ export interface QueryResult {
   columns: string[];
   rows: TableScalar[][];
   rowCount: number;
+  /** Proof returned by the authoritative query execution boundary. */
+  executionToken?: string;
+  resultHash?: string;
+  sourceRevision?: number;
+}
+
+/**
+ * The only production query execution boundary.  Implementations are backed
+ * by the Rust host (`analytics.execute`) and must pin every read to the
+ * workbook revision supplied by the caller.
+ */
+export interface AnalyticsExecutor {
+  execute(input: {
+    unitId: string;
+    revision: number;
+    request: unknown;
+  }): Promise<unknown>;
+}
+
+export interface AnalyticsQueryContext {
+  unitId: string;
+  revision: number;
+  range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number };
 }
 
 /** Canonical persistence-safe workbook state. */

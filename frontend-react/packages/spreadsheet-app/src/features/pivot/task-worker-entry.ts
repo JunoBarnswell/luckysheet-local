@@ -1,4 +1,3 @@
-import { evaluatePivotTask } from './engine';
 import { assertPivotSourceIndex, type PivotSourceIndex } from './source-index';
 import {
   assertPivotTaskRequest,
@@ -57,6 +56,12 @@ export class PivotTaskEvaluator {
       if (current?.revision === request.sourceRevision && request.generation >= current.generation) this.sources.delete(request.sourceIdentity);
       return envelope(request, { status: 'accepted', sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision });
     }
+    // Runtime calculation is owned by kernel/analytics. The worker retains
+    // only protocol handling for old test fixtures; it must never recreate a
+    // SourceRow/dense aggregation path in production.
+    if (!request.kernel) {
+      return pivotTaskFailure(request, new Error('Pivot calculation requires a canonical kernel binding'), 'PIVOT_TASK_FAILED');
+    }
     const registered = this.sources.get(request.sourceIdentity);
     if (!registered) return pivotTaskFailure(request, new Error(`Pivot source ${request.sourceIdentity} is unavailable`), 'PIVOT_SOURCE_UNAVAILABLE');
     if (request.generation < registered.generation) return pivotTaskFailure(request, new Error('Pivot source generation is stale'), 'PIVOT_TASK_REVISION_MISMATCH');
@@ -64,19 +69,7 @@ export class PivotTaskEvaluator {
       return pivotTaskFailure(request, new Error(`Pivot source revision mismatch: ${registered.revision} != ${request.revisions.sourceRevision}`), 'PIVOT_TASK_REVISION_MISMATCH');
     }
     try {
-      const result = evaluatePivotTask({
-        definition: request.definition,
-        source: registered.source,
-        controls: request.controls,
-        revisions: request.revisions,
-        targetBounds: request.targetBounds,
-      });
-      return envelope(request, {
-        status: 'completed',
-        sourceIdentity: request.sourceIdentity,
-        sourceRevision: request.revisions.sourceRevision,
-        result,
-      });
+      return pivotTaskFailure(request, new Error('Pivot worker cannot execute canonical analytics directly; submit through PivotTaskPort'), 'PIVOT_TASK_FAILED');
     } catch (error) {
       return pivotTaskFailure(request, error);
     }

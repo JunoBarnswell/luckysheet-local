@@ -35,7 +35,6 @@ export function registerPhoneticCommands(runtime: CommandRuntime): void {
         context.applyMutation({
           id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: setParams, affectedRanges,
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: write.row, column: write.column, previous: write.before }, affectedRanges }],
-          apply: () => sheet.cells.set(write.row, write.column, structuredClone(write.after)),
         });
       }
       return { operationId: context.operationId, mutationCount: writes.length, affectedRanges };

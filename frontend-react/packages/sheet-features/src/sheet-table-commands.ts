@@ -64,18 +64,6 @@ export interface AddSheetTableParams extends SheetTableModel {}
 export function registerSheetTableCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<AddSheetTableParams>({
     id: 'sheetTable.add',
-    handler: (item, context) => {
-      if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.add mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const table = validateSheetTableModel(item.params, sheet);
-      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
-        throw new Error(`Sheet Table already exists: ${table.name}`);
-      }
-      if (sheet.sheetTables.some((entry) => entry.range.startRow <= table.range.endRow
-        && entry.range.endRow >= table.range.startRow && entry.range.startColumn <= table.range.endColumn
-        && entry.range.endColumn >= table.range.startColumn)) throw new Error('Sheet Tables cannot overlap');
-      sheet.sheetTables.push(structuredClone(table));
-    },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
@@ -85,15 +73,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<TableAutoFilterParams>({
     id: 'sheetTable.autoFilter.set',
-    handler: (item, context) => {
-      if (!isTableAutoFilter(item.params)) throw new Error('Invalid sheetTable.autoFilter.set mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const table = sheet.sheetTables.find((entry) => entry.id === item.params.tableId);
-      if (!table) throw new Error(`Sheet Table not found: ${item.params.tableId}`);
-      table.autoFilter = item.params.autoFilter
-        ? validateFilterOwnership(sheet, item.params.autoFilter, { kind: 'table', tableId: table.id })
-        : undefined;
-    },
     metadata: {
       schema: { name: 'SheetTableAutoFilterSet', validate: isTableAutoFilter },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
@@ -103,13 +82,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation({
     id: 'sheetTable.remove',
-    handler: (item, context) => {
-      if (!isSheetTableRemove(item.params)) throw new Error('Invalid sheetTable.remove mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const index = sheet.sheetTables.findIndex((table) => table.id === params.tableId);
-      if (index >= 0) sheet.sheetTables.splice(index, 1);
-    },
     metadata: {
       schema: { name: 'SheetTableRemove', validate: isSheetTableRemove },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
@@ -119,19 +91,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation({
     id: 'sheetTable.update',
-    handler: (item, context) => {
-      if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.update mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const table = validateSheetTableModel(item.params, sheet);
-      const index = sheet.sheetTables.findIndex((entry) => entry.id === table.id);
-      if (index < 0) throw new Error(`Sheet Table not found: ${table.id}`);
-      if (sheet.sheetTables.some((entry) => entry.id !== table.id
-        && entry.range.startRow <= table.range.endRow && entry.range.endRow >= table.range.startRow
-        && entry.range.startColumn <= table.range.endColumn && entry.range.endColumn >= table.range.startColumn)) {
-        throw new Error('Sheet Tables cannot overlap');
-      }
-      sheet.sheetTables[index] = structuredClone(table);
-    },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
@@ -159,9 +118,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: table,
         affectedRanges,
         inverse: [{ id: 'sheetTable.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, tableId: params.id, range: params.range }, affectedRanges }],
-        apply: () => {
-          context.workbook.getSheet(params.sheetId).sheetTables.push(structuredClone(table));
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -187,7 +143,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: next,
         affectedRanges,
         inverse: [{ id: 'sheetTable.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges: [structuredClone(previous.range)] }],
-        apply: () => { sheet.sheetTables[index] = structuredClone(next); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -218,9 +173,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           params: { sheetId: params.sheetId, tableId: params.tableId, autoFilter: previous },
           affectedRanges,
         }],
-        apply: () => {
-          table.autoFilter = next ? structuredClone(next) : undefined;
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -241,10 +193,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: { ...params, range: previous.range },
         affectedRanges,
         inverse: [{ id: 'sheetTable.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => {
-          const idx = sheet.sheetTables.findIndex((table) => table.id === params.tableId);
-          if (idx >= 0) sheet.sheetTables.splice(idx, 1);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -265,10 +213,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: { ...params, range: previous.range },
         affectedRanges,
         inverse: [{ id: 'sheetTable.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => {
-          const target = sheet.sheetTables.findIndex((table) => table.id === params.tableId);
-          if (target >= 0) sheet.sheetTables.splice(target, 1);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -334,9 +278,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           params: previousTable,
           affectedRanges: [structuredClone(previousTable.range)],
         }],
-        apply: () => {
-          sheet.sheetTables[index] = structuredClone(plan.nextTable);
-        },
       });
       mutationCount += 1;
 
@@ -364,12 +305,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
             affectedRanges: [cellRange],
           })),
-          apply: () => {
-            const rowValues = plan.values[0] ?? [];
-            rowValues.forEach((value, columnOffset) => {
-              sheet.cells.set(plan.totalRow, plan.startColumn + columnOffset, clearFormulaProvenance(value));
-            });
-          },
         });
         mutationCount += 1;
       }
@@ -393,10 +328,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
               params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: previousFilter },
               affectedRanges: [structuredClone(previousFilter.range)],
             }],
-            apply: () => {
-              const replacement = sheet.sheetTables.find((candidate) => candidate.id === linkedTable.id);
-              if (replacement) replacement.autoFilter = structuredClone(nextFilter);
-            },
           });
         } else {
           context.applyMutation({
@@ -412,9 +343,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
               params: { sheetId: params.sheetId, autoFilter: previousFilter },
               affectedRanges: [structuredClone(previousFilter.range)],
             }],
-            apply: () => {
-              sheet.autoFilter = structuredClone(nextFilter);
-            },
           });
         }
         mutationCount += 1;

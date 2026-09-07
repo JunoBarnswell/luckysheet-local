@@ -1,0 +1,354 @@
+{
+  "policy": "Every existing semantic case must execute against the canonical Rust implementation before migration acceptance. Source is evidence only, never executable production fallback.",
+  "baseline": "4fa80a2a879e6f5e0ac626f2fa45b6dd983a2cd4",
+  "version": 1,
+  "files": [
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'persistent calculation worker opens once and applies only canonical deltas afterwards'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'worker entry rejects the removed snapshot task protocol'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'worker entry retains one FormulaEngine per session and restores its handler'"
+        }
+      ],
+      "sourceText": "import assert from 'node:assert/strict';\r\nimport test from 'node:test';\r\nimport {\r\n  CALCULATION_DELTA_PROTOCOL,\r\n  CALCULATION_DELTA_VERSION,\r\n  FormulaEngine,\r\n  consumeCalculationSession,\r\n  installBrowserCalculationWorkerEntry,\r\n  type CalculationBrowserWorker,\r\n  type CalculationSessionRequest,\r\n  type CalculationSessionResult,\r\n} from './index';\r\n\r\ntest('persistent calculation worker opens once and applies only canonical deltas afterwards', async () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });\r\n  engine.setValue('A1', 2);\r\n  engine.setFormula('B1', '=A1*3');\r\n  const worker = new ImmediateCalculationWorker();\r\n  const port = engine.createCalculationSessionPort({ workerFactory: () => worker });\r\n\r\n  await engine.recalculateAsync(undefined, port);\r\n  assert.equal(worker.calculationPosts, 1);\r\n  assert.equal(engine.getCellValue('B1'), 6);\r\n\r\n  engine.setValue('A1', 5);\r\n  await engine.recalculateAsync('A1', port);\r\n  assert.equal(worker.calculationPosts, 2);\r\n  assert.equal(engine.getCellValue('B1'), 15);\r\n  const delta = worker.messages[1] as CalculationSessionRequest;\r\n  assert.equal(delta.kind, 'calculation.delta');\r\n  if (delta.kind !== 'calculation.delta') throw new Error('Expected calculation delta');\r\n  assert.deepEqual(delta.delta.cells?.map((entry) => entry.address.row), [0]);\r\n  port.dispose();\r\n});\r\n\r\ntest('worker entry rejects the removed snapshot task protocol', () => {\r\n  const result = consumeCalculationSession(new Map(), {\r\n    protocol: 'react-sheets.formula-calculation',\r\n    version: 1,\r\n    taskId: 'legacy',\r\n    kind: 'recalculate',\r\n    revision: 1,\r\n  });\r\n  assert.equal(result.status, 'failed');\r\n  assert.match(result.error?.message ?? '', /protocol/i);\r\n});\r\n\r\ntest('worker entry retains one FormulaEngine per session and restores its handler', () => {\r\n  const sent: CalculationSessionResult[] = [];\r\n  const previous = () => undefined;\r\n  const scope = new TestScope(sent, previous);\r\n  const uninstall = installBrowserCalculationWorkerEntry(scope);\r\n  scope.onmessage?.({ data: openRequest() });\r\n  scope.onmessage?.({ data: deltaRequest(2, 8) });\r\n  assert.equal(sent[0]?.status, 'completed');\r\n  assert.equal(sent[1]?.status, 'completed');\r\n  assert.equal(sent[1]?.report?.results.some((entry) => entry.value === 24), true);\r\n  uninstall();\r\n  assert.equal(scope.onmessage, previous);\r\n});\r\n\r\nfunction openRequest(): CalculationSessionRequest {\r\n  const source = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });\r\n  source.setValue('A1', 2);\r\n  source.setFormula('B1', '=A1*3');\r\n  return {\r\n    protocol: CALCULATION_DELTA_PROTOCOL,\r\n    version: CALCULATION_DELTA_VERSION,\r\n    kind: 'session.open',\r\n    sessionId: 'session-test',\r\n    taskId: 'task-open',\r\n    revision: 1,\r\n    generation: source.getCalculationGeneration(),\r\n    bootstrap: source.exportCalculationBootstrap(),\r\n  };\r\n}\r\n\r\nfunction deltaRequest(revision: number, value: number): CalculationSessionRequest {\r\n  return {\r\n    protocol: CALCULATION_DELTA_PROTOCOL,\r\n    version: CALCULATION_DELTA_VERSION,\r\n    kind: 'calculation.delta',\r\n    sessionId: 'session-test',\r\n    taskId: `task-${revision}`,\r\n    revision,\r\n    generation: 8,\r\n    delta: { cells: [{ kind: 'set-value', address: { sheetId: 'Sheet1', row: 0, column: 0 }, value }] },\r\n    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],\r\n  };\r\n}\r\n\r\nabstract class BaseCalculationWorker implements CalculationBrowserWorker {\r\n  private readonly listeners = {\r\n    message: new Set<(event: { readonly data?: unknown; readonly message?: string }) => void>(),\r\n    error: new Set<(event: { readonly data?: unknown; readonly message?: string }) => void>(),\r\n    messageerror: new Set<(event: { readonly data?: unknown; readonly message?: string }) => void>(),\r\n  };\r\n\r\n  abstract postMessage(message: unknown): void;\r\n\r\n  terminate(): void { for (const listeners of Object.values(this.listeners)) listeners.clear(); }\r\n  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void { this.listeners[type].add(listener); }\r\n  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void { this.listeners[type].delete(listener); }\r\n  protected emit(type: 'message' | 'error' | 'messageerror', event: { readonly data?: unknown; readonly message?: string }): void { for (const listener of this.listeners[type]) listener(event); }\r\n}\r\n\r\nclass ImmediateCalculationWorker extends BaseCalculationWorker {\r\n  calculationPosts = 0;\r\n  readonly messages: unknown[] = [];\r\n  private readonly sessions = new Map<string, FormulaEngine>();\r\n  postMessage(message: unknown): void {\r\n    if (!isCalculationMessage(message)) return;\r\n    this.calculationPosts += 1;\r\n    this.messages.push(structuredClone(message));\r\n    queueMicrotask(() => this.emit('message', { data: consumeCalculationSession(this.sessions, message) }));\r\n  }\r\n}\r\n\r\nclass TestScope {\r\n  onmessage: ((event: { readonly data: unknown }) => void) | null;\r\n  constructor(private readonly sent: CalculationSessionResult[], previous: () => void) {\r\n    this.onmessage = previous;\r\n  }\r\n  postMessage(message: CalculationSessionResult): void { this.sent.push(message); }\r\n  terminate(): void {}\r\n}\r\n\r\nfunction isCalculationMessage(value: unknown): boolean {\r\n  return typeof value === 'object' && value !== null && 'kind' in value && ((value as { kind?: unknown }).kind === 'session.open' || (value as { kind?: unknown }).kind === 'calculation.delta');\r\n}",
+      "source": "frontend-react/packages/formula-engine/src/calculation-worker-entry.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'normalizeDefinedNames uppercases keys'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'resolveDefinedNameSource supports scalar"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves defined names in formulas with current cell context'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine recalculates formulas when a defined name changes'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves sheet-scoped names before workbook-scoped names'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'scoped names survive the persistent calculation bootstrap boundary'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine recalculates volatile formulas when dependencies change'"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from './formula-engine';\r\nimport { normalizeDefinedNames, resolveDefinedNameSource } from './defined-names';\r\n\r\ntest('normalizeDefinedNames uppercases keys', () => {\r\n  assert.deepEqual(normalizeDefinedNames({ TaxRate: '0.15' }), { TAXRATE: '0.15' });\r\n});\r\n\r\ntest('resolveDefinedNameSource supports scalar, range, and formula values', () => {\r\n  const context = {\r\n    currentCell: { sheetId: 'Sheet1', row: 4, column: 2 },\r\n    readCell: (address: { row: number; column: number }) => (address.row === 0 && address.column === 0 ? 10 : null),\r\n    readRangeMatrix: () => [[1, 2], [3, 4]],\r\n  };\r\n  assert.equal(resolveDefinedNameSource('0.25', context), 0.25);\r\n  assert.deepEqual(resolveDefinedNameSource('A1:B2', context), [[1, 2], [3, 4]]);\r\n  assert.equal(resolveDefinedNameSource('=A1+5', context), 15);\r\n});\r\n\r\ntest('FormulaEngine resolves defined names in formulas with current cell context', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setDefinedNames({ TaxRate: '0.1', BaseCell: 'C3' });\r\n  engine.setValue('C3', 100);\r\n  engine.setFormula('D3', '=BaseCell*TaxRate');\r\n  assert.equal(engine.getCellValue('D3'), 10);\r\n});\r\n\r\ntest('FormulaEngine recalculates formulas when a defined name changes', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setDefinedNames({ Rate: '2' });\r\n  engine.setValue('A1', 5);\r\n  engine.setFormula('B1', '=A1*Rate');\r\n  assert.equal(engine.getCellValue('B1'), 10);\r\n  engine.setDefinedNames({ Rate: '3' });\r\n  assert.equal(engine.getCellValue('B1'), 15);\r\n});\r\n\r\ntest('FormulaEngine resolves sheet-scoped names before workbook-scoped names', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setDefinedNameModels([\r\n    { name: 'Rate', formula: '2', scope: 'workbook' },\r\n    { name: 'Rate', formula: '3', scope: 'sheet', sheetId: 'Sheet2' },\r\n  ]);\r\n  engine.setFormula({ sheetId: 'Sheet1', row: 0, column: 0 }, '=Rate');\r\n  engine.setFormula({ sheetId: 'Sheet2', row: 0, column: 0 }, '=Rate');\r\n  assert.equal(engine.getCellValue({ sheetId: 'Sheet1', row: 0, column: 0 }), 2);\r\n  assert.equal(engine.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 3);\r\n});\r\n\r\ntest('scoped names survive the persistent calculation bootstrap boundary', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });\r\n  engine.setDefinedNameModels([\r\n    { name: 'Rate', formula: '2', scope: 'workbook' },\r\n    { name: 'Rate', formula: '4', scope: 'sheet', sheetId: 'Sheet2' },\r\n  ]);\r\n  engine.setFormula({ sheetId: 'Sheet2', row: 0, column: 0 }, '=Rate');\r\n  const restored = FormulaEngine.fromCalculationBootstrap(engine.exportCalculationBootstrap());\r\n  restored.executeCalculationDelta({\r\n    protocol: 'react-sheets.formula-delta',\r\n    version: 1,\r\n    kind: 'calculation.delta',\r\n    sessionId: 'scoped-name-session',\r\n    taskId: 'scoped-name-delta',\r\n    revision: 1,\r\n    generation: 1,\r\n    delta: {},\r\n    forceRecalculate: true,\r\n  });\r\n  assert.equal(restored.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 4);\r\n});\r\n\r\ntest('FormulaEngine recalculates volatile formulas when dependencies change', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setFormula('A1', '=RAND()');\r\n  const first = engine.getCellValue('A1');\r\n  const second = engine.getCellValue('A1');\r\n  assert.equal(first, second);\r\n  engine.setValue('B1', 1);\r\n  const third = engine.getCellValue('A1');\r\n  assert.notEqual(second, third);\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/defined-names.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'normalizes Excel and WPS function namespaces without rewriting string literals'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'normalizes the legacy SINGLE spelling into the canonical implicit-intersection operator'"
+        }
+      ],
+      "sourceText": "import assert from 'node:assert/strict';\r\nimport test from 'node:test';\r\nimport { normalizeExternalFormula } from './external-formula-normalizer';\r\n\r\ntest('normalizes Excel and WPS function namespaces without rewriting string literals', () => {\r\n  assert.equal(normalizeExternalFormula('=_xlfn.FILTER(_xlws.A1:A3,B1:B3=1)'), '=FILTER(A1:A3,B1:B3=1)');\r\n  assert.equal(normalizeExternalFormula('=\"_xlfn.FILTER\"&_xlfn.UNIQUE(A1:A3)'), '=\"_xlfn.FILTER\"&UNIQUE(A1:A3)');\r\n});\r\n\r\ntest('normalizes the legacy SINGLE spelling into the canonical implicit-intersection operator', () => {\r\n  assert.equal(normalizeExternalFormula('=_xlfn.SINGLE(A1)'), '=@(A1)');\r\n  assert.equal(normalizeExternalFormula('=@A1'), '=@A1');\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/external-formula-normalizer.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'formula trace evaluates real AST nodes in order'"
+        }
+      ],
+      "sourceText": "import assert from 'node:assert/strict';\r\nimport test from 'node:test';\r\nimport { FormulaEngine, evaluateFormulaWithTrace, parseFormula } from './index';\r\n\r\ntest('formula trace evaluates real AST nodes in order', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 2);\r\n  engine.setValue('A2', 3);\r\n  engine.setFormula('B1', '=SUM(A1:A2)*2');\r\n\r\n  const trace = engine.evaluateFormulaWithTrace('B1');\r\n  assert.ok(trace);\r\n  assert.equal(trace?.value, 10);\r\n  assert.ok((trace?.steps.length ?? 0) >= 5);\r\n  assert.equal(trace?.steps.at(-1)?.expression, '=SUM(A1:A2)*2');\r\n\r\n  const standalone = evaluateFormulaWithTrace(parseFormula('=A1+2'), {\r\n    currentCell: { sheetId: 'Sheet1', row: 0, column: 1 },\r\n    readCell: () => 3,\r\n    readRange: () => [],\r\n  });\r\n  assert.equal(standalone.value, 5);\r\n  assert.equal(standalone.steps.at(-1)?.value, 5);\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/formula-trace.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'dynamic array functions: FILTER UNIQUE SORT SEQUENCE'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'dynamic array functions: XMATCH HSTACK VSTACK TAKE DROP'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'dynamic array functions: SORTBY and RANDARRAY'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'dynamic array functions: FILTER empty uses if_empty'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'dynamic array functions: FILTER no match returns #CALC!'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'generated dynamic arrays accept output at the cell limit'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'generated dynamic arrays reject output above the cell limit before allocation'"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from '../formula-engine';\r\nimport { isArrayValue, isFormulaError } from '../values';\r\n\r\ntest('dynamic array functions: FILTER UNIQUE SORT SEQUENCE', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 'East');\r\n  engine.setValue('A2', 'West');\r\n  engine.setValue('A3', 'East');\r\n  engine.setValue('B1', 100);\r\n  engine.setValue('B2', 200);\r\n  engine.setValue('B3', 50);\r\n  engine.setValue('C1', true);\r\n  engine.setValue('C2', false);\r\n  engine.setValue('C3', true);\r\n\r\n  const filtered = engine.setFormula('D1', '=FILTER(A1:B3, C1:C3)').value;\r\n  assert.ok(isArrayValue(filtered));\r\n  assert.equal((filtered as unknown[][]).length, 2);\r\n\r\n  const unique = engine.setFormula('E1', '=UNIQUE(A1:A3)').value;\r\n  assert.ok(isArrayValue(unique));\r\n  assert.equal((unique as unknown[][]).length, 2);\r\n\r\n  const sorted = engine.setFormula('F1', '=SORT(A1:B3, 2, -1)').value;\r\n  assert.ok(isArrayValue(sorted));\r\n  assert.equal((sorted as unknown[][])[0]?.[1], 200);\r\n\r\n  const sequence = engine.setFormula('G1', '=SEQUENCE(2, 3, 1, 1)').value;\r\n  assert.ok(isArrayValue(sequence));\r\n  assert.deepEqual(sequence, [\r\n    [1, 2, 3],\r\n    [4, 5, 6],\r\n  ]);\r\n});\r\n\r\ntest('dynamic array functions: XMATCH HSTACK VSTACK TAKE DROP', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 'Alpha');\r\n  engine.setValue('A2', 'Beta');\r\n  engine.setValue('A3', 'Gamma');\r\n  engine.setValue('B1', 10);\r\n  engine.setValue('B2', 20);\r\n  engine.setValue('C1', 1);\r\n  engine.setValue('C2', 2);\r\n\r\n  assert.equal(engine.setFormula('D1', '=XMATCH(\"Beta\", A1:A3, 0)').value, 2);\r\n  assert.equal(engine.setFormula('D2', '=XMATCH(15, B1:B2, 1)').value, 2);\r\n\r\n  const stacked = engine.setFormula('E1', '=HSTACK(A1:A2, B1:B2)').value;\r\n  assert.ok(isArrayValue(stacked));\r\n  assert.deepEqual(stacked, [\r\n    ['Alpha', 10],\r\n    ['Beta', 20],\r\n  ]);\r\n\r\n  const vstacked = engine.setFormula('F1', '=VSTACK(C1:C2, B1:B2)').value;\r\n  assert.ok(isArrayValue(vstacked));\r\n  assert.equal((vstacked as unknown[][]).length, 4);\r\n\r\n  const taken = engine.setFormula('G1', '=TAKE(A1:B3, 2)').value;\r\n  assert.ok(isArrayValue(taken));\r\n  assert.equal((taken as unknown[][]).length, 2);\r\n\r\n  const dropped = engine.setFormula('H1', '=DROP(A1:B3, 1)').value;\r\n  assert.ok(isArrayValue(dropped));\r\n  assert.equal((dropped as unknown[][]).length, 2);\r\n});\r\n\r\ntest('dynamic array functions: SORTBY and RANDARRAY', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSpillEnvironment('Sheet1', { rowCount: 10, columnCount: 10, isOccupied: () => false });\r\n  engine.setValue('A1', 'b');\r\n  engine.setValue('A2', 'a');\r\n  engine.setValue('B1', 2);\r\n  engine.setValue('B2', 1);\r\n\r\n  const sorted = engine.setFormula('C1', '=SORTBY(A1:A2,B1:B2)').value;\r\n  assert.ok(isArrayValue(sorted));\r\n  assert.equal((sorted as unknown[][])[0]?.[0], 'a');\r\n\r\n  const random = engine.setFormula('D1', '=RANDARRAY(2,2,1,9,1)').value;\r\n  assert.ok(isArrayValue(random));\r\n  assert.equal((random as unknown[][]).length, 2);\r\n});\r\n\r\ntest('dynamic array functions: FILTER empty uses if_empty', () => {\r\n  const engine = new FormulaEngine();\r\n  engine.setValue('A1', 1);\r\n  engine.setValue('B1', false);\r\n  const result = engine.setFormula('C1', '=FILTER(A1, B1, \"none\")').value;\r\n  assert.deepEqual(result, [['none']]);\r\n});\r\n\r\ntest('dynamic array functions: FILTER no match returns #CALC!', () => {\r\n  const engine = new FormulaEngine();\r\n  engine.setValue('A1', 1);\r\n  engine.setValue('B1', false);\r\n  const result = engine.setFormula('C1', '=FILTER(A1, B1)').value;\r\n  assert.ok(isFormulaError(result));\r\n  if (!isFormulaError(result)) throw new Error('expected error');\r\n  assert.equal(result.code, '#CALC!');\r\n});\r\n\r\ntest('generated dynamic arrays accept output at the cell limit', () => {\r\n  const engine = new FormulaEngine();\r\n  const sequence = engine.setFormula('A1', '=SEQUENCE(1000,100)').value;\r\n  assert.ok(isArrayValue(sequence));\r\n  assert.equal(sequence.length, 1000);\r\n  assert.equal(sequence[0]?.length, 100);\r\n});\r\n\r\ntest('generated dynamic arrays reject output above the cell limit before allocation', () => {\r\n  const engine = new FormulaEngine();\r\n  for (const formula of ['=SEQUENCE(100000000,100000000)', '=RANDARRAY(100000000,100000000)']) {\r\n    const result = engine.setFormula('A1', formula).value;\r\n    assert.ok(isFormulaError(result));\r\n    if (!isFormulaError(result)) throw new Error('expected error');\r\n    assert.equal(result.code, '#VALUE!');\r\n    assert.match(result.message ?? '', /output exceeds the 100000-cell limit/);\r\n  }\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/functions/dynamic-array.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'GROUPBY is enabled by default and aggregates multiple field and value columns deterministically'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'GROUPBY supports the five deterministic aggregations and treats blanks as non-numeric'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'GROUPBY uses typed keys and combines null with empty text as one blank group'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'GROUPBY validates shapes and propagates input errors instead of truncating or coercing rows'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'PIVOTBY builds stable row/column field headers and cross-aggregates every matching source row'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'PIVOTBY preserves multi-field and multi-value dimensions without stringifying keys'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'PIVOTBY rejects mismatched input heights and unsupported optional arguments'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine accepts bare aggregate identifiers"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from '../index';\r\nimport { getBuiltinFunction } from './index';\r\nimport { isFormulaError } from '../values';\r\n\r\ntest('GROUPBY is enabled by default and aggregates multiple field and value columns deterministically', () => {\r\n  const groupBy = getBuiltinFunction('GROUPBY');\r\n  assert.ok(groupBy);\r\n\r\n  const result = groupBy!([\r\n    [['East', 'A'], ['East', 'A'], ['West', 'A'], ['East', 'B']],\r\n    [[10, 1], [20, 2], [5, 3], [7, 4]],\r\n    'SUM',\r\n  ]);\r\n\r\n  assert.deepEqual(result, [\r\n    ['East', 'A', 30, 3],\r\n    ['West', 'A', 5, 3],\r\n    ['East', 'B', 7, 4],\r\n  ]);\r\n});\r\n\r\ntest('GROUPBY supports the five deterministic aggregations and treats blanks as non-numeric', () => {\r\n  const groupBy = getBuiltinFunction('GROUPBY');\r\n  assert.ok(groupBy);\r\n  const fields = [['A'], ['A'], ['B'], ['B'], ['C']];\r\n  const values = [[10], [null], [5], ['ignored'], [null]];\r\n\r\n  assert.deepEqual(groupBy!([fields, values, 'SUM']), [['A', 10], ['B', 5], ['C', 0]]);\r\n  assert.deepEqual(groupBy!([fields, values, 'COUNT']), [['A', 1], ['B', 1], ['C', 0]]);\r\n  assert.deepEqual(groupBy!([fields, values, 'MIN']), [['A', 10], ['B', 5], ['C', 0]]);\r\n  assert.deepEqual(groupBy!([fields, values, 'MAX']), [['A', 10], ['B', 5], ['C', 0]]);\r\n  assert.deepEqual(groupBy!([fields, values, 1]), [['A', 10], ['B', 5], ['C', 0]]);\r\n\r\n  const average = groupBy!([fields, values, 'AVERAGE']);\r\n  assert.equal(Array.isArray(average), true);\r\n  if (!Array.isArray(average)) throw new Error('Expected a matrix');\r\n  assert.equal(average[0]?.[1], 10);\r\n  assert.equal(average[1]?.[1], 5);\r\n  assert.equal(isFormulaError(average[2]?.[1]), true);\r\n});\r\n\r\ntest('GROUPBY uses typed keys and combines null with empty text as one blank group', () => {\r\n  const groupBy = getBuiltinFunction('GROUPBY');\r\n  assert.ok(groupBy);\r\n  const result = groupBy!([\r\n    [[null], [''], [1], ['1']],\r\n    [[2], [3], [5], [7]],\r\n    'SUM',\r\n  ]);\r\n  assert.deepEqual(result, [\r\n    [null, 5],\r\n    [1, 5],\r\n    ['1', 7],\r\n  ]);\r\n});\r\n\r\ntest('GROUPBY validates shapes and propagates input errors instead of truncating or coercing rows', () => {\r\n  const groupBy = getBuiltinFunction('GROUPBY');\r\n  assert.ok(groupBy);\r\n  const mismatch = groupBy!([[['A'], ['B']], [[1]], 'SUM']);\r\n  assert.equal(isFormulaError(mismatch), true);\r\n  if (!isFormulaError(mismatch)) throw new Error('Expected a shape error');\r\n  assert.equal(mismatch.code, '#VALUE!');\r\n\r\n  const sourceError = { kind: 'error' as const, code: '#REF!' as const, message: 'deleted' };\r\n  const propagated = groupBy!([[['A']], [[sourceError]], 'SUM']);\r\n  assert.deepEqual(propagated, sourceError);\r\n\r\n  const unsupported = groupBy!([[['A']], [[1]], 'MEDIAN']);\r\n  assert.equal(isFormulaError(unsupported), true);\r\n  if (!isFormulaError(unsupported)) throw new Error('Expected an aggregate error');\r\n  assert.equal(unsupported.code, '#VALUE!');\r\n});\r\n\r\ntest('PIVOTBY builds stable row/column field headers and cross-aggregates every matching source row', () => {\r\n  const pivotBy = getBuiltinFunction('PIVOTBY');\r\n  assert.ok(pivotBy);\r\n\r\n  const result = pivotBy!([\r\n    [['East'], ['East'], ['West'], ['East']],\r\n    [['Q1'], ['Q2'], ['Q1'], ['Q1']],\r\n    [[100], [200], [50], [25]],\r\n    'SUM',\r\n  ]);\r\n\r\n  assert.deepEqual(result, [\r\n    [null, 'Q1', 'Q2'],\r\n    ['East', 125, 200],\r\n    ['West', 50, 0],\r\n  ]);\r\n});\r\n\r\ntest('PIVOTBY preserves multi-field and multi-value dimensions without stringifying keys', () => {\r\n  const pivotBy = getBuiltinFunction('PIVOTBY');\r\n  assert.ok(pivotBy);\r\n\r\n  const result = pivotBy!([\r\n    [['East', 2025], ['East', 2025], ['West', 2025]],\r\n    [['Q1', true], ['Q2', true], ['Q1', true]],\r\n    [[10, 1], [20, 2], [5, 3]],\r\n    'SUM',\r\n  ]);\r\n\r\n  assert.deepEqual(result, [\r\n    [null, null, 'Q1', 'Q1', 'Q2', 'Q2'],\r\n    [null, null, true, true, true, true],\r\n    [null, null, 'SUM 1', 'SUM 2', 'SUM 1', 'SUM 2'],\r\n    ['East', 2025, 10, 1, 20, 2],\r\n    ['West', 2025, 5, 3, 0, 0],\r\n  ]);\r\n});\r\n\r\ntest('PIVOTBY rejects mismatched input heights and unsupported optional arguments', () => {\r\n  const pivotBy = getBuiltinFunction('PIVOTBY');\r\n  assert.ok(pivotBy);\r\n  const mismatch = pivotBy!([[['East'], ['West']], [['Q1']], [[1], [2]], 'SUM']);\r\n  assert.equal(isFormulaError(mismatch), true);\r\n  if (!isFormulaError(mismatch)) throw new Error('Expected a shape error');\r\n  assert.equal(mismatch.code, '#VALUE!');\r\n\r\n  const unsupported = pivotBy!([[['East']], [['Q1']], [[1]], 'SUM', 3]);\r\n  assert.equal(isFormulaError(unsupported), true);\r\n  if (!isFormulaError(unsupported)) throw new Error('Expected an unsupported-arity error');\r\n  assert.equal(unsupported.code, '#VALUE!');\r\n});\r\n\r\ntest('FormulaEngine accepts bare aggregate identifiers, spills GROUPBY, and computes PIVOTBY by default', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSpillEnvironment('Sheet1', { rowCount: 20, columnCount: 12, isOccupied: () => false });\r\n  engine.setValue('A1', 'East');\r\n  engine.setValue('A2', 'East');\r\n  engine.setValue('A3', 'West');\r\n  engine.setValue('B1', 10);\r\n  engine.setValue('B2', 20);\r\n  engine.setValue('B3', 5);\r\n  engine.setValue('C1', 'Q1');\r\n  engine.setValue('C2', 'Q2');\r\n  engine.setValue('C3', 'Q1');\r\n\r\n  const grouped = engine.setFormula('E1', '=GROUPBY(A1:A3,B1:B3,SUM)').value;\r\n  assert.deepEqual(grouped, [['East', 30], ['West', 5]]);\r\n  assert.equal(engine.getSpillsForSheet('Sheet1')[0]?.state, 'ok');\r\n\r\n  const pivoted = engine.setFormula('H1', '=PIVOTBY(A1:A3,C1:C3,B1:B3,COUNT)').value;\r\n  assert.deepEqual(pivoted, [\r\n    [null, 'Q1', 'Q2'],\r\n    ['East', 1, 1],\r\n    ['West', 1, 0],\r\n  ]);\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/functions/extended-matrix.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'SJS.TABLE returns a dynamic array without writing result cells'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'SJS.TABLE rejects non-paired input arguments'"
+        }
+      ],
+      "sourceText": "import { strict as assert } from 'node:assert';\r\nimport { test } from 'node:test';\r\nimport { FormulaEngine } from '../formula-engine';\r\nimport { isFormulaError } from '../values';\r\n\r\ntest('SJS.TABLE returns a dynamic array without writing result cells', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setFormula('C1', '=B1*2');\r\n  engine.setValue('A2', 3);\r\n  engine.setValue('A3', 4);\r\n  engine.setFormula('D1', '=SJS.TABLE(C1,A2:A3,B1)');\r\n  engine.setValue('B1', 2);\r\n  engine.recalculate();\r\n\r\n  assert.deepEqual(engine.getCellValue('D1'), [[6], [8]]);\r\n  assert.equal(engine.getCellValue('D2'), null);\r\n});\r\n\r\ntest('SJS.TABLE rejects non-paired input arguments', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setFormula('D1', '=SJS.TABLE(C1,A2:A3)');\r\n\r\n  const result = engine.getCellValue('D1');\r\n  assert.equal(isFormulaError(result), true);\r\n  if (!isFormulaError(result)) throw new Error('Expected SJS.TABLE to return a formula error');\r\n  assert.equal(result.code, '#VALUE!');\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/functions/sjs-table.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'lexer and parser produce a precedence-aware AST without executable code'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'spill and implicit-intersection references round-trip and offset through the AST'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'AST formatter preserves explicit grouping and qualified sheet names'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'structural deletion invalidates references instead of clamping them'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'A1 addresses support zero-based engine coordinates and qualified sheets'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'RangeIndex tracks direct and rectangular dependencies'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine evaluates arithmetic"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine evaluates comprehensive math"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves spill references as dynamic ranges'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine recalculates a dependency chain and updates replaced dependencies'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine returns explicit errors and propagates them through formulas'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine evaluates only the selected lazy branch and tracks dynamic references'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'formula capability matrix is derived from executable functions and marks unsupported entries'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'calculation sessions fail closed when a persistent Worker is unavailable'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine supports qualified references and detects cycles'"
+        }
+      ],
+      "sourceText": "import assert from 'node:assert/strict';\r\nimport test from 'node:test';\r\nimport {\r\n  FormulaEngine,\r\n  FUNCTION_CAPABILITY_MATRIX,\r\n  getFunctionCapability,\r\n  RangeIndex,\r\n  formatFormula,\r\n  formatCellAddress,\r\n  isFormulaError,\r\n  lexFormula,\r\n  parseCellAddress,\r\n  parseFormula,\r\n  offsetAst,\r\n  type CellAddress,\r\n  type FormulaValue,\r\n} from './index';\r\n\r\ntest('lexer and parser produce a precedence-aware AST without executable code', () => {\r\n  const tokens = lexFormula('=Sheet1!$A$1:Sheet1!B2');\r\n  assert.deepEqual(tokens.map((token) => token.kind), [\r\n    'identifier',\r\n    'bang',\r\n    'identifier',\r\n    'colon',\r\n    'identifier',\r\n    'bang',\r\n    'identifier',\r\n    'eof',\r\n  ]);\r\n\r\n  const ast = parseFormula('=1 + 2 * (3 - 1)');\r\n  assert.equal(ast.type, 'binary-expression');\r\n  if (ast.type !== 'binary-expression') throw new Error('Expected binary AST');\r\n  assert.equal(ast.operator, '+');\r\n  assert.equal(ast.right.type, 'binary-expression');\r\n  assert.equal(parseFormula('\"line\\\\nvalue\"').type, 'string-literal');\r\n});\r\n\r\ntest('spill and implicit-intersection references round-trip and offset through the AST', () => {\r\n  assert.deepEqual(lexFormula('=SUM(A2#)').map((token) => token.kind), [\r\n    'identifier', 'left-paren', 'identifier', 'spill-operator', 'right-paren', 'eof',\r\n  ]);\r\n  assert.equal(formatFormula(parseFormula('=SUM(A2#)')), '=SUM(A2#)');\r\n  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(A2#)'), 1, 1)), '=SUM(B3#)');\r\n  assert.equal(formatFormula(offsetAst(parseFormula('=@A2#'), 1, 1)), '=@B3#');\r\n});\r\n\r\ntest('AST formatter preserves explicit grouping and qualified sheet names', () => {\r\n  const ast = parseFormula(\"=('Annual Plan'!$A$1+A1)*B1\");\r\n  assert.equal(formatFormula(ast), \"=('Annual Plan'!$A$1+A1)*B1\");\r\n  assert.equal(formatFormula(offsetAst(parseFormula('=A1+$B$1'), 2, 3)), '=D3+$B$1');\r\n});\r\n\r\ntest('structural deletion invalidates references instead of clamping them', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 10);\r\n  engine.setValue('A2', 20);\r\n  engine.setFormula('B1', '=A2+1');\r\n  const report = engine.remapStructure('Sheet1', { axis: 'row', at: 1, count: 1, op: 'delete' });\r\n\r\n  assert.equal(formatFormula(parseFormula('=#REF!')), '=#REF!');\r\n  assert.equal(engine.getCellResult('B1')?.formula, '=#REF!+1');\r\n  assertError(engine.getCellValue('B1'), '#REF!');\r\n  assert.equal(report.recalculated.some((address) => address.row === 0 && address.column === 1), true);\r\n  assert.deepEqual(engine.getDependencies('B1'), []);\r\n});\r\n\r\ntest('A1 addresses support zero-based engine coordinates and qualified sheets', () => {\r\n  assert.deepEqual(parseCellAddress(\"'Annual Plan'!$C$4\"), { sheetId: 'Annual Plan', row: 3, column: 2 });\r\n  assert.equal(formatCellAddress({ sheetId: 'Sheet1', row: 0, column: 0 }), 'A1');\r\n  assert.equal(formatCellAddress({ sheetId: 'Annual Plan', row: 3, column: 2 }, true), \"'Annual Plan'!C4\");\r\n});\r\n\r\ntest('RangeIndex tracks direct and rectangular dependencies', () => {\r\n  const index = new RangeIndex();\r\n  const owner = address('Sheet1', 0, 3);\r\n  index.set(owner, [\r\n    { kind: 'cell', address: address('Sheet1', 0, 0) },\r\n    {\r\n      kind: 'range',\r\n      start: address('Sheet1', 1, 0),\r\n      end: address('Sheet1', 2, 2),\r\n    },\r\n  ]);\r\n\r\n  assert.deepEqual(index.getDependents(address('Sheet1', 2, 1)), [owner]);\r\n  assert.deepEqual(index.getDependents(address('Sheet1', 4, 4)), []);\r\n  assert.equal(index.getDependencies(owner).length, 2);\r\n  assert.equal(index.remove(owner), true);\r\n  assert.deepEqual(index.getDependents(address('Sheet1', 0, 0)), []);\r\n});\r\n\r\ntest('FormulaEngine evaluates arithmetic, strings, SUM ranges, and exposes dependencies', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 2);\r\n  engine.setValue('A2', 3);\r\n  engine.setValue('A3', 'ignored');\r\n\r\n  const result = engine.setFormula('C1', '=SUM(A1:A3) * 2');\r\n  assert.equal(result.value, 10);\r\n  assert.deepEqual(result.dependencies, [\r\n    {\r\n      kind: 'range',\r\n      start: { sheetId: 'Sheet1', row: 0, column: 0 },\r\n      end: { sheetId: 'Sheet1', row: 2, column: 0 },\r\n    },\r\n  ]);\r\n  assert.deepEqual(engine.getDependents('A2').map((cell) => formatCellAddress(cell, true)), ['Sheet1!C1']);\r\n\r\n  engine.setValue('A2', 4);\r\n  assert.equal(engine.getCellValue('C1'), 12);\r\n  assert.equal(engine.getCellValue('A3'), 'ignored');\r\n});\r\n\r\ntest('FormulaEngine evaluates comprehensive math, logical, text, and lookup functions', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 10);\r\n  engine.setValue('A2', 20);\r\n  engine.setValue('A3', 30);\r\n  engine.setValue('B1', 'Apple');\r\n  engine.setValue('B2', 'Banana');\r\n  engine.setValue('B3', 'Cherry');\r\n\r\n  // IF, AVERAGE, COUNT, MIN, MAX\r\n  assert.equal(engine.setFormula('C1', '=IF(A1 > 5, \"YES\", \"NO\")').value, 'YES');\r\n  assert.equal(engine.setFormula('C2', '=AVERAGE(A1:A3)').value, 20);\r\n  assert.equal(engine.setFormula('C3', '=COUNT(A1:A3)').value, 3);\r\n  assert.equal(engine.setFormula('C4', '=MIN(A1:A3)').value, 10);\r\n  assert.equal(engine.setFormula('C5', '=MAX(A1:A3)').value, 30);\r\n\r\n  // VLOOKUP, INDEX, MATCH\r\n  assert.equal(engine.setFormula('D1', '=VLOOKUP(20, A1:B3, 2, FALSE)').value, 'Banana');\r\n  assert.equal(engine.setFormula('D2', '=INDEX(B1:B3, 3, 1)').value, 'Cherry');\r\n  assert.equal(engine.setFormula('D3', '=MATCH(\"Banana\", B1:B3, 0)').value, 2);\r\n\r\n  // Text functions: CONCAT, LEFT, RIGHT, UPPER, TEXTJOIN\r\n  assert.equal(engine.setFormula('E1', '=CONCAT(\"Hello\", \" \", \"World\")').value, 'Hello World');\r\n  assert.equal(engine.setFormula('E2', '=UPPER(B1)').value, 'APPLE');\r\n  assert.equal(engine.setFormula('E3', '=LEFT(B2, 3)').value, 'Ban');\r\n  assert.equal(engine.setFormula('E4', '=TEXTJOIN(\", \", TRUE, B1:B3)').value, 'Apple, Banana, Cherry');\r\n\r\n  // Precedence, percent, concat, date, information\r\n  assert.equal(engine.setFormula('F1', '=2 + 3 * 4 ^ 2').value, 50);\r\n  assert.equal(engine.setFormula('F2', '=50% + 10%').value, 0.6);\r\n  assert.equal(engine.setFormula('F3', '=\"Total: \" & A1').value, 'Total: 10');\r\n  assert.equal(engine.setFormula('F4', '=YEAR(DATE(2025, 6, 15))').value, 2025);\r\n  assert.equal(engine.setFormula('F5', '=MONTH(DATE(2025, 6, 15))').value, 6);\r\n  assert.equal(engine.setFormula('F6', '=DAY(DATE(2025, 6, 15))').value, 15);\r\n  assert.equal(engine.setFormula('F7', '=ISNUMBER(A1)').value, true);\r\n  assert.equal(engine.setFormula('F8', '=ISTEXT(B1)').value, true);\r\n  assert.equal(engine.setFormula('F9', '=ISBLANK(Z99)').value, true);\r\n});\r\n\r\ntest('FormulaEngine resolves spill references as dynamic ranges', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSpillEnvironment('Sheet1', { rowCount: 20, columnCount: 10, isOccupied: () => false });\r\n  engine.setFormula('A2', '=SEQUENCE(2,1,1,1)');\r\n  const dependent = engine.setFormula('C2', '=SUM(A2#)');\r\n  assert.equal(dependent.value, 3);\r\n  assert.deepEqual(dependent.dependencies, [{ kind: 'cell', address: { sheetId: 'Sheet1', row: 1, column: 0 } }]);\r\n  assert.equal(engine.setFormula('D2', '=@A2#').value, 1);\r\n});\r\n\r\ntest('FormulaEngine recalculates a dependency chain and updates replaced dependencies', () => {\r\n  const engine = new FormulaEngine();\r\n  engine.setFormula('B1', '=A1 + 1');\r\n  engine.setFormula('C1', '=B1 * 2');\r\n  engine.setValue('A1', 4);\r\n  assert.equal(engine.getCellValue('B1'), 5);\r\n  assert.equal(engine.getCellValue('C1'), 10);\r\n\r\n  engine.setValue('D1', 10);\r\n  engine.setFormula('E1', '=A1');\r\n  engine.setFormula('E1', '=D1');\r\n  engine.setValue('A1', 100);\r\n  assert.equal(engine.getCellValue('E1'), 10);\r\n  engine.setValue('D1', 11);\r\n  assert.equal(engine.getCellValue('E1'), 11);\r\n\r\n  const report = engine.clearCell('D1');\r\n  assert.deepEqual(report.recalculated.map((cell) => formatCellAddress(cell, true)), ['Sheet1!E1']);\r\n  assert.equal(engine.getCellValue('E1'), null);\r\n});\r\n\r\ntest('FormulaEngine returns explicit errors and propagates them through formulas', () => {\r\n  const engine = new FormulaEngine();\r\n  const division = engine.setFormula('A1', '=1 / 0').value;\r\n  const propagated = engine.setFormula('B1', '=A1 + 1').value;\r\n  const stringArithmetic = engine.setFormula('C1', '=\"text\" + 1').value;\r\n  const unknownFunction = engine.setFormula('D1', '=NO_SUCH_FUNCTION(1)').value;\r\n  const parseError = engine.setFormula('E1', '=1 +').value;\r\n\r\n  assertError(division, '#DIV/0!');\r\n  assertError(propagated, '#DIV/0!');\r\n  assertError(stringArithmetic, '#VALUE!');\r\n  assertError(unknownFunction, '#NAME?');\r\n  assertError(parseError, '#PARSE!');\r\n});\r\n\r\ntest('FormulaEngine evaluates only the selected lazy branch and tracks dynamic references', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 1);\r\n  assert.equal(engine.setFormula('B1', '=IF(A1,10,1/0)').value, 10);\r\n  assert.equal(engine.setFormula('C1', '=IFERROR(1/0,42)').value, 42);\r\n  engine.setValue('D1', 'A1');\r\n  engine.setFormula('E1', '=INDIRECT(D1)');\r\n  assert.equal(engine.getCellValue('E1'), 1);\r\n  assert.equal(engine.getDependents('A1').some((address) => address.column === 4), true);\r\n  engine.setValue('A1', 7);\r\n  assert.equal(engine.getCellValue('E1'), 7);\r\n});\r\n\r\ntest('formula capability matrix is derived from executable functions and marks unsupported entries', () => {\r\n  assert.equal(FUNCTION_CAPABILITY_MATRIX.some((entry) => entry.id === 'INDIRECT' && entry.status === 'native'), true);\r\n  assert.equal(getFunctionCapability('ROMAN').status, 'unsupported');\r\n  assert.equal(getFunctionCapability('NO_SUCH_FUNCTION').status, 'unsupported');\r\n});\r\n\r\ntest('calculation sessions fail closed when a persistent Worker is unavailable', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('A1', 2);\r\n  engine.setFormula('B1', '=A1*3');\r\n  assert.throws(() => engine.createCalculationSessionPort(), /CALCULATION_WORKER_UNAVAILABLE/);\r\n});\r\n\r\ntest('FormulaEngine supports qualified references and detects cycles', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue({ sheetId: 'Sheet2', row: 0, column: 0 }, 7);\r\n  assert.equal(engine.setFormula('A1', '=Sheet2!A1 + 1').value, 8);\r\n\r\n  const firstCycle = engine.setFormula('B1', '=C1 + 1').value;\r\n  const secondCycle = engine.setFormula('C1', '=B1 + 1').value;\r\n  assert.equal(firstCycle, 1);\r\n  assertError(secondCycle, '#NUM!');\r\n  assertError(engine.getCellValue('B1'), '#NUM!');\r\n});\r\n\r\nfunction address(sheetId: string, row: number, column: number): CellAddress {\r\n  return { sheetId, row, column };\r\n}\r\n\r\nfunction assertError(\r\n  value: FormulaValue,\r\n  code: '#DIV/0!' | '#VALUE!' | '#REF!' | '#NAME?' | '#NUM!' | '#N/A' | '#PARSE!' | '#SPILL!',\r\n): void {\r\n  assert.equal(isFormulaError(value), true);\r\n  if (!isFormulaError(value)) throw new Error('Expected a formula error');\r\n  assert.equal(value.code, code);\r\n}",
+      "source": "frontend-react/packages/formula-engine/src/index.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'manual recalculation defers dependent formula updates until recalculate()'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'partial recalculate updates only the requested dependency subtree'"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from './formula-engine';\r\n\r\ntest('manual recalculation defers dependent formula updates until recalculate()', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });\r\n  engine.setValue('A1', 2);\r\n  engine.setFormula('B1', '=A1*3');\r\n  assert.equal(engine.getCellValue('B1'), 6);\r\n\r\n  engine.setValue('A1', 5);\r\n  assert.equal(engine.getCellValue('B1'), 6);\r\n  assert.equal(engine.hasPendingRecalculation(), true);\r\n\r\n  engine.recalculate();\r\n  assert.equal(engine.getCellValue('B1'), 15);\r\n  assert.equal(engine.hasPendingRecalculation(), false);\r\n});\r\n\r\ntest('partial recalculate updates only the requested dependency subtree', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });\r\n  engine.setValue('A1', 1);\r\n  engine.setFormula('B1', '=A1+1');\r\n  engine.setFormula('C1', '=B1+1');\r\n  engine.setValue('A1', 9);\r\n  engine.recalculateCell('B1');\r\n  assert.equal(engine.getCellValue('B1'), 10);\r\n  assert.equal(engine.getCellValue('C1'), 3);\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/recalculation-mode.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves structured table column references'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves this-row structured table references'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine evaluates SUBTOTAL on structured table columns'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves #Data and #Headers structured table specifiers'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine resolves #All structured table specifier'"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from './formula-engine';\r\nimport type { SheetTableRef } from './sheet-table-resolver';\r\n\r\nconst sampleTable: SheetTableRef = {\r\n  id: 't1',\r\n  sheetId: 'Sheet1',\r\n  name: 'Sales',\r\n  range: { sheetId: 'Sheet1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },\r\n  hasHeaderRow: true,\r\n  hasTotalRow: false,\r\n  columns: [\r\n    { id: 'c1', name: 'Product' },\r\n    { id: 'c2', name: 'Amount' },\r\n  ],\r\n};\r\n\r\ntest('FormulaEngine resolves structured table column references', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSheetTables([sampleTable]);\r\n  engine.setValue('A2', 'Apple');\r\n  engine.setValue('B2', 10);\r\n  engine.setValue('A3', 'Banana');\r\n  engine.setValue('B3', 20);\r\n  engine.setFormula('D1', '=SUM(Sales[Amount])');\r\n  assert.equal(engine.getCellValue('D1'), 30);\r\n});\r\n\r\ntest('FormulaEngine resolves this-row structured table references', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSheetTables([sampleTable]);\r\n  engine.setValue('A2', 'Apple');\r\n  engine.setValue('B2', 10);\r\n  engine.setFormula('C2', '=Sales[@Amount]*2');\r\n  assert.equal(engine.getCellValue('C2'), 20);\r\n});\r\n\r\ntest('FormulaEngine evaluates SUBTOTAL on structured table columns', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSheetTables([sampleTable]);\r\n  engine.setValue('A2', 'Apple');\r\n  engine.setValue('B2', 10);\r\n  engine.setValue('A3', 'Banana');\r\n  engine.setValue('B3', 20);\r\n  engine.setFormula('D1', '=SUBTOTAL(109,Sales[Amount])');\r\n  assert.equal(engine.getCellValue('D1'), 30);\r\n});\r\n\r\ntest('FormulaEngine resolves #Data and #Headers structured table specifiers', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSheetTables([sampleTable]);\r\n  engine.setValue('A1', 'Product');\r\n  engine.setValue('B1', 'Amount');\r\n  engine.setValue('A2', 'Apple');\r\n  engine.setValue('B2', 10);\r\n  engine.setValue('A3', 'Banana');\r\n  engine.setValue('B3', 20);\r\n  engine.setFormula('D1', '=SUM(Sales[#Data])');\r\n  assert.equal(engine.getCellValue('D1'), 30);\r\n  engine.setFormula('D2', '=Sales[[#Headers],[Amount]]');\r\n  assert.equal(engine.getCellValue('D2'), 'Amount');\r\n});\r\n\r\ntest('FormulaEngine resolves #All structured table specifier', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSheetTables([sampleTable]);\r\n  engine.setValue('A1', 'Product');\r\n  engine.setValue('B1', 'Amount');\r\n  engine.setValue('A2', 10);\r\n  engine.setValue('B2', 20);\r\n  engine.setFormula('C1', '=SUM(Sales[#All])');\r\n  assert.equal(engine.getCellValue('C1'), 30);\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/sheet-table-resolver.test.ts"
+    },
+    {
+      "cases": [
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'resolveSpill detects blockers and ok states'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'isSpillChild excludes anchor cell'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine tracks spill ranges and child values'"
+        },
+        {
+          "rustTest": null,
+          "status": "requires-rust-parity",
+          "name": "'FormulaEngine returns #SPILL! when spill area is blocked'"
+        }
+      ],
+      "sourceText": "import test from 'node:test';\r\nimport assert from 'node:assert/strict';\r\nimport { FormulaEngine } from './formula-engine';\r\nimport { isFormulaError } from './values';\r\nimport { isSpillChild, resolveSpill } from './spill-resolver';\r\n\r\ntest('resolveSpill detects blockers and ok states', () => {\r\n  const ok = resolveSpill({\r\n    sheetId: 'Sheet1',\r\n    anchor: { row: 0, column: 0 },\r\n    values: [[1, 2], [3, 4]],\r\n    rowCount: 10,\r\n    columnCount: 10,\r\n    isOccupied: () => false,\r\n  });\r\n  assert.equal(ok.state, 'ok');\r\n  assert.equal(ok.range.endRow, 1);\r\n  assert.equal(ok.range.endColumn, 1);\r\n\r\n  const blocked = resolveSpill({\r\n    sheetId: 'Sheet1',\r\n    anchor: { row: 0, column: 0 },\r\n    values: [[1, 2], [3, 4]],\r\n    rowCount: 10,\r\n    columnCount: 10,\r\n    isOccupied: (row, column) => row === 0 && column === 1,\r\n  });\r\n  assert.equal(blocked.state, 'blocked');\r\n  assert.deepEqual(blocked.blocker, { row: 0, column: 1 });\r\n});\r\n\r\ntest('isSpillChild excludes anchor cell', () => {\r\n  const spill = {\r\n    sheetId: 'Sheet1',\r\n    anchor: { row: 0, column: 0 },\r\n    range: { sheetId: 'Sheet1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },\r\n    values: [[1, 2], [3, 4]],\r\n    state: 'ok' as const,\r\n  };\r\n  assert.equal(isSpillChild(spill, 0, 0), false);\r\n  assert.equal(isSpillChild(spill, 1, 1), true);\r\n});\r\n\r\ntest('FormulaEngine tracks spill ranges and child values', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setSpillEnvironment('Sheet1', {\r\n    rowCount: 20,\r\n    columnCount: 20,\r\n    isOccupied: () => false,\r\n  });\r\n  engine.setFormula('A1', '=SEQUENCE(2,2,1,1)');\r\n  const spills = engine.getSpillsForSheet('Sheet1');\r\n  assert.equal(spills.length, 1);\r\n  assert.equal(spills[0]?.state, 'ok');\r\n  assert.equal(engine.getCellValue({ sheetId: 'Sheet1', row: 0, column: 0 }), 1);\r\n  assert.equal(engine.getSpillValueAt('Sheet1', 1, 1), 4);\r\n  assert.equal(engine.getCellValue({ sheetId: 'Sheet1', row: 1, column: 1 }), 4);\r\n});\r\n\r\ntest('FormulaEngine returns #SPILL! when spill area is blocked', () => {\r\n  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });\r\n  engine.setValue('B1', 'blocker');\r\n  engine.setSpillEnvironment('Sheet1', {\r\n    rowCount: 20,\r\n    columnCount: 20,\r\n    isOccupied: (row, column) => row === 0 && column === 1,\r\n  });\r\n  const result = engine.setFormula('A1', '=SEQUENCE(2,2,1,1)').value;\r\n  assert.ok(isFormulaError(result));\r\n  if (!isFormulaError(result)) throw new Error('expected spill error');\r\n  assert.equal(result.code, '#SPILL!');\r\n});",
+      "source": "frontend-react/packages/formula-engine/src/spill-resolver.test.ts"
+    }
+  ],
+  "schema": "FormulaMigrationCorpus"
+}

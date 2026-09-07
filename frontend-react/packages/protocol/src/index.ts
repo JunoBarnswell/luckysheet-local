@@ -11,6 +11,33 @@ import type {
 } from '@react-sheets/core-model';
 import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
+export * from './kernel-contract';
+import type { WorkbookManifest, KernelPagePayload, KernelChangeSet, KernelSheetManifest } from './kernel-contract';
+
+function assertManifestResponse(value: unknown, unitId: string): WorkbookManifest {
+  if (!value || typeof value !== 'object') throw new Error('KERNEL_MANIFEST_INVALID');
+  const manifest = value as WorkbookManifest;
+  if (manifest.schema !== 'WorkbookManifest' || manifest.version !== 11 || manifest.unitId !== unitId || !Number.isSafeInteger(manifest.revision) || manifest.revision < 0 || !Array.isArray(manifest.sheets) || !manifest.sheets.length || !Array.isArray(manifest.pages) || !manifest.metadata || typeof manifest.metadata !== 'object') throw new Error('KERNEL_MANIFEST_INVALID');
+  return manifest;
+}
+
+export interface KernelCloudCommandRequest {
+  readonly operationId: string;
+  readonly baseRevision: number;
+  readonly clientSequence: number;
+  readonly mutations: readonly { readonly id: string; readonly sheetId: string; readonly params: unknown }[];
+  readonly intent?: { readonly commandId: string; readonly params?: unknown };
+}
+export interface KernelWorkbookCreateRequest {
+  readonly unitId: string;
+  readonly name: string;
+  readonly sheets?: readonly KernelSheetManifest[];
+  readonly spaceId?: string;
+  readonly folderId?: string;
+  readonly source?: string;
+  readonly initialMutations?: readonly { readonly id: 'cell.set'; readonly sheetId: string; readonly params: { readonly row: number; readonly column: number; readonly cell: unknown } }[];
+}
+export interface WorkbookOpenResponse { readonly unitId: string; readonly revision: number; readonly manifest: WorkbookManifest; readonly checksum?: string; readonly pages?: readonly KernelPagePayload[]; }
 import {
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
@@ -143,7 +170,7 @@ export interface OperationCommitResponse {
 
 export interface CheckpointResponse {
   created: boolean;
-  snapshot: SnapshotResponse;
+  workbook: WorkbookOpenResponse;
 }
 
 /**
@@ -1134,23 +1161,6 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   return value as WorkbookSnapshot;
 }
 
-function validateSnapshotResponse(value: unknown, expectedUnitId?: string): SnapshotResponse {
-  const input = requireRecord(value, 'Snapshot response');
-  validateExactKeys(input, ['unitId', 'snapshot', 'revision', 'checksum'], 'Snapshot response');
-  const snapshot = validateWorkbookSnapshot(input.snapshot);
-  if (input.unitId !== undefined && !isNonEmptyString(input.unitId)) throw new Error('Snapshot response unitId is invalid');
-  if (expectedUnitId && snapshot.unitId !== expectedUnitId) throw new Error('Snapshot response snapshot unitId does not match request');
-  if (input.unitId !== undefined && input.unitId !== snapshot.unitId) throw new Error('Snapshot response unitId does not match snapshot');
-  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Snapshot response revision is invalid');
-  if (input.checksum !== undefined && !isNonEmptyString(input.checksum)) throw new Error('Snapshot response checksum is invalid');
-  return {
-    ...(input.unitId === undefined ? {} : { unitId: input.unitId }),
-    snapshot,
-    revision: Number(input.revision),
-    ...(input.checksum === undefined ? {} : { checksum: input.checksum }),
-  };
-}
-
 function validateIsoTimestamp(value: unknown, label: string): string {
   if (!isNonEmptyString(value) || Number.isNaN(Date.parse(value))) throw new Error(`${label} must be an ISO timestamp`);
   return value;
@@ -1366,14 +1376,6 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   };
 }
 
-export interface SnapshotResponse {
-  /** Present on Java responses; optional for local-only test and cache records. */
-  unitId?: string;
-  snapshot: WorkbookSnapshot;
-  revision: number;
-  checksum?: string;
-}
-
 /**
  * The only client-authored history restore request.  The historical snapshot
  * is deliberately absent: the server resolves targetRevision from its own
@@ -1387,7 +1389,8 @@ export interface HistoryRestoreRequest {
 /** Server response after committing a server-generated workbook.restore op. */
 export interface HistoryRestoreResponse {
   operation: CommittedOperationEnvelope;
-  snapshot: SnapshotResponse;
+  workbook: WorkbookOpenResponse;
+  changeSet: KernelChangeSet;
 }
 
 export interface HistoryAuditRecord {
@@ -1445,7 +1448,7 @@ export interface CompatibilityReportPayload {
   };
 }
 
-export interface NativeDocumentImportResponse extends SnapshotResponse {
+export interface NativeDocumentImportResponse extends WorkbookOpenResponse {
   report: CompatibilityReportPayload;
 }
 
@@ -1662,6 +1665,36 @@ async function sha256(blob: Blob): Promise<string> {
 }
 
 export class WorkbookApiClient {
+  /** Cloud-authored revision-pinned manifest. No browser snapshot is accepted. */
+  async getManifest(unitId: string, revision?: number, options: ApiRequestOptions = {}): Promise<WorkbookManifest> {
+    if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw new Error('KERNEL_REVISION_INVALID');
+    const query = revision === undefined ? '' : `?revision=${revision}`;
+    const manifest = assertManifestResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/manifest${query}`, options), unitId);
+    if (revision !== undefined && manifest.revision !== revision) throw new Error('KERNEL_MANIFEST_REVISION_MISMATCH');
+    return manifest;
+  }
+
+  async getPage(params: { unitId: string; revision: number; sheetId: string; pageRow: number; pageColumn: number }, options: ApiRequestOptions = {}): Promise<KernelPagePayload> {
+    const { unitId, revision, sheetId, pageRow, pageColumn } = params;
+    if (![revision, pageRow, pageColumn].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error('KERNEL_PAGE_ADDRESS_INVALID');
+    const page = await this.json<KernelPagePayload>(`/api/workbooks/${encodeURIComponent(unitId)}/pages/${encodeURIComponent(sheetId)}/${pageRow}/${pageColumn}?revision=${revision}`, options);
+    if (!page || page.sheetId !== sheetId || page.pageRow !== pageRow || page.pageColumn !== pageColumn || !Number.isSafeInteger(page.revision) || page.revision > revision || typeof page.payloadBase64 !== 'string' || typeof page.checksum !== 'string' || !Number.isSafeInteger(page.byteLength)) throw new Error('KERNEL_PAGE_IDENTITY_MISMATCH');
+    return page;
+  }
+
+  async commitKernelOperation(unitId: string, request: KernelCloudCommandRequest): Promise<KernelChangeSet> {
+    const result = await this.json<KernelChangeSet>(`/api/workbooks/${encodeURIComponent(unitId)}/kernel-operations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, mutations: request.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })) }) });
+    assertManifestResponse(result?.manifest, unitId);
+    if (result.operationId !== request.operationId || result.baseRevision !== request.baseRevision || result.revision !== request.baseRevision + 1 || result.manifest.revision !== result.revision || !Array.isArray(result.pages) || !Array.isArray(result.removedPages) || !Array.isArray(result.affectedRanges)) throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
+    return result;
+  }
+
+  async createKernelWorkbook(request: KernelWorkbookCreateRequest): Promise<WorkbookOpenResponse> {
+    const response = await this.json<WorkbookOpenResponse>('/api/workbooks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+    assertManifestResponse(response?.manifest, request.unitId);
+    if (response.unitId !== request.unitId || response.revision !== response.manifest.revision) throw new Error('KERNEL_MANIFEST_REVISION_MISMATCH');
+    return response;
+  }
   private readonly baseUrl: string;
   private readonly authTokenProvider?: AuthTokenProvider;
   private readonly shareTokenProvider?: ShareTokenProvider;
@@ -1713,13 +1746,6 @@ export class WorkbookApiClient {
     }
   }
 
-  async getSnapshot(unitId: string, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
-    return validateSnapshotResponse(await this.json<unknown>(
-      `/api/workbooks/${encodeURIComponent(unitId)}/snapshot`,
-      options,
-    ), unitId);
-  }
-
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
     const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access`, options);
     return validateWorkbookAccessResponse(result);
@@ -1739,15 +1765,6 @@ export class WorkbookApiClient {
 
   async deleteWorkbookAcl(unitId: string, subject: string): Promise<void> {
     await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, { method: 'DELETE' });
-  }
-
-  async createWorkbook(snapshot: WorkbookSnapshot, metadata: WorkbookCreateMetadata = {}): Promise<SnapshotResponse> {
-    validateWorkbookSnapshot(snapshot);
-    return validateSnapshotResponse(await this.json<unknown>('/api/workbooks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ unitId: snapshot.unitId, name: snapshot.name, snapshot, ...metadata }),
-    }), snapshot.unitId);
   }
 
   async listWorkbookPage(query: WorkbookCatalogQuery = {}, options: ApiRequestOptions = {}): Promise<CursorPage<WorkbookSummary>> {
@@ -1959,7 +1976,16 @@ export class WorkbookApiClient {
   }
 
   async checkpointWorkbook(unitId: string): Promise<CheckpointResponse> {
-    return this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
+    const result = await this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
+    assertManifestResponse(result?.workbook?.manifest, unitId);
+    if (result.workbook.unitId !== unitId || result.workbook.revision !== result.workbook.manifest.revision) throw new Error('KERNEL_CHECKPOINT_IDENTITY_MISMATCH');
+    return result;
+  }
+
+  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName: string; format: string }): Promise<{ revision: number; fileName: string; checksum: string }> {
+    const result = await this.json<{ revision: number; fileName: string; checksum: string }>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+    if (result.revision !== request.revision || result.fileName !== request.fileName || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
+    return result;
   }
 
   async listRevisionPage(unitId: string, query: { cursor?: string; limit?: number } = {}, options: ApiRequestOptions = {}): Promise<CursorPage<RevisionRecord>> {
@@ -1988,13 +2014,6 @@ export class WorkbookApiClient {
     } while (!options.signal?.aborted);
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     return items;
-  }
-
-  async getRevisionSnapshot(unitId: string, revision: number, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
-    return validateSnapshotResponse(await this.json<unknown>(
-      `/api/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
-      options,
-    ), unitId);
   }
 
   async restoreToRevision(unitId: string, targetRevision: number, reason?: string): Promise<HistoryRestoreResponse> {

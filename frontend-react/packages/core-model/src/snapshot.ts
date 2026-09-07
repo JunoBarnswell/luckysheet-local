@@ -870,10 +870,3 @@ function sameRange(left: RangeRef, right: RangeRef): boolean {
     && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
 }
 
-export function loadWorkbookFromSnapshot(snapshot: WorkbookSnapshot): WorkbookModelClass {
-  return WorkbookModelClass.fromSnapshot(assertCanonicalWorkbookSnapshot(snapshot));
-}
-
-export function createWorkbookSnapshot(workbook: WorkbookModel): WorkbookSnapshot {
-  return workbook.snapshot();
-}

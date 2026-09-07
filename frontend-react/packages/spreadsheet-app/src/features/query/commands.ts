@@ -40,6 +40,8 @@ function isQueryLoadPayload(value: unknown): value is QueryLoadMutationPayload {
   if (value.source !== null && !isRecord(value.source)) return false;
   if (value.binding !== null && !isRecord(value.binding)) return false;
   if (value.source !== null && value.binding !== null && value.sourceId !== value.source.id) return false;
+  const proofFields = [value.executionToken, value.resultHash, value.sourceRevision];
+  if (proofFields.some((field) => field !== undefined) && (typeof value.executionToken !== 'string' || !value.executionToken.trim() || typeof value.resultHash !== 'string' || !value.resultHash.trim() || !Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 0)) return false;
   return true;
 }
 
@@ -187,11 +189,6 @@ function isQueryDefinitionReplacePayload(value: unknown): value is QueryDefiniti
 function registerQueryMutations(registry: CommandRegistry): void {
   registry.registerMutation<QueryDefinitionReplaceMutationParams>({
     id: 'query.definition.replace',
-    handler: (item, context) => {
-      if (!isQueryDefinitionReplacePayload(item.params)) throw new Error('Invalid query.definition.replace mutation payload');
-      if (item.params.definition === null) context.workbook.removeQueryDefinition(item.params.queryId);
-      else context.workbook.setQueryDefinition(item.params.definition);
-    },
     metadata: {
       schema: { name: 'QueryDefinitionReplaceMutationParams', validate: isQueryDefinitionReplacePayload },
       permission: { capability: 'query.definition.write', roles: ['owner', 'editor'] },
@@ -199,10 +196,8 @@ function registerQueryMutations(registry: CommandRegistry): void {
       inverseIds: ['query.definition.replace'],
     },
   });
-  const queryLoadHandler = (item: { params: QueryLoadMutationPayload }, context: CommandContext): void => applyQueryLoad(context, item.params);
   registry.registerMutation<QueryLoadMutationPayload>({
     id: 'query.load.range',
-    handler: queryLoadHandler,
     metadata: {
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
@@ -212,7 +207,6 @@ function registerQueryMutations(registry: CommandRegistry): void {
   });
   registry.registerMutation<QueryLoadMutationPayload>({
     id: 'query.load.sheet-table',
-    handler: queryLoadHandler,
     metadata: {
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
@@ -222,7 +216,6 @@ function registerQueryMutations(registry: CommandRegistry): void {
   });
   registry.registerMutation<QueryLoadMutationPayload>({
     id: 'query.load.pivot-source',
-    handler: queryLoadHandler,
     metadata: {
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
@@ -232,7 +225,6 @@ function registerQueryMutations(registry: CommandRegistry): void {
   });
   registry.registerMutation<QueryLoadMutationPayload>({
     id: 'query.load.workbook-table',
-    handler: queryLoadHandler,
     metadata: {
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
@@ -242,7 +234,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
   });
 }
 
-function applyQueryLoadMutation(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext): void {
+function applyQueryLoadMutation(plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext): void {
   const sheetId = plan.payload.binding.kind === 'sheet-region'
     ? plan.payload.binding.region.range.sheetId
     : plan.payload.target.sheetId ?? context.workbook.primarySheetId;
@@ -251,42 +243,38 @@ function applyQueryLoadMutation(registry: CommandRegistry, plan: ReturnType<type
       context.applyMutation({
         id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
         inverse: [{ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
-        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.range')({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
       });
       return;
     case 'query.load.sheet-table':
       context.applyMutation({
         id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
         inverse: [{ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
-        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.sheet-table')({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
       });
       return;
     case 'query.load.pivot-source':
       context.applyMutation({
         id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
         inverse: [{ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
-        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.pivot-source')({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
       });
       return;
     case 'query.load.workbook-table':
       context.applyMutation({
         id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges,
         inverse: [{ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
-        apply: () => registry.getMutation<QueryLoadMutationPayload>('query.load.workbook-table')({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context),
       });
       return;
   }
 }
 
-function executeLoad(registry: CommandRegistry, params: QueryLoadCommandPayload, context: CommandContext): CommandResult {
+function executeLoad(params: QueryLoadCommandPayload, context: CommandContext): CommandResult {
   const plan = buildQueryLoadPlan(context.workbook, params);
-  applyQueryLoadMutation(registry, plan, context);
+  applyQueryLoadMutation(plan, context);
   return { operationId: context.operationId, mutationCount: 1, affectedRanges: plan.affectedRanges };
 }
 
 export function registerQueryCommands(registry: CommandRegistry): void {
   registerQueryMutations(registry);
-  registry.registerCommand<QueryLoadParams>({ id: 'query.load', execute: (params, context) => executeLoad(registry, params, context) });
+  registry.registerCommand<QueryLoadParams>({ id: 'query.load', execute: (params, context) => executeLoad(params, context) });
   registry.registerCommand<QueryDefinitionReplaceParams>({
     id: 'query.definition.replace',
     execute: (params, context) => {
@@ -296,10 +284,9 @@ export function registerQueryCommands(registry: CommandRegistry): void {
         id: 'query.definition.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId,
         params: { queryId: next.id, definition: next }, affectedRanges: [],
         inverse: [{ id: 'query.definition.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { queryId: next.id, definition: previous }, affectedRanges: [] }],
-        apply: () => context.workbook.setQueryDefinition(next),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
-  registry.registerCommand<QueryRefreshParams>({ id: 'query.refresh', execute: (params, context) => executeLoad(registry, params, context) });
+  registry.registerCommand<QueryRefreshParams>({ id: 'query.refresh', execute: (params, context) => executeLoad(params, context) });
 }

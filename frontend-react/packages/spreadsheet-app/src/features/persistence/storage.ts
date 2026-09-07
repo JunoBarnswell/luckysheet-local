@@ -21,7 +21,8 @@ export interface WorkspacePersistenceOptions {
 }
 
 export type WorkspaceLifecycle = 'active' | 'trashed';
-export type WorkspaceStorageLocation = 'local' | 'remote' | 'mirrored';
+/** The browser only owns a committed replica of a cloud workbook. */
+export type WorkspaceStorageLocation = 'remote';
 export type WorkspaceSource = 'native' | 'document-import';
 export type WorkspaceRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 
@@ -59,11 +60,21 @@ export interface WorkspaceRecord {
   localRevision: number;
   serverRevision: number;
   storageRevision: number;
-  syncMode: 'remote' | 'local-only';
+  syncMode: 'remote';
   pending: PendingOperationJournal;
+  /** Explicit browser draft; it is never reported as saved until serverRevision advances. */
+  pendingDraft?: PendingDraft | null;
   updatedAt: string;
   metadata: WorkspaceRecordMetadata;
   userState: WorkspaceUserState;
+}
+
+export interface PendingDraft {
+  schema: 'PendingDraft';
+  unitId: string;
+  baseServerRevision: number;
+  snapshot: WorkbookSnapshot;
+  checksum: string;
 }
 
 export interface PendingOperationJournal {
@@ -80,7 +91,7 @@ export interface WorkspaceRecordInput {
   localRevision: number;
   serverRevision: number;
   storageRevision?: number;
-  syncMode: 'remote' | 'local-only';
+  syncMode: 'remote';
   operations: readonly OperationEnvelope[];
   nextClientSequence: number;
   updatedAt?: string;
@@ -89,7 +100,7 @@ export interface WorkspaceRecordInput {
 }
 
 const DEFAULT_WORKSPACE_METADATA: WorkspaceRecordMetadata = {
-  location: 'local',
+  location: 'remote',
   lifecycle: 'active',
   source: 'native',
   role: 'owner',
@@ -105,13 +116,24 @@ const DEFAULT_WORKSPACE_USER_STATE: WorkspaceUserState = {
 
 export function normalizeWorkspaceRecord(record: WorkspaceRecord): WorkspaceRecord {
   const snapshot = migrateStoredWorkbookSnapshot(record.snapshot);
+  const pendingDraft = record.pending.operations.length > 0
+    ? (record.pendingDraft ?? {
+      schema: 'PendingDraft' as const,
+      unitId: record.unitId,
+      baseServerRevision: record.serverRevision,
+      snapshot,
+      checksum: computeChecksum(snapshotPayload(snapshot)),
+    })
+    : null;
   return {
     ...clone(record),
     snapshot,
+    pendingDraft,
     checksum: computeChecksum(snapshotPayload(snapshot)),
     metadata: {
       ...DEFAULT_WORKSPACE_METADATA,
       ...(record.metadata ?? {}),
+      location: 'remote',
     },
     userState: {
       ...DEFAULT_WORKSPACE_USER_STATE,
@@ -161,7 +183,7 @@ interface WorkspaceHeadRecord {
   checkpointRevision: number;
   localRevision: number;
   serverRevision: number;
-  syncMode: 'remote' | 'local-only';
+  syncMode: 'remote';
   storageRevision: number;
   nextClientSequence: number;
   updatedAt: string;
@@ -175,7 +197,7 @@ interface WorkspaceSnapshotRecord {
   checksum: string;
   localRevision: number;
   serverRevision: number;
-  syncMode: 'remote' | 'local-only';
+  syncMode: 'remote';
   updatedAt: string;
 }
 
@@ -291,12 +313,21 @@ export function verifyWorkspaceRecord(record: WorkspaceRecord): boolean {
     || !isSafeNonNegative(record.localRevision)
     || !isSafeNonNegative(record.serverRevision)
     || !isSafeNonNegative(record.storageRevision)
-    || (record.syncMode !== 'remote' && record.syncMode !== 'local-only')
+    || record.syncMode !== 'remote'
     || !record.updatedAt
     || !record.checksum
   ) return false;
-  return verifyChecksum(snapshotPayload(record.snapshot), record.checksum)
-    && verifyPendingOperationJournal(record.pending);
+  if (!verifyChecksum(snapshotPayload(record.snapshot), record.checksum)
+    || !verifyPendingOperationJournal(record.pending)) return false;
+  if (record.pendingDraft !== undefined && record.pendingDraft !== null) {
+    if (record.pendingDraft.schema !== 'PendingDraft'
+      || record.pendingDraft.unitId !== record.unitId
+      || !isSafeNonNegative(record.pendingDraft.baseServerRevision)
+      || !record.pendingDraft.snapshot
+      || record.pendingDraft.snapshot.unitId !== record.unitId
+      || !verifyChecksum(snapshotPayload(record.pendingDraft.snapshot), record.pendingDraft.checksum)) return false;
+  }
+  return true;
 }
 
 export function buildWorkspaceRecord(input: WorkspaceRecordInput): WorkspaceRecord {
@@ -318,8 +349,15 @@ export function buildWorkspaceRecord(input: WorkspaceRecordInput): WorkspaceReco
     localRevision: input.localRevision,
     serverRevision: input.serverRevision,
     storageRevision: input.storageRevision ?? 0,
-    syncMode: input.syncMode,
+    syncMode: 'remote',
     pending,
+    pendingDraft: pending.operations.length > 0 ? {
+      schema: 'PendingDraft',
+      unitId: input.unitId,
+      baseServerRevision: input.serverRevision,
+      snapshot,
+      checksum: computeChecksum(snapshotPayload(snapshot)),
+    } : null,
     updatedAt: input.updatedAt ?? new Date().toISOString(),
     metadata: {
       ...DEFAULT_WORKSPACE_METADATA,
@@ -614,7 +652,7 @@ export class WorkspacePersistence {
     snapshot: WorkbookSnapshot,
     localRevision: number,
     serverRevision: number,
-    syncMode: 'remote' | 'local-only',
+    syncMode: 'remote',
     pendingJournal = this.operationJournal.read(snapshot.unitId),
     metadata?: Partial<WorkspaceRecordMetadata>,
     userState?: Partial<WorkspaceUserState>,
@@ -645,7 +683,7 @@ export class WorkspacePersistence {
     snapshot: WorkbookSnapshot,
     localRevision: number,
     serverRevision: number,
-    syncMode: 'remote' | 'local-only',
+    syncMode: 'remote',
     artifact: NativeDocumentArtifact,
     pendingJournal = this.operationJournal.read(snapshot.unitId),
     metadata?: Partial<WorkspaceRecordMetadata>,
@@ -755,7 +793,7 @@ export interface PersistenceSnapshotMeta {
   hasPendingOperations: boolean;
   pendingOperationCount: number;
   localRevision?: number;
-  syncMode?: 'remote' | 'local-only';
+  syncMode?: 'remote';
 }
 
 export function buildPersistenceMeta(

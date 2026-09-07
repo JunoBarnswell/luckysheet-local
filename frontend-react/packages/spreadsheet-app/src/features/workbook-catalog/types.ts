@@ -20,6 +20,7 @@ import type {
   UserPreferencesPatch,
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
+  WorkbookManifest,
   WorkbookUserState as ProtocolWorkbookUserState,
   WorkspaceFolder as ProtocolWorkspaceFolder,
   WorkspaceSpace as ProtocolWorkspaceSpace,
@@ -33,7 +34,7 @@ import type {
 } from '../persistence/storage';
 
 export type WorkbookRole = WorkbookAclRole | WorkspaceRole;
-export type WorkbookCatalogView = 'all' | 'recent' | 'local' | 'owned' | 'shared' | 'trash';
+export type WorkbookCatalogView = 'all' | 'recent' | 'owned' | 'shared' | 'trash';
 export type WorkbookStorageLocation = WorkspaceStorageLocation;
 export type WorkbookLifecycle = WorkspaceRecordMetadata['lifecycle'];
 export type WorkbookSource = WorkspaceRecordMetadata['source'];
@@ -81,7 +82,7 @@ export interface WorkbookCatalogEntry {
 
 export interface WorkbookCatalogCreateInput {
   snapshot: WorkbookSnapshot;
-  destination?: 'local' | 'remote';
+  destination?: 'remote';
   metadata?: WorkbookCreateMetadata;
   role?: WorkbookRole;
   source?: WorkbookSource;
@@ -90,7 +91,7 @@ export interface WorkbookCatalogCreateInput {
 export interface WorkbookCatalogImportInput {
   fileName: string;
   buffer: ArrayBuffer;
-  destination?: 'local' | 'remote';
+  destination?: 'remote';
   folderId?: string;
   spaceId?: string;
   options?: Partial<NativeDocumentImportOptions>;
@@ -133,23 +134,24 @@ export interface WorkbookResolution {
   schema: 'WorkbookResolution';
   unitId: string;
   /** Resolution source identifies the authoritative owner, never a cache. */
-  source: 'local' | 'remote' | 'shared';
-  mode: 'local' | 'remote';
+  source: 'remote' | 'shared';
+  mode: 'remote';
   lifecycle: 'active';
   binding: WorkbookResolutionBinding;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   revision: number;
   access: WorkbookAccessResponse | null;
   localRecord: WorkspaceRecord | null;
 }
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
-  | 'getSnapshot'
+  | 'getManifest'
+  | 'createKernelWorkbook'
+  | 'commitKernelOperation'
   | 'listWorkbookAcl'
   | 'putWorkbookAcl'
   | 'deleteWorkbookAcl'
   | 'getAccess'
-  | 'createWorkbook'
   | 'listWorkbookPage'
   | 'updateWorkbook'
   | 'copyWorkbook'
@@ -161,7 +163,6 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'createWorkbookImport'
   | 'putWorkbookSourceArtifact'
   | 'getWorkbookSourceArtifact'
-  | 'commitOperation'
   | 'checkpointWorkbook'
   | 'listSpaces'
   | 'getUserPreferences'

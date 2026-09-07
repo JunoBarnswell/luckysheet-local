@@ -7,6 +7,7 @@ public record WorkbookArtifactResponse(
         String fileName,
         String mimeType,
         String checksum,
+        long revision,
         long byteLength,
         Instant createdAt,
         Instant updatedAt

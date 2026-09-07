@@ -11,6 +11,8 @@ public record QueryExecutionResponse(
         @JsonProperty("connectorId") String connectorId,
         @JsonProperty("sourceRef") String sourceRef,
         @JsonProperty("sourceRevision") long sourceRevision,
+        @JsonProperty("executionToken") String executionToken,
+        @JsonProperty("resultHash") String resultHash,
         @JsonProperty("columns") List<String> columns,
         @JsonProperty("rows") List<List<JsonNode>> rows,
         @JsonProperty("rowCount") long rowCount,

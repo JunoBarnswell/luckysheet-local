@@ -1,0 +1,9 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+const directory = path.resolve('frontend-react/apps/web/public/kernel');
+const manifest = JSON.parse(await readFile(path.join(directory, 'kernel-manifest.json'), 'utf8'));
+const bytes = await readFile(path.join(directory, manifest.artifact));
+const sha256 = createHash('sha256').update(bytes).digest('hex');
+if (manifest.bytes !== bytes.byteLength || manifest.sha256 !== sha256) throw new Error('Kernel WASM manifest does not match artifact');
+console.log(`Kernel manifest verified: ${sha256}`);

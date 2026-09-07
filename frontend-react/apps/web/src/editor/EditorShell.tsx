@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { DesignerShell, Box, Inline } from "@react-sheets/ui-system";
+import { DesignerShell, Box, DocumentBar, Inline } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
 import { StatusBar } from "../components/StatusBar";
@@ -81,6 +81,18 @@ export function EditorShell({
   return (
     <>
       <DesignerShell
+        documentBar={(
+          <DocumentBar
+            workbookName={state.workbookName}
+            saveState={state.saveState}
+            onSave={saveWorkbook}
+            onUndo={() => session.undo()}
+            onRedo={() => session.redo()}
+            onSearch={() => dispatchSessionIntent({ type: "notice", message: "搜索请使用 Ctrl+F 或开始选项卡中的查找和选择。" })}
+            onComments={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "选择单元格后可在审阅工具中查看评论。" })}
+            onShare={copyWorkbookLink}
+          />
+        )}
         formulaBar={(
           <FormulaBar
             cellName={state.activeCell}

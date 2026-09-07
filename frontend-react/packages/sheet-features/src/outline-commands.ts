@@ -80,13 +80,6 @@ export interface OutlineToggleParams {
 export function registerOutlineCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation({
     id: 'outline.set',
-    handler: (item, context) => {
-    if (!isOutlineMutation(item.params)) throw new Error('Invalid outline.set mutation payload');
-    const params = item.params;
-    const sheet = context.workbook.getSheet(params.sheetId);
-    validateOutline(params.outline, sheet);
-    sheet.outline = structuredClone(params.outline);
-    },
     metadata: {
       schema: { name: 'OutlineMutation', validate: isOutlineMutation },
       permission: { capability: 'sheet.outline.write', roles: ['owner', 'editor'] },
@@ -112,7 +105,6 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
         inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
-        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -135,7 +127,6 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
         inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
-        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -158,7 +149,6 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
         inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
-        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -182,7 +172,6 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
         inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
-        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

@@ -15,7 +15,7 @@ import { WorkbookTopBar } from './WorkbookTopBar';
 const infoSections = new Set<WorkbookHubSection>(['info', 'save', 'import', 'export', 'close', 'options']);
 
 function categoryItems(section: WorkbookHubSection, tab: WorkbookCategoryTab, items: WorkbookHubPageProps['items']) {
-  return items.filter((item) => {
+  const filtered = items.filter((item) => {
     if (section === 'trash') return item.lifecycle === 'trashed';
     if (item.lifecycle === 'trashed') return false;
     if (section === 'shared' || tab === 'shared') return item.role !== 'owner';
@@ -23,6 +23,14 @@ function categoryItems(section: WorkbookHubSection, tab: WorkbookCategoryTab, it
     if (tab === 'cloud') return item.storageLocation !== 'local';
     return true;
   });
+  if (section === 'start' || section === 'recent' || tab === 'recent') {
+    return [...filtered].sort((left, right) => {
+      const leftTime = Date.parse(left.updatedAt);
+      const rightTime = Date.parse(right.updatedAt);
+      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+    });
+  }
+  return filtered;
 }
 
 function SectionTitle({ section }: { section: WorkbookHubSection }) {

@@ -1,4 +1,5 @@
 import { pivotSourceIndexTransferables } from './source-index';
+import { executePivotAnalytics } from './rust-analytics';
 import { PivotTaskEvaluator } from './task-worker-entry';
 import {
   assertPivotTaskResult,
@@ -61,6 +62,7 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
   submit(request: Exclude<PivotTaskRequest, { kind: 'cancel' }>): Promise<PivotTaskResult> {
     if (this.disposed) return Promise.resolve(failedResult(request, 'PIVOT_TASK_FAILED', 'Pivot worker has been disposed'));
     if (this.pending.has(request.taskId)) return Promise.resolve(failedResult(request, 'PIVOT_TASK_PROTOCOL_ERROR', `Pivot task already exists: ${request.taskId}`));
+    if (request.kind === 'calculate' && request.kernel) return this.submitKernel(request);
     return new Promise<PivotTaskResult>((resolve) => {
       const timeout = setTimeout(() => {
         const current = this.pending.get(request.taskId);
@@ -83,6 +85,31 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
         resolve(failedResult(request, 'PIVOT_TASK_FAILED', error instanceof Error ? error.message : 'Pivot worker postMessage failed'));
       }
     });
+  }
+
+  private submitKernel(request: PivotCalculateRequest): Promise<PivotTaskResult> {
+    return Promise.resolve().then(() => {
+      const binding = request.kernel!;
+      const result = executePivotAnalytics({
+        unitId: binding.unitId,
+        revision: binding.revision,
+        source: binding.sourceRange,
+        definition: request.definition,
+        filters: binding.filters,
+        valueFilters: binding.valueFilters,
+        viewport: binding.viewport,
+      });
+      return {
+        protocol: PIVOT_TASK_PROTOCOL,
+        version: PIVOT_TASK_VERSION,
+        taskId: request.taskId,
+        generation: request.generation,
+        status: 'completed',
+        sourceIdentity: request.sourceIdentity,
+        sourceRevision: request.revisions.sourceRevision,
+        result,
+      } satisfies PivotTaskResult;
+    }).catch((error) => pivotTaskFailure(request, error));
   }
 
   cancel(taskId: string): void {
@@ -210,6 +237,29 @@ export class InlinePivotTaskPort implements PivotTaskPort {
 
   submit(request: Exclude<PivotTaskRequest, { kind: 'cancel' }>): Promise<PivotTaskResult> {
     if (this.disposed) return Promise.resolve(failedResult(request, 'PIVOT_TASK_FAILED', 'Inline Pivot task port has been disposed'));
+    if (request.kind === 'calculate' && request.kernel) {
+      return Promise.resolve().then(() => {
+        const result = executePivotAnalytics({
+          unitId: request.kernel!.unitId,
+          revision: request.kernel!.revision,
+          source: request.kernel!.sourceRange,
+          definition: request.definition,
+          filters: request.kernel!.filters,
+          valueFilters: request.kernel!.valueFilters,
+          viewport: request.kernel!.viewport,
+        });
+        return {
+          protocol: PIVOT_TASK_PROTOCOL,
+          version: PIVOT_TASK_VERSION,
+          taskId: request.taskId,
+          generation: request.generation,
+          status: 'completed',
+          sourceIdentity: request.sourceIdentity,
+          sourceRevision: request.revisions.sourceRevision,
+          result,
+        } satisfies PivotTaskResult;
+      }).catch((error) => pivotTaskFailure(request, error));
+    }
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(request.taskId)) return;

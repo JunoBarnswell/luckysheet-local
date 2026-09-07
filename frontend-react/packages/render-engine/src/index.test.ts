@@ -163,6 +163,14 @@ test('RenderPlan redraws scrollable panes while preserving header offset', () =>
   assert.equal(scroll.layers[4]?.mode, 'full');
 });
 
+test('RenderPlan carries the canonical header origin to chrome consumers', () => {
+  const headerOffset = { x: 47, y: 24 };
+  const plan = calculateRenderPlan({ skeleton, viewport: viewport(), headerOffset });
+  assert.deepEqual(plan.headerOffset, headerOffset);
+  assert.equal(plan.paneMap.panes[0]?.screenRect.x, headerOffset.x);
+  assert.equal(plan.paneMap.panes[0]?.screenRect.y, headerOffset.y);
+});
+
 test('RenderPlan chromeDirty only redraws chrome layer', () => {
   const chromeOnly = calculateRenderPlan({
     skeleton,

@@ -226,7 +226,7 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[104px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[13px] leading-4 !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>svg]:!shrink-0' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[58px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-0.5 overflow-hidden rounded-none px-1 text-center text-[11px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}

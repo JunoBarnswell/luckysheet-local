@@ -4,6 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@react-sheets/kernel-client": "file:../kernel-client",
     "@react-sheets/formula-engine": "file:../formula-engine"
   }
 }

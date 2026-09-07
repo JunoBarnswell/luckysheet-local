@@ -1,6 +1,4 @@
 package com.xc.luckysheet.server.web;
-
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
-
-public record CommitResponse(CommittedOperationEnvelope operation) {
-}
+import com.fasterxml.jackson.databind.JsonNode;
+public record CommitResponse(CommittedOperationEnvelope operation, JsonNode changeSet) { }

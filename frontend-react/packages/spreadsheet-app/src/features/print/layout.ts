@@ -1,5 +1,6 @@
 import { sha256Hex, type ChartSeriesModel, type RangeRef, type SheetId, type WorkbookModel, type WorksheetModel } from '@react-sheets/core-model';
 import { usedRangeOfSheet } from '../../application-helpers';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 import {
   computePrintPages,
   createDefaultPrintLayout,
@@ -55,6 +56,7 @@ export interface PrintProjectionOptions {
   assetUrls?: Readonly<Record<string, string>>;
   /** Runtime-provided Pivot/table chart data; worksheet charts use readCell. */
   readChart?: (payload: import('@react-sheets/core-model').ChartDrawingPayload) => PrintChartProjection | undefined;
+  resolvedVisibility: ResolvedVisibility;
 }
 
 function mmToPt(mm: number): number {
@@ -177,8 +179,9 @@ export function buildPrintLayoutModel(
   uiLayout: PrintLayout,
   printArea: RangeRef,
   document?: PrintDocument,
+  resolvedVisibility: ResolvedVisibility,
 ): PrintLayoutModel {
-  const base = createDefaultPrintLayout(unitId, sheetId);
+  const base = createDefaultPrintLayout(unitId, sheetId, resolvedVisibility);
   return {
     ...base,
     pageSetup: printLayoutToPageSetup(uiLayout),
@@ -237,8 +240,8 @@ export function buildPrintProjection(workbook: WorkbookModel, page: PrintPageInf
   const sheet = workbook.getSheet(page.sheetId);
   const rowHeights = page.sheetId === sheet.id ? sheet.rowHeightsPx : {};
   const columnWidths = page.sheetId === sheet.id ? sheet.columnWidthsPx : {};
-  const hiddenRows = new Set(sheet.hiddenRows);
-  const hiddenColumns = new Set(sheet.hiddenColumns);
+  const hiddenRows = new Set([...options.resolvedVisibility.rows.keys()]);
+  const hiddenColumns = new Set([...options.resolvedVisibility.columns.keys()]);
   const baseRows = Array.from({ length: page.range.endRow - page.range.startRow + 1 }, (_, offset) => page.range.startRow + offset).filter((row) => !hiddenRows.has(row));
   const baseColumns = Array.from({ length: page.range.endColumn - page.range.startColumn + 1 }, (_, offset) => page.range.startColumn + offset).filter((column) => !hiddenColumns.has(column));
   const repeatedRows = page.repeatRows
@@ -344,6 +347,7 @@ export function buildPrintSnapshot(
   activeSheetId: SheetId,
   uiLayout?: PrintLayout,
   selectionRange?: RangeRef,
+  resolvedVisibility?: import('@react-sheets/sheet-features').ResolvedVisibility,
 ): PrintSnapshot {
   const sheet = workbook.getSheet(activeSheetId);
   const document = getPrintDocument(workbook, activeSheetId);
@@ -367,11 +371,11 @@ export function buildPrintSnapshot(
   };
   const storedArea = document.printAreas.find((area) => area.sheetId === activeSheetId)?.range;
   const printArea = selectionRange ? resolvePrintArea(sheet, selectionRange) : storedArea ?? resolvePrintArea(sheet);
-  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document);
+  if (!resolvedVisibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: print snapshot requires the kernel visibility projection');
+  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document, resolvedVisibility);
   model.rowHeights = { ...sheet.rowHeightsPx };
   model.columnWidths = { ...sheet.columnWidthsPx };
-  model.hiddenRows = new Set(sheet.hiddenRows);
-  model.hiddenColumns = new Set(sheet.hiddenColumns);
+  model.resolvedVisibility = resolvedVisibility;
   const rowHeight = averageRowHeight(sheet, printArea);
   const colWidth = averageColumnWidth(sheet, printArea);
   const pages = computePrintPages(model, rowHeight, colWidth);

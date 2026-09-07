@@ -112,7 +112,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
 const HOME_SMALL_ACTION_CLASS = '!h-6 !min-h-0 !w-6 !rounded-[var(--home-ribbon-radius)] !px-1';
 const HOME_ALIGNMENT_ACTION_CLASS = '!h-[22px] !min-h-0 !w-[22px] !rounded-[var(--home-ribbon-radius)] !px-1';
 const HOME_INLINE_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 rounded-[var(--home-ribbon-radius)] !px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)]';
-const HOME_LARGE_TILE_CLASS = '!h-[104px] !min-h-0 !max-w-none flex-col gap-1 rounded-[var(--home-ribbon-radius)] !px-2 !py-1 text-center text-[13px] font-normal leading-[16px] text-[var(--home-ribbon-color-text)] !whitespace-normal';
+const HOME_LARGE_TILE_CLASS = '!h-[58px] !min-h-0 !max-w-none flex-col gap-0.5 rounded-[var(--home-ribbon-radius)] !px-2 !py-0.5 text-center text-[11px] font-normal leading-[13px] text-[var(--home-ribbon-color-text)] !whitespace-normal';
 const HOME_EDITING_ACTION_CLASS = '!h-6 !min-h-0 justify-start gap-1 overflow-hidden rounded-[var(--home-ribbon-radius)] !px-1 text-[12px] font-normal leading-[14px] text-[var(--home-ribbon-color-text)] whitespace-nowrap';
 const HOME_EDITING_MENU_CLASS = '!h-6 !min-h-0 !w-4 rounded-[var(--home-ribbon-radius)] !px-0';
 
@@ -218,9 +218,9 @@ export function HomeRibbon({
     const iconNode = iconForSurface(surface.id);
     if (surface.id.endsWith('.dialog-launcher')) return renderCommand(surface.commandId, { iconOverride: 'arrow-down', iconOnly: true, className: '!h-4 !min-h-0 !w-4 rotate-[-45deg] rounded-none p-0', ribbonSurfaceId: surface.id });
     if (surface.id === 'clipboard.paste') {
-      return <Inline gap="none" className="h-[104px] items-stretch">
+      return <Inline gap="none" className="h-[58px] items-stretch">
         {renderCommand(surface.commandId, { iconNode, tile: true, className: `${HOME_LARGE_TILE_CLASS} !w-[42px] !min-w-[42px] rounded-r-none`, ribbonSurfaceId: surface.id })}
-        <DropdownMenu align="left" trigger={<Button aria-label={translateRibbonText(locale, 'commands.pasteSpecial')} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="!h-[104px] !min-h-0 !w-4 rounded-l-none px-0" />}>
+        <DropdownMenu align="left" trigger={<Button aria-label={translateRibbonText(locale, 'commands.pasteSpecial')} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="!h-[58px] !min-h-0 !w-4 rounded-l-none px-0" />}>
           <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('clipboard.paste').map((member) => renderSurface(member, 'menu'))}</Stack>
         </DropdownMenu>
       </Inline>;

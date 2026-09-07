@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
         "COORDINATION_MULTI_INSTANCE=false",
         "COORDINATION_REDIS_ENABLED=false"
 })
-class CatalogPersistenceContextTest {
+class CatalogPersistenceContextTest extends com.xc.luckysheet.server.NativeKernelIntegrationTestSupport {
     @Autowired
     private WorkbookCatalogService catalog;
 
@@ -46,10 +46,7 @@ class CatalogPersistenceContextTest {
 
     @Test
     void catalogCreatesPersonalSpaceAndReturnsOneActorEnrichedSummary() throws Exception {
-        var snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":10,"unitId":"book-context","name":"Context","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"calculationSettings":{"mode":"automatic","iterativeCalculation":false,"maximumIterations":100,"maximumChange":0.001,"precisionAsDisplayed":false,"calculateBeforeSave":true,"fullCalculationOnLoad":false},"editingOptions":{"allowEditDirectly":true,"moveAfterEnter":true,"enterDirection":"down","formulaAutoComplete":true,"valueAutoComplete":true,"fixedDecimalPlaces":null},"definedNameModels":[],"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
-                """);
-        catalog.create(new CreateWorkbookRequest("book-context", "Context", snapshot), "actor-context");
+        catalog.create(new CreateWorkbookRequest("book-context", "Context", null, null, null, null), "actor-context");
         var summaries = catalog.list("actor-context", "recent", null, null, null, 0, 50);
         org.junit.jupiter.api.Assertions.assertEquals(1, summaries.items().size());
         org.junit.jupiter.api.Assertions.assertEquals("owner", summaries.items().get(0).role().wireValue());

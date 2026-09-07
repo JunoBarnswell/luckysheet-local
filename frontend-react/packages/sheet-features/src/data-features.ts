@@ -160,14 +160,6 @@ function applyRangeValues(
       params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
     })),
-    apply: () => {
-      for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
-        for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset += 1) {
-          const value = values[rowOffset]?.[columnOffset];
-          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
-        }
-      }
-    },
   });
 }
 
@@ -188,18 +180,6 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
       params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
     })),
-    apply: () => {
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const current = sheet.cells.get(row, column);
-          if (!current) continue;
-          const next = { ...current, value: null };
-          delete next.formula;
-          delete next.displayValue;
-          sheet.cells.set(row, column, next);
-        }
-      }
-    },
   });
 }
 
@@ -214,7 +194,6 @@ function applyRowsInsert(context: CommandContext, sheetId: string, at: number, c
     params: { sheetId, at, count },
     affectedRanges,
     inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }),
   });
 }
 
@@ -240,7 +219,6 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
         affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
       })),
     ],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }),
   });
 }
 
@@ -252,7 +230,6 @@ function applyOutline(context: CommandContext, sheetId: string, next: import('@r
     params: { sheetId, outline: structuredClone(next) },
     affectedRanges,
     inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, outline: structuredClone(previous) }, affectedRanges }],
-    apply: () => { context.workbook.getSheet(sheetId).outline = structuredClone(next); },
   });
 }
 
@@ -451,7 +428,8 @@ export class ConditionalFormatRuntime {
     private readonly resolvedCells?: ResolvedCellReader,
     formulaEngine?: FormulaEngine,
   ) {
-    this.formulaEngine = formulaEngine ?? createRuleFormulaEngine(sheet, resolvedCells);
+    if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: conditional rules require the workbook-owned Rust FormulaEngine');
+    this.formulaEngine = formulaEngine;
     this.rules = [...sheet.conditionalFormats].sort((left, right) =>
       (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER));
     for (const rule of this.rules) for (const range of rule.ranges) this.ruleIndex.add(range, rule);
@@ -577,8 +555,9 @@ export function computeConditionalOverlays(sheet: WorksheetModel, resolvedCells?
   return new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine).resolveAll();
 }
 
-function createDefaultConditionalVisualResolver(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader): FilterVisualResolver {
-  const runtime = new ConditionalFormatRuntime(sheet, resolvedCells);
+function createDefaultConditionalVisualResolver(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): FilterVisualResolver {
+  if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: filter visual evaluation requires the workbook-owned Rust FormulaEngine');
+  const runtime = new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine);
   return createEffectiveFilterVisualResolver((row, column) => runtime.resolveCell(row, column));
 }
 
@@ -631,22 +610,6 @@ function evaluateHighlight(
   }
 }
 
-function createRuleFormulaEngine(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: sheet.id, recalculationMode: 'manual' });
-  // Values are loaded before formulas so rule predicates observe one complete
-  // workbook input set even when their target cell is itself a formula.
-  for (const { cell, row, column } of sheet.cells.entries()) {
-    if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) continue;
-    const value = resolvedCells?.resolve(sheet.id, row, column).value ?? cell.value ?? null;
-    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') engine.setValue({ sheetId: sheet.id, row, column }, value);
-  }
-  for (const { cell, row, column } of sheet.cells.entries()) {
-    if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula({ sheetId: sheet.id, row, column }, cell.formula);
-  }
-  engine.recalculate();
-  return engine;
-}
-
 function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): boolean {
   const source = formula.trim();
   if (!source) return false;
@@ -654,7 +617,8 @@ function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, 
   try {
     const parsed = compiledFormula ?? parseFormula(source.startsWith('=') ? source : `=${source}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    const evaluator = formulaEngine ?? createRuleFormulaEngine(sheet, resolvedCells);
+    if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: conditional formula evaluation requires the workbook-owned Rust FormulaEngine');
+    const evaluator = formulaEngine;
     const result = evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column });
     if (isFormulaError(result)) return false;
     if (isArrayValue(result)) return Boolean(result[0]?.[0]);
@@ -767,9 +731,10 @@ export function computeFilterHiddenRows(
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
+  formulaEngine?: FormulaEngine,
 ): Set<number> {
   const hidden = new Set<number>();
-  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet, undefined, formulaEngine);
   let filters: import('@react-sheets/core-model').AutoFilterModel[] = [];
   try {
     filters = resolveAutoFilters(sheet).map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter));
@@ -1321,7 +1286,8 @@ function evaluateValidationFormula(
   try {
     const parsed = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    const evaluator = options?.formulaEngine ?? createRuleFormulaEngine(sheet);
+    if (!options?.formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: validation formula evaluation requires the workbook-owned Rust FormulaEngine');
+    const evaluator = options.formulaEngine;
     const overrides = candidate === undefined ? [] : [{ address: { sheetId: sheet.id, row, column }, value: candidate }];
     return evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column }, overrides);
   } catch (error) {
@@ -1735,14 +1701,6 @@ function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<
 export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<RowsPermutedMutationParams>({
     id: 'rows.permuted',
-    handler: (item, context) => {
-      if (!isRowsPermutedMutation(item.params)) throw new Error('Invalid rows.permuted mutation payload');
-      const params = item.params;
-      const range = params.range;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
-      setAppliedSortState(sheet, params.sortState);
-    },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
@@ -1826,7 +1784,6 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           },
           affectedRanges,
         }],
-        apply: () => applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

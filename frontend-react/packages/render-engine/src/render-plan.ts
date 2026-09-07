@@ -1,6 +1,7 @@
 import { mergeCellRanges } from './dirty-ranges';
 import { intersectRect, mergeRects, translateRect } from './geometry';
 import { SheetSkeleton } from './sheet-skeleton';
+import { computePaneMapFromKernel } from './kernel-geometry';
 import {
   DEFAULT_LAYER_DEFINITIONS,
   COL_HEADER_HEIGHT,
@@ -43,6 +44,8 @@ export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'scroll-redraw'
 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
+  /** Canonical header origin supplied by the geometry owner. */
+  headerOffset: Point;
   visibleRange: CellRange | null;
   paneMap: PaneMap;
   /** 冻结窗格切分结果(无冻结时为单个 main 窗格) */
@@ -56,6 +59,7 @@ export interface RenderPlan {
 }
 
 export interface RenderPlanInput {
+  sheetId?: string;
   skeleton: SheetSkeleton;
   viewport: ViewportSnapshot;
   previousViewport?: ViewportSnapshot | null;
@@ -72,54 +76,13 @@ export interface RenderPlanInput {
 
 /** 计算文档窗格的屏幕矩形、内容原点与可见范围。 */
 export function computePaneMap(
+  sheetId: string,
   skeleton: SheetSkeleton,
   viewport: ViewportSnapshot,
   pane: PaneLayout | null,
   headerOffset: Point | null,
 ): PaneMap {
-  const originX = headerOffset?.x ?? 0;
-  const originY = headerOffset?.y ?? 0;
-  const gridWidth = Math.max(0, viewport.width - originX);
-  const gridHeight = Math.max(0, viewport.height - originY);
-
-  if (!pane || pane.kind === 'none' || (pane.xSplit <= 0 && pane.ySplit <= 0)) {
-    return createPaneMap([{
-      id: 'main',
-      screenRect: { x: originX, y: originY, width: gridWidth, height: gridHeight },
-      contentOrigin: { x: viewport.scrollX, y: viewport.scrollY },
-      visibleRange: skeleton.getVisibleRange({
-        x: viewport.scrollX,
-        y: viewport.scrollY,
-        width: gridWidth,
-        height: gridHeight,
-      }),
-    }]);
-  }
-
-  const frozen = pane.kind === 'frozen';
-  const xSplit = frozen
-    ? Math.max(0, Math.min(Math.trunc(pane.xSplit), skeleton.columnCount))
-    : 0;
-  const ySplit = frozen
-    ? Math.max(0, Math.min(Math.trunc(pane.ySplit), skeleton.rowCount))
-    : 0;
-  let frozenLeft = 0;
-  for (let c = 0; c < xSplit; c++) frozenLeft += skeleton.getColumnWidth(c);
-  let frozenTop = 0;
-  for (let r = 0; r < ySplit; r++) frozenTop += skeleton.getRowHeight(r);
-  if (!frozen) {
-    const splitX = pointsToPixels(pane.xSplit / 20);
-    const splitY = pointsToPixels(pane.ySplit / 20);
-    return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, 0, 0, 0, 0));
-  }
-
-  frozenLeft = Math.min(frozenLeft, gridWidth);
-  frozenTop = Math.min(frozenTop, gridHeight);
-  // startRow/startColumn describe the initial scroll position saved by Excel;
-  // they are seeded into Viewport when the pane is installed, not used as an
-  // immutable content origin. This keeps rows between the frozen boundary and
-  // the saved position reachable by scrolling back.
-  return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, frozenLeft, frozenTop, 0, 0, ySplit, xSplit), true);
+  return computePaneMapFromKernel(sheetId, skeleton, viewport, pane, headerOffset);
 }
 
 function createPaneMap(panes: RenderPane[], enforceDisjoint = false): PaneMap {
@@ -320,7 +283,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   const previousViewport = input.previousViewport ?? null;
   const hasPrevious = previousViewport !== null;
   const baseScrollDelta = calculateScrollDelta(previousViewport, input.viewport);
-  const paneMap = computePaneMap(input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
+  const paneMap = computePaneMap(input.sheetId ?? '', input.skeleton, input.viewport, input.pane ?? null, input.headerOffset ?? null);
   const panes = [...paneMap.panes];
   const scrollDelta = resolvePaneScrollDelta(baseScrollDelta, panes);
   const dirtyRanges = mergeCellRanges(input.dirtyRanges ?? []);
@@ -363,6 +326,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
 
   return {
     viewport: { ...input.viewport },
+    headerOffset: { ...(input.headerOffset ?? defaultHeaderOffset()) },
     paneMap,
     visibleRange: panes.at(-1)?.visibleRange ?? null,
     panes,

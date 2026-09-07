@@ -53,7 +53,7 @@ export interface ScenarioResult {
   outputs: ScenarioCellOutput[];
 }
 
-/** A deterministic write plan; applying it is the only side effect of a command. */
+/** A deterministic proposal for a later explicit edit; planning has no side effect. */
 export interface WhatIfCellWrite {
   sheetId: string;
   row: number;
@@ -88,23 +88,12 @@ function scalarValue(value: unknown): FormulaScalar {
   return String(value);
 }
 
-function createPlanningFormulaEngine(workbook: WorkbookModel): FormulaEngine {
-  const firstSheet = workbook.getSheets()[0];
-  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.primarySheetId });
-  for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
-      const address = { sheetId: sheet.id, row, column };
-      if (cell.formula) engine.setFormula(address, cell.formula);
-      else engine.setValue(address, (cell.value ?? null) as never);
-    });
-  }
-  engine.setDefinedNameModels(workbook.definedNameModels);
-  engine.recalculate();
-  return engine;
-}
-
-function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, column: number): FormulaScalar {
-  return scalarValue(engine.getCellValue({ sheetId, row, column }));
+function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, column: number, overrides: readonly { address: { sheetId: string; row: number; column: number }; value: CellValue }[] = []): FormulaScalar {
+  const address = { sheetId, row, column };
+  const result = engine.getCellResult(address);
+  if (result?.formula !== undefined) return scalarValue(engine.evaluateFormula(result.formula, address, overrides));
+  const override = overrides.find((entry) => entry.address.sheetId === sheetId && entry.address.row === row && entry.address.column === column);
+  return override ? scalarValue(override.value) : scalarValue(engine.getCellValue(address));
 }
 
 function isSpillCell(workbook: WorkbookModel, sheetId: string, row: number, column: number): boolean {
@@ -116,8 +105,11 @@ function isSpillCell(workbook: WorkbookModel, sheetId: string, row: number, colu
   ));
 }
 
-function hasArrayResult(engine: FormulaEngine, sheetId: string, row: number, column: number): boolean {
-  return Array.isArray(engine.getCellValue({ sheetId, row, column }));
+function hasArrayResult(engine: FormulaEngine, sheetId: string, row: number, column: number, overrides: readonly { address: { sheetId: string; row: number; column: number }; value: CellValue }[] = []): boolean {
+  const address = { sheetId, row, column };
+  const result = engine.getCellResult(address);
+  const value = result?.formula !== undefined ? engine.evaluateFormula(result.formula, address, overrides) : readFormulaScalar(engine, sheetId, row, column, overrides);
+  return Array.isArray(value);
 }
 
 function readWorkbookScalar(workbook: WorkbookModel, sheetId: string, row: number, column: number): FormulaScalar {
@@ -145,7 +137,7 @@ function normalizeGoalSeekValue(value: number, tolerance: number): number {
   return Math.round(value * factor) / factor;
 }
 
-export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: GoalSeekParams): GoalSeekPlan {
+export function planGoalSeek(workbook: WorkbookModel, engine: FormulaEngine, sheetId: string, params: GoalSeekParams): GoalSeekPlan {
   const invalid = !validCell(sheetId, params.setCell.row, params.setCell.column, workbook)
     || !validCell(sheetId, params.byChangingCell.row, params.byChangingCell.column, workbook);
   const maxIterations = Number.isFinite(params.maxIterations ?? 64) ? Math.floor(params.maxIterations ?? 64) : 0;
@@ -169,7 +161,6 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
     };
   }
 
-  const engine = createPlanningFormulaEngine(workbook);
   const { setCell, byChangingCell } = params;
   let low = -1_000_000;
   let high = 1_000_000;
@@ -178,13 +169,12 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
   let iterations = 0;
   let spillDetected = false;
   const writeGuess = (guess: number): number => {
-    engine.setValue({ sheetId, row: byChangingCell.row, column: byChangingCell.column }, guess);
-    engine.recalculate({ sheetId, row: setCell.row, column: setCell.column });
-    if (hasArrayResult(engine, sheetId, setCell.row, setCell.column)) {
+    const overrides = [{ address: { sheetId, row: byChangingCell.row, column: byChangingCell.column }, value: guess as CellValue }];
+    if (hasArrayResult(engine, sheetId, setCell.row, setCell.column, overrides)) {
       spillDetected = true;
       return Number.NaN;
     }
-    const value = readFormulaScalar(engine, sheetId, setCell.row, setCell.column);
+    const value = readFormulaScalar(engine, sheetId, setCell.row, setCell.column, overrides);
     return typeof value === 'number' ? value : Number(value);
   };
 
@@ -270,7 +260,7 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
   };
 }
 
-export function planScenario(workbook: WorkbookModel, sheetId: string, scenario: ScenarioDefinition): ScenarioPlan {
+export function planScenario(workbook: WorkbookModel, engine: FormulaEngine, sheetId: string, scenario: ScenarioDefinition): ScenarioPlan {
   if (scenario.changingCells.length === 0) {
     return {
       kind: 'scenario',
@@ -292,9 +282,7 @@ export function planScenario(workbook: WorkbookModel, sheetId: string, scenario:
     seen.add(key);
   }
 
-  const engine = createPlanningFormulaEngine(workbook);
-  for (const cell of sortedChanges) engine.setValue({ sheetId, row: cell.row, column: cell.column }, cell.value);
-  engine.recalculate();
+  const overrides = sortedChanges.map((cell) => ({ address: { sheetId, row: cell.row, column: cell.column }, value: cell.value as CellValue }));
   const resultCells = scenario.resultCells?.length
     ? scenario.resultCells
     : scenario.changingCells.map((cell) => ({ row: cell.row, column: cell.column }));
@@ -308,9 +296,9 @@ export function planScenario(workbook: WorkbookModel, sheetId: string, scenario:
   const outputs = resultCells.map((cell) => ({
     row: cell.row,
     column: cell.column,
-    value: readFormulaScalar(engine, sheetId, cell.row, cell.column),
+    value: readFormulaScalar(engine, sheetId, cell.row, cell.column, overrides),
   }));
-  if (resultCells.some((cell) => hasArrayResult(engine, sheetId, cell.row, cell.column))) {
+  if (resultCells.some((cell) => hasArrayResult(engine, sheetId, cell.row, cell.column, overrides))) {
     return {
       kind: 'scenario',
       result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario result contains a spill value', outputs: [] },

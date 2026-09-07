@@ -1,8 +1,4 @@
-import { CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
-import { DrawingRuntime } from '../drawing';
-import { registerSpreadsheetFeatures } from '../../feature-registry';
 import type { HistoryEntryMeta, RestoreCommandParams } from './index';
 
 export function describeRevisionMutations(record: RevisionRecord): string {
@@ -13,51 +9,19 @@ export function describeRevisionMutations(record: RevisionRecord): string {
 }
 
 export function revisionToHistoryMeta(record: RevisionRecord): HistoryEntryMeta {
-  return {
-    revision: record.revision,
-    operationId: record.operationId,
-    actorId: record.payload.actorId,
-    category: 'collaboration',
-    description: describeRevisionMutations(record),
-    createdAt: record.createdAt,
-  };
+  return { revision: record.revision, operationId: record.operationId, actorId: record.payload.actorId, category: 'collaboration', description: describeRevisionMutations(record), createdAt: record.createdAt };
 }
 
-export function buildRestoreParams(
-  targetRevision: number,
-  reason?: string,
-): RestoreCommandParams {
-  if (!Number.isSafeInteger(targetRevision) || targetRevision < 0) {
-    throw new Error('targetRevision must be a non-negative integer');
-  }
-  return {
-    targetRevision,
-    reason,
-  };
+export function buildRestoreParams(targetRevision: number, reason?: string): RestoreCommandParams {
+  if (!Number.isSafeInteger(targetRevision) || targetRevision < 0) throw new Error('targetRevision must be a non-negative integer');
+  return { targetRevision, reason };
 }
 
-export function replayRevisionsToSnapshot(
-  baseSnapshot: WorkbookSnapshot,
-  revisions: readonly RevisionRecord[],
-  targetRevision: number,
-): WorkbookSnapshot {
-  const workbook = WorkbookModel.fromSnapshot(structuredClone(baseSnapshot));
-  const runtime = new CommandRuntime(workbook);
-  registerSpreadsheetFeatures(runtime, new DrawingRuntime());
-
-  const ordered = revisions
-    .filter((record) => record.revision > 0 && record.revision <= targetRevision)
-    .sort((left, right) => left.revision - right.revision);
-
-  for (const record of ordered) {
-    runtime.applyRemoteMutations(record.payload.mutations.map((mutation) => ({
-      id: mutation.id,
-      unitId: record.payload.unitId,
-      sheetId: mutation.sheetId,
-      params: mutation.params,
-      affectedRanges: mutation.affectedRanges,
-    })));
+/** Server materializes history; the browser never replays revisions into a local snapshot. */
+export function assertCommittedRevision(records: readonly RevisionRecord[], targetRevision: number): void {
+  if (!Number.isSafeInteger(targetRevision) || targetRevision < 0) throw new Error('targetRevision must be a non-negative integer');
+  const ordered = records.filter((record) => record.revision <= targetRevision).sort((a, b) => a.revision - b.revision);
+  for (let index = 0; index < ordered.length; index += 1) {
+    if (ordered[index]!.revision !== index + 1) throw new Error(`HISTORY_GAP: missing committed revision at ${index + 1}`);
   }
-
-  return workbook.snapshot();
 }

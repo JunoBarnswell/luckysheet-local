@@ -72,13 +72,11 @@ function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: 
       id: 'table.add', unitId: context.workbook.unitId, sheetId: table.sourceSheetId ?? params.sheet.id, params: table,
       affectedRanges: sourceRanges,
       inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: table.sourceSheetId ?? params.sheet.id, params: { tableId: table.id, range: table.sourceRange }, affectedRanges: sourceRanges }],
-      apply: () => context.workbook.addTable(table),
     });
   }
   context.applyMutation({
     id: 'sheet.restore', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheet: structuredClone(params.sheet), index: params.index }, affectedRanges,
     inverse: [{ id: 'sheet.remove', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { id: params.sheet.id }, affectedRanges }],
-    apply: () => context.workbook.restoreSheetSnapshot(params.sheet, params.index),
   });
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
@@ -96,17 +94,11 @@ function executeStructuredChartCreate(params: StructuredChartCreateParams, conte
   if (addsTable && table) {
     context.applyMutation({ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: table, affectedRanges,
       inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { tableId: table.id, range: table.sourceRange }, affectedRanges }],
-      apply: () => context.workbook.addTable(table),
     });
   }
   context.applyMutation({
     id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: params.drawing, payload: params.payload }, affectedRanges,
     inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawing.id }, affectedRanges }],
-    apply: () => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      sheet.drawings.push(structuredClone(params.drawing));
-      sheet.drawingPayloads.set(params.drawing.payloadId, structuredClone(params.payload));
-    },
   });
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
@@ -158,7 +150,6 @@ function executeStructuredChartUpdate(params: StructuredChartUpdateParams, conte
     id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: current.payload, after: params.payload }, affectedRanges,
     inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: params.payload, after: current.payload }, affectedRanges }],
-    apply: () => sheet.drawingPayloads.set(current.drawing.payloadId, structuredClone(params.payload)),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -189,7 +180,6 @@ function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext
           id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
           params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row, column, value: next }, 'script'), affectedRanges: cellRange,
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row, column, previous }, affectedRanges: cellRange }],
-          apply: () => sheet.cells.set(row, column, structuredClone(next)),
         });
         mutationCount += 1;
       }
@@ -303,13 +293,11 @@ function executePictureConvertToCell(params: PictureConvertToCellParams, context
     id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawingId: params.drawingId }, affectedRanges,
     inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: drawingSnapshot, payload: payloadSnapshot }, affectedRanges }],
-    apply: () => removeDrawingForPicture(sheet, params.drawingId),
   });
   context.applyMutation({
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, 'script'), affectedRanges,
     inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
-    apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges };
 }
@@ -338,16 +326,11 @@ function executePictureConvertToFloating(params: PictureConvertToFloatingParams,
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, 'script'), affectedRanges,
     inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
-    apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
   });
   context.applyMutation({
     id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawing, payload }, affectedRanges,
     inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
-    apply: () => {
-      sheet.drawings.push(structuredClone(drawing));
-      sheet.drawingPayloads.set(drawing.payloadId, structuredClone(payload));
-    },
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges };
 }
@@ -369,7 +352,6 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       const affectedRanges = [{ sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column }];
       context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: next }, 'script'), affectedRanges,
         inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous }, affectedRanges }],
-        apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -454,7 +436,6 @@ function linkValueMutations(
     affectedRanges.push(cellRange);
     context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: createCellSetMutationParams(linkedSheet, { sheetId: linked.sheetId, row: linked.row, column: linked.column, value: next }, 'script'), affectedRanges: [cellRange],
       inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, previous }, affectedRanges: [cellRange] }],
-      apply: () => linkedSheet.cells.set(linked.row, linked.column, structuredClone(next)),
     });
     mutationCount += 1;
   }
@@ -479,7 +460,6 @@ function executeFormControlUpdate(params: FormControlUpdateParams, context: Comm
     : [formControlAnchorRange(params.sheetId, drawing)];
   context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after: params.payload }, affectedRanges,
     inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: params.payload, after: before }, affectedRanges }],
-    apply: () => sheet.drawingPayloads.set(drawing.payloadId, structuredClone(params.payload)),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -539,7 +519,6 @@ function executeFormControlActivate(params: FormControlActivateParams, context: 
     affectedRanges.push(payloadRange);
     context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.before, after: update.after }, affectedRanges: [payloadRange],
       inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.after, after: update.before }, affectedRanges: [payloadRange] }],
-      apply: () => sheet.drawingPayloads.set(update.drawing.payloadId, structuredClone(update.after)),
     });
   }
   const mutationCount = payloadUpdates.length + linkValueMutations(context, linkedValues, affectedRanges);

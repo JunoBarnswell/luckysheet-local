@@ -441,42 +441,7 @@ function isDataRegionMaterializeParams(value: unknown): value is DataRegionMater
 
 function dataRegionMaterializeAffected(params: DataRegionMaterializeParams): RangeRef[] {
   return [structuredClone(params.range)];
-}
-
-function applyDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const index = sheet.dataRegions.findIndex((region) => region.id === params.region.id);
-  if (index < 0) throw new Error(`Unknown data region: ${params.region.id}`);
-  const currentRegion = sheet.dataRegions[index]!;
-  if (!rangeEquals(currentRegion.range, params.region.range)
-    || currentRegion.sourceId !== params.region.sourceId
-    || currentRegion.headerRow !== params.region.headerRow) {
-    throw new Error(`Data region ${params.region.id} changed before materialization commit`);
-  }
-  const currentManifest = context.workbook.dataModel.sources.get(params.manifest.id);
-  if (!currentManifest || currentManifest.revision !== params.manifest.revision) {
-    throw new Error(`Data source ${params.manifest.id} changed before materialization commit`);
-  }
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
-  for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
-  sheet.removeDataRegionAt(index);
-  if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
-}
-
-function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  if (sheet.dataRegions.some((region) => region.id === params.region.id)) throw new Error(`Data region already exists: ${params.region.id}`);
-  if (params.willRemoveSource) context.workbook.dataModel.sources.set(params.manifest.id, structuredClone(params.manifest));
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
-  for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
-  sheet.addDataRegion(params.region, params.regionIndex);
-}
-
-function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
+}function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
   return replaceFindText(original, {
     query: params.find,
     matchCase: params.matchCase,
@@ -575,41 +540,7 @@ function fillWritesEqual(expected: readonly FillWrite[], actual: readonly FillMu
     return candidate !== undefined && entry.row === candidate.row && entry.column === candidate.column
       && cellsEqual(entry.cell, candidate.after);
   });
-}
-
-function applyFillMutation(params: FillMutationParams, context: CommandContext, canonical: boolean): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const target = normalizeRange(params.targetRange, params.sheetId);
-  assertNoDataRegionIntersection(sheet, target, 'Fill');
-  assertFillProtection(sheet, target);
-  const planParams: FillPlanParams = {
-    sheetId: params.sheetId,
-    sourceRange: params.sourceRange,
-    targetRange: params.targetRange,
-    direction: params.direction,
-    mode: params.mode,
-    dateSystem: params.dateSystem,
-    series: params.series,
-  };
-  const validated = validateFillPlan(sheet, planParams);
-  if (canonical) {
-    const plan = planFill(sheet, validated);
-    if (!fillWritesEqual(plan.writes, params.writes)) throw new Error('Fill mutation does not match the canonical plan');
-  }
-  for (const write of params.writes) {
-    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
-      throw new Error('Fill mutation contains a write outside its target range');
-    }
-    const current = sheet.cells.get(write.row, write.column);
-    if (!cellsEqual(current, write.before)) throw new Error(`Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
-  }
-  for (const write of params.writes) {
-    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
-    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
-  }
-}
-
-function flashFillWritesEqual(expected: readonly FlashFillWrite[], actual: readonly FlashFillWrite[]): boolean {
+}function flashFillWritesEqual(expected: readonly FlashFillWrite[], actual: readonly FlashFillWrite[]): boolean {
   if (expected.length !== actual.length) return false;
   return expected.every((entry, index) => {
     const candidate = actual[index];
@@ -619,40 +550,7 @@ function flashFillWritesEqual(expected: readonly FlashFillWrite[], actual: reado
       && cellsEqual(entry.before, candidate.before)
       && cellsEqual(entry.after, candidate.after);
   });
-}
-
-function applyFlashFillMutation(params: FlashFillMutationParams, context: CommandContext, canonical: boolean): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  const source = normalizeRange(params.sourceRange, params.sheetId);
-  const target = normalizeRange(params.targetRange, params.sheetId);
-  assertNoDataRegionIntersection(sheet, source, 'Flash Fill');
-  assertNoDataRegionIntersection(sheet, target, 'Flash Fill');
-  assertFillProtection(sheet, target);
-  if (canonical) {
-    const plan: FlashFillPlan = planFlashFill(sheet, {
-      sheetId: params.sheetId,
-      sourceRange: source,
-      targetRange: target,
-    });
-    if (JSON.stringify(plan.operation) !== JSON.stringify(params.operation) || !flashFillWritesEqual(plan.writes, params.writes)) {
-      throw new Error('Flash Fill mutation does not match the canonical inferred pattern');
-    }
-  }
-  for (const write of params.writes) {
-    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
-      throw new Error('Flash Fill mutation contains a write outside its target range');
-    }
-    if (!cellsEqual(sheet.cells.get(write.row, write.column), write.before)) {
-      throw new Error(`Flash Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
-    }
-  }
-  for (const write of params.writes) {
-    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
-    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
-  }
-}
-
-/**
+}/**
  * The sheet-features package intentionally has no dependency on the
  * application-owned block query/overlay service. Until that canonical service
  * is injected into CommandRuntime, Home commands fail closed for a
@@ -732,25 +630,7 @@ interface StylePresetMutationParams {
 function isStylePresetMutation(value: unknown): value is StylePresetMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string' && typeof value.styleId === 'string'
     && isRecord(value.style) && Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange);
-}
-
-function applyStylePresetMutation(params: StylePresetMutationParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  for (const range of params.ranges) {
-    const normalized = normalizeRange(range, params.sheetId);
-    for (let row = normalized.startRow; row <= normalized.endRow; row += 1) {
-      for (let column = normalized.startColumn; column <= normalized.endColumn; column += 1) {
-        const current = sheet.cells.get(row, column) ?? { value: null };
-        const next = { ...current, styleId: params.styleId, style: structuredClone(params.style) };
-        if (params.style.numberFormat !== undefined) next.numberFormat = params.style.numberFormat;
-        delete next.displayValue;
-        sheet.cells.set(row, column, next);
-      }
-    }
-  }
-}
-
-interface ConditionalFormatReorderParams {
+}interface ConditionalFormatReorderParams {
   sheetId: string;
   ruleIds: string[];
   ranges?: RangeRef[];
@@ -829,10 +709,6 @@ function tableStyleAffected(params: TableStyleMutationParams): RangeRef[] {
 export function registerHomeCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<FillMutationParams>({
     id: 'fill.applied',
-    handler: (item, context) => {
-      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.applied mutation payload');
-      applyFillMutation(item.params, context, true);
-    },
     metadata: {
       schema: { name: 'FillApplied', validate: isValidFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -842,10 +718,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<FlashFillMutationParams>({
     id: 'flashFill.applied',
-    handler: (item, context) => {
-      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.applied mutation payload');
-      applyFlashFillMutation(item.params, context, true);
-    },
     metadata: {
       schema: { name: 'FlashFillApplied', validate: isValidFlashFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -855,10 +727,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<FlashFillMutationParams>({
     id: 'flashFill.restored',
-    handler: (item, context) => {
-      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.restored mutation payload');
-      applyFlashFillMutation(item.params, context, false);
-    },
     metadata: {
       schema: { name: 'FlashFillRestored', validate: isValidFlashFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -912,17 +780,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           params: inverseParams,
           affectedRanges,
         }],
-        apply: () => applyFlashFillMutation(mutationParams, context, true),
       });
       return homeResult(context, affectedRanges, 1);
     },
   });
   runtime.registry.registerMutation<FillMutationParams>({
     id: 'fill.restored',
-    handler: (item, context) => {
-      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.restored mutation payload');
-      applyFillMutation(item.params, context, false);
-    },
     metadata: {
       schema: { name: 'FillRestored', validate: isValidFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -932,10 +795,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<DataRegionMaterializeParams>({
     id: 'dataRegion.materialize.commit',
-    handler: (item, context) => {
-      if (!isDataRegionMaterializeParams(item.params)) throw new Error('Invalid dataRegion.materialized mutation payload');
-      applyDataRegionMaterialization(item.params, context);
-    },
     metadata: {
       schema: { name: 'DataRegionMaterializeCommit', validate: isDataRegionMaterializeParams },
       permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
@@ -945,10 +804,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<DataRegionMaterializeParams>({
     id: 'dataRegion.materialize.restore',
-    handler: (item, context) => {
-      if (!isDataRegionMaterializeParams(item.params)) throw new Error('Invalid dataRegion.restored mutation payload');
-      restoreDataRegionMaterialization(item.params, context);
-    },
     metadata: {
       schema: { name: 'DataRegionMaterializeRestore', validate: isDataRegionMaterializeParams },
       permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
@@ -968,7 +823,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'dataRegion.materialize.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
-        apply: () => applyDataRegionMaterialization(params, context),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1011,7 +865,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
               affectedRanges: [range],
               permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' } as const,
             }],
-            apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: styleParams, affectedRanges: [range] }, context),
           });
         }
       }
@@ -1256,7 +1109,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           params: inverseParams,
           affectedRanges,
         }],
-        apply: () => applyFillMutation(mutationParams, context, true),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1512,10 +1364,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<StylePresetMutationParams>({
     id: 'style.preset.set',
-    handler: (item, context) => {
-      if (!isStylePresetMutation(item.params)) throw new Error('Invalid style.preset.set mutation payload');
-      applyStylePresetMutation(item.params, context);
-    },
     metadata: {
       schema: { name: 'CellStylePreset', validate: isStylePresetMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -1549,7 +1397,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params: mutationParams,
         affectedRanges,
         inverse,
-        apply: () => applyStylePresetMutation(mutationParams, context),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1557,19 +1404,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<TableStyleMutationParams>({
     id: 'sheetTable.style.set',
-    handler: (item, context) => {
-      if (!isTableStyleMutationParams(item.params)) throw new Error('Invalid table style mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const index = sheet.sheetTables.findIndex((table) => table.id === item.params.tableId);
-      if (index < 0) throw new Error(`Unknown sheet table: ${item.params.tableId}`);
-      const table = sheet.sheetTables[index]!;
-      sheet.sheetTables[index] = {
-        ...table,
-        ...(item.params.clearStyleName ? { styleName: undefined } : item.params.styleName === undefined ? {} : { styleName: item.params.styleName }),
-        ...(item.params.showBandedRows === undefined ? {} : { showBandedRows: item.params.showBandedRows }),
-        ...(item.params.showBandedColumns === undefined ? {} : { showBandedColumns: item.params.showBandedColumns }),
-      };
-    },
     metadata: {
       schema: { name: 'SheetTableStyleSet', validate: isTableStyleMutationParams },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
@@ -1607,30 +1441,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params: next,
         affectedRanges,
         inverse: [{ id: 'sheetTable.style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => {
-          const index = sheet.sheetTables.findIndex((entry) => entry.id === params.tableId);
-          if (index < 0) throw new Error(`Unknown sheet table: ${params.tableId}`);
-          sheet.sheetTables[index] = {
-            ...sheet.sheetTables[index]!,
-            ...(next.clearStyleName ? { styleName: undefined } : next.styleName === undefined ? {} : { styleName: next.styleName }),
-            ...(next.showBandedRows === undefined ? {} : { showBandedRows: next.showBandedRows }),
-            ...(next.showBandedColumns === undefined ? {} : { showBandedColumns: next.showBandedColumns }),
-          };
-        },
       });
       return homeResult(context, affectedRanges, 1);
     },
   });
   runtime.registry.registerMutation<ConditionalFormatReorderParams>({
     id: 'cf.reorder',
-    handler: (item, context) => {
-      if (!isConditionalFormatReorder(item.params)) throw new Error('Invalid cf.reorder mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-      const next = item.params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-      for (const rule of sheet.conditionalFormats) if (!item.params.ruleIds.includes(rule.id)) next.push(rule);
-      sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
-    },
     metadata: {
       schema: { name: 'ConditionalFormatReorder', validate: isConditionalFormatReorder },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
@@ -1652,12 +1468,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params: { ...params, ranges: affectedRanges },
         affectedRanges,
         inverse: [{ id: 'cf.reorder', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, ruleIds: previousIds, ranges: affectedRanges }, affectedRanges }],
-        apply: () => {
-          const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-          const next = params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-          for (const rule of sheet.conditionalFormats) if (!params.ruleIds.includes(rule.id)) next.push(rule);
-          sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next);
-        },
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1665,13 +1475,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<DrawingVisibilityParams>({
     id: 'drawing.visibility.set',
-    handler: (item, context) => {
-      if (!isDrawingVisibilityParams(item.params)) throw new Error('Invalid drawing.visibility.set mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const drawing = sheet.drawings.find((entry) => entry.id === item.params.drawingId) as DrawingWithHomeState | undefined;
-      if (!drawing) throw new Error(`Unknown drawing: ${item.params.drawingId}`);
-      drawing.visible = item.params.visible;
-    },
     metadata: {
       schema: { name: 'DrawingVisibilitySet', validate: isDrawingVisibilityParams },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
@@ -1694,7 +1497,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'drawing.visibility.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, visible: previous }, affectedRanges }],
-        apply: () => { drawing.visible = params.visible; },
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1702,13 +1504,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<DrawingRenameMutationParams>({
     id: 'drawing.rename',
-    handler: (item, context) => {
-      if (!isDrawingRenameMutation(item.params)) throw new Error('Invalid drawing.rename mutation payload');
-      const drawing = context.workbook.getSheet(item.params.sheetId).drawings.find((entry) => entry.id === item.params.drawingId);
-      if (!drawing) throw new Error(`Unknown drawing: ${item.params.drawingId}`);
-      if (item.params.name.trim()) drawing.name = item.params.name;
-      else delete drawing.name;
-    },
     metadata: {
       schema: { name: 'DrawingRename', validate: isDrawingRenameMutation },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
@@ -1731,7 +1526,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'drawing.rename', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, name: previous ?? '' }, affectedRanges }],
-        apply: () => { drawing.name = params.name; },
       });
       return homeResult(context, affectedRanges, 1);
     },

@@ -6,6 +6,7 @@ import {
   Divider,
   DropdownMenu,
   Inline,
+  Icon,
   Stack,
   Text,
   RIBBON_DENSITY_CLASSES,
@@ -140,17 +141,25 @@ const HOME_COLUMN_CLASSES: Readonly<Record<string, string>> = {
 };
 
 const HOME_ROW_CLASSES: Readonly<Record<string, string>> = {
-  'clipboard.layout': 'h-[104px] gap-1',
+  'clipboard.layout': 'h-[58px] gap-1',
   'font.controls': 'gap-1',
   'font.actions': 'gap-1',
-  'alignment.layout': 'h-[104px] gap-2',
+  'alignment.layout': 'h-[58px] gap-2',
   'alignment.controls.top': 'gap-1',
   'alignment.controls.bottom': 'gap-1',
   'number.actions': 'gap-1',
-  'styles.actions': 'h-[104px] gap-1',
-  'cells.actions': 'h-[104px] gap-1',
-  'editing.layout': 'h-[104px] w-full gap-3',
+  'styles.actions': 'h-[58px] gap-1',
+  'cells.actions': 'h-[58px] gap-1',
+  'editing.layout': 'h-[58px] w-full gap-3',
 };
+
+const GROUP_ICONS: Partial<Record<RibbonGroupId, import('@react-sheets/ui-system').IconName>> = {
+  clipboard: 'clipboard', font: 'type', alignment: 'align-center', number: 'calculator', styles: 'paint-brush', cells: 'table', editing: 'search', tables: 'table', illustrations: 'picture', charts: 'chart', filters: 'filter', links: 'link', text: 'textbox', symbols: 'sigma',
+};
+
+function IconForGroup({ group }: { group: RibbonGroupId }) {
+  return <Icon name={GROUP_ICONS[group] ?? 'menu'} size="md" className="text-[#107C41]" />;
+}
 
 function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, props: RibbonLayoutRendererProps): ReactNode {
   const { renderCommand, renderSurface } = props;
@@ -209,26 +218,32 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
   const isHome = tab === 'home';
+  const collapsed = layout.mode !== 'wide';
   const groups = spec.groups.map((group, index) => {
     const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
     const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
+    const groupBody = collapsed ? (
+      <DropdownMenu align="left" trigger={<Button aria-label={groupLabel} title={groupLabel} size="sm" variant="ghost" className="!h-[58px] min-w-[64px] flex-col gap-0.5 rounded-none px-2 text-[11px] leading-3 text-[#242424]"><IconForGroup group={group.id} /><Text size="xs" className="max-w-[72px] truncate text-[10px]">{groupLabel}</Text></Button>}>
+        <Stack gap="none" className="min-w-[14rem] p-1">{group.children.map((node) => renderLayoutNode(node, { inMenu: true, tab }, props))}</Stack>
+      </DropdownMenu>
+    ) : <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>;
     return (
       <React.Fragment key={group.id}>
         {index > 0 ? isHome
-          ? <Box className="relative h-[110px] w-0 shrink-0"><AssetIcon src="/figma/home-ribbon/divider.svg" className="absolute left-[-55px] top-[54px] h-px w-[110px] max-w-none rotate-90" /></Box>
+          ? <Box className="relative h-[70px] w-0 shrink-0"><AssetIcon src="/figma/home-ribbon/divider.svg" className="absolute left-[-35px] top-[34px] h-px w-[70px] max-w-none rotate-90" /></Box>
           : <Divider orientation="vertical" className={RIBBON_DENSITY_CLASSES.groupContent} /> : null}
-        <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} relative min-w-0 shrink-0 justify-between overflow-hidden ${isHome ? 'pb-0.5' : 'px-1'} ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
-          <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
+        <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} relative min-w-0 shrink-0 justify-between overflow-hidden ${isHome ? 'pb-0.5' : 'px-1'} ${collapsed ? 'w-auto min-w-0 flex-1' : ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+          {groupBody}
           <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} ${isHome ? 'text-[10px] font-normal text-[var(--home-ribbon-color-caption)]' : 'font-medium text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
         </Stack>
       </React.Fragment>
     );
   });
   return (
-    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-hidden`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {isHome
-        ? <Inline gap="none" className="h-full min-w-[1783px] flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
-        : tab === 'insert' ? <Inline gap="none" className="h-full min-w-[1905px] flex-1 bg-[#fffdf9]">{groups}</Inline> : groups}
+        ? <Inline gap="none" className="h-full min-w-0 flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
+        : tab === 'insert' ? <Inline gap="none" className="h-full min-w-0 flex-1 bg-white">{groups}</Inline> : groups}
     </Inline>
   );
 }

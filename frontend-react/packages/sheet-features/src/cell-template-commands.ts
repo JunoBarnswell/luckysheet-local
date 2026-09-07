@@ -143,27 +143,10 @@ function editorAffectedRanges(params: CellEditorSetParams): RangeRef[] {
   return params.ranges.map((range) => structuredClone(range));
 }
 
-function applyEditorMutation(params: CellEditorSetParams, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
-  assertRangesWithinSheet(sheet, params.ranges);
-  for (const range of params.ranges) {
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const current = structuredClone(sheet.cells.get(row, column) ?? { value: null as CellData['value'] });
-        if (params.editor?.kind === 'checkbox') current.value = normalizeCheckboxCellValue(current, params.editor);
-        if (params.editor) current.editor = structuredClone(params.editor);
-        else delete current.editor;
-        sheet.cells.set(row, column, current);
-      }
-    }
-  }
-}
-
 /** Registers workbook-native template and cell-editor commands. */
 export function registerCellTemplateCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<SetCellStyleTemplateParams>({
     id: 'cellTemplate.set',
-    handler: (item, context) => context.workbook.setCellStyleTemplate(item.params.template),
     metadata: {
       schema: { name: 'CellStyleTemplateSet', validate: isSetParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -173,7 +156,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<RemoveCellStyleTemplateParams>({
     id: 'cellTemplate.remove',
-    handler: (item, context) => { context.workbook.removeCellStyleTemplate(item.params.templateId); },
     metadata: {
       schema: { name: 'CellStyleTemplateRemove', validate: isRemoveParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -183,7 +165,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<CellEditorSetParams>({
     id: 'cell.editor.set',
-    handler: (item, context) => applyEditorMutation(item.params, context),
     metadata: {
       schema: { name: 'CellEditorSet', validate: isEditorSetParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -206,7 +187,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
         inverse: previous
           ? [{ id: 'cellTemplate.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, template: structuredClone(previous) }, affectedRanges: [] }]
           : [{ id: 'cellTemplate.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, templateId: params.template.id }, affectedRanges: [] }],
-        apply: () => context.workbook.setCellStyleTemplate(params.template),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
@@ -224,7 +204,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges: [],
         inverse: [{ id: 'cellTemplate.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, template: structuredClone(previous) }, affectedRanges: [] }],
-        apply: () => { context.workbook.removeCellStyleTemplate(params.templateId); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
@@ -265,7 +244,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
           permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
           affectedRanges: [{ sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column }],
         })),
-        apply: () => applyEditorMutation({ ...params, ranges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
     },
@@ -297,7 +275,6 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
         const next = clearFormulaProvenance(entry.next);
         context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: entry.row, column: entry.column, value: next }, 'script'), affectedRanges: [cellRange],
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous }, affectedRanges: [cellRange] }],
-          apply: () => sheet.cells.set(entry.row, entry.column, next),
         });
       }
       return { operationId: context.operationId, mutationCount: entries.length, affectedRanges };

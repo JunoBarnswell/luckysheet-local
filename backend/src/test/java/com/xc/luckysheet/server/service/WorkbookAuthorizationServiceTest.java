@@ -28,7 +28,7 @@ class WorkbookAuthorizationServiceTest {
         SpaceMemberEntityRepository members = mock(SpaceMemberEntityRepository.class);
         WorkbookAuthorizationService service = new WorkbookAuthorizationService(workbooks, acl, members);
         Instant now = Instant.now();
-        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
+        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", 0,
                 now, now, "owner", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
                 WorkbookLifecycle.ACTIVE, null)));
         when(acl.findForSubject("book-1", "member")).thenReturn(Optional.of(

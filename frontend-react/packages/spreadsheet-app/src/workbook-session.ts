@@ -115,7 +115,7 @@ import {
   type FormatPainterStylePattern,
   isCellEntryError,
 } from '@react-sheets/sheet-features';
-import { isArrayValue, isFormulaError, isReferenceValue, isSpillChild, type CalculationSessionPort, type CanonicalExcelDateParts, type ExcelDateSystem, type FormulaValue, type RecalculationMode } from '@react-sheets/formula-engine';
+import { isArrayValue, isFormulaError, isReferenceValue, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type FormulaValue, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
   CellEditDomain,
   CellEditError,
@@ -204,7 +204,7 @@ import {
   encodeSheetDataRegion,
   preprocessRange,
 } from './features/data-source';
-import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
+import type { WorkbookCellResolver } from './features/data-source';
 import {
   buildCellNote,
   buildCommentReply,
@@ -253,7 +253,7 @@ import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
-  executeQueryDefinition,
+  executeCanonicalQueryDefinition,
   prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
@@ -378,7 +378,6 @@ export interface WorkbookSessionOptions {
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
   /** Node/SSR callers must inject the explicit persistent formula session port. */
-  calculationSessionPort?: CalculationSessionPort;
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   nativeDocumentExecution?: 'worker' | 'inline-test';
@@ -915,7 +914,7 @@ export class WorkbookSession {
   private refreshBatchDepth = 0;
   private refreshBatchPending = false;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, calculationSessionPort, collaborationUrl, nativeDocumentExecution = 'worker', nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'loading', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     this.nativeDocumentTransaction = nativeDocumentTransaction ?? createNativeDocumentTransaction();
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
@@ -930,7 +929,6 @@ export class WorkbookSession {
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
       dateSystem,
       canonicalReferenceDate,
-      calculationSessionPort,
       collaborationUrl,
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
@@ -945,8 +943,7 @@ export class WorkbookSession {
     if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
     this.pivotTaskPort = resolvedPivotTaskPort;
     this.onReady = onReady;
-    this.permission.setLocalOnly(this.runtime.localOnly);
-    this.permission.setOnline(!this.runtime.localOnly);
+    this.permission.setOnline(this.runtime.remoteConnected);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
     this.activeSheetId = this.runtime.model.primarySheetId;
@@ -1132,8 +1129,7 @@ export class WorkbookSession {
         this.permission.setOnline(true);
       } else {
         this.permission.clearServerAccess();
-        this.permission.setLocalOnly(this.runtime.localOnly);
-        this.permission.setOnline(false);
+            this.permission.setOnline(false);
       }
       this.emit();
     };
@@ -1267,7 +1263,7 @@ export class WorkbookSession {
     // initial session bootstrap; subsequent mutation refreshes use the stored
     // baseline and pending state instead of serializing the whole workbook.
     if (!this.persistenceChecksum && !record) {
-      this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, 0).checksum;
+      this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.manifest(), this.runtime.remoteRevision, 0).checksum;
     }
     this.persistenceMetaDirty = false;
   }
@@ -1647,8 +1643,8 @@ export class WorkbookSession {
       lastQueryResult: this.lastQueryResult,
       queryConnectors: this.runtime.connectors.list().map((connector) => ({
         ...structuredClone(connector.manifest),
-        available: connector.execution === 'local' || !this.runtime.localOnly,
-        ...(connector.execution === 'server' && this.runtime.localOnly ? { unavailableReason: 'This connector requires the Java backend.' } : {}),
+        available: this.runtime.remoteConnected,
+        ...(!this.runtime.remoteConnected ? { unavailableReason: 'The cloud workbook is disconnected.' } : {}),
       })),
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
@@ -1663,7 +1659,7 @@ export class WorkbookSession {
   };
 
   /** Dispatch one registered domain descriptor through the sole command path. */
-  dispatch(descriptor: CommandDescriptor): Promise<DispatchOutcome> {
+  async dispatch(descriptor: CommandDescriptor): Promise<DispatchOutcome> {
     if (this.phase !== 'ready') {
       return this.rejectDispatch(
         new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready'),
@@ -1673,9 +1669,9 @@ export class WorkbookSession {
       const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
       if (regions.length > 0) {
-        return this.dispatchAfterMaterialization(descriptor.commandId, resolved, regions);
+        return await this.dispatchAfterMaterialization(descriptor.commandId, resolved, regions);
       }
-      const result = this.runCommand(descriptor.commandId, resolved);
+      const result = await this.runCommand(descriptor.commandId, resolved);
       return Promise.resolve({ status: 'committed', result });
     } catch (error) {
       return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Command was rejected'));
@@ -1690,7 +1686,7 @@ export class WorkbookSession {
       return this.rejectDispatch(this.toDispatchError(error, 'MATERIALIZATION_FAILED', 'Data region could not be prepared for editing'));
     }
     try {
-      const result = this.runCommand(commandId, params);
+      const result = await this.runCommand(commandId, params);
       return { status: 'committed', result };
     } catch (error) {
       return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Command was rejected'));
@@ -1717,7 +1713,7 @@ export class WorkbookSession {
     const resolved = this.resolveCommandContext(commandId, params);
     const regions = this.dataRegionsRequiredForCommand(commandId, resolved);
     if (regions.length > 0) await this.materializeDataRegions(regions);
-    return this.runCommand(commandId, resolved);
+    return await this.runCommand(commandId, resolved);
   }
 
   private async materializeDataRegions(regions: readonly SheetDataRegion[]): Promise<void> {
@@ -1734,7 +1730,7 @@ export class WorkbookSession {
             region.id,
             this.runtime.dataContent,
           );
-          this.runCommand('dataRegion.materialize.commit', prepared satisfies DataRegionMaterializeParams);
+          await this.runCommand('dataRegion.materialize.commit', prepared satisfies DataRegionMaterializeParams);
         })();
         this.materializingDataRegions.set(key, pending);
       }
@@ -1986,8 +1982,8 @@ export class WorkbookSession {
     this.emit();
   }
 
-  setWorkbookEditingOptions(options: WorkbookEditingOptions): void {
-    this.runCommand('workbook.editing.options.set', options);
+  async setWorkbookEditingOptions(options: WorkbookEditingOptions): Promise<void> {
+    await this.runCommand('workbook.editing.options.set', options);
   }
 
   registerCellEditorBehavior(behavior: CellEditorBehavior): void {
@@ -1995,13 +1991,17 @@ export class WorkbookSession {
     this.cellEditorRegistry.register(behavior);
   }
 
-  runCommand(commandId: string, params?: unknown): CommandResult {
+  async runCommand(commandId: string, params?: unknown): Promise<CommandResult> {
     const resolvedParams = this.resolveCommandContext(commandId, params);
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
     this.assertPermission(commandId, resolvedParams);
-    const result = this.runtime.commands.execute(commandId, resolvedParams);
+    this.pendingCommandCount += 1;
+    this.saveState = 'saving';
+    this.emit();
+    try {
+    const result = await this.runtime.commands.execute(commandId, resolvedParams);
     if (commandId === 'pivot.refresh') {
       const refreshParams = resolvedParams as { pivotId?: string };
       if (refreshParams.pivotId) this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: refreshParams.pivotId });
@@ -2059,6 +2059,14 @@ export class WorkbookSession {
     this.scheduleFormulaAutocompleteIndex();
     this.refresh();
     return result;
+    } catch (error) {
+      this.saveState = 'error';
+      this.notify(error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      this.pendingCommandCount -= 1;
+      this.emit();
+    }
   }
 
   canRepeatLastCommand(): boolean {
@@ -2066,10 +2074,10 @@ export class WorkbookSession {
       && this.canExecute(this.lastRepeatableCommand.commandId, this.lastRepeatableCommand.params);
   }
 
-  repeatLastCommand(): void {
+  async repeatLastCommand(): Promise<void> {
     if (!this.lastRepeatableCommand) return;
     const descriptor = this.lastRepeatableCommand;
-    this.runCommand(descriptor.commandId, descriptor.params === undefined ? undefined : structuredClone(descriptor.params));
+    await this.runCommand(descriptor.commandId, descriptor.params === undefined ? undefined : structuredClone(descriptor.params));
   }
 
   canExecute(commandId: string, params?: unknown): boolean {
@@ -2092,7 +2100,7 @@ export class WorkbookSession {
     return this.permission.getShareRole();
   }
 
-  protectSelection(allow: ProtectionAllow = { formatCells: true }): void {
+  async protectSelection(allow: ProtectionAllow = { formatCells: true }): Promise<void> {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const rule = {
       id: nextId('protect'),
@@ -2102,18 +2110,18 @@ export class WorkbookSession {
       locked: true,
       allow: structuredClone(allow),
     };
-    this.runCommand('sheet.protect.set', { sheetId: this.activeSheetId, rule });
+    await this.runCommand('sheet.protect.set', { sheetId: this.activeSheetId, rule });
     this.notify('Selection protected');
   }
 
-  unprotectSelection(): void {
+  async unprotectSelection(): Promise<void> {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const rule = findProtectionRuleCoveringRange(this.runtime.model, this.activeSheetId, range);
     if (!rule) {
       this.notify('No protection rule covers the current selection');
       return;
     }
-    this.runCommand('sheet.protect.remove', { sheetId: this.activeSheetId, ruleId: rule.id });
+    await this.runCommand('sheet.protect.remove', { sheetId: this.activeSheetId, ruleId: rule.id });
     this.notify('Selection unprotected');
   }
 
@@ -2177,7 +2185,7 @@ export class WorkbookSession {
     this.clipboardData = null;
   }
 
-  selectAddress(address: string): boolean {
+  async selectAddress(address: string): Promise<boolean> {
     const trimmed = address.trim();
     if (!trimmed) return false;
     if (this.cellEditDomain.getSnapshot().status === 'point') {
@@ -2197,7 +2205,7 @@ export class WorkbookSession {
       return true;
     }
     try {
-      this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: trimmed });
+      await this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: trimmed });
       return true;
     } catch {
       this.notify(`Invalid reference: ${trimmed}`);
@@ -2205,16 +2213,16 @@ export class WorkbookSession {
     }
   }
 
-  goTo(reference: string): void {
-    this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: reference.trim() });
+  async goTo(reference: string): Promise<void> {
+    await this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: reference.trim() });
   }
 
-  goToSpecial(kind: GoToSpecialKind): void {
+  async goToSpecial(kind: GoToSpecialKind): Promise<void> {
     const primary = this.getPrimaryRange();
     const range = primary.startRow === primary.endRow && primary.startColumn === primary.endColumn
       ? usedRangeOfSheet(this.runtime.model.getSheet(this.activeSheetId))
       : primary;
-    this.dispatch({ commandId: 'selection.gotoSpecial', params: { sheetId: this.activeSheetId, range, kind } });
+    await this.dispatch({ commandId: 'selection.gotoSpecial', params: { sheetId: this.activeSheetId, range, kind } });
   }
 
   getActiveSheetId(): string {
@@ -2375,30 +2383,30 @@ export class WorkbookSession {
     this.notify(`Stored data block ${ref.id}`);
   }
 
-  addDataSource(source: DataSourceManifest): void {
+  async addDataSource(source: DataSourceManifest): Promise<void> {
     const sheetId = source.sourceSheetId ?? this.activeSheetId;
-    this.runCommand('dataSource.add', { sheetId, source });
+    await this.runCommand('dataSource.add', { sheetId, source });
     this.refresh();
   }
 
-  updateDataSource(source: DataSourceManifest): void {
+  async updateDataSource(source: DataSourceManifest): Promise<void> {
     const sheetId = source.sourceSheetId ?? this.activeSheetId;
-    this.runCommand('dataSource.update', { sheetId, source });
+    await this.runCommand('dataSource.update', { sheetId, source });
     this.refresh();
   }
 
-  removeDataSource(sourceId: string): void {
-    this.runCommand('dataSource.remove', { sheetId: this.activeSheetId, sourceId });
+  async removeDataSource(sourceId: string): Promise<void> {
+    await this.runCommand('dataSource.remove', { sheetId: this.activeSheetId, sourceId });
     this.refresh();
   }
 
-  addDataRegion(region: SheetDataRegion): void {
-    this.runCommand('dataRegion.add', { sheetId: region.range.sheetId, region });
+  async addDataRegion(region: SheetDataRegion): Promise<void> {
+    await this.runCommand('dataRegion.add', { sheetId: region.range.sheetId, region });
     this.refresh();
   }
 
-  removeDataRegion(regionId: string): void {
-    this.runCommand('dataRegion.remove', { sheetId: this.activeSheetId, regionId });
+  async removeDataRegion(regionId: string): Promise<void> {
+    await this.runCommand('dataRegion.remove', { sheetId: this.activeSheetId, regionId });
     this.refresh();
   }
 
@@ -2434,7 +2442,7 @@ export class WorkbookSession {
   }
 
   async createGuestShareLink(role: GuestShareRole = 'editor'): Promise<string | null> {
-    if (this.runtime.localOnly || typeof window === 'undefined') {
+    if (!this.runtime.remoteConnected || typeof window === 'undefined') {
       this.notify('Connect to the Java backend before creating a guest share link');
       return null;
     }
@@ -2478,7 +2486,7 @@ export class WorkbookSession {
     }
   }
 
-  undoToHistoryIndex(index: number): void {
+  async undoToHistoryIndex(index: number): Promise<void> {
     const entries = this.runtime.commands.getUndoEntries();
     if (index < 0 || index >= entries.length) return;
     const undoCount = entries.length - 1 - index;
@@ -2488,7 +2496,7 @@ export class WorkbookSession {
         this.notify('Undo is no longer allowed for the protected selection');
         break;
       }
-      if (!this.runtime.commands.undo()) break;
+      if (!await this.runtime.commands.undo()) break;
     }
     this.ensureActiveSheetSession();
     this.invalidateAllSheetProjections();
@@ -2498,10 +2506,10 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshot, targetRevision: number, reason?: string): void {
+  async restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshot, targetRevision: number, reason?: string): Promise<void> {
     try {
       void snapshot;
-      this.runCommand('history.restore', { targetRevision, reason });
+      await this.runCommand('history.restore', { targetRevision, reason });
       this.notify(`Restore request submitted for revision ${targetRevision}`);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Permission denied');
@@ -2514,7 +2522,7 @@ export class WorkbookSession {
       revision,
       `Restore to revision ${revision}`,
     );
-    hydrateRuntime(this.runtime, response.snapshot);
+    hydrateRuntime(this.runtime, { ...response.workbook, pages: response.changeSet.pages });
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.groupedSheetIds.clear();
     this.groupedSheetIds.add(this.activeSheetId);
@@ -2529,7 +2537,6 @@ export class WorkbookSession {
 
   async previewRevision(revision: number): Promise<HistoryPreviewSession> {
     try {
-      const response = await this.runtime.api.getRevisionSnapshot(this.runtime.model.unitId, revision);
       const record = this.remoteRevisions.find((entry) => entry.revision === revision);
       const meta: HistoryEntryMeta = record
         ? revisionToHistoryMeta(record)
@@ -2540,7 +2547,9 @@ export class WorkbookSession {
           description: `Revision ${revision}`,
         };
       this.historyPreview?.dispose();
-      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot, this.pivotTaskPort, this.runtime.calculationSessionPort);
+      const manifest = await this.runtime.api.getManifest(this.runtime.model.unitId, meta.revision);
+      const pages = await Promise.all(manifest.pages.map(page => this.runtime.api.getPage({ unitId: manifest.unitId, revision: manifest.revision, sheetId: page.sheetId, pageRow: page.pageRow, pageColumn: page.pageColumn })));
+      this.historyPreview = await HistoryPreviewSession.fromManifest(meta, manifest, pages, this.pivotTaskPort);
       this.notify(`Previewing revision #${revision}`);
       this.emit();
       return this.historyPreview;
@@ -2564,7 +2573,7 @@ export class WorkbookSession {
 
   getPersistenceSnapshot(): PersistenceSnapshotMeta {
     return buildPersistenceMeta(
-      this.runtime.model.snapshot(),
+      this.runtime.model.manifest(),
       this.runtime.remoteRevision,
       this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
       this.runtime.workspaceRecord,
@@ -2579,57 +2588,23 @@ export class WorkbookSession {
     this.saveState = 'saving';
     this.emit();
     try {
-      void reason;
+      if (!this.runtime.remoteConnected) throw new Error('CLOUD_CONNECTION_REQUIRED: reconnect before saving');
       if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
-      const nativeExport = await this.exportNativeDocumentForSave();
-      if (!nativeExport.buffer || !nativeExport.fileName) throw new Error('Native document export did not produce a file');
-      const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
-      if (remoteWorkbook && !this.runtime.remoteConnected) {
-        await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
-        this.saveState = 'offline';
-        this.syncPersistenceMeta();
-        this.notify('Local checkpoint saved; waiting to sync with the server');
-        return;
-      }
-      if (remoteWorkbook) {
-        const flushed = await this.runtime.collaboration?.offlineQueue.flushAll();
-        if (flushed && (flushed.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
-          throw new Error('Pending changes could not be committed before checkpointing');
-        }
-        const checkpoint = await this.runtime.api.checkpointWorkbook(this.runtime.model.unitId);
-        this.runtime.remoteRevision = checkpoint.snapshot.revision;
-        await this.runtime.api.putWorkbookSourceArtifact(
-          this.runtime.model.unitId,
-          new Blob([nativeExport.buffer], { type: nativeDocumentMimeType(nativeExport.fileName) }),
-          nativeExport.fileName,
-        );
-      }
-      await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
+      await this.runtime.commands.whenIdle();
+      await this.runtime.checkpointWorkspace();
+      const fileName = this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`;
+      const format = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
+      await this.runtime.api.saveNativeDocumentArtifact(this.runtime.model.unitId, { revision: this.runtime.model.revision, fileName, format });
       this.saveState = 'saved';
       this.syncPersistenceMeta();
-      this.notify(remoteWorkbook ? 'Workbook saved to server' : 'Local workbook checkpoint saved');
+      this.notify(`${reason}: workbook saved to the cloud`);
     } catch (error) {
-      this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'error';
+      this.saveState = 'error';
       this.notify(error instanceof Error ? error.message : 'Save failed');
+      throw error;
+    } finally {
       this.emit();
-      throw error instanceof Error ? error : new Error('Save failed');
     }
-  }
-
-  private exportNativeDocumentForSave(): Promise<NativeDocumentExchangeResult> {
-    if (this.nativeDocumentTransaction.status === 'failed') {
-      throw new Error('NATIVE_DOCUMENT_TRANSACTION_RECOVERY_REQUIRED: reload the verified source artifact or use Save As with an explicit target format');
-    }
-    const snapshot = this.runtime.model.snapshot();
-    const params = {
-      fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
-      execution: this.nativeDocumentExecution,
-      revision: this.version,
-      assetStore: this.runtime.assetStore,
-    } as const;
-    return this.nativeArtifact
-      ? this.nativeDocumentTransaction.save(snapshot, params)
-      : this.nativeDocumentTransaction.export(snapshot, { ...params, mode: 'save' });
   }
 
   private runReadyCallback(): void {
@@ -2652,13 +2627,13 @@ export class WorkbookSession {
     return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
   }
 
-  undo(): void {
+  async undo(): Promise<void> {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
     if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.undo()) {
+    if (await this.runtime.commands.undo()) {
       this.ensureActiveSheetSession();
       this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
@@ -2668,13 +2643,13 @@ export class WorkbookSession {
     }
   }
 
-  redo(): void {
+  async redo(): Promise<void> {
     const entry = this.runtime.commands.getRedoEntries().at(-1);
     if (entry && !this.canReplayHistory(entry.forwardMutations)) {
       this.notify('Redo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.redo()) {
+    if (await this.runtime.commands.redo()) {
       this.ensureActiveSheetSession();
       this.invalidateAllSheetProjections();
       this.reconcileDrawingSessionState();
@@ -2864,7 +2839,7 @@ export class WorkbookSession {
     if (intent.additive) this.selectionService.selectRange(displayRange, 'add', displayTarget.cell);
     else if (intent.extend) this.selectionService.selectRange(displayRange, 'extend', displayTarget.cell);
     else this.selectionService.selectCellAt(displayTarget.cell.row, displayTarget.cell.column);
-    if (hit.kind === 'toggle') this.runCommand('checkbox.toggle', { sheetId: canonical.sheetId, ranges: [{ sheetId: canonical.sheetId, startRow: canonical.row, endRow: canonical.row, startColumn: canonical.column, endColumn: canonical.column }] });
+    if (hit.kind === 'toggle') void this.runCommand('checkbox.toggle', { sheetId: canonical.sheetId, ranges: [{ sheetId: canonical.sheetId, startRow: canonical.row, endRow: canonical.row, startColumn: canonical.column, endColumn: canonical.column }] }).catch(error => this.notify(error instanceof Error ? error.message : String(error)));
     else this.cellEdit.dispatch({ type: 'begin.request', source: 'cell-control', surface: 'grid' });
     return this.cellControlResult(true);
   }
@@ -2884,7 +2859,7 @@ export class WorkbookSession {
         }
       }
     }
-    this.runCommand('checkbox.toggle', { sheetId: sheet.id, ranges: selection.ranges });
+    void this.runCommand('checkbox.toggle', { sheetId: sheet.id, ranges: selection.ranges }).catch(error => this.notify(error instanceof Error ? error.message : String(error)));
     return this.cellControlResult(true);
   }
 
@@ -2991,7 +2966,8 @@ export class WorkbookSession {
   private executeCellEditEffect(effect: CellEditEffect): CellEditDispatchResult | null {
     switch (effect.type) {
       case 'commit':
-        return this.executeCellEditCommit(effect.request);
+        void this.executeCellEditCommit(effect.request);
+        return null;
       case 'cancel':
         this.activeSheetId = effect.originalSelection.sheetId;
         this.selectionService.applyState(effect.originalSelection);
@@ -3035,7 +3011,7 @@ export class WorkbookSession {
     }
   }
 
-  private executeCellEditCommit(request: CellEditCommitRequest): CellEditDispatchResult {
+  private async executeCellEditCommit(request: CellEditCommitRequest): Promise<CellEditDispatchResult> {
     try {
       const currentSheet = this.runtime.model.getSheet(request.target.canonical.sheetId);
       const currentCell = this.readResolvedCell(currentSheet, request.target.canonical.row, request.target.canonical.column);
@@ -3064,13 +3040,13 @@ export class WorkbookSession {
           ? request.originalSelection.ranges
           : [{ sheetId: request.target.display.sheetId, startRow: request.target.display.row, endRow: request.target.display.row, startColumn: request.target.display.column, endColumn: request.target.display.column }];
         const ranges = groupedSheetIds.flatMap((sheetId) => baseRanges.map((range) => ({ ...range, sheetId })));
-        this.commitPayloadToSelection(payload, request.validationConfirmation, { ...request.originalSelection, ranges });
+        await this.commitPayloadToSelection(payload, request.validationConfirmation, { ...request.originalSelection, ranges });
       } else if (payload.kind === 'raw-text') {
-        this.runCommand('sheet.cell.commitText', { ...request.target.canonical, text: payload.text, inputContext: this.createInputContext('direct-entry', currentCell), style: currentCell?.style, validationConfirmation: request.validationConfirmation });
+        await this.runCommand('sheet.cell.commitText', { ...request.target.canonical, text: payload.text, inputContext: this.createInputContext('direct-entry', currentCell), style: currentCell?.style, validationConfirmation: request.validationConfirmation });
       } else if (payload.kind === 'typed-value') {
-        this.runCommand('sheet.cell.commitTypedValue', { ...request.target.canonical, value: payload.value, validationConfirmation: request.validationConfirmation });
+        await this.runCommand('sheet.cell.commitTypedValue', { ...request.target.canonical, value: payload.value, validationConfirmation: request.validationConfirmation });
       } else {
-        this.runCommand('sheet.cell.commitRichText', { ...request.target.canonical, text: payload.text, runs: payload.runs, validationConfirmation: request.validationConfirmation });
+        await this.runCommand('sheet.cell.commitRichText', { ...request.target.canonical, text: payload.text, runs: payload.runs, validationConfirmation: request.validationConfirmation });
       }
 
       const completed = this.cellEditDomain.dispatch({ type: 'commit.succeeded' });
@@ -3091,7 +3067,7 @@ export class WorkbookSession {
     }
   }
 
-  private commitPayloadToSelection(payload: CellEditCommitPayload, validationConfirmation: boolean, selection: SelectionState): void {
+  private async commitPayloadToSelection(payload: CellEditCommitPayload, validationConfirmation: boolean, selection: SelectionState): Promise<void> {
     const identities = new Set<string>();
     const targets: Array<{ sheetId: string; row: number; column: number; inputContext: ReturnType<WorkbookSession['createInputContext']>; style?: Partial<CellStyle> }> = [];
     for (const range of selection.ranges) {
@@ -3116,11 +3092,11 @@ export class WorkbookSession {
       }
     }
     if (payload.kind === 'raw-text') {
-      this.runCommand('sheet.cells.commitText', { text: payload.text, targets, validationConfirmation });
+      await this.runCommand('sheet.cells.commitText', { text: payload.text, targets, validationConfirmation });
     } else if (payload.kind === 'typed-value') {
-      this.runCommand('sheet.cells.commitTypedValue', { value: payload.value, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
+      await this.runCommand('sheet.cells.commitTypedValue', { value: payload.value, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
     } else {
-      this.runCommand('sheet.cells.commitRichText', { text: payload.text, runs: payload.runs, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
+      await this.runCommand('sheet.cells.commitRichText', { text: payload.text, runs: payload.runs, targets: targets.map(({ sheetId, row, column }) => ({ sheetId, row, column })), validationConfirmation });
     }
   }
 
@@ -3469,7 +3445,7 @@ export class WorkbookSession {
   }
 
   /** Commit a canvas selection exactly, including its active cell and anchor. */
-  applyCanvasSelection(selection: SelectionState): void {
+  async applyCanvasSelection(selection: SelectionState): Promise<void> {
     const edit = this.cellEditDomain.getSnapshot();
     if (edit.session) {
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
@@ -3491,7 +3467,7 @@ export class WorkbookSession {
       const painter = this.formatPainter;
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
       if (targetRange) {
-        void this.dispatch({ commandId: 'format.painter.apply', params: {
+        void await this.dispatch({ commandId: 'format.painter.apply', params: {
           sheetId: this.activeSheetId,
           targetRange: { ...structuredClone(targetRange), sheetId: this.activeSheetId },
           pattern: structuredClone(painter.source.capturedPattern),
@@ -3513,14 +3489,14 @@ export class WorkbookSession {
     this.selectRange({ startRow: row, startColumn: column, endRow: row, endColumn: column }, 'extend');
   }
 
-  formatCells(params: {
+  async formatCells(params: {
     numberFormat?: string;
     style?: Partial<import('@react-sheets/core-model').CellStyle>;
     border?: { placement: import('@react-sheets/core-model').BorderPlacement; line?: import('@react-sheets/core-model').BorderLine };
-  }): void {
+  }): Promise<void> {
     const ranges = this.selectionService.getState().ranges;
     if (ranges.length === 0) return;
-    this.dispatch({ commandId: 'sheet.format.set', params: {
+    await this.dispatch({ commandId: 'sheet.format.set', params: {
       sheetId: this.activeSheetId,
       ranges,
       numberFormat: params.numberFormat,
@@ -3534,9 +3510,9 @@ export class WorkbookSession {
     if (!cell || typeof cell.value !== 'string' || !cell.value) return { text: '' };
     return { text: cell.value, ...(cell.phonetic ? { metadata: structuredClone(cell.phonetic) } : {}) };
   }
-  setPhoneticGuide(metadata: CellPhoneticMetadata): void {
+  async setPhoneticGuide(metadata: CellPhoneticMetadata): Promise<void> {
     const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
-    this.runCommand('sheet.phonetic.set', { sheetId: this.activeSheetId, range, metadata });
+    await this.runCommand('sheet.phonetic.set', { sheetId: this.activeSheetId, range, metadata });
     this.refresh();
   }
 
@@ -3585,20 +3561,20 @@ export class WorkbookSession {
     this.emit();
   }
 
-  requestMergeAction(operation: MergeOperation): void {
+  async requestMergeAction(operation: MergeOperation): Promise<void> {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     if (operation !== 'unmerge' && range.startRow === range.endRow && range.startColumn === range.endColumn) {
       this.notify('Select at least two cells before merging');
       return;
     }
     if (operation === 'unmerge') {
-      this.dispatch({ commandId: 'sheet.merge.unmerge', params: { sheetId: this.activeSheetId, range } });
+      await this.dispatch({ commandId: 'sheet.merge.unmerge', params: { sheetId: this.activeSheetId, range } });
       return;
     }
     const regions = this.dataRegionsIntersectingRanges(this.activeSheetId, [range]);
     if (regions.length > 0) {
       void this.materializeDataRegions(regions)
-        .then(() => this.requestMergeAction(operation))
+        .then(async () => await this.requestMergeAction(operation))
         .catch((error) => this.notify(error instanceof Error ? error.message : 'Data region could not be prepared for merging'));
       return;
     }
@@ -3618,15 +3594,15 @@ export class WorkbookSession {
       this.emit();
       return;
     }
-    this.dispatch({ commandId: operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
+    await this.dispatch({ commandId: operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
   }
 
-  confirmMergeAction(): void {
+  async confirmMergeAction(): Promise<void> {
     const pending = this.pendingMerge;
     this.dialogs = { ...this.dialogs, active: null, mergeDiscardCount: 0 };
     this.setFocusState('grid', 'grid');
     this.pendingMerge = null;
-    if (pending) this.dispatch({ commandId: pending.operation === 'center' ? 'sheet.merge.center' : pending.operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: pending.range.sheetId, range: pending.range, confirmDataLoss: true } });
+    if (pending) await this.dispatch({ commandId: pending.operation === 'center' ? 'sheet.merge.center' : pending.operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: pending.range.sheetId, range: pending.range, confirmDataLoss: true } });
     this.emit();
   }
 
@@ -3637,14 +3613,14 @@ export class WorkbookSession {
     this.emit();
   }
 
-  applyCellShift(operation: CellShiftOperation, axis: 'row' | 'column'): void {
+  async applyCellShift(operation: CellShiftOperation, axis: 'row' | 'column'): Promise<void> {
     const range = this.getPrimaryRange();
-    this.dispatch({ commandId: operation === 'insert' ? 'sheet.cells.insert' : 'sheet.cells.delete', params: { sheetId: this.activeSheetId, range, operation, axis } });
+    await this.dispatch({ commandId: operation === 'insert' ? 'sheet.cells.insert' : 'sheet.cells.delete', params: { sheetId: this.activeSheetId, range, operation, axis } });
   }
 
-  freezeAtPrimary(): void {
+  async freezeAtPrimary(): Promise<void> {
     const sel = this.selectionService.getState();
-    this.runCommand('sheet.freeze.set', {
+    await this.runCommand('sheet.freeze.set', {
       sheetId: this.activeSheetId,
       pane: {
         kind: 'frozen',
@@ -3658,13 +3634,13 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
+  async movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const requestedRow = active.row + rowDelta;
     const requestedColumn = active.column + columnDelta;
     if (requestedRow >= sheet.rowCount || requestedColumn >= sheet.columnCount) {
-      this.ensureSheetExtent(
+      await this.ensureSheetExtent(
         requestedRow >= sheet.rowCount ? sheet.rowCount + SHEET_ROW_GROWTH_CHUNK : sheet.rowCount,
         requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount,
       );
@@ -3677,19 +3653,19 @@ export class WorkbookSession {
   }
 
   /** Grow the sparse worksheet address space through the sole local-durable command. */
-  ensureSheetExtent(rowCount: number, columnCount: number): void {
+  async ensureSheetExtent(rowCount: number, columnCount: number): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const targetRowCount = Math.min(MAX_SHEET_ROW_COUNT, Math.max(sheet.rowCount, Math.trunc(rowCount)));
     const targetColumnCount = Math.min(MAX_SHEET_COLUMN_COUNT, Math.max(sheet.columnCount, Math.trunc(columnCount)));
     if (targetRowCount === sheet.rowCount && targetColumnCount === sheet.columnCount) return;
-    this.runCommand('sheet.extent.grow', {
+    await this.runCommand('sheet.extent.grow', {
       sheetId: this.activeSheetId,
       rowCount: targetRowCount,
       columnCount: targetColumnCount,
     });
   }
 
-  jumpEdge(direction: 'up' | 'down' | 'left' | 'right', extend = false): void {
+  async jumpEdge(direction: 'up' | 'down' | 'left' | 'right', extend = false): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const sel = this.selectionService.getState();
     let row = sel.activeCell.row;
@@ -3707,7 +3683,7 @@ export class WorkbookSession {
     }
     if (horizontal) column = Math.max(0, Math.min(sheet.columnCount - 1, cursor));
     else row = Math.max(0, Math.min(sheet.rowCount - 1, cursor));
-    this.movePrimary(row - sel.activeCell.row, column - sel.activeCell.column, { extend });
+    await this.movePrimary(row - sel.activeCell.row, column - sel.activeCell.column, { extend });
     this.emit();
   }
 
@@ -3752,11 +3728,11 @@ export class WorkbookSession {
     if (next) this.selectSheet(next.id);
   }
 
-  autoSum(functionName: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN' = 'SUM'): void {
+  async autoSum(functionName: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN' = 'SUM'): Promise<void> {
     const selection = this.selectionService.getState();
     const range = this.getCurrentRegion();
     const primary = this.getPrimaryRange();
-    this.dispatch({
+    await this.dispatch({
       commandId: 'formula.autosum',
       params: {
         sheetId: this.activeSheetId,
@@ -3777,10 +3753,10 @@ export class WorkbookSession {
     return this.runtime.model.getDefinedName(name, sheetId);
   }
 
-  setDefinedName(input: DefinedNameCommandInput): DefinedNameModel {
+  async setDefinedName(input: DefinedNameCommandInput): Promise<DefinedNameModel> {
     const scope = input.scope ?? 'workbook';
     const sheetId = scope === 'sheet' ? input.sheetId ?? this.activeSheetId : undefined;
-    this.runCommand('workbook.name.set', {
+    await this.runCommand('workbook.name.set', {
       name: input.name,
       formula: input.formula,
       scope,
@@ -3794,13 +3770,13 @@ export class WorkbookSession {
     return model;
   }
 
-  removeDefinedName(
+  async removeDefinedName(
     name: string,
     scope: DefinedNameModel['scope'] = 'workbook',
     sheetId = scope === 'sheet' ? this.activeSheetId : undefined,
-  ): DefinedNameModel | undefined {
+  ): Promise<DefinedNameModel | undefined> {
     const previous = this.runtime.model.getDefinedNameExact(name, scope, sheetId);
-    this.runCommand('workbook.name.remove', {
+    await this.runCommand('workbook.name.remove', {
       name,
       scope,
       ...(sheetId === undefined ? {} : { sheetId }),
@@ -3809,25 +3785,25 @@ export class WorkbookSession {
     return previous;
   }
 
-  showFormulaPrecedents(): void {
+  async showFormulaPrecedents(): Promise<void> {
     const active = this.selectionService.getState().activeCell;
-    this.runCommand('formula.audit.precedents.show', { address: { sheetId: this.activeSheetId, ...active } });
+    await this.runCommand('formula.audit.precedents.show', { address: { sheetId: this.activeSheetId, ...active } });
     this.refresh();
   }
 
-  showFormulaDependents(): void {
+  async showFormulaDependents(): Promise<void> {
     const active = this.selectionService.getState().activeCell;
-    this.runCommand('formula.audit.dependents.show', { address: { sheetId: this.activeSheetId, ...active } });
+    await this.runCommand('formula.audit.dependents.show', { address: { sheetId: this.activeSheetId, ...active } });
     this.refresh();
   }
 
-  removeFormulaAuditArrows(): void {
-    this.runCommand('formula.audit.arrows.remove', {});
+  async removeFormulaAuditArrows(): Promise<void> {
+    await this.runCommand('formula.audit.arrows.remove', {});
     this.refresh();
   }
 
-  setShowFormulas(enabled: boolean): void {
-    this.runCommand('formula.audit.formulas.show', { enabled });
+  async setShowFormulas(enabled: boolean): Promise<void> {
+    await this.runCommand('formula.audit.formulas.show', { enabled });
     this.refresh();
   }
 
@@ -3841,14 +3817,14 @@ export class WorkbookSession {
     this.emit();
   }
 
-  scanFormulaErrors(): void {
-    this.runCommand('formula.audit.errors.scan', { sheetId: this.activeSheetId });
+  async scanFormulaErrors(): Promise<void> {
+    await this.runCommand('formula.audit.errors.scan', { sheetId: this.activeSheetId });
     this.refresh();
   }
 
-  evaluateFormulaStep(): void {
+  async evaluateFormulaStep(): Promise<void> {
     const active = this.selectionService.getState().activeCell;
-    this.runCommand('formula.audit.evaluate.step', { address: { sheetId: this.activeSheetId, ...active } });
+    await this.runCommand('formula.audit.evaluate.step', { address: { sheetId: this.activeSheetId, ...active } });
     this.refresh();
   }
 
@@ -3874,7 +3850,7 @@ export class WorkbookSession {
     });
   }
 
-  commitFormula(overrideValue?: string): boolean {
+  async commitFormula(overrideValue?: string): Promise<boolean> {
     if (this.phase !== 'ready') return false;
     const sel = this.selectionService.getState();
     const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
@@ -3884,7 +3860,7 @@ export class WorkbookSession {
     const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
     const style = cell?.style;
     try {
-      this.runCommand('sheet.cell.commitText', {
+      await this.runCommand('sheet.cell.commitText', {
         sheetId: target.sheetId,
         row,
         column,
@@ -4029,22 +4005,22 @@ export class WorkbookSession {
     });
   }
 
-  updateTableSheetDefinition(definition: TableSheetDefinition): void {
+  async updateTableSheetDefinition(definition: TableSheetDefinition): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'table-sheet') throw new Error('TableSheet designer requires a table-sheet');
-    this.runCommand('tableSheet.update', { sheetId: this.activeSheetId, definition });
+    await this.runCommand('tableSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
-  updateGanttSheetDefinition(definition: import('@react-sheets/core-model').GanttSheetDefinition): void {
+  async updateGanttSheetDefinition(definition: import('@react-sheets/core-model').GanttSheetDefinition): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'gantt-sheet') throw new Error('GanttSheet designer requires a gantt-sheet');
-    this.runCommand('ganttSheet.update', { sheetId: this.activeSheetId, definition });
+    await this.runCommand('ganttSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
-  updateReportSheetDefinition(definition: import('@react-sheets/core-model').ReportSheetDefinition): void {
+  async updateReportSheetDefinition(definition: import('@react-sheets/core-model').ReportSheetDefinition): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'report-sheet') throw new Error('ReportSheet designer requires a report-sheet');
-    this.runCommand('reportSheet.update', { sheetId: this.activeSheetId, definition });
+    await this.runCommand('reportSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
   private createInsertDrawing(
@@ -4066,12 +4042,12 @@ export class WorkbookSession {
     };
   }
 
-  private commitInsertDrawing(request: DrawingInsertRequest, activate: (result: InsertResult) => void = (result) => {
-    this.setDrawingSelection([...result.createdObjectIds]);
+  private commitInsertDrawing(request: DrawingInsertRequest, activate: (result: InsertResult) => void = async (result) => {
+    await this.setDrawingSelection([...result.createdObjectIds]);
   }): InsertResult {
     return this.insertCoordinator.commitDrawing(
       request,
-      (commandId, params) => this.runCommand(commandId, params),
+      async (commandId, params) => await this.runCommand(commandId, params),
       activate,
     );
   }
@@ -4079,7 +4055,7 @@ export class WorkbookSession {
   private commitInsertMutation(request: InsertMutationRequest, activate: (result: InsertResult) => void = () => {}): InsertResult {
     return this.insertCoordinator.commitMutation(
       request,
-      (commandId, params) => this.runCommand(commandId, params),
+      async (commandId, params) => await this.runCommand(commandId, params),
       activate,
     );
   }
@@ -4124,8 +4100,8 @@ export class WorkbookSession {
     const bindings: ChartBindings = { values: numericFields.map((field) => ({ area: 'values', fieldId: field.id, aggregate: 'sum' })), category: category ? [{ area: 'category', fieldId: category.id, aggregate: 'none' }] : [], details: [], color: [], size: [], tooltip: [], filter: [] };
     const drawing = this.createInsertDrawing('chart', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'chart' });
     const payload: ChartDrawingPayload = { kind: 'chart', chartId: drawing.payloadId, source: { kind: 'table', tableId: table.id, bindings }, chartType: type, subtype: defaultChartSubtype(type), elements: { title: '数据图表', legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show', chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 }, plotArea: { fill: '#ffffff' }, valueAxis: { id: 'value', position: 'left', majorGridlines: { visible: true } }, categoryAxis: { id: 'category', position: 'bottom', majorGridlines: { visible: false } } } };
-    this.commitInsertDrawing({ commandId: 'chart.insert.structured', sheetId: this.activeSheetId, drawing, payload, extraParams: { table } }, () => {
-      this.setDrawingSelection([drawing.id]);
+    this.commitInsertDrawing({ commandId: 'chart.insert.structured', sheetId: this.activeSheetId, drawing, payload, extraParams: { table } }, async () => {
+      await this.setDrawingSelection([drawing.id]);
       this.panels = { ...this.panels, active: 'chart', open: true };
     });
     this.notify('图表已插入');
@@ -4314,23 +4290,23 @@ export class WorkbookSession {
     }
     const drawing = this.createInsertDrawing('textbox', this.activeSheetId, { kind: 'absolute' }, { payloadPrefix: 'textbox', transform: { ...transform, rotation: transform.rotation ?? 0 } });
     const payload: TextBoxDrawingPayload = { kind: 'textbox', text: '', textFrame: createDefaultTextBoxTextFrame() };
-    this.commitInsertDrawing({ commandId: 'drawing.add.textbox', sheetId: this.activeSheetId, drawing, payload }, () => {
+    this.commitInsertDrawing({ commandId: 'drawing.add.textbox', sheetId: this.activeSheetId, drawing, payload }, async () => {
       this.textBoxPlacement = false;
-      this.setDrawingSelection([drawing.id]);
-      this.beginTextBoxEdit(drawing.id);
+      await this.setDrawingSelection([drawing.id]);
+      await this.beginTextBoxEdit(drawing.id);
     });
     this.notify('文本框已插入');
     this.refresh();
   }
 
-  beginTextBoxEdit(drawingId: string, initialText?: string): void {
+  async beginTextBoxEdit(drawingId: string, initialText?: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
     if (!drawing || drawing.kind !== 'textbox') throw new Error(`Unknown textbox: ${drawingId}`);
     const payload = sheet.drawingPayloads.get(drawing.payloadId);
     if (!payload || payload.kind !== 'textbox') throw new Error(`Missing textbox payload: ${drawing.payloadId}`);
     this.textBoxEdit = { sheetId: this.activeSheetId, drawingId, draftText: initialText ?? payload.text };
-    this.setDrawingSelection([drawingId]);
+    await this.setDrawingSelection([drawingId]);
     this.inputMode = 'grid';
     this.focus = { mode: 'grid', target: 'grid' };
     this.emit();
@@ -4356,14 +4332,14 @@ export class WorkbookSession {
     this.emit();
   }
 
-  commitTextBoxEdit(): void {
+  async commitTextBoxEdit(): Promise<void> {
     const edit = this.textBoxEdit;
     if (!edit) return;
     const sheet = this.runtime.model.getSheet(edit.sheetId);
     const drawing = sheet.drawings.find((entry) => entry.id === edit.drawingId);
     const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
     if (!drawing || drawing.kind !== 'textbox' || !payload || payload.kind !== 'textbox') throw new Error(`Textbox edit target disappeared: ${edit.drawingId}`);
-    this.runCommand('drawing.textbox.update', { sheetId: edit.sheetId, drawingId: edit.drawingId, payload: { ...structuredClone(payload), text: edit.draftText } });
+    await this.runCommand('drawing.textbox.update', { sheetId: edit.sheetId, drawingId: edit.drawingId, payload: { ...structuredClone(payload), text: edit.draftText } });
     this.textBoxEdit = null;
     this.refresh();
   }
@@ -4374,12 +4350,12 @@ export class WorkbookSession {
     this.emit();
   }
 
-  updateTextBoxFrame(drawingId: string, textFrame: TextBoxTextFrame): void {
+  async updateTextBoxFrame(drawingId: string, textFrame: TextBoxTextFrame): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
     const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
     if (!drawing || drawing.kind !== 'textbox' || !payload || payload.kind !== 'textbox') throw new Error(`Unknown textbox: ${drawingId}`);
-    this.runCommand('drawing.textbox.update', { sheetId: this.activeSheetId, drawingId, payload: { ...structuredClone(payload), textFrame: structuredClone(textFrame) } });
+    await this.runCommand('drawing.textbox.update', { sheetId: this.activeSheetId, drawingId, payload: { ...structuredClone(payload), textFrame: structuredClone(textFrame) } });
     this.refresh();
   }
 
@@ -4409,10 +4385,10 @@ export class WorkbookSession {
         hiddenData: 'show',
       },
     };
-    this.commitInsertDrawing({ commandId: 'pivot.chart.create', sheetId: sheet.id, drawing, payload }, () => {
+    this.commitInsertDrawing({ commandId: 'pivot.chart.create', sheetId: sheet.id, drawing, payload }, async () => {
       this.activeSheetId = sheet.id;
       this.setActivePivotContext(pivotId, sheet.id);
-      this.setDrawingSelection([drawing.id]);
+      await this.setDrawingSelection([drawing.id]);
       this.notify(`Pivot chart "${title}" inserted`);
       this.refresh();
     });
@@ -4477,12 +4453,12 @@ export class WorkbookSession {
     };
     this.addChart(drawing, payload);
   }
-  updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(chartType)): void {
-    this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType, subtype });
+  async updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(chartType)): Promise<void> {
+    await this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType, subtype });
     this.refresh();
   }
-  updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartDrawingPayload['series'], categoryRange?: RangeRef): void {
-    this.runCommand('chart.setSeries', {
+  async updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartDrawingPayload['series'], categoryRange?: RangeRef): Promise<void> {
+    await this.runCommand('chart.setSeries', {
       sheetId: this.activeSheetId,
       chartId,
       source: { kind: 'worksheet-ranges', ranges: sourceRanges },
@@ -4491,40 +4467,40 @@ export class WorkbookSession {
     });
     this.refresh();
   }
-  setChartLegend(chartId: string, legendPosition: NonNullable<ChartDrawingPayload['elements']['legend']>['position']): void {
-    this.runCommand('chart.setLegend', { sheetId: this.activeSheetId, chartId, legendPosition });
+  async setChartLegend(chartId: string, legendPosition: NonNullable<ChartDrawingPayload['elements']['legend']>['position']): Promise<void> {
+    await this.runCommand('chart.setLegend', { sheetId: this.activeSheetId, chartId, legendPosition });
     this.refresh();
   }
-  setChartDataLabels(chartId: string, showDataLabels: boolean): void {
-    this.runCommand('chart.setDataLabels', { sheetId: this.activeSheetId, chartId, showDataLabels });
+  async setChartDataLabels(chartId: string, showDataLabels: boolean): Promise<void> {
+    await this.runCommand('chart.setDataLabels', { sheetId: this.activeSheetId, chartId, showDataLabels });
     this.refresh();
   }
-  setChartElements(chartId: string, elements: Partial<ChartDrawingPayload['elements']>): void {
-    this.runCommand('chart.setElements', { sheetId: this.activeSheetId, chartId, elements });
+  async setChartElements(chartId: string, elements: Partial<ChartDrawingPayload['elements']>): Promise<void> {
+    await this.runCommand('chart.setElements', { sheetId: this.activeSheetId, chartId, elements });
     this.refresh();
   }
-  setChartSeriesStyle(chartId: string, seriesName: string, style: Partial<NonNullable<ChartDrawingPayload['series']>[number]>): void {
-    this.runCommand('chart.setSeriesStyle', { sheetId: this.activeSheetId, chartId, seriesName, style });
+  async setChartSeriesStyle(chartId: string, seriesName: string, style: Partial<NonNullable<ChartDrawingPayload['series']>[number]>): Promise<void> {
+    await this.runCommand('chart.setSeriesStyle', { sheetId: this.activeSheetId, chartId, seriesName, style });
     this.refresh();
   }
-  updateChartBounds(id: string, bounds: DrawingTransform): void {
+  async updateChartBounds(id: string, bounds: DrawingTransform): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
-      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      await this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
       this.refresh();
       return;
     }
     this.notify('Chart is not registered as a drawing object');
   }
-  removeChart(id: string): void {
+  async removeChart(id: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = findDrawingByPayloadId(sheet, id);
     if (!drawing) {
       this.notify('Chart is not registered as a drawing object');
       return;
     }
-    this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
+    await this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
     this.refresh();
   }
   async addPivot(pivot: PivotModel): Promise<PivotCreateOutcome> {
@@ -4865,8 +4841,8 @@ export class WorkbookSession {
       return { status: 'rejected', error: taskError };
     }
   }
-  updatePivotLayout(pivotId: string, layout: PivotLayout): Promise<PivotUpdateOutcome> {
-    return this.updatePivotConfiguration(pivotId, { layout });
+  async updatePivotLayout(pivotId: string, layout: PivotLayout): Promise<PivotUpdateOutcome> {
+    return await this.updatePivotConfiguration(pivotId, { layout });
   }
   async updatePivotConfiguration(
     pivotId: string,
@@ -4894,7 +4870,7 @@ export class WorkbookSession {
       const calculated = await this.calculatePivotTask(candidate);
       this.pendingPivotCommitResults.set(pivotId, calculated.result);
       try {
-        this.runCommand('pivot.update', {
+        await this.runCommand('pivot.update', {
           sheetId: current.target.sheetId,
           pivotId,
           ...structuredClone(patch),
@@ -4918,10 +4894,10 @@ export class WorkbookSession {
       return { status: 'rejected', error: taskError };
     }
   }
-  setPivotAggregate(pivotId: string, valueId: string, summarizeBy: PivotAggregateFunction): Promise<PivotUpdateOutcome> {
+  async setPivotAggregate(pivotId: string, valueId: string, summarizeBy: PivotAggregateFunction): Promise<PivotUpdateOutcome> {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
     if (!pivot) return Promise.resolve({ status: 'rejected', error: { code: 'PIVOT_SOURCE_INVALID', message: `Unknown PivotTable: ${pivotId}`, pivotId, sourceIdentity: 'unknown', sourceRevision: 'unknown', recovery: 'fix-source' } });
-    return this.updatePivotLayout(pivotId, {
+    return await this.updatePivotLayout(pivotId, {
       ...structuredClone(pivot.layout),
       values: pivot.layout.values.map((value) => value.valueId === valueId ? { ...value, summarizeBy } : value),
     });
@@ -4947,7 +4923,7 @@ export class WorkbookSession {
       collapsed.add(nodeId);
       expanded.delete(nodeId);
     }
-    return this.updatePivotLayout(pivotId, { ...structuredClone(pivot.layout), expansion: { ...expansion, collapsedNodeIds: [...collapsed], expandedNodeIds: [...expanded] } });
+    return await this.updatePivotLayout(pivotId, { ...structuredClone(pivot.layout), expansion: { ...expansion, collapsedNodeIds: [...collapsed], expandedNodeIds: [...expanded] } });
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
@@ -4961,9 +4937,9 @@ export class WorkbookSession {
     return compatiblePivotControlConnections(this.runtime.model, pivotId, fieldId, kind).map((connection) => structuredClone(connection));
   }
 
-  setPivotControlConnections(drawingId: string, connections: readonly PivotControlConnection[]): void {
+  async setPivotControlConnections(drawingId: string, connections: readonly PivotControlConnection[]): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.connections.set', { sheetId: sheet.id, drawingId, connections: structuredClone(connections) });
+    await this.runCommand('pivot.control.connections.set', { sheetId: sheet.id, drawingId, connections: structuredClone(connections) });
     this.refresh();
   }
 
@@ -5008,61 +4984,61 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  removePivotControl(drawingId: string): void {
+  async removePivotControl(drawingId: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
     if (!drawing) return;
-    this.runCommand('drawing.remove', { sheetId: sheet.id, drawingId });
+    await this.runCommand('drawing.remove', { sheetId: sheet.id, drawingId });
     this.refresh();
   }
 
-  setPivotSlicerFilter(drawingId: string, mode: 'all' | 'include' | 'exclude', memberKeys: readonly PivotMemberKey[]): void {
+  async setPivotSlicerFilter(drawingId: string, mode: 'all' | 'include' | 'exclude', memberKeys: readonly PivotMemberKey[]): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.slicer.filter.set', { sheetId: sheet.id, drawingId, filter: { mode, memberKeys: [...memberKeys] } });
+    await this.runCommand('pivot.control.slicer.filter.set', { sheetId: sheet.id, drawingId, filter: { mode, memberKeys: [...memberKeys] } });
     this.refresh();
   }
 
-  setPivotTimelinePeriod(drawingId: string, start?: string, end?: string): void {
+  async setPivotTimelinePeriod(drawingId: string, start?: string, end?: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.period.set', { sheetId: sheet.id, drawingId, period: { ...(start ? { start } : {}), ...(end ? { end } : {}) } });
+    await this.runCommand('pivot.control.timeline.period.set', { sheetId: sheet.id, drawingId, period: { ...(start ? { start } : {}), ...(end ? { end } : {}) } });
     this.refresh();
   }
-  setPivotTimelineLevel(drawingId: string, level: import('@react-sheets/core-model').PivotTimelineLevel): void {
+  async setPivotTimelineLevel(drawingId: string, level: import('@react-sheets/core-model').PivotTimelineLevel): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.level.set', { sheetId: sheet.id, drawingId, level });
+    await this.runCommand('pivot.control.timeline.level.set', { sheetId: sheet.id, drawingId, level });
     this.refresh();
   }
-  setPivotTimelineWindow(drawingId: string, scrollPosition: string): void {
+  async setPivotTimelineWindow(drawingId: string, scrollPosition: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, scrollPosition });
+    await this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, scrollPosition });
     this.refresh();
   }
-  setPivotTimelineDisplay(drawingId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>): void {
+  async setPivotTimelineDisplay(drawingId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.display.set', { sheetId: sheet.id, drawingId, ...display });
+    await this.runCommand('pivot.control.timeline.display.set', { sheetId: sheet.id, drawingId, ...display });
     this.refresh();
   }
-  setPivotTimelineCaption(drawingId: string, caption: string): void {
+  async setPivotTimelineCaption(drawingId: string, caption: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.caption.set', { sheetId: sheet.id, drawingId, caption });
+    await this.runCommand('pivot.control.timeline.caption.set', { sheetId: sheet.id, drawingId, caption });
     this.refresh();
   }
-  setPivotTimelineStyle(drawingId: string, styleName: string): void {
+  async setPivotTimelineStyle(drawingId: string, styleName: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.style.set', { sheetId: sheet.id, drawingId, styleName });
+    await this.runCommand('pivot.control.timeline.style.set', { sheetId: sheet.id, drawingId, styleName });
     this.refresh();
   }
-  refreshPivot(pivotId: string): void {
+  async refreshPivot(pivotId: string): Promise<void> {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
     if (!pivot) return;
-    this.runCommand('pivot.refresh', { sheetId: pivot.target.sheetId, pivotId });
-    if (pivot.presentation?.displayOptions?.autoFitColumnsOnUpdate) this.autoFitPivotColumns(pivotId);
+    await this.runCommand('pivot.refresh', { sheetId: pivot.target.sheetId, pivotId });
+    if (pivot.presentation?.displayOptions?.autoFitColumnsOnUpdate) await this.autoFitPivotColumns(pivotId);
   }
   refreshAllPivots(): void {
     this.refreshPivotsForTrigger({ kind: 'explicit-all' });
     this.refresh();
   }
-  autoFitPivotColumns(pivotId: string): void {
+  async autoFitPivotColumns(pivotId: string): Promise<void> {
     const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
     if (!owner || !pivot) return;
@@ -5074,19 +5050,19 @@ export class WorkbookSession {
       maxima.set(column, Math.max(maxima.get(column) ?? 8, [...text].length * this.runtime.model.dimensionMetrics.maximumDigitWidthPx + 16));
     }
     const maximum = 255 * this.runtime.model.dimensionMetrics.maximumDigitWidthPx;
-    this.applyColumnWidths([...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(maximum, Math.max(8, widthPx)) })));
+    await this.applyColumnWidths([...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(maximum, Math.max(8, widthPx)) })));
   }
-  removePivot(id: string): void {
-    this.runCommand('pivot.remove', id);
+  async removePivot(id: string): Promise<void> {
+    await this.runCommand('pivot.remove', id);
     this.pivotTaskGeneration.delete(id);
     delete this.runtime.pivotResults[id];
     delete this.runtime.pivotErrors[id];
     this.refresh();
   }
-  drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
+  async drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): Promise<void> {
     if (paths.length === 0) return;
     const targetSheetId = this.allocateSheetId();
-    this.runCommand('pivot.drillDown', {
+    await this.runCommand('pivot.drillDown', {
       sheetId: this.activeSheetId,
       pivotId,
       label,
@@ -5199,21 +5175,21 @@ export class WorkbookSession {
     this.notify('Connector inserted');
     this.refresh();
   }
-  updateShapeBounds(id: string, bounds: DrawingTransform): void {
+  async updateShapeBounds(id: string, bounds: DrawingTransform): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
-      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      await this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
       this.refresh();
       return;
     }
     this.notify('Shape is not registered as a drawing object');
   }
-  removeShape(id: string): void {
+  async removeShape(id: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = findDrawingByPayloadId(sheet, id);
     if (drawing) {
-      this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+      await this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
     } else {
       this.notify('Shape is not registered as a drawing object');
       return;
@@ -5279,82 +5255,82 @@ export class WorkbookSession {
       throw error;
     }
   }
-  updateImageBounds(id: string, bounds: DrawingTransform): void {
+  async updateImageBounds(id: string, bounds: DrawingTransform): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
-      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      await this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
       this.refresh();
       return;
     }
     this.notify('Image is not registered as a drawing object');
   }
-  removeImage(id: string): void {
+  async removeImage(id: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = findDrawingByPayloadId(sheet, id);
     if (drawing) {
-      this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+      await this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
     } else {
       this.notify('Image is not registered as a drawing object');
       return;
     }
     this.refresh();
   }
-  bringSelectedDrawingForward(): void {
+  async bringSelectedDrawingForward(): Promise<void> {
     const drawingId = this.resolveSelectedDrawingId();
     if (!drawingId) {
       this.notify('Select a drawing object first');
       return;
     }
-    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'forward' });
+    await this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'forward' });
     this.refresh();
   }
-  sendSelectedDrawingBackward(): void {
+  async sendSelectedDrawingBackward(): Promise<void> {
     const drawingId = this.resolveSelectedDrawingId();
     if (!drawingId) {
       this.notify('Select a drawing object first');
       return;
     }
-    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'backward' });
+    await this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'backward' });
     this.refresh();
   }
-  bringSelectedDrawingToFront(): void {
+  async bringSelectedDrawingToFront(): Promise<void> {
     const drawingId = this.resolveSelectedDrawingId();
     if (!drawingId) {
       this.notify('Select a drawing object first');
       return;
     }
-    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'front' });
+    await this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'front' });
     this.refresh();
   }
-  sendSelectedDrawingToBack(): void {
+  async sendSelectedDrawingToBack(): Promise<void> {
     const drawingId = this.resolveSelectedDrawingId();
     if (!drawingId) {
       this.notify('Select a drawing object first');
       return;
     }
-    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'back' });
+    await this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'back' });
     this.refresh();
   }
-  alignSelectedDrawings(alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): void {
+  async alignSelectedDrawings(alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): Promise<void> {
     const drawingIds = this.resolveSelectedDrawingIds();
     if (drawingIds.length < 2) {
       this.notify('Select at least two drawing objects to align');
       return;
     }
-    this.runCommand('drawing.align', { sheetId: this.activeSheetId, drawingIds, alignment });
+    await this.runCommand('drawing.align', { sheetId: this.activeSheetId, drawingIds, alignment });
     this.refresh();
   }
-  distributeSelectedDrawings(axis: 'horizontal' | 'vertical'): void {
+  async distributeSelectedDrawings(axis: 'horizontal' | 'vertical'): Promise<void> {
     const drawingIds = this.resolveSelectedDrawingIds();
     if (drawingIds.length < 3) {
       this.notify('Select at least three drawing objects to distribute');
       return;
     }
-    this.runCommand('drawing.distribute', { sheetId: this.activeSheetId, drawingIds, axis });
+    await this.runCommand('drawing.distribute', { sheetId: this.activeSheetId, drawingIds, axis });
     this.refresh();
   }
-  removeSelectedDrawing(): void {
+  async removeSelectedDrawing(): Promise<void> {
     if (!this.selectedFloatingId) {
       this.notify('Select a drawing object first');
       return;
@@ -5365,7 +5341,7 @@ export class WorkbookSession {
       this.notify('Selected object is not registered as a drawing');
       return;
     }
-    this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+    await this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
     this.refresh();
   }
   private resolveSelectedDrawingId(): string | undefined {
@@ -5436,8 +5412,8 @@ export class WorkbookSession {
     });
     return sparklineId;
   }
-  updateSparkline(sparklineId: string, patch: Partial<SparklineModel>): void {
-    this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch });
+  async updateSparkline(sparklineId: string, patch: Partial<SparklineModel>): Promise<void> {
+    await this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch });
     this.refresh();
   }
   createSparklineGroup(sparklineIds: string[], patch?: Partial<Omit<SparklineGroup, 'id' | 'sheetId' | 'type' | 'sparklineIds'>>, type: SparklineModel['type'] = 'line'): string {
@@ -5455,49 +5431,49 @@ export class WorkbookSession {
     });
     return groupId;
   }
-  updateSparklineGroup(groupId: string, patch: Partial<SparklineGroup>): void {
-    this.runCommand('sparkline.group.update', { sheetId: this.activeSheetId, groupId, patch });
+  async updateSparklineGroup(groupId: string, patch: Partial<SparklineGroup>): Promise<void> {
+    await this.runCommand('sparkline.group.update', { sheetId: this.activeSheetId, groupId, patch });
     this.refresh();
   }
-  removeSparkline(id: string): void {
-    this.runCommand('sparkline.remove', { sheetId: this.activeSheetId, sparklineId: id });
+  async removeSparkline(id: string): Promise<void> {
+    await this.runCommand('sparkline.remove', { sheetId: this.activeSheetId, sparklineId: id });
     this.refresh();
   }
-  addConditionalFormat(rule: ConditionalFormatRule): void {
-    this.dispatch({ commandId: 'sheet.cf.add', params: { sheetId: this.activeSheetId, rule } });
+  async addConditionalFormat(rule: ConditionalFormatRule): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.cf.add', params: { sheetId: this.activeSheetId, rule } });
   }
-  updateConditionalFormat(ruleId: string, patch: Partial<ConditionalFormatRule>): void {
-    this.dispatch({ commandId: 'sheet.cf.update', params: { sheetId: this.activeSheetId, ruleId, patch } });
+  async updateConditionalFormat(ruleId: string, patch: Partial<ConditionalFormatRule>): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.cf.update', params: { sheetId: this.activeSheetId, ruleId, patch } });
   }
-  reorderConditionalFormats(ruleIds: readonly string[]): void {
-    this.runCommand('conditionalFormat.reorder', { sheetId: this.activeSheetId, ruleIds: [...ruleIds] });
+  async reorderConditionalFormats(ruleIds: readonly string[]): Promise<void> {
+    await this.runCommand('conditionalFormat.reorder', { sheetId: this.activeSheetId, ruleIds: [...ruleIds] });
     this.refresh();
   }
-  removeConditionalFormat(ruleId: string): void {
-    this.dispatch({ commandId: 'sheet.cf.remove', params: { sheetId: this.activeSheetId, ruleId } });
+  async removeConditionalFormat(ruleId: string): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.cf.remove', params: { sheetId: this.activeSheetId, ruleId } });
   }
-  addDataValidation(rule: DataValidationRule): void {
-    this.dispatch({ commandId: 'sheet.dv.add', params: { sheetId: this.activeSheetId, rule } });
+  async addDataValidation(rule: DataValidationRule): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.dv.add', params: { sheetId: this.activeSheetId, rule } });
   }
-  removeDataValidation(ruleId: string): void {
-    this.dispatch({ commandId: 'sheet.dv.remove', params: { sheetId: this.activeSheetId, ruleId } });
+  async removeDataValidation(ruleId: string): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.dv.remove', params: { sheetId: this.activeSheetId, ruleId } });
   }
-  setCellStyleTemplate(template: CellStyleTemplate): void {
-    this.dispatch({ commandId: 'workbook.cellTemplate.set', params: { sheetId: this.activeSheetId, template } });
+  async setCellStyleTemplate(template: CellStyleTemplate): Promise<void> {
+    await this.dispatch({ commandId: 'workbook.cellTemplate.set', params: { sheetId: this.activeSheetId, template } });
   }
-  removeCellStyleTemplate(templateId: string): void {
-    this.dispatch({ commandId: 'workbook.cellTemplate.remove', params: { sheetId: this.activeSheetId, templateId } });
+  async removeCellStyleTemplate(templateId: string): Promise<void> {
+    await this.dispatch({ commandId: 'workbook.cellTemplate.remove', params: { sheetId: this.activeSheetId, templateId } });
   }
-  applyCellStyleTemplate(templateId: string): void {
+  async applyCellStyleTemplate(templateId: string): Promise<void> {
     const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
-    this.dispatch({ commandId: 'sheet.cellTemplate.apply', params: { sheetId: this.activeSheetId, ranges, templateId } });
+    await this.dispatch({ commandId: 'sheet.cellTemplate.apply', params: { sheetId: this.activeSheetId, ranges, templateId } });
   }
-  setCellEditor(editor?: CellEditorConfig): void {
+  async setCellEditor(editor?: CellEditorConfig): Promise<void> {
     const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
-    this.dispatch({ commandId: 'sheet.cellEditor.set', params: { sheetId: this.activeSheetId, ranges, editor } });
+    await this.dispatch({ commandId: 'sheet.cellEditor.set', params: { sheetId: this.activeSheetId, ranges, editor } });
   }
 
-  saveComment(text: string, threadId?: string): void {
+  async saveComment(text: string, threadId?: string): Promise<void> {
     const normalized = text.trim();
     if (!normalized) throw new Error('COMMENT_TEXT_REQUIRED: a comment cannot be empty');
     const sel = this.selectionService.getState();
@@ -5508,7 +5484,7 @@ export class WorkbookSession {
       if (existing.row !== sel.activeCell.row || existing.column !== sel.activeCell.column) {
         throw new Error(`COMMENT_THREAD_CELL_MISMATCH: ${threadId}`);
       }
-      this.runCommand('comment.update', {
+      await this.runCommand('comment.update', {
         sheetId: this.activeSheetId,
         threadId,
         row: existing.row,
@@ -5531,7 +5507,7 @@ export class WorkbookSession {
       normalized,
       nextId('thread'),
     );
-    this.runCommand('comment.add', {
+    await this.runCommand('comment.add', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
@@ -5541,7 +5517,7 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
+  async applyFilter(column: number, patch: { criterion?: FilterCriterion }): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeFilter = resolveActiveAutoFilter(sheet, column);
     if (patch.criterion && !activeFilter && (patch.criterion.kind === 'color' || patch.criterion.kind === 'icon')) {
@@ -5580,32 +5556,32 @@ export class WorkbookSession {
     const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
     const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(baseRange), currentRegion: structuredClone(baseRange) };
     if (owner?.kind === 'table' && tableOwner) {
-      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter, dataRegionContext } });
+      await this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter, dataRegionContext } });
     } else {
-      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter, dataRegionContext } });
+      await this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter, dataRegionContext } });
     }
   }
 
-  sortFilterColumn(column: number, ascending: boolean): void {
+  async sortFilterColumn(column: number, ascending: boolean): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const filter = resolveActiveAutoFilter(sheet, column);
     if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) {
       this.notify('No active filter is available for this column');
       return;
     }
-    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext: this.getDataRegionContext() } });
+    await this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext: this.getDataRegionContext() } });
   }
 
-  applyFilterSelection(): void {
+  async applyFilterSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeFilter = resolveActiveAutoFilter(sheet);
     const owner = resolveFilterOwner(sheet);
     if (activeFilter && owner) {
       if (owner.kind === 'table') {
         const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
-        if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
+        if (table) await this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
       }
-      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
+      else await this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
       return;
     }
     const range = this.getCurrentRegion();
@@ -5613,14 +5589,14 @@ export class WorkbookSession {
       this.notify('Select a data region with a header row before enabling Filter');
       return;
     }
-    this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
+    await this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
       sheetId: this.activeSheetId,
       range,
       dataRegionContext: this.getDataRegionContext(),
     } });
   }
 
-  clearFilter(): void {
+  async clearFilter(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const autoFilter = resolveActiveAutoFilter(sheet);
     const owner = resolveFilterOwner(sheet);
@@ -5634,20 +5610,20 @@ export class WorkbookSession {
     }
     const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
     const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(autoFilter.range), currentRegion: structuredClone(autoFilter.range) };
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
+    if (owner.kind === 'table') await this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
+    else await this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
   }
 
-  closeFilter(): void {
+  async closeFilter(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const autoFilter = resolveActiveAutoFilter(sheet);
     const owner = resolveFilterOwner(sheet);
     if (!autoFilter || !owner) return;
     if (owner.kind === 'table') {
       const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
-      if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
+      if (table) await this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
     }
-    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext: this.getDataRegionContext() } });
+    else await this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext: this.getDataRegionContext() } });
   }
 
   private findParams(params: FindDialogParams): FindSearchParams {
@@ -5742,52 +5718,52 @@ export class WorkbookSession {
     return count;
   }
 
-  insertRowsAtPrimary(count: number): void {
-    this.dispatch({ commandId: 'sheet.rows.insert', params: { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.row, count } });
+  async insertRowsAtPrimary(count: number): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.rows.insert', params: { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.row, count } });
   }
-  deleteRowsAtPrimary(): void {
+  async deleteRowsAtPrimary(): Promise<void> {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    this.dispatch({ commandId: 'sheet.rows.delete', params: { sheetId: this.activeSheetId, at: range?.startRow ?? sel.activeCell.row, count: (range?.endRow ?? sel.activeCell.row) - (range?.startRow ?? sel.activeCell.row) + 1 } });
+    await this.dispatch({ commandId: 'sheet.rows.delete', params: { sheetId: this.activeSheetId, at: range?.startRow ?? sel.activeCell.row, count: (range?.endRow ?? sel.activeCell.row) - (range?.startRow ?? sel.activeCell.row) + 1 } });
   }
-  insertColumnsAtPrimary(count: number): void {
-    this.dispatch({ commandId: 'sheet.columns.insert', params: { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.column, count } });
+  async insertColumnsAtPrimary(count: number): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.columns.insert', params: { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.column, count } });
   }
-  deleteColumnsAtPrimary(): void {
+  async deleteColumnsAtPrimary(): Promise<void> {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    this.dispatch({ commandId: 'sheet.columns.delete', params: { sheetId: this.activeSheetId, at: range?.startColumn ?? sel.activeCell.column, count: (range?.endColumn ?? sel.activeCell.column) - (range?.startColumn ?? sel.activeCell.column) + 1 } });
+    await this.dispatch({ commandId: 'sheet.columns.delete', params: { sheetId: this.activeSheetId, at: range?.startColumn ?? sel.activeCell.column, count: (range?.endColumn ?? sel.activeCell.column) - (range?.startColumn ?? sel.activeCell.column) + 1 } });
   }
-  hideRowsAtPrimary(): void {
+  async hideRowsAtPrimary(): Promise<void> {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
     const start = range?.startRow ?? sel.activeCell.row;
     const end = range?.endRow ?? sel.activeCell.row;
-    this.setRowsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
+    await this.setRowsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
   }
-  hideColumnsAtPrimary(): void {
+  async hideColumnsAtPrimary(): Promise<void> {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
     const start = range?.startColumn ?? sel.activeCell.column;
     const end = range?.endColumn ?? sel.activeCell.column;
-    this.setColumnsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
+    await this.setColumnsHidden(Array.from({ length: end - start + 1 }, (_, offset) => start + offset), true);
   }
-  unhideAll(): void {
-    this.runCommand('sheet.rows.unhide.all', { sheetId: this.activeSheetId });
-    this.runCommand('sheet.columns.unhide.all', { sheetId: this.activeSheetId });
+  async unhideAll(): Promise<void> {
+    await this.runCommand('sheet.rows.unhide.all', { sheetId: this.activeSheetId });
+    await this.runCommand('sheet.columns.unhide.all', { sheetId: this.activeSheetId });
   }
-  toggleBandedRows(): void {
+  async toggleBandedRows(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const next = sheet.bandedRule
       ? null
       : { range: normalizeRangeRef({ sheetId: this.activeSheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }), firstColor: '#ffffff', secondColor: '#f1f5f9' };
-    this.runCommand('sheet.banded.set', { sheetId: this.activeSheetId, rule: next });
+    await this.runCommand('sheet.banded.set', { sheetId: this.activeSheetId, rule: next });
   }
-  transposeSelection(): void {
-    this.runCommand('matrix.transpose', { sheetId: this.activeSheetId, range: this.getPrimaryRange() });
+  async transposeSelection(): Promise<void> {
+    await this.runCommand('matrix.transpose', { sheetId: this.activeSheetId, range: this.getPrimaryRange() });
   }
-  flipSelection(axis: 'h' | 'v'): void {
-    this.runCommand('matrix.flip', { sheetId: this.activeSheetId, range: this.getPrimaryRange(), direction: axis === 'h' ? 'horizontal' : 'vertical' });
+  async flipSelection(axis: 'h' | 'v'): Promise<void> {
+    await this.runCommand('matrix.flip', { sheetId: this.activeSheetId, range: this.getPrimaryRange(), direction: axis === 'h' ? 'horizontal' : 'vertical' });
   }
   async splitByDelimiter(delimiter: string): Promise<void> {
     const sel = this.selectionService.getState();
@@ -5880,12 +5856,12 @@ export class WorkbookSession {
     this.notify('Pasted from clipboard');
     return outcome;
   }
-  clearFormats(): void {
-    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family: 'formats' } });
+  async clearFormats(): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family: 'formats' } });
   }
 
-  clearSelection(family: 'contents' | 'formats' = 'contents'): void {
-    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family } });
+  async clearSelection(family: 'contents' | 'formats' = 'contents'): Promise<void> {
+    await this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family } });
     this.syncDraftFromPrimary();
   }
 
@@ -5905,33 +5881,33 @@ export class WorkbookSession {
 
   addSheet(): void {
     const id = this.allocateSheetId();
-    this.withRefreshBatch(() => {
-      this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
+    this.withRefreshBatch(async () => {
+      await this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
       this.selectSheet(id);
     });
   }
-  renameSheet(sheetId: string, name: string): void {
+  async renameSheet(sheetId: string, name: string): Promise<void> {
     if (!name.trim()) return;
-    this.runCommand('sheet.rename', { sheetId, name: name.trim() });
+    await this.runCommand('sheet.rename', { sheetId, name: name.trim() });
   }
-  renameWorkbook(name: string): void {
+  async renameWorkbook(name: string): Promise<void> {
     if (!name.trim()) return;
-    this.runCommand('workbook.rename', { name });
+    await this.runCommand('workbook.rename', { name });
   }
   duplicateSheet(sheetId: string): void {
     const source = this.runtime.model.getSheet(sheetId);
     const newId = this.allocateSheetId();
     const newName = `${source.name} (2)`;
-    this.withRefreshBatch(() => {
-      this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
+    this.withRefreshBatch(async () => {
+      await this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
       this.selectSheet(newId);
       this.syncDraftFromPrimary();
     });
   }
   hideSheet(sheetId: string): void {
     try {
-      this.withRefreshBatch(() => {
-        this.runCommand('sheet.hide', { sheetId });
+      this.withRefreshBatch(async () => {
+        await this.runCommand('sheet.hide', { sheetId });
         if (this.activeSheetId === sheetId) {
           const next = this.runtime.model.getVisibleSheets()[0];
           if (next) this.selectSheet(next.id);
@@ -5941,16 +5917,16 @@ export class WorkbookSession {
       this.notify(error instanceof Error ? error.message : 'Cannot hide sheet');
     }
   }
-  setSheetTabColor(sheetId: string, color?: string): void {
-    this.runCommand('sheet.tabColor.set', { sheetId, color: color || undefined });
+  async setSheetTabColor(sheetId: string, color?: string): Promise<void> {
+    await this.runCommand('sheet.tabColor.set', { sheetId, color: color || undefined });
   }
   moveSheet(sheetId: string, toIndex: number): void {
-    this.withRefreshBatch(() => this.runCommand('sheet.reorder', { sheetId, toIndex }));
+    this.withRefreshBatch(async () => await this.runCommand('sheet.reorder', { sheetId, toIndex }));
   }
   deleteSheet(sheetId: string): void {
     try {
-      this.withRefreshBatch(() => {
-        this.runCommand('sheet.remove', { id: sheetId });
+      this.withRefreshBatch(async () => {
+        await this.runCommand('sheet.remove', { id: sheetId });
         if (this.activeSheetId === sheetId) {
           const remaining = this.runtime.model.getSheets()[0];
           if (remaining) this.selectSheet(remaining.id);
@@ -5960,48 +5936,48 @@ export class WorkbookSession {
       this.notify(error instanceof Error ? error.message : 'Worksheet removal failed');
     }
   }
-  resizeRow(row: number, heightPx: number): void {
-    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [{ row, heightPx: Math.max(1, heightPx) }] });
+  async resizeRow(row: number, heightPx: number): Promise<void> {
+    await this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [{ row, heightPx: Math.max(1, heightPx) }] });
   }
-  resizeColumn(column: number, widthPx: number): void {
-    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [{ column, widthPx: Math.max(1, widthPx) }] });
+  async resizeColumn(column: number, widthPx: number): Promise<void> {
+    await this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [{ column, widthPx: Math.max(1, widthPx) }] });
   }
-  resizeColumns(columns: readonly number[], widthPx: number): void {
+  async resizeColumns(columns: readonly number[], widthPx: number): Promise<void> {
     const unique = [...new Set(columns)].filter((column) => Number.isSafeInteger(column) && column >= 0);
     if (!unique.length) return;
-    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: unique.map((column) => ({ column, widthPx: Math.max(1, widthPx) })) });
+    await this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: unique.map((column) => ({ column, widthPx: Math.max(1, widthPx) })) });
   }
-  applyColumnWidths(entries: readonly { column: number; widthPx: number }[]): void {
+  async applyColumnWidths(entries: readonly { column: number; widthPx: number }[]): Promise<void> {
     const unique = new Map<number, number>();
     for (const entry of entries) if (Number.isSafeInteger(entry.column) && entry.column >= 0 && Number.isFinite(entry.widthPx) && entry.widthPx > 0) unique.set(entry.column, entry.widthPx);
     if (!unique.size) return;
-    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [...unique].map(([column, widthPx]) => ({ column, widthPx })) });
+    await this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [...unique].map(([column, widthPx]) => ({ column, widthPx })) });
   }
-  applyRowHeights(entries: readonly { row: number; heightPx: number }[]): void {
+  async applyRowHeights(entries: readonly { row: number; heightPx: number }[]): Promise<void> {
     const unique = new Map<number, number>();
     for (const entry of entries) if (Number.isSafeInteger(entry.row) && entry.row >= 0 && Number.isFinite(entry.heightPx) && entry.heightPx > 0) unique.set(entry.row, entry.heightPx);
     if (!unique.size) return;
-    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [...unique].map(([row, heightPx]) => ({ row, heightPx })) });
+    await this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [...unique].map(([row, heightPx]) => ({ row, heightPx })) });
   }
-  resizeRows(rows: readonly number[], heightPx: number): void {
+  async resizeRows(rows: readonly number[], heightPx: number): Promise<void> {
     const unique = [...new Set(rows)].filter((row) => Number.isSafeInteger(row) && row >= 0);
     if (!unique.length) return;
-    this.applyRowHeights(unique.map((row) => ({ row, heightPx: Math.max(1, heightPx) })));
+    await this.applyRowHeights(unique.map((row) => ({ row, heightPx: Math.max(1, heightPx) })));
   }
-  setRowsHidden(rows: readonly number[], hidden: boolean): void {
+  async setRowsHidden(rows: readonly number[], hidden: boolean): Promise<void> {
     const unique = [...new Set(rows)].filter((row) => Number.isSafeInteger(row) && row >= 0);
     if (!unique.length) return;
-    this.runCommand('sheet.rows.visibility.set', { sheetId: this.activeSheetId, rows: unique, hidden });
+    await this.runCommand('sheet.rows.visibility.set', { sheetId: this.activeSheetId, rows: unique, hidden });
   }
-  setColumnsHidden(columns: readonly number[], hidden: boolean): void {
+  async setColumnsHidden(columns: readonly number[], hidden: boolean): Promise<void> {
     const unique = [...new Set(columns)].filter((column) => Number.isSafeInteger(column) && column >= 0);
     if (!unique.length) return;
-    this.runCommand('sheet.columns.visibility.set', { sheetId: this.activeSheetId, columns: unique, hidden });
+    await this.runCommand('sheet.columns.visibility.set', { sheetId: this.activeSheetId, columns: unique, hidden });
   }
-  setDefaultColumnWidth(widthPx: number): void {
-    this.runCommand('sheet.column.defaultWidth.set', { sheetId: this.activeSheetId, widthPx: Math.max(1, widthPx) });
+  async setDefaultColumnWidth(widthPx: number): Promise<void> {
+    await this.runCommand('sheet.column.defaultWidth.set', { sheetId: this.activeSheetId, widthPx: Math.max(1, widthPx) });
   }
-  fillRange(targetRange: { startRow: number; endRow: number; startColumn: number; endColumn: number }): void {
+  async fillRange(targetRange: { startRow: number; endRow: number; startColumn: number; endColumn: number }): Promise<void> {
     const sel = this.selectionService.getState();
     const primary = sel.ranges[sel.primaryRangeIndex] ?? sel.ranges[0];
     if (!primary) return;
@@ -6022,7 +5998,7 @@ export class WorkbookSession {
             : (() => { this.notify('Fill must extend the selection along one axis'); return 'down' as FillDirection; })();
     if (direction === 'down' && !(target.endRow > source.endRow && target.startRow === source.startRow
       && target.startColumn === source.startColumn && target.endColumn === source.endColumn)) return;
-    this.dispatch({ commandId: 'sheet.range.fill', params: {
+    await this.dispatch({ commandId: 'sheet.range.fill', params: {
       sheetId: this.activeSheetId,
       sourceRange: source,
       targetRange: target,
@@ -6031,7 +6007,7 @@ export class WorkbookSession {
     } });
   }
 
-  fillSelection(direction: FillDirection, mode: FillMode = 'copy', series?: FillSeriesOptions): void {
+  async fillSelection(direction: FillDirection, mode: FillMode = 'copy', series?: FillSeriesOptions): Promise<void> {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const sourceRange = mode === 'series'
       ? range
@@ -6045,7 +6021,7 @@ export class WorkbookSession {
     if (sourceRange.startRow === range.startRow && sourceRange.endRow === range.endRow
       && sourceRange.startColumn === range.startColumn && sourceRange.endColumn === range.endColumn) {
       if (mode === 'copy') this.notify('Select a source cell and target cells before filling');
-      else this.dispatch({ commandId: 'sheet.range.fill', params: {
+      else await this.dispatch({ commandId: 'sheet.range.fill', params: {
         sheetId: this.activeSheetId,
         sourceRange,
         targetRange: range,
@@ -6055,7 +6031,7 @@ export class WorkbookSession {
       } });
       return;
     }
-    this.dispatch({ commandId: 'sheet.range.fill', params: {
+    await this.dispatch({ commandId: 'sheet.range.fill', params: {
       sheetId: this.activeSheetId,
       sourceRange,
       targetRange: range,
@@ -6065,14 +6041,14 @@ export class WorkbookSession {
     } });
   }
 
-  fillSeries(series: FillSeriesOptions = {}): void {
+  async fillSeries(series: FillSeriesOptions = {}): Promise<void> {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const direction: FillDirection = series.seriesIn === 'rows'
       ? 'right'
       : series.seriesIn === 'columns'
         ? 'down'
         : range.endRow - range.startRow >= range.endColumn - range.startColumn ? 'down' : 'right';
-    this.fillSelection(direction, 'series', series);
+    await this.fillSelection(direction, 'series', series);
   }
 
   /**
@@ -6080,7 +6056,7 @@ export class WorkbookSession {
    * The command layer owns pattern inference; this method only resolves the
    * active worksheet geometry so keyboard, Ribbon and scripts share one path.
    */
-  flashFill(): void {
+  async flashFill(): Promise<void> {
     const targetRange = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     if (targetRange.startColumn !== targetRange.endColumn) {
       this.notify('Flash Fill requires a single result column');
@@ -6099,11 +6075,11 @@ export class WorkbookSession {
       startColumn: sourceColumn,
       endColumn: sourceColumn,
     };
-    void this.dispatch({ commandId: 'range.flashFill', params: { sheetId: this.activeSheetId, sourceRange, targetRange } });
+    void await this.dispatch({ commandId: 'range.flashFill', params: { sheetId: this.activeSheetId, sourceRange, targetRange } });
   }
 
-  rangeDrag(sourceRange: RangeRef, targetOrigin: { row: number; column: number }, mode: RangeDragMode): void {
-    void this.dispatch({ commandId: 'sheet.range.move', params: {
+  async rangeDrag(sourceRange: RangeRef, targetOrigin: { row: number; column: number }, mode: RangeDragMode): Promise<void> {
+    void await this.dispatch({ commandId: 'sheet.range.move', params: {
       sheetId: this.activeSheetId,
       sourceRange: structuredClone(sourceRange),
       targetOrigin: { ...targetOrigin },
@@ -6121,37 +6097,37 @@ export class WorkbookSession {
       this.refresh();
     });
   }
-  setSelectedFloatingId(id: string | null): void {
-    this.setDrawingSelection(id ? [id] : [], 'replace');
+  async setSelectedFloatingId(id: string | null): Promise<void> {
+    await this.setDrawingSelection(id ? [id] : [], 'replace');
   }
 
-  setDrawingSelectionMode(enabled: boolean): void {
+  async setDrawingSelectionMode(enabled: boolean): Promise<void> {
     if (this.drawingSelectionMode === enabled) return;
     this.drawingSelectionMode = enabled;
-    if (!enabled) this.setDrawingSelection([], 'replace');
+    if (!enabled) await this.setDrawingSelection([], 'replace');
     else this.emit();
   }
 
-  selectAllDrawings(): void {
+  async selectAllDrawings(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.setDrawingSelection(sheet.drawings.map((drawing) => drawing.id), 'replace');
+    await this.setDrawingSelection(sheet.drawings.map((drawing) => drawing.id), 'replace');
   }
 
-  cycleDrawingSelection(direction: 'next' | 'previous'): void {
+  async cycleDrawingSelection(direction: 'next' | 'previous'): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const ordered = [...sheet.drawings].sort((left, right) => left.zIndex - right.zIndex || left.id.localeCompare(right.id));
     if (ordered.length === 0) return;
     const current = this.selectedFloatingId ? ordered.findIndex((drawing) => drawing.id === this.selectedFloatingId) : direction === 'next' ? -1 : ordered.length;
     const next = ordered[(current + (direction === 'next' ? 1 : -1) + ordered.length) % ordered.length];
-    if (next) this.setDrawingSelection([next.id], 'replace');
+    if (next) await this.setDrawingSelection([next.id], 'replace');
   }
 
-  setDrawingSelection(ids: readonly string[], mode: 'replace' | 'add' | 'toggle' = 'replace'): void {
+  async setDrawingSelection(ids: readonly string[], mode: 'replace' | 'add' | 'toggle' = 'replace'): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const valid = ids.filter((id) => sheet.drawings.some((drawing) => drawing.id === id));
     if (valid.length === 0 && mode === 'replace') {
       this.selectedChartElement = null;
-      this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
+      await this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'shape') this.panels = { ...this.panels, open: false };
@@ -6162,7 +6138,7 @@ export class WorkbookSession {
       this.emit();
       return;
     }
-    this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: valid, mode });
+    await this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: valid, mode });
     if (mode === 'replace' && !valid.some((id) => sheet.drawings.find((drawing) => drawing.id === id)?.kind === 'chart')) this.selectedChartElement = null;
     const selectedDrawing = this.selectedFloatingId ? sheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId) : undefined;
     this.activeContext = selectedDrawing
@@ -6199,18 +6175,18 @@ export class WorkbookSession {
     this.emit();
   }
 
-  setDrawingVisibility(drawingId: string, visible: boolean): void {
-    this.runCommand('drawing.visibility.set', { sheetId: this.activeSheetId, drawingId, visible });
+  async setDrawingVisibility(drawingId: string, visible: boolean): Promise<void> {
+    await this.runCommand('drawing.visibility.set', { sheetId: this.activeSheetId, drawingId, visible });
   }
 
-  renameDrawing(drawingId: string, name: string): void {
-    this.runCommand('drawing.rename', { sheetId: this.activeSheetId, drawingId, name });
+  async renameDrawing(drawingId: string, name: string): Promise<void> {
+    await this.runCommand('drawing.rename', { sheetId: this.activeSheetId, drawingId, name });
   }
 
-  removeFloatingObject(kind: 'chart' | 'shape' | 'image', id: string): void {
-    if (kind === 'chart') this.removeChart(id);
-    else if (kind === 'image') this.removeImage(id);
-    else this.removeShape(id);
+  async removeFloatingObject(kind: 'chart' | 'shape' | 'image', id: string): Promise<void> {
+    if (kind === 'chart') await this.removeChart(id);
+    else if (kind === 'image') await this.removeImage(id);
+    else await this.removeShape(id);
   }
 
   getPivotFieldCatalog(range: RangeRef): PivotFieldDefinition[] {
@@ -6230,60 +6206,30 @@ export class WorkbookSession {
     return buildPivotFieldCatalog(this.runtime.model, pivot).fields;
   }
 
-  readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
-    const table = this.runtime.model.dataModel.tables.get(tableId);
-    if (table?.sourceId) {
-      const query = this.runtime.dataContent.get(table.sourceId);
-      if (!query) return Promise.reject(new Error(`Data source ${table.sourceId} is unavailable`));
-      const start = Math.max(0, offset);
-      const count = Math.max(1, limit);
-      return query.getRows(start, Math.min(count, Math.max(0, table.rowCount - start))).then((result) => {
-        if (!result.value || result.state.availability !== 'ready') throw new Error(result.state.error ?? `Data source ${table.sourceId} could not be loaded`);
-        const end = start + result.value.length;
-        return { table: structuredClone(table), rows: result.value.map((row) => [...row]), ...(end < table.rowCount ? { nextOffset: end } : {}) };
-      });
-    }
-    if (!table || !table.sourceSheetId || !table.sourceRange) return Promise.reject(new Error('Data table not found'));
-    const sheet = this.runtime.model.getSheet(table.sourceSheetId);
-    const start = Math.max(0, offset);
-    const end = Math.min(table.rowCount, start + Math.max(1, limit));
-    const rows: import('@react-sheets/core-model').TableScalar[][] = [];
-    for (let rowOffset = start; rowOffset < end; rowOffset += 1) {
-      rows.push(table.fields.map((field) => this.readResolvedCell(sheet,
-        table.sourceRange!.startRow + 1 + rowOffset,
-        table.sourceRange!.startColumn + field.ordinal,
-      )?.value ?? null));
-    }
-    return Promise.resolve({
-      table: structuredClone(table),
-      rows,
-      ...(end < table.rowCount ? { nextOffset: end } : {}),
-    });
-  }
-  removeDataTable(tableId: string): Promise<void> {
+  async removeDataTable(tableId: string): Promise<void> {
     const table = this.runtime.model.dataModel.tables.get(tableId);
     if (!table) return Promise.reject(new Error('Data table not found'));
-    this.runCommand('table.remove', { tableId, sheetId: table.sourceSheetId ?? this.activeSheetId });
+    await this.runCommand('table.remove', { tableId, sheetId: table.sourceSheetId ?? this.activeSheetId });
     return Promise.resolve();
   }
 
-  showPivotDetails(pivotId: string, paths: readonly PivotSourceRowPath[], label = 'Details'): void {
-    this.drillDownPivot(pivotId, label, paths);
+  async showPivotDetails(pivotId: string, paths: readonly PivotSourceRowPath[], label = 'Details'): Promise<void> {
+    await this.drillDownPivot(pivotId, label, paths);
   }
 
   getValidationForPrimary(): DataValidationRule | undefined {
     const sel = this.selectionService.getState();
     return findValidationRule(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
   }
-  printWorkbook(layout: PrintLayout, scope: 'saved-area' | 'selection' | 'active-sheet' = 'saved-area'): void {
+  async printWorkbook(layout: PrintLayout, scope: 'saved-area' | 'selection' | 'active-sheet' = 'saved-area'): Promise<void> {
     if (!this.canExecute('print.preview')) {
       const error = new Error('You do not have permission to print');
       this.notify(error.message);
       throw error;
     }
     const range = this.printRangeForScope(scope);
-    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
-    this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
+    await this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
+    await this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
     this.dialogs = { ...this.dialogs, active: 'print-preview' };
     this.setFocusState('dialog', 'dialog');
@@ -6299,8 +6245,8 @@ export class WorkbookSession {
       throw error;
     }
     const range = this.printRangeForScope(scope);
-    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
-    this.runCommand('print.export', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
+    await this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
+    await this.runCommand('print.export', { layout, sheetId: this.activeSheetId, ...(range ? { range } : {}) });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
     this.dialogs = { ...this.dialogs, active: 'print-preview' };
     this.setFocusState('dialog', 'dialog');
@@ -6318,23 +6264,23 @@ export class WorkbookSession {
     return structuredClone(getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup);
   }
 
-  setPrintArea(range: RangeRef): void {
+  async setPrintArea(range: RangeRef): Promise<void> {
     if (!this.canExecute('pageLayout.printArea.set')) {
       this.notify('You do not have permission to set print area');
       return;
     }
-    this.runCommand('pageLayout.printArea.set', { sheetId: range.sheetId, range });
+    await this.runCommand('pageLayout.printArea.set', { sheetId: range.sheetId, range });
     this.rebuildPrintSnapshot(this.printLayout, range);
     this.notify('Print area updated');
     this.emit();
   }
 
-  updatePrintPageSetup(layout: PrintLayout): void {
+  async updatePrintPageSetup(layout: PrintLayout): Promise<void> {
     if (!this.canExecute('pageLayout.pageSetup.set')) {
       this.notify('You do not have permission to change print setup');
       return;
     }
-    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
+    await this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot(layout);
     this.emit();
   }
@@ -6344,58 +6290,58 @@ export class WorkbookSession {
     this.emit();
   }
 
-  setCurrentPrintArea(): void {
-    this.setPrintArea({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+  async setCurrentPrintArea(): Promise<void> {
+    await this.setPrintArea({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
   }
 
-  clearPrintArea(): void {
-    this.runCommand('pageLayout.printArea.clear', { sheetId: this.activeSheetId });
+  async clearPrintArea(): Promise<void> {
+    await this.runCommand('pageLayout.printArea.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print area cleared');
     this.emit();
   }
 
-  setPrintTitles(axis: 'rows' | 'columns'): void {
+  async setPrintTitles(axis: 'rows' | 'columns'): Promise<void> {
     const range = this.getPrimaryRange();
     const params = axis === 'rows'
       ? { sheetId: this.activeSheetId, repeatRows: { start: range.startRow, end: range.endRow } }
       : { sheetId: this.activeSheetId, repeatColumns: { start: range.startColumn, end: range.endColumn } };
-    this.runCommand('pageLayout.printTitles.set', params);
+    await this.runCommand('pageLayout.printTitles.set', params);
     this.rebuildStoredPrintSnapshot();
     this.notify(axis === 'rows' ? 'Rows to repeat at top updated' : 'Columns to repeat at left updated');
     this.emit();
   }
 
-  clearPrintTitles(): void {
-    this.runCommand('pageLayout.printTitles.clear', { sheetId: this.activeSheetId });
+  async clearPrintTitles(): Promise<void> {
+    await this.runCommand('pageLayout.printTitles.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print titles cleared');
     this.emit();
   }
 
-  setPrintPageBreak(pageBreak: { row?: number; column?: number }): void {
+  async setPrintPageBreak(pageBreak: { row?: number; column?: number }): Promise<void> {
     const next: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('pageLayout.pageBreak.insert', { sheetId: this.activeSheetId, pageBreak: next });
+    await this.runCommand('pageLayout.pageBreak.insert', { sheetId: this.activeSheetId, pageBreak: next });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
-  removePrintPageBreak(pageBreak: { row?: number; column?: number }): void {
+  async removePrintPageBreak(pageBreak: { row?: number; column?: number }): Promise<void> {
     const target: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('pageLayout.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
+    await this.runCommand('pageLayout.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
-  clearPrintPageBreaks(): void {
-    this.runCommand('pageLayout.pageBreak.clear', { sheetId: this.activeSheetId });
+  async clearPrintPageBreaks(): Promise<void> {
+    await this.runCommand('pageLayout.pageBreak.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Manual page breaks cleared');
     this.emit();
   }
 
-  setPrintScale(scale: number, fitToWidth?: number | null, fitToHeight?: number | null): void {
-    this.runCommand('pageLayout.scaleToFit.set', {
+  async setPrintScale(scale: number, fitToWidth?: number | null, fitToHeight?: number | null): Promise<void> {
+    await this.runCommand('pageLayout.scaleToFit.set', {
       sheetId: this.activeSheetId,
       scale,
       ...(fitToWidth === undefined ? {} : { fitToWidth }),
@@ -6413,49 +6359,49 @@ export class WorkbookSession {
     this.emit();
   }
 
-  setPrintScaleToFit(fitToWidth: number | null, fitToHeight: number | null): void {
+  async setPrintScaleToFit(fitToWidth: number | null, fitToHeight: number | null): Promise<void> {
     const scale = getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.scale;
-    this.setPrintScale(scale, fitToWidth, fitToHeight);
+    await this.setPrintScale(scale, fitToWidth, fitToHeight);
   }
 
-  setPrintGridlines(enabled: boolean): void {
-    this.runCommand('pageLayout.printGridlines.set', { sheetId: this.activeSheetId, enabled });
+  async setPrintGridlines(enabled: boolean): Promise<void> {
+    await this.runCommand('pageLayout.printGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printGridlines: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
-  setPrintHeadings(enabled: boolean): void {
-    this.runCommand('pageLayout.printHeadings.set', { sheetId: this.activeSheetId, enabled });
+  async setPrintHeadings(enabled: boolean): Promise<void> {
+    await this.runCommand('pageLayout.printHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printHeadings: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
-  setViewGridlines(enabled: boolean): void {
-    this.runCommand('pageLayout.viewGridlines.set', { sheetId: this.activeSheetId, enabled });
+  async setViewGridlines(enabled: boolean): Promise<void> {
+    await this.runCommand('pageLayout.viewGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 
-  setViewHeadings(enabled: boolean): void {
-    this.runCommand('pageLayout.viewHeadings.set', { sheetId: this.activeSheetId, enabled });
+  async setViewHeadings(enabled: boolean): Promise<void> {
+    await this.runCommand('pageLayout.viewHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 
-  toggleViewGridlines(): void {
-    this.setViewGridlines(!this.runtime.model.getSheet(this.activeSheetId).showGridlines);
+  async toggleViewGridlines(): Promise<void> {
+    await this.setViewGridlines(!this.runtime.model.getSheet(this.activeSheetId).showGridlines);
   }
 
-  toggleViewHeadings(): void {
-    this.setViewHeadings(!this.runtime.model.getSheet(this.activeSheetId).showHeaders);
+  async toggleViewHeadings(): Promise<void> {
+    await this.setViewHeadings(!this.runtime.model.getSheet(this.activeSheetId).showHeaders);
   }
 
-  togglePrintGridlines(): void {
-    this.setPrintGridlines(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printGridlines);
+  async togglePrintGridlines(): Promise<void> {
+    await this.setPrintGridlines(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printGridlines);
   }
 
-  togglePrintHeadings(): void {
-    this.setPrintHeadings(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printHeadings);
+  async togglePrintHeadings(): Promise<void> {
+    await this.setPrintHeadings(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printHeadings);
   }
 
   private rebuildPrintSnapshot(layout?: PrintLayout, range?: RangeRef): PrintSnapshot {
@@ -6465,6 +6411,7 @@ export class WorkbookSession {
       this.activeSheetId,
       uiLayout,
       range,
+      this.runtime.resolveVisibility(this.runtime.model.getSheet(this.activeSheetId)),
     );
     this.printLayout = uiLayout;
     this.printSnapshot = snapshot;
@@ -6480,7 +6427,7 @@ export class WorkbookSession {
 
   private rebuildStoredPrintSnapshot(layout?: PrintLayout): PrintSnapshot {
     const uiLayout = layout ?? this.printLayout;
-    const snapshot = buildPrintSnapshot(this.runtime.model, this.activeSheetId, uiLayout);
+    const snapshot = buildPrintSnapshot(this.runtime.model, this.activeSheetId, uiLayout, undefined, this.runtime.resolveVisibility(this.runtime.model.getSheet(this.activeSheetId)));
     this.printLayout = uiLayout;
     this.printSnapshot = snapshot;
     this.printProjectionCache = null;
@@ -6489,6 +6436,7 @@ export class WorkbookSession {
 
   private buildPrintProjectionOptions(assetBytes?: Readonly<Record<string, Uint8Array>>): PrintProjectionOptions {
     return {
+      resolvedVisibility: this.runtime.resolveVisibility(this.runtime.model.getSheet(this.activeSheetId)),
       readCell: (sheet, row, column) => this.readCalculatedCell(sheet, row, column),
       ...(assetBytes ? { assetBytes } : {}),
       assetUrls: Object.fromEntries(this.assetUrls),
@@ -6502,8 +6450,7 @@ export class WorkbookSession {
                 const cell = this.readCalculatedCell(sheet, row, column);
                 return cell ? { ...cell, value: (cell.formulaValue ?? cell.value) as import('@react-sheets/core-model').PivotScalar } : undefined;
               },
-              hiddenRows: sheet.hiddenRows,
-              hiddenColumns: sheet.hiddenColumns,
+              resolvedVisibility: this.runtime.resolveVisibility(sheet),
               revision: sheet.cells.revision,
             } : undefined;
           },
@@ -6599,12 +6546,12 @@ export class WorkbookSession {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await this.executeQuery(query);
+      const result = await this.executeQuery(query, resolvedTarget);
       const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
       const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
       await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
       try {
-        this.runCommand('query.load', prepared.payload);
+        await this.runCommand('query.load', prepared.payload);
       } catch (error) {
         await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
         throw error;
@@ -6640,12 +6587,12 @@ export class WorkbookSession {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await this.executeQuery(session.definition);
+      const result = await this.executeQuery(session.definition, target);
       session.definition.lastTarget = structuredClone(target);
       const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
       await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
       try {
-        this.runCommand('query.refresh', prepared.payload);
+        await this.runCommand('query.refresh', prepared.payload);
       } catch (error) {
         await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
         throw error;
@@ -6669,7 +6616,7 @@ export class WorkbookSession {
   ): Promise<{ ok: boolean; message?: string }> {
     const connector = this.runtime.connectors.get(connectorId);
     if (connector.execution === 'local') return connector.testConnection(config);
-    if (this.runtime.localOnly) return { ok: false, message: `Connector ${connectorId} requires the Java backend` };
+    if (!this.runtime.remoteConnected) return { ok: false, message: `Connector ${connectorId} requires a cloud connection` };
     if (connectorId !== 'sqlite' && connectorId !== 'jdbc' && connectorId !== 'rest') return { ok: false, message: `Connector ${connectorId} has no server execution contract` };
     try {
       const request = this.buildServerQueryRequest(
@@ -6687,23 +6634,43 @@ export class WorkbookSession {
   }
 
   async cancelQuery(queryId: string): Promise<void> {
-    if (this.runtime.localOnly) throw new Error('QUERY_CANCEL_UNAVAILABLE: local connectors complete inside the current page session');
+    if (!this.runtime.remoteConnected) throw new Error('CLOUD_CONNECTION_REQUIRED: query cancellation requires the cloud host');
     if (!queryId.trim()) throw new Error('QUERY_CANCEL_ID_REQUIRED: query id is required');
     await this.runtime.api.cancelServerQuery(this.runtime.model.unitId, queryId);
     this.notify(`Cancellation requested for ${queryId}`);
   }
 
-  private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
-    if (query.connectorId !== 'sqlite' && query.connectorId !== 'jdbc' && query.connectorId !== 'rest') {
-      return executeQueryDefinition(this.runtime.connectors, query);
+  private async executeQuery(query: QueryDefinition, target: LoadTarget): Promise<import('./features/query').QueryResult> {
+    const range = this.querySourceRange(target);
+    return executeCanonicalQueryDefinition(this.runtime.analytics, query, {
+      unitId: this.runtime.model.unitId,
+      revision: this.runtime.remoteRevision,
+      range,
+    });
+  }
+
+  private querySourceRange(target: LoadTarget): { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number } {
+    const sheetId = target.sheetId ?? this.activeSheetId;
+    const sheet = this.runtime.model.getSheet(sheetId);
+    if (target.kind === 'sheet-table' && target.tableId) {
+      const table = sheet.sheetTables.find((entry) => entry.id === target.tableId);
+      if (!table) throw new Error(`Unknown sheet table: ${target.tableId}`);
+      return structuredClone(table.range);
     }
-    if (this.runtime.localOnly) {
-      throw new Error(`Connector ${query.connectorId} requires the Java backend`);
+    if (target.kind === 'pivot-source' && target.pivotId) {
+      const owner = this.runtime.model.getSheets().find((candidate) => candidate.pivots.some((pivot) => pivot.id === target.pivotId));
+      const pivot = owner?.pivots.find((entry) => entry.id === target.pivotId);
+      if (!pivot || pivot.source.kind !== 'worksheet-range') throw new Error(`Pivot ${target.pivotId} has no worksheet source range`);
+      return structuredClone(pivot.source.range);
     }
-    const request = this.buildServerQueryRequest(query.id, query.name, query.connectorId, query.connectorConfig, query.steps);
-    const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
-    if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
-    return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
+    if (!target.range) throw new Error('QUERY_SOURCE_RANGE_REQUIRED: canonical analytics requires an explicit source range');
+    return {
+      sheetId,
+      startRow: target.range.startRow,
+      endRow: target.range.endRow ?? sheet.rowCount - 1,
+      startColumn: target.range.startColumn,
+      endColumn: target.range.endColumn ?? sheet.columnCount - 1,
+    };
   }
 
   private buildServerQueryRequest(
@@ -6753,8 +6720,8 @@ export class WorkbookSession {
       lastResult: this.lastQueryResult,
       connectors: this.runtime.connectors.list().map((connector) => ({
         ...structuredClone(connector.manifest),
-        available: connector.execution === 'local' || !this.runtime.localOnly,
-        ...(connector.execution === 'server' && this.runtime.localOnly ? { unavailableReason: 'This connector requires the Java backend.' } : {}),
+        available: this.runtime.remoteConnected,
+        ...(!this.runtime.remoteConnected ? { unavailableReason: 'The cloud workbook is disconnected.' } : {}),
       })),
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
@@ -6762,7 +6729,7 @@ export class WorkbookSession {
     };
   }
 
-  runGoalSeek(params: GoalSeekParams): GoalSeekResult {
+  async runGoalSeek(params: GoalSeekParams): Promise<GoalSeekResult> {
     if (!this.canExecute('extended.whatIf.goalSeek')) {
       this.notify('You do not have permission to run Goal Seek');
       return {
@@ -6772,7 +6739,7 @@ export class WorkbookSession {
         message: 'Permission denied',
       };
     }
-    const command = this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
+    const command = await this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
     const result = command.plan?.result as GoalSeekResult | undefined;
     if (!result) throw new Error('Goal Seek command did not return a plan');
     this.lastWhatIfResult = result;
@@ -6782,7 +6749,7 @@ export class WorkbookSession {
     return result;
   }
 
-  runScenarioAnalysis(scenario: ScenarioDefinition): ScenarioResult {
+  async runScenarioAnalysis(scenario: ScenarioDefinition): Promise<ScenarioResult> {
     if (!this.canExecute('extended.whatIf.scenario')) {
       this.notify('You do not have permission to run scenarios');
       return {
@@ -6793,7 +6760,7 @@ export class WorkbookSession {
         outputs: [],
       };
     }
-    const command = this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
+    const command = await this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
     const result = command.plan?.result as ScenarioResult | undefined;
     if (!result) throw new Error('Scenario command did not return a plan');
     this.lastWhatIfResult = result;
@@ -6819,34 +6786,18 @@ export class WorkbookSession {
       if (!fileName && this.nativeDocumentTransaction.status === 'failed') {
         throw new Error('NATIVE_DOCUMENT_TRANSACTION_RECOVERY_REQUIRED: reload the verified source artifact or choose an explicit Save As target');
       }
-      const snapshot = this.runtime.model.snapshot();
-      const exported = fileName
-        ? await this.nativeDocumentTransaction.export(snapshot, {
-          fileName,
-          mode: 'save-as',
-          execution: this.nativeDocumentExecution,
-          revision: this.version,
-          assetStore: this.runtime.assetStore,
-        })
-        : this.nativeArtifact
-        ? await this.nativeDocumentTransaction.save(snapshot, {
-          fileName: this.nativeArtifact.fileName,
-          execution: this.nativeDocumentExecution,
-          revision: this.version,
-          assetStore: this.runtime.assetStore,
-        })
-        : await this.nativeDocumentTransaction.export(snapshot, {
-          fileName: `${this.runtime.model.name || 'workbook'}.ssjson`,
-          mode: 'export',
-          execution: this.nativeDocumentExecution,
-          revision: this.version,
-          assetStore: this.runtime.assetStore,
-        });
+      await this.runtime.commands.whenIdle();
+      const exported = await this.nativeDocumentTransaction.export({
+        unitId: this.runtime.model.unitId,
+        revision: this.runtime.model.revision,
+        fileName: fileName ?? this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
+        mode: fileName ? 'save-as' : 'export',
+      });
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
-      if (!exported.buffer || !exported.fileName) throw new Error('NATIVE_DOCUMENT_EXPORT_EMPTY: native document export did not produce a file');
-      return { buffer: exported.buffer, fileName: exported.fileName, artifact: exported.artifact };
+      if (!exported.content || !exported.fileName) throw new Error('NATIVE_DOCUMENT_EXPORT_EMPTY: native document export did not produce a file');
+      return { buffer: exported.content, fileName: exported.fileName, artifact: exported.artifact };
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Native document export failed');
       throw error instanceof Error ? error : new Error('Native document export failed');
@@ -6858,7 +6809,7 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  sortRange(criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader?: boolean): void {
+  async sortRange(criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader?: boolean): Promise<void> {
     if (criteria.length === 0) return;
     const range = normalizeRangeRef(this.getCurrentRegion());
     if (range.endRow <= range.startRow) {
@@ -6874,7 +6825,7 @@ export class WorkbookSession {
       return { column, ascending: criterion.ascending };
     });
     const detectedHeader = this.inferSortHeader(range);
-    this.dispatch({ commandId: 'sheet.sort.multi', params: {
+    await this.dispatch({ commandId: 'sheet.sort.multi', params: {
       sheetId: this.activeSheetId,
       range,
       criteria: normalizedCriteria,
@@ -6903,8 +6854,8 @@ export class WorkbookSession {
     return this.runtime.formula.hasPendingRecalculation();
   }
 
-  setRecalculationMode(mode: RecalculationMode): void {
-    this.runCommand('formula.calculation.mode.set', { mode });
+  async setRecalculationMode(mode: RecalculationMode): Promise<void> {
+    await this.runCommand('formula.calculation.mode.set', { mode });
     if (mode === 'automatic') void scheduleFormulaRecalculation(this.runtime);
     this.refresh();
   }
@@ -6920,15 +6871,15 @@ export class WorkbookSession {
     this.notify(scope === 'sheet' ? 'Active sheet formulas recalculated' : scope === 'rebuild' ? 'Formula dependencies rebuilt' : 'Formulas recalculated');
   }
 
-  insertCurrentDate(): void {
-    this.insertCurrentTemporalValue('date');
+  async insertCurrentDate(): Promise<void> {
+    await this.insertCurrentTemporalValue('date');
   }
 
-  insertCurrentTime(): void {
-    this.insertCurrentTemporalValue('time');
+  async insertCurrentTime(): Promise<void> {
+    await this.insertCurrentTemporalValue('time');
   }
 
-  private insertCurrentTemporalValue(kind: 'date' | 'time'): void {
+  private async insertCurrentTemporalValue(kind: 'date' | 'time'): Promise<void> {
     const active = this.selectionService.getState().activeCell;
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const current = sheet.cells.get(active.row, active.column);
@@ -6946,7 +6897,7 @@ export class WorkbookSession {
     delete next.formulaMetadata;
     delete next.displayValue;
     delete next.richText;
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: active.row, column: active.column, value: next });
+    await this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: active.row, column: active.column, value: next });
     this.syncDraftFromPrimary();
     this.refresh();
   }
@@ -7044,7 +6995,7 @@ export class WorkbookSession {
     this.emit();
   }
 
-  toggleActiveSheetTableOption(option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton'): void {
+  async toggleActiveSheetTableOption(option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton'): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const table = findSheetTableAt(sheet, active.row, active.column);
@@ -7058,10 +7009,10 @@ export class WorkbookSession {
       next.showFilterButton = false;
     }
     if (option === 'showFilterButton' && !next.showFilterButton) next.autoFilter = undefined;
-    this.runCommand('sheetTable.update', next);
+    await this.runCommand('sheetTable.update', next);
   }
 
-  convertActiveSheetTableToRange(): void {
+  async convertActiveSheetTableToRange(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const table = findSheetTableAt(sheet, active.row, active.column);
@@ -7069,10 +7020,10 @@ export class WorkbookSession {
       this.notify('Select a cell inside a sheet table first');
       return;
     }
-    this.runCommand('sheetTable.convertToRange', { sheetId: this.activeSheetId, tableId: table.id });
+    await this.runCommand('sheetTable.convertToRange', { sheetId: this.activeSheetId, tableId: table.id });
   }
 
-  resizeActiveSheetTable(range: RangeRef): void {
+  async resizeActiveSheetTable(range: RangeRef): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const table = findSheetTableAt(sheet, active.row, active.column);
@@ -7080,10 +7031,10 @@ export class WorkbookSession {
       this.notify('Select a cell inside a sheet table first');
       return;
     }
-    this.runCommand('sheetTable.update', { ...structuredClone(table), range: { ...structuredClone(range), sheetId: this.activeSheetId } });
+    await this.runCommand('sheetTable.update', { ...structuredClone(table), range: { ...structuredClone(range), sheetId: this.activeSheetId } });
   }
 
-  setActiveSheetTableStyle(styleName: string): void {
+  async setActiveSheetTableStyle(styleName: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const table = findSheetTableAt(sheet, active.row, active.column);
@@ -7096,10 +7047,10 @@ export class WorkbookSession {
       this.notify('Invalid table style');
       return;
     }
-    this.runCommand('sheetTable.update', { ...structuredClone(table), styleName: normalized });
+    await this.runCommand('sheetTable.update', { ...structuredClone(table), styleName: normalized });
   }
 
-  setActiveSheetTableName(name: string): void {
+  async setActiveSheetTableName(name: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const active = this.selectionService.getState().activeCell;
     const table = findSheetTableAt(sheet, active.row, active.column);
@@ -7116,10 +7067,10 @@ export class WorkbookSession {
       this.notify(`Sheet Table already exists: ${normalized}`);
       return;
     }
-    this.runCommand('sheetTable.update', { ...structuredClone(table), name: normalized });
+    await this.runCommand('sheetTable.update', { ...structuredClone(table), name: normalized });
   }
 
-  groupRowsFromSelection(): void {
+  async groupRowsFromSelection(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     if (range.endRow <= range.startRow) {
       this.notify('Select multiple rows to group');
@@ -7127,12 +7078,12 @@ export class WorkbookSession {
     }
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const group = buildRowOutlineGroup(this.activeSheetId, range, sheet, nextId('outline'));
-    this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
+    await this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
     this.notify(`Grouped rows ${range.startRow + 1}-${range.endRow + 1}`);
     this.refresh();
   }
 
-  ungroupRowsFromSelection(): void {
+  async ungroupRowsFromSelection(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const groups = groupsWithinRange(sheet.outline, 'row', range);
@@ -7141,26 +7092,26 @@ export class WorkbookSession {
       return;
     }
     for (const group of groups) {
-      this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
+      await this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
     }
     this.notify(`Ungrouped ${groups.length} row group(s)`);
     this.refresh();
   }
 
-  toggleOutlineGroup(groupId: string): void {
+  async toggleOutlineGroup(groupId: string): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const group = sheet.outline?.groups.find((entry) => entry.id === groupId);
     if (!group) return;
-    this.runCommand('outline.group.toggle', { sheetId: this.activeSheetId, groupId, collapsed: !group.collapsed });
+    await this.runCommand('outline.group.toggle', { sheetId: this.activeSheetId, groupId, collapsed: !group.collapsed });
     this.refresh();
   }
 
-  showOutlineLevel(level: 1 | 2 | 3): void {
-    this.runCommand('outline.showLevel', { sheetId: this.activeSheetId, level });
+  async showOutlineLevel(level: 1 | 2 | 3): Promise<void> {
+    await this.runCommand('outline.showLevel', { sheetId: this.activeSheetId, level });
     this.refresh();
   }
 
-  groupColumnsFromSelection(): void {
+  async groupColumnsFromSelection(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     if (range.endColumn <= range.startColumn) {
       this.notify('Select multiple columns to group');
@@ -7168,12 +7119,12 @@ export class WorkbookSession {
     }
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const group = buildColumnOutlineGroup(this.activeSheetId, range, sheet, nextId('outline'));
-    this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
+    await this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
     this.notify(`Grouped columns ${columnLabel(range.startColumn)}-${columnLabel(range.endColumn)}`);
     this.refresh();
   }
 
-  ungroupColumnsFromSelection(): void {
+  async ungroupColumnsFromSelection(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const groups = groupsWithinRange(sheet.outline, 'column', range);
@@ -7182,7 +7133,7 @@ export class WorkbookSession {
       return;
     }
     for (const group of groups) {
-      this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
+      await this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
     }
     this.notify(`Ungrouped ${groups.length} column group(s)`);
     this.refresh();
@@ -7261,7 +7212,7 @@ export class WorkbookSession {
     const sourceRange = preprocessed.range;
     if (preprocessed.headerRow === null) throw new Error('RANGE_PREPROCESS_HEADER_REQUIRED: the selected data region has no unique header row');
     const sourceId = nextId('data-source');
-    const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
+    const sheetSnapshot = this.runtime.model.manifest().sheets.find((candidate) => candidate.sheetId === sheet.id);
     if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
     const encoded = await encodeSheetDataRegion({
       sheet: sheetSnapshot,
@@ -7273,30 +7224,30 @@ export class WorkbookSession {
     });
     if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
     for (const block of encoded.blocks) await this.storeDataBlock(block.ref, block.payload);
-    this.addDataSource(encoded.manifest);
+    await this.addDataSource(encoded.manifest);
     // Creating a reusable source is a copy operation. The authored worksheet
     // keeps cell ownership; only Query Load owns a projected data region.
     this.notify(`Data Source ${encoded.manifest.name} created from ${sheet.name}`);
     this.refresh();
   }
 
-  replyComment(text: string, threadId?: string): void {
+  async replyComment(text: string, threadId?: string): Promise<void> {
     const normalized = text.trim();
     if (!normalized) throw new Error('COMMENT_REPLY_TEXT_REQUIRED: a reply cannot be empty');
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
     const reply = buildCommentReply(this.actorId, normalized, nextId('reply'));
-    this.runCommand('comment.reply', { sheetId: this.activeSheetId, threadId: thread.id, reply });
+    await this.runCommand('comment.reply', { sheetId: this.activeSheetId, threadId: thread.id, reply });
     this.notify('Reply added');
     this.refresh();
   }
-  resolveComment(threadId?: string): void {
+  async resolveComment(threadId?: string): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
     const resolved = !thread.resolved;
-    this.runCommand('comment.resolve', {
+    await this.runCommand('comment.resolve', {
       sheetId: this.activeSheetId,
       threadId: thread.id,
       resolved,
@@ -7305,11 +7256,11 @@ export class WorkbookSession {
     this.notify(resolved ? 'Comment resolved' : 'Comment reopened');
     this.refresh();
   }
-  removeComment(threadId?: string): void {
+  async removeComment(threadId?: string): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const thread = this.resolveCommentThread(sheet, sel.activeCell.row, sel.activeCell.column, threadId);
-    this.runCommand('comment.remove', { sheetId: this.activeSheetId, threadId: thread.id });
+    await this.runCommand('comment.remove', { sheetId: this.activeSheetId, threadId: thread.id });
     this.notify('Comment removed');
     this.refresh();
   }
@@ -7331,14 +7282,14 @@ export class WorkbookSession {
     if (threads.length > 1) throw new Error(`COMMENT_THREAD_SELECTION_REQUIRED: ${sheet.id}!${row}:${column}`);
     return threads[0]!;
   }
-  saveNote(text: string): void {
+  async saveNote(text: string): Promise<void> {
     const normalized = text.trim();
     if (!normalized) throw new Error('NOTE_TEXT_REQUIRED: a note cannot be empty');
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const existing = sheet.review.getNoteAt(sel.activeCell.row, sel.activeCell.column);
     const note = existing ? { ...existing, text: normalized } : buildCellNote(this.actorId, normalized, nextId('note'));
-    this.runCommand('note.set', {
+    await this.runCommand('note.set', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
@@ -7347,9 +7298,9 @@ export class WorkbookSession {
     this.notify(existing ? 'Note updated' : 'Note added');
     this.refresh();
   }
-  removeNote(): void {
+  async removeNote(): Promise<void> {
     const sel = this.selectionService.getState();
-    this.runCommand('note.remove', {
+    await this.runCommand('note.remove', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
@@ -7357,9 +7308,9 @@ export class WorkbookSession {
     this.notify('Note removed');
     this.refresh();
   }
-  setNoteVisibility(visible: boolean): void {
+  async setNoteVisibility(visible: boolean): Promise<void> {
     const sel = this.selectionService.getState();
-    this.runCommand('note.visibility', {
+    await this.runCommand('note.visibility', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
@@ -7371,7 +7322,7 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     return getCellHyperlink(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
   }
-  activateHyperlinkAt(row: number, column: number): { kind: 'none' } | { kind: 'internal' } | { kind: 'external'; href: string } {
+  async activateHyperlinkAt(row: number, column: number): Promise<{ kind: 'none' } | { kind: 'internal' } | { kind: 'external'; href: string }> {
     const sourceSheet = this.runtime.model.getSheet(this.activeSheetId);
     const hyperlink = getCellHyperlink(sourceSheet, row, column);
     if (!hyperlink) return { kind: 'none' };
@@ -7386,7 +7337,7 @@ export class WorkbookSession {
       this.selectSheet(target.sheetId);
       const address = target.address?.replace(/\$/g, '')
         ?? `${columnLabel(target.column ?? 0)}${(target.row ?? 0) + 1}`;
-      if (!this.selectAddress(address)) throw new Error(`HYPERLINK_TARGET_UNAVAILABLE: ${target.sheetId}!${address}`);
+      if (!await this.selectAddress(address)) throw new Error(`HYPERLINK_TARGET_UNAVAILABLE: ${target.sheetId}!${address}`);
       return { kind: 'internal' };
     }
     const definition = this.runtime.model.definedNameModels.find((entry) => entry.name.toLowerCase() === target.name.trim().toLowerCase()
@@ -7411,7 +7362,7 @@ export class WorkbookSession {
   getSheetOptions(): readonly { id: string; name: string; rowCount: number; columnCount: number }[] {
     return this.runtime.model.getSheets().map((sheet) => ({ id: sheet.id, name: sheet.name, rowCount: sheet.rowCount, columnCount: sheet.columnCount }));
   }
-  setActiveHyperlink(target: HyperlinkTarget, tooltip?: string): void {
+  async setActiveHyperlink(target: HyperlinkTarget, tooltip?: string): Promise<void> {
     const sel = this.selectionService.getState();
     const current = getCellHyperlink(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
     const hyperlink: CellHyperlink = {
@@ -7419,7 +7370,7 @@ export class WorkbookSession {
       target: structuredClone(target),
       ...(tooltip?.trim() ? { tooltip: tooltip.trim() } : {}),
     };
-    this.runCommand('hyperlink.set', {
+    await this.runCommand('hyperlink.set', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,
@@ -7428,11 +7379,11 @@ export class WorkbookSession {
     this.notify(current ? 'Hyperlink updated' : 'Hyperlink inserted');
     this.refresh();
   }
-  removeHyperlink(): void {
+  async removeHyperlink(): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (!getCellHyperlink(sheet, sel.activeCell.row, sel.activeCell.column)) return;
-    this.runCommand('hyperlink.remove', {
+    await this.runCommand('hyperlink.remove', {
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
       column: sel.activeCell.column,

@@ -67,8 +67,7 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
   };
 }
 
-function destinationFromLocation(locationId: string): { destination: 'local' | 'remote'; folderId?: string; spaceId?: string } {
-  if (locationId === 'local') return { destination: 'local' };
+function destinationFromLocation(locationId: string): { destination: 'remote'; folderId?: string; spaceId?: string } {
   if (locationId.startsWith('folder:')) {
     const [, spaceId, folderId] = locationId.split(':');
     if (!spaceId || !folderId) throw new Error('工作簿文件夹位置无效');
@@ -149,7 +148,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const [pendingTemplate, setPendingTemplate] = useState<WorkbookTemplateId>('blank');
   const [pendingCreateValue, setPendingCreateValue] = useState<{ name: string; locationId: string }>();
   const [targetId, setTargetId] = useState<string>();
-  const [moveLocationId, setMoveLocationId] = useState('local');
+  const [moveLocationId, setMoveLocationId] = useState('');
   const loadGeneration = useRef(0);
   const loadAbortController = useRef<AbortController | null>(null);
 
@@ -217,12 +216,11 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
 
   const folderLocationOptions = useMemo(() => folderLocations(folders, spaces), [folders, spaces]);
   const locationOptions = useMemo<readonly LocationOption[]>(() => [
-    { id: 'local', label: '此页面 · 内存文件' },
     ...spaces.map((space) => ({ id: `space:${space.spaceId}`, label: `${space.kind === 'team' ? '团队空间' : '我的云端'} · ${space.name}` })),
     ...folderLocationOptions.map(({ folder, label }) => ({ id: `folder:${folder.spaceId}:${folder.folderId}`, label })),
   ], [folderLocationOptions, spaces]);
   const defaultLocationId = useMemo(() => {
-    if (authSnapshot.phase !== 'authenticated') return 'local';
+    if (authSnapshot.phase !== 'authenticated') return '';
     if (preferences?.defaultFolderId) {
       const folder = folders.find((candidate) => candidate.folderId === preferences.defaultFolderId);
       if (folder) return `folder:${folder.spaceId}:${folder.folderId}`;
@@ -230,7 +228,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     if (preferences?.defaultSpaceId && spaces.some((space) => space.spaceId === preferences.defaultSpaceId)) {
       return `space:${preferences.defaultSpaceId}`;
     }
-    return spaces[0] ? `space:${spaces[0].spaceId}` : 'local';
+    return spaces[0] ? `space:${spaces[0].spaceId}` : '';
   }, [authSnapshot.phase, folders, preferences?.defaultFolderId, preferences?.defaultSpaceId, spaces]);
   const items = useMemo(() => entries.map(itemFromEntry), [entries]);
   const target = useMemo(() => targetId ? items.find((item) => item.unitId === targetId) : undefined, [items, targetId]);
@@ -289,17 +287,21 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       setActiveDialog('import');
       return;
     }
+    if (authSnapshot.phase !== 'authenticated') {
+      void requireCloudSignIn();
+      return;
+    }
     setPendingTemplate(templateId);
     setOperationError(undefined);
     setOperationRecovery(undefined);
     setActiveDialog('create');
-  }, []);
+  }, [authSnapshot.phase, requireCloudSignIn]);
 
   const createWorkbook = useCallback((value: { name: string; locationId: string }) => {
     setPendingCreateValue(value);
     void execute(async () => {
       const targetLocation = destinationFromLocation(value.locationId);
-      if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
+      if (!await requireCloudSignIn()) return;
       await ensureStorageReady();
       const unitId = createWorkbookUnitId();
       const snapshot = createTemplateSnapshot(pendingTemplate, unitId, value.name);
@@ -323,7 +325,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
           await retryStorage();
           if (pendingCreateValue) {
             const targetLocation = destinationFromLocation(pendingCreateValue.locationId);
-            if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
+            if (!await requireCloudSignIn()) return;
             const unitId = createWorkbookUnitId();
             const snapshot = createTemplateSnapshot(pendingTemplate, unitId, pendingCreateValue.name);
             const entry = await catalog.create({
@@ -355,7 +357,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const importWorkbook = useCallback((value: { file: File; locationId: string }) => {
     void execute(async () => {
       const targetLocation = destinationFromLocation(value.locationId);
-      if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
+      if (!await requireCloudSignIn()) return;
       const result = await catalog.importWorkbook({
         fileName: value.file.name,
         buffer: await value.file.arrayBuffer(),
@@ -493,7 +495,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
             if (!target) return;
             void execute(async () => {
               const destination = destinationFromLocation(moveLocationId);
-              if (destination.destination === 'remote' && !await requireCloudSignIn()) return;
+              if (!await requireCloudSignIn()) return;
               await catalog.move(target.unitId, { spaceId: destination.spaceId, folderId: destination.folderId ?? null });
             });
           }} size="sm" variant="brand">移动</Button>
@@ -501,7 +503,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       </Dialog>
       <Dialog closeLabel="关闭帮助" onClose={() => setActiveDialog(null)} open={activeDialog === 'help'} title="工作簿存储说明">
         <Stack gap="sm">
-          <Text size="sm">云端工作簿由服务器保存；本地工作簿和离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
+          <Text size="sm">云端工作簿由服务器保存；离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
           <Text size="sm">打开 / 导入会创建新工作簿；导出会基于最新快照和原始原生文档生成副本。</Text>
           {authSnapshot.phase !== 'authenticated' ? <Button onClick={() => void auth.signIn('/workbooks')} size="sm" variant="brand">登录以使用云端文件</Button> : null}
         </Stack>
@@ -510,7 +512,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         <Stack gap="lg">
           <Stack gap="xs">
             <Text size="sm" weight="semibold">默认位置与云端会话</Text>
-            <Text size="sm">当前默认新建位置：{defaultLocationId === 'local' ? '本地文件' : '云端空间'}。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的全局偏好。</Text>
+            <Text size="sm">当前默认新建位置：云端空间。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的全局偏好。</Text>
             <Select aria-label="原生文档导入兼容级别" disabled={!preferences || authSnapshot.phase !== 'authenticated'} value={preferences?.importCompatibility ?? 'B'} options={[{ value: 'A', label: '严格：无法安全保留则拒绝' }, { value: 'B', label: '平衡：编辑已支持部分并保留原文档' }, { value: 'C', label: '转换：仅允许明确的目标格式投影' }]} onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ importCompatibility: event.target.value as 'A' | 'B' | 'C' })); })} />
             <CheckToggle checked={preferences?.autoSave ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动保存" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSave: event.target.checked })); })} />
             <CheckToggle checked={preferences?.autoSync ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动同步" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSync: event.target.checked })); })} />

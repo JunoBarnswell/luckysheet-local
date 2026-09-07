@@ -43,7 +43,7 @@ import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { registerPhoneticCommands } from './phonetic-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
-import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
+import { createClearRangePlan, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
 import { CellEntryError } from './cell-entry-error';
 
@@ -87,6 +87,7 @@ export * from './data-region-context';
 export * from './cell-write-authority';
 export * from './cell-entry-error';
 export * from './rules-runtime';
+export * from './kernel-analytics';
 
 
 export interface SetCellValueParams {
@@ -438,7 +439,6 @@ function applyPreparedCellEntry(prepared: PreparedCellEntry, context: CommandCon
       },
       affectedRanges,
     }],
-    apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
   });
 }
 
@@ -912,19 +912,7 @@ function ruleRanges(value: { rule: { ranges: RangeRef[] } }): RangeRef[] {
 
 function removeRuleRanges(value: { ranges?: RangeRef[] }): RangeRef[] {
   return value.ranges?.map((range) => structuredClone(range)) ?? [];
-}
-
-function restoreCell(
-  workbook: WorkbookModel,
-  item: MutationInfo<{ row: number; column: number; previous?: CellData }>,
-): void {
-  const sheet = workbook.getSheet(item.sheetId);
-  const { row, column, previous } = item.params;
-  if (previous) sheet.cells.set(row, column, previous);
-  else sheet.cells.delete(row, column);
-}
-
-function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
+}function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
   if (cell?.editor?.kind !== 'checkbox') return;
   const normalized = normalizeCheckboxCellValue(cell, cell.editor);
   if (!Object.is(normalized, cell.value)) throw new Error('Checkbox cell value must match one configured canonical state');
@@ -941,15 +929,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<SheetExtentParams>({
     id: 'sheet.extent.grow',
-    handler: (item, context) => {
-      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.grow mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      if (item.params.rowCount < sheet.rowCount || item.params.columnCount < sheet.columnCount) {
-        throw new Error('Sheet extent growth cannot shrink a worksheet');
-      }
-      sheet.rowCount = item.params.rowCount;
-      sheet.columnCount = item.params.columnCount;
-    },
     metadata: {
       schema: { name: 'SheetExtentGrow', validate: isSheetExtentMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -959,12 +938,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<SheetExtentParams>({
     id: 'sheet.extent.restore',
-    handler: (item, context) => {
-      if (!isSheetExtentMutation(item.params)) throw new Error('Invalid sheet.extent.restore mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      sheet.rowCount = item.params.rowCount;
-      sheet.columnCount = item.params.columnCount;
-    },
     metadata: {
       schema: { name: 'SheetExtentRestore', validate: isSheetExtentMutation },
       permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
@@ -1000,10 +973,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           params: previous,
           affectedRanges: [],
         }],
-        apply: () => {
-          sheet.rowCount = next.rowCount;
-          sheet.columnCount = next.columnCount;
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
@@ -1011,10 +980,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',
-    handler: (item, context) => {
-      if (!isRenameWorkbookMutation(item.params)) throw new Error('Invalid workbook.renamed mutation payload');
-      context.workbook.name = item.params.name;
-    },
     metadata: {
       schema: { name: 'RenameWorkbook', validate: isRenameWorkbookMutation },
       permission: { capability: 'workbook.rename', roles: ['owner', 'editor'] },
@@ -1036,7 +1001,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { name },
         affectedRanges,
         inverse: [{ id: 'workbook.renamed', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { name: previous }, affectedRanges }],
-        apply: () => { context.workbook.name = name; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1045,11 +1009,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 1. Sheet mutations & commands
   runtime.registry.registerMutation<AddSheetParams>({
     id: 'sheet.add',
-    handler: (item, context) => {
-      if (!isAddSheetMutation(item.params)) throw new Error('Invalid sheet.add mutation payload');
-      const params = item.params;
-      context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
-    },
     metadata: {
       schema: { name: 'AddSheet', validate: isAddSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -1059,10 +1018,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ id: string }>({
     id: 'sheet.remove',
-    handler: (item, context) => {
-      if (!isSheetIdMutation(item.params)) throw new Error('Invalid sheet.remove mutation payload');
-      context.workbook.removeSheet(item.params.id);
-    },
     metadata: {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -1072,11 +1027,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<RenameSheetParams>({
     id: 'sheet.rename',
-    handler: (item, context) => {
-      if (!isRenameSheetMutation(item.params)) throw new Error('Invalid sheet.rename mutation payload');
-      const params = item.params;
-      context.workbook.renameSheet(params.sheetId, params.name);
-    },
     metadata: {
       schema: { name: 'RenameSheet', validate: isRenameSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -1086,10 +1036,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number }>({
     id: 'sheet.restore',
-    handler: (item, context) => {
-      if (!isSheetRestoreMutation(item.params)) throw new Error('Invalid sheet.restore mutation payload');
-      context.workbook.restoreSheetSnapshot(item.params.sheet, item.params.index);
-    },
     metadata: {
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -1099,12 +1045,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<TableSheetUpdateParams>({
     id: 'tableSheet.update',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isTableSheetDefinition(item.params.definition)) throw new Error('Invalid tableSheet.update mutation payload');
-      const params = item.params as TableSheetUpdateParams;
-      const definition = normalizeTableSheetDefinition(context.workbook, params);
-      context.workbook.getSheet(params.sheetId).tableSheet = definition;
-    },
     metadata: {
       schema: { name: 'TableSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isTableSheetDefinition(value.definition) },
       permission: { capability: 'table-sheet.write', roles: ['owner', 'editor'] },
@@ -1114,11 +1054,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<GanttSheetUpdateParams>({
     id: 'ganttSheet.update',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isGanttSheetDefinition(item.params.definition)) throw new Error('Invalid ganttSheet.update mutation payload');
-      const params = item.params as GanttSheetUpdateParams;
-      context.workbook.getSheet(params.sheetId).ganttSheet = normalizeGanttSheetDefinition(context.workbook, params);
-    },
     metadata: {
       schema: { name: 'GanttSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isGanttSheetDefinition(value.definition) },
       permission: { capability: 'gantt-sheet.write', roles: ['owner', 'editor'] },
@@ -1128,11 +1063,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<ReportSheetUpdateParams>({
     id: 'reportSheet.update',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isReportSheetDefinition(item.params.definition)) throw new Error('Invalid reportSheet.update mutation payload');
-      const params = item.params as ReportSheetUpdateParams;
-      context.workbook.getSheet(params.sheetId).reportSheet = normalizeReportSheetDefinition(context.workbook, params);
-    },
     metadata: {
       schema: { name: 'ReportSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isReportSheetDefinition(value.definition) },
       permission: { capability: 'report-sheet.write', roles: ['owner', 'editor'] },
@@ -1167,7 +1097,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => workbook.removeSheet(params.id),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1192,8 +1121,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () =>
-          context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1221,7 +1148,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           params: { sheetId: params.sheetId, definition: previous },
           affectedRanges,
         }],
-        apply: () => { sheet.tableSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1249,7 +1175,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           params: { sheetId: params.sheetId, definition: previous },
           affectedRanges,
         }],
-        apply: () => { sheet.ganttSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1271,7 +1196,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, definition },
         affectedRanges,
         inverse: [{ id: 'reportSheet.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, definition: previous }, affectedRanges }],
-        apply: () => { sheet.reportSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1298,7 +1222,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => context.workbook.renameSheet(params.sheetId, params.name),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1306,10 +1229,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<WorkbookTableModel>({
     id: 'table.add',
-    handler: (item, context) => {
-      if (!isWorkbookTableMutation(item.params)) throw new Error('Invalid table.add mutation payload');
-      context.workbook.addTable(item.params);
-    },
     metadata: {
       schema: { name: 'WorkbookTableModel', validate: isWorkbookTableMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
@@ -1319,10 +1238,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ tableId: string; range?: RangeRef }>({
     id: 'table.remove',
-    handler: (item, context) => {
-      if (!isTableRemoveMutation(item.params)) throw new Error('Invalid table.remove mutation payload');
-      context.workbook.removeTable(item.params.tableId);
-    },
     metadata: {
       schema: { name: 'TableRemove', validate: isTableRemoveMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
@@ -1341,7 +1256,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: structuredClone(params),
         affectedRanges,
         inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.primarySheetId, params: { tableId: params.id, range: params.sourceRange }, affectedRanges }],
-        apply: () => context.workbook.addTable(params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1358,7 +1272,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { tableId: params.tableId, range: previous.sourceRange },
         affectedRanges,
         inverse: [{ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => context.workbook.removeTable(params.tableId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1367,14 +1280,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 2. Cell mutations & commands
   runtime.registry.registerMutation<CellSetMutationParams>({
     id: 'cell.set',
-    handler: (item, context) => {
-      if (!isCellSetMutationParams(item.params)) throw new Error('Invalid cell.set mutation payload');
-      const params = item.params;
-      assertCellWriteAuthority(params, context.workbook.getSheet(params.sheetId));
-      const value = clearFormulaProvenance(params.value);
-      assertCanonicalCheckboxCell(value);
-      context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
-    },
     metadata: {
       schema: { name: 'SetCellValue', validate: isCellSetMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -1384,11 +1289,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; row: number; column: number; previous?: CellData }>({
     id: 'cell.restore',
-    handler: (item, context) => {
-      if (!isCellRestoreMutation(item.params)) throw new Error('Invalid cell.restore mutation payload');
-      assertCanonicalCheckboxCell(item.params.previous);
-      restoreCell(context.workbook, item as MutationInfo<{ row: number; column: number; previous?: CellData }>);
-    },
     metadata: {
       schema: { name: 'RestoreCell', validate: isCellRestoreMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -1421,7 +1321,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => sheet.cells.set(params.row, params.column, value),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1591,18 +1490,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 3. Range set
   runtime.registry.registerMutation<SetRangeValuesParams>({
     id: 'range.set',
-    handler: (item, context) => {
-      if (!isSetRangeMutation(item.params)) throw new Error('Invalid range.set mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
-        const rowValues = params.values[rowOffset] ?? [];
-        for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
-          const value = rowValues[columnOffset];
-          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, clearFormulaProvenance(value));
-        }
-      }
-    },
     metadata: {
       schema: { name: 'SetRangeValues', validate: isSetRangeMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -1656,7 +1543,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             params: plan.previous,
             affectedRanges: [structuredClone(plan.previous.range)],
           }],
-          apply: () => { sheet.sheetTables[tableIndex] = structuredClone(plan.next); },
         });
         affectedRanges.push(...tableAffectedRanges);
       }
@@ -1681,18 +1567,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             },
           ],
         })),
-        apply: () => {
-          for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
-            const rowValues = values[rowOffset] ?? [];
-            for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
-              const value = rowValues[columnOffset];
-              if (value)
-                sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, {
-                  ...value,
-                });
-            }
-          }
-        },
       });
       return { operationId: context.operationId, mutationCount: 1 + tablePlans.length, affectedRanges };
     },
@@ -1700,12 +1574,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<ClearRangeParams>({
     id: 'range.clear',
-    handler: (item, context) => {
-      if (!isClearRangeMutation(item.params)) throw new Error('Invalid range.clear mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      applyClearRangePlan(sheet, createClearRangePlan(sheet, params));
-    },
     metadata: {
       schema: { name: 'ClearRange', validate: isClearRangeMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -1716,12 +1584,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<ClearRangeRestoreParams>({
     id: 'range.clear.restore',
-    handler: (item, context) => {
-      if (!isClearRangeRestoreMutation(item.params)) throw new Error('Invalid range.clear.restore mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      restoreClearRangeSnapshot(sheet, params.range, params.snapshot);
-    },
     metadata: {
       schema: { name: 'ClearRangeRestore', validate: isClearRangeRestoreMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
@@ -1732,36 +1594,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string }>({
     id: 'style.set',
-    handler: (item, context) => {
-    if (!isStyleMutation(item.params)) throw new Error('Invalid style.set mutation payload');
-    const params = item.params;
-    const sheet = context.workbook.getSheet(params.sheetId);
-    const ranges = 'range' in params ? [params.range] : params.ranges;
-    const style = 'numberFormat' in params && !('style' in params)
-      ? { numberFormat: params.numberFormat }
-      : normalizeStyleFontFamily((params as SetRangeStyleParams).style) ?? {};
-    for (const range of ranges) {
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const current = sheet.cells.get(row, column) ?? { value: null as CellData['value'] };
-          const next = { ...current };
-          if ('replaceStyle' in params && params.replaceStyle) {
-            if (Object.keys(style).length > 0) next.style = structuredClone(style);
-            else delete next.style;
-          } else if (Object.keys(style).length > 0) {
-            next.style = { ...(current.style ?? {}), ...style };
-          }
-          const numberFormat = 'numberFormat' in params && typeof params.numberFormat === 'string'
-            ? params.numberFormat
-            : style.numberFormat;
-          if (numberFormat !== undefined) next.numberFormat = numberFormat;
-          if ('clearNumberFormat' in params && params.clearNumberFormat) delete next.numberFormat;
-          if ('replaceStyle' in params && params.replaceStyle) delete next.displayValue;
-          sheet.cells.set(row, column, next);
-        }
-      }
-    }
-    },
     metadata: {
       schema: { name: 'StyleSet', validate: isStyleMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -1793,7 +1625,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           params: { sheetId: params.sheetId, range, snapshot: plan.snapshot },
           affectedRanges,
         }],
-        apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1840,7 +1671,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             },
           ],
         })),
-        apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: canonicalParams.sheetId, params: canonicalParams, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1893,13 +1723,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
               permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
               affectedRanges: [cellRange],
             }],
-            apply: () => runtime.registry.getMutation('style.set')({
-              id: 'style.set',
-              unitId: context.workbook.unitId,
-              sheetId: params.sheetId,
-              params: { sheetId: params.sheetId, range: cellRange, style },
-              affectedRanges: [cellRange],
-            }, context),
           });
         }
       }
@@ -1910,12 +1733,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 6. Merge commands & mutations
   runtime.registry.registerMutation<SetMergeParams>({
     id: 'merge.set',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isRange(item.params.range)) throw new Error('Invalid merge.set mutation payload');
-      const params = item.params as SetMergeParams;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      sheet.merges.push({ range: params.range, anchor: { row: params.range.startRow, column: params.range.startColumn } });
-    },
     metadata: {
       schema: { name: 'SetMerge', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range) },
       permission: { capability: 'sheet.merge.write', roles: ['owner', 'editor'] },
@@ -1925,13 +1742,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<RemoveMergeParams>({
     id: 'merge.remove',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isRange(item.params.range)) throw new Error('Invalid merge.remove mutation payload');
-      const params = item.params as RemoveMergeParams;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const idx = sheet.merges.findIndex((m) => m.range.startRow === params.range.startRow && m.range.startColumn === params.range.startColumn);
-      if (idx >= 0) sheet.merges.splice(idx, 1);
-    },
     metadata: {
       schema: { name: 'RemoveMerge', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range) },
       permission: { capability: 'sheet.merge.write', roles: ['owner', 'editor'] },
@@ -1965,9 +1775,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          sheet.merges.push(span);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2002,9 +1809,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          sheet.merges.splice(idx, 1);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2013,11 +1817,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 7. Freeze commands
   runtime.registry.registerMutation<SetFreezeParams>({
     id: 'freeze.set',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
-      const params = item.params as SetFreezeParams;
-      context.workbook.getSheet(params.sheetId).pane = { ...params.pane };
-    },
     metadata: {
       schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isWorksheetPane(value.pane) },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
@@ -2048,9 +1847,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          sheet.pane = { ...params.pane };
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2059,11 +1855,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 8. Row and Column resizing
   runtime.registry.registerMutation<ResizeRowParams>({
     id: 'row.resize',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.row) || typeof item.params.heightPx !== 'number' || item.params.heightPx <= 0) throw new Error('Invalid row.resize mutation payload');
-      const params = item.params as ResizeRowParams;
-      context.workbook.getSheet(params.sheetId).rowHeightsPx[params.row] = params.heightPx;
-    },
     metadata: {
       schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.row) && typeof value.heightPx === 'number' && Number(value.row) >= 0 && Number(value.heightPx) > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
@@ -2073,11 +1864,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<ResizeColumnParams>({
     id: 'column.resize',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.column) || typeof item.params.widthPx !== 'number' || item.params.widthPx <= 0) throw new Error('Invalid column.resize mutation payload');
-      const params = item.params as ResizeColumnParams;
-      context.workbook.getSheet(params.sheetId).columnWidthsPx[params.column] = params.widthPx;
-    },
     metadata: {
       schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.column) && typeof value.widthPx === 'number' && Number(value.column) >= 0 && Number(value.widthPx) > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
@@ -2087,10 +1873,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; widthPx: number }>({
     id: 'column.defaultWidth.resize',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || typeof item.params.widthPx !== 'number' || !Number.isFinite(item.params.widthPx) || item.params.widthPx <= 0) throw new Error('Invalid column.defaultWidth.resize mutation payload');
-      context.workbook.getSheet(item.params.sheetId).defaultColumnWidthPx = item.params.widthPx;
-    },
     metadata: {
       schema: { name: 'ResizeDefaultColumnWidthPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && typeof value.widthPx === 'number' && Number.isFinite(value.widthPx) && value.widthPx > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
@@ -2112,7 +1894,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         context.applyMutation({
           id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: mutationParams, affectedRanges,
           inverse: [{ id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: row.row, heightPx: previousHeightPx }, affectedRanges }],
-          apply: () => { sheet.rowHeightsPx[row.row] = row.heightPx; },
         });
         mutationCount += 1;
       }
@@ -2127,7 +1908,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             params: mutationParams,
             affectedRanges,
             inverse: [{ id: 'column.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, column: column.column, widthPx: previousWidthPx }, affectedRanges }],
-            apply: () => { sheet.columnWidthsPx[column.column] = column.widthPx; },
         });
         mutationCount += 1;
       }
@@ -2144,7 +1924,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'column.defaultWidth.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
         inverse: [{ id: 'column.defaultWidth.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, widthPx: previousWidthPx }, affectedRanges }],
-        apply: () => { sheet.defaultColumnWidthPx = params.widthPx; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2164,11 +1943,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 10. 结构操作:行/列插入与删除（统一走 StructuralTransform）
   runtime.registry.registerMutation<{ sheetId: string; at: number; count: number }>({
     id: 'rows.inserted',
-    handler: (item, context) => {
-      if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.inserted mutation payload');
-      const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
-    },
     metadata: {
       schema: { name: 'RowsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -2178,11 +1952,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; at: number; count: number }>({
     id: 'rows.deleted',
-    handler: (item, context) => {
-      if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.deleted mutation payload');
-      const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
-    },
     metadata: {
       schema: { name: 'RowsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -2192,11 +1961,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; at: number; count: number }>({
     id: 'columns.inserted',
-    handler: (item, context) => {
-      if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.inserted mutation payload');
-      const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
-    },
     metadata: {
       schema: { name: 'ColumnsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -2206,11 +1970,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; at: number; count: number }>({
     id: 'columns.deleted',
-    handler: (item, context) => {
-      if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.deleted mutation payload');
-      const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
-    },
     metadata: {
       schema: { name: 'ColumnsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
@@ -2220,11 +1979,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; index: number }>({
     id: 'row.hidden',
-    handler: (item, context) => {
-      if (!isSheetIndexMutation(item.params)) throw new Error('Invalid row.hidden mutation payload');
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).hiddenRows.add(params.index);
-    },
     metadata: {
       schema: { name: 'RowHidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2234,14 +1988,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<RowsVisibilityParams>({
     id: 'rows.visibility',
-    handler: (item, context) => {
-      if (!isRowVisibilityMutation(item.params)) throw new Error('Invalid rows.visibility mutation payload');
-      const hiddenRows = context.workbook.getSheet(item.params.sheetId).hiddenRows;
-      for (const state of item.params.states) {
-        if (state.hidden) hiddenRows.add(state.row);
-        else hiddenRows.delete(state.row);
-      }
-    },
     metadata: {
       schema: { name: 'RowsVisibility', validate: isRowVisibilityMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2251,14 +1997,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<ColumnsVisibilityParams>({
     id: 'columns.visibility',
-    handler: (item, context) => {
-      if (!isColumnVisibilityMutation(item.params)) throw new Error('Invalid columns.visibility mutation payload');
-      const hiddenColumns = context.workbook.getSheet(item.params.sheetId).hiddenColumns;
-      for (const state of item.params.states) {
-        if (state.hidden) hiddenColumns.add(state.column);
-        else hiddenColumns.delete(state.column);
-      }
-    },
     metadata: {
       schema: { name: 'ColumnsVisibility', validate: isColumnVisibilityMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2268,11 +2006,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; index: number }>({
     id: 'row.unhidden',
-    handler: (item, context) => {
-      if (!isSheetIndexMutation(item.params)) throw new Error('Invalid row.unhidden mutation payload');
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).hiddenRows.delete(params.index);
-    },
     metadata: {
       schema: { name: 'RowUnhidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2282,10 +2015,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string }>({
     id: 'rows.unhidden.all',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string') throw new Error('Invalid rows.unhidden.all mutation payload');
-      context.workbook.getSheet(item.params.sheetId).hiddenRows.clear();
-    },
     metadata: {
       schema: { name: 'RowsUnhiddenAll', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2295,13 +2024,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; indices: number[] }>({
     id: 'rows.hidden.restore',
-    handler: (item, context) => {
-      if (!isSheetIndicesMutation(item.params)) throw new Error('Invalid rows.hidden.restore mutation payload');
-      const params = item.params;
-      const hiddenRows = context.workbook.getSheet(params.sheetId).hiddenRows;
-      hiddenRows.clear();
-      for (const index of params.indices) hiddenRows.add(index);
-    },
     metadata: {
       schema: { name: 'RowsHiddenRestore', validate: isSheetIndicesMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2311,11 +2033,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; index: number }>({
     id: 'column.hidden',
-    handler: (item, context) => {
-      if (!isSheetIndexMutation(item.params)) throw new Error('Invalid column.hidden mutation payload');
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).hiddenColumns.add(params.index);
-    },
     metadata: {
       schema: { name: 'ColumnHidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2325,11 +2042,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; index: number }>({
     id: 'column.unhidden',
-    handler: (item, context) => {
-      if (!isSheetIndexMutation(item.params)) throw new Error('Invalid column.unhidden mutation payload');
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).hiddenColumns.delete(params.index);
-    },
     metadata: {
       schema: { name: 'ColumnUnhidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2339,10 +2051,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string }>({
     id: 'columns.unhidden.all',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string') throw new Error('Invalid columns.unhidden.all mutation payload');
-      context.workbook.getSheet(item.params.sheetId).hiddenColumns.clear();
-    },
     metadata: {
       schema: { name: 'ColumnsUnhiddenAll', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2352,13 +2060,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; indices: number[] }>({
     id: 'columns.hidden.restore',
-    handler: (item, context) => {
-      if (!isSheetIndicesMutation(item.params)) throw new Error('Invalid columns.hidden.restore mutation payload');
-      const params = item.params;
-      const hiddenColumns = context.workbook.getSheet(params.sheetId).hiddenColumns;
-      hiddenColumns.clear();
-      for (const index of params.indices) hiddenColumns.add(index);
-    },
     metadata: {
       schema: { name: 'ColumnsHiddenRestore', validate: isSheetIndicesMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
@@ -2380,7 +2081,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'row.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
-        apply: () => hiddenRows.add(params.index),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2399,7 +2099,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         id: 'rows.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId,
         params: { sheetId: params.sheetId, states }, affectedRanges,
         inverse: [{ id: 'rows.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states: inverseStates }, affectedRanges }],
-        apply: () => { for (const state of states) { if (state.hidden) sheet.hiddenRows.add(state.row); else sheet.hiddenRows.delete(state.row); } },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2417,7 +2116,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'columns.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states }, affectedRanges,
         inverse: [{ id: 'columns.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states: inverseStates }, affectedRanges }],
-        apply: () => { for (const state of states) { if (state.hidden) sheet.hiddenColumns.add(state.column); else sheet.hiddenColumns.delete(state.column); } },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2436,7 +2134,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'column.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
-        apply: () => hiddenColumns.add(params.index),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2456,7 +2153,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'rows.hidden.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, indices: previous }, affectedRanges }],
-        apply: () => sheet.hiddenRows.clear(),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2476,7 +2172,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'columns.hidden.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, indices: previous }, affectedRanges }],
-        apply: () => sheet.hiddenColumns.clear(),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2508,7 +2203,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2549,7 +2243,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2581,7 +2274,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2622,7 +2314,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2682,12 +2373,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 13. 筛选 / 条件格式 / 数据验证 / 色带 / 名称
   runtime.registry.registerMutation<{ sheetId: string; autoFilter: AutoFilterModel }>({
     id: 'autoFilter.set',
-    handler: (item, context) => {
-      if (!isFilterMutation(item.params)) throw new Error('Invalid autoFilter.set mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      sheet.autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
-    },
     metadata: {
       schema: { name: 'AutoFilterSet', validate: isFilterMutation },
       permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
@@ -2697,10 +2382,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; range?: RangeRef }>({
     id: 'autoFilter.remove',
-    handler: (item, context) => {
-      if (!isFilterRemoveMutation(item.params)) throw new Error('Invalid autoFilter.remove mutation payload');
-      context.workbook.getSheet(item.params.sheetId).autoFilter = undefined;
-    },
     metadata: {
       schema: { name: 'AutoFilterRemove', validate: isFilterRemoveMutation },
       permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
@@ -2736,9 +2417,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             params: { sheetId: params.sheetId, range: autoFilter.range },
             affectedRanges,
           }],
-        apply: () => {
-          sheet.autoFilter = structuredClone(autoFilter);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2765,9 +2443,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          context.workbook.getSheet(params.sheetId).autoFilter = undefined;
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2775,14 +2450,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<AddConditionalFormatParams>({
     id: 'cf.add',
-    handler: (item, context) => {
-      if (!isConditionalAddMutation(item.params)) throw new Error('Invalid cf.add mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.rule.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
-      if (index >= 0) sheet.conditionalFormats[index] = structuredClone(params.rule);
-      else sheet.conditionalFormats.push(structuredClone(params.rule));
-    },
     metadata: {
       schema: { name: 'ConditionalFormatAdd', validate: isConditionalAddMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
@@ -2792,13 +2459,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges?: RangeRef[] }>({
     id: 'cf.remove',
-    handler: (item, context) => {
-      if (!isRuleRemoveMutation(item.params)) throw new Error('Invalid cf.remove mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
-      if (index >= 0) sheet.conditionalFormats.splice(index, 1);
-    },
     metadata: {
       schema: { name: 'ConditionalFormatRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
@@ -2808,10 +2468,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; ranges: RangeRef[] }>({
     id: 'cf.clear',
-    handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string') throw new Error('Invalid cf.clear mutation payload');
-      context.workbook.getSheet(item.params.sheetId).conditionalFormats.length = 0;
-    },
     metadata: {
       schema: { name: 'ConditionalFormatClear', validate: isSheetRangesMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
@@ -2841,25 +2497,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          const target = context.workbook.getSheet(normalizedRule.sheetId);
-          const index = target.conditionalFormats.findIndex((rule) => rule.id === normalizedRule.id);
-          if (index >= 0) target.conditionalFormats[index] = structuredClone(normalizedRule);
-          else target.conditionalFormats.push(structuredClone(normalizedRule));
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
   runtime.registry.registerMutation<ConditionalFormatUpdateMutationParams>({
     id: 'cf.update',
-    handler: (item, context) => {
-      if (!isConditionalFormatUpdateMutation(item.params)) throw new Error('Invalid cf.update mutation payload');
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === item.params.before.id);
-      if (index < 0 || JSON.stringify(sheet.conditionalFormats[index]) !== JSON.stringify(item.params.before)) throw new Error(`Conditional format ${item.params.before.id} changed before update`);
-      sheet.conditionalFormats[index] = structuredClone(item.params.after);
-    },
     metadata: {
       schema: { name: 'ConditionalFormatUpdate', validate: isConditionalFormatUpdateMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
@@ -2884,11 +2527,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { sheetId: params.sheetId, before, after, ranges },
         affectedRanges: ranges,
         inverse: [{ id: 'cf.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, before: after, after: before, ranges }, affectedRanges: ranges }],
-        apply: () => {
-          const current = sheet.conditionalFormats.findIndex((rule) => rule.id === before.id);
-          if (current < 0 || JSON.stringify(sheet.conditionalFormats[current]) !== JSON.stringify(before)) throw new Error(`Conditional format ${before.id} changed before update`);
-          sheet.conditionalFormats[current] = structuredClone(after);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
     },
@@ -2916,11 +2554,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          const target = context.workbook.getSheet(params.sheetId);
-          const idx = target.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
-          if (idx >= 0) target.conditionalFormats.splice(idx, 1);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2947,9 +2580,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           params: { sheetId: params.sheetId, rule } satisfies AddConditionalFormatParams,
           affectedRanges: [] as RangeRef[],
         })),
-        apply: () => {
-          context.workbook.getSheet(params.sheetId).conditionalFormats.length = 0;
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2957,14 +2587,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<AddDataValidationParams>({
     id: 'dv.add',
-    handler: (item, context) => {
-      if (!isDataValidationAddMutation(item.params)) throw new Error('Invalid dv.add mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.rule.sheetId);
-      const index = sheet.dataValidations.findIndex((rule) => rule.id === params.rule.id);
-      if (index >= 0) sheet.dataValidations[index] = structuredClone(params.rule);
-      else sheet.dataValidations.push(structuredClone(params.rule));
-    },
     metadata: {
       schema: { name: 'DataValidationAdd', validate: isDataValidationAddMutation },
       permission: { capability: 'sheet.data-validation.write', roles: ['owner', 'editor'] },
@@ -2974,13 +2596,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges?: RangeRef[] }>({
     id: 'dv.remove',
-    handler: (item, context) => {
-      if (!isRuleRemoveMutation(item.params)) throw new Error('Invalid dv.remove mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const index = sheet.dataValidations.findIndex((rule) => rule.id === params.ruleId);
-      if (index >= 0) sheet.dataValidations.splice(index, 1);
-    },
     metadata: {
       schema: { name: 'DataValidationRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.data-validation.write', roles: ['owner', 'editor'] },
@@ -3009,12 +2624,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          const sheet = context.workbook.getSheet(normalizedRule.sheetId);
-          const index = sheet.dataValidations.findIndex((rule) => rule.id === normalizedRule.id);
-          if (index >= 0) sheet.dataValidations[index] = structuredClone(normalizedRule);
-          else sheet.dataValidations.push(structuredClone(normalizedRule));
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3042,11 +2651,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          const target = context.workbook.getSheet(params.sheetId);
-          const idx = target.dataValidations.findIndex((rule) => rule.id === params.ruleId);
-          if (idx >= 0) target.dataValidations.splice(idx, 1);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3054,12 +2658,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<{ sheetId: string; rule: BandedRule | null }>({
     id: 'banded.set',
-    handler: (item, context) => {
-      if (!isBandedMutation(item.params)) throw new Error('Invalid banded.set mutation payload');
-      const params = item.params;
-      const sheet = context.workbook.getSheet(params.sheetId);
-      sheet.bandedRule = params.rule ? structuredClone(params.rule) : undefined;
-    },
     metadata: {
       schema: { name: 'BandedRuleSet', validate: isBandedMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
@@ -3087,10 +2685,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => {
-          const sheet = context.workbook.getSheet(params.sheetId);
-          sheet.bandedRule = params.rule ? structuredClone(params.rule) : undefined;
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3098,10 +2692,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<{ model: DefinedNameModel }>({
     id: 'name.set',
-    handler: (item, context) => {
-      if (!isNameSetMutation(item.params)) throw new Error('Invalid name.set mutation payload');
-      context.workbook.setDefinedName(item.params.model);
-    },
     metadata: {
       schema: { name: 'DefinedNameSet', validate: isNameSetMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
@@ -3111,11 +2701,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
   runtime.registry.registerMutation<{ name: string; scope?: 'workbook' | 'sheet'; sheetId?: string }>({
     id: 'name.remove',
-    handler: (item, context) => {
-      if (!isNameRemoveMutation(item.params)) throw new Error('Invalid name.remove mutation payload');
-      const params = item.params;
-      context.workbook.removeDefinedName(params.name, params.scope ?? 'workbook', params.sheetId);
-    },
     metadata: {
       schema: { name: 'DefinedNameRemove', validate: isNameRemoveMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
@@ -3156,9 +2741,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         inverse: previous !== undefined
           ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges }]
           : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { name: normalized.name, scope: normalized.scope, sheetId: normalized.sheetId }, affectedRanges }],
-        apply: () => {
-          context.workbook.setDefinedName(normalized);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3178,9 +2760,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         inverse: [
           { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges },
         ],
-        apply: () => {
-          context.workbook.removeDefinedName(params.name, previous.scope, previous.sheetId);
-        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

@@ -14,5 +14,9 @@ function resolveKind(item: WorkbookCatalogItem): StatusBadgeKind {
 }
 
 export function WorkbookStatusBadge({ item }: { item: WorkbookCatalogItem }) {
-  return <StatusBadge kind={resolveKind(item)} />;
+  const kind = resolveKind(item);
+  const label = kind === 'synced'
+    ? item.role === 'owner' ? '已保存 · 所有者' : '已保存 · 共享'
+    : undefined;
+  return <StatusBadge kind={kind} label={label} />;
 }
