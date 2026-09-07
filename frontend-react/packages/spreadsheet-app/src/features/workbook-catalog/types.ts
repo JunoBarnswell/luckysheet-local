@@ -1,4 +1,3 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type {
   CompatibilityReport,
   NativeDocumentExportOptions,
@@ -21,6 +20,7 @@ import type {
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
   WorkbookManifest,
+  KernelWorkbookCreateRequest,
   WorkbookUserState as ProtocolWorkbookUserState,
   WorkspaceFolder as ProtocolWorkspaceFolder,
   WorkspaceSpace as ProtocolWorkspaceSpace,
@@ -77,11 +77,10 @@ export interface WorkbookCatalogEntry {
   favorite: boolean;
   lastOpenedAt?: string;
   pendingOperationCount: number;
-  localRecord?: WorkspaceRecord;
 }
 
 export interface WorkbookCatalogCreateInput {
-  snapshot: WorkbookSnapshot;
+  plan: Pick<KernelWorkbookCreateRequest, 'unitId' | 'name' | 'sheets' | 'initialMutations'>;
   destination?: 'remote';
   metadata?: WorkbookCreateMetadata;
   role?: WorkbookRole;
@@ -95,13 +94,11 @@ export interface WorkbookCatalogImportInput {
   folderId?: string;
   spaceId?: string;
   options?: Partial<NativeDocumentImportOptions>;
-  execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogImportResult {
   entry: WorkbookCatalogEntry;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   report: CompatibilityReport;
   artifact: NativeDocumentArtifact;
 }
@@ -109,8 +106,6 @@ export interface WorkbookCatalogImportResult {
 export interface WorkbookCatalogExportInput {
   fileName?: string;
   options?: Partial<NativeDocumentExportOptions>;
-  execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogExportResult {
@@ -141,7 +136,6 @@ export interface WorkbookResolution {
   manifest: WorkbookManifest;
   revision: number;
   access: WorkbookAccessResponse | null;
-  localRecord: WorkspaceRecord | null;
 }
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
@@ -161,8 +155,8 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'getWorkbookUserState'
   | 'putWorkbookUserState'
   | 'createWorkbookImport'
-  | 'putWorkbookSourceArtifact'
   | 'getWorkbookSourceArtifact'
+  | 'saveNativeDocumentArtifact'
   | 'checkpointWorkbook'
   | 'listSpaces'
   | 'getUserPreferences'

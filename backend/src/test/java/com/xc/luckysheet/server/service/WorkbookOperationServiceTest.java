@@ -61,6 +61,24 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
+    void restoreReusesHistoricalPagesInANewRevisionAfterRestart() throws Exception {
+        String unitId = "native-restore-pages";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "restore-before", 1, 0, set(0, 0, 42)), "owner");
+        operations.commit(unitId, operation(unitId, "restore-after", 2, 1, set(0, 0, 99)), "owner");
+        kernel.close();
+        operations.restore(unitId, new com.xc.luckysheet.server.contract.RestoreRequest(1, "Recover previous content"), "owner");
+        assertEquals(3, store.find(unitId).orElseThrow().revision());
+        kernel.close();
+        reopenNative(unitId, "owner", true);
+        assertEquals(42, cell(unitId, 3, 0, 0).path("value").asInt());
+        assertEquals(2, operations.readRevision(unitId, 2, "owner").revision());
+        assertThrows(ServiceException.class, () -> operations.restore(unitId,
+                new com.xc.luckysheet.server.contract.RestoreRequest(4, "Invalid future"), "owner"));
+        assertEquals(3, store.find(unitId).orElseThrow().revision());
+    }
+
+    @Test
     void commenterCannotCommitEditorMutationAndRejectionIsAudited() throws Exception {
         String unitId = "native-role";
         create(unitId);
@@ -121,6 +139,25 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
+    void undoRejectsOverlappingLaterPageWithoutPartialCommit() throws Exception {
+        String unitId = "native-undo-conflict";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "undo-conflict-target", 1, 0, set(0, 0, 42)), "owner");
+        operations.commit(unitId, operation(unitId, "undo-conflict-later", 2, 1, set(0, 0, 99)), "owner");
+        var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "undo-conflict-request", unitId, 3, 2,
+                List.of(set(0, 0, 1)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "undo-conflict-target", 0));
+
+        var error = assertThrows(KernelHostException.class, () -> operations.commit(unitId, undo, "owner"));
+
+        assertEquals("UNDO_CONFLICT", error.code());
+        assertEquals(2, store.find(unitId).orElseThrow().revision());
+        assertTrue(store.findOperation(undo.operationId()).isEmpty());
+        assertTrue(manifests.findByUnitIdAndRevision(unitId, 3).isEmpty());
+        reopenNative(unitId, "owner", true);
+        assertEquals(99, cell(unitId, 2, 0, 0).path("value").asInt());
+    }
+
+    @Test
     void undoCannotUseAnotherActorsCommittedHistory() throws Exception {
         String unitId = "native-undo-owner";
         create(unitId);
@@ -162,7 +199,7 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
         JsonNode sheets = mapper.readTree("""
                 [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
                 """);
-        catalog.create(new CreateWorkbookRequest(unitId, "Book", sheets, null, null, null), "owner");
+        catalog.create(new CreateWorkbookRequest(unitId, "Book", sheets, null, null, null, null), "owner");
     }
 
     private OperationMutation set(int row, int column, int value) {

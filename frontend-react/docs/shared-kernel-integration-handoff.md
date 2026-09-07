@@ -26,6 +26,12 @@
 
 ## 本轮整合证据
 
+I04/A03 撤销链路整改：`history.undo` 现在是 Rust command 的显式 canonical 分支，不进入普通 mutation registry。服务端只传从 immutable history 读取并重新校验的 record；客户端提交的 inverse mutations 不参与执行。HistoryRecord 同时记录 metadataBefore/metadataAfter，页和 metadata 都必须仍等于目标操作的 after state；不相交页可保留，重叠页或 metadata 后续变化返回 `UNDO_CONFLICT`，revision、manifest、history、operation 均不产生部分提交。撤销结果始终发布 baseRevision+1，before 页通过同工作簿 content-addressed persistence 验证并由客户端按需补读。Rust command 12/12 通过，包含权限、页冲突、非重叠页、metadata 成功与冲突；真实 native/H2 的权威历史、跨主体拒绝、重叠冲突共 3/3 通过，另 persistence 6/6 通过。
+
+I04/B04 复制文件身份整改：自研新建 OOXML 在受 Markup Compatibility 保护的 `urn:react-sheets:workbook:1` 属性中写出 canonical worksheet id，重开时按 namespace URI 解析；外部文件无该扩展时继续采用 OOXML `sheetId`。这删除了只存在于内存的临时映射，使新建→导出→重开→复制保持同一 sheet identity。Rust native document library/integration 共 12/12 通过；真实 native/H2 的复制原包当前值与恢复历史页测试 2/2 通过。真实 Excel/WPS 对该扩展的保存行为仍属于 D04 Blocked 验收，不在此宣称通过。
+
+后端重跑结果（2026-09-07）：`WorkbookCatalogServiceTest` 5/5、`KernelPersistenceServiceTest` 6/6，共 11 项全部通过，使用最新 `cargo build -p kernel-host` 生成的真实 native 进程与 H2。命令为 Maven `-Dtest=WorkbookCatalogServiceTest,KernelPersistenceServiceTest test`，本机附加 `-DargLine=-Djdk.net.unixdomain.tmpdir=D:/code/luckysheet-local/.tools/verification/sockets`。原 TEMP 短路径下 JDK Unix-domain pipe connect 失败；已用真实 HttpClient 初始化确认指定目录可用，不是跳过连接器或 mock HTTP。JSON 断言现比较序列化的完整字段和值，不依赖 Jackson IntNode/LongNode 实现类别。此验证尚不证明历史恢复/原文件复制的完整端到端场景，须继续补齐相应验收，亦不代表 64 项整体通过。
+
 I04/B11 集中后端验证发现：`cargo test -p kernel-host --lib` 当前 5/5 通过且最新 native 构建通过；Maven catalog/persistence 共 11 项运行，1 failure、8 errors，不能标记后端通过。持久化比较的根因是 JSON 整数在内存 LongNode 与重读 IntNode 表示不同，统一比较整数数值且保留其它类型严格相等；不修改测试数据。H2 启动错误为新 V9/V11 的 CLOB 与 JPA LONGVARCHAR 不一致，未发布迁移改为与现有 H2 页表一致的 text。历史引用 publication 同时计入已核验变更页集合，防止后续 history 校验再次误拒。修复后需重跑该组测试。
 
 I04 恢复链路整改：原 Java `restore` 调用无 native 实现，不能通过旧 revision 重新 open 冒充提交。现由 core `restore_manifest` 验证同一工作簿和历史 revision、生成当前 revision+1、页差量与 metadata before；host 校验 owner 并在控制帧预算验证后发布 staged 状态。持久化层对未附带 payload 的变更页核验同工作簿下既有 immutable 内容再发布，历史页不通过大 base64 控制帧传输。成功/越权/外工作簿/stale 测试已补，本轮尚待集中运行。前端缺页补读及撤销提交消费者还需同批收口。带原生数字签名的包在重写导出时一律显式拒绝，不能用相同 revision 绕过签名保真边界。

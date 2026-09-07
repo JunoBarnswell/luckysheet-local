@@ -318,11 +318,15 @@ public class KernelPersistenceService {
         if (!seen.equals(expected)) throw failure("HISTORY_INVALID", "History must describe every changed page exactly once", operationId);
         JsonNode oldManifest = readManifest(unitId, baseRevision);
         JsonNode metadataBefore = history.path("metadataBefore");
+        JsonNode metadataAfter = history.path("metadataAfter");
         ObjectNode actual = mapper.createObjectNode();
         actual.set("name", oldManifest.path("name")); actual.set("sheets", oldManifest.path("sheets")); actual.set("metadata", oldManifest.path("metadata"));
         boolean metadataChanged = !sameCanonicalJson(oldManifest.path("name"), newManifest.path("name"))
                 || !sameCanonicalJson(oldManifest.path("sheets"), newManifest.path("sheets")) || !sameCanonicalJson(oldManifest.path("metadata"), newManifest.path("metadata"));
-        if (metadataChanged ? !sameCanonicalJson(actual, metadataBefore) : !metadataBefore.isNull())
+        ObjectNode next = mapper.createObjectNode();
+        next.set("name", newManifest.path("name")); next.set("sheets", newManifest.path("sheets")); next.set("metadata", newManifest.path("metadata"));
+        if (metadataChanged ? (!sameCanonicalJson(actual, metadataBefore) || !sameCanonicalJson(next, metadataAfter))
+                : (!metadataBefore.isNull() || !metadataAfter.isNull()))
             throw failure("HISTORY_INVALID", "History metadata does not match the checkpoint transition", operationId);
     }
     private static JsonNode nullable(JsonNode node) { return node == null || node.isNull() ? null : node; }

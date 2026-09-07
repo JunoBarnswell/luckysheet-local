@@ -1,13 +1,51 @@
-import { WorkbookModel, type CellStyle, type WorkbookSnapshot } from '@react-sheets/core-model';
+import type { CellStyle } from '@react-sheets/core-model';
+import type { KernelCell, KernelSheetManifest } from '@react-sheets/protocol';
 
 export type WorkbookTemplateId = 'blank' | 'template' | 'pivot' | 'project-plan' | 'budget' | 'designer-demo';
 
-export interface WorkbookTemplateDefinition {
-  id: WorkbookTemplateId;
-  name: string;
-  description: string;
-  create: (unitId: string, name?: string) => WorkbookSnapshot;
+export interface WorkbookTemplateCreateMutation {
+  readonly id: 'cell.set';
+  readonly sheetId: string;
+  readonly params: {
+    readonly sheetId: string;
+    readonly row: number;
+    readonly column: number;
+    readonly value: KernelCell;
+  };
 }
+
+/** A template is a cloud creation intent. It never materializes a browser workbook snapshot. */
+export interface WorkbookTemplateCreatePlan {
+  readonly unitId: string;
+  readonly name: string;
+  readonly sheets: readonly KernelSheetManifest[];
+  readonly initialMutations: readonly WorkbookTemplateCreateMutation[];
+}
+
+export interface WorkbookTemplateDefinition {
+  readonly id: WorkbookTemplateId;
+  readonly name: string;
+  readonly description: string;
+  readonly create: (unitId: string, name?: string) => WorkbookTemplateCreatePlan;
+}
+
+interface MutableTemplateCell {
+  readonly row: number;
+  readonly column: number;
+  cell: KernelCell;
+}
+
+interface MutableTemplateSheet {
+  readonly sheetId: string;
+  name: string;
+  readonly rowCount: number;
+  readonly columnCount: number;
+  readonly metadata: Record<string, unknown>;
+  readonly cells: Map<string, MutableTemplateCell>;
+}
+
+const MAX_ROWS = 1_048_576;
+const MAX_COLUMNS = 16_384;
 
 const HEADER_STYLE: CellStyle = {
   bold: true,
@@ -20,103 +58,6 @@ const SUBTOTAL_STYLE: CellStyle = {
   bold: true,
   background: '#EAF4EE',
 };
-
-function createWorkbook(unitId: string, name: string): WorkbookModel {
-  if (!unitId.trim()) throw new Error('Workbook unitId is required');
-  return new WorkbookModel(unitId, name);
-}
-
-function writeRows(workbook: WorkbookModel, rows: readonly (readonly (string | number | boolean | null)[])[], startRow = 0): void {
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  rows.forEach((row, rowOffset) => {
-    row.forEach((value, column) => {
-      sheet.cells.set(startRow + rowOffset, column, { value });
-    });
-  });
-}
-
-function styleRow(workbook: WorkbookModel, row: number, width: number, style: CellStyle): void {
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  for (let column = 0; column < width; column += 1) {
-    const current = sheet.cells.get(row, column);
-    if (current) sheet.cells.set(row, column, { ...current, style: { ...style } });
-  }
-}
-
-function blank(unitId: string, name = '空白工作簿'): WorkbookSnapshot {
-  return createWorkbook(unitId, name).snapshot();
-}
-
-function template(unitId: string, name = '会议记录模板'): WorkbookSnapshot {
-  const workbook = createWorkbook(unitId, name);
-  writeRows(workbook, [
-    ['会议主题', '负责人', '会议日期', '状态', '备注'],
-    ['产品评审', '项目组', '2026-08-24', '未开始', ''],
-    ['研发同步', '研发部', '2026-08-25', '进行中', '准备风险清单'],
-    ['周例会', '全体成员', '2026-08-26', '已完成', ''],
-  ]);
-  styleRow(workbook, 0, 5, HEADER_STYLE);
-  return workbook.snapshot();
-}
-
-function pivot(unitId: string, name = '销售数据透视表模板'): WorkbookSnapshot {
-  const workbook = createWorkbook(unitId, name);
-  writeRows(workbook, [
-    ['日期', '区域', '产品', '销售员', '数量', '金额'],
-    ['2026-08-01', '华东', '标准版', '张敏', 12, 12000],
-    ['2026-08-02', '华南', '专业版', '李强', 8, 16000],
-    ['2026-08-03', '华东', '专业版', '王芳', 10, 20000],
-    ['2026-08-04', '华北', '标准版', '赵磊', 15, 15000],
-  ]);
-  styleRow(workbook, 0, 6, HEADER_STYLE);
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.columnWidthsPx[0] = 110;
-  sheet.columnWidthsPx[1] = 90;
-  sheet.columnWidthsPx[2] = 110;
-  sheet.columnWidthsPx[3] = 100;
-  sheet.columnWidthsPx[4] = 80;
-  sheet.columnWidthsPx[5] = 100;
-  return workbook.snapshot();
-}
-
-function projectPlan(unitId: string, name = '项目计划模板'): WorkbookSnapshot {
-  const workbook = createWorkbook(unitId, name);
-  writeRows(workbook, [
-    ['任务名称', '负责人', '开始日期', '结束日期', '进度', '状态'],
-    ['需求分析', '产品经理', '2026-08-24', '2026-08-27', 0.8, '进行中'],
-    ['交互设计', '设计师', '2026-08-28', '2026-09-02', 0.2, '未开始'],
-    ['开发实现', '研发团队', '2026-09-03', '2026-09-14', 0, '未开始'],
-    ['验收发布', '项目经理', '2026-09-15', '2026-09-18', 0, '未开始'],
-  ]);
-  styleRow(workbook, 0, 6, HEADER_STYLE);
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  [0.8, 0.2, 0, 0].forEach((value, index) => {
-    const cell = sheet.cells.get(index + 1, 4);
-    if (cell) sheet.cells.set(index + 1, 4, { ...cell, numberFormat: '0%' });
-  });
-  return workbook.snapshot();
-}
-
-function budget(unitId: string, name = '预算模板'): WorkbookSnapshot {
-  const workbook = createWorkbook(unitId, name);
-  writeRows(workbook, [
-    ['预算科目', '预算金额', '实际金额', '差异', '负责人'],
-    ['人员成本', 120000, 115000, 5000, '人力资源'],
-    ['软件服务', 30000, 28000, 2000, '信息技术'],
-    ['市场推广', 50000, 56000, -6000, '市场部'],
-    ['合计', 200000, 199000, 1000, '财务部'],
-  ]);
-  styleRow(workbook, 0, 5, HEADER_STYLE);
-  styleRow(workbook, 4, 5, SUBTOTAL_STYLE);
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  for (let row = 1; row <= 4; row += 1) {
-    for (const column of [1, 2, 3]) {
-      const cell = sheet.cells.get(row, column);
-      if (cell) sheet.cells.set(row, column, { ...cell, numberFormat: '#,##0.00' });
-    }
-  }
-  return workbook.snapshot();
-}
 
 const DEMO_CARD_STYLE: CellStyle = {
   background: '#f2f2f2',
@@ -158,43 +99,173 @@ const DEMO_SCENE_DETAIL_STYLE: CellStyle = {
   padding: 0,
 };
 
-function designerDemo(unitId: string, name = 'SpreadJS Designer Demo'): WorkbookSnapshot {
-  const workbook = createWorkbook(unitId, name);
-  const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.name = '目录索引';
-  sheet.rowHeightsPx[0] = 18;
-  sheet.rowHeightsPx[1] = 70;
-  sheet.rowHeightsPx[2] = 30;
-  sheet.rowHeightsPx[3] = 32;
-  sheet.rowHeightsPx[4] = 26;
-  sheet.rowHeightsPx[5] = 26;
-  sheet.rowHeightsPx[6] = 26;
-  sheet.rowHeightsPx[7] = 20;
-  sheet.rowHeightsPx[8] = 32;
-  sheet.rowHeightsPx[9] = 26;
-  sheet.rowHeightsPx[10] = 26;
-  sheet.rowHeightsPx[11] = 26;
-  sheet.rowHeightsPx[12] = 22;
-  sheet.rowHeightsPx[13] = 25;
-  sheet.rowHeightsPx[14] = 22;
-  sheet.rowHeightsPx[15] = 32;
-  sheet.rowHeightsPx[16] = 24;
-  for (let column = 0; column < 21; column += 1) sheet.columnWidthsPx[column] = 60;
-  sheet.columnWidthsPx[0] = 30;
+function createSheet(
+  sheetId = 'sheet-1',
+  name = 'Sheet1',
+  rowCount = MAX_ROWS,
+  columnCount = MAX_COLUMNS,
+): MutableTemplateSheet {
+  return { sheetId, name, rowCount, columnCount, metadata: {}, cells: new Map() };
+}
 
-  sheet.cells.set(1, 1, {
+function cellKey(row: number, column: number): string {
+  return `${row}:${column}`;
+}
+
+function setCell(sheet: MutableTemplateSheet, row: number, column: number, cell: KernelCell): void {
+  if (!Number.isSafeInteger(row) || row < 0 || row >= sheet.rowCount
+    || !Number.isSafeInteger(column) || column < 0 || column >= sheet.columnCount) {
+    throw new Error(`Template cell is outside ${sheet.sheetId}: ${row}:${column}`);
+  }
+  sheet.cells.set(cellKey(row, column), { row, column, cell: structuredClone(cell) });
+}
+
+function writeRows(
+  sheet: MutableTemplateSheet,
+  rows: readonly (readonly (string | number | boolean | null)[])[],
+  startRow = 0,
+): void {
+  rows.forEach((values, rowOffset) => values.forEach((value, column) => {
+    setCell(sheet, startRow + rowOffset, column, { value });
+  }));
+}
+
+function styleRow(sheet: MutableTemplateSheet, row: number, width: number, style: CellStyle): void {
+  for (let column = 0; column < width; column += 1) {
+    const entry = sheet.cells.get(cellKey(row, column));
+    if (entry) entry.cell = { ...entry.cell, style: structuredClone(style) };
+  }
+}
+
+function setNumberFormat(sheet: MutableTemplateSheet, row: number, column: number, numberFormat: string): void {
+  const entry = sheet.cells.get(cellKey(row, column));
+  if (entry) entry.cell = { ...entry.cell, numberFormat };
+}
+
+function merge(sheet: MutableTemplateSheet, startRow: number, endRow: number, startColumn: number, endColumn: number): void {
+  const merges = (sheet.metadata.merges ??= []) as Array<Record<string, unknown>>;
+  merges.push({
+    range: { sheetId: sheet.sheetId, startRow, endRow, startColumn, endColumn },
+    anchor: { row: startRow, column: startColumn },
+  });
+}
+
+function setDimension(sheet: MutableTemplateSheet, axis: 'row' | 'column', index: number, pixels: number): void {
+  const key = axis === 'row' ? 'rowHeightsPx' : 'columnWidthsPx';
+  const values = (sheet.metadata[key] ??= {}) as Record<number, number>;
+  values[index] = pixels;
+}
+
+function finalize(unitId: string, name: string, sheets: readonly MutableTemplateSheet[]): WorkbookTemplateCreatePlan {
+  const normalizedUnitId = unitId.trim();
+  const normalizedName = name.trim();
+  if (!normalizedUnitId) throw new Error('Workbook unitId is required');
+  if (!normalizedName) throw new Error('Workbook name is required');
+  if (sheets.length === 0) throw new Error('Workbook template requires at least one worksheet');
+  const initialMutations: WorkbookTemplateCreateMutation[] = [];
+  for (const sheet of sheets) {
+    for (const entry of sheet.cells.values()) {
+      initialMutations.push({
+        id: 'cell.set',
+        sheetId: sheet.sheetId,
+        params: {
+          sheetId: sheet.sheetId,
+          row: entry.row,
+          column: entry.column,
+          value: structuredClone(entry.cell),
+        },
+      });
+    }
+  }
+  return {
+    unitId: normalizedUnitId,
+    name: normalizedName,
+    sheets: sheets.map((sheet) => ({
+      sheetId: sheet.sheetId,
+      name: sheet.name,
+      rowCount: sheet.rowCount,
+      columnCount: sheet.columnCount,
+      metadata: structuredClone(sheet.metadata),
+    })),
+    initialMutations,
+  };
+}
+
+function blank(unitId: string, name = '空白工作簿'): WorkbookTemplateCreatePlan {
+  return finalize(unitId, name, [createSheet()]);
+}
+
+function template(unitId: string, name = '会议记录模板'): WorkbookTemplateCreatePlan {
+  const sheet = createSheet();
+  writeRows(sheet, [
+    ['会议主题', '负责人', '会议日期', '状态', '备注'],
+    ['产品评审', '项目组', '2026-08-24', '未开始', ''],
+    ['研发同步', '研发部', '2026-08-25', '进行中', '准备风险清单'],
+    ['周例会', '全体成员', '2026-08-26', '已完成', ''],
+  ]);
+  styleRow(sheet, 0, 5, HEADER_STYLE);
+  return finalize(unitId, name, [sheet]);
+}
+
+function pivot(unitId: string, name = '销售数据透视表模板'): WorkbookTemplateCreatePlan {
+  const sheet = createSheet();
+  writeRows(sheet, [
+    ['日期', '区域', '产品', '销售员', '数量', '金额'],
+    ['2026-08-01', '华东', '标准版', '张敏', 12, 12000],
+    ['2026-08-02', '华南', '专业版', '李强', 8, 16000],
+    ['2026-08-03', '华东', '专业版', '王芳', 10, 20000],
+    ['2026-08-04', '华北', '标准版', '赵磊', 15, 15000],
+  ]);
+  styleRow(sheet, 0, 6, HEADER_STYLE);
+  [110, 90, 110, 100, 80, 100].forEach((pixels, column) => setDimension(sheet, 'column', column, pixels));
+  return finalize(unitId, name, [sheet]);
+}
+
+function projectPlan(unitId: string, name = '项目计划模板'): WorkbookTemplateCreatePlan {
+  const sheet = createSheet();
+  writeRows(sheet, [
+    ['任务名称', '负责人', '开始日期', '结束日期', '进度', '状态'],
+    ['需求分析', '产品经理', '2026-08-24', '2026-08-27', 0.8, '进行中'],
+    ['交互设计', '设计师', '2026-08-28', '2026-09-02', 0.2, '未开始'],
+    ['开发实现', '研发团队', '2026-09-03', '2026-09-14', 0, '未开始'],
+    ['验收发布', '项目经理', '2026-09-15', '2026-09-18', 0, '未开始'],
+  ]);
+  styleRow(sheet, 0, 6, HEADER_STYLE);
+  for (let row = 1; row <= 4; row += 1) setNumberFormat(sheet, row, 4, '0%');
+  return finalize(unitId, name, [sheet]);
+}
+
+function budget(unitId: string, name = '预算模板'): WorkbookTemplateCreatePlan {
+  const sheet = createSheet();
+  writeRows(sheet, [
+    ['预算科目', '预算金额', '实际金额', '差异', '负责人'],
+    ['人员成本', 120000, 115000, 5000, '人力资源'],
+    ['软件服务', 30000, 28000, 2000, '信息技术'],
+    ['市场推广', 50000, 56000, -6000, '市场部'],
+    ['合计', 200000, 199000, 1000, '财务部'],
+  ]);
+  styleRow(sheet, 0, 5, HEADER_STYLE);
+  styleRow(sheet, 4, 5, SUBTOTAL_STYLE);
+  for (let row = 1; row <= 4; row += 1) {
+    for (const column of [1, 2, 3]) setNumberFormat(sheet, row, column, '#,##0.00');
+  }
+  return finalize(unitId, name, [sheet]);
+}
+
+function designerDemo(unitId: string, name = 'SpreadJS Designer Demo'): WorkbookTemplateCreatePlan {
+  const sheet = createSheet('sheet-1', '目录索引');
+  [18, 70, 30, 32, 26, 26, 26, 20, 32, 26, 26, 26, 22, 25, 22, 32, 24]
+    .forEach((pixels, row) => setDimension(sheet, 'row', row, pixels));
+  for (let column = 0; column < 21; column += 1) setDimension(sheet, 'column', column, 60);
+  setDimension(sheet, 'column', 0, 30);
+
+  setCell(sheet, 1, 1, {
     value: '此表格编辑器基于葡萄城 SpreadJS 实现，实现在浏览器中编辑 Excel 表格的全新体验',
     style: { bold: true, fontSizePx: 32, textColor: '#3d3c41', verticalAlignment: 'middle', padding: 0 },
   });
-  sheet.merges.push({
-    range: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 20 },
-    anchor: { row: 1, column: 1 },
-  });
-  sheet.cells.set(2, 1, { value: '快速体验 SpreadJS 的强大功能，如：', style: { bold: true, fontSizePx: 16, textColor: '#3a4b42', padding: 0 } });
-  sheet.merges.push({
-    range: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 1, endColumn: 20 },
-    anchor: { row: 2, column: 1 },
-  });
+  merge(sheet, 1, 1, 1, 20);
+  setCell(sheet, 2, 1, { value: '快速体验 SpreadJS 的强大功能，如：', style: { bold: true, fontSizePx: 16, textColor: '#3a4b42', padding: 0 } });
+  merge(sheet, 2, 2, 1, 20);
 
   const cards = [
     ['强大的公式计算引擎', '兼容并支持超过500种以上的标准Excel公式函数，包含求和、财务、逻辑、文本、日期时间、查找引用以及数据函数等，同时也支持自定义及异步函数'],
@@ -209,41 +280,26 @@ function designerDemo(unitId: string, name = 'SpreadJS Designer Demo'): Workbook
     const [row, column] = cardOrigins[index]!;
     for (let currentRow = row; currentRow <= row + 3; currentRow += 1) {
       for (let currentColumn = column; currentColumn <= column + 4; currentColumn += 1) {
-        sheet.cells.set(currentRow, currentColumn, { value: null, style: { ...DEMO_CARD_STYLE } });
+        setCell(sheet, currentRow, currentColumn, { value: null, style: { ...DEMO_CARD_STYLE } });
       }
     }
-    sheet.cells.set(row, column, { value: heading, style: { ...DEMO_HEADING_STYLE } });
-    sheet.merges.push({
-      range: { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column + 2 },
-      anchor: { row, column },
-    });
-    sheet.cells.set(row, column + 3, { value: '查看示例 >>', style: { ...DEMO_LINK_STYLE } });
-    sheet.merges.push({
-      range: { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column + 3, endColumn: column + 4 },
-      anchor: { row, column: column + 3 },
-    });
-    sheet.cells.set(row + 1, column, { value: description, style: { ...DEMO_CARD_STYLE, fontSizePx: 13 } });
-    sheet.merges.push({
-      range: { sheetId: sheet.id, startRow: row + 1, endRow: row + 3, startColumn: column, endColumn: column + 4 },
-      anchor: { row: row + 1, column },
-    });
+    setCell(sheet, row, column, { value: heading, style: { ...DEMO_HEADING_STYLE } });
+    merge(sheet, row, row, column, column + 2);
+    setCell(sheet, row, column + 3, { value: '查看示例 >>', style: { ...DEMO_LINK_STYLE } });
+    merge(sheet, row, row, column + 3, column + 4);
+    setCell(sheet, row + 1, column, { value: description, style: { ...DEMO_CARD_STYLE, fontSizePx: 13 } });
+    merge(sheet, row + 1, row + 3, column, column + 4);
   });
-  sheet.cells.set(13, 1, { value: 'SpreadJS 三大应用场景及典型案例介绍', style: { bold: true, fontSizePx: 18, textColor: '#3d3c41' } });
-  sheet.merges.push({
-    range: { sheetId: sheet.id, startRow: 13, endRow: 13, startColumn: 1, endColumn: 8 },
-    anchor: { row: 13, column: 1 },
-  });
+  setCell(sheet, 13, 1, { value: 'SpreadJS 三大应用场景及典型案例介绍', style: { bold: true, fontSizePx: 18, textColor: '#3d3c41' } });
+  merge(sheet, 13, 13, 1, 8);
 
   const notes = [
     [13, 12, '本版本为西安葡萄城 SpreadJS 表格控件产品试用版，未取得再分发授权。'],
     [14, 12, '如需获得正式授权，请致电 400-657-6008 或发送邮件到 info.xa@grapecity.com'],
   ] as const;
   for (const [row, column, value] of notes) {
-    sheet.cells.set(row, column, { value, style: { ...DEMO_NOTE_STYLE } });
-    sheet.merges.push({
-      range: { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: 20 },
-      anchor: { row, column },
-    });
+    setCell(sheet, row, column, { value, style: { ...DEMO_NOTE_STYLE } });
+    merge(sheet, row, row, column, 20);
   }
 
   const scenes = [
@@ -254,16 +310,13 @@ function designerDemo(unitId: string, name = 'SpreadJS Designer Demo'): Workbook
     [16, 11, 20, '插件：数据图表、数据透视表、甘特图、报表、AI - 有效提升办公效率', DEMO_SCENE_DETAIL_STYLE],
   ] as const;
   for (const [row, startColumn, endColumn, value, style] of scenes) {
-    sheet.cells.set(row, startColumn, { value, style: { ...style } });
-    sheet.merges.push({
-      range: { sheetId: sheet.id, startRow: row, endRow: row, startColumn, endColumn },
-      anchor: { row, column: startColumn },
-    });
+    setCell(sheet, row, startColumn, { value, style: { ...style } });
+    merge(sheet, row, row, startColumn, endColumn);
   }
 
   const tabs = ['500+ 公式函数支持', '丰富的单元格表现', '强大的数据透视表', '数据验证与条件格式', '与 Excel 兼容的图表', '文件导入及导出'];
-  tabs.forEach((tab, index) => workbook.addSheet(`designer-demo-${index + 1}`, tab, 1000, 26));
-  return workbook.snapshot();
+  const sheets = [sheet, ...tabs.map((tab, index) => createSheet(`designer-demo-${index + 1}`, tab, 1000, 26))];
+  return finalize(unitId, name, sheets);
 }
 
 const DEFINITIONS: readonly WorkbookTemplateDefinition[] = [
@@ -285,34 +338,12 @@ export function getWorkbookTemplate(id: WorkbookTemplateId): WorkbookTemplateDef
   return definition;
 }
 
-export function createTemplateSnapshot(
+export function createTemplatePlan(
   templateId: WorkbookTemplateId,
   unitId: string,
   name?: string,
-): WorkbookSnapshot {
+): WorkbookTemplateCreatePlan {
   return getWorkbookTemplate(templateId).create(unitId, name);
-}
-
-/** Template creation crosses the cloud boundary as metadata plus typed cell intents. */
-export interface WorkbookTemplateCreatePlan {
-  readonly unitId: string;
-  readonly name: string;
-  readonly sheets: readonly { sheetId: string; name: string; rowCount: number; columnCount: number; metadata: Record<string, unknown> }[];
-  readonly initialMutations: readonly { id: 'cell.set'; sheetId: string; params: { row: number; column: number; cell: unknown } }[];
-}
-
-export function createTemplatePlan(templateId: WorkbookTemplateId, unitId: string, name?: string): WorkbookTemplateCreatePlan {
-  const snapshot = createTemplateSnapshot(templateId, unitId, name);
-  const initialMutations: WorkbookTemplateCreatePlan['initialMutations'][number][] = [];
-  snapshot.sheets.forEach((sheet) => sheet.cells.forEach((cell, row, column) => {
-    initialMutations.push({ id: 'cell.set', sheetId: sheet.id, params: { row, column, cell } });
-  }));
-  return {
-    unitId,
-    name: snapshot.name,
-    sheets: snapshot.sheets.map(({ cells: _cells, ...metadata }) => ({ sheetId: metadata.id, name: metadata.name, rowCount: metadata.rowCount, columnCount: metadata.columnCount, metadata })),
-    initialMutations,
-  };
 }
 
 export function createWorkbookUnitId(prefix = 'wb'): string {

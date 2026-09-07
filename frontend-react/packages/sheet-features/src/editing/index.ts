@@ -1051,7 +1051,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (ranges.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       let lastResult = { operationId: context.operationId, mutationCount: 0, affectedRanges: [] as RangeRef[] };
       for (const range of ranges) {
-        lastResult = runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: params.style });
+        lastResult = context.executeCommand('sheet.style.set', { sheetId: params.sheetId, range, style: params.style });
       }
       return lastResult;
     },
@@ -1064,14 +1064,14 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (params.numberFormat !== undefined) style.numberFormat = params.numberFormat;
       const results = [];
       if (Object.keys(style).length > 0) {
-        results.push(runtime.execute('sheet.style.setMulti', {
+        results.push(context.executeCommand('sheet.style.setMulti', {
           sheetId: params.sheetId,
           ranges: params.ranges,
           style,
         }));
       }
       if (params.border) {
-        results.push(runtime.execute('sheet.borders.set', {
+        results.push(context.executeCommand('sheet.borders.set', {
           sheetId: params.sheetId,
           ranges: params.ranges,
           placement: params.border.placement,
@@ -1127,7 +1127,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (params.preset === 'firstColumn' || params.preset === 'both') {
         if (pane.kind === 'frozen') { pane.xSplit = 1; pane.startColumn = 1; }
       }
-      return runtime.execute('sheet.freeze.set', { sheetId: params.sheetId, pane });
+      return context.executeCommand('sheet.freeze.set', { sheetId: params.sheetId, pane });
     },
   });
 

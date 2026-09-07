@@ -900,7 +900,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (insert) {
         const axis = params.targetOrigin.row !== sourceRange.startRow ? 'row' as const : 'column' as const;
         const count = axis === 'row' ? targetRange.endRow - targetRange.startRow + 1 : targetRange.endColumn - targetRange.startColumn + 1;
-        runtime.execute('sheet.cells.insert', {
+        context.executeCommand('sheet.cells.insert', {
           sheetId: params.sheetId,
           range: axis === 'row'
             ? { sheetId: params.sheetId, startRow: targetRange.startRow, endRow: targetRange.endRow, startColumn: sourceRange.startColumn, endColumn: sourceRange.endColumn }
@@ -917,7 +917,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         }
       }
       clipboard.transfer = copy ? 'copy' : 'move';
-      return runtime.execute('sheet.range.paste', {
+      return context.executeCommand('sheet.range.paste', {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
@@ -938,12 +938,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     const hasNonAnchorContent = rangeAreaOfCells(sheet, range).some(({ row, column, cell }) =>
       (row !== range.startRow || column !== range.startColumn) && Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula)));
     if (hasNonAnchorContent && params.confirmDataLoss === false) throw new Error('Merge would discard non-anchor cell contents');
-    const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
+    const result = context.executeCommand('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
-      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
-      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
+      context.executeCommand('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
+      if (anchor) context.executeCommand('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
     }
-    if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
+    if (center) context.executeCommand('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
     return result;
   };
 
@@ -962,7 +962,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const range = requireRange(params, params.sheetId);
       let result = homeResult(context, []);
       for (let row = range.startRow; row <= range.endRow; row += 1) {
-        result = runtime.execute('sheet.merge.cells', {
+        result = context.executeCommand('sheet.merge.cells', {
           sheetId: params.sheetId,
           range: { ...range, startRow: row, endRow: row },
           confirmDataLoss: params.confirmDataLoss,
@@ -984,7 +984,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       let mutationCount = 0;
       const affectedRanges: RangeRef[] = [];
       for (const span of spans) {
-        const result = runtime.execute('sheet.merge.remove', { sheetId: params.sheetId, range: span.range });
+        const result = context.executeCommand('sheet.merge.remove', { sheetId: params.sheetId, range: span.range });
         mutationCount += result.mutationCount;
         affectedRanges.push(...result.affectedRanges);
       }
@@ -1041,7 +1041,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         }
         values.push(line);
       }
-      const result = runtime.execute('sheet.range.set', {
+      const result = context.executeCommand('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: minRow,
         startColumn: minColumn,
@@ -1157,7 +1157,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
         if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
         if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
-        runtime.execute('sheet.cell.set', {
+        context.executeCommand('sheet.cell.set', {
           sheetId: patch.sheetId,
           row: patch.row,
           column: patch.column,
@@ -1194,7 +1194,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (owner?.kind === 'table') {
         const active = resolveActiveAutoFilter(sheet);
         if (active && (!requestedRange || rangeEquals(active.range, requestedRange))) {
-          return runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, dataRegionContext: regionContext });
+          return context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, dataRegionContext: regionContext });
         }
         throw new Error('Use the Table AutoFilter owner for this range');
       }
@@ -1202,14 +1202,14 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (!current) {
         const next = buildFilterFromParams({ ...params, range: effectiveRange }, sheet);
-        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
+        return context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       }
       const nextRange = requestedRange ?? current.range;
-      if (rangeEquals(current.range, nextRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId, dataRegionContext: regionContext });
+      if (rangeEquals(current.range, nextRange)) return context.executeCommand('sheet.autoFilter.remove', { sheetId: params.sheetId, dataRegionContext: regionContext });
       const next = params.autoFilter ? buildFilterFromParams({ ...params, range: nextRange }, sheet) : { ...current, range: nextRange };
       validateFilterOwnership(sheet, next, { kind: 'worksheet' });
       const nextContext = { ...regionContext, range: structuredClone(nextRange), currentRegion: structuredClone(nextRange) };
-      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: nextContext });
+      return context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: nextContext });
     },
   });
 
@@ -1241,8 +1241,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
       const cleared = { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) };
       return owner?.kind === 'table'
-        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared, dataRegionContext: regionContext })
-        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared, dataRegionContext: regionContext });
+        ? context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared, dataRegionContext: regionContext })
+        : context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared, dataRegionContext: regionContext });
     },
   });
 
@@ -1282,7 +1282,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sortRange = table?.hasTotalRow ? { ...filter.range, endRow: filter.range.endRow - 1 } : filter.range;
       assertNoDataRegionIntersection(sheet, sortRange, 'Sort');
       const sortContext = { ...regionContext, range: structuredClone(sortRange), currentRegion: structuredClone(sortRange) };
-      const sortResult = runtime.execute('data.sort.rows', {
+      const sortResult = context.executeCommand('data.sort.rows', {
         sheetId: params.sheetId,
         range: sortRange,
         criteria: [{ column: params.column, ascending: params.ascending }],
@@ -1298,8 +1298,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
       const next = { ...filter, sortState };
       const filterResult = owner.kind === 'table'
-        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next, dataRegionContext: regionContext })
-        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
+        ? context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next, dataRegionContext: regionContext })
+        : context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       return {
         ...filterResult,
         mutationCount: sortResult.mutationCount + filterResult.mutationCount,
@@ -1315,7 +1315,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const state = getAppliedSortState(sheet);
       if (!state) return homeResult(context, []);
-      return runtime.execute('data.sort.rows', {
+      return context.executeCommand('data.sort.rows', {
         sheetId: params.sheetId,
         range: state.range,
         criteria: state.criteria,
@@ -1330,7 +1330,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       requireSheetId(params);
       const range = requireRange(params, params.sheetId);
       if (!Number.isSafeInteger(params.sortColumn) || params.sortColumn < range.startColumn || params.sortColumn > range.endColumn) throw new Error('Sort column is outside range');
-      const result = runtime.execute('data.sort.rows', {
+      const result = context.executeCommand('data.sort.rows', {
         sheetId: params.sheetId,
         range,
         criteria: [{ column: params.sortColumn, ascending: params.ascending ?? true }],

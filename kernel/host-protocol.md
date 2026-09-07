@@ -13,7 +13,7 @@ Native control messages are framed by a 4-byte big-endian length, maximum 16 MiB
 * `range.get`: `{unitId,revision,range:RangeRef}` -> `{revision,cells:[{address,cell}]}`; bounded range response, use pages for bulk data.
 * `page.get`: `{unitId,revision,sheetId,pageRow,pageColumn}` -> PagePayload.
 * `page.load`: `{unitId,revision,page:PagePayload}` loads a proven manifest page into a replica. It cannot introduce a new page identity or mutate the committed manifest.
-* `command`: `{unitId,baseRevision,operationId,commandId,params}` -> ChangeSet. Identity/ACL is supplied and checked by Java; client actor claims never grant authority.
+* `command`: `{unitId,baseRevision,operationId,commandId,params}` -> ChangeSet. Identity/ACL is supplied and checked by Java; client actor claims never grant authority. `history.undo` accepts only the server-loaded immutable HistoryRecord. It publishes at baseRevision+1 when every target page and metadata field still equals the record's after state; overlap returns `UNDO_CONFLICT` with no partial state.
 * `close`: `{unitId}` -> `{closed:true}`.
 * `restore`: `{unitId,baseRevision,operationId,accessRole:"owner",targetManifest}` -> ChangeSet at baseRevision+1. Target must belong to the same workbook and cannot be from the future. Historical immutable page references may appear without inline payloads; Java verifies their durable content before committing. Clients hydrate changed references through the revision-pinned page endpoint.
 * `formula.evaluate`: `{unitId,revision,address,formula}` -> `{revision,value}`.
@@ -27,6 +27,6 @@ Native control messages are framed by a 4-byte big-endian length, maximum 16 MiB
 
 WorkbookManifest = `{schema:"WorkbookManifest",version:11,unitId,name,revision,sheets:[{sheetId,name,rowCount,columnCount,metadata}],pages:[PageDescriptor],metadata}`. PageDescriptor = `{sheetId,pageRow,pageColumn,revision,checksum,byteLength}`. PagePayload extends PageDescriptor with `payloadBase64` (bounded kernel page encoding). Cell authored metadata remains flattened, matching Rust core Cell. No dense `cells` collection is present on the manifest.
 
-ChangeSet = `{operationId,baseRevision,revision,manifest,pages:[PagePayload],removedPages:[PageKey],affectedRanges:[RangeRef]}`. Java commits this with operation/checkpoint/outbox, then broadcasts. Native staged state must not be treated as committed if the database transaction fails; reopen the last committed manifest before the next operation.
+ChangeSet = `{operationId,baseRevision,revision,manifest,pages:[PagePayload],removedPages:[PageKey],affectedRanges:[RangeRef],history:HistoryRecord}`. HistoryRecord stores exact page descriptor transitions and paired `metadataBefore` / `metadataAfter` states; both metadata fields are null when metadata is unchanged. Java validates this against adjacent immutable manifests before committing operation/checkpoint/outbox. Native staged state must not be treated as committed if the database transaction fails; reopen the last committed manifest before the next operation.
 
 The migration executable is the only reader of v10 full snapshots. Runtime host accepts manifest v11 only. Columnar page records are data transfer, not a parallel canonical model.

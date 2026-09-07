@@ -250,14 +250,14 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       // implementation merely expanded the table range and overwrote the
       // next row, which was silent data loss.
       if (params.enabled) {
-        const result = runtime.execute('sheet.rows.insert', {
+        const result = context.executeCommand('sheet.rows.insert', {
           sheetId: params.sheetId,
           at: plan.totalRow,
           count: 1,
         });
         mutationCount += result.mutationCount;
       } else {
-        const result = runtime.execute('sheet.rows.delete', {
+        const result = context.executeCommand('sheet.rows.delete', {
           sheetId: params.sheetId,
           at: plan.totalRow,
           count: 1,

@@ -1158,13 +1158,6 @@ export class WorkbookSession {
         this.persistenceChecksum = persisted.checksum;
         this.persistenceMetaDirty = false;
       }
-      const artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
-      if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
-        await this.nativeDocumentTransaction.attach(artifact);
-        if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
-        this.invalidateAllSheetProjections();
-        this.emit();
-      }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
       if (!this.disposed && generation === this.lifecycleGeneration && !this.pivotOpenRefreshStarted) {
         this.pivotOpenRefreshStarted = true;

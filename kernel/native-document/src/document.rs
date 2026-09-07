@@ -155,15 +155,15 @@ impl NativeDocument {
             let options =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
             let mut types=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
-            let mut workbook=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><workbookPr date1904=\"0\"/><sheets>");
+            let mut workbook=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:rs=\"urn:react-sheets:workbook:1\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"rs\"><workbookPr date1904=\"0\"/><sheets>");
             let mut rels=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"styles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>");
             for (index, sheet) in manifest.sheets.iter().enumerate() {
                 let id = index + 1;
                 let part = format!("xl/worksheets/sheet{id}.xml");
                 types.push_str(&format!("<Override PartName=\"/{part}\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"));
                 workbook.push_str(&format!(
-                    "<sheet sheetId=\"{id}\" name=\"{}\" r:id=\"sheet{id}\"/>",
-                    xmlnode::escape(&sheet.name)
+                    "<sheet sheetId=\"{id}\" name=\"{}\" r:id=\"sheet{id}\" rs:canonicalId=\"{}\"/>",
+                    xmlnode::escape(&sheet.name), xmlnode::escape(&sheet.sheet_id)
                 ));
                 rels.push_str(&format!("<Relationship Id=\"sheet{id}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{id}.xml\"/>"));
                 zip.start_file(part, options).map_err(io_error)?;
@@ -184,11 +184,7 @@ impl NativeDocument {
             let _ = std::fs::remove_file(path);
             return Err(e);
         }
-        let mut document = Self::open(path, manifest.revision, limits)?;
-        for (source, sheet) in document.sheets.iter_mut().zip(&manifest.sheets) {
-            source.id = sheet.sheet_id.clone();
-        }
-        Ok(document)
+        Self::open(path, manifest.revision, limits)
     }
     pub fn open(
         path: impl AsRef<Path>,
@@ -238,7 +234,18 @@ impl NativeDocument {
             .child("sheets")
             .ok_or_else(|| error("OOXML_SHEETS_MISSING", "Workbook has no sheets collection"))?;
         for sheet in parent.children_named("sheet") {
-            let id = required(sheet, "sheetId")?.to_owned();
+            let native_id = required(sheet, "sheetId")?;
+            let mut canonical_id = None;
+            for (attribute, value) in &sheet.attributes {
+                let Some((prefix, "canonicalId")) = attribute.split_once(':') else { continue; };
+                let namespace = format!("xmlns:{prefix}");
+                let uri = sheet.attr(&namespace).or_else(|| root.child("sheets").and_then(|p| p.attr(&namespace))).or_else(|| root.attr(&namespace));
+                if uri != Some("urn:react-sheets:workbook:1") { continue; }
+                if value.is_empty() || canonical_id.replace(value.as_str()).is_some() {
+                    return Err(error("OOXML_SHEET_IDENTITY_INVALID", "Canonical worksheet identity must be unique and nonempty"));
+                }
+            }
+            let id = canonical_id.unwrap_or(native_id).to_owned();
             let name = required(sheet, "name")?.to_owned();
             if !ids.insert(id.clone()) || !names.insert(name.to_lowercase()) {
                 return Err(error("OOXML_SHEET_DUPLICATE", name));

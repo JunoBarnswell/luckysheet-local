@@ -287,18 +287,18 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
       const template = context.workbook.cellStyleTemplates.get(params.templateId);
       if (!template) throw new Error(`Unknown cell style template: ${params.templateId}`);
       const ranges = normalizeRanges(params.sheetId, params.ranges);
-      const styleResult = runtime.execute('sheet.style.setMulti', { sheetId: params.sheetId, ranges, style: structuredClone(template.style) });
+      const styleResult = context.executeCommand('sheet.style.setMulti', { sheetId: params.sheetId, ranges, style: structuredClone(template.style) });
       let mutationCount = styleResult.mutationCount;
       let affectedRanges = [...styleResult.affectedRanges];
       if (template.editor) {
-        const editorResult = runtime.execute('sheet.cellEditor.set', { sheetId: params.sheetId, ranges, editor: structuredClone(template.editor) });
+        const editorResult = context.executeCommand('sheet.cellEditor.set', { sheetId: params.sheetId, ranges, editor: structuredClone(template.editor) });
         mutationCount += editorResult.mutationCount;
         affectedRanges = [...affectedRanges, ...editorResult.affectedRanges];
       }
       ranges.forEach((range, index) => {
         const rule = templateValidationRule(template, params.sheetId, ranges, index);
         if (!rule) return;
-        const validationResult = runtime.execute('sheet.dv.add', { sheetId: params.sheetId, rule });
+        const validationResult = context.executeCommand('sheet.dv.add', { sheetId: params.sheetId, rule });
         mutationCount += validationResult.mutationCount;
         affectedRanges = [...affectedRanges, ...validationResult.affectedRanges];
       });

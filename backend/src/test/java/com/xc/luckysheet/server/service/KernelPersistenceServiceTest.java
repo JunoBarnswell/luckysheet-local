@@ -58,6 +58,8 @@ class KernelPersistenceServiceTest {
         nextManifest.put("name", "renamed");
         ObjectNode metadataBefore = change.withObject("history").putObject("metadataBefore");
         metadataBefore.put("name", "book"); metadataBefore.set("sheets", manifest(0, initial).path("sheets")); metadataBefore.putObject("metadata");
+        ObjectNode metadataAfter = change.withObject("history").putObject("metadataAfter");
+        metadataAfter.put("name", "renamed"); metadataAfter.set("sheets", nextManifest.path("sheets")); metadataAfter.putObject("metadata");
         service.publish(change, "unit", 1);
         assertJsonEquals(initial, service.readPage("unit", 1, "sheet", 0, 0));
         assertJsonEquals(initial, service.readPage("unit", 0, "sheet", 0, 0));
@@ -151,7 +153,7 @@ class KernelPersistenceServiceTest {
         ObjectNode change = mapper.createObjectNode().put("operationId", operationId).put("baseRevision", 0).put("revision", 1);
         change.set("manifest", manifest); change.putArray("pages"); change.putArray("removedPages"); change.putArray("affectedRanges");
         ObjectNode history = change.putObject("history").put("operationId", operationId).put("baseRevision", 0).put("revision", 1);
-        history.putArray("pageDeltas"); history.putNull("metadataBefore"); return change;
+        history.putArray("pageDeltas"); history.putNull("metadataBefore"); history.putNull("metadataAfter"); return change;
     }
     private ObjectNode descriptor(ObjectNode payload) { ObjectNode result = payload.deepCopy(); result.remove("payloadBase64"); return result; }
     private ObjectNode page(int pageRow, long revision, double value) throws Exception {

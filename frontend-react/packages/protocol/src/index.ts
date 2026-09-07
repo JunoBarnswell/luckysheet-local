@@ -35,7 +35,16 @@ export interface KernelWorkbookCreateRequest {
   readonly spaceId?: string;
   readonly folderId?: string;
   readonly source?: string;
-  readonly initialMutations?: readonly { readonly id: 'cell.set'; readonly sheetId: string; readonly params: { readonly row: number; readonly column: number; readonly cell: unknown } }[];
+  readonly initialMutations?: readonly {
+    readonly id: 'cell.set';
+    readonly sheetId: string;
+    readonly params: {
+      readonly sheetId: string;
+      readonly row: number;
+      readonly column: number;
+      readonly value: KernelCell;
+    };
+  }[];
 }
 export interface WorkbookOpenResponse { readonly unitId: string; readonly revision: number; readonly manifest: WorkbookManifest; readonly checksum?: string; readonly pages?: readonly KernelPagePayload[]; }
 import {
@@ -1617,22 +1626,25 @@ export interface WorkbookSourceArtifactMetadata {
   fileName: string;
   mimeType?: string;
   unitId: string;
+  revision: number;
   updatedAt: string;
   format?: string;
   codecRevision?: number;
+  nativeMetadata?: Record<string, unknown>;
 }
 
 export interface WorkbookImportRequest extends WorkbookCreateMetadata {
-  artifact: Blob;
-  artifactFileName: string;
-  snapshot: WorkbookSnapshot;
-  format: string;
-  nativeMetadata: Record<string, unknown>;
+  content: Blob | ArrayBuffer;
+  fileName: string;
+  name?: string;
 }
 
 export interface WorkbookImportResponse {
+  unitId: string;
+  revision: number;
+  checksum: string;
   artifact: WorkbookSourceArtifactMetadata;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   summary: WorkbookSummary;
 }
 
@@ -1657,11 +1669,6 @@ export interface RemoteDataBlockMetadata {
 export interface RemoteAssetMetadata extends AssetRef {
   unitId: string;
   updatedAt: string;
-}
-
-async function sha256(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 export class WorkbookApiClient {
@@ -1910,35 +1917,21 @@ export class WorkbookApiClient {
   }
 
   async createWorkbookImport(input: WorkbookImportRequest): Promise<WorkbookImportResponse> {
-    validateWorkbookSnapshot(input.snapshot);
     const form = new FormData();
-    form.append('file', input.artifact, input.artifactFileName);
-    form.append('snapshot', JSON.stringify(input.snapshot));
-    form.append('format', input.format);
-    form.append('nativeMetadata', JSON.stringify(input.nativeMetadata));
-    if (input.snapshot.name) form.append('name', input.snapshot.name);
+    const content = input.content instanceof Blob ? input.content : new Blob([input.content]);
+    form.append('file', content, input.fileName);
+    if (input.name) form.append('name', input.name);
     if (input.spaceId) form.append('spaceId', input.spaceId);
     if (input.folderId) form.append('folderId', input.folderId);
     const response = await this.json<WorkbookImportResponse>('/api/workbook-imports', { method: 'POST', body: form });
-    validateWorkbookSnapshot(response.snapshot);
+    assertManifestResponse(response.manifest, response.unitId);
     validateWorkbookSummary(response.summary);
-    if (response.summary.unitId !== input.snapshot.unitId || response.snapshot.unitId !== input.snapshot.unitId) {
+    if (response.summary.unitId !== response.unitId || response.manifest.unitId !== response.unitId
+      || response.revision !== response.manifest.revision || response.summary.revision !== response.revision
+      || response.artifact.unitId !== response.unitId || response.artifact.revision !== response.revision) {
       throw new ApiRequestError('Workbook import returned a mismatched identity', 200, 'INTERNAL_ERROR');
     }
     return response;
-  }
-
-  async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
-    const checksum = await sha256(artifact);
-    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/octet-stream',
-        'x-content-sha256': checksum,
-        'x-file-name': encodeURIComponent(fileName),
-      },
-      body: artifact,
-    });
   }
 
   async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
@@ -1949,8 +1942,9 @@ export class WorkbookApiClient {
     const checksum = response.headers.get('x-content-sha256');
     const byteLength = Number(response.headers.get('content-length') ?? 0);
     const codecRevision = Number(response.headers.get('x-native-codec-revision') ?? 1);
+    const revision = Number(response.headers.get('x-workbook-revision') ?? -1);
     const format = response.headers.get('x-native-format') ?? undefined;
-    if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
+    if (!fileName || !checksum || !Number.isSafeInteger(revision) || revision < 0) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
     return {
       artifact,
@@ -1960,6 +1954,7 @@ export class WorkbookApiClient {
         fileName,
         mimeType: response.headers.get('content-type') ?? undefined,
         unitId,
+        revision,
         updatedAt: response.headers.get('last-modified') ?? new Date().toISOString(),
         format,
         codecRevision: Number.isSafeInteger(codecRevision) && codecRevision > 0 ? codecRevision : 1,
@@ -1982,9 +1977,9 @@ export class WorkbookApiClient {
     return result;
   }
 
-  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName: string; format: string }): Promise<{ revision: number; fileName: string; checksum: string }> {
-    const result = await this.json<{ revision: number; fileName: string; checksum: string }>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
-    if (result.revision !== request.revision || result.fileName !== request.fileName || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
+  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName: string; format: string }): Promise<WorkbookSourceArtifactMetadata> {
+    const result = await this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+    if (result.unitId !== unitId || result.revision !== request.revision || result.fileName !== request.fileName || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
     return result;
   }
 

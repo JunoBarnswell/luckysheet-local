@@ -15,7 +15,10 @@ export interface WorkbookManifest { readonly schema: 'WorkbookManifest'; readonl
 export interface KernelPagePayload extends KernelPageDescriptor { readonly payloadBase64: string; }
 export interface KernelPageKey { readonly sheetId: string; readonly pageRow: number; readonly pageColumn: number; }
 export interface KernelRevisionPin { readonly unitId: string; readonly revision: number; }
-export interface KernelChangeSet { readonly operationId: string; readonly baseRevision: number; readonly revision: number; readonly manifest: WorkbookManifest; readonly pages: KernelPagePayload[]; readonly removedPages: KernelPageKey[]; readonly affectedRanges: KernelRangeRef[]; }
+export interface KernelManifestMetadata { readonly name: string; readonly sheets: KernelSheetManifest[]; readonly metadata: Record<string, unknown>; }
+export interface KernelPageDelta { readonly key: KernelPageKey; readonly before: KernelPageDescriptor | null; readonly after: KernelPageDescriptor | null; }
+export interface KernelHistoryRecord { readonly operationId: string; readonly baseRevision: number; readonly revision: number; readonly pageDeltas: KernelPageDelta[]; readonly metadataBefore: KernelManifestMetadata | null; readonly metadataAfter: KernelManifestMetadata | null; }
+export interface KernelChangeSet { readonly operationId: string; readonly baseRevision: number; readonly revision: number; readonly manifest: WorkbookManifest; readonly pages: KernelPagePayload[]; readonly removedPages: KernelPageKey[]; readonly affectedRanges: KernelRangeRef[]; readonly history: KernelHistoryRecord; }
 export interface KernelAnalyticsRequest { readonly kind: 'filter' | 'query' | 'pivot'; readonly params: unknown; }
 export interface KernelAnalyticsResponse { readonly kind: KernelAnalyticsRequest['kind']; readonly revision: number; readonly [resultField: string]: unknown; }
 

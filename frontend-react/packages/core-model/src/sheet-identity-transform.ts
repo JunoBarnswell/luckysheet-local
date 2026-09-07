@@ -1,4 +1,4 @@
-import type { SheetId } from './domain';
+type SheetId = string;
 
 export type SheetIdentityTransformKind = 'rename' | 'duplicate' | 'delete';
 

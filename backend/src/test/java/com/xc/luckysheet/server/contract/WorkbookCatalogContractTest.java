@@ -44,6 +44,6 @@ class WorkbookCatalogContractTest {
         assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class, () -> mapper.readValue(
                 "{\"unitId\":\"legacy-book\",\"name\":\"Legacy\",\"snapshot\":{}}", CreateWorkbookRequest.class));
         assertThrows(IllegalArgumentException.class, () -> new CreateWorkbookRequest(
-                "import-book", "Import", null, null, null, WorkbookSource.DOCUMENT_IMPORT));
+                "import-book", "Import", null, null, null, WorkbookSource.DOCUMENT_IMPORT, null));
     }
 }

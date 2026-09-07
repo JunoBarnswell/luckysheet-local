@@ -115,6 +115,12 @@ export interface CommandContext {
   readonly operationId: string;
   /** Optional canonical worksheet-value authority supplied by the host runtime. */
   readonly resolveCellValue?: (sheet: WorksheetModel, row: number, column: number) => unknown;
+  /**
+   * Compose another command into the current plan. The nested command shares
+   * this operation identity and may only append mutations to this transaction;
+   * it never enters the serialized commit queue on its own.
+   */
+  executeCommand<P>(commandId: string, params: P): CommandResult;
   applyMutation<P>(mutation: Mutation<P>): void;
   recordOperation<P>(operation: Operation<P>, params: P): OperationResult;
 }
@@ -758,6 +764,7 @@ export class CommandRuntime {
       const context: CommandContext = {
         workbook: this.workbook, operationId,
         resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
+        executeCommand: (commandId, parameters) => this.registry.getCommand(commandId).execute(parameters, context),
         applyMutation: mutation => {
           if (mutation.unitId !== this.workbook.unitId) throw new CommandCommitError('MUTATION_WORKBOOK_MISMATCH', mutation.unitId);
           this.registry.assertMutation(mutation);

@@ -16,9 +16,8 @@ import {
 import { useApplicationServices } from '../ApplicationServicesProvider';
 import { useAuthSession, useAuthSnapshot } from '../auth/AuthProvider';
 import {
-  createTemplateSnapshot,
+  createTemplatePlan,
   createWorkbookUnitId,
-  isWorkspaceStorageError,
   type WorkbookCatalogEntry,
   type WorkbookTemplateId,
 } from '@react-sheets/spreadsheet-app';
@@ -39,11 +38,9 @@ interface WorkbookHubContainerProps {
 function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
   const locationLabel = entry.locationPath.length > 0
     ? entry.locationPath.join(' › ')
-    : entry.storage === 'local'
-      ? '本地设备'
-      : entry.role === 'owner'
-        ? '服务器 / 云端'
-        : `共享给我${entry.ownerName ? ` · ${entry.ownerName}` : ''}`;
+    : entry.role === 'owner'
+      ? '服务器 / 云端'
+      : `共享给我${entry.ownerName ? ` · ${entry.ownerName}` : ''}`;
   return {
     unitId: entry.unitId,
     name: entry.name,
@@ -60,8 +57,6 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     folderPath: entry.locationPath,
     favorite: entry.favorite,
     revision: entry.revision,
-    localRevision: entry.localRecord?.localRevision,
-    serverRevision: entry.localRecord?.serverRevision,
     pendingOperationCount: entry.pendingOperationCount,
     sourceFileName: entry.sourceFileName,
   };
@@ -121,7 +116,7 @@ function isAbortError(cause: unknown): boolean {
 }
 
 export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerProps) {
-  const { catalog, ensureStorageReady, retryStorage, storageReadiness } = useApplicationServices();
+  const { catalog } = useApplicationServices();
   const auth = useAuthSession();
   const authSnapshot = useAuthSnapshot();
   const [activeSection, setActiveSection] = useState<WorkbookHubSection>('start');
@@ -139,14 +134,12 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [operationError, setOperationError] = useState<string>();
-  const [operationRecovery, setOperationRecovery] = useState<string>();
   const [error, setError] = useState<string>();
   const [activeDialog, setActiveDialog] = useState<ActiveDialog>(() => {
     if (typeof window === 'undefined') return null;
     return new URLSearchParams(window.location.search).get('dialog') === 'import' ? 'import' : null;
   });
   const [pendingTemplate, setPendingTemplate] = useState<WorkbookTemplateId>('blank');
-  const [pendingCreateValue, setPendingCreateValue] = useState<{ name: string; locationId: string }>();
   const [targetId, setTargetId] = useState<string>();
   const [moveLocationId, setMoveLocationId] = useState('');
   const loadGeneration = useRef(0);
@@ -161,7 +154,6 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     setLoading(true);
     setError(undefined);
     try {
-      await ensureStorageReady();
       const [listed, remoteSpaces, remotePreferences] = await Promise.all([
         catalog.list({ view: activeSection === 'trash' ? 'trash' : 'all' }, requestOptions),
         authSnapshot.phase === 'authenticated' ? catalog.listSpaces(requestOptions) : Promise.resolve([]),
@@ -178,15 +170,11 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       setSelectedSpaceId((current) => current || remoteSpaces[0]?.spaceId || '');
     } catch (cause) {
       if (generation !== loadGeneration.current || controller.signal.aborted || isAbortError(cause)) return;
-      if (isWorkspaceStorageError(cause)) {
-        setError(`${cause.message}${cause.recovery ? ` ${cause.recovery}` : ''}`);
-      } else {
-        setError(cause instanceof Error ? cause.message : '无法加载工作簿目录');
-      }
+      setError(cause instanceof Error ? cause.message : '无法加载工作簿目录');
     } finally {
       if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [activeSection, authSnapshot.phase, catalog, ensureStorageReady]);
+  }, [activeSection, authSnapshot.phase, catalog]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -194,12 +182,6 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     loadAbortController.current?.abort();
     loadGeneration.current += 1;
   }, []);
-
-  useEffect(() => {
-    if (storageReadiness.error && !error) {
-      setError(`${storageReadiness.error.message}${storageReadiness.error.recovery ? ` ${storageReadiness.error.recovery}` : ''}`);
-    }
-  }, [error, storageReadiness.error]);
 
   useEffect(() => {
     if (authSnapshot.phase !== 'authenticated' || !selectedSpaceId) {
@@ -237,22 +219,15 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     setSubmitting(true);
     setError(undefined);
     setOperationError(undefined);
-    setOperationRecovery(undefined);
     try {
       await operation();
       setActiveDialog(null);
       setTargetId(undefined);
       await load();
     } catch (cause) {
-      if (isWorkspaceStorageError(cause)) {
-        setError(`${cause.message}${cause.recovery ? ` ${cause.recovery}` : ''}`);
-        setOperationError(cause.message);
-        setOperationRecovery(cause.recovery);
-      } else {
-        const message = cause instanceof Error ? cause.message : '工作簿操作失败';
-        setError(message);
-        setOperationError(message);
-      }
+      const message = cause instanceof Error ? cause.message : '工作簿操作失败';
+      setError(message);
+      setOperationError(message);
     } finally {
       setSubmitting(false);
     }
@@ -293,66 +268,24 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     }
     setPendingTemplate(templateId);
     setOperationError(undefined);
-    setOperationRecovery(undefined);
     setActiveDialog('create');
   }, [authSnapshot.phase, requireCloudSignIn]);
 
   const createWorkbook = useCallback((value: { name: string; locationId: string }) => {
-    setPendingCreateValue(value);
     void execute(async () => {
       const targetLocation = destinationFromLocation(value.locationId);
       if (!await requireCloudSignIn()) return;
-      await ensureStorageReady();
       const unitId = createWorkbookUnitId();
-      const snapshot = createTemplateSnapshot(pendingTemplate, unitId, value.name);
+      const plan = createTemplatePlan(pendingTemplate, unitId, value.name);
       const entry = await catalog.create({
-        snapshot,
+        plan,
         destination: targetLocation.destination,
         metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
         source: 'native',
       });
       onOpenWorkbook(entry.unitId, pendingTemplate === 'designer-demo' ? { initialCell: 'B1' } : undefined);
     });
-  }, [catalog, ensureStorageReady, execute, onOpenWorkbook, pendingTemplate, requireCloudSignIn]);
-
-  const retryStorageThenCreate = useCallback(() => {
-    void (async () => {
-      setSubmitting(true);
-      setOperationError(undefined);
-      setOperationRecovery(undefined);
-      setError(undefined);
-      try {
-          await retryStorage();
-          if (pendingCreateValue) {
-            const targetLocation = destinationFromLocation(pendingCreateValue.locationId);
-            if (!await requireCloudSignIn()) return;
-            const unitId = createWorkbookUnitId();
-            const snapshot = createTemplateSnapshot(pendingTemplate, unitId, pendingCreateValue.name);
-            const entry = await catalog.create({
-              snapshot,
-              destination: targetLocation.destination,
-              metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
-              source: 'native',
-            });
-            setPendingCreateValue(undefined);
-            setActiveDialog(null);
-            onOpenWorkbook(entry.unitId, pendingTemplate === 'designer-demo' ? { initialCell: 'B1' } : undefined);
-          }
-      } catch (cause) {
-        if (isWorkspaceStorageError(cause)) {
-          setOperationError(cause.message);
-          setOperationRecovery(cause.recovery);
-          setError(`${cause.message}${cause.recovery ? ` ${cause.recovery}` : ''}`);
-        } else {
-          const message = cause instanceof Error ? cause.message : '本地工作簿存储不可用';
-          setOperationError(message);
-          setError(message);
-        }
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [catalog, onOpenWorkbook, pendingCreateValue, pendingTemplate, requireCloudSignIn, retryStorage]);
+  }, [catalog, execute, onOpenWorkbook, pendingTemplate, requireCloudSignIn]);
 
   const importWorkbook = useCallback((value: { file: File; locationId: string }) => {
     void execute(async () => {
@@ -446,10 +379,8 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         defaultLocationId={defaultLocationId}
         defaultName={pendingTemplate === 'blank' ? '未命名工作簿' : undefined}
         error={operationError}
-        errorRecovery={operationRecovery}
         locationOptions={locationOptions}
         onClose={() => setActiveDialog(null)}
-        onRetryStorage={operationError ? () => retryStorageThenCreate() : undefined}
         onSubmit={createWorkbook}
         open={activeDialog === 'create'}
         submitting={submitting}

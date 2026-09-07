@@ -1,27 +1,10 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
-import {
-  ApiRequestError,
-  AuthenticationRequiredError,
-  MAX_WORKBOOK_NAME_LENGTH,
-  type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
-  type WorkbookCreateMetadata,
-  type WorkbookSummary,
-  type KernelSheetManifest,
-} from '@react-sheets/protocol';
-import { buildOperation } from '../../collaboration/helpers';
+import { MAX_WORKBOOK_NAME_LENGTH, type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery, type WorkbookSummary } from '@react-sheets/protocol';
 import {
   NativeDocumentTransactionRegistry,
+  WorkbookApiNativeDocumentTransport,
+  createNativeDocumentTransaction,
 } from '../native-document';
-import {
-  type WorkspaceRecord,
-  type WorkspaceRecordMetadata,
-  type WorkspaceRole,
-  type WorkspaceUserState,
-  WorkspacePersistence,
-} from '../persistence/storage';
-import { filterWorkbookCatalog, resolveWorkbookSyncState } from './state';
-import { createWorkbookUnitId } from './templates';
+import { filterWorkbookCatalog } from './state';
 import type {
   WorkbookCatalogCreateInput,
   WorkbookCatalogEntry,
@@ -38,7 +21,7 @@ import type {
 } from './types';
 import { WorkbookResolver } from './resolver';
 
-export const DEFAULT_NATIVE_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_NATIVE_IMPORT_MAX_BYTES = 1024 * 1024 * 1024;
 
 export class WorkbookCatalogError extends Error {
   readonly code: 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input' | 'conflict';
@@ -51,10 +34,8 @@ export class WorkbookCatalogError extends Error {
 }
 
 export interface WorkbookCatalogServiceOptions {
-  persistence?: WorkspacePersistence;
   remote?: WorkbookCatalogRemoteClient;
   now?: () => Date;
-  unitIdFactory?: () => string;
   remoteAvailable?: () => boolean;
   shareTokenProvider?: import('@react-sheets/protocol').ShareTokenProvider;
   nativeDocumentTransactions?: NativeDocumentTransactionRegistry;
@@ -71,100 +52,11 @@ export interface WorkbookCatalogSyncResult {
   revision: number;
 }
 
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object';
-}
-
-function isRemoteUnavailable(error: unknown): boolean {
-  if (error instanceof AuthenticationRequiredError) return false;
-  if (error instanceof ApiRequestError) return error.status === 408 || error.status === 429 || error.status >= 500;
-  if (isRecord(error) && typeof error.status === 'number') return error.status === 0 || error.status >= 500;
-  return error instanceof TypeError;
-}
-
-function normalizeRole(role: WorkbookRole | undefined, fallback: WorkspaceRole = 'owner'): WorkspaceRole {
+function normalizeRole(role: WorkbookRole | undefined, fallback: WorkbookRole = 'owner'): WorkbookRole {
   return role === 'owner' || role === 'editor' || role === 'commenter' || role === 'viewer' ? role : fallback;
 }
 
-function sourceFromProtocol(summary: WorkbookSummary): WorkspaceRecordMetadata['source'] {
-  return summary.source === 'document-import' ? 'document-import' : 'native';
-}
-
-function metadataFromRemote(summary: WorkbookSummary): WorkspaceRecordMetadata {
-  return {
-    location: 'remote',
-    lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
-    source: sourceFromProtocol(summary),
-    // An omitted server role is fail-closed. The backend contract should
-    // always return the actor's effective role in the catalog row.
-    role: normalizeRole(summary.role, 'viewer'),
-    ownerId: summary.ownerSubject,
-    sourceFileName: summary.sourceFileName,
-    spaceId: summary.spaceId,
-    folderId: summary.folderId,
-    locationPath: summary.locationPath?.join(' / '),
-    deletedAt: summary.deletedAt,
-  };
-}
-
-function metadataToProtocol(metadata: Partial<WorkspaceRecordMetadata> | undefined): WorkbookCreateMetadata {
-  return {
-    spaceId: metadata?.spaceId,
-    folderId: metadata?.folderId,
-    source: metadata?.source === 'document-import' ? 'document-import' : 'native',
-  };
-}
-
-function userStateToRemote(state: WorkspaceUserState): Omit<import('@react-sheets/protocol').WorkbookUserState, 'unitId'> {
-  return {
-    favorite: state.favorite,
-    lastOpenedAt: state.lastOpenedAt,
-  };
-}
-
-function userStateFromRemote(input: import('@react-sheets/protocol').WorkbookUserState): Partial<WorkspaceUserState> {
-  return {
-    favorite: input.favorite,
-    lastOpenedAt: input.lastOpenedAt,
-  };
-}
-
-function localEntry(record: WorkspaceRecord, remoteAvailable: boolean): WorkbookCatalogEntry {
-  const metadata = record.metadata;
-  return {
-    unitId: record.unitId,
-    name: record.snapshot.name,
-    revision: record.serverRevision,
-    updatedAt: record.updatedAt,
-    storage: 'remote',
-    syncState: resolveWorkbookSyncState({
-      storage: metadata.location,
-      pendingOperationCount: record.pending.operations.length,
-      syncMode: record.syncMode,
-      remoteAvailable,
-    }),
-    role: metadata.role,
-    lifecycle: metadata.lifecycle,
-    source: metadata.source,
-    ownerId: metadata.ownerId,
-    spaceId: metadata.spaceId,
-    folderId: metadata.folderId,
-    sourceFileName: metadata.sourceFileName,
-    locationPath: metadata.locationPath ? metadata.locationPath.split(' / ') : [],
-    deletedAt: metadata.deletedAt,
-    favorite: record.userState.favorite,
-    lastOpenedAt: record.userState.lastOpenedAt,
-    pendingOperationCount: record.pending.operations.length,
-    localRecord: record,
-  };
-}
-
 function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
-  const metadata = metadataFromRemote(summary);
   return {
     unitId: summary.unitId,
     name: summary.name,
@@ -172,14 +64,13 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
     updatedAt: summary.updatedAt,
     storage: 'remote',
     syncState: summary.syncStatus ?? 'synced',
-    role: metadata.role,
-    lifecycle: metadata.lifecycle,
-    source: metadata.source,
-    ownerId: metadata.ownerId,
-    ownerName: undefined,
-    spaceId: metadata.spaceId,
+    role: normalizeRole(summary.role, 'viewer'),
+    lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
+    source: summary.source === 'document-import' ? 'document-import' : 'native',
+    ownerId: summary.ownerSubject,
+    spaceId: summary.spaceId,
     spaceName: summary.spaceName,
-    folderId: metadata.folderId,
+    folderId: summary.folderId,
     locationPath: summary.locationPath ?? [],
     sourceFileName: summary.sourceFileName,
     deletedAt: summary.deletedAt,
@@ -189,67 +80,20 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
   };
 }
 
-function mergeEntries(local: WorkbookCatalogEntry, remote: WorkbookCatalogEntry): WorkbookCatalogEntry {
-  return {
-    ...remote,
-    storage: 'remote',
-    syncState: local.pendingOperationCount > 0 ? 'pending' : remote.syncState,
-    favorite: local.favorite || remote.favorite,
-    lastOpenedAt: local.lastOpenedAt ?? remote.lastOpenedAt,
-    pendingOperationCount: local.pendingOperationCount,
-    localRecord: local.localRecord,
-  };
-}
-
-function assertSnapshotUnitId(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
-  if (snapshot.unitId !== unitId) throw new WorkbookCatalogError('conflict', `Workbook snapshot unitId mismatch: ${unitId}`);
-  return snapshot;
-}
-
-function assertRole(record: WorkspaceRecord, action: string, allowed: readonly WorkspaceRole[]): void {
-  if (!allowed.includes(record.metadata.role)) {
-    throw new WorkbookCatalogError('permission-denied', `Role ${record.metadata.role} cannot ${action} workbook ${record.unitId}`);
-  }
-}
-
-function renameSnapshot(snapshot: WorkbookSnapshot, name: string): WorkbookSnapshot {
-  const nextName = name.trim();
-  if (!nextName) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
-  if (nextName.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-  return { ...snapshot, name: nextName };
-}
-
-function newOperationId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  return `operation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
-  return {
-    ...snapshot,
-    unitId,
-    printDocuments: (snapshot.printDocuments ?? []).map((document) => ({ ...document, unitId })),
-  };
-}
-
 export class WorkbookCatalogService {
   private readonly nativeTransactions: NativeDocumentTransactionRegistry;
-  readonly persistence: WorkspacePersistence;
   readonly remote?: WorkbookCatalogRemoteClient;
   readonly resolver: WorkbookResolver;
   private readonly now: () => Date;
-  private readonly unitIdFactory: () => string;
   private readonly remoteAvailable?: () => boolean;
 
   constructor(options: WorkbookCatalogServiceOptions = {}) {
-    this.persistence = options.persistence ?? new WorkspacePersistence();
     this.remote = options.remote;
     this.now = options.now ?? (() => new Date());
-    this.unitIdFactory = options.unitIdFactory ?? (() => createWorkbookUnitId());
     this.remoteAvailable = options.remoteAvailable;
-    this.nativeTransactions = options.nativeDocumentTransactions ?? new NativeDocumentTransactionRegistry();
+    const transport = this.remote ? new WorkbookApiNativeDocumentTransport(this.remote) : undefined;
+    this.nativeTransactions = options.nativeDocumentTransactions ?? new NativeDocumentTransactionRegistry(transport);
     this.resolver = new WorkbookResolver({
-      persistence: this.persistence,
       remote: this.remote,
       remoteAvailable: () => this.canUseRemote(),
       shareTokenProvider: options.shareTokenProvider,
@@ -265,89 +109,81 @@ export class WorkbookCatalogService {
     return this.remote;
   }
 
+  private async entryFromManifest(
+    unitId: string,
+    overrides: Partial<Pick<WorkbookCatalogEntry, 'lifecycle' | 'source' | 'spaceId' | 'folderId' | 'sourceFileName'>> = {},
+  ): Promise<WorkbookCatalogEntry> {
+    const api = this.requireRemote();
+    const [manifest, access, state] = await Promise.all([
+      api.getManifest(unitId),
+      api.getAccess(unitId),
+      api.getWorkbookUserState(unitId),
+    ]);
+    return {
+      unitId,
+      name: manifest.name,
+      revision: manifest.revision,
+      updatedAt: this.now().toISOString(),
+      storage: 'remote',
+      syncState: 'synced',
+      role: access.role,
+      lifecycle: overrides.lifecycle ?? 'active',
+      source: overrides.source ?? 'native',
+      spaceId: overrides.spaceId,
+      folderId: overrides.folderId,
+      locationPath: [],
+      sourceFileName: overrides.sourceFileName,
+      favorite: Boolean(state.favorite),
+      lastOpenedAt: state.lastOpenedAt,
+      pendingOperationCount: 0,
+    };
+  }
+
   async listPage(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogPage> {
-    const records = await this.persistence.listRecords();
-    const local = records.map((record) => localEntry(record, this.canUseRemote()));
-    const byId = new Map(local.map((entry) => [entry.unitId, entry]));
-    let nextCursor: string | null = null;
-    const shouldQueryRemote = this.canUseRemote();
-    if (shouldQueryRemote) {
-      try {
-        const protocolQuery: ProtocolWorkbookCatalogQuery = {
-          view: query.view,
-          query: query.query,
-          spaceId: query.spaceId,
-          folderId: query.folderId,
-          cursor: query.cursor,
-          limit: query.limit,
-        };
-        const page = await this.requireRemote().listWorkbookPage(protocolQuery, options);
-        nextCursor = page.nextCursor;
-        for (const summary of page.items) {
-          const remote = remoteEntry(summary);
-          const existing = byId.get(remote.unitId);
-          byId.set(remote.unitId, existing ? mergeEntries(existing, remote) : remote);
-        }
-      } catch (error) {
-        if (options.signal?.aborted || (isRecord(error) && error.name === 'AbortError')) throw error;
-        if (!isRemoteUnavailable(error)) throw error;
-        for (const entry of byId.values()) {
-          if (entry.storage !== 'remote') entry.syncState = 'offline';
-        }
-      }
-    }
-    return { entries: filterWorkbookCatalog([...byId.values()], query), nextCursor };
+    const protocolQuery: ProtocolWorkbookCatalogQuery = {
+      view: query.view,
+      query: query.query,
+      spaceId: query.spaceId,
+      folderId: query.folderId,
+      cursor: query.cursor,
+      limit: query.limit,
+    };
+    const page = await this.requireRemote().listWorkbookPage(protocolQuery, options);
+    return { entries: filterWorkbookCatalog(page.items.map(remoteEntry), query), nextCursor: page.nextCursor };
   }
 
   async list(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogEntry[]> {
-    const page = await this.listPage(query, options);
-    return page.entries;
+    return (await this.listPage(query, options)).entries;
   }
 
   async create(input: WorkbookCatalogCreateInput): Promise<WorkbookCatalogEntry> {
-    const snapshot = assertSnapshotUnitId(input.snapshot, input.snapshot.unitId);
-    const destination = input.destination ?? 'remote';
-    const metadata = input.metadata ?? {};
-    if (destination === 'remote') {
-      const api = this.requireRemote();
-      const sheets: KernelSheetManifest[] = snapshot.sheets.map((sheet) => {
-        const { cells: _cells, ...metadata } = sheet;
-        return { sheetId: sheet.id, name: sheet.name, rowCount: sheet.rowCount, columnCount: sheet.columnCount, metadata };
-      });
-      const initialMutations: { id: 'cell.set'; sheetId: string; params: { row: number; column: number; cell: unknown } }[] = [];
-      snapshot.sheets.forEach((sheet) => sheet.cells.forEach((cell, row, column) => {
-        initialMutations.push({ id: 'cell.set', sheetId: sheet.id, params: { row, column, cell } });
-      }));
-      const opened = await api.createKernelWorkbook({
-        unitId: snapshot.unitId,
-        name: snapshot.name,
-        sheets,
-        spaceId: metadata.spaceId,
-        folderId: metadata.folderId,
-        source: input.source ?? 'native',
-        initialMutations,
-      });
-      const manifest = opened.manifest;
-      const record = await this.persistence.checkpoint(
-        snapshot,
-        1,
-        manifest.revision,
-        'remote',
-        undefined,
-        {
-          location: 'remote',
-          lifecycle: 'active',
-          source: input.source ?? 'native',
-          role: normalizeRole(input.role),
-          spaceId: metadata.spaceId,
-          folderId: metadata.folderId,
-          ownerId: undefined,
-          sourceFileName: undefined,
-        },
-      );
-      return localEntry(record, true);
+    const plan = input.plan;
+    if (!plan.unitId.trim() || !plan.name.trim() || !plan.sheets?.length) {
+      throw new WorkbookCatalogError('invalid-input', 'Workbook creation plan requires identity, name, and worksheets');
     }
-    throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
+    if ((input.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
+    const opened = await this.requireRemote().createKernelWorkbook({
+      ...plan,
+      spaceId: input.metadata?.spaceId,
+      folderId: input.metadata?.folderId,
+      source: input.source ?? 'native',
+    });
+    return {
+      unitId: opened.unitId,
+      name: opened.manifest.name,
+      revision: opened.revision,
+      updatedAt: this.now().toISOString(),
+      storage: 'remote',
+      syncState: 'synced',
+      role: normalizeRole(input.role),
+      lifecycle: 'active',
+      source: input.source ?? 'native',
+      spaceId: input.metadata?.spaceId,
+      folderId: input.metadata?.folderId,
+      locationPath: [],
+      favorite: false,
+      pendingOperationCount: 0,
+    };
   }
 
   resolve(unitId: string, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookResolution> {
@@ -358,262 +194,137 @@ export class WorkbookCatalogService {
     if (resolution.schema !== 'WorkbookResolution' || resolution.lifecycle !== 'active') {
       throw new WorkbookCatalogError('conflict', `Workbook resolution is not openable: ${resolution.unitId}`);
     }
-    let record = await this.persistence.store.open(resolution.unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook session was not persisted: ${resolution.unitId}`);
-    if (record.metadata.lifecycle === 'trashed') throw new WorkbookCatalogError('not-found', `Workbook is in trash: ${resolution.unitId}`);
+    const remote = this.requireRemote();
+    const current = await remote.getWorkbookUserState(resolution.unitId);
+    const { unitId: _unitId, ...state } = current;
     const openedAt = this.now().toISOString();
-    record = await this.persistence.updateUserState(resolution.unitId, { lastOpenedAt: openedAt }, record.storageRevision);
-    if (resolution.mode === 'remote' && this.canUseRemote()) {
-      try {
-        const remoteState = await this.requireRemote().getWorkbookUserState(resolution.unitId);
-        record = await this.persistence.updateUserState(resolution.unitId, {
-          ...userStateFromRemote(remoteState),
-          lastOpenedAt: openedAt,
-        }, record.storageRevision);
-        await this.requireRemote().putWorkbookUserState(resolution.unitId, userStateToRemote(record.userState));
-      } catch (error) {
-        if (!isRemoteUnavailable(error)
-          && !(error instanceof ApiRequestError && [401, 403, 404].includes(error.status))) throw error;
-      }
-    }
-    return localEntry(record, this.canUseRemote());
+    const saved = await remote.putWorkbookUserState(resolution.unitId, { ...state, lastOpenedAt: openedAt });
+    return {
+      unitId: resolution.unitId,
+      name: resolution.manifest.name,
+      revision: resolution.revision,
+      updatedAt: openedAt,
+      storage: 'remote',
+      syncState: 'synced',
+      role: resolution.access?.role ?? 'viewer',
+      lifecycle: 'active',
+      source: 'native',
+      locationPath: [],
+      favorite: Boolean(saved.favorite),
+      lastOpenedAt: saved.lastOpenedAt,
+      pendingOperationCount: 0,
+    };
   }
 
   async importWorkbook(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
-    if (!input.fileName.trim()) throw new WorkbookCatalogError('invalid-input', 'Native document file name is required');
-    if (input.buffer.byteLength > DEFAULT_NATIVE_IMPORT_MAX_BYTES) {
-      throw new WorkbookCatalogError('invalid-input', `Native document exceeds ${DEFAULT_NATIVE_IMPORT_MAX_BYTES} byte limit`);
+    const fileName = input.fileName.trim();
+    if (!fileName) throw new WorkbookCatalogError('invalid-input', 'Native document file name is required');
+    if (input.buffer.byteLength < 1 || input.buffer.byteLength > DEFAULT_NATIVE_IMPORT_MAX_BYTES) {
+      throw new WorkbookCatalogError('invalid-input', `Native document must contain between 1 and ${DEFAULT_NATIVE_IMPORT_MAX_BYTES} bytes`);
     }
-    let compatibilityTarget = input.options?.compatibilityTarget;
-    if (!compatibilityTarget && this.canUseRemote()) {
-      try {
-        compatibilityTarget = (await this.requireRemote().getUserPreferences()).importCompatibility;
-      } catch (error) {
-        if (!isRemoteUnavailable(error) && !(error instanceof ApiRequestError && [401, 403].includes(error.status))) throw error;
-      }
-    }
-    const unitId = this.unitIdFactory();
-    const transaction = this.nativeTransactions.getOrCreate(unitId);
-    try {
-      const imported = await transaction.import({
-        fileName: input.fileName,
-        buffer: input.buffer,
-        options: { ...input.options, compatibilityTarget: compatibilityTarget ?? 'B' },
-        workerPort: input.workerPort,
-        execution: input.execution,
-      });
-      if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', 'Native document import did not produce a workbook snapshot');
-      const importedSnapshot = reidentifySnapshot(imported.snapshot, unitId);
-      const destination = input.destination ?? 'remote';
-      const metadata: WorkbookCreateMetadata = {
-        source: 'document-import',
-        spaceId: input.spaceId,
-        folderId: input.folderId,
-      };
-      let record: WorkspaceRecord;
-      if (destination === 'remote') {
-        const api = this.requireRemote();
-        const format = `${imported.artifact.format.family}/${imported.artifact.format.variant}`;
-        if (!imported.artifact.sourceSnapshotHash) {
-          throw new WorkbookCatalogError('invalid-input', 'Native document import did not bind the source file to its canonical snapshot');
-        }
-        const response = await api.createWorkbookImport({
-          artifact: new Blob([input.buffer], { type: nativeDocumentMimeType(input.fileName) }),
-          artifactFileName: input.fileName,
-          snapshot: importedSnapshot,
-          format,
-          nativeMetadata: {
-            schema: 'NativeDocumentMetadata',
-            format,
-            codecRevision: imported.artifact.codecRevision,
-            checksum: imported.artifact.checksum,
-            byteLength: imported.artifact.sourceBytes.byteLength,
-            sourceSnapshotHash: imported.artifact.sourceSnapshotHash,
-            detectedFeatures: imported.artifact.detectedFeatures,
-            compatibility: imported.report,
-          },
-          ...metadata,
-        });
-        const serverSnapshot = assertSnapshotUnitId(response.snapshot, importedSnapshot.unitId);
-        record = await this.persistence.checkpointWithArtifact(serverSnapshot, 1, response.summary.revision, 'remote', imported.artifact, undefined, {
-          location: 'remote', lifecycle: 'active', source: 'document-import', role: 'owner', spaceId: input.spaceId, folderId: input.folderId,
-          sourceFileName: input.fileName,
-        });
-      } else throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
-      return {
-        entry: localEntry(record, destination === 'remote'),
-        snapshot: clone(record.snapshot),
-        report: imported.report,
-        artifact: imported.artifact,
-      };
-    } catch (error) {
-      this.nativeTransactions.delete(unitId);
-      throw error;
-    }
+    if ((input.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
+    const api = this.requireRemote();
+    const compatibilityTarget = input.options?.compatibilityTarget ?? (await api.getUserPreferences()).importCompatibility;
+    const transport = new WorkbookApiNativeDocumentTransport(api, {
+      name: fileName,
+      spaceId: input.spaceId,
+      folderId: input.folderId,
+    });
+    const transaction = createNativeDocumentTransaction(transport);
+    const imported = await transaction.import({
+      fileName,
+      content: input.buffer,
+      options: { ...input.options, compatibilityTarget },
+    });
+    if (!imported.manifest) throw new WorkbookCatalogError('conflict', 'Native import omitted its committed manifest');
+    const bound = this.nativeTransactions.getOrCreate(imported.manifest.unitId, new WorkbookApiNativeDocumentTransport(api));
+    await bound.attach(imported.artifact);
+    const entry = await this.entryFromManifest(imported.manifest.unitId, {
+      source: 'document-import',
+      spaceId: input.spaceId,
+      folderId: input.folderId,
+      sourceFileName: fileName,
+    });
+    return { entry, manifest: imported.manifest, report: imported.report, artifact: imported.artifact };
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
     const resolved = await this.resolve(unitId);
-    const transaction = this.nativeTransactions.getOrCreate(unitId);
-    let artifact = await this.persistence.nativeDocuments.load(unitId);
-    if (artifact && !transaction.artifact) await transaction.attach(artifact);
-    if (!artifact && this.canUseRemote()) {
-      try {
-        const remoteArtifact = await this.requireRemote().getWorkbookSourceArtifact(unitId);
-        const imported = await transaction.import({
-          fileName: remoteArtifact.metadata.fileName,
-          buffer: await remoteArtifact.artifact.arrayBuffer(),
-          execution: 'worker',
-        });
-        artifact = imported.artifact
-          ? { ...imported.artifact, codecRevision: remoteArtifact.metadata.codecRevision ?? 1 }
-          : null;
-        if (artifact) await this.persistence.nativeDocuments.save(unitId, artifact);
-      } catch (error) {
-        if (!isRemoteUnavailable(error)) throw error;
-      }
-    }
-    const exported = input.fileName
-      ? await transaction.export(resolved.snapshot, { ...input, fileName: input.fileName, mode: 'save-as' })
-      : transaction.artifact
-        ? await transaction.save(resolved.snapshot, { ...input, fileName: artifact?.fileName ?? transaction.artifact.fileName })
-        : await transaction.export(resolved.snapshot, { ...input, fileName: `${resolved.snapshot.name || 'workbook'}.ssjson`, mode: 'export' });
-    if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', 'Native document export did not produce a file');
-    return { unitId, fileName: exported.fileName, buffer: exported.buffer, report: exported.report };
+    const transaction = this.nativeTransactions.getOrCreate(unitId, new WorkbookApiNativeDocumentTransport(this.requireRemote()));
+    const fileName = input.fileName ?? transaction.artifact?.fileName ?? `${resolved.manifest.name || 'workbook'}.xlsx`;
+    const exported = await transaction.export({
+      unitId,
+      revision: resolved.revision,
+      fileName,
+      options: input.options,
+      mode: input.fileName ? 'save-as' : 'export',
+    });
+    if (!exported.content || !exported.fileName) throw new WorkbookCatalogError('conflict', 'Native document export omitted its bytes or file name');
+    return { unitId, fileName: exported.fileName, buffer: exported.content, report: exported.report };
   }
 
   async syncToServer(unitId: string): Promise<WorkbookCatalogSyncResult> {
     const api = this.requireRemote();
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    const manifest = await api.getManifest(unitId, record.serverRevision);
-    const saved = { ...record, serverRevision: manifest.revision, localRevision: manifest.revision, pending: { ...record.pending, operations: [] } };
-    return {
-      entry: localEntry(saved, true),
-      committedOperationCount: 0,
-      revision: manifest.revision,
-    };
+    const checkpoint = await api.checkpointWorkbook(unitId);
+    const entry = await this.entryFromManifest(unitId);
+    if (entry.revision !== checkpoint.workbook.revision) throw new WorkbookCatalogError('conflict', 'Checkpoint revision changed while reading the catalog');
+    return { entry, committedOperationCount: 0, revision: entry.revision };
   }
 
   async rename(unitId: string, name: string): Promise<WorkbookCatalogEntry> {
     const trimmed = name.trim();
     if (!trimmed) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
     if (trimmed.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(record, 'rename', ['owner', 'editor']);
-    const snapshot = renameSnapshot(record.snapshot, trimmed);
-    const nextClientSequence = record.pending.nextClientSequence + 1;
-    const operation = buildOperation(
-      newOperationId(),
-      unitId,
-      nextClientSequence,
-      record.serverRevision,
-      [{ id: 'workbook.renamed', sheetId: snapshot.sheets[0]!.id, params: { name: trimmed } }],
-    );
-    const committed = await this.requireRemote().commitKernelOperation(unitId, {
-      operationId: operation.operationId,
-      baseRevision: record.serverRevision,
-      clientSequence: nextClientSequence,
-      mutations: operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
-      intent: { commandId: 'workbook.rename', params: { name: trimmed } },
-    });
-    const saved = { ...record, snapshot, localRevision: committed.revision, serverRevision: committed.revision, pending: { ...record.pending, operations: [] } };
-    return localEntry(saved, this.canUseRemote());
+    return remoteEntry(await this.requireRemote().updateWorkbook(unitId, { name: trimmed }));
   }
 
-  async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'local' | 'remote' } = {}): Promise<WorkbookCatalogEntry> {
-    const source = await this.resolve(unitId);
-    const newUnitId = this.unitIdFactory();
-    let snapshot = reidentifySnapshot(renameSnapshot(source.snapshot, request.name ?? `${source.snapshot.name} - 副本`), newUnitId);
-    const destination = request.destination ?? 'remote';
-    if (destination !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is unavailable');
-    let remoteRevision = 0;
-    if (destination === 'remote') {
-      const api = this.requireRemote();
-      const copied = await api.copyWorkbook(unitId, { name: snapshot.name, spaceId: request.spaceId, folderId: request.folderId });
-      snapshot = reidentifySnapshot(snapshot, copied.unitId);
-      remoteRevision = copied.revision;
-    }
-    const artifact = await this.persistence.nativeDocuments.load(unitId);
-    const saved = artifact
-      ? await this.persistence.checkpointWithArtifact(snapshot, 1, remoteRevision, 'remote', artifact, undefined, {
-        location: 'remote', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
-      })
-      : await this.persistence.checkpoint(snapshot, 1, remoteRevision, 'remote', undefined, {
-        location: 'remote', lifecycle: 'active', source: source.localRecord?.metadata.source ?? 'native', role: 'owner', spaceId: request.spaceId, folderId: request.folderId,
-      });
-    return localEntry(saved, destination === 'remote');
+  async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'remote' } = {}): Promise<WorkbookCatalogEntry> {
+    if ((request.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
+    return remoteEntry(await this.requireRemote().copyWorkbook(unitId, {
+      name: request.name,
+      spaceId: request.spaceId,
+      folderId: request.folderId,
+    }));
   }
 
   async move(unitId: string, input: WorkbookCatalogMoveInput): Promise<WorkbookCatalogEntry> {
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(record, 'move', ['owner', 'editor']);
-    if (record.metadata.role === 'editor'
-      && input.spaceId !== undefined
-      && input.spaceId !== record.metadata.spaceId) {
-      throw new WorkbookCatalogError('permission-denied', 'Editors may move a workbook only inside its current space');
-    }
-    if (this.canUseRemote()) await this.requireRemote().updateWorkbook(unitId, { spaceId: input.spaceId, folderId: input.folderId });
-    const saved = await this.persistence.updateMetadata(unitId, { spaceId: input.spaceId ?? undefined, folderId: input.folderId ?? undefined }, record.storageRevision);
-    return localEntry(saved, this.canUseRemote());
+    return remoteEntry(await this.requireRemote().updateWorkbook(unitId, { spaceId: input.spaceId, folderId: input.folderId }));
   }
 
   async grantAccess(unitId: string, subject: string, role: WorkbookRole): Promise<void> {
     const normalizedSubject = subject.trim();
     if (!normalizedSubject) throw new WorkbookCatalogError('invalid-input', 'Share subject is required');
     if (role === 'owner') throw new WorkbookCatalogError('invalid-input', 'Owner role cannot be granted through workbook sharing');
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(record, 'share', ['owner']);
     await this.requireRemote().putWorkbookAcl(unitId, normalizedSubject, normalizeRole(role));
   }
 
   async revokeAccess(unitId: string, subject: string): Promise<void> {
     const normalizedSubject = subject.trim();
     if (!normalizedSubject) throw new WorkbookCatalogError('invalid-input', 'Share subject is required');
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(record, 'revoke sharing', ['owner']);
     await this.requireRemote().deleteWorkbookAcl(unitId, normalizedSubject);
   }
 
   async moveToTrash(unitId: string): Promise<WorkbookCatalogEntry> {
-    const current = await this.persistence.load(unitId);
-    if (!current) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(current, 'move to trash', ['owner']);
-    if (this.canUseRemote()) await this.requireRemote().moveToTrash(unitId);
-    const record = await this.persistence.moveToTrash(unitId, this.now().toISOString(), current.storageRevision);
-    return localEntry(record, this.canUseRemote());
+    await this.requireRemote().moveToTrash(unitId);
+    return this.entryFromManifest(unitId, { lifecycle: 'trashed' });
   }
 
   async restore(unitId: string): Promise<WorkbookCatalogEntry> {
-    const current = await this.persistence.load(unitId);
-    if (!current) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(current, 'restore', ['owner']);
-    if (this.canUseRemote()) await this.requireRemote().restoreFromTrash(unitId);
-    const record = await this.persistence.restore(unitId, current.storageRevision);
-    return localEntry(record, this.canUseRemote());
+    return remoteEntry(await this.requireRemote().restoreFromTrash(unitId));
   }
 
   async purge(unitId: string): Promise<void> {
-    const current = await this.persistence.load(unitId);
-    if (!current) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    assertRole(current, 'purge', ['owner']);
-    if (this.canUseRemote()) await this.requireRemote().purgeWorkbook(unitId);
-    await this.persistence.purge(unitId);
+    await this.requireRemote().purgeWorkbook(unitId);
     this.nativeTransactions.delete(unitId);
   }
 
   async setFavorite(unitId: string, favorite: boolean): Promise<WorkbookCatalogEntry> {
-    const record = await this.persistence.load(unitId);
-    if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
-    if (this.canUseRemote()) {
-      await this.requireRemote().putWorkbookUserState(unitId, { ...userStateToRemote({ ...record.userState, favorite }), favorite });
-    }
-    const saved = await this.persistence.updateUserState(unitId, { favorite }, record.storageRevision);
-    return localEntry(saved, this.canUseRemote());
+    const remote = this.requireRemote();
+    const current = await remote.getWorkbookUserState(unitId);
+    const { unitId: _unitId, ...state } = current;
+    await remote.putWorkbookUserState(unitId, { ...state, favorite });
+    const entry = await this.entryFromManifest(unitId);
+    return { ...entry, favorite };
   }
 
   async listAccess(unitId: string): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listWorkbookAcl']>>> {
@@ -663,15 +374,4 @@ export class WorkbookCatalogService {
   async deleteSpaceMember(spaceId: string, subject: string): Promise<void> {
     await this.requireRemote().deleteSpaceMember(spaceId, subject.trim());
   }
-}
-
-function nativeDocumentMimeType(fileName: string): string {
-  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
-  return extension === 'csv' ? 'text/csv'
-    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
-      : extension === 'xml' ? 'application/xml'
-        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
-          : extension === 'sjs' ? 'application/zip'
-            : extension === 'ssjson' ? 'application/json'
-              : 'application/octet-stream';
 }

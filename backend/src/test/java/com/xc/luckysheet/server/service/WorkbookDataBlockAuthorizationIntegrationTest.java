@@ -44,7 +44,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.se
     void revokedEditorCannotCommitBytesReadBeforeTheWriteBoundary() throws Exception {
         String unitId = "block-revoked";
         String owner = "owner-revoked";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null, null), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "blocked-after-revocation".getBytes(StandardCharsets.UTF_8);
 
@@ -61,7 +61,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.se
     void editorCommitThatCompletesBeforeRevocationRemainsPersisted() throws Exception {
         String unitId = "block-committed";
         String owner = "owner-committed";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null, null), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "committed-before-revocation".getBytes(StandardCharsets.UTF_8);
 

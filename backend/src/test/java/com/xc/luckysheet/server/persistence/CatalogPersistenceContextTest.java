@@ -46,7 +46,7 @@ class CatalogPersistenceContextTest extends com.xc.luckysheet.server.NativeKerne
 
     @Test
     void catalogCreatesPersonalSpaceAndReturnsOneActorEnrichedSummary() throws Exception {
-        catalog.create(new CreateWorkbookRequest("book-context", "Context", null, null, null, null), "actor-context");
+        catalog.create(new CreateWorkbookRequest("book-context", "Context", null, null, null, null, null), "actor-context");
         var summaries = catalog.list("actor-context", "recent", null, null, null, 0, 50);
         org.junit.jupiter.api.Assertions.assertEquals(1, summaries.items().size());
         org.junit.jupiter.api.Assertions.assertEquals("owner", summaries.items().get(0).role().wireValue());

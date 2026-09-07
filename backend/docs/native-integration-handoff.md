@@ -26,6 +26,8 @@
 
 ## root 必須串行补齐的接口与风险
 
+> Root 整合进度（2026-09-07）：以下第 1–4 项已按 canonical host contract 实现并通过针对性 Rust/native/H2 测试。`command.prepare` 已存在；create 省略 sheets 由 native 创建默认工作表；undo 使用服务端已验证 HistoryRecord 与 descriptor 引用并在冲突时 fail-close；restore/copy 发布连续 revision 或独立 revision-zero identity。第 5 项 source artifact 复制已接入原包保真导出并验证当前单元格写入，但真实 Excel/WPS producer 保存仍 Blocked。第 6–10 项继续按原说明整改。历史交接文字保留，用于说明原始断点。
+
 1. 当前 native host 尚未确认实现 `command.prepare`。Java发送与command完全相同 envelope，期望 `{pages:[{sheetId,pageRow,pageColumn}]}`。必须真实 native决定所需页/公式依赖，不靠吞DATA_PAGE重试。空白页不应在需要hydrate的目录中。
 2. Native `create` 当前要求 sheets，而HTTP契约允许省略；默认sheet必须在native create实现。不要Java重建canonical默认metadata。
 3. Native `history.undo` 尚需服务端 proven before page 装载：Java现传 `params.history`（来自DB）。不能把所有before pages塞16MiB control frame；可用host staging/任务文件。公开client inverses不参与undo，committed log记录history.undo+targetOperationId。

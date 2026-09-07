@@ -121,7 +121,7 @@ pub struct PageDelta {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MetadataBefore {
+pub struct ManifestMetadata {
     pub name: String,
     pub sheets: Vec<SheetManifest>,
     pub metadata: BTreeMap<String, Value>,
@@ -134,7 +134,8 @@ pub struct HistoryRecord {
     pub base_revision: u64,
     pub revision: u64,
     pub page_deltas: Vec<PageDelta>,
-    pub metadata_before: Option<MetadataBefore>,
+    pub metadata_before: Option<ManifestMetadata>,
+    pub metadata_after: Option<ManifestMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,14 +353,22 @@ impl WorkbookPages {
         let history = HistoryRecord {
             operation_id: operation_id.clone(), base_revision, revision: target.revision,
             page_deltas: page_deltas.clone(),
-            metadata_before: metadata_changed.then(|| MetadataBefore {
+            metadata_before: metadata_changed.then(|| ManifestMetadata {
                 name: self.manifest.name.clone(), sheets: self.manifest.sheets.clone(), metadata: self.manifest.metadata.clone(),
+            }),
+            metadata_after: metadata_changed.then(|| ManifestMetadata {
+                name: target.name.clone(), sheets: target.sheets.clone(), metadata: target.metadata.clone(),
             }),
         };
         let mut affected_ranges = Vec::new();
-        for sheet in self.manifest.sheets.iter().chain(target.sheets.iter()) {
-            let range = RangeRef { sheet_id: sheet.sheet_id.clone(), start_row: 0, end_row: sheet.row_count - 1, start_column: 0, end_column: sheet.column_count - 1 };
-            if !affected_ranges.contains(&range) { affected_ranges.push(range); }
+        if metadata_changed {
+            for sheet in self.manifest.sheets.iter().chain(target.sheets.iter()) {
+                let range = RangeRef { sheet_id: sheet.sheet_id.clone(), start_row: 0, end_row: sheet.row_count - 1, start_column: 0, end_column: sheet.column_count - 1 };
+                if !affected_ranges.contains(&range) { affected_ranges.push(range); }
+            }
+        } else {
+            affected_ranges.extend(page_deltas.iter().filter_map(|delta| delta.after.as_ref().and_then(|d| d.occupied_range.clone())
+                .or_else(|| delta.before.as_ref().and_then(|d| d.occupied_range.clone()))));
         }
         let next = Self::open_reusing(target.clone(), self)?;
         let changes = ChangeSet {
@@ -369,6 +378,52 @@ impl WorkbookPages {
         };
         *self = next;
         Ok(changes)
+    }
+
+    /// Reverts one committed operation only when every owned page and metadata
+    /// value still equals that operation's after state. Later overlapping work
+    /// therefore rejects atomically instead of being overwritten.
+    pub fn undo_history(
+        &mut self,
+        operation_id: String,
+        base_revision: u64,
+        record: HistoryRecord,
+    ) -> KernelResult<ChangeSet> {
+        if base_revision != self.manifest.revision {
+            return Err(KernelError::new("STALE_REVISION", "Undo base revision is stale").recover("refresh-manifest"));
+        }
+        if record.operation_id.trim().is_empty()
+            || record.revision != record.base_revision.checked_add(1).ok_or_else(|| KernelError::new("HISTORY_INVALID", "History revision overflow"))?
+            || record.revision > base_revision
+            || record.metadata_before.is_some() != record.metadata_after.is_some()
+        {
+            return Err(KernelError::new("HISTORY_INVALID", "Undo history has an invalid revision or metadata transition"));
+        }
+        let current: BTreeMap<_, _> = self.manifest.pages.iter().cloned().map(|d| (d.key(), d)).collect();
+        let mut seen = BTreeSet::new();
+        for delta in &record.page_deltas {
+            if !seen.insert(delta.key.clone()) || delta.before == delta.after || current.get(&delta.key) != delta.after.as_ref() {
+                return Err(KernelError::new("UNDO_CONFLICT", "A later operation changed a page owned by the undo target")
+                    .at(format!("{}:{}:{}", delta.key.sheet_id, delta.key.page_row, delta.key.page_column))
+                    .recover("refresh-history"));
+            }
+        }
+        let mut target = self.manifest.clone();
+        if let (Some(before), Some(after)) = (&record.metadata_before, &record.metadata_after) {
+            let current_metadata = ManifestMetadata { name: target.name.clone(), sheets: target.sheets.clone(), metadata: target.metadata.clone() };
+            if &current_metadata != after {
+                return Err(KernelError::new("UNDO_CONFLICT", "A later operation changed workbook metadata owned by the undo target").recover("refresh-history"));
+            }
+            target.name = before.name.clone();
+            target.sheets = before.sheets.clone();
+            target.metadata = before.metadata.clone();
+        }
+        target.pages.retain(|descriptor| !seen.contains(&descriptor.key()));
+        for delta in &record.page_deltas {
+            if let Some(before) = &delta.before { target.pages.push(before.clone()); }
+        }
+        target.pages.sort_by_key(PageDescriptor::key);
+        self.restore_manifest(operation_id, base_revision, target)
     }
     pub fn set_page_budget(&mut self, bytes: u64) -> KernelResult<()> {
         if bytes == 0 {
@@ -595,8 +650,9 @@ impl WorkbookPages {
             if before == after { None } else { Some(PageDelta{key,before,after}) }
         }).collect();
         let metadata_before = if committed.name != self.manifest.name || committed.sheets != self.manifest.sheets || committed.metadata != self.manifest.metadata {
-            Some(MetadataBefore{name:self.manifest.name.clone(),sheets:self.manifest.sheets.clone(),metadata:self.manifest.metadata.clone()})
+            Some(ManifestMetadata{name:self.manifest.name.clone(),sheets:self.manifest.sheets.clone(),metadata:self.manifest.metadata.clone()})
         } else { None };
+        let metadata_after = metadata_before.as_ref().map(|_| ManifestMetadata{name:committed.name.clone(),sheets:committed.sheets.clone(),metadata:committed.metadata.clone()});
         // Reserve and evict against a private Arc-backed candidate. Every error
         // leaves both the committed directory and its resident cache untouched.
         let mut candidate=self.clone();
@@ -618,7 +674,7 @@ impl WorkbookPages {
         // Dirty scope is page-bounded, not a million-element address list.
         let affected_ranges=page_deltas.iter().filter_map(|delta|delta.after.as_ref().and_then(|d|d.occupied_range.clone())
             .or_else(||delta.before.as_ref().and_then(|d|d.occupied_range.clone()))).collect();
-        let history=HistoryRecord{operation_id:operation_id.clone(),base_revision,revision:next_revision,page_deltas,metadata_before};
+        let history=HistoryRecord{operation_id:operation_id.clone(),base_revision,revision:next_revision,page_deltas,metadata_before,metadata_after};
         let result=ChangeSet{operation_id,base_revision,revision:next_revision,manifest:candidate.manifest.clone(),
             pages:changed,removed_pages:removed.into_iter().collect(),affected_ranges,history};
         *self=candidate;

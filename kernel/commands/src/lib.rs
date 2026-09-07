@@ -47,6 +47,9 @@ pub enum AccessRole {
 }
 
 pub fn required_role(request: &CommandRequest) -> KernelResult<AccessRole> {
+    if request.command_id == "history.undo" {
+        return Ok(AccessRole::Editor);
+    }
     let ids: Vec<&str> = if request.command_id == "operation.apply" {
         request.params["mutations"]
             .as_array()
@@ -292,6 +295,12 @@ pub fn execute_authorized(
     }
     if request.operation_id.trim().is_empty() {
         return Err(invalid("operationId is required"));
+    }
+    if request.command_id == "history.undo" {
+        let record: HistoryRecord = serde_json::from_value(
+            request.params.get("history").cloned().ok_or_else(|| invalid("history is required"))?,
+        ).map_err(|error| invalid(format!("Invalid history record: {error}")))?;
+        return pages.undo_history(request.operation_id, request.base_revision, record);
     }
     let mutations: Vec<Mutation> = if request.command_id == "operation.apply" {
         serde_json::from_value(

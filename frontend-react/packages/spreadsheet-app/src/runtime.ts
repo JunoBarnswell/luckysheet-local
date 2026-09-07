@@ -765,7 +765,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   let resolvedRemote: WorkbookOpenResponse | null = null;
   if (resolution) {
     if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
-    localRecord = resolution.localRecord ?? null;
+    localRecord = null;
     const manifest = await runtime.api.getManifest(runtime.model.unitId, resolution.revision);
     resolvedRemote = { unitId: manifest.unitId, manifest, pages: [], revision: manifest.revision };
   } else {

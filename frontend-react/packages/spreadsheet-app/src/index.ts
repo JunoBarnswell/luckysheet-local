@@ -134,6 +134,7 @@ export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
   createNativeDocumentTransaction,
   NativeDocumentTransactionRegistry,
+  WorkbookApiNativeDocumentTransport,
   summarizeCompatibilityReport,
   type NativeDocumentExchangeResult,
   type NativeDocumentTransaction,
@@ -146,7 +147,6 @@ export {
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalNativeDocumentStore,
   LocalAssetStore,
   RemoteAssetStore,
   migrateLegacyImageAssets,

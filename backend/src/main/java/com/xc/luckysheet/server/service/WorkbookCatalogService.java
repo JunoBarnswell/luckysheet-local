@@ -134,7 +134,20 @@ public class WorkbookCatalogService {
         WorkbookEntity entity = createNativeEntity(request.unitId(), manifest, request.spaceId(), request.folderId(), WorkbookSource.NATIVE, actor);
         ObjectNode result = mapper.createObjectNode(); result.set("manifest", manifest); result.putArray("pages");
         kernelPersistence.publish(result, request.unitId(), 0);
-        return openResponse(entity, manifest);
+        if (request.initialMutations().isEmpty()) return openResponse(entity, manifest);
+        OperationEnvelope initialOperation = new OperationEnvelope(
+                OperationEnvelope.SCHEMA,
+                "workbook-create-" + UUID.randomUUID(),
+                request.unitId(),
+                1,
+                0,
+                request.initialMutations(),
+                Instant.now()
+        );
+        var committed = operations.commit(request.unitId(), initialOperation, actor);
+        WorkbookEntity committedEntity = workbooks.findById(request.unitId())
+                .orElseThrow(() -> ServiceException.notFound("Workbook creation was not persisted"));
+        return openResponse(committedEntity, committed.changeSet().path("manifest"));
     }
 
     public CursorPage<WorkbookSummary> list(String actor, String view, String spaceId, String folderId, String query, int page, int limit) {
@@ -338,7 +351,7 @@ public class WorkbookCatalogService {
                 params.put("pagesDirectory", pagesDirectory.toString());
                 result = kernel.call("document.export", params);
             }
-            JsonNode metadata = result.path("artifact");
+            JsonNode metadata = artifactMetadata(result);
             if (metadata.path("revision").asLong(-1) != revision) throw new KernelHostException("REVISION_CONFLICT", "Native artifact revision mismatch", unitId, "regenerate-artifact");
             WorkbookSourceArtifactEntity saved = storeArtifact(unitId, revision, safeFileName(fileName), output, metadata);
             output = null;
@@ -377,7 +390,7 @@ public class WorkbookCatalogService {
             JsonNode manifest = result.path("manifest");
             WorkbookEntity entity = createNativeEntity(unitId, manifest, spaceId, folderId, WorkbookSource.DOCUMENT_IMPORT, actor);
             kernelPersistence.publishImported(result, unitId, 0, root);
-            JsonNode metadata = result.path("artifact");
+            JsonNode metadata = artifactMetadata(result);
             retained = Files.createTempFile(root, "source-artifact-", ".artifact");
             Files.copy(file, retained, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             WorkbookSourceArtifactEntity artifact = storeArtifact(unitId, 0, resolvedName, retained, metadata);
@@ -516,8 +529,19 @@ public class WorkbookCatalogService {
     }
 
     private WorkbookArtifactResponse artifactResponse(WorkbookSourceArtifactEntity artifact) {
+        JsonNode nativeMetadata;
+        try { nativeMetadata = mapper.readTree(artifact.getNativeMetadataJson()); }
+        catch (Exception error) { throw new KernelHostException("ARTIFACT_INVALID", "Stored native artifact metadata is invalid", artifact.getUnitId(), "reimport-or-regenerate-artifact"); }
         return new WorkbookArtifactResponse(artifact.getUnitId(), artifact.getFileName(), artifact.getMimeType(), artifact.getChecksum(), artifact.getWorkbookRevision(),
-                artifact.getByteLength(), artifact.getCreatedAt(), artifact.getUpdatedAt());
+                artifact.getByteLength(), nativeMetadata, artifact.getCreatedAt(), artifact.getUpdatedAt());
+    }
+
+    private JsonNode artifactMetadata(JsonNode nativeResult) {
+        if (!nativeResult.path("artifact").isObject() || !nativeResult.path("metadata").isObject())
+            throw new KernelHostException("ARTIFACT_INVALID", "Native result omitted artifact or document metadata", null, "deploy-matching-kernel-host");
+        ObjectNode metadata = ((ObjectNode) nativeResult.path("artifact")).deepCopy();
+        metadata.set("documentMetadata", nativeResult.path("metadata").deepCopy());
+        return metadata;
     }
 
     private WorkbookEntity requireActiveOrTrashed(String unitId) {

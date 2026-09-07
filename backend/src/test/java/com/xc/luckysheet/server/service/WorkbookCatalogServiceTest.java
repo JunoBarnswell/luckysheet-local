@@ -30,7 +30,7 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
 
     @Test
     void createPublishesNativeManifestAndReopensAfterProcessRestart() {
-        var created = catalog.create(new CreateWorkbookRequest("native-catalog", "Catalog", null, null, null, null), "owner");
+        var created = catalog.create(new CreateWorkbookRequest("native-catalog", "Catalog", null, null, null, null, null), "owner");
         assertEquals(0, created.revision());
         assertEquals("WorkbookManifest", created.manifest().path("schema").asText());
         assertEquals(11, created.manifest().path("version").asInt());
@@ -47,7 +47,7 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
         var sheets = mapper.readTree("""
                 [{"sheetId":"sheet-1","name":"Invalid","rowCount":0,"columnCount":26,"metadata":{}}]
                 """);
-        var request = new CreateWorkbookRequest("invalid-native-catalog", "Invalid", sheets, null, null, null);
+        var request = new CreateWorkbookRequest("invalid-native-catalog", "Invalid", sheets, null, null, null, null);
         var error = assertThrows(KernelHostException.class, () -> catalog.create(request, "owner"));
         assertEquals("SHEET_INVALID", error.code());
         assertFalse(workbooks.existsById(request.unitId()));
@@ -55,11 +55,52 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
+    void createCommitsTemplateCellsThroughTheCanonicalOperationChain() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Template","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 3);
+        params.putObject("value").put("value", "created through Rust");
+
+        var created = catalog.create(new CreateWorkbookRequest(
+                "native-template-create", "Template", sheets, null, null, null,
+                List.of(new OperationMutation("cell.set", "sheet-1", params))), "template-owner");
+
+        assertEquals(1, created.revision());
+        assertEquals(1, created.manifest().path("revision").asLong());
+        assertEquals(1, created.manifest().path("pages").size());
+        assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 0).isPresent());
+        assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 1).isPresent());
+        var address = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 3);
+        var read = kernel.call("cell.get", mapper.createObjectNode()
+                .put("unitId", "native-template-create").put("revision", 1).set("address", address));
+        assertEquals("created through Rust", read.path("cell").path("value").asText());
+    }
+
+    @Test
+    void rejectedTemplateCellRollsBackWorkbookAndEveryCheckpoint() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Template","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        var invalid = mapper.createObjectNode().put("row", 0).put("column", 0);
+        invalid.putObject("value").put("value", "missing sheet identity");
+        var request = new CreateWorkbookRequest(
+                "invalid-template-create", "Invalid template", sheets, null, null, null,
+                List.of(new OperationMutation("cell.set", "sheet-1", invalid)));
+
+        assertThrows(KernelHostException.class, () -> catalog.create(request, "template-owner"));
+        assertFalse(workbooks.existsById(request.unitId()));
+        assertTrue(manifests.findByUnitIdAndRevision(request.unitId(), 0).isEmpty());
+        assertTrue(manifests.findByUnitIdAndRevision(request.unitId(), 1).isEmpty());
+    }
+
+    @Test
     void nativeCopyHasIndependentIdentityAndCellsAcrossPersistedReopen() throws Exception {
         var sheets = mapper.readTree("""
                 [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
                 """);
-        catalog.create(new CreateWorkbookRequest("native-copy-source", "Source", sheets, null, null, null), "copy-owner");
+        catalog.create(new CreateWorkbookRequest("native-copy-source", "Source", sheets, null, null, null, null), "copy-owner");
+        catalog.exportArtifact("native-copy-source", 0, "source.xlsx", "xlsx", "copy-owner");
         var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 0).put("column", 0);
         params.putObject("value").put("value", 42);
         var write = new OperationEnvelope(OperationEnvelope.SCHEMA, "copy-source-write", "native-copy-source", 1, 0,
@@ -69,6 +110,19 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
         var copied = catalog.copy("native-copy-source", new CopyWorkbookRequest("Copied", null, null), "copy-owner");
 
         assertNotEquals("native-copy-source", copied.unitId());
+        var copiedArtifact = catalog.getArtifact(copied.unitId(), "copy-owner");
+        assertEquals(0, copiedArtifact.getWorkbookRevision());
+        try (var zip = new java.util.zip.ZipFile(copiedArtifact.getStoragePath())) {
+            var documentFactory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            documentFactory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            documentFactory.setNamespaceAware(true);
+            try (var xml = zip.getInputStream(zip.getEntry("xl/worksheets/sheet1.xml"))) {
+                var document = documentFactory.newDocumentBuilder().parse(xml);
+                var values = document.getElementsByTagNameNS("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "v");
+                assertEquals(1, values.getLength());
+                assertEquals(42, Double.parseDouble(values.item(0).getTextContent()));
+            }
+        }
         kernel.close();
         var opened = operations.open(copied.unitId(), "copy-owner");
         assertEquals(copied.unitId(), opened.manifest().path("unitId").asText());
@@ -92,7 +146,7 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
         var sheets = mapper.readTree("""
                 [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
                 """);
-        catalog.create(new CreateWorkbookRequest(unitId, "Export", sheets, null, null, null), "export-owner");
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", sheets, null, null, null, null), "export-owner");
 
         var exported = catalog.exportArtifact(unitId, 0, "export.xlsx", "xlsx", "export-owner");
 
@@ -118,7 +172,7 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
     @Test
     void viewerCannotPublishNativeArtifact() {
         String unitId = "native-export-role";
-        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null), "export-owner");
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
         var share = shares.create(unitId, new ShareCreateRequest("viewer", Instant.now().plusSeconds(600)), "export-owner");
         var error = assertThrows(ServiceException.class, () -> catalog.exportArtifact(
                 unitId, 0, "forbidden.xlsx", "xlsx", "guest:" + share.shareId()));

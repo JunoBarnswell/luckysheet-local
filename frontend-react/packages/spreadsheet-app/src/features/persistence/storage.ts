@@ -1,9 +1,7 @@
 import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
-import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
 import { LocalDataBlockStore } from './data-block-store';
-import { buildNativeDocumentRecord, LocalNativeDocumentStore } from './native-document-store';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import type { AssetStore } from './asset-store';
 import { normalizeWorkspaceRecordWithAssets } from './asset-migration';
@@ -433,7 +431,6 @@ export class MemoryWorkspaceStore {
     await this.coordinator.transaction((transaction) => {
       transaction.delete('workspaceHeads', unitId);
       transaction.delete('workspaceCatalog', unitId);
-      transaction.delete('nativeDocuments', unitId);
       for (const snapshot of transaction.getAll<WorkspaceSnapshotRecord>('workspaceSnapshots')) {
         if (snapshot.unitId === unitId) transaction.delete('workspaceSnapshots', memoryKey(unitId, snapshot.revision));
       }
@@ -611,7 +608,6 @@ export class WorkspacePersistence {
   readonly store: LocalWorkspaceStore;
   readonly dataBlocks: LocalDataBlockStore;
   readonly sparseOverlays: LocalSparseOverlayStore;
-  readonly nativeDocuments: LocalNativeDocumentStore;
   readonly coordinator: WorkspaceMemoryCoordinator;
 
   constructor(options: WorkspacePersistenceOptions = {}, operationJournal = new OperationJournalStore()) {
@@ -619,7 +615,6 @@ export class WorkspacePersistence {
     this.store = new LocalWorkspaceStore(this.coordinator);
     this.dataBlocks = new LocalDataBlockStore(this.coordinator, options.unitId);
     this.sparseOverlays = new LocalSparseOverlayStore({ coordinator: this.coordinator, unitId: options.unitId });
-    this.nativeDocuments = new LocalNativeDocumentStore(this.coordinator);
     this.operationJournal = operationJournal;
   }
 
@@ -672,57 +667,6 @@ export class WorkspacePersistence {
         userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
       });
       return this.store.save(record);
-    });
-  }
-
-  /**
-   * Commits the canonical workspace checkpoint and its source native document artifact
-   * in one memory transaction.
-   */
-  async checkpointWithArtifact(
-    snapshot: WorkbookSnapshot,
-    localRevision: number,
-    serverRevision: number,
-    syncMode: 'remote',
-    artifact: NativeDocumentArtifact,
-    pendingJournal = this.operationJournal.read(snapshot.unitId),
-    metadata?: Partial<WorkspaceRecordMetadata>,
-    userState?: Partial<WorkspaceUserState>,
-  ): Promise<WorkspaceRecord> {
-    return this.withWorkbookWriter(snapshot.unitId, async () => {
-      const previous = await this.store.open(snapshot.unitId);
-      const record = buildWorkspaceRecord({
-        unitId: snapshot.unitId,
-        snapshot,
-        localRevision,
-        serverRevision,
-        syncMode,
-        storageRevision: previous?.storageRevision ?? 0,
-        operations: pendingJournal?.operations ?? [],
-        nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
-        metadata: { ...(previous?.metadata ?? {}), ...(metadata ?? {}) },
-        userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
-      });
-      const artifactRecord = await buildNativeDocumentRecord(snapshot.unitId, artifact);
-      return this.coordinator.transaction((transaction) => {
-        const current = transaction.get<WorkspaceHeadRecord>('workspaceHeads', record.unitId);
-        const currentStorageRevision = current?.storageRevision ?? 0;
-        if (current && currentStorageRevision !== record.storageRevision) {
-          throw revisionConflict(record.unitId, record.storageRevision, currentStorageRevision);
-        }
-        const saved = { ...record, storageRevision: currentStorageRevision + 1 };
-        transaction.set('workspaceHeads', saved.unitId, headRecordFrom(saved, saved.storageRevision));
-        transaction.set('workspaceSnapshots', memoryKey(saved.unitId, saved.localRevision), snapshotRecordFrom(saved));
-        transaction.set('workspaceCatalog', saved.unitId, catalogRecordFrom(saved));
-        for (const operation of transaction.getAll<WorkspaceOperationRecord>('workspaceOperations')) {
-          if (operation.unitId === saved.unitId) transaction.delete('workspaceOperations', memoryKey(operation.unitId, operation.clientSequence));
-        }
-        for (const operation of saved.pending.operations) {
-          transaction.set('workspaceOperations', memoryKey(saved.unitId, operation.clientSequence), { ...clone(operation), unitId: saved.unitId });
-        }
-        transaction.set('nativeDocuments', saved.unitId, artifactRecord);
-        return saved;
-      });
     });
   }
 

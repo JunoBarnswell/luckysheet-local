@@ -3,7 +3,6 @@ import {
   type ApiRequestOptions,
   type ShareTokenProvider,
 } from '@react-sheets/protocol';
-import type { WorkspacePersistence, WorkspaceRecord } from '../persistence/storage';
 import type {
   WorkbookCatalogRemoteClient,
   WorkbookResolution,
@@ -34,7 +33,6 @@ export function isWorkbookResolutionError(error: unknown): error is WorkbookReso
 }
 
 export interface WorkbookResolverOptions {
-  persistence: WorkspacePersistence;
   remote?: WorkbookCatalogRemoteClient;
   remoteAvailable?: () => boolean;
   shareTokenProvider?: ShareTokenProvider;
@@ -68,13 +66,11 @@ function assertUnitId(unitId: string): string {
 }
 
 export class WorkbookResolver {
-  private readonly persistence: WorkspacePersistence;
   private readonly remote?: WorkbookCatalogRemoteClient;
   private readonly remoteAvailable?: () => boolean;
   private readonly shareTokenProvider?: ShareTokenProvider;
 
   constructor(options: WorkbookResolverOptions) {
-    this.persistence = options.persistence;
     this.remote = options.remote;
     this.remoteAvailable = options.remoteAvailable;
     this.shareTokenProvider = options.shareTokenProvider;
@@ -91,11 +87,6 @@ export class WorkbookResolver {
 
   async resolve(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookResolution> {
     const normalized = assertUnitId(unitId);
-    const localRecord = await this.persistence.store.open(normalized);
-    if (localRecord?.metadata.lifecycle === 'trashed') {
-      throw new WorkbookResolutionError('not-found', `Workbook is in trash: ${normalized}`);
-    }
-
     if (!this.canUseRemote()) {
       if (this.remote) throw new WorkbookResolutionError(
         'remote-unavailable',
@@ -121,7 +112,6 @@ export class WorkbookResolver {
         manifest: clone(manifest),
         revision: manifest.revision,
         access,
-        localRecord: localRecord ? clone(localRecord) : null,
       };
     } catch (error) {
       // A cached mirror remains durable in persistence, but an authoritative

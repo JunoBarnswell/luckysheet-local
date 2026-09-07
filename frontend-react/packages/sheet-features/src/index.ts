@@ -695,7 +695,6 @@ function isSelectedDimensionCommand(value: unknown): value is { sheetId: string;
 }
 
 function executeSelectedDimensionCommand(
-  runtime: CommandRuntime,
   axis: 'row' | 'column',
   operation: 'insert' | 'delete',
   params: { sheetId: string; indices: number[] },
@@ -712,7 +711,7 @@ function executeSelectedDimensionCommand(
   const affectedRanges: RangeRef[] = [];
   let mutationCount = 0;
   for (const index of ordered) {
-    const result = runtime.execute(commandId, { sheetId: params.sheetId, at: index, count: 1 });
+    const result = context.executeCommand(commandId, { sheetId: params.sheetId, at: index, count: 1 });
     mutationCount += result.mutationCount;
     affectedRanges.push(...result.affectedRanges);
   }
@@ -1932,7 +1931,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 9. Range Sorting
   runtime.registry.registerCommand<SortRangeParams>({
     id: 'sheet.sort',
-    execute: (params, context) => runtime.execute('data.sort.rows', {
+    execute: (params, context) => context.executeCommand('data.sort.rows', {
       sheetId: params.sheetId,
       range: params.range,
       criteria: [{ column: params.sortColumn, ascending: params.ascending }],
@@ -2321,19 +2320,19 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
     id: 'sheet.rows.insert.selected',
-    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'row', 'insert', params, context),
+    execute: (params, context) => executeSelectedDimensionCommand('row', 'insert', params, context),
   });
   runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
     id: 'sheet.rows.delete.selected',
-    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'row', 'delete', params, context),
+    execute: (params, context) => executeSelectedDimensionCommand('row', 'delete', params, context),
   });
   runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
     id: 'sheet.columns.insert.selected',
-    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'column', 'insert', params, context),
+    execute: (params, context) => executeSelectedDimensionCommand('column', 'insert', params, context),
   });
   runtime.registry.registerCommand<{ sheetId: string; indices: number[] }>({
     id: 'sheet.columns.delete.selected',
-    execute: (params, context) => executeSelectedDimensionCommand(runtime, 'column', 'delete', params, context),
+    execute: (params, context) => executeSelectedDimensionCommand('column', 'delete', params, context),
   });
 
   // 12. 多列排序 / 转置 / 翻转 / 拆分
@@ -2344,7 +2343,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     hasHeader: boolean;
   }>({
     id: 'sheet.sort.multi',
-    execute: (params, context) => runtime.execute('data.sort.rows', params),
+    execute: (params, context) => context.executeCommand('data.sort.rows', params),
   });
 
   runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
@@ -2361,7 +2360,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const baseStyle = cell?.style ? structuredClone(cell.style) : undefined;
       const values: CellData[][] = [parts.map((part) => ({ value: coerceText(part, cell), style: baseStyle ? structuredClone(baseStyle) : undefined }))];
       while (values[0]!.length < 1) values[0]!.push({ value: null });
-      return runtime.execute('sheet.range.set', {
+      return context.executeCommand('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: params.row,
         startColumn: params.column,

@@ -23,6 +23,12 @@ pub fn required_pages(
                 .recover("refresh-manifest"),
         );
     }
+    if request.command_id == "history.undo" {
+        let _: HistoryRecord = serde_json::from_value(
+            request.params.get("history").cloned().ok_or_else(|| invalid("history is required"))?,
+        ).map_err(|error| invalid(format!("Invalid history record: {error}")))?;
+        return Ok(Vec::new());
+    }
     let mutations: Vec<Mutation> = if request.command_id == "operation.apply" {
         serde_json::from_value(request.params["mutations"].clone())
             .map_err(|e| invalid(e.to_string()))?

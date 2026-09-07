@@ -60,7 +60,6 @@ import {
 import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
-import { planSheetIdentityTransform } from './sheet-identity-transform';
 import { ReviewStore } from './review-store';
 import type { ReviewStoreSnapshot } from './review-store';
 

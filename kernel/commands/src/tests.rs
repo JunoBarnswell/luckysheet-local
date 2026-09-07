@@ -98,6 +98,59 @@ fn request(revision: u64, id: &str, mutations: Value) -> CommandRequest {
 fn set(row: u32, value: i32) -> Value {
     json!({"id":"cell.set","sheetId":"s","params":{"sheetId":"s","row":row,"column":0,"value":{"value":value}}})
 }
+fn undo(revision: u64, id: &str, history: &HistoryRecord) -> CommandRequest {
+    CommandRequest {
+        unit_id: "w".into(), base_revision: revision, operation_id: id.into(),
+        command_id: "history.undo".into(), params: json!({"history":history}),
+    }
+}
+
+#[test]
+fn undo_reverts_owned_pages_in_a_new_revision_and_requires_editor() {
+    let mut pages = book();
+    let committed = execute(&mut pages, request(0, "target", json!([set(0, 42)]))).unwrap();
+    assert!(required_pages(&pages, &undo(1, "undo", &committed.history)).unwrap().is_empty());
+    assert_eq!(execute_authorized(&mut pages, undo(1, "denied", &committed.history), AccessRole::Commenter).unwrap_err().code, "FORBIDDEN");
+    let reverted = execute(&mut pages, undo(1, "undo", &committed.history)).unwrap();
+    assert_eq!(reverted.revision, 2);
+    assert_eq!(reverted.history.page_deltas[0].before, committed.history.page_deltas[0].after);
+    assert_eq!(reverted.history.page_deltas[0].after, committed.history.page_deltas[0].before);
+    assert_eq!(pages.read_cell(&CellAddress { sheet_id: "s".into(), row: 0, column: 0 }).unwrap(), None);
+}
+
+#[test]
+fn undo_preserves_nonoverlapping_pages_and_rejects_overlap_atomically() {
+    let mut pages = WorkbookPages::create("w", "Workbook", vec![SheetManifest {
+        sheet_id: "s".into(), name: "Sheet1".into(), row_count: 3000, column_count: 4, metadata: BTreeMap::new(),
+    }]).unwrap();
+    let target = execute(&mut pages, request(0, "target", json!([set(0, 42)]))).unwrap();
+    execute(&mut pages, request(1, "other-page", json!([set(1500, 9)]))).unwrap();
+    execute(&mut pages, undo(2, "undo", &target.history)).unwrap();
+    assert_eq!(pages.read_cell(&CellAddress { sheet_id: "s".into(), row: 1500, column: 0 }).unwrap().unwrap().value, Scalar::Number(9.));
+
+    let mut conflicting = book();
+    let target = execute(&mut conflicting, request(0, "target", json!([set(0, 42)]))).unwrap();
+    execute(&mut conflicting, request(1, "overlap", json!([set(0, 99)]))).unwrap();
+    assert_eq!(execute(&mut conflicting, undo(2, "undo", &target.history)).unwrap_err().code, "UNDO_CONFLICT");
+    assert_eq!(conflicting.revision(), 2);
+    assert_eq!(conflicting.read_cell(&CellAddress { sheet_id: "s".into(), row: 0, column: 0 }).unwrap().unwrap().value, Scalar::Number(99.));
+}
+
+#[test]
+fn undo_metadata_requires_the_recorded_after_state() {
+    let rename = |name: &str| json!([{"id":"sheet.rename","sheetId":"s","params":{"sheetId":"s","name":name}}]);
+    let mut pages = book();
+    let target = execute(&mut pages, request(0, "rename", rename("Renamed"))).unwrap();
+    assert_eq!(target.history.metadata_after.as_ref().unwrap().sheets[0].name, "Renamed");
+    execute(&mut pages, undo(1, "undo-rename", &target.history)).unwrap();
+    assert_eq!(pages.manifest().sheets[0].name, "Sheet1");
+
+    let mut conflicting = book();
+    let target = execute(&mut conflicting, request(0, "rename", rename("Renamed"))).unwrap();
+    execute(&mut conflicting, request(1, "rename-again", rename("Later"))).unwrap();
+    assert_eq!(execute(&mut conflicting, undo(2, "undo-rename", &target.history)).unwrap_err().code, "UNDO_CONFLICT");
+    assert_eq!(conflicting.manifest().sheets[0].name, "Later");
+}
 
 #[test]
 fn batch_has_one_revision_and_roundtrips_pages() {
