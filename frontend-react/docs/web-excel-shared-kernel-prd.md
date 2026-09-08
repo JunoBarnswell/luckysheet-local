@@ -174,6 +174,7 @@
 | L06 选择与跳转 | 选区先发布，active cell 同步读取可能早于页面请求 | 远跳、PageDown、名称框触发 `DATA_PAGE_UNAVAILABLE` | 异步选择入口先加载目标 range；Canvas 可见点击复用 resident 页 | 跳到第 4 页只新增目标页请求且可编辑 |
 | L07 加载 UI | 每次 prepare 都全屏遮罩，旧 Promise 可覆盖新状态 | 滚动闪烁、交互被遮挡、错误串 revision | generation/ref-count 状态；已有内容加载时显示非阻塞提示，error 可重试 | 快速滚动无 stale overlay，指针持续可用 |
 | L08 回归与度量 | 只测 replica 局部语义，没有 route/runtime/browser 网络证据 | 全量读取可从新入口回归 | resolver/runtime/replica/Canvas 测试并记录真实 OCR 文件 Network、Console、TTI | 无 route-level 全页 waterfall；console 无未处理缺页 |
+| L09 E2E 构建溯源 | browser CI 用当前提交的 Linux WASM 覆盖仓库中的平台产物，v1 把这两个受控输出判为源码脏 | 浏览器用例在启动前失败，无法验证产品行为 | provenance v2 仅放行精确 kernel manifest/WASM 路径，并校验 manifest schema、artifact、byteLength、SHA-256；记录最终 WASM 身份，其它差异继续 fail-close | Linux CI 产物可运行 E2E；任意源码差异、字节数或 hash 不符均拒绝 |
 
 ### 失败与恢复
 

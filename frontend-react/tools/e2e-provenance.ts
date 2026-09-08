@@ -8,14 +8,22 @@ import { chromium, type FullConfig } from '@playwright/test';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const frontendRoot = path.join(repoRoot, 'frontend-react');
 const manifestPath = path.join(frontendRoot, 'test-results', 'provenance.json');
+const kernelDirectory = path.join(frontendRoot, 'apps', 'web', 'public', 'kernel');
+const kernelManifestPath = path.join(kernelDirectory, 'kernel-manifest.json');
+const generatedKernelPaths = new Set([
+  'frontend-react/apps/web/public/kernel/kernel-manifest.json',
+  'frontend-react/apps/web/public/kernel/kernel_host.wasm',
+]);
 
 export interface E2EProvenanceManifest {
-  schema: 'luckysheet-local.e2e-provenance.v1';
+  schema: 'luckysheet-local.e2e-provenance.v2';
   runId: string;
   sourceSha: string;
   buildSha: string;
   sourceDirty: boolean;
   packageLockSha256: string;
+  kernelArtifactSha256: string;
+  kernelArtifactBytes: number;
   nodeVersion: string;
   playwrightVersion: string;
   browserVersion: string;
@@ -28,12 +36,53 @@ export interface E2EProvenanceManifest {
   artifactRoot: string;
 }
 
+interface KernelBuildManifest {
+  readonly schema: 'react-sheets.kernel-build.v1';
+  readonly artifact: string;
+  readonly bytes: number;
+  readonly expectedSha256: string;
+}
+
 function git(...args: string[]): string {
   return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).trim();
 }
 
+function gitPorcelain(): string {
+  return execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' });
+}
+
 function packageLockSha256(): string {
   return crypto.createHash('sha256').update(fs.readFileSync(path.join(frontendRoot, 'package-lock.json'))).digest('hex');
+}
+
+export function validateKernelBuildArtifact(manifest: KernelBuildManifest, payload: Uint8Array): string {
+  if (manifest.schema !== 'react-sheets.kernel-build.v1' || manifest.artifact !== 'kernel_host.wasm') {
+    throw new Error('E2E provenance requires the canonical kernel build manifest');
+  }
+  if (!Number.isSafeInteger(manifest.bytes) || manifest.bytes < 1 || manifest.bytes !== payload.byteLength) {
+    throw new Error(`E2E kernel artifact byte length mismatch: manifest=${manifest.bytes}, artifact=${payload.byteLength}`);
+  }
+  const actualSha256 = crypto.createHash('sha256').update(payload).digest('hex');
+  if (!/^[0-9a-f]{64}$/i.test(manifest.expectedSha256) || manifest.expectedSha256.toLowerCase() !== actualSha256) {
+    throw new Error(`E2E kernel artifact SHA-256 mismatch: manifest=${manifest.expectedSha256}, artifact=${actualSha256}`);
+  }
+  return actualSha256;
+}
+
+function kernelArtifactIdentity(): { sha256: string; bytes: number } {
+  const manifest = JSON.parse(fs.readFileSync(kernelManifestPath, 'utf8')) as KernelBuildManifest;
+  if (manifest.schema !== 'react-sheets.kernel-build.v1' || manifest.artifact !== 'kernel_host.wasm') {
+    throw new Error('E2E provenance requires the canonical kernel build manifest');
+  }
+  const payload = fs.readFileSync(path.join(kernelDirectory, manifest.artifact));
+  return { sha256: validateKernelBuildArtifact(manifest, payload), bytes: payload.byteLength };
+}
+
+export function hasUnexpectedSourceChanges(porcelain: string): boolean {
+  return porcelain.split(/\r?\n/).filter(Boolean).some((entry) => {
+    const pathEntry = entry.slice(3);
+    return !generatedKernelPaths.has(pathEntry);
+  });
 }
 
 function packageJson(): { version?: string; devDependencies?: Record<string, string> } {
@@ -52,17 +101,20 @@ async function installedBrowserVersion(): Promise<string> {
 async function buildManifest(): Promise<E2EProvenanceManifest> {
   const startedAt = new Date().toISOString();
   const sourceSha = git('rev-parse', 'HEAD');
-  const sourceDirty = git('status', '--porcelain', '--untracked-files=all').length > 0;
+  const sourceDirty = hasUnexpectedSourceChanges(gitPorcelain());
   const packageInfo = packageJson();
   const playwrightVersion = packageInfo.devDependencies?.['@playwright/test'] ?? 'unknown';
   const browserVersion = process.env.PLAYWRIGHT_BROWSER_VERSION ?? await installedBrowserVersion();
+  const kernelArtifact = kernelArtifactIdentity();
   return {
-    schema: 'luckysheet-local.e2e-provenance.v1',
+    schema: 'luckysheet-local.e2e-provenance.v2',
     runId: `${sourceSha}-${startedAt.replaceAll(/[-:.TZ]/g, '')}`,
     sourceSha,
     buildSha: process.env.E2E_BUILD_SHA ?? sourceSha,
     sourceDirty,
     packageLockSha256: packageLockSha256(),
+    kernelArtifactSha256: kernelArtifact.sha256,
+    kernelArtifactBytes: kernelArtifact.bytes,
     nodeVersion: process.version,
     playwrightVersion,
     browserVersion,
@@ -77,14 +129,16 @@ async function buildManifest(): Promise<E2EProvenanceManifest> {
 }
 
 export function validateE2EProvenance(manifest: E2EProvenanceManifest): void {
-  const required = ['runId', 'sourceSha', 'buildSha', 'packageLockSha256', 'nodeVersion', 'playwrightVersion', 'browserVersion', 'backendBuildIdentity', 'locale', 'viewport', 'baseURL', 'command', 'startedAt', 'artifactRoot'] as const;
+  const required = ['runId', 'sourceSha', 'buildSha', 'packageLockSha256', 'kernelArtifactSha256', 'nodeVersion', 'playwrightVersion', 'browserVersion', 'backendBuildIdentity', 'locale', 'viewport', 'baseURL', 'command', 'startedAt', 'artifactRoot'] as const;
   for (const key of required) {
     if (typeof manifest[key] !== 'string' || manifest[key].trim() === '') throw new Error(`E2E provenance is missing ${key}`);
   }
-  if (manifest.schema !== 'luckysheet-local.e2e-provenance.v1') throw new Error(`Unsupported E2E provenance schema: ${manifest.schema}`);
+  if (manifest.schema !== 'luckysheet-local.e2e-provenance.v2') throw new Error(`Unsupported E2E provenance schema: ${manifest.schema}`);
   if (manifest.sourceSha !== manifest.buildSha) throw new Error(`E2E build/source SHA mismatch: build=${manifest.buildSha}, source=${manifest.sourceSha}`);
   if (manifest.sourceDirty) throw new Error('E2E provenance requires a clean source tree');
   if (!/^[0-9a-f]{64}$/i.test(manifest.packageLockSha256)) throw new Error('E2E provenance has an invalid package-lock digest');
+  if (!/^[0-9a-f]{64}$/i.test(manifest.kernelArtifactSha256)) throw new Error('E2E provenance has an invalid kernel artifact digest');
+  if (!Number.isSafeInteger(manifest.kernelArtifactBytes) || manifest.kernelArtifactBytes < 1) throw new Error('E2E provenance has an invalid kernel artifact byte length');
   if (manifest.browserVersion.toLowerCase() === 'unknown' || manifest.browserVersion.toLowerCase() === 'unresolved') throw new Error('E2E provenance requires an installed browser version');
   if (!/^\d+x\d+$/.test(manifest.viewport)) throw new Error(`E2E provenance has an invalid viewport: ${manifest.viewport}`);
   if (Number.isNaN(Date.parse(manifest.startedAt))) throw new Error('E2E provenance has an invalid start time');
