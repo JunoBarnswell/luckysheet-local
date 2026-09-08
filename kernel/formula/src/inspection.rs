@@ -71,7 +71,7 @@ pub struct FormulaInspection {
     pub dependents: Vec<CellAddress>,
     pub spills: Vec<ResolvedSpill>,
     pub pending_recalculation: bool,
-    pub next_cursor: Option<CellAddress>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,7 +80,7 @@ pub struct InspectionQuery {
     pub address: Option<CellAddress>,
     pub projection: Option<String>,
     pub sheet_id: Option<String>,
-    pub cursor: Option<CellAddress>,
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -110,12 +110,16 @@ fn dependency_values(expr: &Expr) -> Vec<FormulaDependency> {
     fn walk(expr: &Expr, out: &mut Vec<FormulaDependency>) {
         match expr {
             Expr::Reference(range) => append_range_dependencies(out, std::slice::from_ref(range)),
-            Expr::Name(name) | Expr::Structured(name) => {
+            Expr::Name(name) => {
                 out.push(FormulaDependency::Name(NameDependency {
                     kind: "name".into(),
                     name: name.to_uppercase(),
                 }))
             }
+            Expr::Structured(reference) => out.push(FormulaDependency::Name(NameDependency {
+                kind: "name".into(),
+                name: reference.table_name.to_uppercase(),
+            })),
             Expr::Array(rows) => {
                 for expr in rows.iter().flatten() {
                     walk(expr, out);
@@ -197,7 +201,10 @@ fn inspection_bounds(
         row: MAX_ROWS - 1,
         column: MAX_COLUMNS - 1,
     });
-    let lower = if let Some(cursor) = &query.cursor {
+    let lower = if let Some(raw_cursor) = &query.cursor {
+        let cursor: CellAddress = serde_json::from_str(raw_cursor).map_err(|_| {
+            KernelError::new("INSPECTION_QUERY_INVALID", "Inspection cursor is malformed")
+        })?;
         cursor.validate()?;
         if query
             .sheet_id
@@ -209,7 +216,7 @@ fn inspection_bounds(
                 "Inspection cursor belongs to another worksheet",
             ));
         }
-        Excluded(cursor.clone())
+        Excluded(cursor)
     } else {
         start.map(Included).unwrap_or(Unbounded)
     };
@@ -302,7 +309,9 @@ impl FormulaRuntime {
                 .take(limit + 1)
                 .collect();
             if selected.len() > limit {
-                next_cursor = selected.get(limit - 1).map(|(cell, _)| (*cell).clone());
+                next_cursor = selected
+                    .get(limit - 1)
+                    .map(|(cell, _)| serde_json::to_string(*cell).expect("cell addresses serialize"));
             }
             for (cell, formula) in selected.into_iter().take(limit) {
                 let value = session.cell_output(cell)?;
@@ -344,7 +353,9 @@ impl FormulaRuntime {
                 }
             }
             if selected.len() > limit {
-                next_cursor = selected.get(limit - 1).map(|cell| (*cell).clone());
+                next_cursor = selected
+                    .get(limit - 1)
+                    .map(|cell| serde_json::to_string(*cell).expect("cell addresses serialize"));
             }
             values
         } else {
@@ -446,7 +457,8 @@ impl FormulaRuntime {
         services: &dyn CalculationServices,
     ) -> KernelResult<FormulaValue> {
         let session = evaluator::Session::with_overrides(self, reader, services, overrides)?;
-        let ast = parser::parse(formula, current)?;
+        let mut ast = parser::parse(formula, current)?;
+        self.resolve_sheets(&mut ast)?;
         session.output(&ast, current)
     }
 }

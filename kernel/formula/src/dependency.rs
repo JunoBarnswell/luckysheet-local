@@ -179,8 +179,11 @@ impl DependencyIndex {
 fn collect(e: &Expr, ranges: &mut Vec<RangeRef>, names: &mut BTreeSet<String>) {
     match e {
         Expr::Reference(r) => ranges.push(r.clone()),
-        Expr::Name(n) | Expr::Structured(n) => {
+        Expr::Name(n) => {
             names.insert(n.to_uppercase());
+        }
+        Expr::Structured(reference) => {
+            names.insert(reference.table_name.to_uppercase());
         }
         Expr::Array(rows) => {
             for e in rows.iter().flatten() {

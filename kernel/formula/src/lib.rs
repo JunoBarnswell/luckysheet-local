@@ -152,6 +152,22 @@ struct FormulaEntry {
     ast: Expr,
     source: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefinedNameScope {
+    Workbook,
+    Sheet(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormulaTable {
+    pub name: String,
+    pub range: RangeRef,
+    pub has_header_row: bool,
+    pub has_total_row: bool,
+    pub columns: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct FormulaRuntime {
     sheet_ids: BTreeMap<String, String>,
@@ -163,8 +179,9 @@ pub struct FormulaRuntime {
     index: DependencyIndex,
     dirty: BTreeSet<CellAddress>,
     volatile: BTreeSet<CellAddress>,
-    names: BTreeMap<String, Expr>,
-    tables: BTreeMap<String, RangeRef>,
+    workbook_names: BTreeMap<String, Expr>,
+    sheet_names: BTreeMap<(String, String), Expr>,
+    tables: BTreeMap<String, FormulaTable>,
     spills: BTreeMap<CellAddress, RangeRef>,
     spill_index: DependencyIndex,
     pub context: CalculationContext,
@@ -181,7 +198,8 @@ impl FormulaRuntime {
             index: DependencyIndex::default(),
             dirty: BTreeSet::new(),
             volatile: BTreeSet::new(),
-            names: BTreeMap::new(),
+            workbook_names: BTreeMap::new(),
+            sheet_names: BTreeMap::new(),
             tables: BTreeMap::new(),
             spills: BTreeMap::new(),
             spill_index: DependencyIndex::default(),
@@ -258,27 +276,126 @@ impl FormulaRuntime {
         &mut self,
         name: &str,
         formula: &str,
-        scope: &CellAddress,
+        scope: DefinedNameScope,
+        current: &CellAddress,
     ) -> KernelResult<()> {
         let key = name.to_uppercase();
-        let mut ast = parser::parse(formula, scope)?;
+        if key.is_empty() {
+            return Err(KernelError::new("DEFINED_NAME_INVALID", "Defined name is required"));
+        }
+        let mut ast = parser::parse(formula, current)?;
         self.resolve_sheets(&mut ast)?;
-        self.names.insert(key.clone(), ast);
+        match scope {
+            DefinedNameScope::Workbook => {
+                self.workbook_names.insert(key.clone(), ast);
+            }
+            DefinedNameScope::Sheet(sheet_id) => {
+                if !self.sheet_ids.values().any(|id| id == &sheet_id) {
+                    return Err(KernelError::new("SHEET_IDENTITY_INVALID", "Defined-name scope worksheet is not registered").at(sheet_id));
+                }
+                self.sheet_names.insert((sheet_id, key.clone()), ast);
+            }
+        }
         for a in self.index.named(&key) {
             self.dirty.insert(a.clone());
             self.invalidate(&a);
         }
         Ok(())
     }
-    pub fn define_table_reference(&mut self, name: &str, range: RangeRef) -> KernelResult<()> {
-        range.validate()?;
-        let key = name.to_uppercase();
-        self.tables.insert(key.clone(), range);
+    pub fn define_table(&mut self, table: FormulaTable) -> KernelResult<()> {
+        table.range.validate()?;
+        let width = (table.range.end_column - table.range.start_column + 1) as usize;
+        if table.name.trim().is_empty()
+            || table.columns.len() != width
+            || table.columns.iter().any(|column| column.trim().is_empty())
+            || table.has_header_row as u32 + table.has_total_row as u32
+                > table.range.end_row - table.range.start_row + 1
+        {
+            return Err(KernelError::new("TABLE_DEFINITION_INVALID", "Structured table definition does not match its worksheet range"));
+        }
+        let key = table.name.to_uppercase();
+        self.tables.insert(key.clone(), table);
         for a in self.index.named(&key) {
             self.dirty.insert(a.clone());
             self.invalidate(&a);
         }
         Ok(())
+    }
+
+    fn resolve_name(&self, name: &str, current: &CellAddress) -> Option<&Expr> {
+        let key = name.to_uppercase();
+        self.sheet_names
+            .get(&(current.sheet_id.clone(), key.clone()))
+            .or_else(|| self.workbook_names.get(&key))
+    }
+
+    fn resolve_table_reference(
+        &self,
+        reference: &parser::StructuredReference,
+        current: &CellAddress,
+    ) -> KernelResult<RangeRef> {
+        let table = self.tables.get(&reference.table_name.to_uppercase()).ok_or_else(|| {
+            KernelError::new("STRUCTURED_REFERENCE_UNRESOLVED", "Canonical table definition is unavailable").at(&reference.source)
+        })?;
+        let mut start_column = table.range.start_column;
+        let mut end_column = table.range.end_column;
+        if let Some(column_name) = &reference.column_name {
+            let first = table.columns.iter().position(|column| column.eq_ignore_ascii_case(column_name)).ok_or_else(|| {
+                KernelError::new("#REF!", "Structured table column does not exist").at(column_name)
+            })? as u32;
+            let last = if let Some(column_end_name) = &reference.column_end_name {
+                table.columns.iter().position(|column| column.eq_ignore_ascii_case(column_end_name)).ok_or_else(|| {
+                    KernelError::new("#REF!", "Structured table column does not exist").at(column_end_name)
+                })? as u32
+            } else {
+                first
+            };
+            if last < first {
+                return Err(KernelError::new("#REF!", "Structured table column range is reversed").at(&reference.source));
+            }
+            start_column += first;
+            end_column = table.range.start_column + last;
+        }
+        let data_start = table.range.start_row + u32::from(table.has_header_row);
+        let data_end = table.range.end_row - u32::from(table.has_total_row);
+        let (start_row, end_row) = if reference.this_row {
+            if current.sheet_id != table.range.sheet_id || current.row < data_start || current.row > data_end {
+                return Err(KernelError::new("#VALUE!", "This-row structured reference is outside the table data body").at(&reference.source));
+            }
+            (current.row, current.row)
+        } else {
+            match reference.specifier.as_deref().unwrap_or("data") {
+                "all" => (table.range.start_row, table.range.end_row),
+                "headers" if table.has_header_row => (table.range.start_row, table.range.start_row),
+                "totals" if table.has_total_row => (table.range.end_row, table.range.end_row),
+                "data" if data_start <= data_end => (data_start, data_end),
+                "headers" | "totals" | "data" => {
+                    return Err(KernelError::new("#REF!", "Structured table row selector has no rows").at(&reference.source));
+                }
+                _ => return Err(KernelError::new("UNSUPPORTED_FEATURE", "Unsupported structured table row selector").at(&reference.source)),
+            }
+        };
+        Ok(RangeRef {
+            sheet_id: table.range.sheet_id.clone(),
+            start_row,
+            end_row,
+            start_column,
+            end_column,
+        })
+    }
+
+    pub fn synchronize_range(&mut self, range: &RangeRef, reader: &dyn CellReader) -> KernelResult<()> {
+        range.validate()?;
+        let existing: Vec<_> = self.formulas.keys().filter(|address| range.contains(address)).cloned().collect();
+        for address in existing {
+            self.remove_formula(&address);
+        }
+        reader.read_range(range, &mut |address, cell| {
+            if let Some(formula) = cell.formula {
+                self.set_formula(address, &formula)?;
+            }
+            Ok(())
+        })
     }
     pub fn evaluate(
         &self,

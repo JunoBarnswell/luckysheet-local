@@ -1,7 +1,7 @@
 //! Authored entry rules are evaluated against the staged canonical reader.
 use crate::{Transaction, invalid, range, text};
 use kernel_core::*;
-use kernel_formula::{FormulaRuntime, FormulaValue};
+use kernel_formula::{DefinedNameScope, FormulaRuntime, FormulaTable, FormulaValue};
 use serde_json::Value;
 
 pub(crate) fn check(
@@ -187,6 +187,9 @@ pub(crate) fn check(
 }
 fn evaluate(tx: &Transaction, address: &CellAddress, formula: &str) -> KernelResult<FormulaValue> {
     let mut runtime = FormulaRuntime::new(&address.sheet_id);
+    for sheet in &tx.manifest.sheets {
+        runtime.register_sheet(&sheet.name, &sheet.sheet_id)?;
+    }
     runtime.context.date1904 = tx
         .manifest
         .metadata
@@ -198,10 +201,12 @@ fn evaluate(tx: &Transaction, address: &CellAddress, formula: &str) -> KernelRes
             .as_array()
             .ok_or_else(|| invalid("Defined names must be array"))?
         {
-            let sheet = name.get("sheetId").and_then(Value::as_str);
-            if sheet.is_none() || sheet == Some(address.sheet_id.as_str()) {
-                runtime.define_name(text(name, "name")?, text(name, "formula")?, address)?;
-            }
+            let scope = match name.get("scope").and_then(Value::as_str).unwrap_or("workbook") {
+                "workbook" => DefinedNameScope::Workbook,
+                "sheet" => DefinedNameScope::Sheet(text(name, "sheetId")?.into()),
+                _ => return Err(invalid("Defined-name scope must be workbook or sheet")),
+            };
+            runtime.define_name(text(name, "name")?, text(name, "formula")?, scope, address)?;
         }
     }
     for sheet in &tx.manifest.sheets {
@@ -210,10 +215,20 @@ fn evaluate(tx: &Transaction, address: &CellAddress, formula: &str) -> KernelRes
                 .as_array()
                 .ok_or_else(|| invalid("Sheet tables must be array"))?
             {
-                runtime.define_table_reference(
-                    text(table, "name")?,
-                    range(tx, &sheet.sheet_id, &table["range"])?,
-                )?;
+                let columns = table
+                    .get("columns")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| invalid("Sheet table columns must be array"))?
+                    .iter()
+                    .map(|column| text(column, "name").map(str::to_owned))
+                    .collect::<KernelResult<Vec<_>>>()?;
+                runtime.define_table(FormulaTable {
+                    name: text(table, "name")?.into(),
+                    range: range(tx, &sheet.sheet_id, &table["range"])?,
+                    has_header_row: table.get("hasHeaderRow").and_then(Value::as_bool).ok_or_else(|| invalid("Sheet table hasHeaderRow is required"))?,
+                    has_total_row: table.get("hasTotalRow").and_then(Value::as_bool).ok_or_else(|| invalid("Sheet table hasTotalRow is required"))?,
+                    columns,
+                })?;
             }
         }
     }

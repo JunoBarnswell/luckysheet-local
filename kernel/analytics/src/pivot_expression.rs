@@ -1,5 +1,5 @@
 use kernel_core::{Cell, CellAddress, CellReader, KernelError, KernelResult, RangeRef, Scalar};
-use kernel_formula::{FormulaRuntime, parser::Expr};
+use kernel_formula::{DefinedNameScope, FormulaRuntime, FormulaTable, parser::Expr};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -149,6 +149,7 @@ impl Evaluator {
             runtime.define_name(
                 &field.field_id,
                 &reference,
+                DefinedNameScope::Workbook,
                 &CellAddress {
                     sheet_id: "pivot-summary".into(),
                     row: 1,
@@ -158,6 +159,7 @@ impl Evaluator {
             runtime.define_name(
                 &field.name,
                 &reference,
+                DefinedNameScope::Workbook,
                 &CellAddress {
                     sheet_id: "pivot-summary".into(),
                     row: 1,
@@ -171,8 +173,15 @@ impl Evaluator {
                 start_column: index as u32,
                 end_column: index as u32,
             };
-            runtime.define_table_reference(&field.field_id, range.clone())?;
-            runtime.define_table_reference(&field.name, range)?;
+            for name in [&field.field_id, &field.name] {
+                runtime.define_table(FormulaTable {
+                    name: name.clone(),
+                    range: range.clone(),
+                    has_header_row: false,
+                    has_total_row: false,
+                    columns: vec![name.clone()],
+                })?;
+            }
         }
         let mut output = BTreeMap::new();
         for id in &self.ordered {
@@ -326,7 +335,7 @@ fn references(
         owner: &str,
     ) -> KernelResult<()> {
         match expr {
-            Expr::Name(name) | Expr::Structured(name) => {
+            Expr::Name(name) => {
                 let id = aliases.get(&name.to_ascii_uppercase()).ok_or_else(|| {
                     KernelError::new(
                         "PIVOT_CALCULATED_FIELD_REFERENCE",
@@ -334,6 +343,23 @@ fn references(
                     )
                     .at(owner)
                 })?;
+                if defs.contains_key(id) {
+                    found.insert(id.clone());
+                }
+            }
+            Expr::Structured(reference) => {
+                let id = aliases
+                    .get(&reference.table_name.to_ascii_uppercase())
+                    .ok_or_else(|| {
+                        KernelError::new(
+                            "PIVOT_CALCULATED_FIELD_REFERENCE",
+                            format!(
+                                "Unknown calculated field reference: {}",
+                                reference.table_name
+                            ),
+                        )
+                        .at(owner)
+                    })?;
                 if defs.contains_key(id) {
                     found.insert(id.clone());
                 }

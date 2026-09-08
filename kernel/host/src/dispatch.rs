@@ -1,7 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kernel_commands::{AccessRole, CommandRequest};
 use kernel_core::*;
-use kernel_formula::FormulaRuntime;
+use kernel_formula::{
+    DefinedNameScope, FormulaRuntime, FormulaTable, InspectionQuery,
+};
 use kernel_geometry::{GeometryRequest, HeaderAxis, Point};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -24,6 +26,13 @@ struct Invocation {
     params: Value,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FormulaOverride {
+    address: CellAddress,
+    value: Scalar,
+}
+
 #[derive(Default)]
 pub struct KernelHost {
     workbooks: BTreeMap<String, WorkbookPages>,
@@ -33,6 +42,17 @@ pub struct KernelHost {
 }
 
 impl KernelHost {
+    fn ensure_formula_runtime(&mut self, unit_id: &str) -> KernelResult<()> {
+        if !self.formulas.contains_key(unit_id) {
+            let workbook = self
+                .workbooks
+                .get(unit_id)
+                .ok_or_else(|| KernelError::new("WORKBOOK_NOT_OPEN", "Workbook is not open").at(unit_id))?;
+            self.formulas
+                .insert(unit_id.to_owned(), build_formula_runtime(workbook)?);
+        }
+        Ok(())
+    }
     pub fn invoke_cancellable(&mut self, bytes: &[u8], cancellation: Arc<AtomicBool>) -> Vec<u8> {
         self.cancellation = cancellation;
         let response = self.invoke(bytes);
@@ -97,7 +117,7 @@ impl KernelHost {
     pub fn dispatch(&mut self, operation: &str, params: Value) -> KernelResult<Value> {
         match operation {
             "init" => Ok(
-                json!({"protocolVersion":1,"manifestVersion":11,"operations":["init","open","create","manifest","cell.get","range.get","page.get","page.load","command","close","formula.functions","formula.evaluate","formula.recalculate","analytics.execute","geometry.computePaneMap","geometry.hitTest","geometry.cellRect","geometry.headerRect"]}),
+                json!({"protocolVersion":1,"manifestVersion":11,"operations":["init","open","create","manifest","cell.get","range.get","page.get","page.load","command","close","formula.functions","formula.evaluate","formula.recalculate","formula.inspect","formula.trace","formula.spillValue","analytics.execute","geometry.computePaneMap","geometry.hitTest","geometry.cellRect","geometry.headerRect"]}),
             ),
             "create" => {
                 let unit_id = string(&params, "unitId")?.to_owned();
@@ -263,13 +283,65 @@ impl KernelHost {
             }
             "formula.functions" => Ok(json!({"functions": kernel_formula::function_capabilities()})),
             "formula.evaluate" => {
-                let workbook = self.workbook(&params)?;
+                let id = string(&params, "unitId")?.to_owned();
+                self.workbook(&params)?;
+                self.ensure_formula_runtime(&id)?;
+                let workbook = self.workbooks.get(&id).unwrap();
                 let address: CellAddress = decode(required(&params, "address")?.clone())?;
-                let runtime = FormulaRuntime::new(address.sheet_id.clone());
-                let result = runtime.evaluate(string(&params, "formula")?, &address, workbook)?;
+                let overrides = params
+                    .get("overrides")
+                    .map(|value| decode::<Vec<FormulaOverride>>(value.clone()))
+                    .transpose()?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|item| (item.address, item.value))
+                    .collect::<BTreeMap<_, _>>();
+                let runtime = self.formulas.get(&id).unwrap();
+                let result = if overrides.is_empty() {
+                    runtime.evaluate(string(&params, "formula")?, &address, workbook)?
+                } else {
+                    runtime.evaluate_with_overrides(
+                        string(&params, "formula")?,
+                        &address,
+                        workbook,
+                        &overrides,
+                    )?
+                };
                 Ok(json!({"revision":workbook.revision(),"value":result}))
             }
             "formula.recalculate" => self.recalculate(params),
+            "formula.inspect" => {
+                let id = string(&params, "unitId")?.to_owned();
+                self.workbook(&params)?;
+                self.ensure_formula_runtime(&id)?;
+                let query: InspectionQuery = decode(params)?;
+                encode(self.formulas.get(&id).unwrap().inspect_query(
+                    self.workbooks.get(&id).unwrap(),
+                    &query,
+                )?)
+            }
+            "formula.trace" => {
+                let id = string(&params, "unitId")?.to_owned();
+                self.workbook(&params)?;
+                self.ensure_formula_runtime(&id)?;
+                let address: CellAddress = decode(required(&params, "address")?.clone())?;
+                let trace = self.formulas.get(&id).unwrap().trace(
+                    &address,
+                    self.workbooks.get(&id).unwrap(),
+                )?;
+                Ok(json!({"revision":self.workbooks.get(&id).unwrap().revision(),"value":trace.value,"steps":trace.steps}))
+            }
+            "formula.spillValue" => {
+                let id = string(&params, "unitId")?.to_owned();
+                self.workbook(&params)?;
+                self.ensure_formula_runtime(&id)?;
+                let address: CellAddress = decode(required(&params, "address")?.clone())?;
+                let spill = self.formulas.get(&id).unwrap().spill_value(
+                    &address,
+                    self.workbooks.get(&id).unwrap(),
+                )?;
+                Ok(json!({"revision":self.workbooks.get(&id).unwrap().revision(),"value":spill.value,"isSpill":spill.is_spill}))
+            }
             "analytics.execute" => {
                 self.workbook(&params)?;
                 let request = required(&params, "request")?.clone();
@@ -333,10 +405,23 @@ impl KernelHost {
         if serde_json::to_vec(&result).map_err(|e| KernelError::new("KERNEL_RESPONSE_INVALID", e.to_string()))?.len() + 1024 > MAX_FRAME_BYTES {
             return Err(KernelError::new("KERNEL_PAYLOAD_TOO_LARGE", "ChangeSet must be staged in data pages before committing").recover("use-bulk-transaction"));
         }
-        if let Some(formula) = self.formulas.get_mut(&id) {
-            for range in &changes.affected_ranges { formula.invalidate_range(range)?; }
+        let staged_formula = if let Some(current) = self.formulas.get(&id) {
+            if changes.history.metadata_after.is_some() {
+                Some(build_formula_runtime(&staged)?)
+            } else {
+                let mut next = current.clone();
+                for range in &changes.affected_ranges {
+                    next.synchronize_range(range, &staged)?;
+                }
+                Some(next)
+            }
+        } else {
+            None
+        };
+        self.workbooks.insert(id.clone(), staged);
+        if let Some(runtime) = staged_formula {
+            self.formulas.insert(id, runtime);
         }
-        self.workbooks.insert(id, staged);
         Ok(result)
     }
 
@@ -346,35 +431,146 @@ impl KernelHost {
         let workbook = self.workbooks.get(&id).unwrap();
         let manifest = workbook.manifest();
         if !self.formulas.contains_key(&id) {
-            let default_sheet = manifest
-                .sheets
-                .first()
-                .ok_or_else(|| KernelError::new("WORKBOOK_INVALID", "No worksheets"))?
-                .sheet_id
-                .clone();
-            let mut runtime = FormulaRuntime::new(default_sheet);
-            for sheet in &manifest.sheets {
-                let range = RangeRef {
-                    sheet_id: sheet.sheet_id.clone(),
-                    start_row: 0,
-                    end_row: sheet.row_count - 1,
-                    start_column: 0,
-                    end_column: sheet.column_count - 1,
-                };
-                workbook.read_range(&range, &mut |address, cell| {
-                    if let Some(formula) = cell.formula {
-                        runtime.set_formula(address, &formula)?;
-                    }
-                    Ok(())
-                })?;
-            }
-            self.formulas.insert(id.clone(), runtime);
+            self.formulas.insert(id.clone(), build_formula_runtime(workbook)?);
         }
         let values = self.formulas.get_mut(&id).unwrap().recalculate(workbook)?;
-        Ok(
-            json!({"revision":manifest.revision,"values":values.into_iter().map(|(address,value)|json!({"address":address,"value":value})).collect::<Vec<_>>()}),
-        )
+        let generation = self.formulas.get(&id).unwrap().generation();
+        let pending = self.formulas.get(&id).unwrap().dirty_count() != 0;
+        Ok(json!({
+            "revision":manifest.revision,
+            "generation":generation,
+            "recalculatedCount":values.len(),
+            "pendingRecalculation":pending,
+            "values":values.into_iter().map(|(address,value)|json!({"address":address,"value":value})).collect::<Vec<_>>()
+        }))
     }
+}
+
+fn build_formula_runtime(workbook: &WorkbookPages) -> KernelResult<FormulaRuntime> {
+    let manifest = workbook.manifest();
+    let default_sheet = manifest
+        .sheets
+        .first()
+        .ok_or_else(|| KernelError::new("WORKBOOK_INVALID", "No worksheets"))?
+        .sheet_id
+        .clone();
+    let mut runtime = FormulaRuntime::new(default_sheet.clone());
+    runtime.context.date1904 = manifest
+        .metadata
+        .get("dateSystem")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value == "1904")
+        || manifest
+            .metadata
+            .get("date1904")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    for sheet in &manifest.sheets {
+        runtime.register_sheet(&sheet.name, &sheet.sheet_id)?;
+    }
+    if let Some(names) = manifest.metadata.get("definedNameModels") {
+        for value in names
+            .as_array()
+            .ok_or_else(|| KernelError::new("DEFINED_NAME_INVALID", "Defined names must be an array"))?
+        {
+            let name = required_text(value, "name", "DEFINED_NAME_INVALID")?;
+            let formula = required_text(value, "formula", "DEFINED_NAME_INVALID")?;
+            let scope = match value.get("scope").and_then(Value::as_str).unwrap_or("workbook") {
+                "workbook" => DefinedNameScope::Workbook,
+                "sheet" => DefinedNameScope::Sheet(
+                    required_text(value, "sheetId", "DEFINED_NAME_INVALID")?.to_owned(),
+                ),
+                _ => {
+                    return Err(KernelError::new(
+                        "DEFINED_NAME_INVALID",
+                        "Defined-name scope must be workbook or sheet",
+                    )
+                    .at(name))
+                }
+            };
+            let scope_sheet = match &scope {
+                DefinedNameScope::Workbook => default_sheet.clone(),
+                DefinedNameScope::Sheet(sheet_id) => sheet_id.clone(),
+            };
+            runtime.define_name(
+                name,
+                formula,
+                scope,
+                &CellAddress {
+                    sheet_id: scope_sheet,
+                    row: 0,
+                    column: 0,
+                },
+            )?;
+        }
+    }
+    for sheet in &manifest.sheets {
+        if let Some(tables) = sheet.metadata.get("sheetTables") {
+            for value in tables
+                .as_array()
+                .ok_or_else(|| KernelError::new("TABLE_DEFINITION_INVALID", "Sheet tables must be an array"))?
+            {
+                let range: RangeRef = decode(
+                    value
+                        .get("range")
+                        .ok_or_else(|| KernelError::new("TABLE_DEFINITION_INVALID", "Sheet table range is required"))?
+                        .clone(),
+                )?;
+                if range.sheet_id != sheet.sheet_id {
+                    return Err(KernelError::new(
+                        "TABLE_DEFINITION_INVALID",
+                        "Sheet table range belongs to another worksheet",
+                    )
+                    .at(required_text(value, "name", "TABLE_DEFINITION_INVALID")?));
+                }
+                let columns = value
+                    .get("columns")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| KernelError::new("TABLE_DEFINITION_INVALID", "Sheet table columns must be an array"))?
+                    .iter()
+                    .map(|column| {
+                        required_text(column, "name", "TABLE_DEFINITION_INVALID")
+                            .map(str::to_owned)
+                    })
+                    .collect::<KernelResult<Vec<_>>>()?;
+                runtime.define_table(FormulaTable {
+                    name: required_text(value, "name", "TABLE_DEFINITION_INVALID")?.to_owned(),
+                    range,
+                    has_header_row: value
+                        .get("hasHeaderRow")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| KernelError::new("TABLE_DEFINITION_INVALID", "Sheet table hasHeaderRow is required"))?,
+                    has_total_row: value
+                        .get("hasTotalRow")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| KernelError::new("TABLE_DEFINITION_INVALID", "Sheet table hasTotalRow is required"))?,
+                    columns,
+                })?;
+            }
+        }
+        let range = RangeRef {
+            sheet_id: sheet.sheet_id.clone(),
+            start_row: 0,
+            end_row: sheet.row_count - 1,
+            start_column: 0,
+            end_column: sheet.column_count - 1,
+        };
+        workbook.read_range(&range, &mut |address, cell| {
+            if let Some(formula) = cell.formula {
+                runtime.set_formula(address, &formula)?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(runtime)
+}
+
+fn required_text<'a>(value: &'a Value, key: &str, code: &str) -> KernelResult<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| KernelError::new(code, format!("{key} must be a nonempty string")))
 }
 
 fn required<'a>(params: &'a Value, key: &str) -> KernelResult<&'a Value> {

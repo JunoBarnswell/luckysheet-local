@@ -12,7 +12,7 @@ pub enum Expr {
     Scalar(Scalar),
     Reference(RangeRef),
     Name(String),
-    Structured(String),
+    Structured(StructuredReference),
     Array(Vec<Vec<Expr>>),
     Unary(String, Box<Expr>),
     Binary(String, Box<Expr>, Box<Expr>),
@@ -20,6 +20,16 @@ pub enum Expr {
     Invoke(Box<Expr>, Vec<Expr>),
     Spill(Box<Expr>),
     Missing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredReference {
+    pub source: String,
+    pub table_name: String,
+    pub specifier: Option<String>,
+    pub column_name: Option<String>,
+    pub column_end_name: Option<String>,
+    pub this_row: bool,
 }
 
 fn err(message: impl Into<String>) -> kernel_core::KernelError {
@@ -123,10 +133,15 @@ fn resolve(source: &crate::editor::Expr, current: &CellAddress) -> KernelResult<
             Box::new(child(left)?),
             Box::new(child(right)?),
         ),
-        Node::FunctionCall { name, arguments } => Expr::Call(
-            normalize_function(name),
-            arguments.iter().map(child).collect::<KernelResult<_>>()?,
-        ),
+        Node::FunctionCall { name, arguments } => {
+            let name = normalize_function(name);
+            let arguments = arguments.iter().map(child).collect::<KernelResult<Vec<_>>>()?;
+            if name == "SINGLE" && arguments.len() == 1 {
+                Expr::Unary("@".into(), Box::new(arguments.into_iter().next().unwrap()))
+            } else {
+                Expr::Call(name, arguments)
+            }
+        }
         Node::LambdaInvocation { callee, arguments } => Expr::Invoke(
             Box::new(child(callee)?),
             arguments.iter().map(child).collect::<KernelResult<_>>()?,
@@ -137,7 +152,20 @@ fn resolve(source: &crate::editor::Expr, current: &CellAddress) -> KernelResult<
                 .map(|row| row.iter().map(child).collect())
                 .collect::<KernelResult<_>>()?,
         ),
-        Node::TableReference { .. } => Expr::Structured(crate::editor::format_editor(source)),
+        Node::TableReference {
+            table_name,
+            specifier,
+            column_name,
+            column_end_name,
+            this_row,
+        } => Expr::Structured(StructuredReference {
+            source: crate::editor::format_editor(source),
+            table_name: table_name.clone(),
+            specifier: specifier.clone(),
+            column_name: column_name.clone(),
+            column_end_name: column_end_name.clone(),
+            this_row: *this_row,
+        }),
         Node::ReferenceIntersection { left, right } => {
             let (Expr::Reference(a), Expr::Reference(b)) = (child(left)?, child(right)?) else {
                 return Err(kernel_core::KernelError::new(
@@ -191,7 +219,8 @@ pub fn format(expr: &Expr) -> String {
         Expr::Scalar(Scalar::Text(v)) => format!("\"{}\"", v.replace('"', "\"\"")),
         Expr::Scalar(Scalar::Error(e)) => e.code.clone(),
         Expr::Reference(r) => format_range(r),
-        Expr::Name(v) | Expr::Structured(v) => v.clone(),
+        Expr::Name(v) => v.clone(),
+        Expr::Structured(v) => v.source.clone(),
         Expr::Array(rows) => format!(
             "{{{}}}",
             rows.iter()

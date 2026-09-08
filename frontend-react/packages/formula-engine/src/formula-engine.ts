@@ -52,7 +52,7 @@ interface FormulaMetadata {
 interface Manifest {
   readonly revision: number;
   readonly metadata: FormulaMetadata;
-  readonly sheets: readonly { readonly sheetId: string; readonly metadata: { readonly tables: readonly SheetTableRef[] } }[];
+  readonly sheets: readonly { readonly sheetId: string; readonly metadata: { readonly sheetTables?: readonly SheetTableRef[] } }[];
 }
 
 /** Revision-pinned Rust formula binding. All authored writes belong to model commands. */
@@ -145,5 +145,5 @@ export class FormulaEngine {
   getCollationContext(): WorkbookCollationContext { return this.metadata('collationContext'); }
   getDefinedNameModels(): FormulaDefinedName[] { return [...this.metadata('definedNameModels')]; }
   getDefinedNames(): Record<string, string> { return Object.fromEntries(this.getDefinedNameModels().filter(name => name.scope === 'workbook').map(name => [name.name, name.formula])); }
-  getSheetTables(): readonly SheetTableRef[] { return this.manifest().sheets.flatMap(sheet => sheet.metadata.tables); }
+  getSheetTables(): readonly SheetTableRef[] { return this.manifest().sheets.flatMap(sheet => sheet.metadata.sheetTables ?? []); }
 }

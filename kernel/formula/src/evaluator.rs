@@ -101,6 +101,7 @@ pub const FUNCTIONS: &[&str] = &[
     "RANDBETWEEN",
     "RANDARRAY",
     "ISOMITTED",
+    "SJS.TABLE",
 ];
 pub(crate) struct Session<'a> {
     runtime: &'a FormulaRuntime,
@@ -733,25 +734,15 @@ impl<'a> Session<'a> {
                 if let Some(v) = env.get(&key) {
                     return Ok(v.clone());
                 }
-                if let Some(expr) = self.runtime.names.get(&key) {
+                if let Some(expr) = self.runtime.resolve_name(&key, current) {
                     return self.eval(expr, current, env);
                 }
                 Err(KernelError::new("#NAME?", format!("Undefined name {name}")))
             }
-            Expr::Structured(name) => {
-                let range = self
-                    .runtime
-                    .tables
-                    .get(&name.to_uppercase())
-                    .ok_or_else(|| {
-                        KernelError::new(
-                            "STRUCTURED_REFERENCE_UNRESOLVED",
-                            "Canonical table resolver has not supplied this reference",
-                        )
-                        .at(name)
-                    })?;
-                self.record(current, range);
-                Ok(Value::Reference(range.clone()))
+            Expr::Structured(reference) => {
+                let range = self.runtime.resolve_table_reference(reference, current)?;
+                self.record(current, &range);
+                Ok(Value::Reference(range))
             }
             Expr::Array(rows) => {
                 let cols = rows.first().map_or(0, Vec::len);
@@ -948,6 +939,81 @@ impl<'a> Session<'a> {
         let scalar = |i: usize| self.scalar(&ev(i)?);
         let number = |i: usize| num(&scalar(i)?);
         match name {
+            "SJS.TABLE" => {
+                if args.len() != 3 && args.len() != 5 {
+                    return Err(KernelError::new(
+                        "#VALUE!",
+                        "SJS.TABLE requires a result cell and one or two value/input-cell pairs",
+                    ));
+                }
+                let result_range = self.reference(&ev(0)?)?;
+                if result_range.start_row != result_range.end_row
+                    || result_range.start_column != result_range.end_column
+                {
+                    return Err(KernelError::new("#VALUE!", "SJS.TABLE result must be one cell"));
+                }
+                let result_address = CellAddress {
+                    sheet_id: result_range.sheet_id,
+                    row: result_range.start_row,
+                    column: result_range.start_column,
+                };
+                if &result_address == current {
+                    return Err(KernelError::new("#REF!", "SJS.TABLE result cannot reference itself"));
+                }
+                let input_address = |index: usize| -> KernelResult<CellAddress> {
+                    let range = self.reference(&ev(index)?)?;
+                    if range.start_row != range.end_row || range.start_column != range.end_column {
+                        return Err(KernelError::new("#VALUE!", "SJS.TABLE input must be one cell"));
+                    }
+                    Ok(CellAddress {
+                        sheet_id: range.sheet_id,
+                        row: range.start_row,
+                        column: range.start_column,
+                    })
+                };
+                let first_values = self.materialize(&ev(1)?)?.matrix();
+                let first_input = input_address(2)?;
+                let calculate = |overrides: &BTreeMap<CellAddress, Scalar>| -> KernelResult<Scalar> {
+                    let session = Session::with_overrides(
+                        self.runtime,
+                        self.reader,
+                        self.services,
+                        overrides,
+                    )?;
+                    Ok(session.cell_output(&result_address)?.scalar())
+                };
+                let output = if args.len() == 3 {
+                    self.allocate(first_values.len(), first_values.first().map_or(0, Vec::len))?;
+                    let mut output = Vec::with_capacity(first_values.len());
+                    for row in first_values {
+                        let mut output_row = Vec::with_capacity(row.len());
+                        for value in row {
+                            output_row.push(calculate(&BTreeMap::from([(first_input.clone(), value)]))?);
+                        }
+                        output.push(output_row);
+                    }
+                    output
+                } else {
+                    let second_values = self.materialize(&ev(3)?)?.matrix();
+                    let second_input = input_address(4)?;
+                    let row_values: Vec<_> = first_values.into_iter().flatten().collect();
+                    let column_values: Vec<_> = second_values.into_iter().flatten().collect();
+                    self.allocate(row_values.len(), column_values.len())?;
+                    let mut output = Vec::with_capacity(row_values.len());
+                    for row_value in row_values {
+                        let mut output_row = Vec::with_capacity(column_values.len());
+                        for column_value in &column_values {
+                            output_row.push(calculate(&BTreeMap::from([
+                                (first_input.clone(), row_value.clone()),
+                                (second_input.clone(), column_value.clone()),
+                            ]))?);
+                        }
+                        output.push(output_row);
+                    }
+                    output
+                };
+                return Ok(Value::Data(FormulaValue::Array(output)));
+            }
             "INDEX" => {
                 arity(args, 2, 4)?;
                 let input = ev(0)?;
@@ -1327,7 +1393,7 @@ impl<'a> Session<'a> {
                 } else {
                     true
                 };
-                if let Some(expr) = self.runtime.names.get(&source.to_uppercase()) {
+                if let Some(expr) = self.runtime.resolve_name(&source, current) {
                     return self.eval(expr, current, env);
                 }
                 let range = parser::parse_reference(&source, current, a1)
@@ -1424,7 +1490,7 @@ impl<'a> Session<'a> {
                 .collect::<KernelResult<Vec<_>>>()?;
             return self.invoke(callee, values, current);
         }
-        if let Some(expr) = self.runtime.names.get(&n) {
+        if let Some(expr) = self.runtime.resolve_name(&n, current) {
             let callee = self.eval(expr, current, env)?;
             let values = args
                 .iter()
