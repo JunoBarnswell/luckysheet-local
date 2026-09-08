@@ -197,6 +197,7 @@ Ribbon 的命令目录与 `RIBBON_LAYOUT_SPECS` 继续是唯一语义来源。�
 | E07 Ribbon 功能入口 | Format、Paste Special、Format Painter 等叶入口在 compact group 内，旧 selector 直接查找 | 对话框和真实行为超时 | 复用 E02 的 owning-group 打开链并点击 canonical surface/test id | 对话框与 transient action 从真实目录入口打开并完成 |
 | E08 Visual golden | snapshot 目录为空且默认文件名绑定执行平台 | 每个平台第一次运行必失败，CI 无可审查基线 | 固定跨平台 snapshot 路径、生成双语言四视口 shell+五 tab 基线，设置有限抗锯齿容差；产品结构差异仍失败 | 48 组图像全部有版本化基线，CI 比对通过 |
 | E09 诊断与清理 | 失败运行遗留临时工作簿、截图和输出；并发失败难定位首因 | 重跑污染 Hub 并降低可复现性 | fixture 记录创建对象并在 test teardown 通过真实 API 清理；console/page/network failures 继续零容忍 | 全套 108 用例完成后无测试工作簿残留、无 console/page/request error |
+| E10 嵌套菜单视口边界 | compact Ribbon 的 group menu 靠近右边缘时，二级菜单仍按 trigger 左边界向右展开 | 二级入口落在视口外，用户和自动验收都无法点击 | 共享 `DropdownMenu` 在挂载后按实际尺寸约束 x/y，底部空间不足时向上展开，超高内容使用单一滚动容器 | 1280/1366/1440 下 Home/Insert 所有二级入口可点击且菜单边界保持在视口内 |
 
 ### 失败与恢复
 
