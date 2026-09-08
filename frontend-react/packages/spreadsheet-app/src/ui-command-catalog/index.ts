@@ -1220,7 +1220,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   homeControl('fill-color', 'font', 100),
   ribbonSurface('home', 'font.phonetic-guide', 'font', 105, 'small', 'phoneticGuide'),
   ribbonSurface('home', 'font.dialog-launcher', 'font', 110, 'small', 'formatCellsFont'),
-  homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
+  homeControl('alignment-menu', 'alignment', 10),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1403,6 +1403,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
           rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
           rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
         ),
+        homeSurfaceNode('control.alignment-menu'),
         columnNode(
           'alignment.wrap-merge',
           homeSurfaceNode('alignment.wrap'),

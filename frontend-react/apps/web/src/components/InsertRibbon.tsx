@@ -107,7 +107,7 @@ export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, r
       </Inline>;
     };
     return (
-      <Stack key={surfaceId} gap="none" data-ribbon-surface={surfaceId} className="!w-[320px] !min-w-[320px] shrink-0 items-center justify-center">
+      <Stack key={surfaceId} gap="none" data-ribbon-surface={surfaceId} className="!w-[340px] !min-w-[340px] shrink-0 items-center justify-center">
         <Inline gap="none" className="flex-nowrap">
           {row1.map(familyControl)}
         </Inline>

@@ -63,7 +63,7 @@ const WIDE_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = 
   tables: 'w-[265px]',
   illustrations: 'w-[308px]',
   controls: 'w-[68px]',
-  charts: 'w-[416px]',
+  charts: 'w-[476px]',
   sparklines: 'w-[181px]',
   filters: 'w-[132px]',
   links: 'w-[68px]',

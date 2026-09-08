@@ -11,11 +11,9 @@ export interface InsertVariantDefinition<T extends string> {
   readonly tooltipKey: InsertUiTextKey;
 }
 
-type ChartGalleryType = ChartDrawingPayload['chartType'];
-
 export interface InsertChartFamilyVariant {
   readonly id: string;
-  readonly chartType: ChartGalleryType;
+  readonly chartType: ChartDrawingPayload['chartType'];
   readonly subtype: ChartSubtype;
 }
 
@@ -25,21 +23,6 @@ export interface InsertChartFamilyDefinition {
   readonly labelKey: InsertUiTextKey;
   readonly variants: readonly InsertChartFamilyVariant[];
 }
-
-export const INSERT_CHART_VARIANTS = [
-  { id: 'chart.column', value: 'column', icon: 'chart-column', labelKey: 'chartColumn', ariaLabelKey: 'chartColumn', tooltipKey: 'chartColumn' },
-  { id: 'chart.bar', value: 'bar', icon: 'chart-bar', labelKey: 'chartBar', ariaLabelKey: 'chartBar', tooltipKey: 'chartBar' },
-  { id: 'chart.line', value: 'line', icon: 'chart-line', labelKey: 'chartLine', ariaLabelKey: 'chartLine', tooltipKey: 'chartLine' },
-  { id: 'chart.area', value: 'area', icon: 'chart-area', labelKey: 'chartArea', ariaLabelKey: 'chartArea', tooltipKey: 'chartArea' },
-  { id: 'chart.pie', value: 'pie', icon: 'chart-pie', labelKey: 'chartPie', ariaLabelKey: 'chartPie', tooltipKey: 'chartPie' },
-  { id: 'chart.doughnut', value: 'doughnut', icon: 'chart-pie', labelKey: 'chartDoughnut', ariaLabelKey: 'chartDoughnut', tooltipKey: 'chartDoughnut' },
-  { id: 'chart.scatter', value: 'scatter', icon: 'chart-scatter', labelKey: 'chartScatter', ariaLabelKey: 'chartScatter', tooltipKey: 'chartScatter' },
-  { id: 'chart.hierarchy', value: 'treemap', icon: 'chart-column', labelKey: 'chartHierarchy', ariaLabelKey: 'chartHierarchy', tooltipKey: 'chartHierarchy' },
-  { id: 'chart.statistical', value: 'histogram', icon: 'chart-column', labelKey: 'chartStatistical', ariaLabelKey: 'chartStatistical', tooltipKey: 'chartStatistical' },
-  { id: 'chart.waterfall', value: 'waterfall', icon: 'chart-column', labelKey: 'chartWaterfall', ariaLabelKey: 'chartWaterfall', tooltipKey: 'chartWaterfall' },
-  { id: 'chart.map', value: 'map', icon: 'chart-column', labelKey: 'chartMap', ariaLabelKey: 'chartMap', tooltipKey: 'chartMap' },
-  { id: 'chart.combo', value: 'combo', icon: 'chart-column', labelKey: 'chartCombo', ariaLabelKey: 'chartCombo', tooltipKey: 'chartCombo' },
-] as const satisfies readonly InsertVariantDefinition<ChartGalleryType>[];
 
 export const INSERT_CHART_FAMILIES: readonly InsertChartFamilyDefinition[] = [
   { id: 'chart-family.column-bar', icon: 'chart-column', labelKey: 'chartColumn', variants: [

@@ -8,7 +8,7 @@ import {
   type RibbonSurfaceDefinition,
 } from '@react-sheets/spreadsheet-app';
 import {
-  INSERT_CHART_VARIANTS,
+  INSERT_CHART_FAMILIES,
   INSERT_CONNECTOR_VARIANTS,
   INSERT_SHAPE_GALLERY,
   INSERT_SPARKLINE_VARIANTS,
@@ -297,7 +297,7 @@ export const HOME_BEHAVIOR_CASES: readonly AcceptanceCase[] = [
 ];
 
 export const INSERT_VARIANT_GROUPS = [
-  { id: 'chart', commandId: 'chartBuilder' as const, rootSurfaceId: 'charts.gallery', variants: INSERT_CHART_VARIANTS },
+  { id: 'chart', commandId: 'chartBuilder' as const, rootSurfaceId: 'charts.gallery', variants: INSERT_CHART_FAMILIES.flatMap((family) => family.variants) },
   { id: 'sparkline', commandId: 'sparkline' as const, rootSurfaceId: 'sparklines.gallery', variants: INSERT_SPARKLINE_VARIANTS },
   { id: 'shape', commandId: 'shapesLines' as const, rootSurfaceId: 'illustrations.shape', variants: INSERT_SHAPE_GALLERY.flatMap((category) => category.variants) },
   { id: 'connector', commandId: 'shapesLines' as const, rootSurfaceId: 'illustrations.shape', variants: INSERT_CONNECTOR_VARIANTS },
