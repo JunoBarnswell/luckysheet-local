@@ -29,7 +29,7 @@ test.describe('workbook hub', () => {
     await page.goto('/workbooks/not-a-cloud-workbook');
     await expect(page.getByTestId('designer-shell')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '无法打开工作簿' })).toBeVisible();
-    await expect(page.getByText('Cloud workbook service is unavailable')).toBeVisible();
+    await expect(page.getByText('Authoritative workbook service is unavailable: not-a-cloud-workbook', { exact: true })).toBeVisible();
   });
 });
 
