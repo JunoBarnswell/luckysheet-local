@@ -6,5 +6,8 @@
   "dependencies": {
     "@react-sheets/kernel-client": "file:../kernel-client",
     "@react-sheets/formula-engine": "file:../formula-engine"
+  },
+  "devDependencies": {
+    "@react-sheets/command-runtime": "file:../command-runtime"
   }
 }

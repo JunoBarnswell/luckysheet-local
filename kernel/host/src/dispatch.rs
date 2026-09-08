@@ -97,7 +97,7 @@ impl KernelHost {
     pub fn dispatch(&mut self, operation: &str, params: Value) -> KernelResult<Value> {
         match operation {
             "init" => Ok(
-                json!({"protocolVersion":1,"manifestVersion":11,"operations":["init","open","create","manifest","cell.get","range.get","page.get","page.load","command","close","formula.evaluate","formula.recalculate","analytics.execute","geometry.computePaneMap","geometry.hitTest","geometry.cellRect","geometry.headerRect"]}),
+                json!({"protocolVersion":1,"manifestVersion":11,"operations":["init","open","create","manifest","cell.get","range.get","page.get","page.load","command","close","formula.functions","formula.evaluate","formula.recalculate","analytics.execute","geometry.computePaneMap","geometry.hitTest","geometry.cellRect","geometry.headerRect"]}),
             ),
             "create" => {
                 let unit_id = string(&params, "unitId")?.to_owned();
@@ -261,6 +261,7 @@ impl KernelHost {
                 self.analytics.remove(id);
                 Ok(json!({"closed":self.workbooks.remove(id).is_some()}))
             }
+            "formula.functions" => Ok(json!({"functions": kernel_formula::function_capabilities()})),
             "formula.evaluate" => {
                 let workbook = self.workbook(&params)?;
                 let address: CellAddress = decode(required(&params, "address")?.clone())?;

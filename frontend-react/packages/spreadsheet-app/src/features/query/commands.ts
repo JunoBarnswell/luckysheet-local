@@ -99,13 +99,18 @@ function executeLoad(params: QueryLoadCommandPayload, context: CommandContext): 
   const sheetId = plan.payload.binding.kind === 'sheet-region'
     ? plan.payload.binding.region.range.sheetId
     : plan.payload.target.sheetId ?? context.workbook.primarySheetId;
-  context.applyMutation({
-    id: plan.mutationId,
+  const mutation = {
     unitId: context.workbook.unitId,
     sheetId,
     params: plan.payload,
     affectedRanges: plan.affectedRanges,
-  });
+  };
+  switch (plan.mutationId) {
+    case 'query.load.range': context.applyMutation({ id: 'query.load.range', ...mutation }); break;
+    case 'query.load.sheet-table': context.applyMutation({ id: 'query.load.sheet-table', ...mutation }); break;
+    case 'query.load.pivot-source': context.applyMutation({ id: 'query.load.pivot-source', ...mutation }); break;
+    case 'query.load.workbook-table': context.applyMutation({ id: 'query.load.workbook-table', ...mutation }); break;
+  }
   return { operationId: context.operationId, mutationCount: 1, affectedRanges: plan.affectedRanges };
 }
 

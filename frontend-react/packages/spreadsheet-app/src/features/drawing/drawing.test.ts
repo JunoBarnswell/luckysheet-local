@@ -44,9 +44,9 @@ describe('drawing feature', () => {
       assert.ok((sheet.drawings[0]?.zIndex ?? 0) > 1);
 
       assert.equal(await runtime.undo(), true);
-      assert.equal(sheet.drawings[0]?.zIndex, 1);
+      assert.equal(workbook.getSheet('sheet-1').drawings[0]?.zIndex, 1);
       assert.equal(await runtime.redo(), true);
-      assert.ok((sheet.drawings[0]?.zIndex ?? 0) > 1);
+      assert.ok((workbook.getSheet('sheet-1').drawings[0]?.zIndex ?? 0) > 1);
     } finally {
       close();
     }

@@ -198,7 +198,7 @@ async function contentBuffer(content: Blob | ArrayBuffer): Promise<ArrayBuffer> 
   throw new Error('NATIVE_DOCUMENT_CONTENT_INVALID');
 }
 
-/** Production native I/O adapter. Browser code only uploads/downloads opaque bytes. */
+/** Production native I/O transport. Browser code only uploads/downloads opaque bytes. */
 export class WorkbookApiNativeDocumentTransport implements NativeDocumentTransport {
   constructor(
     private readonly api: NativeDocumentServerApi,

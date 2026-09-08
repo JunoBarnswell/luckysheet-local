@@ -5,5 +5,8 @@
   "main": "src/index.ts",
   "dependencies": {
     "@react-sheets/core-model": "file:../core-model"
+  },
+  "devDependencies": {
+    "@react-sheets/kernel-client": "file:../kernel-client"
   }
 }

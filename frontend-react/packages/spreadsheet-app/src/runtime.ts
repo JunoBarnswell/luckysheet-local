@@ -166,7 +166,10 @@ export function createSpreadsheetRuntime(options: {
   const resolveVisibility = createKernelWorkbookVisibilityResolver(model, () => model.revision);
   const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, resolveVisibility);
   formula = new FormulaEngine({ unitId: model.unitId, revision: () => model.revision, defaultSheetId: 'sheet-1' });
-  const findIndex = new FindIndex(model, (sheet, row, column) => formula?.getCellValue({ sheetId: sheet.id, row, column }));
+  // The session shell exists before the asynchronous cloud open has loaded a
+  // committed manifest and its first page. Build the index only in
+  // hydrateRuntime, after that revision boundary is resident.
+  const findIndex = new FindIndex(model, (sheet, row, column) => formula?.getCellValue({ sheetId: sheet.id, row, column }), false);
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing, featureRuntime);
   activateSpreadsheetFeatures(featureRuntime, { documentType: 'spreadsheet', environment: typeof window === 'undefined' ? 'worker' : 'browser' });

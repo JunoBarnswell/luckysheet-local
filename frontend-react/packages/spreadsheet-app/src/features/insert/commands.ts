@@ -1,4 +1,4 @@
-import { BARCODE_SYMBOLOGIES, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type ChartBindingArea, type ChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, clearFormulaProvenance, isAssetRef, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type ChartBindingArea, type ChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 
@@ -63,6 +63,7 @@ export interface FormControlUpdateParams {
 function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: CommandContext) {
   if (!['table-sheet', 'gantt-sheet', 'report-sheet'].includes(params.sheet.kind)) throw new Error('Advanced sheet kind is invalid');
   if (context.workbook.sheets.has(params.sheet.id)) throw new Error(`Sheet already exists: ${params.sheet.id}`);
+  if (params.index !== undefined && (!Number.isSafeInteger(params.index) || params.index < 0 || params.index > context.workbook.sheetOrder.length)) throw new Error('Advanced sheet index is invalid');
   const affectedRanges: RangeRef[] = [];
   const table = params.table;
   const addsTable = Boolean(table && !context.workbook.dataModel.tables.has(table.id));
@@ -74,9 +75,55 @@ function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: 
     });
   }
   context.applyMutation({
-    id: 'sheet.restore', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheet: structuredClone(params.sheet), index: params.index }, affectedRanges,
+    id: 'sheet.add', unitId: context.workbook.unitId, sheetId: params.sheet.id,
+    params: { id: params.sheet.id, name: params.sheet.name, rowCount: params.sheet.rowCount, columnCount: params.sheet.columnCount }, affectedRanges: [],
   });
-  return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
+  const definitionRange: RangeRef[] = [{ sheetId: params.sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+  if (params.sheet.kind === 'table-sheet') {
+    if (!params.sheet.tableSheet) throw new Error('TableSheet definition is required');
+    context.applyMutation({ id: 'tableSheet.update', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheetId: params.sheet.id, definition: structuredClone(params.sheet.tableSheet) }, affectedRanges: definitionRange });
+  } else if (params.sheet.kind === 'gantt-sheet') {
+    if (!params.sheet.ganttSheet) throw new Error('GanttSheet definition is required');
+    context.applyMutation({ id: 'ganttSheet.update', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheetId: params.sheet.id, definition: structuredClone(params.sheet.ganttSheet) }, affectedRanges: definitionRange });
+  } else {
+    if (!params.sheet.reportSheet) throw new Error('ReportSheet definition is required');
+    context.applyMutation({ id: 'reportSheet.update', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheetId: params.sheet.id, definition: structuredClone(params.sheet.reportSheet) }, affectedRanges: definitionRange });
+  }
+  let mutationCount = addsTable ? 3 : 2;
+  for (const run of advancedSheetCellRuns(params.sheet)) {
+    context.applyMutation({ id: 'range.set', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheetId: params.sheet.id, startRow: run.range.startRow, startColumn: run.range.startColumn, values: [run.values] }, affectedRanges: [run.range] });
+    affectedRanges.push(run.range);
+    mutationCount += 1;
+  }
+  if (params.index !== undefined && params.index !== context.workbook.sheetOrder.length) {
+    context.applyMutation({ id: 'sheet.reordered', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheetId: params.sheet.id, toIndex: params.index }, affectedRanges: [] });
+    mutationCount += 1;
+  }
+  return { operationId: context.operationId, mutationCount, affectedRanges };
+}
+
+function advancedSheetCellRuns(sheet: SheetSnapshot): Array<{ range: RangeRef; values: CellData[] }> {
+  const runs: Array<{ range: RangeRef; values: CellData[] }> = [];
+  for (const [rowKey, rowCells] of Object.entries(sheet.cells)) {
+    const row = Number(rowKey);
+    if (!Number.isSafeInteger(row) || row < 0 || row >= sheet.rowCount) throw new Error('Advanced sheet cell row is invalid');
+    const entries = Object.entries(rowCells).map(([columnKey, value]) => ({ column: Number(columnKey), value }));
+    entries.sort((left, right) => left.column - right.column);
+    let start = 0;
+    while (start < entries.length) {
+      const first = entries[start]!;
+      if (!Number.isSafeInteger(first.column) || first.column < 0 || first.column >= sheet.columnCount) throw new Error('Advanced sheet cell column is invalid');
+      let end = start;
+      while (end + 1 < entries.length && entries[end + 1]!.column === entries[end]!.column + 1) end += 1;
+      const values = entries.slice(start, end + 1).map((entry) => clearFormulaProvenance(structuredClone(entry.value)));
+      runs.push({
+        range: { sheetId: sheet.id, startRow: row, endRow: row, startColumn: first.column, endColumn: entries[end]!.column },
+        values,
+      });
+      start = end + 1;
+    }
+  }
+  return runs;
 }
 
 function executeStructuredChartCreate(params: StructuredChartCreateParams, context: CommandContext) {

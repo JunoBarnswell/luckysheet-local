@@ -1192,8 +1192,8 @@ export class WorkbookModel {
     this.theme = structuredClone({ id: theme.id.trim(), colors: theme.colors });
   }
 
-  constructor(readonly unitId: UnitId, public name: string) {
-    this.pageReplica = new KernelPageReplica(unitId);
+  constructor(readonly unitId: UnitId, public name: string, pageReplica?: KernelPageReplica) {
+    this.pageReplica = pageReplica ?? new KernelPageReplica(unitId);
     const sheet = new WorksheetModel('sheet-1', 'Sheet1', DEFAULT_SHEET_ROW_COUNT, DEFAULT_SHEET_COLUMN_COUNT, this.pageReplica);
     this.sheets.set(sheet.id, sheet);
     this.sheetOrder = [sheet.id];
@@ -1413,7 +1413,11 @@ export class WorkbookModel {
   /** Replace the read projection only after the server has acknowledged the transaction. */
   applyCommittedManifest(manifest: KernelReplicaManifest, pages: readonly KernelReplicaPagePayload[] = []): void {
     if (manifest.unitId !== this.unitId) throw new Error('KERNEL_MANIFEST_IDENTITY_MISMATCH');
-    const workbook = new WorkbookModel(this.unitId, manifest.name);
+    // Keep one replica identity for the lifetime of the workbook. Feature
+    // domains may retain a worksheet projection between commits; replacing
+    // the replica would leave those projections pinned to an obsolete
+    // revision even though the owning WorkbookModel had advanced.
+    const workbook = new WorkbookModel(this.unitId, manifest.name, this.pageReplica);
     const snapshot = manifest.metadata as unknown as Omit<WorkbookSnapshot, 'schema' | 'version' | 'unitId' | 'name' | 'sheets'>;
     if (snapshot.dimensionMetrics) workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     if (snapshot.theme) workbook.setTheme(snapshot.theme);

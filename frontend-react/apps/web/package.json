@@ -7,6 +7,7 @@
     "@react-sheets/core-model": "file:../../packages/core-model",
     "@react-sheets/exchange-excel-ooxml": "file:../../packages/exchange-excel-ooxml",
     "@react-sheets/formula-engine": "file:../../packages/formula-engine",
+    "@react-sheets/kernel-client": "file:../../packages/kernel-client",
     "@react-sheets/protocol": "file:../../packages/protocol",
     "@react-sheets/render-engine": "file:../../packages/render-engine",
     "@react-sheets/sheet-features": "file:../../packages/sheet-features",

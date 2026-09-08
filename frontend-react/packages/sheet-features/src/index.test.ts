@@ -13,6 +13,7 @@ test('typed sheet commands plan through the canonical runtime and commit page va
   try {
     registerSheetCommands(runtime);
     await runtime.execute('sheet.cell.set', { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'Title', style: { bold: true } } });
+    const titlePageChecksum = workbook.manifest().pages[0]?.checksum;
     await runtime.execute('sheet.range.set', {
       sheetId: 'sheet-1', startRow: 1, startColumn: 0,
       values: [[{ value: 10 }, { value: 20 }], [{ value: 30 }, { value: 40 }]],
@@ -22,11 +23,13 @@ test('typed sheet commands plan through the canonical runtime and commit page va
     assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
     assert.equal(sheet.cells.get(2, 1)?.value, 40);
     assert.equal(workbook.revision, 2);
+    const rangePageChecksum = workbook.manifest().pages[0]?.checksum;
+    assert.notEqual(rangePageChecksum, titlePageChecksum);
     assert.equal(runtime.getHistoryDepth().undo, 2);
     assert.equal(await runtime.undo(), true);
-    assert.equal(sheet.cells.get(2, 1), undefined);
+    assert.equal(workbook.manifest().pages[0]?.checksum, titlePageChecksum);
     assert.equal(await runtime.redo(), true);
-    assert.equal(sheet.cells.get(2, 1)?.value, 40);
+    assert.equal(workbook.manifest().pages[0]?.checksum, rangePageChecksum);
   } finally {
     close();
   }

@@ -259,9 +259,9 @@ export class FindIndex {
   private readonly entries = new Map<string, FindIndexEntry[]>();
   private revision = 0;
 
-  constructor(private readonly workbook: WorkbookModel, private readonly resolveCellValue?: FindResolveCellValue) {
+  constructor(private readonly workbook: WorkbookModel, private readonly resolveCellValue?: FindResolveCellValue, buildImmediately = true) {
     findIndexRegistry.set(workbook, this);
-    this.rebuild();
+    if (buildImmediately) this.rebuild();
   }
 
   getRevision(): number { return this.revision; }
