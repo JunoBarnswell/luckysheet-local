@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-const directory = path.resolve('frontend-react/apps/web/public/kernel');
+const repositoryRoot = path.resolve(import.meta.dirname, '..');
+const directory = path.resolve(process.argv[2] ?? path.join(repositoryRoot, 'frontend-react/apps/web/public/kernel'));
 const manifest = JSON.parse(await readFile(path.join(directory, 'kernel-manifest.json'), 'utf8'));
 const bytes = await readFile(path.join(directory, manifest.artifact));
 const sha256 = createHash('sha256').update(bytes).digest('hex');
