@@ -4,6 +4,7 @@ import { kernelInvoke } from '@react-sheets/kernel-client';
 import { WorkbookModel, type KernelReplicaManifest } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
 import { openCanonicalTestRuntime } from './canonical-test-runtime.test';
+import { registerSheetCommands } from '../../sheet-features/src/index';
 
 test('WorkbookModel is opened from the canonical manifest and exposes a read-only page replica', async () => {
   const { workbook, close } = await openCanonicalTestRuntime('core-model-manifest');
@@ -23,6 +24,7 @@ test('WorkbookModel is opened from the canonical manifest and exposes a read-onl
 test('typed cell command commits a new manifest revision and page value', async () => {
   const { workbook, runtime, close } = await openCanonicalTestRuntime('core-model-command');
   try {
+    registerSheetCommands(runtime);
     const result = await runtime.execute('sheet.cell.set', {
       sheetId: 'sheet-1', row: 2, column: 3, value: { value: 'canonical' },
     });
@@ -39,6 +41,7 @@ test('typed cell command commits a new manifest revision and page value', async 
 test('command parameter rejection leaves the committed manifest and page replica unchanged', async () => {
   const { workbook, runtime, close } = await openCanonicalTestRuntime('core-model-rejection');
   try {
+    registerSheetCommands(runtime);
     await assert.rejects(
       runtime.execute('sheet.cell.set', { sheetId: 'sheet-1', row: -1, column: 0, value: { value: 1 } }),
       /Invalid cell set parameters|invalid/i,
@@ -92,7 +95,7 @@ test('stored snapshot migration accepts only an explicit canonical snapshot revi
 test('the kernel manifest operation returns the same canonical identity used by the page replica', async () => {
   const { workbook, close } = await openCanonicalTestRuntime('core-model-kernel-manifest');
   try {
-    const manifest = kernelInvoke<KernelReplicaManifest>('manifest', { unitId: workbook.unitId });
+    const manifest = kernelInvoke<KernelReplicaManifest>('manifest', { unitId: workbook.unitId, revision: workbook.revision });
     assert.deepEqual(manifest, workbook.manifest());
   } finally {
     close();

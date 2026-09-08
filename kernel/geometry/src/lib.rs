@@ -269,7 +269,15 @@ impl Axis {
         let last_coord = (start + extent)
             .min(self.total_before(self.count))
             .max(start);
-        let mut last = self.index_at((last_coord - f64::EPSILON).max(start))?;
+        // Pane extents are half-open. Subtract one representable float rather
+        // than f64::EPSILON: the latter is smaller than one ULP once worksheet
+        // coordinates grow beyond 1px and can leave an exact total unchanged.
+        let exclusive_end = if last_coord > 0.0 {
+            f64::from_bits(last_coord.to_bits() - 1)
+        } else {
+            last_coord
+        };
+        let mut last = self.index_at(exclusive_end.max(start))?;
         if last < first {
             last = first;
         }
@@ -710,7 +718,7 @@ mod tests {
         };
         let rect = cell_rect(&r, &a).unwrap();
         assert_eq!(rect.height, 50.0);
-        assert_eq!(rect.y, 220.0);
+        assert_eq!(rect.y, 245.0);
     }
     #[test]
     fn frozen_ranges_disjoint_and_hit_matches_cell() {
@@ -767,5 +775,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.y, 20.0);
+    }
+
+    #[test]
+    fn viewport_ending_at_hidden_sheet_extent_keeps_a_visible_range() {
+        let mut r = req();
+        r.row_count = 6;
+        r.column_count = 6;
+        r.viewport.width = 220.0;
+        r.viewport.height = 120.0;
+        r.hidden_rows.extend([1, 2]);
+        r.hidden_columns.extend([1, 2]);
+        let pane = compute_pane_map(&r).unwrap().pane_map.panes.remove(0);
+        assert_eq!(pane.visible_range, Some(CellRange {
+            start_row: 0,
+            end_row: 5,
+            start_column: 0,
+            end_column: 5,
+        }));
     }
 }

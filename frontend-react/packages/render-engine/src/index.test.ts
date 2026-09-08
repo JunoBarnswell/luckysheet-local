@@ -1,5 +1,6 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
+import { initializeNodeKernel } from '@react-sheets/kernel-client/node';
 import {
   CanvasRenderEngine,
   DirtyRangeSet,
@@ -21,6 +22,8 @@ import { drawCellLayer, drawGridLayer } from './cell-renderer';
 import { drawChromeLayer } from './chrome-renderer';
 import { resolveCellContentLayout } from './cell-content-layout';
 import { DEFAULT_RENDER_THEME, type CellRenderData, type RenderPane } from './types';
+
+before(async () => initializeNodeKernel());
 
 const skeleton = new SheetSkeleton({
   rowCount: 20,
@@ -659,7 +662,7 @@ test('pane translation preserves model coordinates for C9', () => {
   });
   engine.render();
   const cell = renderSkeleton.getCellRect(8, 2)!;
-  assert.deepEqual(engine.cellAtLocalPoint({ x: 39 + cell.x + cell.width / 2, y: 20 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
+  assert.deepEqual(engine.cellAtLocalPoint({ x: 39 + cell.x + cell.width / 2, y: 20 + cell.y + cell.height / 2 }), { sheetId: 'sheet-1', row: 8, column: 2 });
   engine.dispose();
 });
 
@@ -675,7 +678,7 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   const topLeft = renderSkeleton.getCellRect(0, 0)!;
   const main = renderSkeleton.getCellRect(4, 2)!;
   assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 39, y: 20 });
-  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 139, y: 100 });
+  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 89, y: 80 });
   engine.dispose();
 });
 

@@ -472,7 +472,7 @@ export class CanvasRenderEngine {
       if (!pane) return null;
       const column = headerIndexAtKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, 'column', local);
       if (column === null) return null;
-      const contentX = this.localToContent(local).x;
+      const contentX = local.x - pane.screenRect.x + pane.contentOrigin.x;
       const hiddenBoundary = this.hiddenColumnBoundaryAt(contentX);
       if (hiddenBoundary) return { kind: "col", index: column, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.findNearestColumnBoundary(contentX, RESIZE_HIT_TOLERANCE_PX);
@@ -485,7 +485,7 @@ export class CanvasRenderEngine {
       if (!pane) return null;
       const row = headerIndexAtKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, 'row', local);
       if (row === null) return null;
-      const contentY = this.localToContent(local).y;
+      const contentY = local.y - pane.screenRect.y + pane.contentOrigin.y;
       const hiddenBoundary = this.hiddenRowBoundaryAt(contentY);
       if (hiddenBoundary) return { kind: "row", index: row, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.getRowTop(row) + this.skeletonModel.getRowHeight(row) - contentY;

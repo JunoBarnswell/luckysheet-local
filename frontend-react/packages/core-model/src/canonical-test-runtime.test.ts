@@ -32,7 +32,9 @@ export async function openCanonicalTestRuntime(unitId: string, name = 'Canonical
       operationId: request.operationId,
       commandId: request.intent ? 'history.undo' : 'operation.apply',
       accessRole: 'owner',
-      params: request.intent ? { history: target!.record } : { mutations: request.mutations },
+      params: request.intent ? { history: target!.record } : {
+        mutations: request.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
+      },
     });
     history.set(request.operationId, { baseRevision: request.baseRevision, record: committed.history });
     return committed;

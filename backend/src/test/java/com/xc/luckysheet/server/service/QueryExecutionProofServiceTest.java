@@ -9,6 +9,7 @@ import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.time.Duration;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -80,15 +81,22 @@ class QueryExecutionProofServiceTest {
     }
 
     @Test void analyticsProofPinsRevisionAndSealsOnlyMatchingNativePages() throws Exception {
-        WorkbookQueryExecutionEntity execution = execution(4);
-        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty(), Optional.of(execution));
+        execution(4);
+        AtomicReference<WorkbookQueryExecutionEntity> saved = new AtomicReference<>();
+        when(executions.save(any())).thenAnswer(invocation -> {
+            WorkbookQueryExecutionEntity row = invocation.getArgument(0);
+            saved.set(row);
+            return row;
+        });
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty())
+                .thenAnswer(invocation -> Optional.of(saved.get()));
         var started = service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5));
         assertEquals(4, started.sourceRevision());
-        assertEquals("RUNNING", execution.getStatus());
+        assertEquals("RUNNING", saved.get().getStatus());
         var page = mapper.readTree("{\"kind\":\"query\",\"revision\":4,\"columns\":[0],\"rows\":[],\"total\":0,\"grouped\":false}");
         String hash = service.publishAnalytics("unit", "query", started.executionToken(), "actor", page);
         assertEquals(64, hash.length());
-        assertEquals("READY", execution.getStatus());
+        assertEquals("READY", saved.get().getStatus());
         assertEquals("QUERY_RESULT_INVALID", assertThrows(ServiceException.class,
                 () -> service.publishAnalytics("unit", "query", started.executionToken(), "actor",
                         mapper.readTree("{\"kind\":\"query\",\"revision\":3}"))).code());
@@ -98,10 +106,16 @@ class QueryExecutionProofServiceTest {
         execution(5);
         assertEquals("QUERY_STALE_REVISION", assertThrows(ServiceException.class,
                 () -> service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5))).code());
-        WorkbookQueryExecutionEntity fresh = execution(4);
-        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty(), Optional.of(fresh));
+        execution(4);
+        AtomicReference<WorkbookQueryExecutionEntity> saved = new AtomicReference<>();
+        when(executions.save(any())).thenAnswer(invocation -> {
+            WorkbookQueryExecutionEntity row = invocation.getArgument(0);
+            saved.set(row);
+            return row;
+        });
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty());
         service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5));
-        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.of(fresh));
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.of(saved.get()));
         when(access.currentRole("unit", "other")).thenReturn(WorkbookAclRole.VIEWER);
         assertEquals("FORBIDDEN", assertThrows(ServiceException.class,
                 () -> service.cancelAnalytics("unit", "query", "other")).code());
