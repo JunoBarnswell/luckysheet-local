@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from './cn';
 
@@ -10,8 +10,12 @@ export interface DropdownMenuProps {
   disabled?: boolean;
 }
 
+const DropdownMenuAncestorContext = React.createContext<readonly string[]>([]);
+
 export function DropdownMenu({ trigger, children, align = 'left', className, disabled = false }: DropdownMenuProps) {
   const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const ancestorMenuIds = React.useContext(DropdownMenuAncestorContext);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [coords, setCoords] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -49,11 +53,15 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
   useEffect(() => {
     if (!open) return;
     const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
+      const containingMenu = target?.closest('[data-dropdown-menu]');
+      const containingMenuAncestors = containingMenu?.getAttribute('data-dropdown-ancestors')?.split(/\s+/).filter(Boolean) ?? [];
       if (
         triggerRef.current &&
         !triggerRef.current.contains(e.target as Node) &&
         menuRef.current &&
-        !menuRef.current.contains(e.target as Node)
+        !menuRef.current.contains(e.target as Node) &&
+        !containingMenuAncestors.includes(menuId)
       ) {
         setOpen(false);
       }
@@ -87,13 +95,17 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
         ? createPortal(
             <div
               ref={menuRef}
+              data-dropdown-ancestors={ancestorMenuIds.join(' ') || undefined}
+              data-dropdown-menu={menuId}
               className={cn(
                 'fixed z-50 max-h-[calc(100vh-1rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl animate-in fade-in zoom-in-95 duration-100',
                 className,
               )}
               style={{ left: coords.x, top: coords.y }}
             >
-              {typeof children === 'function' ? children({ close: () => setOpen(false) }) : children}
+              <DropdownMenuAncestorContext.Provider value={[...ancestorMenuIds, menuId]}>
+                {typeof children === 'function' ? children({ close: () => setOpen(false) }) : children}
+              </DropdownMenuAncestorContext.Provider>
             </div>,
             document.body,
           )
