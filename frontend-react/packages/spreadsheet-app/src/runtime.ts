@@ -428,6 +428,11 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
         await engine.recalculateAsync();
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
         runtime.handlers.onMutationsApplied?.('formula');
+        // Mutation listeners run before CommandRuntime exits the acknowledged
+        // transaction. Do not publish a terminal save state until that serial
+        // command boundary has actually drained.
+        await runtime.commands.whenIdle();
+        if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
       } catch (error) {
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
