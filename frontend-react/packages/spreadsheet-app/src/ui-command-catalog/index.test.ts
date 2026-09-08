@@ -361,7 +361,7 @@ describe('Ribbon UI command catalog', () => {
       'font.underline', 'control.font-borders-menu', 'control.fill-color', 'control.font-color', 'font.phonetic-guide', 'font.dialog-launcher',
       'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
       'alignment.center', 'alignment.right', 'alignment.indent-decrease', 'alignment.indent-increase', 'control.alignment-menu', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
-      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
+      'control.number-format', 'number.currency', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
       'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
       'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',
       'control.auto-sum-menu', 'editing.fill-down', 'control.clear-menu', 'editing.sort', 'editing.find',

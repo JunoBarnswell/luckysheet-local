@@ -1418,7 +1418,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'number.layout',
         rowNode('number.format', homeSurfaceNode('control.number-format')),
-        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
+        rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
       ),
     ),
     groupSpec(
