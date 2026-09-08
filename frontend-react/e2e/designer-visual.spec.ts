@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openConnectedWorkbook } from './support/workbook-fixtures';
 
 const viewports = [
   { width: 1280, height: 720 },
@@ -10,17 +11,9 @@ const viewports = [
 
 async function openDemo(page: import('@playwright/test').Page, viewport: { width: number; height: number }) {
   await page.setViewportSize(viewport);
-  await page.addInitScript(() => window.localStorage.setItem('react-sheets:locale', 'zh-CN'));
-  await page.goto('/');
-  await expect(page.getByTestId('workbook-hub')).toBeVisible();
-  await page.getByRole('button', { name: 'Designer Demo' }).click();
-  const dialog = page.getByTestId('create-workbook-dialog');
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel('工作簿名称').fill(`Designer Demo Visual ${viewport.width}x${viewport.height} ${Date.now()}`);
-  await dialog.getByLabel('保存位置').selectOption('local');
-  await dialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+  await openConnectedWorkbook(page, 'zh-CN', `Designer Visual ${viewport.width}x${viewport.height} ${Date.now()}`);
+  await page.getByTestId('name-box').fill('B1');
+  await page.getByTestId('name-box').press('Enter');
 }
 
 for (const viewport of viewports) {

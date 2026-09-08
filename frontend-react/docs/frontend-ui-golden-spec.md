@@ -34,7 +34,7 @@ App -> WorkbookHubContainer -> WorkbookHubPage
   -> WorkbookTopBar / WorkbookSidebar / WorkbookCategoryTabs
   -> WorkbookSearch / WorkbookFilterDialog / WorkbookActionBar
   -> WorkbookGrid or WorkbookTable / WorkbookRowMenu
-  -> WorkbookCatalogService -> local memory or remote cloud API
+  -> WorkbookCatalogService -> authenticated cloud API
 ```
 
 云端是唯一远程存储来源。登录状态、角色与同步状态必须从 `AuthProvider`、`WorkbookCatalogService` 和真实 commit/revision 状态 derive；不可通过视觉状态、预置 Demo 或 UI-only success 伪造。

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_VIEWPORTS, HOME_BEHAVIOR_CASES, HOME_SURFACE_CASES } from './acceptance-matrix';
-import { assertSurfaceVisible, focusCanvas, installBrowserDiagnostics, openLocalWorkbook, selectRibbonTab } from './support/workbook-fixtures';
+import { assertSurfaceVisible, focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, selectRibbonTab } from './support/workbook-fixtures';
 
 for (const locale of ACCEPTANCE_LOCALES) {
   for (const viewport of ACCEPTANCE_VIEWPORTS) {
@@ -9,7 +9,7 @@ for (const locale of ACCEPTANCE_LOCALES) {
 
       test('renders every Home surface from the canonical catalog', async ({ page }) => {
         const diagnostics = installBrowserDiagnostics(page);
-        await openLocalWorkbook(page, locale, `Home matrix ${locale} ${viewport.width}`);
+        await openConnectedWorkbook(page, locale, `Home matrix ${locale} ${viewport.width}`);
         await selectRibbonTab(page, 'home');
         for (const entry of HOME_SURFACE_CASES) {
           if (entry.surface.menuId) {
@@ -26,7 +26,7 @@ for (const locale of ACCEPTANCE_LOCALES) {
 
       test('keeps the Home authored smoke on one selection and history path', async ({ page }) => {
         const diagnostics = installBrowserDiagnostics(page);
-        await openLocalWorkbook(page, locale, `Home transaction ${locale} ${viewport.width}`);
+        await openConnectedWorkbook(page, locale, `Home transaction ${locale} ${viewport.width}`);
         const canvas = await focusCanvas(page);
         await page.keyboard.type('home-matrix-value');
         await page.keyboard.press('Enter');

@@ -1,17 +1,5 @@
 import { expect, test } from '@playwright/test';
-
-async function createLocalWorkbook(page: import('@playwright/test').Page, name: string) {
-  await page.goto('/workbooks');
-  await expect(page.getByTestId('workbook-hub')).toBeVisible();
-  await page.getByRole('button', { name: '新建工作簿' }).click();
-  const dialog = page.getByTestId('create-workbook-dialog');
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel('工作簿名称').fill(name);
-  await dialog.getByLabel('保存位置').selectOption('local');
-  await dialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
-}
+import { openConnectedWorkbook } from './support/workbook-fixtures';
 
 test.describe('workbook hub', () => {
   test('renders the file-center shell and never exposes inactive workbook commands', async ({ page }) => {
@@ -24,11 +12,11 @@ test.describe('workbook hub', () => {
     await expect(page.getByRole('button', { name: '导出', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: '关闭' })).toBeDisabled();
     await expect(page.getByRole('button', { name: '空白工作簿', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '导入 Excel 文件', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '打开 / 导入原生文档', exact: true })).toBeVisible();
   });
 
-  test('creates a local workbook then preserves its session through Backstage', async ({ page }) => {
-    await createLocalWorkbook(page, 'Backstage UAT');
+  test('creates a cloud workbook then preserves its session through Backstage', async ({ page }) => {
+    await openConnectedWorkbook(page, 'zh-CN', 'Backstage UAT');
     await page.getByRole('button', { name: 'Open workbook menu', exact: true }).click();
     await page.getByText('File / 工作簿', { exact: true }).click();
     await expect(page.getByTestId('workbook-backstage')).toBeVisible();
@@ -37,10 +25,11 @@ test.describe('workbook hub', () => {
   await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
   });
 
-  test('does not turn an unknown unauthenticated route into a blank local workbook', async ({ page }) => {
-    await page.goto('/workbooks/not-a-local-workbook');
+  test('does not turn an unknown unauthenticated workbook into a local session', async ({ page }) => {
+    await page.goto('/workbooks/not-a-cloud-workbook');
     await expect(page.getByTestId('designer-shell')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: '内存会话已重置' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '无法打开工作簿' })).toBeVisible();
+    await expect(page.getByText('Cloud workbook service is unavailable')).toBeVisible();
   });
 });
 
@@ -54,11 +43,10 @@ test.describe('workbook hub desktop reference anchors', () => {
     const sidebar = await page.getByRole('navigation', { name: '工作簿导航' }).boundingBox();
     const title = await page.getByRole('heading', { name: '早上好' }).boundingBox();
     const firstCard = await page.getByRole('button', { name: '空白工作簿', exact: true }).boundingBox();
-    const banner = await page.getByText('当前本地工作簿仅保存在此页面的内存会话中，刷新或关闭页面后会清空；云端工作簿仍由服务端保存。', { exact: true }).locator('..').locator('..').boundingBox();
     expect(header).toMatchObject({ x: 0, y: 0, height: 58 });
     expect(sidebar).toMatchObject({ x: 0, y: 58, width: 168 });
     expect(title).toMatchObject({ x: 218, y: 88 });
     expect(firstCard).toMatchObject({ x: 236, y: 192, height: 182 });
-    expect(banner).toMatchObject({ x: 218, y: 398, height: 68 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1672);
   });
 });

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openConnectedWorkbook } from './support/workbook-fixtures';
 
 const ROW_HEADER_WIDTH = 39;
 const COLUMN_HEADER_HEIGHT = 20;
@@ -6,16 +7,7 @@ const COLUMN_WIDTH = 64;
 const ROW_HEIGHT = 20;
 
 async function openWorkbook(page: Page): Promise<{ canvas: ReturnType<Page['getByTestId']>; box: NonNullable<Awaited<ReturnType<ReturnType<Page['getByTestId']>['boundingBox']>>> }> {
-  await page.goto('/');
-  await expect(page.getByTestId('workbook-hub')).toBeVisible();
-  await page.getByRole('button', { name: '新建工作簿' }).click();
-  const dialog = page.getByTestId('create-workbook-dialog');
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel('工作簿名称').fill(`Cell UI ${Date.now()}`);
-  await dialog.getByLabel('保存位置').selectOption('local');
-  await dialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+  await openConnectedWorkbook(page, 'zh-CN', `Cell UI ${Date.now()}`);
   const canvas = page.getByTestId('sheet-canvas');
   const box = await canvas.boundingBox();
   if (!box) throw new Error('Spreadsheet canvas has no bounds');

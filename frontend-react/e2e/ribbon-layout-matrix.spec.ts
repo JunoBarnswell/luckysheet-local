@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_VIEWPORTS, DATA_CASES, FORMULAS_CASES, PAGE_LAYOUT_CASES } from './acceptance-matrix';
-import { installBrowserDiagnostics, openLocalWorkbook, selectRibbonTab } from './support/workbook-fixtures';
+import { installBrowserDiagnostics, openConnectedWorkbook, selectRibbonTab } from './support/workbook-fixtures';
 
 const primaryTabCases = [
   ['pageLayout', PAGE_LAYOUT_CASES],
@@ -16,7 +16,7 @@ for (const locale of ACCEPTANCE_LOCALES) {
       for (const [tab, cases] of primaryTabCases) {
         test(`exposes ${tab} layout nodes with canonical command identity`, async ({ page }) => {
           const diagnostics = installBrowserDiagnostics(page);
-          await openLocalWorkbook(page, locale, `${tab} matrix ${locale} ${viewport.width}`);
+          await openConnectedWorkbook(page, locale, `${tab} matrix ${locale} ${viewport.width}`);
           await selectRibbonTab(page, tab);
           const layout = page.getByTestId(`ribbon-layout-${tab}`);
           await expect(layout).toHaveAttribute('data-ribbon-layout', tab);

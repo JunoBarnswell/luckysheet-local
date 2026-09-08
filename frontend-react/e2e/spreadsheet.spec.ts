@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openConnectedWorkbook } from './support/workbook-fixtures';
 
 const DEFAULT_COLUMN_WIDTH_PX = 64;
 const ROW_HEADER_WIDTH_PX = 39;
@@ -6,35 +7,16 @@ const COLUMN_HEADER_HEIGHT_PX = 20;
 const DEFAULT_ROW_HEIGHT_PX = 20;
 
 async function waitForWorkspace(page: Page) {
-  await page.goto('/');
-  await expect(page.getByTestId('workbook-hub')).toBeVisible();
-  await page.getByRole('button', { name: '新建工作簿' }).click();
-  const createDialog = page.getByTestId('create-workbook-dialog');
-  await expect(createDialog).toBeVisible();
-  await createDialog.getByLabel('工作簿名称').fill(`E2E ${Date.now()}`);
-  await createDialog.getByLabel('保存位置').selectOption('local');
-  await createDialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
-  await expect(page.getByTestId('designer-shell')).toBeVisible();
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+  await openConnectedWorkbook(page, 'zh-CN', `E2E ${Date.now()}`);
 }
 
 async function waitForDesignerDemo(page: Page) {
   page.on('pageerror', (error) => console.log(`[pageerror] ${error.message}\n${error.stack ?? ''}`));
   page.on('console', (message) => { if (message.type() === 'error') console.log(`[console.error] ${message.text()}`); });
-  await page.addInitScript(() => window.localStorage.setItem('react-sheets:locale', 'zh-CN'));
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.goto('/');
-  await expect(page.getByTestId('workbook-hub')).toBeVisible();
-  await page.getByRole('button', { name: 'Designer Demo' }).click();
-  const createDialog = page.getByTestId('create-workbook-dialog');
-  await expect(createDialog).toBeVisible();
-  await createDialog.getByLabel('工作簿名称').fill(`Designer Demo E2E ${Date.now()}`);
-  await createDialog.getByLabel('保存位置').selectOption('local');
-  await createDialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
-  await expect(page.getByTestId('designer-shell')).toBeVisible();
-  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+  await openConnectedWorkbook(page, 'zh-CN', `Designer E2E ${Date.now()}`);
+  await page.getByTestId('name-box').fill('B1');
+  await page.getByTestId('name-box').press('Enter');
   await expect(page.getByTestId('name-box')).toHaveValue('B1');
 }
 
@@ -79,7 +61,7 @@ async function dragScrollbar(page: Page, orientation: 'horizontal' | 'vertical')
 }
 
 test.describe('spreadsheet baseline', () => {
-  test('Designer Demo shell exposes the fixed 1280x720 geometry and real palette entry', async ({ page }) => {
+  test('cloud workbook shell exposes the fixed 1280x720 geometry and real palette entry', async ({ page }) => {
     await waitForDesignerDemo(page);
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) => {
@@ -448,14 +430,10 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('fill-source-unique');
   });
 
-  test('local formula calculation works in the page memory session without an API request', async ({ page }) => {
+  test('formula calculation commits through the cloud session and survives reload', async ({ page }) => {
     const apiRequests: string[] = [];
-    let socketCount = 0;
     page.on('request', (request) => {
       if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url());
-    });
-    page.on('websocket', (socket) => {
-      if (new URL(socket.url()).pathname === '/ws') socketCount += 1;
     });
     await waitForWorkspace(page);
     const canvas = await focusCanvas(page);
@@ -464,12 +442,11 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('');
     await canvas.press('ArrowUp');
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
-
+    await expect(page.getByText('已保存到服务器', { exact: true })).toBeVisible({ timeout: 30_000 });
     await page.reload();
-    await expect(page.getByRole('heading', { name: '内存会话已重置' })).toBeVisible();
-    await expect(page.getByText('本地工作簿只存在于当前页面的内存会话中；刷新或关闭页面后无法恢复。请返回工作簿中心重新创建或导入。')).toBeVisible();
-    expect(apiRequests).toEqual([]);
-    expect(socketCount).toBe(0);
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+    await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
+    expect(apiRequests.length).toBeGreaterThan(0);
   });
 
   test('Home ribbon opens shared format, sort, find, and paste dialogs without rendering Add-ins', async ({ page }) => {
