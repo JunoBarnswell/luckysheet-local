@@ -92,7 +92,7 @@ export async function selectRibbonTab(page: Page, tab: 'home' | 'insert' | 'page
 }
 
 export async function assertSurfaceVisible(page: Page, surfaceId: string): Promise<void> {
-  await expect(page.locator(`[data-ribbon-surface="${surfaceId}"]`).first()).toBeVisible();
+  await expect(page.locator(`[data-ribbon-surface="${surfaceId}"]:visible`).first()).toBeVisible();
 }
 
 export function ribbonSurface(surfaceId: string): RibbonSurfaceDefinition {
@@ -112,7 +112,7 @@ export async function openRibbonGroup(page: Page, groupId: string): Promise<void
 /** Reveals one catalog surface through its real responsive group/menu path. */
 export async function revealRibbonSurface(page: Page, surface: RibbonSurfaceDefinition): Promise<ReturnType<Page['locator']>> {
   await page.keyboard.press('Escape');
-  const target = page.locator(`[data-ribbon-surface="${surface.id}"]`).first();
+  const target = page.locator(`[data-ribbon-surface="${surface.id}"]:visible`).first();
   if (!await target.isVisible()) await openRibbonGroup(page, surface.group);
   if (surface.menuId && !await target.isVisible()) {
     let menu = page.locator(`[data-ribbon-menu="${surface.menuId}"]`).first();

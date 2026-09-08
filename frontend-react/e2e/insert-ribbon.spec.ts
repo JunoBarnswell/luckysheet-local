@@ -26,18 +26,18 @@ for (const locale of ACCEPTANCE_LOCALES) {
           const familyMenus = page.locator('[data-ribbon-gallery-family]');
           if (group.rootSurfaceId === 'charts.gallery' && await familyMenus.count() > 0) {
             for (const family of INSERT_CHART_FAMILIES) {
-              await page.locator(`[data-ribbon-gallery-family="${family.id}"]`).click();
-              for (const variant of family.variants) await expect(page.locator(`[data-ribbon-variant="${variant.id}"]`).first()).toBeVisible();
+              await page.locator(`[data-ribbon-gallery-family="${family.id}"]:visible`).click();
+              for (const variant of family.variants) await expect(page.locator(`[data-ribbon-variant="${variant.id}"]:visible`).first()).toBeVisible();
               await page.keyboard.press('Escape');
             }
           } else {
-            const firstVariant = page.locator(`[data-ribbon-variant="${group.variants[0]!.id}"]`).first();
+            const firstVariant = page.locator(`[data-ribbon-variant="${group.variants[0]!.id}"]:visible`).first();
             if (!await firstVariant.isVisible()) {
               const menu = page.locator(`[data-ribbon-menu="${group.rootSurfaceId}"]`).first();
               await expect(menu).toBeVisible();
               await menu.click();
             }
-            for (const variant of group.variants) await expect(page.locator(`[data-ribbon-variant="${variant.id}"]`).first()).toBeVisible();
+            for (const variant of group.variants) await expect(page.locator(`[data-ribbon-variant="${variant.id}"]:visible`).first()).toBeVisible();
           }
           await page.keyboard.press('Escape');
         }

@@ -133,12 +133,14 @@ export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, r
     if (commandId === 'chartBuilder') return INSERT_CHART_FAMILIES.flatMap((family) => family.variants.map((variant) => variantButton({ id: variant.id, icon: family.icon, label: chartVariantLabel(locale, variant), disabled: !permitted('chart.insert'), onSelect: () => onInsertChart(variant.chartType, variant.subtype), surfaceId })));
     if (commandId === 'sparkline') return INSERT_SPARKLINE_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('sparkline.insert'), onSelect: () => onInsertSparkline(variant.value), surfaceId }));
     if (commandId === 'forms') return INSERT_FORM_CONTROL_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('drawing.add.form-control'), onSelect: () => onInsertFormControl(variant.value), surfaceId }));
-    if (commandId === 'shapesLines') return INSERT_SHAPE_GALLERY.flatMap((category) => [
-      <Text key={`${category.id}.label`} size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, category.labelKey)}</Text>,
-      ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('drawing.add.shape'), onSelect: () => onInsertShape(variant.value), surfaceId })),
+    if (commandId === 'shapesLines') return [
+      ...INSERT_SHAPE_GALLERY.flatMap((category) => [
+        <Text key={`${category.id}.label`} size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, category.labelKey)}</Text>,
+        ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !permitted('drawing.add.shape'), onSelect: () => onInsertShape(variant.value), surfaceId })),
+      ]),
       <Text key="connectors.label" size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, 'connectorCategory')}</Text>,
       ...INSERT_CONNECTOR_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled: !canInsertConnector || !permitted('drawing.add.connector'), onSelect: () => onInsertConnector(variant.value), surfaceId })),
-    ]);
+    ];
     return [];
   };
 

@@ -348,10 +348,10 @@ export function HomeRibbon({
         />;
       case 'font-increase':
       case 'font-decrease':
-        return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode !== 'menu' ? '!h-[19px] !min-h-0 !w-[25px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px] text-[11px] font-bold leading-[13px] text-black' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: pointsToPixels(adjacentExcelFontSize(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)), controlId === 'font-increase' ? 1 : -1)) })}>{mode !== 'menu' ? (controlId === 'font-increase' ? 'A↑' : 'A↓') : label}</Button>;
+        return <Button aria-label={label} data-ribbon-surface={surfaceId} disabled={!canFormat} size="sm" variant="ghost" className={mode !== 'menu' ? '!h-[19px] !min-h-0 !w-[25px] rounded-[var(--home-ribbon-radius)] border border-[var(--home-ribbon-color-border)] px-[3px] text-[11px] font-bold leading-[13px] text-black' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: pointsToPixels(adjacentExcelFontSize(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)), controlId === 'font-increase' ? 1 : -1)) })}>{mode !== 'menu' ? (controlId === 'font-increase' ? 'A↑' : 'A↓') : label}</Button>;
       case 'font-color':
       case 'fill-color':
-        return <DropdownMenu disabled={!canFormat} trigger={mode !== 'menu' ? <Button aria-label={label} data-ribbon-keytip={keyTip} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
+        return <DropdownMenu disabled={!canFormat} trigger={mode !== 'menu' ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} disabled={!canFormat} iconNode={<HomeRibbonIcon name={controlId === 'font-color' ? 'text-align-center' : 'paint-bucket'} size="md" />} iconOnly size="sm" variant="ghost" className={HOME_SMALL_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'text-align-center' : 'paint-bucket')}>
           {({ close }) => <ColorPicker color={controlId === 'font-color' ? cellStyle.textColor ?? '#1e293b' : cellStyle.background ?? '#ffffff'} onChange={(color) => { onEmitStyle({ [controlId === 'font-color' ? 'textColor' : 'background']: color }); close(); }} />}
         </DropdownMenu>;
       case 'font-borders-menu':
