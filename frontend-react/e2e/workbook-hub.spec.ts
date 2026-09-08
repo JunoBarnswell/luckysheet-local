@@ -25,11 +25,11 @@ test.describe('workbook hub', () => {
   await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
   });
 
-  test('does not turn an unknown unauthenticated workbook into a local session', async ({ page }) => {
+  test('requires authentication instead of turning an unknown workbook into a local session', async ({ page }) => {
     await page.goto('/workbooks/not-a-cloud-workbook');
     await expect(page.getByTestId('designer-shell')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: '无法打开工作簿' })).toBeVisible();
-    await expect(page.getByText('Authoritative workbook service is unavailable: not-a-cloud-workbook', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '需要云端登录' })).toBeVisible();
+    await expect(page.getByText('请登录后打开云端工作簿。', { exact: true })).toBeVisible();
   });
 });
 
