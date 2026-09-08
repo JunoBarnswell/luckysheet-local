@@ -1,4 +1,4 @@
-import { sha256Hex, type ChartSeriesModel, type RangeRef, type SheetId, type WorkbookModel, type WorksheetModel } from '@react-sheets/core-model';
+import { sha256Hex, type RangeRef, type SheetId, type WorkbookModel, type WorksheetModel } from '@react-sheets/core-model';
 import { usedRangeOfSheet } from '../../application-helpers';
 import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 import {
@@ -54,8 +54,8 @@ export interface PrintProjectionOptions {
   assetBytes?: Readonly<Record<string, Uint8Array>>;
   /** Browser preview URLs resolved through the same AssetStore ownership. */
   assetUrls?: Readonly<Record<string, string>>;
-  /** Runtime-provided Pivot/table chart data; worksheet charts use readCell. */
-  readChart?: (payload: import('@react-sheets/core-model').ChartDrawingPayload) => PrintChartProjection | undefined;
+  /** Runtime-provided chart data resolved from the same pinned workbook view. */
+  readChart: (payload: import('@react-sheets/core-model').ChartDrawingPayload) => PrintChartProjection;
   resolvedVisibility: ResolvedVisibility;
 }
 
@@ -178,8 +178,8 @@ export function buildPrintLayoutModel(
   sheetId: SheetId,
   uiLayout: PrintLayout,
   printArea: RangeRef,
-  document?: PrintDocument,
   resolvedVisibility: ResolvedVisibility,
+  document?: PrintDocument,
 ): PrintLayoutModel {
   const base = createDefaultPrintLayout(unitId, sheetId, resolvedVisibility);
   return {
@@ -230,14 +230,21 @@ function cellHasPrintContent(cell: import('@react-sheets/core-model').CellData |
   return Boolean(cell && (cell.value !== null || cell.formula || cell.style || cell.numberFormat || cell.displayValue !== undefined || cell.presentation));
 }
 
+function assertPinnedVisibility(sheet: WorksheetModel, resolvedVisibility: ResolvedVisibility): void {
+  if (sheet.cells.revision !== resolvedVisibility.revision) {
+    throw new Error(`STALE_VISIBILITY: print source revision ${sheet.cells.revision} does not match visibility revision ${resolvedVisibility.revision}`);
+  }
+}
+
 /**
  * Build one page's actual cell/object projection.  Pagination remains a
  * geometry concern; this function is the single value and object read path
  * consumed by every print host so a PDF cannot fall back to metadata-only
  * rows.
  */
-export function buildPrintProjection(workbook: WorkbookModel, page: PrintPageInfo, options: PrintProjectionOptions = {}): PrintProjection {
+export function buildPrintProjection(workbook: WorkbookModel, page: PrintPageInfo, options: PrintProjectionOptions): PrintProjection {
   const sheet = workbook.getSheet(page.sheetId);
+  assertPinnedVisibility(sheet, options.resolvedVisibility);
   const rowHeights = page.sheetId === sheet.id ? sheet.rowHeightsPx : {};
   const columnWidths = page.sheetId === sheet.id ? sheet.columnWidthsPx : {};
   const hiddenRows = new Set([...options.resolvedVisibility.rows.keys()]);
@@ -285,7 +292,7 @@ export function buildPrintProjection(workbook: WorkbookModel, page: PrintPageInf
     const repeatedRow = drawingRow !== undefined && page.repeatRows && drawingRow >= page.repeatRows.start && drawingRow <= page.repeatRows.end;
     const repeatedColumn = drawingColumn !== undefined && page.repeatColumns && drawingColumn >= page.repeatColumns.start && drawingColumn <= page.repeatColumns.end;
     const image = payload.kind === 'image' ? printImageResource(payload.asset, options.assetBytes, options.assetUrls) : undefined;
-    const chart = payload.kind === 'chart' ? resolvePrintChart(payload, sheet, options.readCell, options.readChart) : undefined;
+    const chart = payload.kind === 'chart' ? resolvePrintChart(payload, options.readChart) : undefined;
     drawings.push({ drawing: structuredClone(drawing), payload: structuredClone(payload), ...(image ? { image } : {}), ...(chart ? { chart } : {}), xPx: (repeatedColumn ? 0 : repeatWidth) + left - originX, yPx: (repeatedRow ? 0 : repeatHeight) + top - originY, widthPx: drawing.transform.width, heightPx: drawing.transform.height });
   }
   return { schema: 'PrintProjection', page: structuredClone(page), cells, drawings, visibleRows: rows, visibleColumns: columns, scaleX: page.scaleX ?? 1, scaleY: page.scaleY ?? 1, contentWidthPx: Math.max(page.contentWidthPx ?? 0, columnOffsetPx), contentHeightPx: Math.max(page.contentHeightPx ?? 0, rowOffsetPx) };
@@ -310,44 +317,17 @@ function printImageResource(
 
 function resolvePrintChart(
   payload: import('@react-sheets/core-model').ChartDrawingPayload,
-  sheet: WorksheetModel,
-  readCell: PrintCellReader | undefined,
-  runtimeReader: ((payload: import('@react-sheets/core-model').ChartDrawingPayload) => PrintChartProjection | undefined) | undefined,
-): PrintChartProjection | undefined {
-  const runtime = runtimeReader?.(payload);
-  if (runtime) return structuredClone(runtime);
-  if (payload.source.kind !== 'worksheet-ranges') throw new Error(`NATIVE_PRINT_CHART_SOURCE_UNAVAILABLE: ${payload.chartId}`);
-  const source = payload.source.ranges[0];
-  if (!source || source.sheetId !== sheet.id) throw new Error(`NATIVE_PRINT_CHART_SOURCE_UNAVAILABLE: ${payload.chartId}`);
-  const read = (row: number, column: number) => readCell?.(sheet, row, column) ?? sheet.cells.get(row, column);
-  const scalar = (row: number, column: number): string | number | null => {
-    const cell = read(row, column);
-    const value = cell?.formulaValue ?? cell?.value;
-    return typeof value === 'number' && Number.isFinite(value) ? value : typeof value === 'string' ? value : null;
-  };
-  const categories = payload.categoryRange && payload.categoryRange.sheetId === sheet.id
-    ? Array.from({ length: payload.categoryRange.endRow - payload.categoryRange.startRow + 1 }, (_, index) => String(scalar(payload.categoryRange!.startRow + index, payload.categoryRange!.startColumn) ?? ''))
-    : Array.from({ length: Math.max(0, source.endRow - source.startRow) }, (_, index) => String(scalar(source.startRow + index + 1, source.startColumn) ?? index + 1));
-  const declarations: readonly ChartSeriesModel[] = payload.series ?? Array.from({ length: Math.max(1, source.endColumn - source.startColumn) }, (_, index): ChartSeriesModel => ({ id: `series:${index + 1}`, name: String(scalar(source.startRow, source.startColumn + index + 1) ?? `Series ${index + 1}`), range: { ...source, startColumn: source.startColumn + index + 1, endColumn: source.startColumn + index + 1 } }));
-  return {
-    categories,
-    series: declarations.map((entry, index) => {
-      const range = entry.yRange ?? entry.range;
-      const values = Array.from({ length: Math.max(0, range.endRow - range.startRow + 1) }, (_, offset) => {
-        const value = scalar(range.startRow + offset, range.startColumn);
-        return typeof value === 'number' ? value : null;
-      });
-      return { id: entry.id ?? `series:${index + 1}`, name: entry.name || `Series ${index + 1}`, values, ...(entry.color ? { color: entry.color } : {}) };
-    }),
-  };
+  runtimeReader: (payload: import('@react-sheets/core-model').ChartDrawingPayload) => PrintChartProjection,
+): PrintChartProjection {
+  return structuredClone(runtimeReader(payload));
 }
 
 export function buildPrintSnapshot(
   workbook: WorkbookModel,
   activeSheetId: SheetId,
-  uiLayout?: PrintLayout,
-  selectionRange?: RangeRef,
-  resolvedVisibility?: import('@react-sheets/sheet-features').ResolvedVisibility,
+  uiLayout: PrintLayout | undefined,
+  selectionRange: RangeRef | undefined,
+  resolvedVisibility: ResolvedVisibility,
 ): PrintSnapshot {
   const sheet = workbook.getSheet(activeSheetId);
   const document = getPrintDocument(workbook, activeSheetId);
@@ -371,8 +351,8 @@ export function buildPrintSnapshot(
   };
   const storedArea = document.printAreas.find((area) => area.sheetId === activeSheetId)?.range;
   const printArea = selectionRange ? resolvePrintArea(sheet, selectionRange) : storedArea ?? resolvePrintArea(sheet);
-  if (!resolvedVisibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: print snapshot requires the kernel visibility projection');
-  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document, resolvedVisibility);
+  assertPinnedVisibility(sheet, resolvedVisibility);
+  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, resolvedVisibility, document);
   model.rowHeights = { ...sheet.rowHeightsPx };
   model.columnWidths = { ...sheet.columnWidthsPx };
   model.resolvedVisibility = resolvedVisibility;

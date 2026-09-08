@@ -5,9 +5,7 @@ export const WORKBOOK_SYNC_STATE_PRIORITY: Readonly<Record<WorkbookSyncState, nu
   error: 0,
   conflict: 1,
   syncing: 2,
-  pending: 3,
-  offline: 4,
-  synced: 5,
+  synced: 3,
 };
 
 export function compareWorkbookSyncState(left: WorkbookSyncState, right: WorkbookSyncState): number {
@@ -52,13 +50,9 @@ export function filterWorkbookCatalog(
 
 export function resolveWorkbookSyncState(input: {
   syncState?: WorkbookSyncState;
-  storage: 'remote';
-  pendingOperationCount?: number;
-  syncMode?: 'remote';
   remoteAvailable?: boolean;
 }): WorkbookSyncState {
   if (input.syncState) return input.syncState;
-  if (input.pendingOperationCount && input.pendingOperationCount > 0) return 'pending';
   if (input.remoteAvailable === false) return 'error';
-  return input.pendingOperationCount && input.pendingOperationCount > 0 ? 'pending' : 'synced';
+  return 'synced';
 }

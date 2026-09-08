@@ -12,7 +12,7 @@ import type {
 import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 export * from './kernel-contract';
-import type { WorkbookManifest, KernelPagePayload, KernelChangeSet, KernelSheetManifest } from './kernel-contract';
+import type { WorkbookManifest, KernelPagePayload, KernelChangeSet, KernelSheetManifest, KernelCell } from './kernel-contract';
 
 function assertManifestResponse(value: unknown, unitId: string): WorkbookManifest {
   if (!value || typeof value !== 'object') throw new Error('KERNEL_MANIFEST_INVALID');
@@ -26,7 +26,7 @@ export interface KernelCloudCommandRequest {
   readonly baseRevision: number;
   readonly clientSequence: number;
   readonly mutations: readonly { readonly id: string; readonly sheetId: string; readonly params: unknown }[];
-  readonly intent?: { readonly commandId: string; readonly params?: unknown };
+  readonly intent?: OperationIntent;
 }
 export interface KernelWorkbookCreateRequest {
   readonly unitId: string;
@@ -1321,9 +1321,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   if (!isNonEmptyString(input.createdAt) || Number.isNaN(Date.parse(input.createdAt))) {
     throw new Error('createdAt must be an ISO timestamp');
   }
-  if (!Array.isArray(input.mutations) || input.mutations.length === 0) {
-    throw new Error('mutations must contain at least one mutation');
-  }
+  if (!Array.isArray(input.mutations)) throw new Error('mutations must be an array');
 
   // Reject fields that used to be client-controlled security inputs instead
   // of silently ignoring them. This prevents accidental reintroduction of
@@ -1350,6 +1348,11 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
       targetOperationId: rawIntent.targetOperationId,
       targetBaseRevision: Number(rawIntent.targetBaseRevision),
     };
+  }
+  if (intent ? input.mutations.length !== 0 : input.mutations.length === 0) {
+    throw new Error(intent
+      ? 'undo intent must not include client mutations'
+      : 'mutations must contain at least one mutation');
   }
 
   const mutations = input.mutations.map((raw, index) => {
@@ -1559,6 +1562,10 @@ export interface WorkbookMetadataPatch {
   spaceId?: string | null;
 }
 
+export interface WorkbookRenameRequest {
+  name: string;
+}
+
 export interface WorkbookCopyRequest {
   folderId?: string;
   name?: string;
@@ -1646,6 +1653,45 @@ export interface WorkbookImportResponse {
   artifact: WorkbookSourceArtifactMetadata;
   manifest: WorkbookManifest;
   summary: WorkbookSummary;
+}
+
+export interface NativeDocumentImportTaskRequest {
+  fileName: string;
+  name?: string;
+  spaceId?: string;
+  folderId?: string;
+  byteLength: number;
+  sha256: string;
+}
+
+export interface NativeDocumentImportTaskResponse {
+  taskId: string;
+  state: 'uploading' | 'importing' | 'completed' | 'failed' | 'cancelled';
+  uploadedBytes: number;
+  byteLength: number;
+  result?: WorkbookImportResponse | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+function validateNativeDocumentImportTask(value: unknown): NativeDocumentImportTaskResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_INVALID');
+  const task = value as Record<string, unknown>;
+  if (!isNonEmptyString(task.taskId)
+    || !['uploading', 'importing', 'completed', 'failed', 'cancelled'].includes(String(task.state))
+    || !Number.isSafeInteger(task.uploadedBytes) || Number(task.uploadedBytes) < 0
+    || !Number.isSafeInteger(task.byteLength) || Number(task.byteLength) < 1
+    || Number(task.uploadedBytes) > Number(task.byteLength)) {
+    throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_INVALID');
+  }
+  if (task.result != null) {
+    const result = task.result as WorkbookImportResponse;
+    assertManifestResponse(result.manifest, result.unitId);
+    if (result.revision !== result.manifest.revision || result.artifact?.unitId !== result.unitId) {
+      throw new Error('NATIVE_DOCUMENT_IMPORT_RESULT_INVALID');
+    }
+  }
+  return task as unknown as NativeDocumentImportTaskResponse;
 }
 
 export interface RevisionRecord {
@@ -1930,6 +1976,42 @@ export class WorkbookApiClient {
       || response.revision !== response.manifest.revision || response.summary.revision !== response.revision
       || response.artifact.unitId !== response.unitId || response.artifact.revision !== response.revision) {
       throw new ApiRequestError('Workbook import returned a mismatched identity', 200, 'INTERNAL_ERROR');
+    }
+    return response;
+  }
+
+  async createNativeDocumentTask(request: NativeDocumentImportTaskRequest): Promise<NativeDocumentImportTaskResponse> {
+    return validateNativeDocumentImportTask(await this.json<unknown>('/api/workbook-imports/tasks', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    }));
+  }
+
+  async uploadNativeDocumentTaskChunk(taskId: string, offset: number, bytes: ArrayBuffer): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim() || !Number.isSafeInteger(offset) || offset < 0 || bytes.byteLength < 1) throw new Error('NATIVE_DOCUMENT_UPLOAD_CHUNK_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}/chunks?offset=${offset}`, {
+      method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes,
+    }));
+  }
+
+  async commitNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim()) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_ID_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}/commit`, { method: 'POST' }));
+  }
+
+  async cancelNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim()) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_ID_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }));
+  }
+
+  async renameWorkbook(unitId: string, request: WorkbookRenameRequest): Promise<WorkbookOpenResponse> {
+    const response = await this.json<WorkbookOpenResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    assertManifestResponse(response?.manifest, unitId);
+    if (response.unitId !== unitId || response.revision !== response.manifest.revision || response.manifest.name !== request.name.trim()) {
+      throw new Error('KERNEL_RENAME_IDENTITY_MISMATCH');
     }
     return response;
   }
@@ -2351,7 +2433,7 @@ export class CollabSocketClient {
     this.emitStatus('closed');
   }
 
-  /** 发送客户端消息；未连接时返回 false，由 OfflineQueue 保留 operation。 */
+  /** Send ephemeral presence/cursor state; disconnected messages are dropped. */
   send(message: ClientOperationMessage): boolean {
     const encoded = encodeClientOperationMessage(message);
     if (this.socket?.readyState === 1) {

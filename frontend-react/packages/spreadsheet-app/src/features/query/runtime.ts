@@ -86,12 +86,7 @@ export interface QueryLoadCommandPayload {
   sourceRevision?: number;
 }
 
-export interface QueryLoadRestorePayload extends Omit<QueryLoadCommandPayload, 'source' | 'binding'> {
-  source: DataSourceManifest | null;
-  binding: QueryLoadBinding | null;
-}
-
-export type QueryLoadMutationPayload = QueryLoadCommandPayload | QueryLoadRestorePayload;
+export type QueryLoadMutationPayload = QueryLoadCommandPayload;
 
 export interface PreparedQueryLoad {
   payload: QueryLoadCommandPayload;
@@ -356,23 +351,6 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
   };
 }
 
-function currentBinding(workbook: WorkbookModel, sourceId: string, target?: LoadTarget): QueryLoadBinding | null {
-  for (const sheet of workbook.getSheets()) {
-    const region = sheet.dataRegions.find((entry) => entry.sourceId === sourceId);
-    if (region) {
-      const header: TableScalar[] = [];
-      for (let column = region.range.startColumn; column <= region.range.endColumn; column += 1) header.push(sheet.cells.get(region.headerRow, column)?.value ?? null);
-      return { kind: 'sheet-region', region: structuredClone(region), header };
-    }
-  }
-  if (target?.kind === 'workbook-table' && target.tableId) {
-    const table = workbook.dataModel.tables.get(target.tableId);
-    if (table) return { kind: 'workbook-table', tableId: table.id, table: structuredClone(table) };
-  }
-  for (const table of workbook.dataModel.tables.values()) if (table.sourceId === sourceId) return { kind: 'workbook-table', tableId: table.id, table: structuredClone(table) };
-  return null;
-}
-
 function currentRanges(workbook: WorkbookModel, sourceId: string): RangeRef[] {
   return workbook.getSheets().flatMap((sheet) => sheet.dataRegions.filter((region) => region.sourceId === sourceId).map((region) => structuredClone(region.range)));
 }
@@ -380,7 +358,6 @@ function currentRanges(workbook: WorkbookModel, sourceId: string): RangeRef[] {
 export interface QueryLoadPlan {
   mutationId: 'query.load.range' | 'query.load.sheet-table' | 'query.load.workbook-table' | 'query.load.pivot-source';
   payload: QueryLoadCommandPayload;
-  inverse: QueryLoadRestorePayload;
   affectedRanges: RangeRef[];
 }
 
@@ -388,22 +365,7 @@ export function buildQueryLoadPlan(workbook: WorkbookModel, params: QueryLoadCom
   if (params.kind !== 'data-source-load') throw new Error('Query load payload must use the block-backed data-source contract');
   if (!params.queryId.trim() || params.sourceId !== sourceIdForQuery(params.queryId)) throw new Error('Query load source identity is invalid');
   if (!params.source || !params.binding) throw new Error('Query load source and binding are required');
-  const previousBinding = currentBinding(workbook, params.sourceId, params.target);
-  const previousSource = workbook.dataModel.sources.get(params.sourceId);
   const affectedRanges = [...currentRanges(workbook, params.sourceId), ...(params.binding.kind === 'sheet-region' ? [params.binding.region.range] : [])];
-  const previousSheetId = previousBinding?.kind === 'sheet-region'
-    ? previousBinding.region.range.sheetId
-    : (params.target.sheetId ?? (params.binding.kind === 'sheet-region' ? params.binding.region.range.sheetId : undefined));
-  const previousSheet = previousSheetId ? workbook.getSheet(previousSheetId) : undefined;
-  const inverse: QueryLoadRestorePayload = {
-    kind: 'data-source-load', queryId: params.queryId, queryDefinition: workbook.getQueryDefinition(params.queryId) ?? null,
-    target: structuredClone(params.target), sourceId: params.sourceId, source: previousSource ? structuredClone(previousSource) : null,
-    binding: previousBinding,
-    ...(params.target.kind === 'pivot-source' && params.target.pivotId
-      ? { pivotSource: workbook.getSheets().flatMap((sheet) => sheet.pivots).find((pivot) => pivot.id === params.target.pivotId)?.source }
-      : {}),
-    ...(previousSheet ? { extent: { sheetId: previousSheet.id, rowCount: previousSheet.rowCount, columnCount: previousSheet.columnCount } } : {}),
-  };
   const mutationId = params.target.kind === 'range' ? 'query.load.range' : params.target.kind === 'sheet-table' ? 'query.load.sheet-table' : params.target.kind === 'pivot-source' ? 'query.load.pivot-source' : 'query.load.workbook-table';
-  return { mutationId, payload: structuredClone(params), inverse, affectedRanges: affectedRanges.filter((range, index, all) => all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(range)) === index) };
+  return { mutationId, payload: structuredClone(params), affectedRanges: affectedRanges.filter((range, index, all) => all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(range)) === index) };
 }

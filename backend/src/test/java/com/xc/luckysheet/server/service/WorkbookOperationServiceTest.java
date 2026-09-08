@@ -94,6 +94,44 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
+    void serverRenameUsesCanonicalRevisionAndTheNextActorSequence() throws Exception {
+        String unitId = "native-server-rename";
+        create(unitId);
+        operations.commit(unitId, operation(unitId, "rename-prior-edit", 1, 0, set(0, 0, 42)), "owner");
+        var params = mapper.createObjectNode().put("name", "Renamed once");
+
+        var result = operations.commitServerMutation(unitId,
+                new OperationMutation("workbook.renamed", "workbook", params), "owner", "workbook-rename");
+
+        assertTrue(result.committed());
+        assertEquals(2, result.operation().clientSequence());
+        assertEquals(2, result.operation().revision());
+        assertEquals("Renamed once", result.changeSet().path("manifest").path("name").asText());
+        assertEquals("Renamed once", store.find(unitId).orElseThrow().name());
+        kernel.close();
+        var reopened = operations.open(unitId, "owner");
+        assertEquals(2, reopened.revision());
+        assertEquals("Renamed once", reopened.manifest().path("name").asText());
+    }
+
+    @Test
+    void viewerCannotUseServerRenameAndNoRevisionIsPublished() throws Exception {
+        String unitId = "native-server-rename-role";
+        create(unitId);
+        var share = shares.create(unitId, new ShareCreateRequest("viewer", Instant.now().plusSeconds(600)), "owner");
+        String actor = "guest:" + share.shareId();
+        var params = mapper.createObjectNode().put("name", "Forbidden rename");
+
+        var error = assertThrows(ServiceException.class, () -> operations.commitServerMutation(unitId,
+                new OperationMutation("workbook.renamed", "workbook", params), actor, "workbook-rename"));
+
+        assertEquals("FORBIDDEN", error.code());
+        assertEquals(0, store.find(unitId).orElseThrow().revision());
+        assertTrue(manifests.findByUnitIdAndRevision(unitId, 1).isEmpty());
+        assertEquals("Book", operations.open(unitId, "owner").manifest().path("name").asText());
+    }
+
+    @Test
     void invalidNativeMutationTailRejectsWholeBatchWithoutPersistentOrNativePartialWrite() throws Exception {
         String unitId = "native-invalid-batch";
         create(unitId);
@@ -122,13 +160,13 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
-    void undoUsesPersistedNativeHistoryInsteadOfClientSuppliedInverseCells() throws Exception {
+    void undoUsesPersistedNativeHistoryWithoutClientInverseMutations() throws Exception {
         String unitId = "native-undo";
         create(unitId);
         operations.commit(unitId, operation(unitId, "native-undo-target", 1, 0, set(0, 0, 42)), "owner");
         kernel.close();
         var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-undo-op", unitId, 2, 1,
-                List.of(set(0, 0, 999)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-undo-target", 0));
+                List.of(), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-undo-target", 0));
 
         var result = operations.commit(unitId, undo, "owner");
 
@@ -145,7 +183,7 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
         operations.commit(unitId, operation(unitId, "undo-conflict-target", 1, 0, set(0, 0, 42)), "owner");
         operations.commit(unitId, operation(unitId, "undo-conflict-later", 2, 1, set(0, 0, 99)), "owner");
         var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "undo-conflict-request", unitId, 3, 2,
-                List.of(set(0, 0, 1)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "undo-conflict-target", 0));
+                List.of(), Instant.now(), new OperationIntent(OperationIntent.UNDO, "undo-conflict-target", 0));
 
         var error = assertThrows(KernelHostException.class, () -> operations.commit(unitId, undo, "owner"));
 
@@ -164,7 +202,7 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
         operations.commit(unitId, operation(unitId, "native-owned-history", 1, 0, set(0, 0, 42)), "owner");
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), "owner");
         var undo = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-foreign-undo", unitId, 1, 1,
-                List.of(set(0, 0, 999)), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-owned-history", 0));
+                List.of(), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-owned-history", 0));
 
         var error = assertThrows(ServiceException.class, () -> operations.commit(unitId, undo, "guest:" + share.shareId()));
 

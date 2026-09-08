@@ -183,7 +183,6 @@ export interface PrintProjection {
 export interface PrintPaginationOptions {
   rowHeights?: Readonly<Record<number, number>>;
   columnWidths?: Readonly<Record<number, number>>;
-  resolvedVisibility: ResolvedVisibility;
 }
 
 const PAPER_POINTS: Record<PaperSize, { width: number; height: number }> = {
@@ -249,6 +248,7 @@ function trimHidden(segment: { start: number; end: number }, hidden: ReadonlySet
 
 /** One pagination implementation shared by browser and Node print hosts. */
 export function computePrintPages(layout: PrintLayoutModel, rowHeight = 20, colWidth = 80, options: PrintPaginationOptions = {}): PrintPageInfo[] {
+  if (!layout.resolvedVisibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: print pagination requires the kernel visibility projection');
   const pages: PrintPageInfo[] = [];
   const capacity = pageCapacity(layout);
   const scale = Math.max(0.01, layout.pageSetup.scale / 100);

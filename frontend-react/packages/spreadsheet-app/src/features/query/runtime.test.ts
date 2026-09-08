@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { exportSnapshotToOoxmlBase64 } from '@react-sheets/exchange-excel-ooxml';
-import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
-import { registerSheetCommands } from '@react-sheets/sheet-features';
+import { CommandRegistry, type CommandContext } from '@react-sheets/command-runtime';
 import {
   buildQueryResultSnapshot,
   buildQueryLoadPlan,
@@ -174,25 +173,29 @@ describe('query commands', () => {
     registry.assertComplete();
   });
 
-  it('loads query results into a block-backed worksheet region through query.load', async () => {
+  it('plans query loads as canonical mutations without mutating the replica', async () => {
     const model = new WorkbookModel('wb-query', 'Query');
-    const runtime = new CommandRuntime(model);
-    registerSheetCommands(runtime);
-    registerQueryCommands(runtime.registry);
+    const registry = new CommandRegistry({ requireMutationMetadata: true });
+    registerQueryCommands(registry);
     const sheetId = model.primarySheetId;
     const query = createInlineJsonQuery('q-load', 'Load', [{ Product: 'X', Units: 9 }]);
     const result = { columns: ['Product', 'Units'], rows: [['X', 9]], rowCount: 1 };
     const prepared = await prepareQueryLoadPayload(model, query, { kind: 'range', sheetId, range: { startRow: 0, startColumn: 0 } }, result);
-    runtime.execute('query.load', prepared.payload);
-
-    const sheet = model.getSheet(sheetId);
-    assert.equal(sheet.cells.get(0, 0)?.value, 'Product');
-    assert.equal(sheet.cells.get(1, 1), undefined);
-    assert.equal(model.getSheet(sheetId).dataRegions[0]?.sourceId, 'query:q-load');
-    assert.equal(Array.isArray(model.getQueryDefinition('q-load')?.connectorConfig.data), true);
-    assert.deepEqual(model.getQueryDefinition('q-load')?.steps, []);
-    const restored = WorkbookModel.fromSnapshot(model.snapshot());
-    assert.deepEqual(restored.getQueryDefinition('q-load'), model.getQueryDefinition('q-load'));
+    const mutations: unknown[] = [];
+    const context = {
+      workbook: model,
+      operationId: 'op-load',
+      executeCommand: () => ({ operationId: 'op-load', mutationCount: 0, affectedRanges: [] }),
+      applyMutation: (mutation: unknown) => mutations.push(mutation),
+      recordOperation: () => ({ operationId: 'op-load' }),
+    } as unknown as CommandContext;
+    const planned = registry.getCommand('query.load').execute(prepared.payload, context);
+    assert.equal(planned.mutationCount, 1);
+    assert.equal(mutations.length, 1);
+    assert.equal((mutations[0] as { id: string }).id, 'query.load.range');
+    assert.equal('inverse' in (mutations[0] as object), false);
+    assert.equal(model.getSheet(sheetId).dataRegions.length, 0);
+    assert.equal(model.getQueryDefinition('q-load'), undefined);
   });
 
   it('builds distinct load plans for sheet tables and pivots', async () => {
@@ -214,43 +217,28 @@ describe('query commands', () => {
     assert.equal(buildQueryLoadPlan(model, pivotSource.payload).mutationId, 'query.load.pivot-source');
   });
 
-  it('applies and reverts sheet-table, workbook-table, and pivot-source loads', async () => {
-    const model = new WorkbookModel('wb-query-replay', 'Query');
-    const runtime = new CommandRuntime(model);
-    registerSheetCommands(runtime);
-    registerQueryCommands(runtime.registry);
-    const sheet = model.getSheet(model.primarySheetId);
-    sheet.sheetTables.push({
-      id: 'table-1', sheetId: sheet.id, name: 'Sales',
-      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
-      hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
-      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both', columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
-    });
-    model.addTable({ id: 'workbook-table-1', name: 'Results', rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
-    const pivot = queryTargetPivot(sheet.id);
-    sheet.pivots.push(pivot);
-    const query = createInlineJsonQuery('q-replay', 'Replay', [{ A: 1, B: 2 }]);
-    const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
-
-    const sheetLoad = await prepareQueryLoadPayload(model, query, { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result);
-    runtime.execute('query.load', sheetLoad.payload);
-    assert.equal(sheet.cells.get(1, 1), undefined);
-    assert.equal(model.getQueryDefinition('q-replay')?.id, 'q-replay');
-    assert.equal(runtime.undo(), true);
-    assert.equal(sheet.cells.get(1, 1), undefined);
-    assert.equal(model.getQueryDefinition('q-replay'), undefined);
-
-    const workbookTableLoad = await prepareQueryLoadPayload(model, query, { kind: 'workbook-table', tableId: 'workbook-table-1' }, result);
-    runtime.execute('query.load', workbookTableLoad.payload);
-    assert.equal(model.getTable('workbook-table-1').rowCount, 1);
-    assert.equal(model.getTable('workbook-table-1').sourceId, 'query:q-replay');
-    assert.equal(runtime.undo(), true);
-    assert.equal(model.getTable('workbook-table-1').rowCount, 0);
-
-    const pivotLoad = await prepareQueryLoadPayload(model, query, { kind: 'pivot-source', pivotId: 'pivot-1' }, result);
-    runtime.execute('query.load', pivotLoad.payload);
-    assert.equal(sheet.cells.get(6, 1), undefined);
-    assert.equal(runtime.undo(), true);
-    assert.equal(sheet.cells.get(6, 1), undefined);
+  it('rejects query loads with a mismatched source identity before planning', async () => {
+    const model = new WorkbookModel('wb-query-invalid', 'Query');
+    const registry = new CommandRegistry({ requireMutationMetadata: true });
+    registerQueryCommands(registry);
+    const prepared = await prepareQueryLoadPayload(
+      model,
+      createInlineJsonQuery('q-invalid', 'Invalid', [{ A: 1 }]),
+      { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } },
+      { columns: ['A'], rows: [[1]], rowCount: 1 },
+    );
+    const mutations: unknown[] = [];
+    const context = {
+      workbook: model,
+      operationId: 'op-invalid',
+      executeCommand: () => ({ operationId: 'op-invalid', mutationCount: 0, affectedRanges: [] }),
+      applyMutation: (mutation: unknown) => mutations.push(mutation),
+      recordOperation: () => ({ operationId: 'op-invalid' }),
+    } as unknown as CommandContext;
+    assert.throws(
+      () => registry.getCommand('query.load').execute({ ...prepared.payload, sourceId: 'wrong-source' }, context),
+      /source identity is invalid/i,
+    );
+    assert.equal(mutations.length, 0);
   });
 });

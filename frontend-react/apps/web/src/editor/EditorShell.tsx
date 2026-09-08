@@ -163,9 +163,7 @@ export function EditorShell({
             sheetCount={state.sheets.length}
             zoom={state.zoom}
             collabStatus={state.collabStatus}
-            pendingChangeSetCount={state.pendingChangeSetCount}
             collabRevision={state.collabRevision}
-            hasPendingOperations={state.hasPendingOperations}
             fixedDecimalPlaces={state.editingOptions.fixedDecimalPlaces}
           />
         )}
@@ -188,18 +186,16 @@ export function EditorShell({
                 textBoxPlacementActive={state.textBoxPlacement}
                 textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
-                onActivateHyperlink={(row, column) => {
+                onActivateHyperlink={async (row, column) => {
                   try {
-                    const result = session.activateHyperlinkAt(row, column);
-                    if (result.kind === 'none') return false;
+                    const result = await session.activateHyperlinkAt(row, column);
+                    if (result.kind === 'none') return;
                     if (result.kind === 'external') {
                       const opened = window.open(result.href, '_blank', 'noopener,noreferrer');
                       if (!opened) throw new Error('HYPERLINK_POPUP_BLOCKED: allow popups and retry');
                     }
-                    return true;
                   } catch (cause) {
                     dispatchSessionIntent({ type: 'notice', message: cause instanceof Error ? cause.message : 'Hyperlink activation failed' });
-                    return true;
                   }
                 }}
                 onPivotContextHit={(hit) => {

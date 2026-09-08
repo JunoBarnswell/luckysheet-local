@@ -17,30 +17,22 @@ export interface SetSelectionParams {
 export function registerEditingFeatures(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<WorkbookEditingOptions>({
     id: 'workbook.editing.options.set',
-    handler: (item, context) => {
-      if (!isWorkbookEditingOptions(item.params)) throw new Error('workbook.editing.options.set requires canonical options');
-      context.workbook.setEditingOptions(item.params);
-    },
     metadata: {
       schema: { name: 'WorkbookEditingOptions', validate: isWorkbookEditingOptions },
       permission: { capability: 'workbook.editing.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      inversePolicy: { allowedMutationIds: ['workbook.editing.options.set'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerCommand<WorkbookEditingOptions>({
     id: 'workbook.editing.options.set',
     execute: (params, context) => {
       if (!isWorkbookEditingOptions(params)) throw new Error('Workbook editing options are invalid');
-      const previous = structuredClone(context.workbook.editingOptions);
       context.applyMutation({
         id: 'workbook.editing.options.set',
         unitId: context.workbook.unitId,
         sheetId: context.workbook.primarySheetId,
         params: structuredClone(params),
         affectedRanges: [],
-        inverse: [{ id: 'workbook.editing.options.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: previous, affectedRanges: [] }],
-        apply: () => context.workbook.setEditingOptions(params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },

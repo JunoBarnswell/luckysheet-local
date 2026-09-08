@@ -137,42 +137,12 @@ export interface RestoreCommandParams {
   reason?: string;
 }
 
-/** Server-produced mutation payload. The client command never accepts this shape. */
-export interface ServerRestoreMutationParams extends RestoreCommandParams {
-  serverGenerated: true;
-  manifest: WorkbookManifest;
-  pages: KernelPagePayload[];
-}
-
-function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMutationParams {
-  if (!value || typeof value !== 'object') return false;
-  const input = value as Record<string, unknown>;
-  return input.serverGenerated === true
-    && Number.isSafeInteger(input.targetRevision)
-    && Number(input.targetRevision) >= 0
-    && Boolean(input.manifest)
-    && (input.manifest as { schema?: string; version?: number }).schema === 'WorkbookManifest'
-    && (input.manifest as { version?: number }).version === 11
-    && Array.isArray(input.pages);
-}
-
 /**
- * Register the server-authoritative restore mutation and the client request
- * command. A client request intentionally does not mutate the workbook: the
- * server resolves targetRevision, authorizes it, and broadcasts the signed
- * `workbook.restore` mutation carrying the server-authoritative manifest/pages.
+ * Register the client history request command. A client request intentionally
+ * does not mutate the workbook: the server resolves targetRevision and
+ * authorizes the history intent.
  */
 export function registerHistoryCommands(registry: CommandRegistry): void {
-  registry.registerMutation<ServerRestoreMutationParams>({
-    id: 'workbook.restore',
-    metadata: {
-      schema: { name: 'ServerRestoreMutationParams', validate: isServerRestoreMutationParams },
-      permission: { capability: 'history.restore' },
-      affectedRanges: { resolve: () => [], mode: 'exact' },
-      inverseIds: ['workbook.restore'],
-    },
-  });
-
   registry.registerCommand<RestoreCommandParams>({
     id: 'history.restore',
     execute(params: RestoreCommandParams, _context): CommandResult {

@@ -76,7 +76,22 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
     deletedAt: summary.deletedAt,
     favorite: Boolean(summary.favorite),
     lastOpenedAt: summary.lastOpenedAt,
-    pendingOperationCount: 0,
+  };
+}
+
+function canonicalManifest(manifest: import('@react-sheets/core-model').KernelReplicaManifest): import('@react-sheets/protocol').WorkbookManifest {
+  return {
+    schema: manifest.schema,
+    version: manifest.version,
+    unitId: manifest.unitId,
+    name: manifest.name,
+    revision: manifest.revision,
+    sheets: manifest.sheets.map(sheet => ({ ...sheet, metadata: { ...sheet.metadata } })),
+    pages: manifest.pages.map(page => ({
+      ...page,
+      occupiedRange: page.occupiedRange ? { ...page.occupiedRange } : null,
+    })),
+    metadata: { ...manifest.metadata },
   };
 }
 
@@ -135,7 +150,6 @@ export class WorkbookCatalogService {
       sourceFileName: overrides.sourceFileName,
       favorite: Boolean(state.favorite),
       lastOpenedAt: state.lastOpenedAt,
-      pendingOperationCount: 0,
     };
   }
 
@@ -182,7 +196,6 @@ export class WorkbookCatalogService {
       folderId: input.metadata?.folderId,
       locationPath: [],
       favorite: false,
-      pendingOperationCount: 0,
     };
   }
 
@@ -212,7 +225,6 @@ export class WorkbookCatalogService {
       locationPath: [],
       favorite: Boolean(saved.favorite),
       lastOpenedAt: saved.lastOpenedAt,
-      pendingOperationCount: 0,
     };
   }
 
@@ -245,7 +257,7 @@ export class WorkbookCatalogService {
       folderId: input.folderId,
       sourceFileName: fileName,
     });
-    return { entry, manifest: imported.manifest, report: imported.report, artifact: imported.artifact };
+    return { entry, manifest: canonicalManifest(imported.manifest), report: imported.report, artifact: imported.artifact };
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
@@ -275,7 +287,12 @@ export class WorkbookCatalogService {
     const trimmed = name.trim();
     if (!trimmed) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
     if (trimmed.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-    return remoteEntry(await this.requireRemote().updateWorkbook(unitId, { name: trimmed }));
+    const renamed = await this.requireRemote().renameWorkbook(unitId, { name: trimmed });
+    const entry = await this.entryFromManifest(unitId);
+    if (entry.revision !== renamed.revision || entry.name !== trimmed) {
+      throw new WorkbookCatalogError('conflict', 'Workbook rename changed while refreshing the catalog');
+    }
+    return entry;
   }
 
   async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'remote' } = {}): Promise<WorkbookCatalogEntry> {

@@ -12,7 +12,7 @@ import type {
   RangeRef,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
+import { clearFormulaProvenance, columnLabel, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
@@ -20,7 +20,7 @@ import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegi
 import { resolveValidationRule } from './rule-index';
 import { RuleIntervalIndex } from './rule-index';
 import type { ResolvedCellReader } from './rules-runtime';
-import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
+import type { CommandContext, CommandResult, CommandRuntime } from "@react-sheets/command-runtime";
 import {
   formatFormula,
   isArrayValue,
@@ -53,7 +53,6 @@ export interface AppliedSortState {
   range: RangeRef;
   criteria: Array<{ column: number; ascending: boolean }>;
   hasHeader?: boolean;
-  revision: number;
 }
 
 interface RowsPermutedMutationParams {
@@ -62,7 +61,6 @@ interface RowsPermutedMutationParams {
   sourceRows: number[];
   affectedColumnEnd: number;
   sortState?: AppliedSortState;
-  previousSortState?: AppliedSortState;
 }
 
 /**
@@ -100,12 +98,6 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
 }
 
-function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | undefined): void {
-  const target = sheet as WorksheetModel & { appliedSortState?: AppliedSortState };
-  if (state === undefined) delete target.appliedSortState;
-  else target.appliedSortState = structuredClone(state);
-}
-
 function rowsPermutedAffectedColumnEnd(sheet: WorksheetModel, range: RangeRef): number {
   return sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
 }
@@ -115,25 +107,10 @@ function inRange(range: RangeRef, row: number, column: number): boolean {
     && column >= range.startColumn && column <= range.endColumn;
 }
 
-function cellRange(sheetId: string, row: number, column: number): RangeRef {
-  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
-}
-
-function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous?: CellData }> {
-  const result: Array<{ row: number; column: number; previous?: CellData }> = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      result.push({ row, column, previous: structuredClone(sheet.cells.get(row, column)) });
-    }
-  }
-  return result;
-}
-
 function applyRangeValues(
   context: CommandContext,
   params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
 ): void {
-  const sheet = context.workbook.getSheet(params.sheetId);
   const range: RangeRef = {
     sheetId: params.sheetId,
     startRow: params.startRow,
@@ -142,7 +119,6 @@ function applyRangeValues(
     endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
   };
   const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
-  const previous = snapshotCells(sheet, range);
   const affectedRanges = [range];
   context.applyMutation({
     id: 'range.set',
@@ -153,19 +129,10 @@ function applyRangeValues(
       values,
     },
     affectedRanges,
-    inverse: previous.map((entry) => ({
-      id: 'cell.restore' as const,
-      unitId: context.workbook.unitId,
-      sheetId: params.sheetId,
-      params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
-      affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
-    })),
   });
 }
 
 function clearRangeContents(context: CommandContext, range: RangeRef): void {
-  const sheet = context.workbook.getSheet(range.sheetId);
-  const previous = snapshotCells(sheet, range);
   const affectedRanges = [structuredClone(range)];
   context.applyMutation({
     id: 'range.clear',
@@ -173,13 +140,6 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
     sheetId: range.sheetId,
     params: { sheetId: range.sheetId, range, family: 'contents' as const },
     affectedRanges,
-    inverse: previous.map((entry) => ({
-      id: 'cell.restore' as const,
-      unitId: context.workbook.unitId,
-      sheetId: range.sheetId,
-      params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
-      affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
-    })),
   });
 }
 
@@ -193,7 +153,6 @@ function applyRowsInsert(context: CommandContext, sheetId: string, at: number, c
     sheetId,
     params: { sheetId, at, count },
     affectedRanges,
-    inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
   });
 }
 
@@ -201,7 +160,6 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
   if (count <= 0) return;
   const sheet = context.workbook.getSheet(sheetId);
   const end = at + count - 1;
-  const removed = snapshotCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
   const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
   context.applyMutation({
     id: 'rows.deleted',
@@ -209,27 +167,16 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
     sheetId,
     params: { sheetId, at, count },
     affectedRanges,
-    inverse: [
-      { id: 'rows.inserted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges },
-      ...removed.map((entry) => ({
-        id: 'cell.restore' as const,
-        unitId: context.workbook.unitId,
-        sheetId,
-        params: { sheetId, row: entry.row, column: entry.column, previous: entry.previous },
-        affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
-      })),
-    ],
   });
 }
 
-function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, previous: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
+function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
   context.applyMutation({
     id: 'outline.set',
     unitId: context.workbook.unitId,
     sheetId,
     params: { sheetId, outline: structuredClone(next) },
     affectedRanges,
-    inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, outline: structuredClone(previous) }, affectedRanges }],
   });
 }
 
@@ -1630,7 +1577,7 @@ function executeMatrixTransform(
   context: CommandContext,
   params: { sheetId: string; range: RangeRef; direction?: 'horizontal' | 'vertical' },
   transpose: boolean,
-): ReturnType<CommandRuntime['execute']> {
+): CommandResult {
   const sheet = runtime.workbook.getSheet(params.sheetId);
   const range = normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
   assertMatrixTransformSupported(sheet, range);
@@ -1705,7 +1652,6 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
-      inverseIds: ['rows.permuted'],
     },
   });
 
@@ -1737,8 +1683,6 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       }
       const startRow = hasHeader ? range.startRow + 1 : range.startRow;
       const bodyRange: RangeRef = { ...range, startRow };
-      const inverseRows = new Array<number>(sourceRows.length);
-      sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
       const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
       context.applyMutation({
@@ -1757,33 +1701,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
             range,
             criteria: structuredClone(params.criteria),
             hasHeader,
-            revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
           },
-          previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
-            ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
-            : undefined),
         },
         affectedRanges,
-        inverse: [{
-          id: 'rows.permuted',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: {
-            ...params,
-            hasHeader,
-            dataRegionContext: regionContext,
-            range: bodyRange,
-            sourceRows: inverseRows,
-            affectedColumnEnd,
-            sortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
-              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
-              : undefined),
-            previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
-              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
-              : undefined),
-          },
-          affectedRanges,
-        }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1929,7 +1849,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
         const nextOutline = structuredClone(sheetOutline);
         nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
-        applyOutline(context, params.sheetId, nextOutline, sheetOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
+        applyOutline(context, params.sheetId, nextOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
         mutationCount += 1;
       }
       return { operationId: context.operationId, mutationCount, affectedRanges };

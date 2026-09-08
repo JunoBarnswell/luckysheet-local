@@ -2,7 +2,6 @@ import { clearFormulaProvenance, type AutoFilterModel, type RangeRef, type Sheet
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
-  snapshotTotalRowCells,
   validateFilterOwnership,
   validateSheetTableModel,
 } from './sheet-table-features';
@@ -68,7 +67,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
-      inverseIds: ['sheetTable.remove'],
     },
   });
   runtime.registry.registerMutation<TableAutoFilterParams>({
@@ -77,7 +75,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableAutoFilterSet', validate: isTableAutoFilter },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.autoFilter ? [structuredClone(params.autoFilter.range)] : [], mode: 'declared' },
-      inverseIds: ['sheetTable.autoFilter.set'],
     },
   });
   runtime.registry.registerMutation({
@@ -86,7 +83,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableRemove', validate: isSheetTableRemove },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removedTableRange, mode: 'exact' },
-      inverseIds: ['sheetTable.add'],
     },
   });
   runtime.registry.registerMutation({
@@ -95,7 +91,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
-      inverseIds: ['sheetTable.update'],
     },
   });
 
@@ -117,7 +112,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: table,
         affectedRanges,
-        inverse: [{ id: 'sheetTable.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, tableId: params.id, range: params.range }, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -129,7 +123,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const index = sheet.sheetTables.findIndex((entry) => entry.id === params.id);
       if (index < 0) throw new Error(`Sheet Table not found: ${params.id}`);
-      const previous = structuredClone(sheet.sheetTables[index]!);
       const next = validateSheetTableModel(params, sheet);
       const overlaps = sheet.sheetTables.some((entry) => entry.id !== next.id
         && entry.range.startRow <= next.range.endRow && entry.range.endRow >= next.range.startRow
@@ -142,7 +135,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: next,
         affectedRanges,
-        inverse: [{ id: 'sheetTable.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges: [structuredClone(previous.range)] }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -154,7 +146,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const table = sheet.sheetTables.find((entry) => entry.id === params.tableId);
       if (!table) throw new Error(`Sheet Table not found: ${params.tableId}`);
-      const previous = table.autoFilter ? structuredClone(table.autoFilter) : undefined;
       const next = params.autoFilter
         ? validateFilterOwnership(sheet, params.autoFilter, { kind: 'table', tableId: table.id })
         : undefined;
@@ -166,13 +157,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: mutationParams,
         affectedRanges,
-        inverse: [{
-          id: 'sheetTable.autoFilter.set',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, tableId: params.tableId, autoFilter: previous },
-          affectedRanges,
-        }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -192,7 +176,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { ...params, range: previous.range },
         affectedRanges,
-        inverse: [{ id: 'sheetTable.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -212,7 +195,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { ...params, range: previous.range },
         affectedRanges,
-        inverse: [{ id: 'sheetTable.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -231,7 +213,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       }
 
       const plan = planTotalRowToggle(previousTable, params.enabled);
-      const cellSnapshots = snapshotTotalRowCells(sheet, plan.totalRow, plan.startColumn, plan.endColumn);
       const cellRange: RangeRef = {
         sheetId: params.sheetId,
         startRow: plan.totalRow,
@@ -271,22 +252,10 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: plan.nextTable,
         affectedRanges: [structuredClone(plan.nextTable.range)],
-        inverse: [{
-          id: 'sheetTable.update',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: previousTable,
-          affectedRanges: [structuredClone(previousTable.range)],
-        }],
       });
       mutationCount += 1;
 
-      if (plan.clearTotalRow) {
-        // The row deletion above already removed the total-row cells. Keep
-        // the snapshot solely as an integrity check for the command plan; no
-        // second clear/write is allowed to create a stale-cell fallback.
-        void cellSnapshots;
-      } else {
+      if (!plan.clearTotalRow) {
         context.applyMutation({
           id: 'range.set',
           unitId: context.workbook.unitId,
@@ -298,13 +267,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             values: plan.values.map((row) => row.map((value) => clearFormulaProvenance(value))),
           },
           affectedRanges: [cellRange],
-          inverse: cellSnapshots.map((entry) => ({
-            id: 'cell.restore',
-            unitId: context.workbook.unitId,
-            sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
-            affectedRanges: [cellRange],
-          })),
         });
         mutationCount += 1;
       }
@@ -321,13 +283,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             sheetId: params.sheetId,
             params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: nextFilter },
             affectedRanges: [structuredClone(plan.nextTable.range)],
-            inverse: [{
-              id: 'sheetTable.autoFilter.set',
-              unitId: context.workbook.unitId,
-              sheetId: params.sheetId,
-              params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: previousFilter },
-              affectedRanges: [structuredClone(previousFilter.range)],
-            }],
           });
         } else {
           context.applyMutation({
@@ -336,13 +291,6 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
             sheetId: params.sheetId,
             params: { sheetId: params.sheetId, autoFilter: nextFilter },
             affectedRanges: [structuredClone(plan.nextTable.range)],
-            inverse: [{
-              id: 'autoFilter.set',
-              unitId: context.workbook.unitId,
-              sheetId: params.sheetId,
-              params: { sheetId: params.sheetId, autoFilter: previousFilter },
-              affectedRanges: [structuredClone(previousFilter.range)],
-            }],
           });
         }
         mutationCount += 1;

@@ -25,8 +25,7 @@ export function WorkbookInfoDialog({ open, item, onClose, onOpen, onExport }: Wo
           <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">位置</Text><Text size="sm">{item.locationLabel}</Text></Inline>
           <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">最近修改</Text><Text size="sm">{format(item.updatedAt)}</Text></Inline>
           <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">权限</Text><Text size="sm">{item.role}</Text></Inline>
-          <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">本地 / 服务端版本</Text><Text size="sm">{format(item.localRevision)} / {format(item.serverRevision)}</Text></Inline>
-          <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">待同步操作</Text><Text size="sm">{format(item.pendingOperationCount ?? 0)}</Text></Inline>
+          <Inline gap="md" className="justify-between"><Text size="xs" tone="muted">服务端版本</Text><Text size="sm">{format(item.revision)}</Text></Inline>
         </Stack>
         <Inline gap="sm">{onOpen ? <Button icon="folder-open" onClick={() => onOpen(item.unitId)} size="sm" variant="brand">打开工作簿</Button> : null}{onExport ? <Button icon="download" onClick={() => onExport(item.unitId)} size="sm" variant="outline">导出副本</Button> : null}</Inline>
       </Stack> : <Text size="sm" tone="muted">请先选择一个工作簿。</Text>}

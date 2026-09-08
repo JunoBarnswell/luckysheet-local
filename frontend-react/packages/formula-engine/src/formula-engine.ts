@@ -1,5 +1,5 @@
 import { KernelInvocationError, kernelInvoke } from '../../kernel-client/src/index';
-import { cellAddressKey, formatCellAddress, parseCellAddress } from './address';
+import { cellAddressKey, parseCellAddress } from './address';
 import type { CellAddress, FormulaAst } from './ast';
 import { formatFormula } from './ast-format';
 import { parseFormula } from './parser';
@@ -111,8 +111,7 @@ export class FormulaEngine {
     return { value: cell.value, dependencies: [] };
   }
   getCellValue(addressInput: CellAddressInput): FormulaValue {
-    const address = this.address(addressInput);
-    return this.invoke<{ revision: number; value: FormulaValue }>('formula.evaluate', { address, formula: '=' + formatCellAddress(address, true) }).value;
+    return this.getCellResult(addressInput)?.value ?? null;
   }
   getFormulaEntriesPage(options: { cursor?: string; limit?: number; sheetId?: string } = {}): { revision: number; entries: readonly FormulaCellEntry[]; nextCursor?: string | null } {
     const result = this.inspect(undefined, 'entries', options);

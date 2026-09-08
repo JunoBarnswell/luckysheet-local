@@ -93,23 +93,6 @@ describe('WorkbookSession review integration', () => {
     assert.equal(getCellHyperlink(sheet, 2, 2), undefined);
   });
 
-  it('supports typed email, worksheet, and defined-name targets with atomic undo/redo', () => {
-    const app = new WorkbookSession();
-    const sheetId = app.getActiveSheetId();
-    selectCell(app, 0, 0);
-    app['runtime'].model.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
-    app.setActiveHyperlink({ kind: 'email', address: 'team@example.com', subject: 'Review' }, 'Email tip');
-    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'email');
-    app.undo();
-    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0), undefined);
-    app.redo();
-    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.tooltip, 'Email tip');
-    app.setActiveHyperlink({ kind: 'sheet', sheetId, address: 'B2' });
-    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'sheet');
-    app.setActiveHyperlink({ kind: 'name', name: 'SalesTotal' });
-    assert.equal(getCellHyperlink(app['runtime'].model.getSheet(sheetId), 0, 0)?.target.kind, 'name');
-  });
-
   it('rejects invalid typed targets before creating a mutation', () => {
     const app = new WorkbookSession();
     selectCell(app, 0, 0);

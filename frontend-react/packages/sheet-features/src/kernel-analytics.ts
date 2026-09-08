@@ -28,13 +28,36 @@ export interface KernelFilterResult {
   domain: Record<string, unknown>;
 }
 
+/** Shared revision-pinned analytics invocation.  Source registration,
+ * preparation, execution, viewport and drilldown are task phases owned by
+ * the server transport; the WASM kernel receives only a canonical analytics
+ * request and returns a response for that exact revision. */
+export interface KernelAnalyticsRequest {
+  kind: 'filter' | 'query' | 'pivot';
+  revision: number;
+  [parameter: string]: unknown;
+}
+
+export function executeKernelAnalytics<T extends { kind: KernelAnalyticsRequest['kind']; revision: number }>(
+  unitId: string,
+  request: KernelAnalyticsRequest,
+): T {
+  if (!unitId.trim()) throw new Error('ANALYTICS_UNIT_REQUIRED: analytics requires a workbook identity');
+  if (!Number.isSafeInteger(request.revision) || request.revision < 0) throw new Error('ANALYTICS_REVISION_REQUIRED: analytics requires a non-negative pinned revision');
+  const response = kernelInvoke<T>('analytics.execute', { unitId, revision: request.revision, request });
+  if (!response || response.kind !== request.kind || response.revision !== request.revision) {
+    throw new Error('ANALYTICS_REVISION_MISMATCH: analytics response does not match its pinned request');
+  }
+  return response;
+}
+
 export function executeKernelFilter(unitId: string, request: KernelFilterRequest): KernelFilterResult {
-  const response = kernelInvoke<KernelFilterResult & { kind: 'filter' }>('analytics.execute', {
-    unitId,
+  const response = executeKernelAnalytics<KernelFilterResult & { kind: 'filter' }>(unitId, {
+    kind: 'filter',
     revision: request.revision,
-    request: { kind: 'filter', params: request },
+    params: request,
   });
-  if (response.kind !== 'filter' || response.revision !== request.revision || !response.visibility) {
+  if (!response.visibility) {
     throw new Error('KERNEL_ANALYTICS_RESPONSE_INVALID: filter response revision or kind is invalid');
   }
   return response;

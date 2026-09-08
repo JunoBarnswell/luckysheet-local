@@ -96,6 +96,28 @@ public class WorkbookOperationService {
         }
     }
 
+    /**
+     * Converts a server-owned semantic intent into the same canonical operation
+     * envelope used by editor clients. The workbook lock serializes sequence
+     * allocation with the commit, so catalog actions cannot create a parallel
+     * metadata write path.
+     */
+    @Transactional
+    public CommitResult commitServerMutation(String unitId, OperationMutation mutation, String actor, String operationPrefix) {
+        WorkbookRow row = lockedActive(unitId);
+        long sequence = store.nextClientSequence(unitId, actor);
+        OperationEnvelope operation = new OperationEnvelope(
+                OperationEnvelope.SCHEMA,
+                operationPrefix + "-" + UUID.randomUUID(),
+                unitId,
+                sequence,
+                row.revision(),
+                List.of(mutation),
+                Instant.now()
+        );
+        return commit(unitId, operation, actor);
+    }
+
     private void hydrateCommand(ObjectNode command, String unitId, long revision) {
         JsonNode plan = kernel.call("command.prepare", command);
         if (!plan.path("pages").isArray()) throw new KernelHostException("PROTOCOL_ERROR", "Command preparation has no page plan", unitId, "deploy-matching-kernel-host");

@@ -57,7 +57,6 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     folderPath: entry.locationPath,
     favorite: entry.favorite,
     revision: entry.revision,
-    pendingOperationCount: entry.pendingOperationCount,
     sourceFileName: entry.sourceFileName,
   };
 }
@@ -434,7 +433,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       </Dialog>
       <Dialog closeLabel="关闭帮助" onClose={() => setActiveDialog(null)} open={activeDialog === 'help'} title="工作簿存储说明">
         <Stack gap="sm">
-          <Text size="sm">云端工作簿由服务器保存；离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
+          <Text size="sm">云端工作簿由服务器保存；连接中断时编辑会停止，重新连接并完成版本对账后才能继续。</Text>
           <Text size="sm">打开 / 导入会创建新工作簿；导出会基于最新快照和原始原生文档生成副本。</Text>
           {authSnapshot.phase !== 'authenticated' ? <Button onClick={() => void auth.signIn('/workbooks')} size="sm" variant="brand">登录以使用云端文件</Button> : null}
         </Stack>

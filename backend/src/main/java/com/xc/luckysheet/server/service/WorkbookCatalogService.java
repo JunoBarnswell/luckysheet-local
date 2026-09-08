@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
+import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;

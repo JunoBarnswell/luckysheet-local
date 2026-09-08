@@ -276,7 +276,6 @@ export function registerFormulaAuditCommands(
       schema: { name: 'WorkbookCalculationModeMutation', validate: isFormulaCalculationModeParams },
       permission: { capability: 'formula.calculation.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      inversePolicy: { allowedMutationIds: ['workbook.calculation.mode.set'], minCount: 1, maxCount: 1 },
     },
   });
 
@@ -338,20 +337,12 @@ export function registerFormulaAuditCommands(
       if (params.mode !== 'automatic' && params.mode !== 'manual' && params.mode !== 'partial') {
         throw new Error('Formula calculation mode must be automatic, manual, or partial');
       }
-      const previous = context.workbook.calculationSettings.mode;
       context.applyMutation({
         id: 'workbook.calculation.mode.set',
         unitId: context.workbook.unitId,
         sheetId: context.workbook.primarySheetId,
         params: { mode: params.mode },
         affectedRanges: [],
-        inverse: [{
-          id: 'workbook.calculation.mode.set',
-          unitId: context.workbook.unitId,
-          sheetId: context.workbook.primarySheetId,
-          params: { mode: previous },
-          affectedRanges: [],
-        }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },

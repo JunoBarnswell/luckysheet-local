@@ -376,7 +376,6 @@ function executeChartInsert(params: ChartInsertParams, context: CommandContext, 
     sheetId: params.sheetId,
     params,
     affectedRanges,
-    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawing.id }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -400,7 +399,6 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
     sheetId: params.sheetId,
     params: mutationParams,
     affectedRanges,
-    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: params.chartId, before: nextPayload, after: current.payload }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -526,14 +524,12 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
       const current = findChartDrawing(sheet, params.chartId);
       if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       const affectedRanges = sheetRange(params.sheetId);
-      const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
       context.applyMutation({
         id: 'drawing.remove',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawingId: current.drawing.id },
         affectedRanges,
-        inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverseParams, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

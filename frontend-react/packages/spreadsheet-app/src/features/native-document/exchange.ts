@@ -68,7 +68,6 @@ export class NativeDocumentTransaction {
       const result = await resolveTransport(params.transport ?? this.defaultTransport).import({
         fileName: params.fileName,
         content: params.content,
-        ...(params.formatHint ? { formatHint: params.formatHint } : {}),
         options: buildNativeDocumentImportOptions(params.options),
       });
       assertNativeDocumentArtifact(result.artifact);

@@ -60,6 +60,7 @@ import {
   type FilterButtonCell,
   type FilterButtonState,
   type OutlineControl,
+  type ResolvedVisibility,
 } from '@react-sheets/sheet-features';
 import { resolveFilterCellValue } from '@react-sheets/core-model';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
@@ -111,6 +112,9 @@ export interface CanvasSheetSnapshot {
   isEmpty?: boolean;
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
+  /** Revision and visibility always describe the same committed kernel view. */
+  revision: number;
+  resolvedVisibility: ResolvedVisibility;
   /** Sparse model addresses for operations such as AutoFit; never a rectangle scan. */
   forEachOccupiedCell: (
     visitor: (row: number, column: number) => void,
@@ -250,6 +254,21 @@ export function buildCanvasSheetSnapshot(
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
   const hiddenColumns = new Set<number>([...sheet.hiddenColumns, ...outlineHiddenColumns]);
+  const visibilityRows = new Map<number, { manualHidden: boolean; filterHidden: boolean; outlineHidden: boolean }>();
+  for (const row of hiddenRows) visibilityRows.set(row, {
+    manualHidden: sheet.hiddenRows.has(row),
+    filterHidden: filterHidden.has(row),
+    outlineHidden: outlineHiddenRows.has(row),
+  });
+  const visibilityColumns = new Map<number, { manualHidden: boolean }>();
+  for (const column of hiddenColumns) visibilityColumns.set(column, { manualHidden: sheet.hiddenColumns.has(column) });
+  const resolvedVisibility: ResolvedVisibility = {
+    revision: sheet.cells.revision,
+    rows: visibilityRows,
+    columns: visibilityColumns,
+    isRowHidden: (row) => visibilityRows.has(row),
+    isColumnHidden: (column) => visibilityColumns.has(column),
+  };
   const filterRangeColumns = resolveFilterRangeColumns(sheet);
   const activeFilterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
@@ -367,6 +386,8 @@ export function buildCanvasSheetSnapshot(
     isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
     occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
+    revision: sheet.cells.revision,
+    resolvedVisibility,
     forEachOccupiedCell,
     usedRange,
     drawings: structuredClone(sheet.drawings),

@@ -19,23 +19,6 @@ export function getCellHyperlink(sheet: WorksheetModel, row: number, column: num
   return link ? structuredClone(link) : undefined;
 }
 
-export function setCellHyperlink(
-  sheet: WorksheetModel,
-  row: number,
-  column: number,
-  link: CellHyperlink,
-): void {
-  sheet.hyperlinks.set(hyperlinkKey(row, column), structuredClone(link));
-}
-
-export function removeCellHyperlink(sheet: WorksheetModel, row: number, column: number): CellHyperlink | undefined {
-  const links = sheet.hyperlinks;
-  const key = hyperlinkKey(row, column);
-  const previous = links.get(key);
-  links.delete(key);
-  return previous ? structuredClone(previous) : undefined;
-}
-
 export function serializeHyperlink(link: CellHyperlink): string {
   switch (link.target.kind) {
     case 'url':

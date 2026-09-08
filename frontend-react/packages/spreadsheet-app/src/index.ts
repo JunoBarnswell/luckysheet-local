@@ -142,31 +142,19 @@ export {
 export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
-  LocalWorkspaceStore,
-  MemoryWorkspaceStore,
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
   LocalAssetStore,
   RemoteAssetStore,
-  migrateLegacyImageAssets,
-  buildWorkspaceRecord,
-  verifyWorkspaceRecord,
-  verifyPendingOperationJournal,
   WorkspaceStorageError,
   isWorkspaceStorageError,
   WorkspaceMemoryCoordinator,
   type WorkspacePersistenceState,
-  type WorkspacePersistenceMode,
   type PersistenceSnapshotMeta,
-  type WorkspaceRecord,
-  type WorkspaceRecordInput,
-  type PendingOperationJournal,
-  type LocalWorkspaceSummary,
   type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type NativeDocumentRecord,
   type AssetStore,
   type AssetPutInput,
 } from './features/persistence';
@@ -247,7 +235,6 @@ export {
   type HistoryEntryMeta,
   type HistoryPreviewProjection,
   type RestoreCommandParams,
-  type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
 export { buildPivotGroupedFilterMembers, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskInput, type PivotGroupedFilterMember, type PivotTaskControl, type PivotTaskEvaluationInput } from './features/pivot/engine';

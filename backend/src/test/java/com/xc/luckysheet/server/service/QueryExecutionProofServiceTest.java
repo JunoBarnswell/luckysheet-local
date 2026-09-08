@@ -5,9 +5,11 @@ import com.xc.luckysheet.server.persistence.WorkbookEntity;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookQueryExecutionEntity;
 import com.xc.luckysheet.server.persistence.WorkbookQueryExecutionEntityRepository;
+import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.Optional;
+import java.time.Duration;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -15,8 +17,9 @@ class QueryExecutionProofServiceTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final WorkbookEntityRepository workbooks = mock(WorkbookEntityRepository.class);
     private final WorkbookQueryExecutionEntityRepository executions = mock(WorkbookQueryExecutionEntityRepository.class);
+    private final AccessControlService access = mock(AccessControlService.class);
     private final QueryExecutionProofService service = new QueryExecutionProofService(workbooks, executions,
-            mock(AccessControlService.class), mock(WorkbookLifecycleService.class), mapper);
+            access, mock(WorkbookLifecycleService.class), mapper);
 
     private WorkbookQueryExecutionEntity execution(long workbookRevision) {
         Instant now = Instant.now();
@@ -74,5 +77,33 @@ class QueryExecutionProofServiceTest {
         assertEquals("QUERY_RESULT_MISMATCH", assertThrows(ServiceException.class,
                 () -> service.consumeProof("unit", "query", "token", "actor", 4, "other-hash")).code());
         assertEquals("READY", execution.getStatus());
+    }
+
+    @Test void analyticsProofPinsRevisionAndSealsOnlyMatchingNativePages() throws Exception {
+        WorkbookQueryExecutionEntity execution = execution(4);
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty(), Optional.of(execution));
+        var started = service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5));
+        assertEquals(4, started.sourceRevision());
+        assertEquals("RUNNING", execution.getStatus());
+        var page = mapper.readTree("{\"kind\":\"query\",\"revision\":4,\"columns\":[0],\"rows\":[],\"total\":0,\"grouped\":false}");
+        String hash = service.publishAnalytics("unit", "query", started.executionToken(), "actor", page);
+        assertEquals(64, hash.length());
+        assertEquals("READY", execution.getStatus());
+        assertEquals("QUERY_RESULT_INVALID", assertThrows(ServiceException.class,
+                () -> service.publishAnalytics("unit", "query", started.executionToken(), "actor",
+                        mapper.readTree("{\"kind\":\"query\",\"revision\":3}"))).code());
+    }
+
+    @Test void analyticsPrepareRejectsStaleRevisionAndCancellationRejectsAnotherViewer() {
+        execution(5);
+        assertEquals("QUERY_STALE_REVISION", assertThrows(ServiceException.class,
+                () -> service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5))).code());
+        WorkbookQueryExecutionEntity fresh = execution(4);
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.empty(), Optional.of(fresh));
+        service.beginAnalytics("unit", "query", "actor", 4, Duration.ofMinutes(5));
+        when(executions.findForUpdate("unit", "query")).thenReturn(Optional.of(fresh));
+        when(access.currentRole("unit", "other")).thenReturn(WorkbookAclRole.VIEWER);
+        assertEquals("FORBIDDEN", assertThrows(ServiceException.class,
+                () -> service.cancelAnalytics("unit", "query", "other")).code());
     }
 }

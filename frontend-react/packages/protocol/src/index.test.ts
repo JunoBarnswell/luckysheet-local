@@ -68,43 +68,18 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
     fetchImpl: async (_input, init) => {
       request = init;
       return new Response(JSON.stringify({
-        snapshot: {
-          schema: 'WorkbookSnapshot',
-          version: 10,
-          unitId: 'unit-1',
-          name: 'Workbook',
-          dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
-          editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          definedNameModels: [],
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
-          sheets: [{
-            kind: 'worksheet', id: 'sheet-1',
-            name: 'Sheet1',
-            rowCount: 100,
-            columnCount: 26,
-            cells: {},
-            merges: [],
-            pane: { kind: 'none' },
-            defaultRowHeightPx: 20,
-            defaultColumnWidthPx: 64,
-            pivots: [],
-            sparklines: [],
-            drawings: [],
-            drawingPayloads: {},
-            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
-          }],
-        },
-        revision: 0,
+        schema: 'WorkbookManifest', version: 11, unitId: 'unit-1', name: 'Workbook', revision: 0,
+        sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 100, columnCount: 26, metadata: {} }],
+        pages: [], metadata: {},
       }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     },
   });
-  await api.getSnapshot('unit-1');
+  await api.getManifest('unit-1');
   assert.equal(new Headers(request?.headers).get('authorization'), 'Bearer token-123');
-  await assert.rejects(() => new WorkbookApiClient().getSnapshot('unit-1'), AuthenticationRequiredError);
+  await assert.rejects(() => new WorkbookApiClient().getManifest('unit-1'), AuthenticationRequiredError);
 });
 
 test('WorkbookApiClient uses a server-issued guest share token when no bearer exists', async () => {
@@ -114,31 +89,64 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
     fetchImpl: async (_input, init) => {
       request = init;
       return new Response(JSON.stringify({
-        snapshot: {
-          schema: 'WorkbookSnapshot',
-          version: 10,
-          unitId: 'unit-guest',
-          name: 'Guest workbook',
-          dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
-          editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          definedNameModels: [],
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
-          sheets: [{
-            kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
-            cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
-            pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
-            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
-          }],
-        },
-        revision: 0,
+        schema: 'WorkbookManifest', version: 11, unitId: 'unit-guest', name: 'Guest workbook', revision: 0,
+        sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10, metadata: {} }],
+        pages: [], metadata: {},
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     },
   });
-  await api.getSnapshot('unit-guest');
+  await api.getManifest('unit-guest');
   const headers = new Headers(request?.headers);
   assert.equal(headers.get('x-workbook-share-token'), 'guest-token');
   assert.equal(headers.has('authorization'), false);
+});
+
+test('OperationEnvelope accepts an undo intent only with an empty mutation list', () => {
+  const envelope = {
+    schema: 'OperationEnvelope' as const,
+    operationId: 'undo-1',
+    unitId: 'unit-1',
+    clientSequence: 2,
+    baseRevision: 1,
+    mutations: [],
+    createdAt: new Date().toISOString(),
+    intent: { type: 'undo' as const, targetOperationId: 'op-1', targetBaseRevision: 0 },
+  };
+  assert.deepEqual(validateOperationEnvelope(envelope), envelope);
+  assert.throws(() => validateOperationEnvelope({ ...envelope, intent: undefined }), /at least one mutation/);
+  assert.throws(() => validateOperationEnvelope({
+    ...envelope,
+    mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }],
+  }), /must not include client mutations/);
+});
+
+test('WorkbookApiClient renames through the canonical semantic endpoint and verifies the returned manifest', async () => {
+  let path = '';
+  let body: unknown;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'rename-token',
+    fetchImpl: async (input, init) => {
+      path = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        unitId: 'rename-unit',
+        revision: 4,
+        checksum: 'a'.repeat(64),
+        manifest: {
+          schema: 'WorkbookManifest', version: 11, unitId: 'rename-unit', name: 'Renamed', revision: 4,
+          sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 1000, columnCount: 26, metadata: {} }],
+          pages: [], metadata: {},
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await api.renameWorkbook('rename-unit', { name: '  Renamed  ' });
+
+  assert.equal(path, '/api/workbooks/rename-unit/rename');
+  assert.deepEqual(body, { name: '  Renamed  ' });
+  assert.equal(result.manifest.name, 'Renamed');
+  assert.equal(result.revision, 4);
 });
 
 test('WorkbookApiClient accepts access roles only from the server projection', async () => {

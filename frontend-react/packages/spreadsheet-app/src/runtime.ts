@@ -1,6 +1,6 @@
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
+import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   WorkbookApiClient,
@@ -8,6 +8,8 @@ import {
   type ShareTokenProvider,
   type WorkbookAclRole,
   type OperationMessage,
+  type CommittedOperationEnvelope,
+  type WorkbookManifest,
   mutationCapability,
 } from '@react-sheets/protocol';
 import { CollabSocketClient } from '@react-sheets/protocol';
@@ -28,8 +30,6 @@ import {
   RemoteAssetStore,
   type AssetStore,
   type WorkspacePersistenceOptions,
-  type WorkspaceRecord,
-  WorkspaceStorageError,
 } from './features/persistence';
 import { initializeKernel, kernelInvoke } from '../../kernel-client/src/index';
 import type { WorkbookOpenResponse } from '@react-sheets/protocol';
@@ -96,8 +96,6 @@ export interface SpreadsheetRuntime {
   assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
   dataContentDetachers: Array<() => void>;
-  workspaceRecord: WorkspaceRecord | null;
-  localRevision: number;
   /** Cloud authority is mandatory; this flag only tracks whether a save is awaiting server ack. */
   remoteSyncRequested: boolean;
   formulaCalculation: Promise<void>;
@@ -222,8 +220,6 @@ export function createSpreadsheetRuntime(options: {
     assetStore,
     dataContent: new Map(),
     dataContentDetachers: [],
-    workspaceRecord: null,
-    localRevision: 0,
     remoteSyncRequested: true,
     formulaCalculation: Promise.resolve(),
     persistenceReady: Promise.resolve(),
@@ -240,12 +236,7 @@ export function createSpreadsheetRuntime(options: {
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   bindKernelCommitPort(runtime);
   // Draft operations remain in the active command session until the cloud ack.
-  runtime.collaboration = new CollaborationSession(runtime.commands, {
-    loadPending: () => null,
-    persistPending: () => {
-      runtime.handlers.onSaveState?.('syncing');
-    },
-  });
+  runtime.collaboration = new CollaborationSession();
   installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;
@@ -353,14 +344,10 @@ const FIND_INDEX_MUTATIONS = new Set([
   'comment.add', 'comment.update', 'comment.remove', 'comment.reply', 'comment.reply.remove', 'comment.resolve',
 ]);
 
-/** Formula state is owned by the revision-pinned kernel. Runtime only schedules a read. */
-function synchronizeManualCellMutation(_engine: FormulaEngine, _workbook: WorkbookModel, _mutation: MutationInfo): boolean {
-  return true;
-}
-
 /** The only command commit boundary: mutations are applied by the cloud kernel. */
 function bindKernelCommitPort(runtime: SpreadsheetRuntime): void {
   runtime.commands.setCommitPort(async (request) => {
+    if (!runtime.remoteConnected) throw new Error('CLOUD_CONNECTION_REQUIRED');
     const clientSequence = runtime.kernelClientSequences.get(request.operationId) ?? runtime.nextClientSequence + 1;
     runtime.kernelClientSequences.set(request.operationId, clientSequence);
     runtime.nextClientSequence = Math.max(runtime.nextClientSequence, clientSequence);
@@ -377,7 +364,6 @@ interface FormulaQueueState {
   scheduled: boolean;
   epoch: number;
   force: boolean;
-  roots?: readonly CellAddressInput[];
 }
 
 const formulaQueueStates = new WeakMap<SpreadsheetRuntime, FormulaQueueState>();
@@ -388,24 +374,21 @@ function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').S
 }
 
 /**
- * Coalesce formula input changes into one Worker task. A new mutation cancels
- * the active task and advances the epoch, so a late worker result cannot
- * mutate spills or render projections for an older workbook state.
+ * Coalesce formula invalidations into one revision-pinned kernel calculation.
+ * The runtime never copies cell inputs into a second formula model: the kernel
+ * reads the committed workbook at the revision supplied by FormulaEngine.
  */
-export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false, roots?: readonly CellAddressInput[]): Promise<void> {
+export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
   const state = formulaQueueStates.get(runtime) ?? {
     tail: Promise.resolve(),
     scheduled: false,
     epoch: 0,
     force: false,
-    roots: undefined,
   } satisfies FormulaQueueState;
   formulaQueueStates.set(runtime, state);
   state.epoch += 1;
   state.force ||= force;
-  if (roots !== undefined) state.roots = [...roots];
-  else state.roots = undefined;
   if (state.scheduled) return runtime.formulaCalculation;
 
   state.scheduled = true;
@@ -415,16 +398,9 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       state.scheduled = false;
       const epoch = state.epoch;
       const forceCalculation = state.force;
-      const calculationRoots = state.roots;
       state.force = false;
-      state.roots = undefined;
       const engine = runtime.formula;
       const workbook = runtime.model;
-      const formulaCount = loadFormulaInputs(engine, workbook);
-      if (formulaCount === 0) {
-        runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
-        return;
-      }
       if (engine.getRecalculationMode() !== 'automatic' && !forceCalculation) return;
 
       runtime.handlers.onSaveState?.('calculating');
@@ -443,31 +419,6 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
   return state.tail;
 }
 
-function assertNoSpillChildWrite(
-  workbook: WorkbookModel,
-  mutation: MutationInfo,
-): void {
-  const sheet = workbook.getSheet(mutation.sheetId);
-  for (const range of mutation.affectedRanges) {
-    if (range.sheetId !== sheet.id) continue;
-    for (const spill of sheet.spillRanges) {
-      const startRow = Math.max(range.startRow, spill.range.startRow);
-      const endRow = Math.min(range.endRow, spill.range.endRow);
-      const startColumn = Math.max(range.startColumn, spill.range.startColumn);
-      const endColumn = Math.min(range.endColumn, spill.range.endColumn);
-      if (startRow > endRow || startColumn > endColumn) continue;
-      const overlapCells = (endRow - startRow + 1) * (endColumn - startColumn + 1);
-      const includesAnchor = spill.anchor.row >= startRow
-        && spill.anchor.row <= endRow
-        && spill.anchor.column >= startColumn
-        && spill.anchor.column <= endColumn;
-      if (overlapCells - (includesAnchor ? 1 : 0) > 0) {
-        throw new Error('Spill cells are read-only');
-      }
-    }
-  }
-}
-
 async function checkpointWorkspace(runtime: SpreadsheetRuntime): Promise<void> {
   if (runtime.disposed || !runtime.remoteConnected) throw new Error('CLOUD_CONNECTION_REQUIRED');
   await runtime.commands.whenIdle();
@@ -482,6 +433,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
       runtime.remoteRevision = runtime.model.revision;
+      runtime.collaboration?.setRevision(runtime.model.revision);
       if (VISIBILITY_MUTATIONS.has(mutation.id)) {
         runtime.rowVisibilityResolver.invalidate();
       }
@@ -494,10 +446,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
-        const formulaInputChanged = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)
-          ? synchronizeManualCellMutation(runtime.formula, runtime.model, mutation)
-          : false;
-        void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id) || formulaInputChanged);
+        void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
       }
       if (FIND_INDEX_MUTATIONS.has(mutation.id)) {
         if ((mutation.id === 'sheet.add' || mutation.id === 'sheet.restore' || mutation.id === 'sheet.duplicated') && mutation.sheetId) runtime.findIndex.rebuildSheet(mutation.sheetId);
@@ -527,13 +476,8 @@ function detachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.pendingPivotMutations = [];
 }
 
-function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: WorkspaceRecord | null, options: { deferRevision?: boolean } = {}): void {
-  runtime.collaboration = new CollaborationSession(runtime.commands, {
-    loadPending: () => null,
-    persistPending: () => {
-      runtime.handlers.onSaveState?.('syncing');
-    },
-  });
+function replaceCollaborationSession(runtime: SpreadsheetRuntime, options: { deferRevision?: boolean } = {}): void {
+  runtime.collaboration = new CollaborationSession();
   if (!options.deferRevision) runtime.collaboration.setRevision(runtime.remoteRevision);
 }
 
@@ -586,7 +530,6 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: WorkbookOp
   attachCoreListeners(runtime);
   runtime.remoteRevision = response.revision;
   if (!options.deferCollaborationRevision) runtime.collaboration?.setRevision(response.revision);
-  runtime.collaboration?.rebindCommands(runtime.commands);
   runtime.pivotResults = {};
   initializeDataContent(runtime);
   void scheduleFormulaRecalculation(runtime, true);
@@ -615,17 +558,105 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
   }
 }
 
-/** Replay durable local intent on top of the authoritative server snapshot. */
-export function replayPendingOperations(
-  runtime: SpreadsheetRuntime,
-  operations = runtime.collaboration?.getPendingOperations() ?? [],
-): number {
-  void runtime; void operations;
-  return 0;
+function pageIdentity(page: { sheetId: string; pageRow: number; pageColumn: number }): string {
+  return `${page.sheetId}:${page.pageRow}:${page.pageColumn}`;
 }
 
-async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise<void> {
-  void runtime;
+async function loadChangedRevisionPages(
+  runtime: SpreadsheetRuntime,
+  manifest: WorkbookManifest,
+): Promise<import('@react-sheets/protocol').KernelPagePayload[]> {
+  const previous = new Map(runtime.model.manifest().pages.map((page) => [pageIdentity(page), page]));
+  const changed = manifest.pages.filter((page) => {
+    const old = previous.get(pageIdentity(page));
+    return !old || old.revision !== page.revision || old.checksum !== page.checksum || old.byteLength !== page.byteLength;
+  });
+  const pages: import('@react-sheets/protocol').KernelPagePayload[] = [];
+  for (let offset = 0; offset < changed.length; offset += 4) {
+    pages.push(...await Promise.all(changed.slice(offset, offset + 4).map((page) => runtime.api.getPage({
+      unitId: manifest.unitId,
+      revision: manifest.revision,
+      sheetId: page.sheetId,
+      pageRow: page.pageRow,
+      pageColumn: page.pageColumn,
+    }))));
+  }
+  return pages;
+}
+
+async function openResponseWithInitialPage(
+  runtime: SpreadsheetRuntime,
+  manifest: WorkbookManifest,
+): Promise<WorkbookOpenResponse> {
+  const primarySheetId = manifest.sheets[0]?.sheetId;
+  const descriptor = manifest.pages.find((page) => page.sheetId === primarySheetId && page.pageRow === 0 && page.pageColumn === 0);
+  const pages = descriptor ? [await runtime.api.getPage({
+    unitId: manifest.unitId,
+    revision: manifest.revision,
+    sheetId: descriptor.sheetId,
+    pageRow: descriptor.pageRow,
+    pageColumn: descriptor.pageColumn,
+  })] : [];
+  return { unitId: manifest.unitId, manifest, pages, revision: manifest.revision };
+}
+
+async function publishRemoteRevision(
+  runtime: SpreadsheetRuntime,
+  operation: CommittedOperationEnvelope,
+): Promise<void> {
+  if (operation.unitId !== runtime.model.unitId) throw new Error('REMOTE_OPERATION_WORKBOOK_MISMATCH');
+  if (operation.baseRevision !== runtime.model.revision || operation.revision !== operation.baseRevision + 1) {
+    throw new Error(`HISTORY_GAP: expected revision ${runtime.model.revision + 1}, received ${operation.revision}`);
+  }
+  const manifest = await runtime.api.getManifest(runtime.model.unitId, operation.revision);
+  const pages = await loadChangedRevisionPages(runtime, manifest);
+  const nextPageIds = new Set(manifest.pages.map(pageIdentity));
+  const removedPages = runtime.model.manifest().pages
+    .filter((page) => !nextPageIds.has(pageIdentity(page)))
+    .map(({ sheetId, pageRow, pageColumn }) => ({ sheetId, pageRow, pageColumn }));
+  const mutations: MutationInfo[] = operation.mutations.map((mutation) => ({
+    id: mutation.id,
+    unitId: operation.unitId,
+    sheetId: mutation.sheetId,
+    params: mutation.params,
+    affectedRanges: [...mutation.affectedRanges],
+  }));
+  runtime.commands.applyRemoteCommit({
+    operationId: operation.operationId,
+    baseRevision: operation.baseRevision,
+    revision: operation.revision,
+    manifest,
+    pages,
+    removedPages,
+    affectedRanges: mutations.flatMap((mutation) => mutation.affectedRanges),
+  }, mutations);
+  runtime.remoteRevision = operation.revision;
+  runtime.collaboration?.setRevision(operation.revision);
+  runtime.handlers.onMutationsApplied?.();
+  runtime.handlers.onSaveState?.('saved');
+}
+
+async function synchronizeRemoteRevisions(runtime: SpreadsheetRuntime, announcedRevision: number): Promise<void> {
+  await runtime.commands.whenIdle();
+  if (announcedRevision <= runtime.model.revision) {
+    runtime.remoteRevision = runtime.model.revision;
+    runtime.collaboration?.setRevision(runtime.model.revision);
+    return;
+  }
+  const revisions = (await runtime.api.listRevisions(runtime.model.unitId))
+    .filter((entry) => entry.revision > runtime.model.revision && entry.revision <= announcedRevision)
+    .sort((left, right) => left.revision - right.revision);
+  let expected = runtime.model.revision + 1;
+  for (const entry of revisions) {
+    if (entry.revision !== expected || entry.payload.revision !== entry.revision) {
+      throw new Error(`HISTORY_GAP: expected revision ${expected}, received ${entry.revision}`);
+    }
+    await publishRemoteRevision(runtime, entry.payload);
+    expected += 1;
+  }
+  if (runtime.model.revision !== announcedRevision) {
+    throw new Error(`HISTORY_GAP: revision ${announcedRevision} was announced but history ended at ${runtime.model.revision}`);
+  }
 }
 
 export function startCollaborationSession(
@@ -644,7 +675,7 @@ export function startCollaborationSession(
       runtime.handlers.onCollabStatus?.('closed');
       return;
     }
-    runtime.collaboration ??= new CollaborationSession(runtime.commands);
+    runtime.collaboration ??= new CollaborationSession();
     runtime.collaboration.setRevision(runtime.remoteRevision);
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -659,8 +690,31 @@ export function startCollaborationSession(
     runtime.collab = client;
     runtime.broadcastPresence = (state) => !runtime.disposed && client.send({ type: 'presence.updated', unitId: runtime.model.unitId, state });
 
+    let revisionTail = Promise.resolve();
+
     const applyRemote = (message: OperationMessage) => {
       if (runtime.disposed) return;
+      if (message.type === 'revision.created') {
+        if (message.revision !== message.payload.revision || message.payload.unitId !== runtime.model.unitId) {
+          publishRuntimeFailure(runtime, {
+            code: 'HISTORY_LOAD_FAILED',
+            message: 'Remote revision announcement has a mismatched workbook or revision identity.',
+            recovery: 'Reload the authoritative cloud workbook before editing again.',
+          });
+          return;
+        }
+        revisionTail = revisionTail
+          .then(() => synchronizeRemoteRevisions(runtime, message.revision))
+          .catch((cause: unknown) => {
+            publishRuntimeFailure(runtime, {
+              code: cause instanceof Error && cause.message.startsWith('HISTORY_GAP') ? 'HISTORY_GAP' : 'HISTORY_LOAD_FAILED',
+              message: cause instanceof Error ? cause.message : 'Remote revision could not be loaded.',
+              recovery: 'Reload the authoritative cloud workbook before editing again.',
+              cause,
+            });
+          });
+        return;
+      }
       if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
         if (!message.unitId || message.unitId !== runtime.model.unitId) return;
         if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
@@ -687,10 +741,24 @@ export function startCollaborationSession(
       if (runtime.disposed) return;
       runtime.handlers.onCollabStatus?.(status);
       runtime.remoteConnected = status !== 'closed';
-      runtime.collaboration?.offlineQueue.setOnline(status === 'open');
-      if (status === 'closed') runtime.collaboration?.transportClosed();
       if (status === 'closed') runtime.handlers.onSaveState?.('offline');
       else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
+      else {
+        runtime.handlers.onSaveState?.('saved');
+        revisionTail = revisionTail
+          .then(async () => {
+            const head = await runtime.api.getManifest(runtime.model.unitId);
+            await synchronizeRemoteRevisions(runtime, head.revision);
+          })
+          .catch((cause: unknown) => {
+            publishRuntimeFailure(runtime, {
+              code: cause instanceof Error && cause.message.startsWith('HISTORY_GAP') ? 'HISTORY_GAP' : 'HISTORY_LOAD_FAILED',
+              message: cause instanceof Error ? cause.message : 'Remote revision synchronization failed.',
+              recovery: 'Reload the authoritative cloud workbook before editing again.',
+              cause,
+            });
+          });
+      }
     });
     client.open();
 
@@ -709,7 +777,6 @@ export function startCollaborationSession(
       detachMessage();
       detachStatus();
       client.close();
-      runtime.collaboration?.attachTransport(undefined);
       runtime.collab = null;
       runtime.broadcastPresence = () => false;
     };
@@ -752,54 +819,27 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.dataContentDetachers) detach();
   runtime.dataContentDetachers = [];
   runtime.dataContent.clear();
-  runtime.collaboration?.attachTransport(undefined);
   runtime.collaboration = null;
   runtime.collab = null;
 }
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
   await initializeKernel();
+  await runtime.workspacePersistence.ensureReady();
   if (!isActive()) return;
   const resolution = runtime.resolution;
-  let localRecord: WorkspaceRecord | null = null;
-  let resolvedRemote: WorkbookOpenResponse | null = null;
-  if (resolution) {
-    if (resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
-    localRecord = null;
-    const manifest = await runtime.api.getManifest(runtime.model.unitId, resolution.revision);
-    resolvedRemote = { unitId: manifest.unitId, manifest, pages: [], revision: manifest.revision };
-  } else {
-    try {
-      localRecord = await runtime.workspacePersistence.load(runtime.model.unitId, runtime.assetStore);
-    } catch (error) {
-      publishPersistenceFailure(runtime, error);
-      return;
-    }
-  }
-
-  if (!isActive()) return;
-
-  if (localRecord) {
-    runtime.workspaceRecord = localRecord;
-    runtime.localRevision = localRecord.localRevision;
-    runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
-    runtime.remoteSyncRequested = true;
-  }
-
-  if (!resolvedRemote) {
-    const manifest = await runtime.api.getManifest(runtime.model.unitId);
-    resolvedRemote = { unitId: manifest.unitId, manifest, pages: [], revision: manifest.revision };
-  }
 
   try {
-    const snapshotResponse = resolvedRemote;
+    if (resolution && resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
+    const manifest = await runtime.api.getManifest(runtime.model.unitId, resolution?.revision);
+    const snapshotResponse: WorkbookOpenResponse = await openResponseWithInitialPage(runtime, manifest);
     const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
     if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
     hydrateRuntime(runtime, snapshotResponse, { deferCollaborationRevision: true });
     runtime.remoteRevision = snapshotResponse.manifest.revision;
     runtime.remoteSyncRequested = true;
-    replaceCollaborationSession(runtime, localRecord, { deferRevision: true });
+    replaceCollaborationSession(runtime, { deferRevision: true });
     runtime.collaboration?.setRevision(runtime.remoteRevision);
     if (!isActive()) return;
     runtime.remoteConnected = true;
@@ -841,19 +881,6 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       cause: error,
     });
   }
-}
-
-function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {
-  runtime.workspaceRecord = null;
-  runtime.remoteConnected = false;
-  runtime.handlers.onAccessRole?.(null);
-  runtime.handlers.onSaveState?.('error');
-  runtime.handlers.onPhaseChange?.('error');
-  if (error instanceof WorkspaceStorageError) {
-    runtime.handlers.onNotice?.(`${error.code}: ${error.message} ${error.recovery}`);
-    return;
-  }
-  runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'STORAGE_TRANSACTION_FAILED: 云端工作簿持久化失败。');
 }
 
 function publishRuntimeFailure(runtime: SpreadsheetRuntime, failure: RuntimeFailure): void {

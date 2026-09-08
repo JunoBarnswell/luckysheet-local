@@ -44,7 +44,7 @@ export function HistoryPanel({
       <PanelBody className="p-4">
         <Stack gap="md">
           <Text size="xs" tone="subtle">
-            All workbook state mutations are tracked as reversible transactions.
+            Undo and redo use the server's immutable revision history.
           </Text>
 
           {previewRevision != null ? (
@@ -114,7 +114,7 @@ export function HistoryPanel({
                       {entry.description || 'Workbook Mutation'}
                     </Text>
                     <Text size="xs" tone="subtle">
-                      {new Date(entry.timestamp).toLocaleTimeString()} · {entry.inversePlan.length} inverse ops · {entry.status}
+                      {new Date(entry.timestamp).toLocaleTimeString()} · committed revision #{entry.committedRevision}
                     </Text>
                   </Stack>
                   <Inline gap="sm" className="items-center">

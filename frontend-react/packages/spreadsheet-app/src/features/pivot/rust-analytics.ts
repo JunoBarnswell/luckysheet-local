@@ -10,7 +10,6 @@ import type {
   RangeRef,
 } from '@react-sheets/core-model';
 import { PIVOT_RESULT_TREE_SCHEMA, createPivotMemberKey, formatPivotMember, pivotScalarFromMemberKey } from '@react-sheets/core-model';
-import { kernelInvoke } from '@react-sheets/kernel-client';
 
 /** Canonical wire shape owned by kernel/analytics. Keep this type local so the
  * presentation tree never becomes an analytics input or a second read model. */
@@ -81,6 +80,12 @@ export interface ExecutePivotAnalyticsOptions {
   viewport?: PivotAnalyticsRequest['viewport'];
   drilldown?: PivotAnalyticsRequest['drilldown'];
   budget?: unknown;
+}
+
+export interface PivotAnalyticsRevisionMetadata {
+  sourceRevision: string;
+  layoutRevision: string;
+  filterRevision: string;
 }
 
 function fieldOrdinal(definition: PivotDefinition, fieldId: string): number {
@@ -177,25 +182,18 @@ export function createPivotAnalyticsRequest(options: ExecutePivotAnalyticsOption
   return request;
 }
 
-export function executePivotAnalytics(options: ExecutePivotAnalyticsOptions): PivotResultTree {
-  const request = createPivotAnalyticsRequest(options);
-  const response = kernelInvoke<PivotAnalyticsSparseResult & { kind: 'pivot' }>('analytics.execute', {
-    unitId: options.unitId,
-    revision: options.revision,
-    request,
-  });
-  if (response.kind !== 'pivot' || response.revision !== options.revision) {
-    throw new Error('KERNEL_ANALYTICS_RESPONSE_INVALID: pivot response revision or kind is invalid');
-  }
-  return pivotTreeFromSparseResult(options.definition, response);
-}
-
 function columnKeys(column: PivotAnalyticsSparseResult['columns'][number]): PivotScalar[] {
   return Array.isArray(column) ? column : column.keys;
 }
 
-function cellFor(rowId: number, columnId: number, result: PivotAnalyticsSparseResult, definition: PivotDefinition): PivotResultCell {
-  const found = result.cells.find((cell) => cell.rowId === rowId && cell.columnId === columnId);
+function cellFor(
+  rowId: number,
+  columnId: number,
+  result: PivotAnalyticsSparseResult,
+  definition: PivotDefinition,
+  cellsByCoordinate: ReadonlyMap<string, PivotAnalyticsSparseResult['cells'][number]>,
+): PivotResultCell {
+  const found = cellsByCoordinate.get(`${rowId}:${columnId}`);
   return {
     id: `${definition.id}|row:${rowId}|column:${columnId}`,
     kind: 'detail',
@@ -205,7 +203,12 @@ function cellFor(rowId: number, columnId: number, result: PivotAnalyticsSparseRe
   };
 }
 
-function buildNodes(definition: PivotDefinition, result: PivotAnalyticsSparseResult, rowIds: number[]): PivotResultNode[] {
+function buildNodes(
+  definition: PivotDefinition,
+  result: PivotAnalyticsSparseResult,
+  rowIds: number[],
+  cellsByCoordinate: ReadonlyMap<string, PivotAnalyticsSparseResult['cells'][number]>,
+): PivotResultNode[] {
   const rows = result.rows.filter((row) => rowIds.includes(row.rowId) && !row.grandTotal);
   const roots: PivotResultNode[] = [];
   const byPath = new Map<string, PivotResultNode>();
@@ -228,25 +231,32 @@ function buildNodes(definition: PivotDefinition, result: PivotAnalyticsSparseRes
       parent = byPath.get(key) ?? { nodeId: `${definition.id}|root`, path: ['__root__'], kind: 'leaf', key: null, label: key, depth: 0, children: [], values: [], subtotal: false, sourceRowPaths: [] };
       if (!byPath.has(key)) { byPath.set(key, parent); roots.push(parent); }
     }
-    parent.values = result.columns.map((_, columnId) => cellFor(row.rowId, columnId, result, definition));
+    parent.values = result.columns.map((_, columnId) => cellFor(row.rowId, columnId, result, definition, cellsByCoordinate));
   }
   return roots;
 }
 
-export function pivotTreeFromSparseResult(definition: PivotDefinition, result: PivotAnalyticsSparseResult): PivotResultTree {
+export function pivotTreeFromSparseResult(
+  definition: PivotDefinition,
+  result: PivotAnalyticsSparseResult,
+  revisions?: PivotAnalyticsRevisionMetadata,
+): PivotResultTree {
+  const cellsByCoordinate = new Map(result.cells.map((cell) => [`${cell.rowId}:${cell.columnId}`, cell]));
   const grand = result.rows.find((row) => row.grandTotal);
   const resultFields: PivotResultValueField[] = definition.layout.values.map((value) => ({ ...value, sourceFieldId: value.fieldId }));
-  const grandTotal = grand ? { ...cellFor(grand.rowId, 0, result, definition), id: `${definition.id}|grand-total`, kind: 'grand-total' as const, columnPath: [] } : null;
+  const grandTotal = grand ? { ...cellFor(grand.rowId, 0, result, definition, cellsByCoordinate), id: `${definition.id}|grand-total`, kind: 'grand-total' as const, columnPath: [] } : null;
   return {
     schema: PIVOT_RESULT_TREE_SCHEMA,
     pivotId: definition.id,
     fields: definition.fieldCatalog,
     columnPaths: result.columns.map(columnKeys),
     valueFields: resultFields,
-    rows: buildNodes(definition, result, result.rows.map((row) => row.rowId)),
+    rows: buildNodes(definition, result, result.rows.map((row) => row.rowId), cellsByCoordinate),
     grandTotal,
     columnGrandTotals: [],
     sourceRowPaths: [],
-    sourceRevision: String(result.revision),
+    sourceRevision: revisions?.sourceRevision ?? String(result.revision),
+    ...(revisions?.layoutRevision ? { layoutRevision: revisions.layoutRevision } : {}),
+    ...(revisions?.filterRevision ? { filterRevision: revisions.filterRevision } : {}),
   };
 }

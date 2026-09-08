@@ -8,7 +8,7 @@ import type {
   WorkbookResolution,
 } from './types';
 
-export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'memory-session-reset' | 'invalid-input';
+export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input';
 
 export class WorkbookResolutionError extends Error {
   readonly code: WorkbookResolutionErrorCode;
@@ -28,7 +28,6 @@ export function isWorkbookResolutionError(error: unknown): error is WorkbookReso
     && (candidate.code === 'not-found'
       || candidate.code === 'permission-denied'
       || candidate.code === 'remote-unavailable'
-      || candidate.code === 'memory-session-reset'
       || candidate.code === 'invalid-input');
 }
 
@@ -108,14 +107,11 @@ export class WorkbookResolver {
         source: isShared ? 'shared' : 'remote',
         mode: 'remote',
         lifecycle: 'active',
-        binding: { location: 'remote', syncMode: 'remote' },
         manifest: clone(manifest),
         revision: manifest.revision,
         access,
       };
     } catch (error) {
-      // A cached mirror remains durable in persistence, but an authoritative
-      // remote failure must never be hidden by opening stale local data.
       throw toResolutionError(error, normalized);
     }
   }

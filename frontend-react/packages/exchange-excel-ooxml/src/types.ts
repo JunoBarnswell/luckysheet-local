@@ -60,7 +60,11 @@ export interface NativeDocumentArtifact {
   compatibility: CompatibilityReport;
 }
 
-export interface NativeDocumentImportRequest { fileName: string; content: Blob | ArrayBuffer; options: NativeDocumentImportOptions; formatHint?: string; }
+/**
+ * The browser only supplies opaque bytes to the server task endpoint.  It has
+ * no format hint because format detection and native parsing are server owned.
+ */
+export interface NativeDocumentImportRequest { fileName: string; content: Blob | ArrayBuffer; options: NativeDocumentImportOptions; }
 export interface NativeDocumentImportResult { unitId: string; manifest: KernelReplicaManifest; pages?: KernelReplicaPagePayload[]; report: CompatibilityReport; artifact: NativeDocumentArtifact; }
 export interface NativeDocumentExportRequest { unitId: string; revision: number; fileName: string; options: NativeDocumentExportOptions; }
 export interface NativeDocumentExportResult { unitId: string; revision: number; content: ArrayBuffer; fileName: string; report: CompatibilityReport; artifact: NativeDocumentArtifact; }

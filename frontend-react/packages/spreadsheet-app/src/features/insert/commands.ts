@@ -71,12 +71,10 @@ function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: 
     context.applyMutation({
       id: 'table.add', unitId: context.workbook.unitId, sheetId: table.sourceSheetId ?? params.sheet.id, params: table,
       affectedRanges: sourceRanges,
-      inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: table.sourceSheetId ?? params.sheet.id, params: { tableId: table.id, range: table.sourceRange }, affectedRanges: sourceRanges }],
     });
   }
   context.applyMutation({
     id: 'sheet.restore', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { sheet: structuredClone(params.sheet), index: params.index }, affectedRanges,
-    inverse: [{ id: 'sheet.remove', unitId: context.workbook.unitId, sheetId: params.sheet.id, params: { id: params.sheet.id }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
@@ -93,12 +91,10 @@ function executeStructuredChartCreate(params: StructuredChartCreateParams, conte
   const addsTable = Boolean(table && !context.workbook.dataModel.tables.has(table.id));
   if (addsTable && table) {
     context.applyMutation({ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: table, affectedRanges,
-      inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { tableId: table.id, range: table.sourceRange }, affectedRanges }],
     });
   }
   context.applyMutation({
     id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: params.drawing, payload: params.payload }, affectedRanges,
-    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawing.id }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
 }
@@ -149,7 +145,6 @@ function executeStructuredChartUpdate(params: StructuredChartUpdateParams, conte
   context.applyMutation({
     id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: current.payload, after: params.payload }, affectedRanges,
-    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: params.payload, after: current.payload }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -179,7 +174,6 @@ function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext
         context.applyMutation({
           id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
           params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row, column, value: next }, 'script'), affectedRanges: cellRange,
-          inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row, column, previous }, affectedRanges: cellRange }],
         });
         mutationCount += 1;
       }
@@ -247,14 +241,6 @@ function assertCellPosition(sheet: WorksheetModel, row: number, column: number):
   if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0 || row >= sheet.rowCount || column >= sheet.columnCount) throw new Error('Picture cell position is outside worksheet bounds');
 }
 
-function removeDrawingForPicture(sheet: WorksheetModel, drawingId: string): void {
-  const index = sheet.drawings.findIndex((drawing) => drawing.id === drawingId);
-  if (index < 0) throw new Error(`Unknown drawing: ${drawingId}`);
-  const drawing = sheet.drawings[index]!;
-  sheet.drawings.splice(index, 1);
-  sheet.drawingPayloads.delete(drawing.payloadId);
-}
-
 function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDrawingPayload {
   validateImagePresentation(presentation);
   return {
@@ -287,17 +273,13 @@ function executePictureConvertToCell(params: PictureConvertToCellParams, context
   if (previousCell && (previousCell.value !== null || previousCell.presentation !== undefined)) throw new Error('Picture conversion target cell is not empty');
   const nextCell: CellData = { ...(previousCell ?? { value: null }), presentation: convertDrawingImageToPresentation(payload) };
   const affectedRanges = imageRange(params.sheetId, params.row, params.column);
-  const drawingSnapshot = structuredClone(drawing);
-  const payloadSnapshot = structuredClone(payload);
   context.applyMutation({
     id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawingId: params.drawingId }, affectedRanges,
-    inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: drawingSnapshot, payload: payloadSnapshot }, affectedRanges }],
   });
   context.applyMutation({
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, 'script'), affectedRanges,
-    inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges };
 }
@@ -325,12 +307,10 @@ function executePictureConvertToFloating(params: PictureConvertToFloatingParams,
   context.applyMutation({
     id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, 'script'), affectedRanges,
-    inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
   });
   context.applyMutation({
     id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawing, payload }, affectedRanges,
-    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges };
 }
@@ -351,7 +331,6 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       next.presentation = structuredClone(params.presentation);
       const affectedRanges = [{ sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column }];
       context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: params.row, column: params.column, value: next }, 'script'), affectedRanges,
-        inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous }, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -435,7 +414,6 @@ function linkValueMutations(
     const cellRange = formControlCellRange(linked.sheetId, linked.row, linked.column);
     affectedRanges.push(cellRange);
     context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: createCellSetMutationParams(linkedSheet, { sheetId: linked.sheetId, row: linked.row, column: linked.column, value: next }, 'script'), affectedRanges: [cellRange],
-      inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, previous }, affectedRanges: [cellRange] }],
     });
     mutationCount += 1;
   }
@@ -459,7 +437,6 @@ function executeFormControlUpdate(params: FormControlUpdateParams, context: Comm
     ? [formControlCellRange(updatedCellLink.sheetId, updatedCellLink.row, updatedCellLink.column)]
     : [formControlAnchorRange(params.sheetId, drawing)];
   context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after: params.payload }, affectedRanges,
-    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: params.payload, after: before }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -518,7 +495,6 @@ function executeFormControlActivate(params: FormControlActivateParams, context: 
     const payloadRange = updateCellLink ? formControlCellRange(updateCellLink.sheetId, updateCellLink.row, updateCellLink.column) : formControlAnchorRange(params.sheetId, update.drawing);
     affectedRanges.push(payloadRange);
     context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.before, after: update.after }, affectedRanges: [payloadRange],
-      inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.after, after: update.before }, affectedRanges: [payloadRange] }],
     });
   }
   const mutationCount = payloadUpdates.length + linkValueMutations(context, linkedValues, affectedRanges);

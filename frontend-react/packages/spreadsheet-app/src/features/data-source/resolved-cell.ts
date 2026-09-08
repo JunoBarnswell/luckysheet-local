@@ -94,11 +94,6 @@ export interface PreparedDataRegionMaterialization {
   materializedCellCount: number;
 }
 
-/** Applied transaction returned by the synchronous commit entry point. */
-export interface AppliedDataRegionMaterialization extends PreparedDataRegionMaterialization {
-  sourceRemoved: boolean;
-}
-
 const PATCH_FIELDS: readonly CellDataField[] = [
   'formula',
   'displayValue',
@@ -182,38 +177,6 @@ export function applyCellPatch(base: CellData | undefined, patch: CellPatch | un
     else result[key] = value as never;
   }
   return result as CellData;
-}
-
-/** Merge a command patch with the currently persisted patch. `inherit` is a no-op. */
-export function mergeCellPatches(current: CellPatch | undefined, incoming: CellPatch): CellPatch {
-  const next: CellPatch = {
-    schema: 'CellPatch',
-    ...(incoming.revision === undefined
-      ? current?.revision === undefined ? {} : { revision: current.revision }
-      : { revision: incoming.revision }),
-  };
-  for (const key of PATCH_KEYS) {
-    const incomingField = incoming[key];
-    const currentField = current?.[key];
-    if (incomingField === undefined || incomingField.kind === 'inherit') {
-      if (currentField !== undefined && currentField.kind !== 'inherit') next[key] = clone(currentField) as never;
-      continue;
-    }
-    next[key] = clone(incomingField) as never;
-  }
-  return next;
-}
-
-function cellDataForPatch(patch: CellPatch): CellPatchCarrier {
-  const normalized = normalizeCellPatch(patch);
-  const value = normalized.value?.kind === 'set'
-    ? clone(normalized.value.value)
-    : null;
-  const carrier: CellPatchCarrier = {
-    value,
-    __cellPatch: normalized,
-  };
-  return carrier;
 }
 
 function isBodyCell(region: SheetDataRegion, row: number, column: number): boolean {
@@ -317,12 +280,6 @@ function cellsInRange(sheet: WorksheetModel, range: RangeRef): MaterializedDataR
   return cells;
 }
 
-function clearRange(sheet: WorksheetModel, range: RangeRef): void {
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
-}
-
 function sourceStillReferenced(workbook: WorkbookModel, sourceId: string): boolean {
   return workbook.getSheets().some((candidate) => candidate.dataRegions.some((region) => region.sourceId === sourceId));
 }
@@ -397,106 +354,6 @@ export async function prepareDataRegionMaterialization(
     materializedCells: materialized,
     materializedCellCount: materialized.length,
   };
-}
-
-function sameRange(left: RangeRef, right: RangeRef): boolean {
-  return left.sheetId === right.sheetId
-    && left.startRow === right.startRow
-    && left.endRow === right.endRow
-    && left.startColumn === right.startColumn
-    && left.endColumn === right.endColumn;
-}
-
-/** Commit a prepared materialization synchronously as one model mutation. */
-export function applyDataRegionMaterialization(
-  workbook: WorkbookModel,
-  prepared: PreparedDataRegionMaterialization,
-): AppliedDataRegionMaterialization {
-  const sheet = workbook.getSheet(prepared.sheetId);
-  const regionIndex = sheet.dataRegions.findIndex((entry) => entry.id === prepared.region.id);
-  const currentRegion = regionIndex < 0 ? undefined : sheet.dataRegions[regionIndex];
-  if (!currentRegion || !sameRange(currentRegion.range, prepared.region.range)
-    || currentRegion.sourceId !== prepared.region.sourceId
-    || currentRegion.headerRow !== prepared.region.headerRow) {
-    throw new Error(`Data region ${prepared.region.id} changed before materialization commit`);
-  }
-  const currentManifest = workbook.getDataSource(prepared.manifest.id);
-  if (currentManifest.revision !== prepared.manifest.revision) {
-    throw new Error(`Data source ${prepared.manifest.id} changed before materialization commit`);
-  }
-  clearRange(sheet, prepared.range);
-  for (const entry of prepared.materializedCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));
-  sheet.removeDataRegionAt(regionIndex);
-  const sourceRemoved = !sourceStillReferenced(workbook, prepared.region.sourceId);
-  if (sourceRemoved) workbook.dataModel.sources.delete(prepared.region.sourceId);
-  return {
-    ...prepared,
-    regionIndex,
-    sourceRemoved,
-    previousCells: prepared.previousCells.map((entry) => ({ ...entry, cell: clone(entry.cell) })),
-    materializedCells: prepared.materializedCells.map((entry) => ({ ...entry, cell: clone(entry.cell) })),
-  };
-}
-
-/** Restore an applied materialization transaction when its caller owns inverse. */
-export function restoreDataRegionMaterialization(
-  workbook: WorkbookModel,
-  transaction: AppliedDataRegionMaterialization,
-): void {
-  const sheet = workbook.getSheet(transaction.sheetId);
-  if (sheet.dataRegions.some((entry) => entry.id === transaction.region.id)) {
-    throw new Error(`Data region already exists: ${transaction.region.id}`);
-  }
-  if (transaction.sourceRemoved) {
-    if (workbook.dataModel.sources.has(transaction.manifest.id)) {
-      throw new Error(`Data source already exists: ${transaction.manifest.id}`);
-    }
-    workbook.dataModel.sources.set(transaction.manifest.id, clone(transaction.manifest));
-  }
-  clearRange(sheet, transaction.range);
-  for (const entry of transaction.previousCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));
-  sheet.addDataRegion(transaction.region, transaction.regionIndex);
-}
-
-/**
- * Persist a field-level edit. For a data-region body this writes only a patch
- * carrier; ordinary cells are materialized after applying the same semantics.
- */
-export function writeCellPatch(
-  sheet: WorksheetModel,
-  row: number,
-  column: number,
-  patch: CellPatch,
-): CellData | undefined {
-  const normalized = normalizeCellPatch(patch);
-  const region = dataRegionAt(sheet, row, column);
-  const existing = sheet.cells.get(row, column);
-  if (region) {
-    const current = readCellPatch(existing);
-    if (existing && !current) {
-      throw new Error(`Data region ${region.id} contains a non-canonical cell overlay; snapshot migration is required`);
-    }
-    const merged = mergeCellPatches(current, normalized);
-    if (!hasPatchEffect(merged)) {
-      sheet.cells.delete(row, column);
-      return undefined;
-    }
-    const carrier = cellDataForPatch(merged);
-    sheet.cells.set(row, column, carrier);
-    return applyCellPatch(undefined, merged);
-  }
-
-  const next = applyCellPatch(existing, normalized);
-  if (!next || !hasPatchEffect(normalized)) {
-    if (next === undefined) sheet.cells.delete(row, column);
-    return existing ? next : undefined;
-  }
-  if (normalized.value?.kind === 'clear' && next.value === null && PATCH_FIELDS.every((key) => next[key] === undefined)) {
-    sheet.cells.delete(row, column);
-    return undefined;
-  }
-  sheet.cells.set(row, column, next);
-  return next;
 }
 
 export function clearCellPatch<T>(value?: T): CellPatchField<T> {

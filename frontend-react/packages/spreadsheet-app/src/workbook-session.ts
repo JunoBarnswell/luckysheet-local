@@ -380,7 +380,6 @@ export interface WorkbookSessionOptions {
   /** Node/SSR callers must inject the explicit persistent formula session port. */
   collaborationUrl?: string;
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
-  nativeDocumentExecution?: 'worker' | 'inline-test';
   /** Catalog and editor resolve the same unit-scoped native transaction. */
   nativeDocumentTransaction?: NativeDocumentTransaction;
   /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
@@ -495,16 +494,13 @@ export interface UiSnapshot extends DesignerState {
   peers: PeerCursor[];
   collabStatus: 'connecting' | 'open' | 'closed';
   collabRevision: number;
-  pendingChangeSetCount: number;
   pendingCommandCount: number;
-  offlineQueueState: string;
   actorId: string;
   shareRole: ShareRole | null;
   permissions: PermissionCapabilities;
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
   historyPreviewRevision: number | null;
-  hasPendingOperations: boolean;
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
   featurePhase: FeatureLifecyclePhase;
@@ -783,7 +779,6 @@ export class WorkbookSession {
   };
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
-  private readonly nativeDocumentExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
   private readyCallback: Promise<void> | null = null;
 
@@ -820,7 +815,6 @@ export class WorkbookSession {
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
   private remoteRevisions: RevisionRecord[] = [];
   private historyPreview: HistoryPreviewSession | null = null;
-  private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline and serialized import/export owner. */
@@ -914,7 +908,7 @@ export class WorkbookSession {
   private refreshBatchDepth = 0;
   private refreshBatchPending = false;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'loading', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'loading', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     this.nativeDocumentTransaction = nativeDocumentTransaction ?? createNativeDocumentTransaction();
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
@@ -938,7 +932,6 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    this.nativeDocumentExecution = nativeDocumentExecution;
     const resolvedPivotTaskPort = pivotTaskPort ?? (pivotExecution === 'worker' ? createBrowserPivotTaskPort() : new InlinePivotTaskPort());
     if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
     this.pivotTaskPort = resolvedPivotTaskPort;
@@ -1152,12 +1145,8 @@ export class WorkbookSession {
     this.persistenceDispose = startPersistenceSession(this.runtime);
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
-      const persisted = this.runtime.workspaceRecord;
-      if (persisted) {
-        this.hasPendingOperations = persisted.pending.operations.length > 0;
-        this.persistenceChecksum = persisted.checksum;
-        this.persistenceMetaDirty = false;
-      }
+      this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.manifest(), this.runtime.remoteRevision).checksum;
+      this.persistenceMetaDirty = false;
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
       if (!this.disposed && generation === this.lifecycleGeneration && !this.pivotOpenRefreshStarted) {
         this.pivotOpenRefreshStarted = true;
@@ -1245,19 +1234,7 @@ export class WorkbookSession {
 
   private syncPersistenceMeta(): void {
     if (!this.persistenceMetaDirty) return;
-    const record = this.runtime.workspaceRecord;
-    const pendingCount = (this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0)
-      + this.runtime.pendingMutations.length
-      + (record?.pending.operations.length ?? 0);
-    this.hasPendingOperations = pendingCount > 0 || this.runtime.pendingLocalCheckpoint;
-    if (record?.checksum) this.persistenceChecksum = record.checksum;
-    // A new in-memory workbook has no persisted record yet, but the UI
-    // contract still exposes a canonical checksum. Compute it once during the
-    // initial session bootstrap; subsequent mutation refreshes use the stored
-    // baseline and pending state instead of serializing the whole workbook.
-    if (!this.persistenceChecksum && !record) {
-      this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.manifest(), this.runtime.remoteRevision, 0).checksum;
-    }
+    this.persistenceChecksum = buildPersistenceMeta(this.runtime.model.manifest(), this.runtime.remoteRevision).checksum;
     this.persistenceMetaDirty = false;
   }
 
@@ -1592,16 +1569,13 @@ export class WorkbookSession {
       peers: this.peers,
       collabStatus: this.collabStatus,
       collabRevision: collaboration.revision,
-      pendingChangeSetCount: collaboration.pendingCount,
       pendingCommandCount: this.pendingCommandCount,
-      offlineQueueState: collaboration.offlineQueueState,
       actorId: this.actorId,
       shareRole: this.getShareRole(),
       permissions: this.permission.getCapabilities(),
       historyEntries: this.runtime.commands.getUndoEntries(),
       remoteRevisions: this.remoteRevisions,
       historyPreviewRevision: this.historyPreview?.revision ?? null,
-      hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
       featurePhase: this.runtime.featureRuntime.getPhase(),
@@ -2425,8 +2399,6 @@ export class WorkbookSession {
     if (!this.runtime.collaboration) {
       return {
         revision: this.runtime.remoteRevision,
-        pendingCount: 0,
-        offlineQueueState: 'offline',
         presence: { users: [], selections: [], editSessions: [], updatedAt: Date.now() },
         peerCount: this.peers.length,
       };
@@ -2456,18 +2428,6 @@ export class WorkbookSession {
     }
   }
 
-  async flushPendingCollaborations(): Promise<void> {
-    if (!this.runtime.collaboration) {
-      this.notify('Collaboration is offline');
-      return;
-    }
-    const result = await this.runtime.collaboration.offlineQueue.flushAll();
-    if (result.failed > 0) this.notify(`${result.failed} pending change set(s) failed to sync`);
-    else if (result.flushed > 0) this.notify(`${result.flushed} pending change set(s) synced`);
-    else this.notify('No pending collaboration changes');
-    this.refresh();
-  }
-
   async refreshRevisionLog(): Promise<void> {
     try {
       this.remoteRevisions = await this.runtime.api.listRevisions(this.runtime.model.unitId);
@@ -2484,11 +2444,6 @@ export class WorkbookSession {
     if (index < 0 || index >= entries.length) return;
     const undoCount = entries.length - 1 - index;
     for (let step = 0; step < undoCount; step += 1) {
-      const entry = this.runtime.commands.getUndoEntries().at(-1);
-      if (entry && !this.canReplayHistory(entry.inversePlan)) {
-        this.notify('Undo is no longer allowed for the protected selection');
-        break;
-      }
       if (!await this.runtime.commands.undo()) break;
     }
     this.ensureActiveSheetSession();
@@ -2568,8 +2523,6 @@ export class WorkbookSession {
     return buildPersistenceMeta(
       this.runtime.model.manifest(),
       this.runtime.remoteRevision,
-      this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
-      this.runtime.workspaceRecord,
     );
   }
 
@@ -2615,17 +2568,7 @@ export class WorkbookSession {
     this.emit();
   }
 
-  /** Permission is evaluated again before replaying a historical mutation. */
-  private canReplayHistory(mutations: readonly MutationInfo[]): boolean {
-    return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
-  }
-
   async undo(): Promise<void> {
-    const entry = this.runtime.commands.getUndoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.inversePlan)) {
-      this.notify('Undo is no longer allowed for the protected selection');
-      return;
-    }
     if (await this.runtime.commands.undo()) {
       this.ensureActiveSheetSession();
       this.invalidateAllSheetProjections();
@@ -2637,11 +2580,6 @@ export class WorkbookSession {
   }
 
   async redo(): Promise<void> {
-    const entry = this.runtime.commands.getRedoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.forwardMutations)) {
-      this.notify('Redo is no longer allowed for the protected selection');
-      return;
-    }
     if (await this.runtime.commands.redo()) {
       this.ensureActiveSheetSession();
       this.invalidateAllSheetProjections();
@@ -4412,7 +4350,7 @@ export class WorkbookSession {
   }
   getChartRecommendations(): readonly ChartRecommendation[] {
     const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
-    return recommendCharts(this.runtime.model, range);
+    return recommendCharts(this.runtime.model, range, this.runtime.resolveVisibility(this.runtime.model.getSheet(this.activeSheetId)));
   }
   insertRecommendedChart(candidate: ChartRecommendation): void {
     const range = candidate.source.ranges[0];
@@ -6854,12 +6792,7 @@ export class WorkbookSession {
   }
 
   async recalculateFormulas(scope: 'all' | 'sheet' | 'full' | 'rebuild' = 'all'): Promise<void> {
-    const roots = scope === 'sheet'
-      ? this.runtime.formula.getFormulaEntries()
-        .filter((entry) => entry.address.sheetId === this.activeSheetId)
-        .map((entry) => entry.address)
-      : undefined;
-    await scheduleFormulaRecalculation(this.runtime, true, roots);
+    await scheduleFormulaRecalculation(this.runtime, true);
     this.refresh();
     this.notify(scope === 'sheet' ? 'Active sheet formulas recalculated' : scope === 'rebuild' ? 'Formula dependencies rebuilt' : 'Formulas recalculated');
   }

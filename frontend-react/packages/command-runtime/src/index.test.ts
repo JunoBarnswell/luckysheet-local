@@ -1,338 +1,168 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
+import { WorkbookModel, type KernelReplicaManifest, type RangeRef } from '@react-sheets/core-model';
+import { initializeNodeKernel } from '@react-sheets/kernel-client/node';
+import {
+  CommandRegistry,
+  CommandRuntime,
+  type KernelCommitRequest,
+  type MutationInfo,
+} from './index';
 
-const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
-  sheetId: params.sheetId ?? 'sheet-1',
-  startRow: params.row,
-  endRow: params.row,
-  startColumn: params.column,
-  endColumn: params.column,
-}];
+before(async () => initializeNodeKernel());
 
-const cellSetMetadata = {
-  schema: {
-    name: 'CellSet',
-    validate: (value: unknown) => {
-      if (!value || typeof value !== 'object') return false;
-      const params = value as Record<string, unknown>;
-      return Number.isInteger(params.row) && Number.isInteger(params.column) && 'value' in params;
-    },
-  },
-  permission: { capability: 'test.cell.write' },
-  affectedRanges: { resolve: cellRange },
-  inversePolicy: { allowedMutationIds: ['cell.restore'], minCount: 1 },
-} as const;
+const range: RangeRef = {
+  sheetId: 'sheet-1',
+  startRow: 0,
+  endRow: 0,
+  startColumn: 0,
+  endColumn: 0,
+};
 
-const cellRestoreMetadata = {
-  schema: {
-    name: 'CellRestore',
-    validate: (value: unknown) => {
-      if (!value || typeof value !== 'object') return false;
-      const params = value as Record<string, unknown>;
-      return Number.isInteger(params.row) && Number.isInteger(params.column);
-    },
-  },
-  permission: { capability: 'test.cell.write' },
-  affectedRanges: { resolve: cellRange },
-  inversePolicy: { allowedMutationIds: ['cell.set'], minCount: 1 },
-} as const;
+function manifest(unitId: string, revision: number): KernelReplicaManifest {
+  return {
+    schema: 'WorkbookManifest',
+    version: 11,
+    unitId,
+    name: 'Runtime',
+    revision,
+    sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 1_048_576, columnCount: 16_384, metadata: {} }],
+    pages: [],
+    metadata: {},
+  };
+}
 
-test('CommandRuntime executes a registered command and tracks history', () => {
-  const workbook = new WorkbookModel('unit-1', 'Runtime');
+function runtimeFixture(unitId = 'unit-1') {
+  const workbook = WorkbookModel.fromManifest(manifest(unitId, 0));
   const runtime = new CommandRuntime(workbook);
-  runtime.registry.registerMutation({
+  runtime.registry.registerMutation<{ row: number; column: number; value: string }>({
     id: 'cell.set',
-    handler: (item, context) => {
-      const params = item.params as { row: number; column: number; value: string };
-      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    metadata: {
+      schema: {
+        name: 'CellSet',
+        validate: (value): value is { row: number; column: number; value: string } => {
+          if (!value || typeof value !== 'object') return false;
+          const input = value as Record<string, unknown>;
+          return Number.isInteger(input.row) && Number.isInteger(input.column) && typeof input.value === 'string';
+        },
+      },
+      permission: { capability: 'sheet.cell.write' },
+      affectedRanges: { resolve: () => [range], mode: 'exact' },
     },
-    metadata: cellSetMetadata,
   });
-  runtime.registry.registerMutation({
-    id: 'cell.restore',
-    handler: (item, context) => {
-      const params = item.params as { row: number; column: number; previous?: { value: string } };
-      if (params.previous) context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, params.previous);
-      else context.workbook.getSheet(item.sheetId).cells.delete(params.row, params.column);
-    },
-    metadata: cellRestoreMetadata,
-  });
-  runtime.registry.registerCommand({
+  runtime.registry.registerCommand<{ value: string }>({
     id: 'cell.set',
-    execute: (params: { row: number; column: number; value: string }, context) => {
-      const sheet = context.workbook.getSheet('sheet-1');
-      const previous = sheet.cells.get(params.row, params.column);
-      const range = [{ sheetId: 'sheet-1', startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column }];
+    execute: (params, context) => {
       context.applyMutation({
         id: 'cell.set',
-        unitId: context.workbook.unitId,
+        unitId,
         sheetId: 'sheet-1',
-        params,
-        affectedRanges: range,
-        inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: 'sheet-1', params: { row: params.row, column: params.column, previous }, affectedRanges: range }],
-        apply: () => sheet.cells.set(params.row, params.column, { value: params.value }),
+        params: { row: 0, column: 0, value: params.value },
+        affectedRanges: [range],
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: range };
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [range] };
     },
   });
+  const requests: KernelCommitRequest[] = [];
+  runtime.setCommitPort(async (request) => {
+    requests.push(structuredClone(request));
+    return {
+      operationId: request.operationId,
+      baseRevision: request.baseRevision,
+      revision: request.baseRevision + 1,
+      manifest: manifest(unitId, request.baseRevision + 1),
+      pages: [],
+      removedPages: [],
+      affectedRanges: [range],
+    };
+  });
+  return { runtime, workbook, requests };
+}
 
-  const listenedMutations: MutationInfo[] = [];
-  const unsubscribe = runtime.onMutation((m) => listenedMutations.push(m));
+test('publishes a planned mutation only after the canonical commit acknowledgement', async () => {
+  const { runtime, workbook, requests } = runtimeFixture();
+  const observed: MutationInfo[] = [];
+  runtime.onMutation((mutation) => observed.push(mutation));
 
-  const result = runtime.execute('cell.set', { row: 1, column: 1, value: 'A' });
+  const result = await runtime.execute('cell.set', { value: 'A' });
+
   assert.equal(result.mutationCount, 1);
-  assert.equal(listenedMutations.length, 1);
-  assert.equal(runtime.getHistoryDepth().undo, 1);
-  assert.equal(runtime.undo(), true);
-  assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1), undefined);
-  assert.equal(runtime.redo(), true);
-  assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
-
-  unsubscribe();
+  assert.equal(workbook.revision, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.mutations[0]?.id, 'cell.set');
+  assert.equal(requests[0]?.intent, undefined);
+  assert.equal(observed.length, 1);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 1, redo: 0 });
 });
 
-test('CommandRuntime rolls back applied mutations if a command throws mid-execution', () => {
-  const workbook = new WorkbookModel('unit-rollback', 'Rollback');
-  const runtime = new CommandRuntime(workbook);
+test('undo and redo target immutable server history without client inverse mutations', async () => {
+  const { runtime, workbook, requests } = runtimeFixture('unit-history');
+  await runtime.execute('cell.set', { value: 'A' });
+  const original = requests[0]!;
 
-  runtime.registry.registerMutation({
-    id: 'val.set',
-    handler: (item, context) => {
-      const params = item.params as { row: number; value: number };
-      context.workbook.getSheet(item.sheetId).cells.set(params.row, 0, { value: params.value });
-    },
-    metadata: {
-      schema: { name: 'ValueSet', validate: (value: unknown) => !!value && typeof value === 'object' && Number.isInteger((value as { row?: unknown }).row) },
-      permission: { capability: 'test.value.write' },
-      affectedRanges: { resolve: () => [] },
-      inversePolicy: { allowedMutationIds: ['val.restore'], minCount: 1 },
-    },
+  assert.equal(await runtime.undo(), true);
+  const undo = requests[1]!;
+  assert.deepEqual(undo.mutations, []);
+  assert.deepEqual(undo.intent, {
+    type: 'undo',
+    targetOperationId: original.operationId,
+    targetBaseRevision: original.baseRevision,
   });
-  runtime.registry.registerMutation({
-    id: 'val.restore',
-    handler: (item, context) => {
-      const params = item.params as { row: number };
-      context.workbook.getSheet(item.sheetId).cells.delete(params.row, 0);
-    },
-    metadata: {
-      schema: { name: 'ValueRestore', validate: (value: unknown) => !!value && typeof value === 'object' && Number.isInteger((value as { row?: unknown }).row) },
-      permission: { capability: 'test.value.write' },
-      affectedRanges: { resolve: () => [] },
-      inversePolicy: { allowedMutationIds: ['val.set'], minCount: 1 },
-    },
+  assert.equal(workbook.revision, 2);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 1 });
+
+  assert.equal(await runtime.redo(), true);
+  const redo = requests[2]!;
+  assert.deepEqual(redo.mutations, []);
+  assert.deepEqual(redo.intent, {
+    type: 'undo',
+    targetOperationId: undo.operationId,
+    targetBaseRevision: undo.baseRevision,
   });
-
-  runtime.registry.registerCommand({
-    id: 'failing.transaction',
-    execute: (_params: unknown, context) => {
-      const sheet = context.workbook.getSheet('sheet-1');
-      context.applyMutation({
-        id: 'val.set',
-        unitId: context.workbook.unitId,
-        sheetId: 'sheet-1',
-        params: { row: 0, value: 100 },
-        affectedRanges: [],
-        inverse: [{ id: 'val.restore', unitId: context.workbook.unitId, sheetId: 'sheet-1', params: { row: 0 }, affectedRanges: [] }],
-        apply: () => sheet.cells.set(0, 0, { value: 100 }),
-      });
-
-      // Now throw an error intentionally
-      throw new Error('Simulated failure during multi-mutation command');
-    },
-  });
-
-  assert.throws(() => runtime.execute('failing.transaction', {}), /Simulated failure/);
-  // The first mutation should have been rolled back
-  assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0), undefined);
-  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(workbook.revision, 3);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 1, redo: 0 });
 });
 
-test('CommandRegistry guards against duplicate IDs and unknown lookups', () => {
-  const workbook = new WorkbookModel('unit-guard', 'Guards');
-  const runtime = new CommandRuntime(workbook);
+test('a rejected commit leaves the replica and history unchanged', async () => {
+  const { runtime, workbook } = runtimeFixture('unit-rejected');
+  runtime.setCommitPort(async () => { throw new Error('UNDO_CONFLICT'); });
 
-  runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) });
-  assert.throws(() => runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) }), /Duplicate command/);
-  assert.throws(() => runtime.execute('non.existent', {}), /Unknown command/);
+  await assert.rejects(() => runtime.execute('cell.set', { value: 'A' }), /UNDO_CONFLICT/);
+  assert.equal(workbook.revision, 0);
   assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
 });
 
-test('remote mutations reject a different workbook unit', () => {
-  const workbook = new WorkbookModel('unit-remote', 'Remote');
-  const runtime = new CommandRuntime(workbook);
-  runtime.registry.registerMutation({
-    id: 'cell.set',
-    handler: (item, context) => {
-      const params = item.params as { row: number; column: number; value: string };
-      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
-    },
-    metadata: cellSetMetadata,
-  });
-  runtime.registry.registerMutation({
-    id: 'cell.restore',
-    handler: () => undefined,
-    metadata: cellRestoreMetadata,
-  });
-
-  assert.throws(() => runtime.applyRemoteMutations([{
-    id: 'cell.set',
-    unitId: 'other-unit',
-    sheetId: 'sheet-1',
-    params: { row: 0, column: 0, value: 'invalid' },
-    affectedRanges: [],
-  }]), /Mutation unit mismatch/);
-});
-
-test('CommandRuntime rejects an unregistered mutation before touching the workbook', () => {
-  const workbook = new WorkbookModel('unit-unregistered', 'Unregistered');
-  const runtime = new CommandRuntime(workbook);
-  let applyCalled = false;
-  runtime.registry.registerCommand({
-    id: 'invalid.mutation',
-    execute: (_params: unknown, context) => {
-      const affectedRanges = [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
-      context.applyMutation({
-        id: 'mutation.not.registered',
-        unitId: workbook.unitId,
-        sheetId: 'sheet-1',
-        params: {},
-        affectedRanges,
-        inverse: [],
-        apply: () => {
-          applyCalled = true;
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
-
-  assert.throws(() => runtime.execute('invalid.mutation', {}), /Unknown mutation: mutation\.not\.registered/);
-  assert.equal(applyCalled, false);
-  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
-});
-
-test('CommandRuntime rejects an inverse that is not registered before applying the mutation', () => {
-  const workbook = new WorkbookModel('unit-invalid-inverse', 'Invalid inverse');
-  const runtime = new CommandRuntime(workbook);
-  let applyCalled = false;
-  runtime.registry.registerMutation({
-    id: 'primary.set',
-    handler: () => undefined,
-    metadata: {
-      schema: { name: 'PrimarySet', validate: (value: unknown) => !!value && typeof value === 'object' },
-      permission: { capability: 'test.write' },
-      affectedRanges: { resolve: () => [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }] },
-      inversePolicy: { allowedMutationIds: ['known.inverse'], minCount: 1 },
-    },
-  });
-  runtime.registry.registerMutation({
-    id: 'known.inverse',
-    handler: () => undefined,
-    metadata: {
-      schema: { name: 'KnownInverse', validate: (value: unknown) => !!value && typeof value === 'object' },
-      permission: { capability: 'test.write' },
-      affectedRanges: { resolve: () => [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }] },
-      inversePolicy: { allowedMutationIds: ['primary.set'], minCount: 1 },
-    },
-  });
-  runtime.registry.registerCommand({
-    id: 'invalid.inverse',
-    execute: (_params: unknown, context) => {
-      const affectedRanges = [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
-      context.applyMutation({
-        id: 'primary.set',
-        unitId: workbook.unitId,
-        sheetId: 'sheet-1',
-        params: {},
-        affectedRanges,
-        inverse: [{
-          id: 'inverse.not.registered',
-          unitId: workbook.unitId,
-          sheetId: 'sheet-1',
-          params: {},
-          affectedRanges,
-        }],
-        apply: () => {
-          applyCalled = true;
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
-
-  assert.throws(() => runtime.execute('invalid.inverse', {}), /unknown inverse inverse\.not\.registered/);
-  assert.equal(applyCalled, false);
-  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
-});
-
-test('CommandRegistry validates schema, permission, affected ranges, and declared inverses', () => {
+test('registry rejects incomplete metadata and invalid affected ranges', () => {
   const registry = new CommandRegistry();
-  const range = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
-  const metadata = {
-    schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
-    permission: { capability: 'sheet.write' },
-    affectedRanges: { resolve: () => [range] },
-    inverseIds: ['cell.restore'],
-  } as const;
+  assert.throws(() => registry.registerMutation({ id: 'missing.contract', metadata: undefined as never }), /requires canonical metadata/);
   registry.registerMutation({
     id: 'cell.set',
-    handler: () => undefined,
-    metadata,
-  });
-  registry.registerMutation({
-    id: 'cell.restore',
-    handler: () => undefined,
     metadata: {
-      schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
-      permission: { capability: 'sheet.write' },
-      affectedRanges: { resolve: () => [range] },
-      inverseIds: ['cell.set'],
+      schema: { name: 'Params', validate: (value) => value !== null && typeof value === 'object' },
+      permission: { capability: 'sheet.cell.write' },
+      affectedRanges: { resolve: () => [range], mode: 'exact' },
     },
   });
-
-  const result = registry.validateCompleteness();
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.issues, []);
-
-  const invalid = registry.validateMutation({
+  const issues = registry.validateMutation({
     id: 'cell.set',
     unitId: 'unit-1',
     sheetId: 'sheet-1',
     params: {},
     affectedRanges: [],
-    inverse: [{ id: 'cell.restore', unitId: 'unit-1', sheetId: 'sheet-1', params: {}, affectedRanges: [range] }],
-    apply: () => undefined,
   });
-  assert.equal(invalid.some((entry) => entry.code === 'invalid-affected-ranges'), true);
+  assert.equal(issues.some((entry) => entry.code === 'invalid-affected-ranges'), true);
 });
 
-test('CommandRegistry rejects incomplete metadata and declared inverse drift', () => {
-  const registry = new CommandRegistry();
-  assert.throws(() => registry.registerMutation({
-    id: 'missing.contract',
-    handler: () => undefined,
-    metadata: undefined as never,
-  }), /requires canonical metadata/);
-  assert.throws(() => registry.registerMutation({
-    id: 'broken.registration',
-    handler: () => undefined,
-    metadata: {} as never,
-  }), /must declare a parameter schema/);
-
-  registry.registerMutation({
-    id: 'declared.drift',
-    handler: () => undefined,
-    metadata: {
-      schema: { name: 'DeclaredDrift', validate: () => true },
-      permission: { capability: 'test.write' },
-      affectedRanges: { resolve: () => [] },
-      inverseIds: ['missing.inverse'],
-    },
+test('history-free view commands do not create a server transaction', async () => {
+  const { runtime, requests } = runtimeFixture('unit-view');
+  runtime.registry.registerCommand({
+    id: 'view.noop',
+    history: 'none',
+    execute: (_params: unknown, context) => ({ operationId: context.operationId, mutationCount: 0, affectedRanges: [] }),
   });
-  const result = registry.validateCompleteness();
-  assert.equal(result.ok, false);
-  assert.equal(result.issues.some((entry) => entry.code === 'unknown-inverse' && entry.inverseId === 'missing.inverse'), true);
-  assert.throws(() => registry.assertComplete(), /Mutation registry is incomplete/);
+
+  const result = await runtime.execute('view.noop', {});
+  assert.equal(result.mutationCount, 0);
+  assert.equal(requests.length, 0);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
 });

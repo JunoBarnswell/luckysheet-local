@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 import type { IconName, TemplatePreviewKind } from '@react-sheets/ui-system';
 
 export type WorkbookRole = 'owner' | 'editor' | 'commenter' | 'viewer';
-export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
-export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookStorageLocation = 'remote';
+export type WorkbookSyncStatus = 'synced' | 'syncing' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
 export type WorkbookSourceKind = 'native' | 'document-import';
 
@@ -23,9 +23,6 @@ export interface WorkbookCatalogItem {
   folderPath?: readonly string[];
   favorite: boolean;
   revision?: number;
-  localRevision?: number;
-  serverRevision?: number;
-  pendingOperationCount?: number;
   sourceFileName?: string;
   sizeBytes?: number;
 }

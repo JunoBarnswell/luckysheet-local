@@ -102,7 +102,7 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
-  onActivateHyperlink?: (row: number, column: number) => boolean;
+  onActivateHyperlink?: (row: number, column: number) => void | Promise<void>;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;

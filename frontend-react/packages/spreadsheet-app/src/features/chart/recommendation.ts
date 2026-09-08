@@ -1,4 +1,5 @@
 import { defaultChartSubtype, type ChartDrawingPayload, type ChartSeriesModel, type PivotScalar, type RangeRef, type WorkbookModel } from '@react-sheets/core-model';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 import { chartNumericValue, resolveChartData } from './data';
 
 export interface ChartRecommendation {
@@ -27,10 +28,11 @@ function isDateSemantic(value: unknown, numberFormat: string | undefined): boole
   return typeof value === 'string' && /^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T].*)?$/.test(value.trim());
 }
 
-function profileColumns(workbook: WorkbookModel, range: RangeRef): ColumnProfile[] {
+function profileColumns(workbook: WorkbookModel, range: RangeRef, resolvedVisibility: ResolvedVisibility): ColumnProfile[] {
   const sheet = workbook.getSheet(range.sheetId);
   const profiles: ColumnProfile[] = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    if (resolvedVisibility.isColumnHidden(column)) continue;
     const headerCell = sheet.cells.get(range.startRow, column);
     const profile: ColumnProfile = {
       index: column,
@@ -41,6 +43,7 @@ function profileColumns(workbook: WorkbookModel, range: RangeRef): ColumnProfile
       nonBlankCount: 0,
     };
     for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+      if (resolvedVisibility.isRowHidden(row)) continue;
       const cell = sheet.cells.get(row, column);
       const value = cell?.value;
       if (value === null || value === undefined || value === '') continue;
@@ -73,18 +76,22 @@ function explicitRecommendationSeries(type: 'scatter' | 'bubble', range: RangeRe
 }
 
 /** Deterministic selection analyzer used by the Recommended Charts dialog. */
-export function recommendCharts(workbook: WorkbookModel, range: RangeRef): readonly ChartRecommendation[] {
+export function recommendCharts(workbook: WorkbookModel, range: RangeRef, resolvedVisibility: ResolvedVisibility): readonly ChartRecommendation[] {
+  if (resolvedVisibility.revision !== workbook.revision) {
+    throw new Error(`STALE_VISIBILITY: chart recommendation revision ${workbook.revision} does not match visibility revision ${resolvedVisibility.revision}`);
+  }
   if (range.endRow <= range.startRow || range.endColumn < range.startColumn) {
     throw new Error('INVALID_CHART_SOURCE: Recommended Charts requires a header row and at least one data row');
   }
-  const profiles = profileColumns(workbook, range);
+  const profiles = profileColumns(workbook, range, resolvedVisibility);
   const populated = profiles.filter((profile) => profile.nonBlankCount > 0);
   const numeric = populated.filter((profile) => profile.numericCount > 0 && profile.numericCount >= profile.textCount);
   const dates = populated.filter((profile) => profile.dateCount > 0 && profile.dateCount >= profile.numericCount);
   const categories = populated.filter((profile) => profile.textCount > 0 && profile.textCount >= profile.numericCount);
   if (numeric.length === 0) throw new Error('INVALID_CHART_SOURCE: Recommended Charts requires at least one numeric field');
 
-  const rowCount = range.endRow - range.startRow;
+  const rowCount = Array.from({ length: range.endRow - range.startRow }, (_, offset) => range.startRow + offset)
+    .filter((row) => !resolvedVisibility.isRowHidden(row)).length;
   const recommendations: ChartRecommendation[] = [];
   if (dates.length > 0) addCandidate(recommendations, range, { id: 'recommended-line', chartType: 'line', title: `${numeric[0]!.header} trend`, confidence: 0.98, reason: 'time-series' });
   if (categories.length > 0) addCandidate(recommendations, range, { id: 'recommended-column', chartType: 'column', title: `${numeric[0]!.header} by ${categories[0]!.header}`, confidence: dates.length ? 0.86 : 0.96, reason: 'category-comparison' });
@@ -104,7 +111,7 @@ export function recommendCharts(workbook: WorkbookModel, range: RangeRef): reado
       source: structuredClone(candidate.source),
       series: candidate.series ? structuredClone(candidate.series) : undefined,
       elements: { hiddenData: 'show' },
-    });
+    }, {}, resolvedVisibility);
     return { ...candidate, preview: { categories: data.categories, series: data.series.map((series) => ({ name: series.name, values: series.values.map((value) => chartNumericValue(value) ?? value) })) } };
   });
 }

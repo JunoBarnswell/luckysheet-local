@@ -91,6 +91,10 @@ public class WorkbookStore {
         return workbooks.findForUpdate(unitId).map(this::workbookRow);
     }
 
+    public long nextClientSequence(String unitId, String actor) {
+        return Math.addExact(operations.maxClientSequence(unitId, actor), 1L);
+    }
+
     public void updateWorkbookRevision(String unitId, long revision, Instant now) {
         WorkbookEntity entity = workbooks.findById(unitId).orElseThrow(() -> new IllegalStateException("Workbook not found: " + unitId));
         entity.updateRevision(revision, now);

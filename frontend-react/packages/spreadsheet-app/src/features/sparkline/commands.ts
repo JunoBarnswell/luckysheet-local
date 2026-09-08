@@ -5,17 +5,9 @@ function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
 }
 
-function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
-  const index = items.findIndex((item) => item.id === id);
-  if (index < 0) return undefined;
-  return items.splice(index, 1)[0];
-}
-
 export interface SparklineInsertParams {
   sheetId: string;
   sparkline: SparklineModel;
-  /** Optional group state restored after the member is inserted during undo. */
-  groupState?: SparklineGroupStateParams;
 }
 
 export interface SparklineUpdateParams {
@@ -353,8 +345,7 @@ const isGroupState = (value: unknown): value is SparklineGroupStateParams => isR
   && Array.isArray(value.members) && value.members.every(isMemberState);
 const isSparklineInsert = (value: unknown): value is SparklineInsertParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isSparkline(value.sparkline)
-  && value.sparkline.sheetId === value.sheetId
-  && (value.groupState === undefined || isGroupState(value.groupState));
+  && value.sparkline.sheetId === value.sheetId;
 const isSparklineRemove = (value: unknown): value is SparklineRemoveParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.sparklineId)
   && (value.groupState === undefined || isGroupState(value.groupState));
@@ -383,37 +374,6 @@ function sameSparklineValue(left: unknown, right: unknown): boolean {
   return keys.every((key) => sameSparklineValue(leftRecord[key], rightRecord[key]));
 }
 
-function editableSparklinePatch(sparkline: SparklineModel): Partial<SparklineModel> {
-  return {
-    anchor: structuredClone(sparkline.anchor),
-    sourceRange: structuredClone(sparkline.sourceRange),
-    type: sparkline.type,
-    color: sparkline.color,
-    negativeColor: sparkline.negativeColor,
-    highlightMax: sparkline.highlightMax,
-    highlightMin: sparkline.highlightMin,
-    highlightFirst: sparkline.highlightFirst,
-    highlightLast: sparkline.highlightLast,
-    highlightNegative: sparkline.highlightNegative,
-    groupId: sparkline.groupId,
-    showAxis: sparkline.showAxis,
-    showMarkers: sparkline.showMarkers,
-    lineWeight: sparkline.lineWeight,
-    dateAxis: sparkline.dateAxis,
-    dataOrientation: sparkline.dataOrientation,
-    rightToLeft: sparkline.rightToLeft,
-    hiddenCells: sparkline.hiddenCells,
-    emptyCells: sparkline.emptyCells,
-    verticalAxis: sparkline.verticalAxis ? structuredClone(sparkline.verticalAxis) : undefined,
-    axisColor: sparkline.axisColor,
-    firstColor: sparkline.firstColor,
-    lastColor: sparkline.lastColor,
-    highColor: sparkline.highColor,
-    lowColor: sparkline.lowColor,
-    markerColor: sparkline.markerColor,
-  };
-}
-
 function executeSparklineInsert(params: SparklineInsertParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
@@ -422,7 +382,6 @@ function executeSparklineInsert(params: SparklineInsertParams, context: CommandC
     sheetId: params.sheetId,
     params,
     affectedRanges,
-    inverse: [{ id: 'sparkline.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparkline.id }, affectedRanges }],
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -470,7 +429,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineInsertParams', validate: isSparklineInsert },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.remove'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<SparklineRemoveParams>({
@@ -479,7 +437,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineRemoveParams', validate: isSparklineRemove },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.add'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<SparklineUpdateParams>({
@@ -488,7 +445,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineUpdateParams', validate: isSparklineUpdate },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.update'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
@@ -497,7 +453,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.group.remove'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
@@ -506,7 +461,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.group.add'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<SparklineGroupStateParams>({
@@ -515,7 +469,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['sparkline.group.replace'], minCount: 1, maxCount: 1 },
   },
     });
 
@@ -582,7 +535,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'sparkline.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparklineId, patch: editableSparklinePatch(previous) }, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -594,7 +546,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       if (sheet.sparklineGroups.some((group) => group.id === params.group.id)) throw new Error(`Sparkline group already exists: ${params.group.id}`);
-      const { before, after } = transitionForGroup(sheet, structuredClone(params.group));
+      const { after } = transitionForGroup(sheet, structuredClone(params.group));
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'sparkline.group.add',
@@ -602,7 +554,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: after,
         affectedRanges,
-        inverse: [{ id: 'sparkline.group.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -621,7 +572,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         sparklineIds: params.patch.sparklineIds ? [...params.patch.sparklineIds] : [...group.sparklineIds],
       };
-      const { before, after } = transitionForGroup(sheet, nextGroup);
+      const { after } = transitionForGroup(sheet, nextGroup);
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'sparkline.group.replace',
@@ -629,7 +580,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: after,
         affectedRanges,
-        inverse: [{ id: 'sparkline.group.replace', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -642,7 +592,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
       const sheet = context.workbook.getSheet(params.sheetId);
       const current = sheet.sparklineGroups.find((group) => group.id === params.group.id);
       if (!current) throw new Error(`Unknown sparkline group: ${params.group.id}`);
-      const { before, after } = transitionForGroup(sheet, structuredClone(params.group));
+      const { after } = transitionForGroup(sheet, structuredClone(params.group));
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'sparkline.group.replace',
@@ -650,7 +600,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: after,
         affectedRanges,
-        inverse: [{ id: 'sparkline.group.replace', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -661,7 +610,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     id: 'sparkline.group.remove',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const { before, after } = transitionForGroupRemoval(sheet, params.groupId);
+      const { after } = transitionForGroupRemoval(sheet, params.groupId);
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'sparkline.group.remove',
@@ -669,7 +618,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: after,
         affectedRanges,
-        inverse: [{ id: 'sparkline.group.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: before, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -682,7 +630,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
       const sheet = context.workbook.getSheet(params.sheetId);
       const sparkline = sheet.sparklines.find((entry) => entry.id === params.sparklineId);
       if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
-      const previous = structuredClone(sparkline);
       const affectedRanges = sheetRange(params.sheetId);
       const groups = sheet.sparklineGroups.filter((group) => group.sparklineIds.includes(params.sparklineId));
       const groupTransition = groups.length > 0
@@ -704,7 +651,6 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: removeParams,
         affectedRanges,
-        inverse: [{ id: 'sparkline.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparkline: previous, groupState: groupTransition?.before }, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

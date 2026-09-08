@@ -3,16 +3,16 @@ import { describe, it } from 'node:test';
 import { WorkbookSession } from './workbook-session';
 
 describe('WorkbookSession print integration', () => {
-  it('exposes print metadata in ui snapshot after preview', () => {
+  it('exposes print metadata in ui snapshot after preview', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app.runCommand('sheet.cell.set', {
+    await app.runCommand('sheet.cell.set', {
       sheetId,
       row: 0,
       column: 0,
       value: { value: 'Print me' },
     });
-    app.printWorkbook({
+    await app.printWorkbook({
       paper: 'A4',
       orientation: 'portrait',
       margin: { top: 20, right: 20, bottom: 20, left: 20 },
@@ -38,27 +38,27 @@ describe('WorkbookSession print integration', () => {
     assert.equal(printSnapshot?.layout.orientation, 'landscape');
   });
 
-  it('keeps saved print area, current selection, and active-sheet scopes distinct', () => {
+  it('keeps saved print area, current selection, and active-sheet scopes distinct', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
+    await app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'used-start' } });
+    await app.runCommand('sheet.cell.set', { sheetId, row: 20, column: 5, value: { value: 'used-end' } });
     const sheet = app['runtime'].model.getSheet(sheetId);
-    sheet.cells.set(0, 0, { value: 'used-start' });
-    sheet.cells.set(20, 5, { value: 'used-end' });
-    app.setPrintArea({ sheetId, startRow: 2, endRow: 6, startColumn: 1, endColumn: 3 });
+    await app.setPrintArea({ sheetId, startRow: 2, endRow: 6, startColumn: 1, endColumn: 3 });
     app.selectRange({ startRow: 10, endRow: 12, startColumn: 2, endColumn: 4 });
     const layout = { paper: 'A4' as const, orientation: 'portrait' as const, margin: { top: 20, right: 20, bottom: 20, left: 20 } };
-    app.printWorkbook(layout, 'saved-area');
+    await app.printWorkbook(layout, 'saved-area');
     assert.deepEqual(app.getPrintSnapshot()?.printArea, { sheetId, startRow: 2, endRow: 6, startColumn: 1, endColumn: 3 });
-    app.printWorkbook(layout, 'selection');
+    await app.printWorkbook(layout, 'selection');
     assert.deepEqual(app.getPrintSnapshot()?.printArea, { sheetId, startRow: 10, endRow: 12, startColumn: 2, endColumn: 4 });
-    app.printWorkbook(layout, 'active-sheet');
+    await app.printWorkbook(layout, 'active-sheet');
     assert.deepEqual(app.getPrintSnapshot()?.printArea, sheet.usedRange);
   });
 
-  it('updates print area through pageLayout.printArea.set', () => {
+  it('updates print area through pageLayout.printArea.set', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app.setPrintArea({
+    await app.setPrintArea({
       sheetId,
       startRow: 1,
       endRow: 5,
@@ -70,11 +70,11 @@ describe('WorkbookSession print integration', () => {
     assert.equal(area?.endRow, 5);
   });
 
-  it('allows viewers to preview print output', () => {
+  it('allows viewers to preview print output', async () => {
     const app = new WorkbookSession();
     app['permission'].applyServerAccess('viewer');
     app['permission'].setOnline(true);
-    app.printWorkbook({
+    await app.printWorkbook({
       paper: 'A4',
       orientation: 'portrait',
       margin: { top: 20, right: 20, bottom: 20, left: 20 },
@@ -83,22 +83,22 @@ describe('WorkbookSession print integration', () => {
     assert.ok(app.getUiSnapshot().printPageCount >= 1);
   });
 
-  it('exposes persisted page-layout fields without replacing the saved print area', () => {
+  it('exposes persisted page-layout fields without replacing the saved print area', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app.setPrintArea({ sheetId, startRow: 2, endRow: 8, startColumn: 1, endColumn: 4 });
-    app.updatePrintPageSetup({
+    await app.setPrintArea({ sheetId, startRow: 2, endRow: 8, startColumn: 1, endColumn: 4 });
+    await app.updatePrintPageSetup({
       paper: 'Letter',
       orientation: 'landscape',
       margin: { top: 12, right: 12, bottom: 12, left: 12 },
     });
-    app.setPrintTitles('rows');
-    app.setPrintPageBreak({ row: 5 });
-    app.setPrintScale(80, 1, null);
-    app.setPrintGridlines(true);
-    app.setPrintHeadings(true);
-    app.setViewGridlines(false);
-    app.setViewHeadings(false);
+    await app.setPrintTitles('rows');
+    await app.setPrintPageBreak({ row: 5 });
+    await app.setPrintScale(80, 1, null);
+    await app.setPrintGridlines(true);
+    await app.setPrintHeadings(true);
+    await app.setViewGridlines(false);
+    await app.setViewHeadings(false);
 
     const snapshot = app.getPrintSnapshot();
     assert.equal(snapshot?.printArea.startRow, 2);
@@ -110,8 +110,8 @@ describe('WorkbookSession print integration', () => {
     assert.equal(app['runtime'].model.getSheet(sheetId).showGridlines, false);
     assert.equal(app['runtime'].model.getSheet(sheetId).showHeaders, false);
 
-    app.clearPrintPageBreaks();
-    app.clearPrintTitles();
+    await app.clearPrintPageBreaks();
+    await app.clearPrintTitles();
     assert.equal(app.getPrintSnapshot()?.model.pageBreaks.length, 0);
     assert.equal(app.getPrintSnapshot()?.model.repeatRows, undefined);
   });

@@ -154,7 +154,7 @@ const HOME_ROW_CLASSES: Readonly<Record<string, string>> = {
 };
 
 const GROUP_ICONS: Partial<Record<RibbonGroupId, import('@react-sheets/ui-system').IconName>> = {
-  clipboard: 'clipboard', font: 'type', alignment: 'align-center', number: 'calculator', styles: 'paint-brush', cells: 'table', editing: 'search', tables: 'table', illustrations: 'picture', charts: 'chart', filters: 'filter', links: 'link', text: 'textbox', symbols: 'sigma',
+  clipboard: 'clipboard', font: 'type', alignment: 'align-center', number: 'calculator', styles: 'palette', cells: 'table', editing: 'search', tables: 'table', illustrations: 'picture', charts: 'chart', filters: 'filter', links: 'link', text: 'textbox', symbols: 'sigma',
 };
 
 function IconForGroup({ group }: { group: RibbonGroupId }) {

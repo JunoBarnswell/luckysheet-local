@@ -1,17 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
-import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 import { createLocalCalculationSessionPort } from '@react-sheets/formula-engine';
 import {
   buildRestoreParams,
   describeRevisionMutations,
-  replayRevisionsToSnapshot,
   revisionToHistoryMeta,
 } from './replay';
-import { HistoryPreviewSession, registerHistoryCommands } from './index';
+import { HistoryPreviewSession } from './index';
 
 describe('history replay', () => {
   it('maps revision records to history metadata', () => {
@@ -48,42 +45,6 @@ describe('history replay', () => {
     assert.equal('snapshot' in restore, false);
   });
 
-  it('replays revision mutations onto a base snapshot', () => {
-    const workbook = new WorkbookModel('wb-1', 'Replay');
-    const baseSnapshot = workbook.snapshot();
-    const revisions: RevisionRecord[] = [{
-      operationId: 'op-1',
-      revision: 1,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      payload: {
-        schema: 'OperationEnvelope',
-        operationId: 'op-1',
-        unitId: 'wb-1',
-        actorId: 'actor-1',
-        origin: 'client',
-        clientSequence: 1,
-        baseRevision: 0,
-        revision: 1,
-        committedAt: '2026-01-01T00:00:00.000Z',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        mutations: [{
-          id: 'cell.set',
-          sheetId: 'sheet-1',
-          params: createCellSetMutationParams(
-            workbook.getSheet('sheet-1'),
-            { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'restored' } },
-            'external-sync',
-          ),
-          affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
-        }],
-      },
-    }];
-
-    const replayed = replayRevisionsToSnapshot(baseSnapshot, revisions, 1);
-    const sheet = replayed.sheets[0];
-    assert.equal(sheet?.cells['0']?.['0']?.value, 'restored');
-  });
-
   it('builds an isolated formula-backed UI projection for preview', async () => {
     const source = new WorkbookModel('wb-preview', 'Preview');
     const sheet = source.getSheet('sheet-1');
@@ -102,26 +63,5 @@ describe('history replay', () => {
     assert.equal(session.ui.activeSheetId, 'sheet-1');
     session.dispose();
     assert.throws(() => session.sheets, /disposed/);
-  });
-
-  it('accepts restore only as a server-generated mutation', () => {
-    const workbook = new WorkbookModel('wb-restore', 'Current');
-    const runtime = new CommandRuntime(workbook);
-    registerHistoryCommands(runtime.registry);
-    const historical = new WorkbookModel('wb-restore', 'Historical');
-    historical.addSheet('sheet-2', 'Second');
-    const snapshot = historical.snapshot();
-
-    assert.throws(() => runtime.execute('history.restore', { targetRevision: 2, reason: 'client request' }), /server-authorized/);
-    assert.equal(workbook.name, 'Current');
-    runtime.applyRemoteMutations([{
-      id: 'workbook.restore',
-      unitId: workbook.unitId,
-      sheetId: workbook.primarySheetId,
-      params: { serverGenerated: true, targetRevision: 2, snapshot },
-      affectedRanges: [],
-    }]);
-    assert.equal(workbook.name, 'Historical');
-    assert.deepEqual(workbook.sheetOrder, ['sheet-1', 'sheet-2']);
   });
 });

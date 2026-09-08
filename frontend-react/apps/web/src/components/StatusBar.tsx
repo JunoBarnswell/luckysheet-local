@@ -13,9 +13,7 @@ export interface StatusBarProps {
   sheetCount: number;
   zoom: number;
   collabStatus?: 'connecting' | 'open' | 'closed';
-  pendingChangeSetCount?: number;
   collabRevision?: number;
-  hasPendingOperations?: boolean;
   fixedDecimalPlaces?: number | null;
 }
 
@@ -30,9 +28,7 @@ export function StatusBar({
   sheetCount,
   zoom,
   collabStatus = 'closed',
-  pendingChangeSetCount = 0,
   collabRevision = 0,
-  hasPendingOperations = false,
   fixedDecimalPlaces = null,
 }: StatusBarProps) {
   const edit = useCellEdit(cellEdit);
@@ -42,9 +38,7 @@ export function StatusBar({
   void saveState;
   void sheetCount;
   void collabStatus;
-  void pendingChangeSetCount;
   void collabRevision;
-  void hasPendingOperations;
   const labels = locale === 'zh-CN'
     ? { ready: '就绪', enter: '输入', edit: '编辑', point: '点选', overtype: '覆盖' }
     : { ready: 'Ready', enter: 'Enter', edit: 'Edit', point: 'Point', overtype: 'Overtype' };

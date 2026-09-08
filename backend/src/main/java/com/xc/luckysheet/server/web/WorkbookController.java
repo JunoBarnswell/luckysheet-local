@@ -16,6 +16,7 @@ import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
+import com.xc.luckysheet.server.contract.RenameWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
 import com.xc.luckysheet.server.contract.WorkbookUserState;
@@ -110,6 +111,16 @@ public class WorkbookController {
     @PatchMapping("/{unitId}")
     public WorkbookSummary update(@PathVariable String unitId, @Valid @RequestBody UpdateWorkbookRequest request, Authentication authentication) {
         return catalog.update(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/rename")
+    public WorkbookOpenResponse rename(@PathVariable String unitId, @Valid @RequestBody RenameWorkbookRequest request, Authentication authentication) {
+        String actor = ActorIdentity.subject(authentication);
+        var params = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("name", request.name());
+        var result = operations.commitServerMutation(unitId,
+                new com.xc.luckysheet.server.contract.OperationMutation("workbook.renamed", "workbook", params), actor, "workbook-rename");
+        if (result.committed()) sessions.broadcastRevision(result.operation());
+        return operations.open(unitId, actor);
     }
 
     @PostMapping("/{unitId}/copy")
