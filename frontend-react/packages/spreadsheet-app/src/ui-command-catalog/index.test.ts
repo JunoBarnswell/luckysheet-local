@@ -344,6 +344,23 @@ describe('Ribbon UI command catalog', () => {
       positions.add(`${surface.group}:${surface.order}`);
       if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
     }
+    const layoutRoots = new Set<string>();
+    const visit = (nodes: readonly RibbonLayoutNode[]): void => nodes.forEach((node) => {
+      if (node.kind === 'surface') layoutRoots.add(node.surfaceId);
+      if ('children' in node) visit(node.children);
+    });
+    for (const group of RIBBON_LAYOUT_SPECS.home.groups) visit(group.children);
+    let discovered = true;
+    while (discovered) {
+      discovered = false;
+      for (const surface of HOME_RIBBON_SURFACES) {
+        if (!layoutRoots.has(surface.id) && surface.menuId && layoutRoots.has(surface.menuId)) {
+          layoutRoots.add(surface.id);
+          discovered = true;
+        }
+      }
+    }
+    assert.deepEqual(HOME_RIBBON_SURFACES.filter((surface) => !layoutRoots.has(surface.id)).map((surface) => surface.id), []);
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
   });
 
