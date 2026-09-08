@@ -18,19 +18,19 @@ The application never keeps `Map<unitId, WorkbookSession>`. Opening another work
 
 - Web runtime: desktop-style chrome is visual only. Help, Settings and the file-center exit are real controls; OS window glyphs are decorative and non-interactive.
 - Identity: OIDC Authorization Code + PKCE. The browser obtains bearer tokens from `AuthSession`; no token is stored in a workbook, URL, or page-session memory record.
-- Storage: server state is authoritative for remote workbooks. Local-only workbooks, pending-operation journals, source blocks, overlays, assets, and native artifacts exist only in the current page-session memory and are cleared on reload or page close.
+- Storage: server state is authoritative for every workbook. Browser memory may cache revision-pinned pages and transient UI drafts, but cannot create a workbook, acknowledge a save, queue an offline write, or own an artifact.
 - File domain: personal/team spaces and nested folders are first-class. Shared-with-me is a virtual view and never copies a workbook.
 - Permissions: Owner controls sharing, cross-space moves, trash and purge. Editor may rename and move inside a permitted space. Commenter/Viewer are read-only. Every accessible role can export a copy.
-- XLSX: importing always creates a new canonical workbook identity. The original XLSX package is stored locally and, for remote workbooks, in a server-owned LOB record. Export uses the latest snapshot plus that artifact.
+- XLSX: importing always creates a new canonical workbook identity. The original package is stored in the server-owned artifact record. Export uses the latest committed manifest/pages plus that artifact.
 - Persistence: client operations commit through the REST operation endpoint. WebSocket only carries committed broadcasts and presence/cursor events.
-- Lifecycle: delete is a soft move to trash. Artifact, history, blocks and local mirror data are deleted only by an Owner purge; there is no automatic retention purge.
+- Lifecycle: delete is a soft move to trash. Artifact, history and blocks are deleted only by an Owner purge; there is no automatic retention purge.
 
 ## Routes
 
 | Route | Owner | Behavior |
 |---|---|---|
 | `/` | application router | replace-navigate to `/workbooks` |
-| `/workbooks` | Workbook Hub | Catalog, create, import, local/remote/space/trash views |
+| `/workbooks` | Workbook Hub | Cloud catalog, create, import, space, shared and trash views |
 | `/workbooks/:unitId` | Spreadsheet editor | One keyed `WorkbookSession` |
 | `/auth/callback` | AuthSession | OIDC callback then return to the original route |
 | `/auth/silent-renew` | AuthSession | OIDC silent renewal callback |
@@ -41,4 +41,4 @@ At Chrome 100% zoom and DPR=1, the target viewport is 1672 × 941. The image pix
 
 ## Acceptance matrix
 
-`home-default`, `home-local-files`, `home-shared`, `home-empty`, `home-offline`, `home-syncing`, `home-search`, `home-row-menu`, and `backstage-active-workbook` all require a real data path, not a mocked UI branch.
+`home-default`, `home-cloud-files`, `home-shared`, `home-empty`, `home-disconnected`, `home-saving`, `home-search`, `home-row-menu`, and `backstage-active-workbook` all require a real data path, not a mocked UI branch.

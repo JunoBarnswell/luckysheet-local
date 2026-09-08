@@ -44,7 +44,7 @@ function connectedAuthFixture(): ConnectedAuthFixture | null {
   if (!authority || !clientId || !userFile) return null;
   const userJson = readFileSync(userFile, 'utf8');
   const user = JSON.parse(userJson) as { access_token?: unknown; expires_at?: unknown; profile?: { sub?: unknown } };
-  if (typeof user.access_token !== 'string' || typeof user.expires_at !== 'number' || typeof user.profile?.sub !== 'string') {
+  if (typeof user.access_token !== 'string' || typeof user.expires_at !== 'number' || user.expires_at <= Date.now() / 1000 || typeof user.profile?.sub !== 'string') {
     throw new Error('E2E_OIDC_USER_FILE must contain a valid, unexpired oidc-client-ts User payload');
   }
   return { authority, clientId, userJson };
