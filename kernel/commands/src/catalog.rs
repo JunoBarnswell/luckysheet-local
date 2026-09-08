@@ -4,7 +4,6 @@ pub const MUTATION_IDS: &[&str] = &[
     "autoFilter.set",
     "banded.set",
     "cell.editor.set",
-    "cell.restore",
     "cell.set",
     "cells.deleted",
     "cells.deleted.restore",

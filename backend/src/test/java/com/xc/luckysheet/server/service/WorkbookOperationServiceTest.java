@@ -35,6 +35,7 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     void nativeCommitPersistsPagesAndServerMetadataAndReopensAfterProcessRestart() throws Exception {
         String unitId = "native-commit";
         create(unitId);
+        assertEquals(1, operations.accessProjection(unitId, "owner").nextClientSequence());
         var submitted = operation(unitId, "native-commit-op", 1, 0, set(1, 2, 42));
         Instant before = Instant.now();
         var result = operations.commit(unitId, submitted, "owner");
@@ -48,6 +49,7 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
         assertEquals(1, store.find(unitId).orElseThrow().revision());
         assertTrue(store.findOperation(submitted.operationId()).isPresent());
         assertTrue(manifests.findByUnitIdAndRevision(unitId, 1).isPresent());
+        assertEquals(2, operations.accessProjection(unitId, "owner").nextClientSequence());
 
         kernel.close();
         var reopened = operations.open(unitId, "owner");

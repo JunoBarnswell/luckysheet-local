@@ -92,6 +92,30 @@ test('server native transport verifies downloaded export bytes and rejects check
   }), /NATIVE_DOCUMENT_EXPORT_CHECKSUM_MISMATCH/);
 });
 
+test('server native transport rejects unsupported export options before publishing an artifact', async () => {
+  const published = metadata({ revision: 3 });
+  published.nativeMetadata = { ...(published.nativeMetadata as Record<string, unknown>), revision: 3 };
+  let publishCalls = 0;
+  const transport = new WorkbookApiNativeDocumentTransport({
+    ...importApi(published),
+    saveNativeDocumentArtifact: async () => { publishCalls += 1; return published; },
+  });
+
+  await assert.rejects(() => transport.export({
+    unitId: 'native-unit', revision: 3, fileName: 'native.xlsx',
+    options: { compatibilityTarget: 'B', includeCachedValues: false },
+  }), /UNSUPPORTED_FEATURE: native export cannot disable cached formula values/);
+  await assert.rejects(() => transport.export({
+    unitId: 'native-unit', revision: 3, fileName: 'native.xlsx',
+    options: { compatibilityTarget: 'B', preserveMacros: false },
+  }), /UNSUPPORTED_FEATURE: native export cannot remove or rewrite macro parts/);
+  await assert.rejects(() => transport.export({
+    unitId: 'native-unit', revision: 3, fileName: 'native.xlsx',
+    options: { compatibilityTarget: 'B', dateSystem: '1904' },
+  }), /UNSUPPORTED_FEATURE: native export cannot convert the workbook date system/);
+  assert.equal(publishCalls, 0);
+});
+
 test('server native transport rejects import metadata whose nested revision disagrees', async () => {
   const invalid = metadata();
   invalid.nativeMetadata = { ...(invalid.nativeMetadata as Record<string, unknown>), revision: 9 };

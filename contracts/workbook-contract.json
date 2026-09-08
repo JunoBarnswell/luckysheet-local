@@ -243,7 +243,6 @@
       "sheet.extent.restore": { "capability": "navigate", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "worksheet" },
       "banded.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cell.editor.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
-      "cell.restore": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "cell.set": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "cells.inserted": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "cells.deleted": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },

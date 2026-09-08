@@ -7,6 +7,12 @@ export class KernelInvocationError extends Error {
   readonly code: string; readonly object?: string | null; readonly recovery: string;
   constructor(detail: KernelErrorDetail) { super(detail.message); this.name = 'KernelInvocationError'; this.code = detail.code; this.object = detail.object; this.recovery = detail.recovery; }
 }
+export interface KernelBuildManifest {
+  readonly schema: 'react-sheets.kernel-build.v1';
+  readonly artifact: 'kernel_host.wasm';
+  readonly bytes: number;
+  readonly expectedSha256: string;
+}
 interface KernelExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
   kernel_alloc(length: number): number;
@@ -22,6 +28,44 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 export interface KernelInitializationOptions { wasmBytes?: BufferSource; wasmUrl?: string | URL; expectedSha256?: string; }
 function failure(code: string, message: string, recovery = 'reload-kernel'): KernelInvocationError { return new KernelInvocationError({code,message,recovery}); }
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+export function parseKernelBuildManifest(value: unknown): KernelBuildManifest {
+  if (!value || typeof value !== 'object') throw failure('KERNEL_MANIFEST_INVALID', 'Kernel build manifest is not an object.');
+  const manifest = value as Record<string, unknown>;
+  if (manifest.schema !== 'react-sheets.kernel-build.v1'
+    || manifest.artifact !== 'kernel_host.wasm'
+    || !Number.isSafeInteger(manifest.bytes) || (manifest.bytes as number) <= 0
+    || typeof manifest.expectedSha256 !== 'string'
+    || !SHA256_PATTERN.test(manifest.expectedSha256)) {
+    throw failure('KERNEL_MANIFEST_INVALID', 'Kernel build manifest does not match the supported build-bound contract.');
+  }
+  return {
+    schema: 'react-sheets.kernel-build.v1',
+    artifact: 'kernel_host.wasm',
+    bytes: manifest.bytes as number,
+    expectedSha256: manifest.expectedSha256,
+  };
+}
+
+export function versionedKernelWasmUrl(manifestUrl: string | URL, manifest: KernelBuildManifest): URL {
+  const wasmUrl = new URL(manifest.artifact, manifestUrl);
+  wasmUrl.searchParams.set('sha256', manifest.expectedSha256);
+  return wasmUrl;
+}
+
+export async function initializeKernelFromManifest(manifestResource: string | URL): Promise<void> {
+  const manifestUrl = new URL(manifestResource, typeof window === 'undefined' ? undefined : window.location.href);
+  const buildId = manifestUrl.searchParams.get('build');
+  if (!buildId || !SHA256_PATTERN.test(buildId)) throw failure('KERNEL_BUILD_CONTRACT_REQUIRED', 'Kernel manifest URL is missing its build binding.');
+  const response = await fetch(manifestUrl, { cache: 'no-store' });
+  if (!response.ok) throw failure('KERNEL_MANIFEST_UNAVAILABLE', `Unable to load kernel build manifest (${response.status}).`);
+  let value: unknown;
+  try { value = await response.json(); } catch { throw failure('KERNEL_MANIFEST_INVALID', 'Kernel build manifest is not valid JSON.'); }
+  const manifest = parseKernelBuildManifest(value);
+  if (manifest.expectedSha256 !== buildId) throw failure('KERNEL_BUILD_CONTRACT_MISMATCH', 'Kernel build manifest does not match the running frontend build.');
+  await initializeKernel({ wasmUrl: versionedKernelWasmUrl(manifestUrl, manifest), expectedSha256: manifest.expectedSha256 });
+}
 export function isKernelReady(): boolean { return exports !== null; }
 export async function initializeKernel(options: KernelInitializationOptions = {}): Promise<void> {
   if (exports) return;
@@ -30,7 +74,14 @@ export async function initializeKernel(options: KernelInitializationOptions = {}
     let bytes = options.wasmBytes;
     if (!bytes) {
       if (typeof window === 'undefined' && !options.wasmUrl) throw failure('KERNEL_INITIALIZATION_REQUIRED','Non-browser hosts must explicitly supply compiled WASM bytes.');
-      const response = await fetch(options.wasmUrl ?? '/kernel/kernel_host.wasm', {cache:'no-cache'});
+      if (!options.wasmUrl || !options.expectedSha256 || !SHA256_PATTERN.test(options.expectedSha256.toLowerCase())) {
+        throw failure('KERNEL_BUILD_CONTRACT_REQUIRED', 'Browser kernel initialization requires a manifest-bound WASM URL and expectedSha256.');
+      }
+      const wasmUrl = new URL(options.wasmUrl, typeof window === 'undefined' ? undefined : window.location.href);
+      if (wasmUrl.searchParams.get('sha256')?.toLowerCase() !== options.expectedSha256.toLowerCase()) {
+        throw failure('KERNEL_BUILD_CONTRACT_MISMATCH', 'Kernel WASM URL is not bound to the expectedSha256 from the build manifest.');
+      }
+      const response = await fetch(wasmUrl, {cache:'no-store'});
       if (!response.ok) throw failure('KERNEL_UNAVAILABLE', 'Unable to load spreadsheet kernel (' + response.status + ').');
       bytes = await response.arrayBuffer();
     }

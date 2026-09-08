@@ -1104,8 +1104,6 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onCollabStatus = (status) => {
       this.collabStatus = status;
-      if (status === 'closed') this.permission.setOnline(false);
-      else if (this.permission.getShareRole()) this.permission.setOnline(true);
       this.emit();
     };
     this.runtime.handlers.onAccessRole = (role) => {
@@ -2548,6 +2546,11 @@ export class WorkbookSession {
     return this.nativeArtifact?.fileName;
   }
 
+  getNativeDocumentFormat(): 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'xlam' {
+    const format = this.nativeArtifact?.format;
+    return format?.family === 'ooxml' ? format.variant : 'xlsx';
+  }
+
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
     this.saveState = 'saving';
     this.emit();
@@ -2556,9 +2559,6 @@ export class WorkbookSession {
       if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
       await this.runtime.commands.whenIdle();
       await this.runtime.checkpointWorkspace();
-      const fileName = this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`;
-      const format = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
-      await this.runtime.api.saveNativeDocumentArtifact(this.runtime.model.unitId, { revision: this.runtime.model.revision, fileName, format });
       this.saveState = 'saved';
       this.syncPersistenceMeta();
       this.notify(`${reason}: workbook saved to the cloud`);

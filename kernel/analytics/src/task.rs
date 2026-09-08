@@ -16,6 +16,20 @@ use std::time::Instant;
 unsafe extern "C" {
     fn analytics_now_ms() -> f64;
 }
+
+/// Trusted upper bounds for one analytics task. Request budgets are caller
+/// hints; they can reduce these limits but can never increase them.
+pub const MAX_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_TIMEOUT_MS: u64 = 60_000;
+pub const MAX_TEMPORARY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+fn bounded_budget(requested: TaskBudget) -> TaskBudget {
+    TaskBudget {
+        memory_bytes: requested.memory_bytes.min(MAX_MEMORY_BYTES),
+        timeout_ms: requested.timeout_ms.min(MAX_TIMEOUT_MS),
+        temporary_bytes: requested.temporary_bytes.min(MAX_TEMPORARY_BYTES),
+    }
+}
 pub(crate) struct TaskClock {
     #[cfg(not(target_arch = "wasm32"))]
     instant: Instant,
@@ -225,13 +239,13 @@ fn request_control(request: &AnalyticsRequest) -> KernelResult<(u64, TaskBudget)
             .map_err(|e| KernelError::new("ANALYTICS_BUDGET_INVALID", e.to_string()))?,
         _ => TaskBudget::default(),
     };
-    Ok((revision, budget))
+    Ok((revision, bounded_budget(budget)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::execute;
-    use kernel_core::{Cell, CellAddress, CellReader, KernelResult, RangeRef};
+    use super::{MAX_MEMORY_BYTES, MAX_TEMPORARY_BYTES, MAX_TIMEOUT_MS, bounded_budget, execute};
+    use kernel_core::{Cell, CellAddress, CellReader, KernelResult, RangeRef, TaskBudget};
     use serde_json::json;
 
     struct EmptyReader;
@@ -261,5 +275,30 @@ mod tests {
     fn rejects_revision_mismatch_before_scan() {
         let error = execute(json!({"kind":"query","revision":8,"range":{"sheetId":"s","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}}), &EmptyReader).unwrap_err();
         assert_eq!(error.code, "ANALYTICS_REVISION_MISMATCH");
+    }
+
+    #[test]
+    fn caller_budget_is_intersected_with_trusted_limits() {
+        let bounded = bounded_budget(TaskBudget {
+            memory_bytes: u64::MAX,
+            timeout_ms: u64::MAX,
+            temporary_bytes: u64::MAX,
+        });
+        assert_eq!(bounded.memory_bytes, MAX_MEMORY_BYTES);
+        assert_eq!(bounded.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(bounded.temporary_bytes, MAX_TEMPORARY_BYTES);
+    }
+
+    #[test]
+    fn budget_within_trusted_limits_is_preserved() {
+        let requested = TaskBudget {
+            memory_bytes: 8 * 1024 * 1024,
+            timeout_ms: 2_000,
+            temporary_bytes: 32 * 1024 * 1024,
+        };
+        let bounded = bounded_budget(requested.clone());
+        assert_eq!(bounded.memory_bytes, requested.memory_bytes);
+        assert_eq!(bounded.timeout_ms, requested.timeout_ms);
+        assert_eq!(bounded.temporary_bytes, requested.temporary_bytes);
     }
 }

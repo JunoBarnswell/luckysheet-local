@@ -3,10 +3,24 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const webOutputDirectory = path.resolve(projectRoot, 'dist/web');
 const offlineShellSource = path.resolve(projectRoot, 'apps/web/public/sw.js');
+const kernelManifestPath = path.resolve(projectRoot, 'apps/web/public/kernel/kernel-manifest.json');
+const kernelBuildManifest = JSON.parse(readFileSync(kernelManifestPath, 'utf8')) as {
+  schema?: unknown;
+  artifact?: unknown;
+  expectedSha256?: unknown;
+};
+if (kernelBuildManifest.schema !== 'react-sheets.kernel-build.v1'
+  || kernelBuildManifest.artifact !== 'kernel_host.wasm'
+  || typeof kernelBuildManifest.expectedSha256 !== 'string'
+  || !/^[a-f0-9]{64}$/.test(kernelBuildManifest.expectedSha256)) {
+  throw new Error('Kernel build manifest is invalid or is not bound to the frontend build');
+}
+const kernelBuildId = kernelBuildManifest.expectedSha256;
 
 async function listOutputAssets(directory: string, relative = ''): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -28,7 +42,14 @@ function offlineShellManifestPlugin() {
     name: 'offline-shell-manifest',
     async closeBundle() {
       const assets = await listOutputAssets(webOutputDirectory);
-      const shellUrls = ['/', '/index.html', '/manifest.webmanifest', ...assets.sort()];
+      const shellUrls = [
+        '/',
+        '/index.html',
+        '/manifest.webmanifest',
+        `/kernel/kernel-manifest.json?build=${kernelBuildId}`,
+        `/kernel/kernel_host.wasm?sha256=${kernelBuildId}`,
+        ...assets.filter((asset) => !asset.startsWith('/kernel/')).sort(),
+      ];
       const workerPath = path.join(webOutputDirectory, 'sw.js');
       // Vite keeps an out-of-root output directory between some development
       // builds. Always render from the tracked shell template instead of a
@@ -36,10 +57,13 @@ function offlineShellManifestPlugin() {
       // no placeholder left to replace.
       const source = await readFile(offlineShellSource, 'utf8');
       const next = source.replace(
+        /const BUILD_ID = '__REACT_SHEETS_BUILD_ID__';/,
+        `const BUILD_ID = '${kernelBuildId}';`,
+      ).replace(
         /const SHELL_URLS = \[[^;]+\];/,
         `const SHELL_URLS = ${JSON.stringify(shellUrls)};`,
       );
-      if (next === source) throw new Error('Offline shell manifest placeholder was not found');
+      if (next === source || next.includes('__REACT_SHEETS_BUILD_ID__')) throw new Error('Offline shell build placeholders were not found');
       await writeFile(workerPath, next, 'utf8');
     },
   };
@@ -48,6 +72,9 @@ function offlineShellManifestPlugin() {
 export default defineConfig({
   root: path.resolve(projectRoot, 'apps/web'),
   plugins: [react(), offlineShellManifestPlugin()],
+  define: {
+    'import.meta.env.VITE_KERNEL_BUILD_ID': JSON.stringify(kernelBuildId),
+  },
   resolve: {
     alias: [
       { find: 'react/jsx-dev-runtime', replacement: path.resolve(projectRoot, 'node_modules/react/jsx-dev-runtime.js') },

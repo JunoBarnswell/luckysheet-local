@@ -4,15 +4,15 @@ use crate::{
     shared_strings::SharedStrings,
     styles::Styles,
     worksheet, xml,
-    xmlnode::{self, error, Node},
+    xmlnode::{self, Node, error},
 };
 use kernel_core::{
-    Cell, CellAddress, CellReader, KernelError, KernelResult, SheetManifest, WorkbookManifest,
-    MAX_COLUMNS, MAX_ROWS,
+    Cell, CellAddress, CellReader, KernelError, KernelResult, MAX_COLUMNS, MAX_ROWS, SheetManifest,
+    WorkbookManifest,
 };
-use quick_xml::{events::Event, Reader};
+use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
@@ -134,6 +134,87 @@ pub struct NativeDocument {
     limits: ResourceLimits,
 }
 
+fn calculation_settings(root: &Node) -> KernelResult<Value> {
+    let Some(settings) = root.child("calcPr") else {
+        return Ok(json!({
+            "mode": "automatic",
+            "iterativeCalculation": false,
+            "maximumIterations": 100,
+            "maximumChange": 0.001,
+            "precisionAsDisplayed": false,
+            "calculateBeforeSave": true,
+            "fullCalculationOnLoad": false
+        }));
+    };
+    let boolean = |name: &str, default: bool| -> KernelResult<bool> {
+        match settings.attr(name) {
+            None => Ok(default),
+            Some("1" | "true") => Ok(true),
+            Some("0" | "false") => Ok(false),
+            Some(value) => Err(error(
+                "OOXML_CALCULATION_SETTINGS_INVALID",
+                format!("{name}={value}"),
+            )),
+        }
+    };
+    let mode = match settings.attr("calcMode") {
+        None | Some("auto") => "automatic",
+        Some("manual") => "manual",
+        Some("autoNoTable") => "partial",
+        Some(value) => {
+            return Err(error(
+                "OOXML_CALCULATION_SETTINGS_INVALID",
+                format!("calcMode={value}"),
+            ));
+        }
+    };
+    let maximum_iterations = settings
+        .attr("iterateCount")
+        .map(|value| {
+            value.parse::<u32>().map_err(|_| {
+                error(
+                    "OOXML_CALCULATION_SETTINGS_INVALID",
+                    format!("iterateCount={value}"),
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(100);
+    if maximum_iterations == 0 {
+        return Err(error(
+            "OOXML_CALCULATION_SETTINGS_INVALID",
+            "iterateCount must be positive",
+        ));
+    }
+    let maximum_change = settings
+        .attr("iterateDelta")
+        .map(|value| {
+            value.parse::<f64>().map_err(|_| {
+                error(
+                    "OOXML_CALCULATION_SETTINGS_INVALID",
+                    format!("iterateDelta={value}"),
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(0.001);
+    if !maximum_change.is_finite() || maximum_change < 0.0 {
+        return Err(error(
+            "OOXML_CALCULATION_SETTINGS_INVALID",
+            "iterateDelta must be finite and non-negative",
+        ));
+    }
+    Ok(json!({
+        "mode": mode,
+        "iterativeCalculation": boolean("iterate", false)?,
+        "maximumIterations": maximum_iterations,
+        "maximumChange": maximum_change,
+        "precisionAsDisplayed": !boolean("fullPrecision", true)?,
+        "calculateBeforeSave": boolean("calcOnSave", true)?,
+        "fullCalculationOnLoad": boolean("fullCalcOnLoad", false)?
+    }))
+}
+
 impl NativeDocument {
     /// Creates the real OPC skeleton for a workbook which has no imported source.
     /// Canonical cells are then streamed through the same owned worksheet writer.
@@ -142,7 +223,7 @@ impl NativeDocument {
         manifest: &WorkbookManifest,
         limits: ResourceLimits,
     ) -> KernelResult<Self> {
-        use zip::{write::SimpleFileOptions, ZipWriter};
+        use zip::{ZipWriter, write::SimpleFileOptions};
         kernel_core::WorkbookPages::open(manifest.clone())?;
         let path = path.as_ref();
         let file = OpenOptions::new()
@@ -154,9 +235,15 @@ impl NativeDocument {
             let mut zip = ZipWriter::new(file);
             let options =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-            let mut types=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
-            let mut workbook=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:rs=\"urn:react-sheets:workbook:1\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"rs\"><workbookPr date1904=\"0\"/><sheets>");
-            let mut rels=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"styles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>");
+            let mut types = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>",
+            );
+            let mut workbook = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:rs=\"urn:react-sheets:workbook:1\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"rs\"><workbookPr date1904=\"0\"/><sheets>",
+            );
+            let mut rels = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"styles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>",
+            );
             for (index, sheet) in manifest.sheets.iter().enumerate() {
                 let id = index + 1;
                 let part = format!("xl/worksheets/sheet{id}.xml");
@@ -170,7 +257,7 @@ impl NativeDocument {
                 zip.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData/></worksheet>").map_err(io_error)?;
             }
             types.push_str("</Types>");
-            workbook.push_str("</sheets><calcPr fullCalcOnLoad=\"1\"/></workbook>");
+            workbook.push_str("</sheets><calcPr/></workbook>");
             rels.push_str("</Relationships>");
             let styles = Styles::default_styles()?.bytes()?;
             for(name,bytes)in [("[Content_Types].xml",types.as_bytes()),("_rels/.rels",b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"workbook\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>".as_slice()),("xl/workbook.xml",workbook.as_bytes()),("xl/_rels/workbook.xml.rels",rels.as_bytes()),("xl/styles.xml",styles.as_slice())]{zip.start_file(name,options).map_err(io_error)?;zip.write_all(bytes).map_err(io_error)?;}
@@ -220,7 +307,25 @@ impl NativeDocument {
             })
             .and_then(|n| n.attr("ContentType"))
             .ok_or_else(|| error("OOXML_CONTENT_TYPE_MISSING", workbook_part.clone()))?;
-        let format=match content_type{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"=>DocumentFormat::Xlsx,"application/vnd.ms-excel.sheet.macroEnabled.main+xml"=>DocumentFormat::Xlsm,"application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"=>DocumentFormat::Xltx,"application/vnd.ms-excel.template.macroEnabled.main+xml"=>DocumentFormat::Xltm,"application/vnd.ms-excel.addin.macroEnabled.main+xml"=>DocumentFormat::Xlam,_=>return Err(error("UNSUPPORTED_FORMAT",format!("Workbook content type {content_type} is not an editable OOXML worksheet document")))};
+        let format = match content_type {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml" => {
+                DocumentFormat::Xlsx
+            }
+            "application/vnd.ms-excel.sheet.macroEnabled.main+xml" => DocumentFormat::Xlsm,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml" => {
+                DocumentFormat::Xltx
+            }
+            "application/vnd.ms-excel.template.macroEnabled.main+xml" => DocumentFormat::Xltm,
+            "application/vnd.ms-excel.addin.macroEnabled.main+xml" => DocumentFormat::Xlam,
+            _ => {
+                return Err(error(
+                    "UNSUPPORTED_FORMAT",
+                    format!(
+                        "Workbook content type {content_type} is not an editable OOXML worksheet document"
+                    ),
+                ));
+            }
+        };
         let workbook = read_metadata(&package, &workbook_part, &limits)?;
         let root = xmlnode::parse(&workbook, limits.max_metadata_bytes)?;
         if root.local() != "workbook" {
@@ -237,12 +342,22 @@ impl NativeDocument {
             let native_id = required(sheet, "sheetId")?;
             let mut canonical_id = None;
             for (attribute, value) in &sheet.attributes {
-                let Some((prefix, "canonicalId")) = attribute.split_once(':') else { continue; };
+                let Some((prefix, "canonicalId")) = attribute.split_once(':') else {
+                    continue;
+                };
                 let namespace = format!("xmlns:{prefix}");
-                let uri = sheet.attr(&namespace).or_else(|| root.child("sheets").and_then(|p| p.attr(&namespace))).or_else(|| root.attr(&namespace));
-                if uri != Some("urn:react-sheets:workbook:1") { continue; }
+                let uri = sheet
+                    .attr(&namespace)
+                    .or_else(|| root.child("sheets").and_then(|p| p.attr(&namespace)))
+                    .or_else(|| root.attr(&namespace));
+                if uri != Some("urn:react-sheets:workbook:1") {
+                    continue;
+                }
                 if value.is_empty() || canonical_id.replace(value.as_str()).is_some() {
-                    return Err(error("OOXML_SHEET_IDENTITY_INVALID", "Canonical worksheet identity must be unique and nonempty"));
+                    return Err(error(
+                        "OOXML_SHEET_IDENTITY_INVALID",
+                        "Canonical worksheet identity must be unique and nonempty",
+                    ));
                 }
             }
             let id = canonical_id.unwrap_or(native_id).to_owned();
@@ -314,6 +429,46 @@ impl NativeDocument {
             json!(match date_system {
                 DateSystem::Excel1900 => "1900",
                 DateSystem::Excel1904 => "1904",
+            }),
+        );
+        workbook_metadata.insert("calculationSettings".into(), calculation_settings(&root)?);
+        workbook_metadata.insert("numericContext".into(), json!({ "significantDigits": 15 }));
+        workbook_metadata.insert(
+            "collationContext".into(),
+            json!({
+                "cultureId": "invariant",
+                "caseSensitive": true,
+                "accentSensitive": true,
+                "numericTextMode": "lexical",
+                "blankOrder": "last",
+                "typeOrder": ["number", "text", "boolean", "error", "blank"],
+                "customLists": []
+            }),
+        );
+        workbook_metadata.insert("definedNameModels".into(), json!([]));
+        workbook_metadata.insert(
+            "dimensionMetrics".into(),
+            json!({
+                "normalFontFamily": "Calibri",
+                "normalFontSizePx": 14.6666666667,
+                "maximumDigitWidthPx": 7
+            }),
+        );
+        workbook_metadata.insert(
+            "editingOptions".into(),
+            json!({
+                "allowEditDirectly": true,
+                "moveAfterEnter": true,
+                "enterDirection": "down",
+                "formulaAutoComplete": true,
+                "valueAutoComplete": true,
+                "fixedDecimalPlaces": null
+            }),
+        );
+        workbook_metadata.insert(
+            "dataModel".into(),
+            json!({
+                "sources": [], "tables": [], "relationships": [], "views": []
             }),
         );
         if let Some(names) = root.child("definedNames") {
@@ -434,7 +589,17 @@ impl NativeDocument {
                 "Export cells and manifest must belong to the target revision",
             ));
         }
-        for key in ["dateSystem", "definedNameModels", "printDocuments"] {
+        for key in [
+            "dateSystem",
+            "numericContext",
+            "collationContext",
+            "calculationSettings",
+            "dimensionMetrics",
+            "editingOptions",
+            "definedNameModels",
+            "dataModel",
+            "printDocuments",
+        ] {
             if manifest.metadata.contains_key(key)
                 && !metadata_equal(
                     manifest.metadata.get(key),
@@ -513,7 +678,13 @@ impl NativeDocument {
                 "outline",
             ] {
                 if !metadata_equal(current.metadata.get(key), original.metadata.get(key)) {
-                    return Err(error("UNSUPPORTED_FEATURE",format!("Worksheet {} changed {key}; this native writer does not own that structural metadata",current.sheet_id)));
+                    return Err(error(
+                        "UNSUPPORTED_FEATURE",
+                        format!(
+                            "Worksheet {} changed {key}; this native writer does not own that structural metadata",
+                            current.sheet_id
+                        ),
+                    ));
                 }
             }
         }
@@ -729,21 +900,314 @@ fn sheet_metadata(
     sheet_id: &str,
     limits: &ResourceLimits,
 ) -> KernelResult<BTreeMap<String, Value>> {
-    package.with_part_reader(part,|input|{
- let mut reader=Reader::from_reader(input);let mut buffer=Vec::new();let mut map=BTreeMap::new();let mut merges=Vec::new();let mut heights=BTreeMap::new();let mut widths=BTreeMap::new();let mut hidden_rows=Vec::new();let mut hidden_columns=Vec::new();
- loop{match reader.read_event_into(&mut buffer).map_err(|e|error("XML_INVALID",e.to_string()))?{
- Event::Start(e)|Event::Empty(e)=>{let key=xml::local_name(e.name().as_ref()).to_vec();let attr=|k:&[u8]|xml::attr(e.attributes(),k);match key.as_slice(){
- b"mergeCell"=>{let reference=attr(b"ref")?.ok_or_else(||error("OOXML_MERGE_INVALID","Merge ref required"))?;let (a,b)=reference.split_once(':').ok_or_else(||error("OOXML_MERGE_INVALID",reference.clone()))?;let (sr,sc)=worksheet::parse_ref(a)?;let(er,ec)=worksheet::parse_ref(b)?;if sr>er||sc>ec{return Err(error("OOXML_MERGE_INVALID",reference));}merges.push(json!({"range":{"sheetId":sheet_id,"startRow":sr,"endRow":er,"startColumn":sc,"endColumn":ec},"anchor":{"row":sr,"column":sc}}));},
- b"sheetFormatPr"=>{if let Some(v)=attr(b"defaultRowHeight")?{let n=v.parse::<f64>().map_err(|_|error("OOXML_DIMENSION_INVALID",v))?;map.insert("defaultRowHeightPx".into(),json!(n*96.0/72.0));}},
- b"row"=>{let Some(r)=attr(b"r")?else{return Err(error("OOXML_ROW_ADDRESS_MISSING",part))};let row=r.parse::<u32>().map_err(|_|error("OOXML_ROW_INVALID",&r))?.checked_sub(1).ok_or_else(||error("OOXML_ROW_INVALID",&r))?;if row>=MAX_ROWS{return Err(error("OOXML_ROW_INVALID",r));}if let Some(v)=attr(b"ht")?{let n=v.parse::<f64>().map_err(|_|error("OOXML_DIMENSION_INVALID",v))?;heights.insert(row,json!(n*96.0/72.0));}if attr(b"hidden")?.is_some_and(|v|v=="1"||v=="true"){hidden_rows.push(row);}},
- b"col"=>{let min=attr(b"min")?.ok_or_else(||error("OOXML_COLUMN_INVALID","min required"))?.parse::<u32>().map_err(|_|error("OOXML_COLUMN_INVALID","min"))?;let max=attr(b"max")?.ok_or_else(||error("OOXML_COLUMN_INVALID","max required"))?.parse::<u32>().map_err(|_|error("OOXML_COLUMN_INVALID","max"))?;if min==0||min>max||max>MAX_COLUMNS{return Err(error("OOXML_COLUMN_INVALID",part));}let width=attr(b"width")?.map(|v|v.parse::<f64>().map_err(|_|error("OOXML_COLUMN_INVALID",v))).transpose()?;let hidden=attr(b"hidden")?.is_some_and(|v|v=="1"||v=="true");for col in min-1..max{if let Some(w)=width{widths.insert(col,json!(w));}if hidden{hidden_columns.push(col);}}},
- b"sheetView"=>{for (native,canonical) in [(b"showGridLines".as_slice(),"showGridlines"),(b"showRowColHeaders".as_slice(),"showHeaders")]{if let Some(v)=attr(native)?{map.insert(canonical.into(),json!(v!="0"&&v!="false"));}}if let Some(v)=attr(b"zoomScale")?{map.insert("zoom".into(),json!(v.parse::<f64>().map_err(|_|error("OOXML_ZOOM_INVALID",v))?/100.0));}},
- b"pane"=>{let state=attr(b"state")?.unwrap_or_else(||"split".into());if !["frozen","frozenSplit","split"].contains(&state.as_str()){return Err(error("OOXML_PANE_INVALID",state));}let x=attr(b"xSplit")?.map(|v|v.parse::<f64>().map_err(|_|error("OOXML_PANE_INVALID",v))).transpose()?.unwrap_or(0.0);let y=attr(b"ySplit")?.map(|v|v.parse::<f64>().map_err(|_|error("OOXML_PANE_INVALID",v))).transpose()?.unwrap_or(0.0);let (row,column)=attr(b"topLeftCell")?.map(|v|worksheet::parse_ref(&v)).transpose()?.unwrap_or((0,0));if !x.is_finite()||!y.is_finite()||x<0.0||y<0.0{return Err(error("OOXML_PANE_INVALID","Invalid split position"));}let mut pane=json!({"kind":if state=="split"{"split"}else{"frozen"},"state":state,"xSplit":x,"ySplit":y,"startRow":row,"startColumn":column});if let Some(active)=attr(b"activePane")?{if !["topLeft","topRight","bottomLeft","bottomRight"].contains(&active.as_str()){return Err(error("OOXML_PANE_INVALID",active));}pane["activePane"]=json!(active);}map.insert("pane".into(),pane);},_=>{}}
- },Event::DocType(_)=>return Err(error("XML_DOCTYPE_FORBIDDEN",part)),Event::Eof=>break,_=>{}}buffer.clear();
- if merges.len() as u64*64+heights.len() as u64*48+hidden_rows.len() as u64*4>limits.max_metadata_bytes{return Err(error("XML_METADATA_BUDGET","Worksheet metadata exceeds budget"));}
- }
- map.insert("merges".into(),json!(merges));if !heights.is_empty(){map.insert("rowHeightsPx".into(),json!(heights));}if !widths.is_empty(){map.insert("nativeColumnWidths".into(),json!(widths));}if !hidden_rows.is_empty(){map.insert("nativeHiddenRows".into(),json!(hidden_rows));}if !hidden_columns.is_empty(){map.insert("hiddenColumns".into(),json!(hidden_columns));}Ok(map)
-})
+    package.with_part_reader(part, |input| {
+        let mut reader = Reader::from_reader(input);
+        let mut buffer = Vec::new();
+        let mut map = BTreeMap::new();
+        let mut merges = Vec::new();
+        let mut heights = BTreeMap::new();
+        let mut widths = BTreeMap::new();
+        let mut hidden_rows = BTreeSet::new();
+        let mut hidden_columns = BTreeSet::new();
+        let mut has_filter_metadata = false;
+
+        loop {
+            match reader
+                .read_event_into(&mut buffer)
+                .map_err(|e| error("XML_INVALID", e.to_string()))?
+            {
+                Event::Start(e) | Event::Empty(e) => {
+                    let key = xml::local_name(e.name().as_ref()).to_vec();
+                    let attr = |key: &[u8]| xml::attr(e.attributes(), key);
+                    match key.as_slice() {
+                        b"mergeCell" => {
+                            let reference = attr(b"ref")?.ok_or_else(|| {
+                                error("OOXML_MERGE_INVALID", "Merge ref required")
+                            })?;
+                            let (a, b) = reference.split_once(':').ok_or_else(|| {
+                                error("OOXML_MERGE_INVALID", reference.clone())
+                            })?;
+                            let (sr, sc) = worksheet::parse_ref(a)?;
+                            let (er, ec) = worksheet::parse_ref(b)?;
+                            if sr > er || sc > ec {
+                                return Err(error("OOXML_MERGE_INVALID", reference));
+                            }
+                            merges.push(json!({
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "startRow": sr,
+                                    "endRow": er,
+                                    "startColumn": sc,
+                                    "endColumn": ec
+                                },
+                                "anchor": {"row": sr, "column": sc}
+                            }));
+                        }
+                        b"sheetFormatPr" => {
+                            if let Some(value) = attr(b"defaultRowHeight")? {
+                                let height = value
+                                    .parse::<f64>()
+                                    .map_err(|_| error("OOXML_DIMENSION_INVALID", &value))?;
+                                if !height.is_finite() || height < 0.0 {
+                                    return Err(error("OOXML_DIMENSION_INVALID", value));
+                                }
+                                map.insert(
+                                    "defaultRowHeightPx".into(),
+                                    json!(height * 96.0 / 72.0),
+                                );
+                            }
+                        }
+                        b"row" => {
+                            let Some(reference) = attr(b"r")? else {
+                                return Err(error("OOXML_ROW_ADDRESS_MISSING", part));
+                            };
+                            let row = reference
+                                .parse::<u32>()
+                                .map_err(|_| error("OOXML_ROW_INVALID", &reference))?
+                                .checked_sub(1)
+                                .ok_or_else(|| error("OOXML_ROW_INVALID", &reference))?;
+                            if row >= MAX_ROWS {
+                                return Err(error("OOXML_ROW_INVALID", reference));
+                            }
+                            if let Some(value) = attr(b"ht")? {
+                                let height = value
+                                    .parse::<f64>()
+                                    .map_err(|_| error("OOXML_DIMENSION_INVALID", &value))?;
+                                if !height.is_finite() || height < 0.0 {
+                                    return Err(error("OOXML_DIMENSION_INVALID", value));
+                                }
+                                heights.insert(row, json!(height * 96.0 / 72.0));
+                            }
+                            if attr(b"hidden")?.is_some_and(|v| v == "1" || v == "true") {
+                                hidden_rows.insert(row);
+                            }
+                        }
+                        b"col" => {
+                            let min = attr(b"min")?
+                                .ok_or_else(|| {
+                                    error("OOXML_COLUMN_INVALID", "min required")
+                                })?
+                                .parse::<u32>()
+                                .map_err(|_| error("OOXML_COLUMN_INVALID", "min"))?;
+                            let max = attr(b"max")?
+                                .ok_or_else(|| {
+                                    error("OOXML_COLUMN_INVALID", "max required")
+                                })?
+                                .parse::<u32>()
+                                .map_err(|_| error("OOXML_COLUMN_INVALID", "max"))?;
+                            if min == 0 || min > max || max > MAX_COLUMNS {
+                                return Err(error("OOXML_COLUMN_INVALID", part));
+                            }
+                            let width = attr(b"width")?
+                                .map(|value| {
+                                    value
+                                        .parse::<f64>()
+                                        .map_err(|_| error("OOXML_COLUMN_INVALID", value))
+                                        .and_then(excel_column_width_to_pixels)
+                                })
+                                .transpose()?;
+                            let hidden =
+                                attr(b"hidden")?.is_some_and(|v| v == "1" || v == "true");
+                            let added_widths = width.map_or(0, |_| {
+                                (min - 1..max)
+                                    .filter(|column| !widths.contains_key(column))
+                                    .count()
+                            });
+                            let added_hidden_columns = if hidden {
+                                (min - 1..max)
+                                    .filter(|column| !hidden_columns.contains(column))
+                                    .count()
+                            } else {
+                                0
+                            };
+                            ensure_metadata_budget(
+                                limits.max_metadata_bytes,
+                                merges.len(),
+                                heights.len(),
+                                hidden_rows.len(),
+                                widths.len().saturating_add(added_widths),
+                                hidden_columns
+                                    .len()
+                                    .saturating_add(added_hidden_columns),
+                            )?;
+                            for column in min - 1..max {
+                                if let Some(value) = width {
+                                    widths.insert(column, json!(value));
+                                }
+                                if hidden {
+                                    hidden_columns.insert(column);
+                                } else {
+                                    hidden_columns.remove(&column);
+                                }
+                            }
+                        }
+                        b"autoFilter" | b"tableParts" | b"filterColumn" | b"sortState" => {
+                            has_filter_metadata = true;
+                        }
+                        b"sheetView" => {
+                            for (native, canonical) in [
+                                (b"showGridLines".as_slice(), "showGridlines"),
+                                (b"showRowColHeaders".as_slice(), "showHeaders"),
+                            ] {
+                                if let Some(value) = attr(native)? {
+                                    map.insert(
+                                        canonical.into(),
+                                        json!(value != "0" && value != "false"),
+                                    );
+                                }
+                            }
+                            if let Some(value) = attr(b"zoomScale")? {
+                                let zoom = value
+                                    .parse::<f64>()
+                                    .map_err(|_| error("OOXML_ZOOM_INVALID", &value))?;
+                                if !zoom.is_finite() || zoom < 0.0 {
+                                    return Err(error("OOXML_ZOOM_INVALID", value));
+                                }
+                                map.insert("zoom".into(), json!(zoom / 100.0));
+                            }
+                        }
+                        b"pane" => {
+                            let state = attr(b"state")?.unwrap_or_else(|| "split".into());
+                            if !["frozen", "frozenSplit", "split"].contains(&state.as_str()) {
+                                return Err(error("OOXML_PANE_INVALID", state));
+                            }
+                            let x = attr(b"xSplit")?
+                                .map(|value| {
+                                    value
+                                        .parse::<f64>()
+                                        .map_err(|_| error("OOXML_PANE_INVALID", value))
+                                })
+                                .transpose()?
+                                .unwrap_or(0.0);
+                            let y = attr(b"ySplit")?
+                                .map(|value| {
+                                    value
+                                        .parse::<f64>()
+                                        .map_err(|_| error("OOXML_PANE_INVALID", value))
+                                })
+                                .transpose()?
+                                .unwrap_or(0.0);
+                            let (row, column) = attr(b"topLeftCell")?
+                                .map(|value| worksheet::parse_ref(&value))
+                                .transpose()?
+                                .unwrap_or((0, 0));
+                            if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+                                return Err(error(
+                                    "OOXML_PANE_INVALID",
+                                    "Invalid split position",
+                                ));
+                            }
+                            let mut pane = json!({
+                                "kind": if state == "split" { "split" } else { "frozen" },
+                                "state": state,
+                                "xSplit": x,
+                                "ySplit": y,
+                                "startRow": row,
+                                "startColumn": column
+                            });
+                            if let Some(active) = attr(b"activePane")? {
+                                if !["topLeft", "topRight", "bottomLeft", "bottomRight"]
+                                    .contains(&active.as_str())
+                                {
+                                    return Err(error("OOXML_PANE_INVALID", active));
+                                }
+                                pane["activePane"] = json!(active);
+                            }
+                            map.insert("pane".into(), pane);
+                        }
+                        _ => {}
+                    }
+                }
+                Event::DocType(_) => return Err(error("XML_DOCTYPE_FORBIDDEN", part)),
+                Event::Eof => break,
+                _ => {}
+            }
+            buffer.clear();
+            ensure_metadata_budget(
+                limits.max_metadata_bytes,
+                merges.len(),
+                heights.len(),
+                hidden_rows.len(),
+                widths.len(),
+                hidden_columns.len(),
+            )?;
+        }
+        if has_filter_metadata && !hidden_rows.is_empty() {
+            return Err(error(
+                "UNSUPPORTED_FEATURE",
+                format!(
+                    "Worksheet {sheet_id} has hidden rows whose filter ownership is not modeled"
+                ),
+            ));
+        }
+        map.insert("merges".into(), json!(merges));
+        if !heights.is_empty() {
+            map.insert("rowHeightsPx".into(), json!(heights));
+        }
+        if !widths.is_empty() {
+            map.insert("columnWidthsPx".into(), json!(widths));
+        }
+        if !hidden_rows.is_empty() {
+            map.insert("hiddenRows".into(), json!(hidden_rows.into_iter().collect::<Vec<_>>()));
+        }
+        if !hidden_columns.is_empty() {
+            map.insert(
+                "hiddenColumns".into(),
+                json!(hidden_columns.into_iter().collect::<Vec<_>>()),
+            );
+        }
+        Ok(map)
+    })
+}
+
+const MAX_EXCEL_COLUMN_WIDTH: f64 = 255.0;
+const EXCEL_MAX_DIGIT_WIDTH_PX: f64 = 7.0;
+
+fn excel_column_width_to_pixels(width: f64) -> KernelResult<f64> {
+    if !width.is_finite() || width < 0.0 {
+        return Err(error(
+            "OOXML_COLUMN_INVALID",
+            "Column width must be a finite non-negative number",
+        ));
+    }
+    if width == 0.0 {
+        return Ok(0.0);
+    }
+    let width = width.min(MAX_EXCEL_COLUMN_WIDTH);
+    Ok(((256.0 * width + (128.0 / EXCEL_MAX_DIGIT_WIDTH_PX).floor()) / 256.0
+        * EXCEL_MAX_DIGIT_WIDTH_PX)
+        .floor())
+}
+
+fn ensure_metadata_budget(
+    budget: u64,
+    merges: usize,
+    heights: usize,
+    hidden_rows: usize,
+    widths: usize,
+    hidden_columns: usize,
+) -> KernelResult<()> {
+    const MERGE_BYTES: u64 = 64;
+    const HEIGHT_BYTES: u64 = 48;
+    const HIDDEN_ROW_BYTES: u64 = 4;
+    const WIDTH_BYTES: u64 = 24;
+    const HIDDEN_COLUMN_BYTES: u64 = 4;
+    let bytes = (merges as u64)
+        .checked_mul(MERGE_BYTES)
+        .and_then(|value| value.checked_add((heights as u64).checked_mul(HEIGHT_BYTES)?))
+        .and_then(|value| value.checked_add((hidden_rows as u64).checked_mul(HIDDEN_ROW_BYTES)?))
+        .and_then(|value| value.checked_add((widths as u64).checked_mul(WIDTH_BYTES)?))
+        .and_then(|value| {
+            value.checked_add((hidden_columns as u64).checked_mul(HIDDEN_COLUMN_BYTES)?)
+        })
+        .ok_or_else(|| error("XML_METADATA_BUDGET", "Worksheet metadata budget overflow"))?;
+    if bytes > budget {
+        return Err(error(
+            "XML_METADATA_BUDGET",
+            "Worksheet metadata exceeds budget",
+        ));
+    }
+    Ok(())
 }
 fn rewrite_sheet_directory(
     bytes: &[u8],

@@ -28,33 +28,37 @@ impl Styles {
             .map(|bytes| theme_colors(bytes, budget))
             .transpose()?
             .unwrap_or_default();
-        let fonts = root
+        let font_records = root
             .child("fonts")
             .map(|n| {
                 n.children_named("font")
-                    .map(|n| font(n, &colors))
+                    .map(|n| Ok((font(n, &colors)?, font_has_unmodeled_content(n))))
                     .collect::<KernelResult<Vec<_>>>()
             })
             .transpose()?
             .unwrap_or_default();
-        let fills = root
+        let (fonts, font_unsupported): (Vec<_>, Vec<_>) = font_records.into_iter().unzip();
+        let fill_records = root
             .child("fills")
             .map(|n| {
                 n.children_named("fill")
-                    .map(|n| fill(n, &colors))
+                    .map(|n| Ok((fill(n, &colors)?, fill_has_unmodeled_content(n))))
                     .collect::<KernelResult<Vec<_>>>()
             })
             .transpose()?
             .unwrap_or_default();
-        let borders = root
+        let (fills, fill_unsupported): (Vec<_>, Vec<_>) = fill_records.into_iter().unzip();
+        let border_records = root
             .child("borders")
             .map(|n| {
                 n.children_named("border")
-                    .map(|n| border(n, &colors))
+                    .map(|n| Ok((border(n, &colors)?, border_has_unmodeled_content(n))))
                     .collect::<KernelResult<Vec<_>>>()
             })
             .transpose()?
             .unwrap_or_default();
+        let (borders, border_unsupported): (Vec<_>, Vec<_>) =
+            border_records.into_iter().unzip();
         let mut formats = builtin_formats();
         let mut next_num_format = 164;
         if let Some(parent) = root.child("numFmts") {
@@ -77,6 +81,22 @@ impl Styles {
         if let Some(parent) = root.child("cellXfs") {
             for xf in parent.children_named("xf") {
                 let mut style = Map::new();
+                let mut style_unsupported = has_unmodeled_attributes(
+                    xf,
+                    &[
+                        "numFmtId",
+                        "fontId",
+                        "fillId",
+                        "borderId",
+                        "xfId",
+                        "applyNumberFormat",
+                        "applyFont",
+                        "applyFill",
+                        "applyBorder",
+                        "applyAlignment",
+                        "applyProtection",
+                    ],
+                );
                 for (field, items) in [
                     ("fontId", &fonts),
                     ("fillId", &fills),
@@ -85,6 +105,12 @@ impl Styles {
                     let index = uint(xf, field, 0)? as usize;
                     if let Some(item) = items.get(index) {
                         style.extend(item.clone());
+                        style_unsupported |= match field {
+                            "fontId" => font_unsupported.get(index).copied().unwrap_or(false),
+                            "fillId" => fill_unsupported.get(index).copied().unwrap_or(false),
+                            "borderId" => border_unsupported.get(index).copied().unwrap_or(false),
+                            _ => false,
+                        };
                     } else if index != 0 || !items.is_empty() {
                         return Err(error(
                             "OOXML_STYLE_INDEX_INVALID",
@@ -102,6 +128,7 @@ impl Styles {
                 }
                 if let Some(alignment) = xf.child("alignment") {
                     alignment_style(alignment, &mut style)?;
+                    style_unsupported |= alignment_has_unmodeled_content(alignment);
                 }
                 if let Some(protection) = xf.child("protection") {
                     style.insert("locked".into(), json!(boolean(protection, "locked", true)?));
@@ -109,12 +136,14 @@ impl Styles {
                         "formulaHidden".into(),
                         json!(boolean(protection, "hidden", false)?),
                     );
+                    style_unsupported |= has_unmodeled_attributes(protection, &["locked", "hidden"])
+                        || !protection.children.is_empty();
                 }
-                unsupported.push(
-                    xf.children
-                        .iter()
-                        .any(|c| !["alignment", "protection"].contains(&c.local())),
-                );
+                style_unsupported |= xf
+                    .children
+                    .iter()
+                    .any(|c| !["alignment", "protection"].contains(&c.local()));
+                unsupported.push(style_unsupported);
                 values.push(Value::Object(style));
             }
         }
@@ -144,9 +173,6 @@ impl Styles {
         let style = value
             .as_object()
             .ok_or_else(|| error("CELL_STYLE_INVALID", "style must be an object"))?;
-        if let Some(index) = self.values.iter().position(|candidate| candidate == value) {
-            return Ok(Some(index as u32));
-        }
         if let Some(index) = cell
             .metadata
             .get("styleId")
@@ -154,12 +180,18 @@ impl Styles {
             .and_then(|s| s.strip_prefix("ooxml:"))
             .and_then(|s| s.parse::<usize>().ok())
         {
+            if self.values.get(index) == Some(value) {
+                return Ok(Some(index as u32));
+            }
             if self.unsupported.get(index) == Some(&true) {
                 return Err(error(
                     "UNSUPPORTED_FEATURE",
                     "Changing a style with unknown native extensions is not owned",
                 ));
             }
+        }
+        if let Some(index) = self.values.iter().position(|candidate| candidate == value) {
+            return Ok(Some(index as u32));
         }
         let font_id = self.add("fonts", "font", write_font(style)?)?;
         let fill_id = self.add("fills", "fill", write_fill(style)?)?;
@@ -426,6 +458,115 @@ fn color(node: &Node, theme: &[String]) -> KernelResult<Option<String>> {
         (channels[2] * 255.0).round() as u8
     )))
 }
+
+fn has_unmodeled_attributes(node: &Node, allowed: &[&str]) -> bool {
+    node.attributes
+        .keys()
+        .any(|key| !allowed.contains(&key.as_str()))
+}
+
+fn has_unmodeled_children(node: &Node, allowed: &[&str]) -> bool {
+    node.children
+        .iter()
+        .any(|child| !allowed.contains(&child.local()))
+}
+
+fn color_has_unmodeled_content(node: &Node) -> bool {
+    has_unmodeled_attributes(node, &["rgb", "theme", "indexed", "tint"])
+        || !node.children.is_empty()
+}
+
+fn font_has_unmodeled_content(node: &Node) -> bool {
+    if has_unmodeled_attributes(node, &[]) {
+        return true;
+    }
+    node.children.iter().any(|child| match child.local() {
+        "name" | "sz" | "b" | "i" | "strike" | "u" | "scheme" => {
+            has_unmodeled_attributes(child, &["val"]) || !child.children.is_empty()
+        }
+        "vertAlign" => {
+            has_unmodeled_attributes(child, &["val"])
+                || !child.children.is_empty()
+                || !matches!(child.attr("val"), Some("superscript" | "subscript"))
+        }
+        "color" => color_has_unmodeled_content(child),
+        _ => true,
+    })
+}
+
+fn fill_has_unmodeled_content(node: &Node) -> bool {
+    if has_unmodeled_attributes(node, &[]) || node.children.len() > 1 {
+        return true;
+    }
+    let Some(fill) = node.children.first() else {
+        return false;
+    };
+    match fill.local() {
+        "patternFill" => {
+            if has_unmodeled_attributes(fill, &["patternType"])
+                || has_unmodeled_children(fill, &["fgColor", "bgColor"])
+            {
+                return true;
+            }
+            let pattern = fill.attr("patternType").unwrap_or("none");
+            ((pattern == "none" || pattern == "gray125") && !fill.children.is_empty())
+                || fill
+                    .children
+                    .iter()
+                    .any(color_has_unmodeled_content)
+        }
+        "gradientFill" => {
+            if has_unmodeled_attributes(fill, &["type", "degree"])
+            {
+                return true;
+            }
+            fill.children.iter().any(|stop| {
+                stop.local() != "stop"
+                    || has_unmodeled_attributes(stop, &["position"])
+                    || stop.children.len() != 1
+                    || stop.children
+                        .first()
+                        .is_some_and(color_has_unmodeled_content)
+                        || stop.children.first().is_none_or(|child| child.local() != "color")
+            })
+        }
+        _ => true,
+    }
+}
+
+fn border_has_unmodeled_content(node: &Node) -> bool {
+    if has_unmodeled_attributes(node, &["diagonalUp", "diagonalDown"])
+        || has_unmodeled_children(node, &["top", "bottom", "left", "right", "diagonal"])
+    {
+        return true;
+    }
+    node.children.iter().any(|side| {
+        has_unmodeled_attributes(side, &["style"])
+            || side.children.iter().any(|child| {
+                child.local() != "color" || color_has_unmodeled_content(child)
+            })
+            || (side.attr("style").is_none() && !side.children.is_empty())
+    })
+}
+
+fn alignment_has_unmodeled_content(node: &Node) -> bool {
+    has_unmodeled_attributes(
+        node,
+        &[
+            "horizontal",
+            "vertical",
+            "wrapText",
+            "shrinkToFit",
+            "indent",
+            "textRotation",
+            "readingOrder",
+        ],
+    ) || !node.children.is_empty()
+        || node
+            .attr("indent")
+            .is_some_and(|value| value.parse::<u32>().is_err())
+}
+
 const INDEXED: [&str; 64] = [
     "000000", "FFFFFF", "FF0000", "00FF00", "0000FF", "FFFF00", "FF00FF", "00FFFF", "000000",
     "FFFFFF", "FF0000", "00FF00", "0000FF", "FFFF00", "FF00FF", "00FFFF", "800000", "008000",
@@ -590,7 +731,7 @@ fn alignment_style(n: &Node, m: &mut Map<String, Value>) -> KernelResult<()> {
     if n.attr("textRotation").is_some() {
         let v = uint(n, "textRotation", 0)?;
         if v == 255 {
-            m.insert("textOrientation".into(), json!("vertical"));
+            m.insert("textOrientation".into(), json!("stacked"));
         } else if v <= 180 {
             m.insert(
                 "textRotate".into(),
@@ -806,7 +947,7 @@ fn write_alignment(m: &Map<String, Value>) -> KernelResult<String> {
             " textRotation=\"{}\"",
             if v < 0 { 90 - v } else { v }
         ));
-    } else if m.get("textOrientation").and_then(Value::as_str) == Some("vertical") {
+    } else if m.get("textOrientation").and_then(Value::as_str) == Some("stacked") {
         s.push_str(" textRotation=\"255\"");
     }
     if let Some(v) = m.get("readingOrder").and_then(Value::as_str) {

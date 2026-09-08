@@ -44,7 +44,7 @@ export interface NativeDocumentServerApi {
   uploadNativeDocumentTaskChunk(taskId: string, offset: number, bytes: ArrayBuffer): Promise<NativeDocumentImportTaskResponse>;
   commitNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse>;
   cancelNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse>;
-  saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName: string; format: string }): Promise<WorkbookSourceArtifactMetadata>;
+  saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName?: string; format?: string }): Promise<WorkbookSourceArtifactMetadata>;
   getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }>;
 }
 
@@ -158,6 +158,18 @@ function exportFormat(fileName: string): string {
   return extension;
 }
 
+function assertSupportedExportOptions(options: Parameters<NativeDocumentTransport['export']>[0]['options']): void {
+  if (options.includeCachedValues === false) {
+    throw new Error('UNSUPPORTED_FEATURE: native export cannot disable cached formula values');
+  }
+  if (options.preserveMacros === false) {
+    throw new Error('UNSUPPORTED_FEATURE: native export cannot remove or rewrite macro parts');
+  }
+  if (options.dateSystem !== undefined) {
+    throw new Error('UNSUPPORTED_FEATURE: native export cannot convert the workbook date system');
+  }
+}
+
 async function checksum(buffer: ArrayBuffer): Promise<string> {
   if (!globalThis.crypto?.subtle) throw new Error('NATIVE_DOCUMENT_CRYPTO_UNAVAILABLE: SHA-256 is required to verify native artifacts');
   const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
@@ -243,6 +255,7 @@ export class WorkbookApiNativeDocumentTransport implements NativeDocumentTranspo
   }
 
   async export(request: Parameters<NativeDocumentTransport['export']>[0]): ReturnType<NativeDocumentTransport['export']> {
+    assertSupportedExportOptions(request.options);
     const metadata = await this.api.saveNativeDocumentArtifact(request.unitId, {
       revision: request.revision, fileName: request.fileName, format: exportFormat(request.fileName),
     });

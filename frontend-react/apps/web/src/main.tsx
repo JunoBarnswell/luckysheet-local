@@ -5,8 +5,9 @@ import { AuthProvider } from './auth/AuthProvider';
 import { ApplicationServicesProvider } from './ApplicationServicesProvider';
 import { registerOfflineShell } from './offline-shell';
 import './styles.css';
-import { initializeKernel, KernelInvocationError } from '@react-sheets/kernel-client';
+import { KernelInvocationError, initializeKernelFromManifest } from '@react-sheets/kernel-client';
 import { Box, StatePanel } from '@react-sheets/ui-system';
+import { kernelManifestUrl } from './kernel-build';
 
 const rootElement = document.getElementById('root');
 
@@ -25,7 +26,7 @@ function renderKernelFailure(cause: unknown): void {
   );
 }
 
-void initializeKernel()
+void initializeKernelFromManifest(kernelManifestUrl())
   .then(() => {
     createRoot(mountNode).render(
       <StrictMode>

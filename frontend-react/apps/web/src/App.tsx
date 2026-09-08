@@ -153,7 +153,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           </Stack>
         )}
       </WorkbookBackstageShell>
-      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.ssjson`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
+      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.xlsx`} supportedFormats={[session.getNativeDocumentFormat()]} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
       </>
     );
   }

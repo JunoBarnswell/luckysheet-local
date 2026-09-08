@@ -242,7 +242,6 @@ export const MUTATION_PERMISSION_POLICIES = {
   "sheet.extent.restore": { capability: "navigate", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
   "banded.set": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cell.editor.set": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
-  "cell.restore": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cell.set": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cells.inserted": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cells.deleted": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },

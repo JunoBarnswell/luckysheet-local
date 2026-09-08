@@ -4,6 +4,7 @@ import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDatePa
 import {
   ApiRequestError,
   WorkbookApiClient,
+  OPERATION_ENVELOPE_SCHEMA,
   type AuthTokenProvider,
   type ShareTokenProvider,
   type WorkbookAclRole,
@@ -173,8 +174,8 @@ export function createSpreadsheetRuntime(options: {
   const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, resolveVisibility);
   formula = new FormulaEngine({ unitId: model.unitId, revision: () => model.revision, defaultSheetId: model.primarySheetId });
   // The session shell exists before the asynchronous cloud open has loaded a
-  // committed manifest and its first page. Build the index only in
-  // hydrateRuntime, after that revision boundary is resident.
+  // complete committed revision. Build the index only in hydrateRuntime,
+  // after every sparse page in that revision is resident.
   const findIndex = new FindIndex(model, (sheet, row, column) => formula?.getCellValue({ sheetId: sheet.id, row, column }), false);
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing, featureRuntime);
@@ -272,7 +273,6 @@ function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
 
 const FORMULA_SYNC_MUTATIONS = new Set([
   'cell.set',
-  'cell.restore',
   'range.set',
   'fill.applied',
   'fill.restored',
@@ -331,7 +331,6 @@ const VISIBILITY_MUTATIONS = new Set([
 
 const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'cell.set',
-  'cell.restore',
   'range.set',
   'fill.applied',
   'fill.restored',
@@ -360,7 +359,16 @@ function bindKernelCommitPort(runtime: SpreadsheetRuntime): void {
     const clientSequence = runtime.kernelClientSequences.get(request.operationId) ?? runtime.nextClientSequence + 1;
     runtime.kernelClientSequences.set(request.operationId, clientSequence);
     runtime.nextClientSequence = Math.max(runtime.nextClientSequence, clientSequence);
-    const changeSet = await runtime.api.commitKernelOperation(runtime.model.unitId, { ...request, clientSequence });
+    const { changeSet } = await runtime.api.commitOperation(runtime.model.unitId, {
+      schema: OPERATION_ENVELOPE_SCHEMA,
+      operationId: request.operationId,
+      unitId: runtime.model.unitId,
+      clientSequence,
+      baseRevision: request.baseRevision,
+      mutations: request.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
+      createdAt: new Date().toISOString(),
+      ...(request.intent ? { intent: request.intent } : {}),
+    });
     if (!Number.isSafeInteger(changeSet.revision) || changeSet.revision <= runtime.remoteRevision) {
       throw new Error('KERNEL_COMMIT_REVISION_INVALID: server acknowledgement is not newer than the current revision');
     }
@@ -648,6 +656,7 @@ async function publishRemoteRevision(
     affectedRanges: mutations.flatMap((mutation) => mutation.affectedRanges),
   }, mutations);
   runtime.remoteRevision = operation.revision;
+  runtime.nextClientSequence = Math.max(runtime.nextClientSequence, operation.clientSequence);
   runtime.collaboration?.setRevision(operation.revision);
   runtime.handlers.onMutationsApplied?.();
   runtime.handlers.onSaveState?.('saved');
@@ -757,11 +766,7 @@ export function startCollaborationSession(
     const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
       if (runtime.disposed) return;
       runtime.handlers.onCollabStatus?.(status);
-      runtime.remoteConnected = status !== 'closed';
-      if (status === 'closed') runtime.handlers.onSaveState?.('offline');
-      else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
-      else {
-        runtime.handlers.onSaveState?.('saved');
+      if (status === 'open') {
         revisionTail = revisionTail
           .then(async () => {
             const head = await runtime.api.getManifest(runtime.model.unitId);
@@ -860,6 +865,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.collaboration?.setRevision(runtime.remoteRevision);
     if (!isActive()) return;
     runtime.remoteConnected = true;
+    runtime.nextClientSequence = access.nextClientSequence - 1;
     runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
       runtime.handlers.onSaveState?.('saved');

@@ -78,8 +78,8 @@ public class QueryExecutionService {
     private final AtomicReference<HttpClient> http = new AtomicReference<>();
     private final KernelHostClient kernel;
     private final KernelPersistenceService persistence;
-    private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
-    private final Map<String, ActiveAnalytics> analyticsActive = new ConcurrentHashMap<>();
+    private final Map<ActiveTaskKey, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final Map<ActiveTaskKey, ActiveAnalytics> analyticsActive = new ConcurrentHashMap<>();
 
     @org.springframework.beans.factory.annotation.Autowired
     public QueryExecutionService(
@@ -147,7 +147,7 @@ public class QueryExecutionService {
         // Seal cancellation in the database first. A worker racing this call
         // can no longer publish a result after the proof becomes CANCELLED.
         proofs.cancelAnalytics(unitId, queryId, actor);
-        ActiveAnalytics running = analyticsActive.get(unitId + ":" + queryId);
+        ActiveAnalytics running = analyticsActive.get(new ActiveTaskKey(unitId, queryId));
         if (running != null) {
             running.control().cancel();
             running.future().cancel(true);
@@ -161,7 +161,7 @@ public class QueryExecutionService {
         QueryExecutionProofService.AnalyticsExecution proof = proofs.authorizeAnalytics(unitId, queryId,
                 request.executionToken(), actor);
         validateAnalyticsRequest(request.request(), proof.sourceRevision());
-        String key = unitId + ":" + queryId;
+        ActiveTaskKey key = new ActiveTaskKey(unitId, queryId);
         ExecutionControl control = new ExecutionControl();
         FutureTask<JsonNode> future = new FutureTask<>(() -> executeNativeAnalytics(unitId, proof.sourceRevision(), request.request(), control));
         ActiveAnalytics running = new ActiveAnalytics(control, future);
@@ -213,13 +213,26 @@ public class QueryExecutionService {
         }
         control.ensureActive();
         synchronized (kernel) {
-            control.ensureActive();
-            persistence.reopen(unitId, revision, kernel);
-            loadAnalyticsPages(unitId, revision, request, kernel, control);
-            control.ensureActive();
-            ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision);
-            params.set("request", request.deepCopy());
-            return kernel.call("analytics.execute", params);
+            RuntimeException primaryFailure = null;
+            try {
+                control.ensureActive();
+                persistence.reopen(unitId, revision, kernel);
+                loadAnalyticsPages(unitId, revision, request, kernel, control);
+                control.ensureActive();
+                ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision);
+                params.set("request", request.deepCopy());
+                return kernel.call("analytics.execute", params);
+            } catch (RuntimeException error) {
+                primaryFailure = error;
+                throw error;
+            } finally {
+                try {
+                    kernel.closeWorkbookContext(unitId);
+                } catch (RuntimeException closeFailure) {
+                    if (primaryFailure == null) throw closeFailure;
+                    primaryFailure.addSuppressed(closeFailure);
+                }
+            }
         }
     }
 
@@ -309,7 +322,7 @@ public class QueryExecutionService {
         Instant started = Instant.now();
         ExecutionControl control = new ExecutionControl();
         FutureTask<QueryTable> future = new FutureTask<>(() -> executeInternal(request, source, control));
-        String executionKey = unitId + ":" + request.queryId();
+        ActiveTaskKey executionKey = new ActiveTaskKey(unitId, request.queryId());
         ActiveQuery running = new ActiveQuery(control, future);
         ActiveQuery previous = active.putIfAbsent(executionKey, running);
         if (previous != null) {
@@ -387,7 +400,7 @@ public class QueryExecutionService {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         lifecycle.requireActive(unitId);
         proofs.cancel(unitId, queryId, actor);
-        ActiveQuery query = active.get(unitId + ":" + queryId);
+        ActiveQuery query = active.get(new ActiveTaskKey(unitId, queryId));
         if (query != null) {
             query.control().cancel();
             query.future().cancel(true);
@@ -1209,6 +1222,8 @@ public class QueryExecutionService {
         private ExecutionControl control() { return control; }
         private Future<QueryTable> future() { return future; }
     }
+
+    private record ActiveTaskKey(String unitId, String queryId) {}
 
     /** REST transport is initialized only when a configured REST source runs. */
     private HttpClient httpClient() {

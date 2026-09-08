@@ -41,6 +41,8 @@ import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntity;
 import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntityRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -290,6 +292,8 @@ public class WorkbookCatalogService {
         WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) throw ServiceException.conflict("Workbook must be in trash before purge");
+        WorkbookSourceArtifactEntity artifact = artifacts.findById(unitId).orElse(null);
+        Path artifactPath = artifact == null ? null : verifiedArtifactPath(artifact);
         artifacts.deleteById(unitId);
         userStates.deleteByIdUnitId(unitId);
         blocks.deleteByIdUnitId(unitId);
@@ -300,6 +304,7 @@ public class WorkbookCatalogService {
         shares.deleteByUnitId(unitId);
         acl.deleteAll(acl.findAllForWorkbook(unitId));
         workbooks.deleteById(unitId);
+        deleteAfterCommit(artifactPath);
     }
 
     public WorkbookUserState getUserState(String unitId, String actor) {
@@ -336,10 +341,17 @@ public class WorkbookCatalogService {
             exportDirectory = Files.createTempDirectory(root, "native-export-");
             output = exportDirectory.resolve("export.artifact");
             WorkbookSourceArtifactEntity previous = artifacts.findById(unitId).orElse(null);
+            Path previousPath = previous == null ? null : verifiedArtifactPath(previous);
+            String resolvedFileName = safeFileName(nonBlank(fileName)
+                    ? fileName
+                    : previous != null ? previous.getFileName() : workbook.getName() + ".xlsx");
+            String resolvedFormat = nonBlank(format)
+                    ? format.trim().toLowerCase()
+                    : previous != null ? previous.getFormat() : fileExtension(resolvedFileName);
             ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision)
-                    .put("fileHandle", output.toString()).put("format", format);
+                    .put("fileHandle", output.toString()).put("format", resolvedFormat);
             if (previous != null) {
-                params.put("sourceFileHandle", verifiedArtifactPath(previous).toString());
+                params.put("sourceFileHandle", previousPath.toString());
                 params.put("sourceChecksum", previous.getChecksum());
                 params.put("sourceRevision", previous.getWorkbookRevision());
             }
@@ -353,7 +365,8 @@ public class WorkbookCatalogService {
             }
             JsonNode metadata = artifactMetadata(result);
             if (metadata.path("revision").asLong(-1) != revision) throw new KernelHostException("REVISION_CONFLICT", "Native artifact revision mismatch", unitId, "regenerate-artifact");
-            WorkbookSourceArtifactEntity saved = storeArtifact(unitId, revision, safeFileName(fileName), output, metadata);
+            WorkbookSourceArtifactEntity saved = storeArtifact(unitId, revision, resolvedFileName, output, metadata);
+            deleteAfterCommit(previousPath);
             output = null;
             return artifactResponse(saved);
         } catch (IOException error) { throw ServiceException.unavailable("Native export I/O failed: " + error.getMessage()); }
@@ -473,7 +486,24 @@ public class WorkbookCatalogService {
     }
     private void deleteTemporary(Path path) {
         if (path == null) return;
-        try { Files.deleteIfExists(path); } catch (IOException error) { org.slf4j.LoggerFactory.getLogger(getClass()).error("Native temporary file cleanup failed: {}", path, error); }
+        Path validated = validateTaskFile(path);
+        try { Files.deleteIfExists(validated); } catch (IOException error) { org.slf4j.LoggerFactory.getLogger(getClass()).error("Native temporary file cleanup failed: {}", validated, error); }
+    }
+    private void deleteAfterCommit(Path path) {
+        if (path == null) return;
+        Path validated = validateTaskFile(path);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) throw new IllegalStateException("Artifact deletion requires an active transaction");
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) deleteTemporary(validated);
+            }
+        });
+    }
+    private Path validateTaskFile(Path path) {
+        Path root = taskRoot();
+        Path normalized = path.toAbsolutePath().normalize();
+        if (normalized.equals(root) || !normalized.startsWith(root)) throw new IllegalStateException("Native artifact cleanup outside task storage");
+        return normalized;
     }
     private void invalidateOnRollback() {
         if (!org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) throw new IllegalStateException("Native mutation requires transaction");
@@ -582,6 +612,11 @@ public class WorkbookCatalogService {
         } catch (IllegalArgumentException ignored) {
             return value.replaceAll("[\\r\\n]", "_");
         }
+    }
+    private String fileExtension(String fileName) {
+        int separator = fileName.lastIndexOf('.');
+        if (separator < 0 || separator == fileName.length() - 1) throw ServiceException.validation("Native document file name requires a format extension");
+        return fileName.substring(separator + 1).toLowerCase();
     }
     private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/octet-stream" : value; }
     private String writeJson(Object value) { try { return mapper.writeValueAsString(value); } catch (Exception error) { throw new IllegalStateException("Unable to serialize workbook snapshot", error); } }

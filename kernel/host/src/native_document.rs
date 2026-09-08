@@ -4,7 +4,7 @@ use crate::KernelHost;
 use kernel_core::*;
 use kernel_native_document::{NativeDocument, ResourceLimits};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -120,11 +120,9 @@ fn import(root: &Path, request: ImportRequest) -> KernelResult<Value> {
     let mut manifest = WorkbookPages::create(request.unit_id, request.name, sheets)?.manifest();
     manifest.revision = 0;
     manifest.pages = entries.iter().map(|e| e.descriptor.clone()).collect();
-    manifest.metadata = document.metadata.workbook_metadata.clone();
-    manifest.metadata.insert(
-        "nativeArtifact".into(),
-        serde_json::to_value(&document.artifact.identity).map_err(protocol)?,
-    );
+    manifest
+        .metadata
+        .extend(document.metadata.workbook_metadata.clone());
     // Opening validates directory identities and page extents before publishing.
     WorkbookPages::open(manifest.clone())?;
     let pages_manifest = directory.join("pages.json");
@@ -202,11 +200,15 @@ fn export(root: &Path, request: ExportRequest, manifest: WorkbookManifest) -> Ke
             return Err(KernelError::new(
                 "ARTIFACT_BINDING_REQUIRED",
                 "Source file, revision and checksum must be supplied together",
-            ))
+            ));
         }
     };
     if request.format != document.format.as_str() {
-        return Err(KernelError::new("UNSUPPORTED_FEATURE", "Export format conversion requires an explicit native conversion implementation").at(request.format));
+        return Err(KernelError::new(
+            "UNSUPPORTED_FEATURE",
+            "Export format conversion requires an explicit native conversion implementation",
+        )
+        .at(request.format));
     }
     let cells = FilePageReader::open(
         root,

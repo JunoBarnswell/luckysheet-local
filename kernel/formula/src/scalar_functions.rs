@@ -499,13 +499,26 @@ fn substitute(a: &[FormulaValue]) -> KernelResult<FormulaValue> {
     })
 }
 fn rept(a: &[FormulaValue]) -> KernelResult<FormulaValue> {
+    const MAX_REPT_OUTPUT_BYTES: usize = 32_767;
     require(a, 2).and_then(|_| {
         let s = string(&scalar(&a[0]));
         let n = number(&scalar(&a[1]))?;
-        if n < 0.0 {
+        if n < 0.0 || !n.is_finite() {
             return excel("#VALUE!", "Invalid count in REPT");
         };
-        ok(Scalar::Text(s.repeat(n.floor() as usize)))
+        let repetitions = n.floor();
+        if repetitions > usize::MAX as f64 {
+            return excel("#VALUE!", "REPT count exceeds the supported output budget");
+        }
+        let repetitions = repetitions as usize;
+        let output_bytes = s
+            .len()
+            .checked_mul(repetitions)
+            .ok_or_else(|| KernelError::new("FORMULA_VALUE", "REPT output size overflow"))?;
+        if output_bytes > MAX_REPT_OUTPUT_BYTES {
+            return excel("#VALUE!", "REPT output exceeds the supported formula-string budget");
+        }
+        ok(Scalar::Text(s.repeat(repetitions)))
     })
 }
 fn format_number(value: f64, format: &str) -> String {
@@ -724,5 +737,17 @@ mod tests {
             matches!(logical_error, FormulaValue::Scalar(Scalar::Error(e)) if e.code == "#VALUE!")
         );
         assert!(call("DOES_NOT_EXIST", &[]).is_none());
+    }
+
+    #[test]
+    fn rept_bounds_count_and_output_size_before_allocation() {
+        assert_eq!(
+            call("REPT", &[s("ab"), n(3.0)]).unwrap().unwrap(),
+            s("ababab")
+        );
+        let huge = call("REPT", &[s("AA"), n(1e308)]).unwrap().unwrap();
+        assert!(matches!(huge, FormulaValue::Scalar(Scalar::Error(e)) if e.code == "#VALUE!"));
+        let too_large = call("REPT", &[s("x"), n(32_768.0)]).unwrap().unwrap();
+        assert!(matches!(too_large, FormulaValue::Scalar(Scalar::Error(e)) if e.code == "#VALUE!"));
     }
 }

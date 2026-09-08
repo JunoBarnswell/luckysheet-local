@@ -37,7 +37,7 @@ The workbook catalog contract is:
 - `POST /api/workbook-imports/tasks`, `PUT /tasks/{id}/chunks?offset=`, `POST /tasks/{id}/commit`, and `GET/DELETE /tasks/{id}` implement persistent upload/cancel/publication. Uploads are limited to 1 GiB, each chunk to 8 MiB, using a 64 KiB buffer. Multipart `POST /api/workbook-imports` accepts `file` and catalog location/name only and uses the same task chain. Native parsing receives scoped file handles, never browser snapshots or whole-file base64.
 - `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
 
-Workbook mutations enter one authority through `POST /api/workbooks/{unitId}/kernel-operations` (raw ChangeSet response), or its OperationEnvelope transport at `/operations` (`{operation,changeSet}` response). WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
+Workbook mutations enter one authority through `POST /api/workbooks/{unitId}/operations` using the canonical `OperationEnvelope` request and `{operation,changeSet}` response. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
 
 The request contract is `OperationEnvelope`. It contains operation identity, workbook identity, revision metadata and mutation intent only. The committed response adds server-owned `actorId`, `revision`, `committedAt` and `affectedRanges`.
 

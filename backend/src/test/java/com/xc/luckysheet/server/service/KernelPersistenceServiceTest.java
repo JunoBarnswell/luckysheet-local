@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.persistence.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -68,6 +70,43 @@ class KernelPersistenceServiceTest {
         service.reopen("unit", 1, kernel);
         verify(kernel).call(eq("open"), argThat(params -> params.has("manifest") && !params.has("pages")));
         verifyNoMoreInteractions(kernel);
+    }
+
+    @Test
+    void closesReopenedContextAfterSuccessfulTransaction() throws Exception {
+        KernelHostClient kernel = mock(KernelHostClient.class);
+        publishInitial(page(0, 0, 7));
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.reopen("unit", 0, kernel);
+            verify(kernel).call(eq("open"), any(JsonNode.class));
+            verify(kernel, never()).closeWorkbookContext(anyString());
+
+            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+            verify(kernel).closeWorkbookContext("unit");
+            verify(kernel, never()).abortTransaction();
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void abortsHostAfterRolledBackTransactionWithoutClosingAStagedContext() throws Exception {
+        KernelHostClient kernel = mock(KernelHostClient.class);
+        publishInitial(page(0, 0, 7));
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.reopen("unit", 0, kernel);
+            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+            }
+            verify(kernel).abortTransaction();
+            verify(kernel, never()).closeWorkbookContext(anyString());
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test

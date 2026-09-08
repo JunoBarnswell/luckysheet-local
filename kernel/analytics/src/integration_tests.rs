@@ -258,6 +258,48 @@ fn memory_rejection_occurs_before_source_allocation() {
     );
     assert_eq!(source.scans.get(), 0);
 }
+
+#[test]
+fn oversized_caller_budget_is_bounded_before_large_source_allocation() {
+    let source = Generated {
+        rows: 1_048_575,
+        scanned: Counter::new(0),
+    };
+    let mut request = json!({
+        "kind": "query",
+        "revision": 7,
+        "range": {
+            "sheetId": "s",
+            "startRow": 0,
+            "endRow": 1_048_574,
+            "startColumn": 0,
+            "endColumn": 16_383
+        },
+        "limit": 1
+    });
+    request["budget"] = json!({
+        "memoryBytes": u64::MAX,
+        "timeoutMs": u64::MAX,
+        "temporaryBytes": u64::MAX
+    });
+    assert_eq!(
+        crate::execute(request, &source).unwrap_err().code,
+        "ANALYTICS_MEMORY_BUDGET_EXCEEDED"
+    );
+    assert_eq!(source.scanned.get(), 0);
+}
+
+#[test]
+fn caller_budget_within_trusted_limits_executes_successfully() {
+    let mut request = pivot();
+    request["budget"] = json!({
+        "memoryBytes": 1024 * 1024,
+        "timeoutMs": 1_000,
+        "temporaryBytes": 1024 * 1024
+    });
+    assert!(crate::execute(request, &fixture()).is_ok());
+}
+
 impl CellReader for Generated {
     fn revision(&self) -> u64 {
         7

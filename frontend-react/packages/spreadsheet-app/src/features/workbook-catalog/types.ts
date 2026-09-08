@@ -132,7 +132,7 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'getManifest'
   | 'getPage'
   | 'createKernelWorkbook'
-  | 'commitKernelOperation'
+  | 'commitOperation'
   | 'listWorkbookAcl'
   | 'putWorkbookAcl'
   | 'deleteWorkbookAcl'

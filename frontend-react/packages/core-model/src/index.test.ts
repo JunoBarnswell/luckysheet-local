@@ -73,7 +73,16 @@ test('manifest metadata remains the sole workbook state boundary for restored de
     assert.equal(committed.revision, 0);
     assert.equal(committed.sheets.length, 1);
     assert.equal(committed.sheets[0]?.sheetId, 'sheet-1');
-    assert.deepEqual(committed.metadata, {});
+    assert.deepEqual(committed.metadata, {
+      calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
+      collationContext: { cultureId: 'invariant', caseSensitive: true, accentSensitive: true, numericTextMode: 'lexical', blankOrder: 'last', typeOrder: ['number', 'text', 'boolean', 'error', 'blank'], customLists: [] },
+      dataModel: { sources: [], tables: [], relationships: [], views: [] },
+      dateSystem: '1900',
+      definedNameModels: [],
+      dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
+      editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
+      numericContext: { significantDigits: 15 },
+    });
   } finally {
     close();
   }

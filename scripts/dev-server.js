@@ -22,4 +22,33 @@ const server = http.createServer((req, res) => {
   const actual = fs.existsSync(file) && fs.statSync(file).isFile() ? file : path.join(dist, 'index.html');
   fs.readFile(actual, (error, data) => { if (error) { res.writeHead(404); res.end('Build output is unavailable; run scripts/build.ps1'); return; } res.writeHead(200, { 'content-type': types[path.extname(actual)] ?? 'application/octet-stream' }); res.end(data); });
 });
+
+server.on('upgrade', (req, socket, head) => {
+  if (!req.url?.startsWith('/ws')) {
+    socket.destroy();
+    return;
+  }
+  const upstream = http.request({
+    hostname: backend.host,
+    port: backend.port,
+    path: req.url,
+    method: req.method,
+    headers: { ...req.headers, host: `${backend.host}:${backend.port}` },
+  });
+  upstream.on('upgrade', (reply, upstreamSocket, upstreamHead) => {
+    const headers = Object.entries(reply.headers)
+      .flatMap(([name, value]) => Array.isArray(value) ? value.map((entry) => `${name}: ${entry}`) : value === undefined ? [] : [`${name}: ${value}`]);
+    socket.write(`HTTP/${reply.httpVersion} ${reply.statusCode} ${reply.statusMessage}\r\n${headers.join('\r\n')}\r\n\r\n`);
+    if (head.length > 0) upstreamSocket.write(head);
+    if (upstreamHead.length > 0) socket.write(upstreamHead);
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+  });
+  upstream.on('response', (reply) => {
+    socket.write(`HTTP/${reply.httpVersion} ${reply.statusCode} ${reply.statusMessage}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  });
+  upstream.on('error', () => socket.destroy());
+  upstream.end();
+});
 server.listen(port, '127.0.0.1', () => console.log(`React web app: http://127.0.0.1:${port}/`));

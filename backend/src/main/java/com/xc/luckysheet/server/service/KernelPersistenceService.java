@@ -8,6 +8,8 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.xc.luckysheet.server.persistence.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -209,6 +211,49 @@ public class KernelPersistenceService {
 
     public void reopen(String unitId, long revision, KernelHostClient kernel) {
         kernel.call("open", mapper.createObjectNode().set("manifest", readManifest(unitId, revision)));
+        registerCloseAfterTransaction(unitId, kernel);
+    }
+
+    /**
+     * The native host is shared by all server requests. A transaction owns the
+     * workbook it reopens, so release that context when the transaction ends.
+     * Non-transactional readers (analytics) retain their existing request
+     * lifecycle and are bounded by the native host itself.
+     */
+    @SuppressWarnings("unchecked")
+    private void registerCloseAfterTransaction(String unitId, KernelHostClient kernel) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) return;
+        Set<String> units = (Set<String>) TransactionSynchronizationManager.getResource(this);
+        if (units == null) {
+            units = new LinkedHashSet<>();
+            TransactionSynchronizationManager.bindResource(this, units);
+            Set<String> registeredUnits = units;
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCompletion(int status) {
+                    try {
+                        if (status != STATUS_COMMITTED) {
+                            kernel.abortTransaction();
+                            return;
+                        }
+                        for (String registeredUnit : List.copyOf(registeredUnits)) {
+                            try {
+                                synchronized (kernel) {
+                                    kernel.closeWorkbookContext(registeredUnit);
+                                }
+                            } catch (RuntimeException error) {
+                                // A failed close must not leave a partially usable
+                                // process holding an unbounded context registry.
+                                kernel.abortTransaction();
+                                break;
+                            }
+                        }
+                    } finally {
+                        TransactionSynchronizationManager.unbindResourceIfPossible(KernelPersistenceService.this);
+                    }
+                }
+            });
+        }
+        units.add(unitId);
     }
 
     public void loadPage(String unitId, long revision, String sheetId, int pageRow, int pageColumn, KernelHostClient kernel) {

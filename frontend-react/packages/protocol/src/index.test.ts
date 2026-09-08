@@ -140,6 +140,60 @@ test('OperationEnvelope accepts an undo intent only with an empty mutation list'
   }), /must not include client mutations/);
 });
 
+test('WorkbookApiClient commits through the sole OperationEnvelope endpoint and validates the change set', async () => {
+  const createdAt = new Date('2026-09-08T00:00:00.000Z').toISOString();
+  const operation = {
+    schema: 'OperationEnvelope' as const,
+    operationId: 'commit-1',
+    unitId: 'unit-1',
+    clientSequence: 4,
+    baseRevision: 2,
+    mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: { row: 0, column: 0, value: { value: 'ok' } } }],
+    createdAt,
+  };
+  const manifest = {
+    schema: 'WorkbookManifest', version: 11, unitId: 'unit-1', name: 'Workbook', revision: 3,
+    sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 100, columnCount: 26, metadata: {} }],
+    pages: [], metadata: {},
+  };
+  let path = '';
+  let body: unknown;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'commit-token',
+    fetchImpl: async (input, init) => {
+      path = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        operation: {
+          ...operation,
+          actorId: 'user-1',
+          origin: 'client',
+          revision: 3,
+          committedAt: createdAt,
+          mutations: operation.mutations.map(mutation => ({ ...mutation, affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }] })),
+        },
+        changeSet: {
+          operationId: operation.operationId,
+          baseRevision: 2,
+          revision: 3,
+          manifest,
+          pages: [],
+          removedPages: [],
+          affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+          history: { operationId: operation.operationId, baseRevision: 2, revision: 3, pageDeltas: [], metadataBefore: null, metadataAfter: null },
+        },
+      }), { status: 201, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await api.commitOperation(operation.unitId, operation);
+
+  assert.equal(path, '/api/workbooks/unit-1/operations');
+  assert.deepEqual(body, operation);
+  assert.equal(result.operation.revision, 3);
+  assert.equal(result.changeSet.manifest.revision, 3);
+});
+
 test('WorkbookApiClient renames through the canonical semantic endpoint and verifies the returned manifest', async () => {
   let path = '';
   let body: unknown;
@@ -172,12 +226,12 @@ test('WorkbookApiClient renames through the canonical semantic endpoint and veri
 test('WorkbookApiClient accepts access roles only from the server projection', async () => {
   const api = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',
-    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor' }), {
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor', nextClientSequence: 12 }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }),
   });
-  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor' });
+  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor', nextClientSequence: 12 });
 
   const malformed = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',
@@ -187,6 +241,29 @@ test('WorkbookApiClient accepts access roles only from the server projection', a
     }),
   });
   await assert.rejects(() => malformed.getAccess('unit-access'), /invalid role/);
+
+  const missingCursor = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'owner' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  await assert.rejects(() => missingCursor.getAccess('unit-access'), /client sequence cursor/);
+});
+
+test('WorkbookApiClient preserves typed kernel failure codes from the server', async () => {
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ code: 'UNSUPPORTED_FEATURE', message: 'Calculation settings changed' }), {
+      status: 422,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  await assert.rejects(
+    () => api.getManifest('unit-error'),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'UNSUPPORTED_FEATURE',
+  );
 });
 
 test('WorkbookApiClient validates cursor pages and forwards cursor, limit, and abort signal', async () => {

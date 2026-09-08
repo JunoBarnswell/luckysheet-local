@@ -4,46 +4,57 @@ import { Button, Dialog, Select, Stack, Text, TextInput } from '@react-sheets/ui
 export interface SaveAsDocumentDialogProps {
   open: boolean;
   currentFileName?: string;
+  supportedFormats?: readonly SaveAsDocumentFormat[];
   onClose: () => void;
   onSubmit: (fileName: string) => void;
   submitting?: boolean;
 }
 
-const formats = [
-  { value: 'ssjson', label: 'SpreadJS SSJSON (.ssjson)' },
-  { value: 'sjs', label: 'SpreadJS SJS (.sjs)' },
-  { value: 'xlsx', label: 'Excel OOXML (.xlsx)' },
-  { value: 'xlsm', label: 'Excel 宏工作簿 (.xlsm)' },
-  { value: 'xltx', label: 'Excel 模板 (.xltx)' },
-  { value: 'xltm', label: 'Excel 宏模板 (.xltm)' },
-  { value: 'ods', label: 'OpenDocument (.ods)' },
-  { value: 'csv', label: 'CSV (.csv)' },
-  { value: 'xml', label: 'XML Spreadsheet 2003 (.xml)' },
-] as const;
+export type SaveAsDocumentFormat = 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'xlam';
 
-function extensionOf(fileName: string): string {
-  return fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? 'ssjson';
+const formatLabels: Record<SaveAsDocumentFormat, string> = {
+  xlsx: 'Excel OOXML (.xlsx)',
+  xlsm: 'Excel 宏工作簿 (.xlsm)',
+  xltx: 'Excel 模板 (.xltx)',
+  xltm: 'Excel 宏模板 (.xltm)',
+  xlam: 'Excel 加载项 (.xlam)',
+};
+
+function extensionOf(fileName: string): string | undefined {
+  return fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
 }
 
-export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.ssjson', onClose, onSubmit, submitting = false }: SaveAsDocumentDialogProps) {
+function fileNameForFormat(fileName: string, format: SaveAsDocumentFormat): string {
+  const stem = fileName.replace(/\.[^.]+$/, '');
+  return `${stem || 'workbook'}.${format}`;
+}
+
+export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.xlsx', supportedFormats = ['xlsx'], onClose, onSubmit, submitting = false }: SaveAsDocumentDialogProps) {
   const [fileName, setFileName] = useState(currentFileName);
-  const [format, setFormat] = useState(extensionOf(currentFileName));
+  const [format, setFormat] = useState<SaveAsDocumentFormat>(supportedFormats[0] ?? 'xlsx');
+  const supportedFormatKey = supportedFormats.join(',');
 
   useEffect(() => {
     if (!open) return;
+    const currentExtension = extensionOf(currentFileName);
+    const nextFormat = supportedFormats.includes(currentExtension as SaveAsDocumentFormat)
+      ? currentExtension as SaveAsDocumentFormat
+      : supportedFormats[0] ?? 'xlsx';
     setFileName(currentFileName);
-    setFormat(extensionOf(currentFileName));
-  }, [currentFileName, open]);
+    setFormat(nextFormat);
+    if (currentExtension !== nextFormat) setFileName(fileNameForFormat(currentFileName, nextFormat));
+  }, [currentFileName, open, supportedFormatKey]);
 
   const chooseFormat = (next: string) => {
-    setFormat(next);
-    const stem = fileName.replace(/\.[^.]+$/, '');
-    setFileName(`${stem || 'workbook'}.${next}`);
+    if (!supportedFormats.includes(next as SaveAsDocumentFormat)) return;
+    const nextFormat = next as SaveAsDocumentFormat;
+    setFormat(nextFormat);
+    setFileName(fileNameForFormat(fileName, nextFormat));
   };
   const submit = () => {
     const trimmed = fileName.trim();
     if (!trimmed || submitting) return;
-    onSubmit(trimmed);
+    onSubmit(fileNameForFormat(trimmed, format));
   };
 
   return (
@@ -59,8 +70,8 @@ export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.ssjson'
     >
       <Stack gap="md">
         <Stack gap="xs"><Text as="label" htmlFor="save-as-document-name" size="sm" weight="medium">目标文件名</Text><TextInput id="save-as-document-name" onChange={(event) => setFileName(event.currentTarget.value)} value={fileName} /></Stack>
-        <Stack gap="xs"><Text as="label" htmlFor="save-as-document-format" size="sm" weight="medium">目标协议</Text><Select id="save-as-document-format" onChange={(event) => chooseFormat(event.currentTarget.value)} options={formats.map((entry) => ({ value: entry.value, label: entry.label }))} value={format} /></Stack>
-        <Text size="xs" tone="muted">跨协议转换会在导出结果中报告可编辑、保留、投影和阻断的特性。</Text>
+        <Stack gap="xs"><Text as="label" htmlFor="save-as-document-format" size="sm" weight="medium">目标协议</Text><Select id="save-as-document-format" onChange={(event) => chooseFormat(event.currentTarget.value)} options={supportedFormats.map((entry) => ({ value: entry, label: formatLabels[entry] }))} value={format} /></Stack>
+        <Text size="xs" tone="muted">原生导出会在结果中报告可编辑、保留、投影和阻断的特性。</Text>
       </Stack>
     </Dialog>
   );

@@ -162,8 +162,16 @@ export function useEditorCommandController({
 }: EditorCommandControllerOptions): EditorCommandController {
   const [activePivotId, setActivePivotId] = useState<string>();
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
-  const dataRegionContext = session.getDataRegionContext();
-  const currentDataRange = dataRegionContext.range;
+  const needsDataRegionProjection = state.ribbonTab === 'data'
+    || state.ribbonTab === 'tableDesign'
+    || state.dialogs.active === 'create-pivot'
+    || state.dialogs.active === 'create-table'
+    || state.dialogs.active === 'sort-dialog';
+  const dataRegionContext = useMemo(
+    () => needsDataRegionProjection ? session.getDataRegionContext() : null,
+    [needsDataRegionProjection, session, state.activeSheetId, state.selection, state.version],
+  );
+  const currentDataRange = dataRegionContext?.range ?? state.selectedSheet.usedRange;
   const sortColumns = state.selectedSheet.columns.slice(currentDataRange.startColumn, currentDataRange.endColumn + 1);
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
@@ -181,7 +189,10 @@ export function useEditorCommandController({
   // (often a single `Column 1` field) and makes the pending layout reference
   // unknown value fields.  Keep the catalog stable until the canonical Pivot
   // mutation publishes a new definition.
-  const pivotFields: PivotFieldDefinition[] = activePivot?.fieldCatalog.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
+  // Field identities are owned by a committed Pivot definition. Building a
+  // speculative catalog during every editor render scans the entire source
+  // range and blocks large imported workbooks before the Pivot flow is used.
+  const pivotFields: PivotFieldDefinition[] = activePivot?.fieldCatalog.fields ?? [];
   const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
@@ -222,21 +233,24 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
-  const activeFilterOwner = dataRegionContext.owner.kind === 'sheet-table'
-    ? { kind: 'table' as const, tableId: dataRegionContext.owner.tableId }
-    : { kind: 'worksheet' as const };
   const activeAutoFilter = state.selectedSheet.getActiveAutoFilter(state.selection.activeCell.column);
-  const buildFilterSelectionCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
-    : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange, dataRegionContext } };
-  const filterRange = activeAutoFilter?.range ?? currentDataRange;
-  const buildClearFilterCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
-    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange, dataRegionContext } };
+  const buildFilterSelectionCommand = (): CommandDescriptor => {
+    const context = session.getDataRegionContext();
+    return context.owner.kind === 'sheet-table'
+      ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: context.owner.tableId, dataRegionContext: context } }
+      : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: context.range, dataRegionContext: context } };
+  };
+  const buildClearFilterCommand = (): CommandDescriptor => {
+    const context = session.getDataRegionContext();
+    return context.owner.kind === 'sheet-table'
+      ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: context.owner.tableId, dataRegionContext: context } }
+      : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: activeAutoFilter?.range ?? context.range, dataRegionContext: context } };
+  };
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
-    const range = dataRegionContext.range;
+    const context = session.getDataRegionContext();
+    const range = context.range;
     if (range.endRow <= range.startRow) return undefined;
-    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: dataRegionContext.header.kind === 'present', dataRegionContext } };
+    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: context.header.kind === 'present', dataRegionContext: context } };
   };
 
   const sheetNames = useMemo(() => new Map(state.sheets.map((sheet) => [sheet.id, sheet.name] as const)), [state.sheets]);

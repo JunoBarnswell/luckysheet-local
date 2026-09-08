@@ -1,4 +1,5 @@
-const CACHE_NAME = 'react-sheets-shell';
+const BUILD_ID = '__REACT_SHEETS_BUILD_ID__';
+const CACHE_NAME = `react-sheets-shell-${BUILD_ID}`;
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest'];
 
 async function cacheUrls(urls) {

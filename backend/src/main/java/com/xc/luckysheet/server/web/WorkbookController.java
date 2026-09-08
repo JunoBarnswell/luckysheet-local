@@ -183,18 +183,6 @@ public class WorkbookController {
         return operations.page(unitId, revision, sheetId, pageRow, pageColumn, ActorIdentity.subject(authentication));
     }
 
-    public record KernelCommitRequest(String operationId, long baseRevision, long clientSequence,
-            List<com.xc.luckysheet.server.contract.OperationMutation> mutations, com.xc.luckysheet.server.contract.OperationIntent intent) { }
-
-    @PostMapping("/{unitId}/kernel-operations")
-    public com.fasterxml.jackson.databind.JsonNode commitKernel(@PathVariable String unitId, @RequestBody KernelCommitRequest request, Authentication authentication) {
-        OperationEnvelope operation = new OperationEnvelope(OperationEnvelope.SCHEMA, request.operationId(), unitId, request.clientSequence(),
-                request.baseRevision(), request.mutations(), java.time.Instant.now(), request.intent());
-        WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication));
-        if (result.committed()) sessions.broadcastRevision(result.operation());
-        return result.changeSet();
-    }
-
     @PostMapping("/{unitId}/operations")
     public ResponseEntity<CommitResponse> commit(@PathVariable String unitId, @Valid @RequestBody OperationEnvelope operation, Authentication authentication) {
         WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication));

@@ -65,7 +65,6 @@ pub fn required_pages(
         if matches!(
             m.id.as_str(),
             "cell.set"
-                | "cell.restore"
                 | "note.set"
                 | "note.remove"
                 | "note.visibility"

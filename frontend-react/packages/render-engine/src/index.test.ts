@@ -678,7 +678,7 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   const topLeft = renderSkeleton.getCellRect(0, 0)!;
   const main = renderSkeleton.getCellRect(4, 2)!;
   assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 39, y: 20 });
-  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 89, y: 80 });
+  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 139, y: 100 });
   engine.dispose();
 });
 
@@ -725,8 +725,8 @@ test('split pane point geometry is independent of display DPR', () => {
   const pane = { kind: 'split' as const, xSplit: 1440, ySplit: 720, startRow: 0, startColumn: 0, state: 'split' as const };
   const one = computePaneMap('sheet-1', renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, pane, defaultHeaderOffset());
   const two = computePaneMap('sheet-1', renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 2 }, pane, defaultHeaderOffset());
-  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.x, two.panes.find((entry) => entry.id === 'main')?.screenRect.x);
-  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.y, two.panes.find((entry) => entry.id === 'main')?.screenRect.y);
+  assert.deepEqual(one.panes.find((entry) => entry.id === 'main')?.contentOrigin, { x: 96, y: 48 });
+  assert.deepEqual(two.panes.find((entry) => entry.id === 'main')?.contentOrigin, { x: 96, y: 48 });
 });
 
 test('frozen 2x2 pane map clamps the main origin and keeps four ranges disjoint', () => {

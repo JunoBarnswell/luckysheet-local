@@ -39,42 +39,6 @@ function contains(range: RangeRef, row: number, column: number): boolean {
   return range.startRow <= row && row <= range.endRow && range.startColumn <= column && column <= range.endColumn;
 }
 
-function cellHasContent(sheet: WorksheetModel, row: number, column: number): boolean {
-  const cell = sheet.cells.get(row, column);
-  return Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula !== undefined || cell.formulaValue !== undefined));
-}
-
-function usedRange(sheet: WorksheetModel): RangeRef {
-  let startRow = sheet.rowCount - 1;
-  let endRow = 0;
-  let startColumn = sheet.columnCount - 1;
-  let endColumn = 0;
-  let occupied = false;
-  sheet.cells.forEach((_cell, row, column) => {
-    occupied = true;
-    startRow = Math.min(startRow, row);
-    endRow = Math.max(endRow, row);
-    startColumn = Math.min(startColumn, column);
-    endColumn = Math.max(endColumn, column);
-  });
-  for (const { row, column } of sheet.review.noteEntries()) {
-    occupied = true;
-    startRow = Math.min(startRow, row);
-    endRow = Math.max(endRow, row);
-    startColumn = Math.min(startColumn, column);
-    endColumn = Math.max(endColumn, column);
-  }
-  for (const thread of sheet.review.threadEntries()) {
-    occupied = true;
-    startRow = Math.min(startRow, thread.row);
-    endRow = Math.max(endRow, thread.row);
-    startColumn = Math.min(startColumn, thread.column);
-    endColumn = Math.max(endColumn, thread.column);
-  }
-  if (!occupied) return { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
-  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
-}
-
 function currentRegion(sheet: WorksheetModel, input: DataRegionResolveInput): RangeRef {
   const selection = cloneRange(input.selection);
   if (selection.startRow !== selection.endRow || selection.startColumn !== selection.endColumn) return selection;
@@ -82,30 +46,7 @@ function currentRegion(sheet: WorksheetModel, input: DataRegionResolveInput): Ra
   if (table) return cloneRange(table.range);
   const dataRegion = sheet.dataRegions.find((candidate) => contains(candidate.range, input.activeRow, input.activeColumn));
   if (dataRegion) return cloneRange(dataRegion.range);
-  if (!cellHasContent(sheet, input.activeRow, input.activeColumn)) {
-    return { sheetId: sheet.id, startRow: input.activeRow, endRow: input.activeRow, startColumn: input.activeColumn, endColumn: input.activeColumn };
-  }
-  let startRow = input.activeRow;
-  let endRow = input.activeRow;
-  let startColumn = input.activeColumn;
-  let endColumn = input.activeColumn;
-  const rowHasContent = (row: number) => {
-    for (let column = startColumn; column <= endColumn; column += 1) if (cellHasContent(sheet, row, column)) return true;
-    return false;
-  };
-  const columnHasContent = (column: number) => {
-    for (let row = startRow; row <= endRow; row += 1) if (cellHasContent(sheet, row, column)) return true;
-    return false;
-  };
-  let grew = true;
-  while (grew) {
-    grew = false;
-    while (startRow > 0 && rowHasContent(startRow - 1)) { startRow -= 1; grew = true; }
-    while (endRow + 1 < sheet.rowCount && rowHasContent(endRow + 1)) { endRow += 1; grew = true; }
-    while (startColumn > 0 && columnHasContent(startColumn - 1)) { startColumn -= 1; grew = true; }
-    while (endColumn + 1 < sheet.columnCount && columnHasContent(endColumn + 1)) { endColumn += 1; grew = true; }
-  }
-  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
+  return sheet.cells.currentRegion(input.activeRow, input.activeColumn);
 }
 
 function tableAtRange(sheet: WorksheetModel, range: RangeRef): SheetTableModel | undefined {
@@ -163,7 +104,7 @@ export function resolveDataRegionContext(workbook: WorkbookModel, input: DataReg
     selection,
     currentRegion: cloneRange(region),
     range: cloneRange(region),
-    usedRange: usedRange(sheet),
+    usedRange: cloneRange(sheet.usedRange),
     owner,
     header,
     activeColumn: input.activeColumn,

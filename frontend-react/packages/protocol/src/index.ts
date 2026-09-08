@@ -21,13 +21,6 @@ function assertManifestResponse(value: unknown, unitId: string): WorkbookManifes
   return manifest;
 }
 
-export interface KernelCloudCommandRequest {
-  readonly operationId: string;
-  readonly baseRevision: number;
-  readonly clientSequence: number;
-  readonly mutations: readonly { readonly id: string; readonly sheetId: string; readonly params: unknown }[];
-  readonly intent?: OperationIntent;
-}
 export interface KernelWorkbookCreateRequest {
   readonly unitId: string;
   readonly name: string;
@@ -73,7 +66,7 @@ export {
 
 export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';
 
-export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
+export type ProtocolErrorCode = ContractErrorCode | Uppercase<string>;
 
 export interface ApiError {
   code: ProtocolErrorCode;
@@ -171,10 +164,12 @@ export interface WorkbookAclRecord {
 export interface WorkbookAccessResponse {
   unitId: string;
   role: WorkbookAclRole;
+  nextClientSequence: number;
 }
 
 export interface OperationCommitResponse {
   operation: CommittedOperationEnvelope;
+  changeSet: KernelChangeSet;
 }
 
 export interface CheckpointResponse {
@@ -1297,7 +1292,10 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
   if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
     throw new Error('workbook access response has an invalid role');
   }
-  return { unitId: input.unitId, role: input.role };
+  if (!Number.isSafeInteger(input.nextClientSequence) || Number(input.nextClientSequence) < 1) {
+    throw new Error('workbook access response has an invalid client sequence cursor');
+  }
+  return { unitId: input.unitId, role: input.role, nextClientSequence: Number(input.nextClientSequence) };
 }
 
 /** Strict runtime validation used at the REST/WebSocket trust boundary. */
@@ -1746,13 +1744,6 @@ export class WorkbookApiClient {
     return page;
   }
 
-  async commitKernelOperation(unitId: string, request: KernelCloudCommandRequest): Promise<KernelChangeSet> {
-    const result = await this.json<KernelChangeSet>(`/api/workbooks/${encodeURIComponent(unitId)}/kernel-operations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, mutations: request.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })) }) });
-    assertManifestResponse(result?.manifest, unitId);
-    if (result.operationId !== request.operationId || result.baseRevision !== request.baseRevision || result.revision !== request.baseRevision + 1 || result.manifest.revision !== result.revision || !Array.isArray(result.pages) || !Array.isArray(result.removedPages) || !Array.isArray(result.affectedRanges)) throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
-    return result;
-  }
-
   async createKernelWorkbook(request: KernelWorkbookCreateRequest): Promise<WorkbookOpenResponse> {
     const response = await this.json<WorkbookOpenResponse>('/api/workbooks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
     assertManifestResponse(response?.manifest, request.unitId);
@@ -1790,7 +1781,7 @@ export class WorkbookApiClient {
       // failure body.  Do not swallow the request failure itself.
     }
     const code = typeof payload?.code === 'string'
-      && (CONTRACT_ERROR_CODES as readonly string[]).includes(payload.code)
+      && /^[A-Z][A-Z0-9_]{1,63}$/.test(payload.code)
       ? payload.code as ProtocolErrorCode
       : 'INTERNAL_ERROR';
     throw new ApiRequestError(
@@ -2056,11 +2047,31 @@ export class WorkbookApiClient {
   }
 
   async commitOperation(unitId: string, operation: OperationEnvelope): Promise<OperationCommitResponse> {
-    return this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations`, {
+    if (operation.unitId !== unitId) throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
+    const request = validateOperationEnvelope(operation);
+    const result = await this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(operation),
+      body: JSON.stringify(request),
     });
+    const committed = validateCommittedOperationEnvelope(result?.operation);
+    const changeSet = result?.changeSet;
+    assertManifestResponse(changeSet?.manifest, unitId);
+    if (committed.operationId !== request.operationId
+      || committed.unitId !== unitId
+      || committed.clientSequence !== request.clientSequence
+      || committed.baseRevision !== request.baseRevision
+      || committed.revision !== request.baseRevision + 1
+      || changeSet.operationId !== request.operationId
+      || changeSet.baseRevision !== request.baseRevision
+      || changeSet.revision !== committed.revision
+      || changeSet.manifest.revision !== committed.revision
+      || !Array.isArray(changeSet.pages)
+      || !Array.isArray(changeSet.removedPages)
+      || !Array.isArray(changeSet.affectedRanges)) {
+      throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
+    }
+    return { operation: committed, changeSet };
   }
 
   async checkpointWorkbook(unitId: string): Promise<CheckpointResponse> {
@@ -2070,9 +2081,9 @@ export class WorkbookApiClient {
     return result;
   }
 
-  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName: string; format: string }): Promise<WorkbookSourceArtifactMetadata> {
+  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName?: string; format?: string }): Promise<WorkbookSourceArtifactMetadata> {
     const result = await this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
-    if (result.unitId !== unitId || result.revision !== request.revision || result.fileName !== request.fileName || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
+    if (result.unitId !== unitId || result.revision !== request.revision || (request.fileName !== undefined && result.fileName !== request.fileName) || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
     return result;
   }
 
@@ -2300,6 +2311,17 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
   if (!isNonEmptyString(input.committedAt) || Number.isNaN(Date.parse(input.committedAt))) {
     throw new Error('Invalid committed operation timestamp');
   }
+  const mutationInputs = Array.isArray(input.mutations)
+    ? input.mutations.map((mutation) => {
+      if (!mutation || typeof mutation !== 'object') return mutation;
+      const candidate = mutation as Record<string, unknown>;
+      return {
+        id: candidate.id,
+        sheetId: candidate.sheetId,
+        params: candidate.params,
+      };
+    })
+    : input.mutations;
   const operation = validateOperationEnvelope({
     schema: input.schema,
     operationId: input.operationId,
@@ -2308,24 +2330,21 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     baseRevision: input.baseRevision,
     createdAt: input.createdAt,
     ...(input.intent === undefined ? {} : { intent: input.intent }),
-    mutations: Array.isArray(input.mutations)
-      ? input.mutations.map((mutation) => {
-        if (!mutation || typeof mutation !== 'object') return mutation;
-        const candidate = mutation as Record<string, unknown>;
-        return {
-          id: candidate.id,
-          sheetId: candidate.sheetId,
-          params: candidate.params,
-        };
-      })
-      : input.mutations,
+    mutations: input.intent === undefined ? mutationInputs : [],
   });
+  const committedMutationInputs = input.intent === undefined
+    ? operation.mutations
+    : validateOperationEnvelope({
+      ...operation,
+      intent: undefined,
+      mutations: mutationInputs,
+    }).mutations;
   const mutations = (input.mutations as unknown[]).map((raw, index) => {
     if (!raw || typeof raw !== 'object') throw new Error(`committed mutation[${index}] must be an object`);
     const mutation = raw as Record<string, unknown>;
     if (!Array.isArray(mutation.affectedRanges)) throw new Error(`committed mutation[${index}] requires affectedRanges`);
     if (!mutation.affectedRanges.every(isRangeRef)) throw new Error(`committed mutation[${index}] contains invalid affectedRanges`);
-    return { ...operation.mutations[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
+    return { ...committedMutationInputs[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
   });
   return {
     ...operation,

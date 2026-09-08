@@ -1091,7 +1091,7 @@ export function SheetCanvas({
             {pageLoadState.status !== 'idle' ? (
               <StatePanel
                 kind={pageLoadState.status === 'error' ? 'error' : 'loading'}
-                className="absolute inset-0 z-40 min-h-0 rounded-none bg-white/90"
+                className={`absolute inset-0 z-40 min-h-0 rounded-none bg-white/90 ${pageLoadState.status === 'loading' ? 'pointer-events-none' : ''}`}
                 title={pageLoadState.status === 'error' ? 'Worksheet page unavailable' : 'Loading worksheet pages'}
                 description={pageLoadState.message}
                 actionLabel={pageLoadState.status === 'error' ? 'Retry' : undefined}

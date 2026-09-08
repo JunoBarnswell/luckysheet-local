@@ -60,6 +60,7 @@ fn restore_publishes_new_revision_and_rejects_unauthorized_or_foreign_history() 
     assert_eq!(result["manifest"]["pages"], json!(target.pages));
     assert_eq!(result["history"]["pageDeltas"][0]["before"], json!(current.pages[0]));
     assert_eq!(result["history"]["pageDeltas"][0]["after"], json!(target.pages[0]));
+    assert_eq!(result["history"]["requiredRole"], json!("owner"));
     assert_eq!(host.dispatch("restore", request).unwrap_err().code, "STALE_REVISION");
 }
 
@@ -119,4 +120,35 @@ fn analytics_rejects_stale_and_cancelled_requests_then_recovers() {
     assert_eq!(cancelled["error"]["code"], "ANALYTICS_TASK_CANCELLED");
     assert!(host.analytics.contains_key("a"));
     assert_eq!(host.dispatch("analytics.execute", query("a", 1)).unwrap(), expected);
+}
+
+#[test]
+fn workbook_context_capacity_is_bounded_and_close_reclaims_it() {
+    let mut host = KernelHost::default();
+    for index in 0..MAX_CONTEXTS {
+        host.dispatch(
+            "create",
+            json!({"unitId":format!("unit-{index}"),"name":format!("Unit {index}")}),
+        )
+        .unwrap();
+    }
+    let invalid = host
+        .dispatch(
+            "create",
+            json!({"unitId":"invalid","name":"Invalid","sheets":[]}),
+        )
+        .unwrap_err();
+    assert_eq!(invalid.code, "SHEET_INVALID");
+    assert!(!host.workbooks.contains_key("invalid"));
+
+    let rejected = host
+        .dispatch("create", json!({"unitId":"overflow","name":"Overflow"}))
+        .unwrap_err();
+    assert_eq!(rejected.code, "KERNEL_CONTEXT_LIMIT");
+    assert!(!host.workbooks.contains_key("overflow"));
+
+    host.dispatch("close", json!({"unitId":"unit-0"})).unwrap();
+    host.dispatch("create", json!({"unitId":"overflow","name":"Overflow"}))
+        .unwrap();
+    assert_eq!(host.workbooks.len(), MAX_CONTEXTS);
 }

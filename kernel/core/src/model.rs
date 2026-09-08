@@ -9,6 +9,18 @@ pub const MAX_COLUMNS: u32 = 16_384;
 pub const PAGE_ROWS: u32 = 1024;
 pub const PAGE_COLUMNS: u32 = 32;
 
+/// Authorization level attached to an immutable committed operation history.
+/// The command layer reuses this type so an undo cannot silently acquire a
+/// different policy from the forward mutation it replays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessRole {
+    Viewer,
+    Commenter,
+    Editor,
+    Owner,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Scalar {

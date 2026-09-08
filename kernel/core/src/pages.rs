@@ -5,18 +5,75 @@
 //! deliberately distinguishable from a page which is not in the directory.
 
 use crate::{
-    Cell, CellAddress, CellReader, FormulaError, KernelError, KernelResult, RangeRef, Scalar,
-    MAX_COLUMNS, MAX_ROWS, PAGE_COLUMNS, PAGE_ROWS, WORKBOOK_MANIFEST_VERSION,
+    AccessRole, Cell, CellAddress, CellReader, FormulaError, KernelError, KernelResult, MAX_COLUMNS, MAX_ROWS,
+    PAGE_COLUMNS, PAGE_ROWS, RangeRef, Scalar, WORKBOOK_MANIFEST_VERSION,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 const PAGE_MAGIC: &[u8; 4] = b"LSPG";
 const PAGE_ENCODING_VERSION: u8 = 1;
 const DEFAULT_PAGE_BUDGET: u64 = 64 * 1024 * 1024;
+
+fn default_workbook_metadata() -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        ("dateSystem".into(), json!("1900")),
+        ("numericContext".into(), json!({ "significantDigits": 15 })),
+        (
+            "collationContext".into(),
+            json!({
+                "cultureId": "invariant",
+                "caseSensitive": true,
+                "accentSensitive": true,
+                "numericTextMode": "lexical",
+                "blankOrder": "last",
+                "typeOrder": ["number", "text", "boolean", "error", "blank"],
+                "customLists": []
+            }),
+        ),
+        (
+            "calculationSettings".into(),
+            json!({
+                "mode": "automatic",
+                "iterativeCalculation": false,
+                "maximumIterations": 100,
+                "maximumChange": 0.001,
+                "precisionAsDisplayed": false,
+                "calculateBeforeSave": true,
+                "fullCalculationOnLoad": false
+            }),
+        ),
+        (
+            "dimensionMetrics".into(),
+            json!({
+                "normalFontFamily": "Calibri",
+                "normalFontSizePx": 14.6666666667,
+                "maximumDigitWidthPx": 7
+            }),
+        ),
+        (
+            "editingOptions".into(),
+            json!({
+                "allowEditDirectly": true,
+                "moveAfterEnter": true,
+                "enterDirection": "down",
+                "formulaAutoComplete": true,
+                "valueAutoComplete": true,
+                "fixedDecimalPlaces": null
+            }),
+        ),
+        ("definedNameModels".into(), json!([])),
+        (
+            "dataModel".into(),
+            json!({
+                "sources": [], "tables": [], "relationships": [], "views": []
+            }),
+        ),
+    ])
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,6 +190,7 @@ pub struct HistoryRecord {
     pub operation_id: String,
     pub base_revision: u64,
     pub revision: u64,
+    pub required_role: AccessRole,
     pub page_deltas: Vec<PageDelta>,
     pub metadata_before: Option<ManifestMetadata>,
     pub metadata_after: Option<ManifestMetadata>,
@@ -301,7 +359,7 @@ impl WorkbookPages {
                 revision: 0,
                 sheets,
                 pages: Vec::new(),
-                metadata: BTreeMap::new(),
+                metadata: default_workbook_metadata(),
             },
             pages: BTreeMap::new(),
             unavailable: BTreeSet::new(),
@@ -335,46 +393,95 @@ impl WorkbookPages {
         mut target: WorkbookManifest,
     ) -> KernelResult<ChangeSet> {
         if base_revision != self.manifest.revision || target.revision > base_revision {
-            return Err(KernelError::new("STALE_REVISION", "Restore revision is not based on the current workbook"));
+            return Err(KernelError::new(
+                "STALE_REVISION",
+                "Restore revision is not based on the current workbook",
+            ));
         }
         if target.unit_id != self.manifest.unit_id || operation_id.is_empty() {
-            return Err(KernelError::new("HISTORY_INVALID", "Restore requires the same workbook and an operation identity"));
+            return Err(KernelError::new(
+                "HISTORY_INVALID",
+                "Restore requires the same workbook and an operation identity",
+            ));
         }
         validate_manifest(&target)?;
-        target.revision = base_revision.checked_add(1).ok_or_else(||
-            KernelError::new("REVISION_OVERFLOW", "Workbook revision exhausted"))?;
-        let before: BTreeMap<_, _> = self.manifest.pages.iter().map(|p| (p.key(), p.clone())).collect();
+        target.revision = base_revision
+            .checked_add(1)
+            .ok_or_else(|| KernelError::new("REVISION_OVERFLOW", "Workbook revision exhausted"))?;
+        let before: BTreeMap<_, _> = self
+            .manifest
+            .pages
+            .iter()
+            .map(|p| (p.key(), p.clone()))
+            .collect();
         let after: BTreeMap<_, _> = target.pages.iter().map(|p| (p.key(), p.clone())).collect();
         let keys: BTreeSet<_> = before.keys().chain(after.keys()).cloned().collect();
-        let page_deltas: Vec<_> = keys.into_iter().filter(|k| before.get(k) != after.get(k)).map(|key| PageDelta {
-            before: before.get(&key).cloned(), after: after.get(&key).cloned(), key,
-        }).collect();
-        let metadata_changed = self.manifest.name != target.name || self.manifest.sheets != target.sheets || self.manifest.metadata != target.metadata;
+        let page_deltas: Vec<_> = keys
+            .into_iter()
+            .filter(|k| before.get(k) != after.get(k))
+            .map(|key| PageDelta {
+                before: before.get(&key).cloned(),
+                after: after.get(&key).cloned(),
+                key,
+            })
+            .collect();
+        let metadata_changed = self.manifest.name != target.name
+            || self.manifest.sheets != target.sheets
+            || self.manifest.metadata != target.metadata;
         let history = HistoryRecord {
-            operation_id: operation_id.clone(), base_revision, revision: target.revision,
+            operation_id: operation_id.clone(),
+            base_revision,
+            revision: target.revision,
+            required_role: AccessRole::Editor,
             page_deltas: page_deltas.clone(),
             metadata_before: metadata_changed.then(|| ManifestMetadata {
-                name: self.manifest.name.clone(), sheets: self.manifest.sheets.clone(), metadata: self.manifest.metadata.clone(),
+                name: self.manifest.name.clone(),
+                sheets: self.manifest.sheets.clone(),
+                metadata: self.manifest.metadata.clone(),
             }),
             metadata_after: metadata_changed.then(|| ManifestMetadata {
-                name: target.name.clone(), sheets: target.sheets.clone(), metadata: target.metadata.clone(),
+                name: target.name.clone(),
+                sheets: target.sheets.clone(),
+                metadata: target.metadata.clone(),
             }),
         };
         let mut affected_ranges = Vec::new();
         if metadata_changed {
             for sheet in self.manifest.sheets.iter().chain(target.sheets.iter()) {
-                let range = RangeRef { sheet_id: sheet.sheet_id.clone(), start_row: 0, end_row: sheet.row_count - 1, start_column: 0, end_column: sheet.column_count - 1 };
-                if !affected_ranges.contains(&range) { affected_ranges.push(range); }
+                let range = RangeRef {
+                    sheet_id: sheet.sheet_id.clone(),
+                    start_row: 0,
+                    end_row: sheet.row_count - 1,
+                    start_column: 0,
+                    end_column: sheet.column_count - 1,
+                };
+                if !affected_ranges.contains(&range) {
+                    affected_ranges.push(range);
+                }
             }
         } else {
-            affected_ranges.extend(page_deltas.iter().filter_map(|delta| delta.after.as_ref().and_then(|d| d.occupied_range.clone())
-                .or_else(|| delta.before.as_ref().and_then(|d| d.occupied_range.clone()))));
+            affected_ranges.extend(page_deltas.iter().filter_map(|delta| {
+                delta
+                    .after
+                    .as_ref()
+                    .and_then(|d| d.occupied_range.clone())
+                    .or_else(|| delta.before.as_ref().and_then(|d| d.occupied_range.clone()))
+            }));
         }
         let next = Self::open_reusing(target.clone(), self)?;
         let changes = ChangeSet {
-            operation_id, base_revision, revision: target.revision, manifest: target,
-            pages: Vec::new(), removed_pages: page_deltas.iter().filter(|p| p.after.is_none()).map(|p| p.key.clone()).collect(),
-            affected_ranges, history,
+            operation_id,
+            base_revision,
+            revision: target.revision,
+            manifest: target,
+            pages: Vec::new(),
+            removed_pages: page_deltas
+                .iter()
+                .filter(|p| p.after.is_none())
+                .map(|p| p.key.clone())
+                .collect(),
+            affected_ranges,
+            history,
         };
         *self = next;
         Ok(changes)
@@ -390,37 +497,73 @@ impl WorkbookPages {
         record: HistoryRecord,
     ) -> KernelResult<ChangeSet> {
         if base_revision != self.manifest.revision {
-            return Err(KernelError::new("STALE_REVISION", "Undo base revision is stale").recover("refresh-manifest"));
+            return Err(
+                KernelError::new("STALE_REVISION", "Undo base revision is stale")
+                    .recover("refresh-manifest"),
+            );
         }
         if record.operation_id.trim().is_empty()
-            || record.revision != record.base_revision.checked_add(1).ok_or_else(|| KernelError::new("HISTORY_INVALID", "History revision overflow"))?
+            || record.revision
+                != record.base_revision.checked_add(1).ok_or_else(|| {
+                    KernelError::new("HISTORY_INVALID", "History revision overflow")
+                })?
             || record.revision > base_revision
             || record.metadata_before.is_some() != record.metadata_after.is_some()
         {
-            return Err(KernelError::new("HISTORY_INVALID", "Undo history has an invalid revision or metadata transition"));
+            return Err(KernelError::new(
+                "HISTORY_INVALID",
+                "Undo history has an invalid revision or metadata transition",
+            ));
         }
-        let current: BTreeMap<_, _> = self.manifest.pages.iter().cloned().map(|d| (d.key(), d)).collect();
+        let current: BTreeMap<_, _> = self
+            .manifest
+            .pages
+            .iter()
+            .cloned()
+            .map(|d| (d.key(), d))
+            .collect();
         let mut seen = BTreeSet::new();
         for delta in &record.page_deltas {
-            if !seen.insert(delta.key.clone()) || delta.before == delta.after || current.get(&delta.key) != delta.after.as_ref() {
-                return Err(KernelError::new("UNDO_CONFLICT", "A later operation changed a page owned by the undo target")
-                    .at(format!("{}:{}:{}", delta.key.sheet_id, delta.key.page_row, delta.key.page_column))
-                    .recover("refresh-history"));
+            if !seen.insert(delta.key.clone())
+                || delta.before == delta.after
+                || current.get(&delta.key) != delta.after.as_ref()
+            {
+                return Err(KernelError::new(
+                    "UNDO_CONFLICT",
+                    "A later operation changed a page owned by the undo target",
+                )
+                .at(format!(
+                    "{}:{}:{}",
+                    delta.key.sheet_id, delta.key.page_row, delta.key.page_column
+                ))
+                .recover("refresh-history"));
             }
         }
         let mut target = self.manifest.clone();
         if let (Some(before), Some(after)) = (&record.metadata_before, &record.metadata_after) {
-            let current_metadata = ManifestMetadata { name: target.name.clone(), sheets: target.sheets.clone(), metadata: target.metadata.clone() };
+            let current_metadata = ManifestMetadata {
+                name: target.name.clone(),
+                sheets: target.sheets.clone(),
+                metadata: target.metadata.clone(),
+            };
             if &current_metadata != after {
-                return Err(KernelError::new("UNDO_CONFLICT", "A later operation changed workbook metadata owned by the undo target").recover("refresh-history"));
+                return Err(KernelError::new(
+                    "UNDO_CONFLICT",
+                    "A later operation changed workbook metadata owned by the undo target",
+                )
+                .recover("refresh-history"));
             }
             target.name = before.name.clone();
             target.sheets = before.sheets.clone();
             target.metadata = before.metadata.clone();
         }
-        target.pages.retain(|descriptor| !seen.contains(&descriptor.key()));
+        target
+            .pages
+            .retain(|descriptor| !seen.contains(&descriptor.key()));
         for delta in &record.page_deltas {
-            if let Some(before) = &delta.before { target.pages.push(before.clone()); }
+            if let Some(before) = &delta.before {
+                target.pages.push(before.clone());
+            }
         }
         target.pages.sort_by_key(PageDescriptor::key);
         self.restore_manifest(operation_id, base_revision, target)
@@ -551,6 +694,85 @@ impl WorkbookPages {
         })
     }
 
+    /// Resolves Excel's current-region boundary inside the canonical page
+    /// store. The entire calculation stays in Rust so a UI projection never
+    /// performs one host call per cell.
+    pub fn resolve_current_region(
+        &self,
+        sheet_id: &str,
+        active_row: u32,
+        active_column: u32,
+    ) -> KernelResult<RangeRef> {
+        let sheet = self.sheet_id(sheet_id)?;
+        if active_row >= sheet.row_count || active_column >= sheet.column_count {
+            return Err(KernelError::new(
+                "CELL_ADDRESS_INVALID",
+                "Current-region address is outside the worksheet",
+            ));
+        }
+        let single = || RangeRef {
+            sheet_id: sheet_id.into(),
+            start_row: active_row,
+            end_row: active_row,
+            start_column: active_column,
+            end_column: active_column,
+        };
+        let Some(occupied_range) = self.sheet_stats(sheet_id)?.occupied_range else {
+            return Ok(single());
+        };
+        let mut occupied = HashSet::new();
+        self.read_range(&occupied_range, &mut |address, cell| {
+            if cell.formula.is_some() || !matches!(cell.value, Scalar::Null) {
+                occupied.insert((address.row, address.column));
+            }
+            Ok(())
+        })?;
+        if !occupied.contains(&(active_row, active_column)) {
+            return Ok(single());
+        }
+        let mut start_row = active_row;
+        let mut end_row = active_row;
+        let mut start_column = active_column;
+        let mut end_column = active_column;
+        let mut grew = true;
+        while grew {
+            grew = false;
+            while start_row > 0
+                && (start_column..=end_column)
+                    .any(|column| occupied.contains(&(start_row - 1, column)))
+            {
+                start_row -= 1;
+                grew = true;
+            }
+            while end_row + 1 < sheet.row_count
+                && (start_column..=end_column)
+                    .any(|column| occupied.contains(&(end_row + 1, column)))
+            {
+                end_row += 1;
+                grew = true;
+            }
+            while start_column > 0
+                && (start_row..=end_row).any(|row| occupied.contains(&(row, start_column - 1)))
+            {
+                start_column -= 1;
+                grew = true;
+            }
+            while end_column + 1 < sheet.column_count
+                && (start_row..=end_row).any(|row| occupied.contains(&(row, end_column + 1)))
+            {
+                end_column += 1;
+                grew = true;
+            }
+        }
+        Ok(RangeRef {
+            sheet_id: sheet_id.into(),
+            start_row,
+            end_row,
+            start_column,
+            end_column,
+        })
+    }
+
     pub fn apply_writes(
         &mut self,
         operation_id: impl Into<String>,
@@ -571,51 +793,136 @@ impl WorkbookPages {
         next_manifest: WorkbookManifest,
     ) -> KernelResult<ChangeSet> {
         let operation_id = operation_id.into();
-        if operation_id.trim().is_empty() { return Err(KernelError::new("OPERATION_INVALID", "operationId is required")); }
-        if base_revision != self.manifest.revision { return Err(KernelError::new("STALE_REVISION", "Base revision is stale").recover("refresh-manifest")); }
-        if next_manifest.schema != "WorkbookManifest" || next_manifest.version != WORKBOOK_MANIFEST_VERSION
-            || next_manifest.unit_id != self.manifest.unit_id || next_manifest.revision != base_revision {
-            return Err(KernelError::new("MANIFEST_INVALID", "Transaction manifest must identify the current workbook version"));
+        if operation_id.trim().is_empty() {
+            return Err(KernelError::new(
+                "OPERATION_INVALID",
+                "operationId is required",
+            ));
+        }
+        if base_revision != self.manifest.revision {
+            return Err(KernelError::new("STALE_REVISION", "Base revision is stale")
+                .recover("refresh-manifest"));
+        }
+        if next_manifest.schema != "WorkbookManifest"
+            || next_manifest.version != WORKBOOK_MANIFEST_VERSION
+            || next_manifest.unit_id != self.manifest.unit_id
+            || next_manifest.revision != base_revision
+        {
+            return Err(KernelError::new(
+                "MANIFEST_INVALID",
+                "Transaction manifest must identify the current workbook version",
+            ));
         }
         validate_sheets(&next_manifest.sheets)?;
-        let next_revision = base_revision.checked_add(1).ok_or_else(|| KernelError::new("REVISION_OVERFLOW", "Workbook revision exhausted"))?;
+        let next_revision = base_revision
+            .checked_add(1)
+            .ok_or_else(|| KernelError::new("REVISION_OVERFLOW", "Workbook revision exhausted"))?;
         let mut touched: BTreeMap<PageKey, CellPage> = BTreeMap::new();
-        let next_sheets: BTreeMap<&str, &SheetManifest> = next_manifest.sheets.iter().map(|s|(s.sheet_id.as_str(),s)).collect();
+        let next_sheets: BTreeMap<&str, &SheetManifest> = next_manifest
+            .sheets
+            .iter()
+            .map(|s| (s.sheet_id.as_str(), s))
+            .collect();
         for write in &writes {
             write.address.validate()?;
-            if let Some(cell) = &write.cell { cell.value.validate()?; }
+            if let Some(cell) = &write.cell {
+                cell.value.validate()?;
+            }
             let target = next_sheets.get(write.address.sheet_id.as_str());
-            let inside = target.is_some_and(|s| write.address.row < s.row_count && write.address.column < s.column_count);
+            let inside = target.is_some_and(|s| {
+                write.address.row < s.row_count && write.address.column < s.column_count
+            });
             // Clearing an address that was removed by this same structural
             // transaction is valid. A value write beyond the new extent is not.
             if !inside {
-                let existed = self.manifest.sheets.iter().any(|s| s.sheet_id == write.address.sheet_id
-                    && write.address.row < s.row_count && write.address.column < s.column_count);
-                if write.cell.is_some() || !existed { return Err(KernelError::new("CELL_ADDRESS_INVALID", "Write is outside the transaction worksheet extent")); }
-                if target.is_none() { continue; }
+                let existed = self.manifest.sheets.iter().any(|s| {
+                    s.sheet_id == write.address.sheet_id
+                        && write.address.row < s.row_count
+                        && write.address.column < s.column_count
+                });
+                if write.cell.is_some() || !existed {
+                    return Err(KernelError::new(
+                        "CELL_ADDRESS_INVALID",
+                        "Write is outside the transaction worksheet extent",
+                    ));
+                }
+                if target.is_none() {
+                    continue;
+                }
             }
             let key = PageKey::for_address(&write.address);
-            if self.unavailable.contains(&key) { return Err(KernelError::new("DATA_PAGE_UNAVAILABLE", "Cannot write an unloaded page").at(format!("{}:{}:{}",key.sheet_id,key.page_row,key.page_column))); }
-            let page = touched.entry(key.clone()).or_insert_with(||self.pages.get(&key).map(|p|(*p.page).clone()).unwrap_or_default());
-            set_cell(page,&write.address,write.cell.as_ref())?;
+            if self.unavailable.contains(&key) {
+                return Err(KernelError::new(
+                    "DATA_PAGE_UNAVAILABLE",
+                    "Cannot write an unloaded page",
+                )
+                .at(format!(
+                    "{}:{}:{}",
+                    key.sheet_id, key.page_row, key.page_column
+                )));
+            }
+            let page = touched.entry(key.clone()).or_insert_with(|| {
+                self.pages
+                    .get(&key)
+                    .map(|p| (*p.page).clone())
+                    .unwrap_or_default()
+            });
+            set_cell(page, &write.address, write.cell.as_ref())?;
         }
-        let mut directory: BTreeMap<PageKey, PageDescriptor> = self.manifest.pages.iter().cloned().map(|d|(d.key(),d)).collect();
+        let mut directory: BTreeMap<PageKey, PageDescriptor> = self
+            .manifest
+            .pages
+            .iter()
+            .cloned()
+            .map(|d| (d.key(), d))
+            .collect();
         let mut removed = BTreeSet::new();
         // Extent changes own removal of cells beyond the final logical extent.
         // Boundary pages are rewritten in the same transaction; no intermediate
         // clear revision is ever exposed.
         for (key, descriptor) in &directory {
-            let Some(sheet) = next_sheets.get(key.sheet_id.as_str()) else { removed.insert(key.clone()); continue; };
+            let Some(sheet) = next_sheets.get(key.sheet_id.as_str()) else {
+                removed.insert(key.clone());
+                continue;
+            };
             let row_start = key.page_row * PAGE_ROWS;
             let column_start = key.page_column * PAGE_COLUMNS;
-            if row_start >= sheet.row_count || column_start >= sheet.column_count { removed.insert(key.clone()); continue; }
-            if descriptor.occupied_range.as_ref().is_some_and(|r|r.end_row >= sheet.row_count || r.end_column >= sheet.column_count) {
-                if self.unavailable.contains(key) { return Err(KernelError::new("DATA_PAGE_UNAVAILABLE", "Structural change requires the boundary page").at(format!("{}:{}:{}",key.sheet_id,key.page_row,key.page_column))); }
-                let page = touched.entry(key.clone()).or_insert_with(||(*self.pages.get(key).expect("manifest page is resident").page).clone());
+            if row_start >= sheet.row_count || column_start >= sheet.column_count {
+                removed.insert(key.clone());
+                continue;
+            }
+            if descriptor
+                .occupied_range
+                .as_ref()
+                .is_some_and(|r| r.end_row >= sheet.row_count || r.end_column >= sheet.column_count)
+            {
+                if self.unavailable.contains(key) {
+                    return Err(KernelError::new(
+                        "DATA_PAGE_UNAVAILABLE",
+                        "Structural change requires the boundary page",
+                    )
+                    .at(format!(
+                        "{}:{}:{}",
+                        key.sheet_id, key.page_row, key.page_column
+                    )));
+                }
+                let page = touched.entry(key.clone()).or_insert_with(|| {
+                    (*self.pages.get(key).expect("manifest page is resident").page).clone()
+                });
                 for column in 0..PAGE_COLUMNS {
                     for row in 0..PAGE_ROWS {
-                        if row_start+row >= sheet.row_count || column_start+column >= sheet.column_count {
-                            set_cell(page,&CellAddress{sheet_id:key.sheet_id.clone(),row:row_start+row,column:column_start+column},None)?;
+                        if row_start + row >= sheet.row_count
+                            || column_start + column >= sheet.column_count
+                        {
+                            set_cell(
+                                page,
+                                &CellAddress {
+                                    sheet_id: key.sheet_id.clone(),
+                                    row: row_start + row,
+                                    column: column_start + column,
+                                },
+                                None,
+                            )?;
                         }
                     }
                 }
@@ -624,60 +931,162 @@ impl WorkbookPages {
         let mut replacements: BTreeMap<PageKey, PageStore> = BTreeMap::new();
         let mut changed = Vec::new();
         for (key, page) in touched {
-            if removed.contains(&key) { continue; }
-            let (cell_count, occupied_range) = page_stats(&page,&key);
-            if cell_count == 0 { if directory.contains_key(&key) { removed.insert(key); } continue; }
+            if removed.contains(&key) {
+                continue;
+            }
+            let (cell_count, occupied_range) = page_stats(&page, &key);
+            if cell_count == 0 {
+                if directory.contains_key(&key) {
+                    removed.insert(key);
+                }
+                continue;
+            }
             let bytes = encode_page(&page)?;
-            if bytes.len() > 1024*1024 { return Err(KernelError::new("PAGE_SIZE_LIMIT", "Encoded page exceeds 1 MiB")); }
+            if bytes.len() > 1024 * 1024 {
+                return Err(KernelError::new(
+                    "PAGE_SIZE_LIMIT",
+                    "Encoded page exceeds 1 MiB",
+                ));
+            }
             let digest = checksum(&bytes);
-            if directory.get(&key).is_some_and(|old|old.checksum == digest && old.cell_count == cell_count && old.occupied_range == occupied_range) { continue; }
-            let descriptor = PageDescriptor{sheet_id:key.sheet_id.clone(),page_row:key.page_row,page_column:key.page_column,
-                revision:next_revision,checksum:digest,byte_length:bytes.len() as u32,cell_count,occupied_range};
-            directory.insert(key.clone(),descriptor.clone());
-            changed.push(PagePayload{descriptor,payload_base64:b64_encode(&bytes)});
-            replacements.insert(key,PageStore{page:Arc::new(page),dirty:true,bytes:bytes.len() as u64});
+            if directory.get(&key).is_some_and(|old| {
+                old.checksum == digest
+                    && old.cell_count == cell_count
+                    && old.occupied_range == occupied_range
+            }) {
+                continue;
+            }
+            let descriptor = PageDescriptor {
+                sheet_id: key.sheet_id.clone(),
+                page_row: key.page_row,
+                page_column: key.page_column,
+                revision: next_revision,
+                checksum: digest,
+                byte_length: bytes.len() as u32,
+                cell_count,
+                occupied_range,
+            };
+            directory.insert(key.clone(), descriptor.clone());
+            changed.push(PagePayload {
+                descriptor,
+                payload_base64: b64_encode(&bytes),
+            });
+            replacements.insert(
+                key,
+                PageStore {
+                    page: Arc::new(page),
+                    dirty: true,
+                    bytes: bytes.len() as u64,
+                },
+            );
         }
-        for key in &removed { directory.remove(key); }
+        for key in &removed {
+            directory.remove(key);
+        }
         let mut committed = next_manifest;
         committed.revision = next_revision;
         committed.pages = directory.into_values().collect();
         validate_manifest(&committed)?;
-        let next_descriptors:BTreeMap<PageKey,PageDescriptor> = committed.pages.iter().cloned().map(|d|(d.key(),d)).collect();
-        let previous_descriptors:BTreeMap<PageKey,PageDescriptor> = self.manifest.pages.iter().cloned().map(|d|(d.key(),d)).collect();
-        let all_keys:BTreeSet<PageKey> = previous_descriptors.keys().chain(next_descriptors.keys()).cloned().collect();
-        let page_deltas:Vec<PageDelta> = all_keys.into_iter().filter_map(|key|{
-            let before=previous_descriptors.get(&key).cloned(); let after=next_descriptors.get(&key).cloned();
-            if before == after { None } else { Some(PageDelta{key,before,after}) }
-        }).collect();
-        let metadata_before = if committed.name != self.manifest.name || committed.sheets != self.manifest.sheets || committed.metadata != self.manifest.metadata {
-            Some(ManifestMetadata{name:self.manifest.name.clone(),sheets:self.manifest.sheets.clone(),metadata:self.manifest.metadata.clone()})
-        } else { None };
-        let metadata_after = metadata_before.as_ref().map(|_| ManifestMetadata{name:committed.name.clone(),sheets:committed.sheets.clone(),metadata:committed.metadata.clone()});
+        let next_descriptors: BTreeMap<PageKey, PageDescriptor> = committed
+            .pages
+            .iter()
+            .cloned()
+            .map(|d| (d.key(), d))
+            .collect();
+        let previous_descriptors: BTreeMap<PageKey, PageDescriptor> = self
+            .manifest
+            .pages
+            .iter()
+            .cloned()
+            .map(|d| (d.key(), d))
+            .collect();
+        let all_keys: BTreeSet<PageKey> = previous_descriptors
+            .keys()
+            .chain(next_descriptors.keys())
+            .cloned()
+            .collect();
+        let page_deltas: Vec<PageDelta> = all_keys
+            .into_iter()
+            .filter_map(|key| {
+                let before = previous_descriptors.get(&key).cloned();
+                let after = next_descriptors.get(&key).cloned();
+                if before == after {
+                    None
+                } else {
+                    Some(PageDelta { key, before, after })
+                }
+            })
+            .collect();
+        let metadata_before = if committed.name != self.manifest.name
+            || committed.sheets != self.manifest.sheets
+            || committed.metadata != self.manifest.metadata
+        {
+            Some(ManifestMetadata {
+                name: self.manifest.name.clone(),
+                sheets: self.manifest.sheets.clone(),
+                metadata: self.manifest.metadata.clone(),
+            })
+        } else {
+            None
+        };
+        let metadata_after = metadata_before.as_ref().map(|_| ManifestMetadata {
+            name: committed.name.clone(),
+            sheets: committed.sheets.clone(),
+            metadata: committed.metadata.clone(),
+        });
         // Reserve and evict against a private Arc-backed candidate. Every error
         // leaves both the committed directory and its resident cache untouched.
-        let mut candidate=self.clone();
+        let mut candidate = self.clone();
         for key in &removed {
-            if let Some(page)=candidate.pages.remove(key) { candidate.loaded_bytes-=page.bytes; }
+            if let Some(page) = candidate.pages.remove(key) {
+                candidate.loaded_bytes -= page.bytes;
+            }
             candidate.unavailable.remove(key);
         }
         for key in replacements.keys() {
-            if let Some(page)=candidate.pages.remove(key) { candidate.loaded_bytes-=page.bytes; }
+            if let Some(page) = candidate.pages.remove(key) {
+                candidate.loaded_bytes -= page.bytes;
+            }
         }
-        let needed:u64=replacements.values().map(|p|p.bytes).sum();
+        let needed: u64 = replacements.values().map(|p| p.bytes).sum();
         candidate.evict_for(needed)?;
-        for (key,page) in replacements {
-            candidate.loaded_bytes+=page.bytes;
+        for (key, page) in replacements {
+            candidate.loaded_bytes += page.bytes;
             candidate.unavailable.remove(&key);
-            candidate.pages.insert(key,page);
+            candidate.pages.insert(key, page);
         }
-        candidate.manifest=committed;
+        candidate.manifest = committed;
         // Dirty scope is page-bounded, not a million-element address list.
-        let affected_ranges=page_deltas.iter().filter_map(|delta|delta.after.as_ref().and_then(|d|d.occupied_range.clone())
-            .or_else(||delta.before.as_ref().and_then(|d|d.occupied_range.clone()))).collect();
-        let history=HistoryRecord{operation_id:operation_id.clone(),base_revision,revision:next_revision,page_deltas,metadata_before,metadata_after};
-        let result=ChangeSet{operation_id,base_revision,revision:next_revision,manifest:candidate.manifest.clone(),
-            pages:changed,removed_pages:removed.into_iter().collect(),affected_ranges,history};
-        *self=candidate;
+        let affected_ranges = page_deltas
+            .iter()
+            .filter_map(|delta| {
+                delta
+                    .after
+                    .as_ref()
+                    .and_then(|d| d.occupied_range.clone())
+                    .or_else(|| delta.before.as_ref().and_then(|d| d.occupied_range.clone()))
+            })
+            .collect();
+        let history = HistoryRecord {
+            operation_id: operation_id.clone(),
+            base_revision,
+            revision: next_revision,
+            required_role: AccessRole::Editor,
+            page_deltas,
+            metadata_before,
+            metadata_after,
+        };
+        let result = ChangeSet {
+            operation_id,
+            base_revision,
+            revision: next_revision,
+            manifest: candidate.manifest.clone(),
+            pages: changed,
+            removed_pages: removed.into_iter().collect(),
+            affected_ranges,
+            history,
+        };
+        *self = candidate;
         Ok(result)
     }
 
@@ -841,28 +1250,58 @@ impl CellReader for WorkbookPages {
         self.sheet_id(&range.sheet_id)?;
         let mut groups: BTreeMap<u32, Vec<(&PageDescriptor, &CellPage)>> = BTreeMap::new();
         for descriptor in &self.manifest.pages {
-            if descriptor.sheet_id != range.sheet_id || !descriptor.occupied_range.as_ref().is_some_and(|r| r.intersects(range)) { continue; }
+            if descriptor.sheet_id != range.sheet_id
+                || !descriptor
+                    .occupied_range
+                    .as_ref()
+                    .is_some_and(|r| r.intersects(range))
+            {
+                continue;
+            }
             let key = descriptor.key();
-            let page = self.pages.get(&key).ok_or_else(|| KernelError::new("DATA_PAGE_UNAVAILABLE", "Range requires an unloaded page").at(format!("{}:{}:{}",key.sheet_id,key.page_row,key.page_column)))?;
-            groups.entry(key.page_row).or_default().push((descriptor,&page.page));
+            let page = self.pages.get(&key).ok_or_else(|| {
+                KernelError::new("DATA_PAGE_UNAVAILABLE", "Range requires an unloaded page").at(
+                    format!("{}:{}:{}", key.sheet_id, key.page_row, key.page_column),
+                )
+            })?;
+            groups
+                .entry(key.page_row)
+                .or_default()
+                .push((descriptor, &page.page));
         }
         // Page directories and column tags skip implicit blank space. Within a
         // page strip the visitor remains row-major for deterministic formulas.
         for (page_row, mut pages) in groups {
-            pages.sort_by_key(|(descriptor,_)| descriptor.page_column);
+            pages.sort_by_key(|(descriptor, _)| descriptor.page_column);
             let first_row = range.start_row.max(page_row * PAGE_ROWS);
             let last_row = range.end_row.min((page_row + 1) * PAGE_ROWS - 1);
             for row in first_row..=last_row {
-                for (descriptor,page) in &pages {
-                    let occupied = descriptor.occupied_range.as_ref().expect("directory statistics are validated");
-                    if row < occupied.start_row || row > occupied.end_row { continue; }
+                for (descriptor, page) in &pages {
+                    let occupied = descriptor
+                        .occupied_range
+                        .as_ref()
+                        .expect("directory statistics are validated");
+                    if row < occupied.start_row || row > occupied.end_row {
+                        continue;
+                    }
                     let first_column = range.start_column.max(occupied.start_column);
                     let last_column = range.end_column.min(occupied.end_column);
                     for column in first_column..=last_column {
                         let slot = (row % PAGE_ROWS) as usize;
-                        if page.columns[(column % PAGE_COLUMNS) as usize].as_ref().is_none_or(|c| c.tags[slot] == 0) { continue; }
-                        let address = CellAddress { sheet_id: range.sheet_id.clone(), row, column };
-                        if let Some(cell) = get_cell(page,&address)? { visitor(address,cell)?; }
+                        if page.columns[(column % PAGE_COLUMNS) as usize]
+                            .as_ref()
+                            .is_none_or(|c| c.tags[slot] == 0)
+                        {
+                            continue;
+                        }
+                        let address = CellAddress {
+                            sheet_id: range.sheet_id.clone(),
+                            row,
+                            column,
+                        };
+                        if let Some(cell) = get_cell(page, &address)? {
+                            visitor(address, cell)?;
+                        }
                     }
                 }
             }
@@ -1465,6 +1904,82 @@ mod tests {
             row,
             column,
         }
+    }
+
+    #[test]
+    fn new_workbooks_publish_complete_canonical_metadata() {
+        let manifest = store().manifest();
+        for key in [
+            "dateSystem",
+            "numericContext",
+            "collationContext",
+            "calculationSettings",
+            "dimensionMetrics",
+            "editingOptions",
+            "definedNameModels",
+            "dataModel",
+        ] {
+            assert!(
+                manifest.metadata.contains_key(key),
+                "missing canonical metadata: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_region_resolves_in_kernel_and_rejects_unloaded_pages() {
+        let mut pages = store();
+        let committed = pages
+            .apply_writes(
+                "region",
+                0,
+                vec![
+                    CellWrite {
+                        address: address(0, 0),
+                        cell: Some(Cell {
+                            value: Scalar::Text("a".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                    CellWrite {
+                        address: address(0, 1),
+                        cell: Some(Cell {
+                            value: Scalar::Text("b".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                    CellWrite {
+                        address: address(1, 0),
+                        cell: Some(Cell {
+                            value: Scalar::Text("c".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                    CellWrite {
+                        address: address(3, 3),
+                        cell: Some(Cell {
+                            value: Scalar::Text("outside".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            pages.resolve_current_region("s", 0, 0).unwrap(),
+            RangeRef {
+                sheet_id: "s".into(),
+                start_row: 0,
+                end_row: 1,
+                start_column: 0,
+                end_column: 1,
+            }
+        );
+        let unloaded = WorkbookPages::open(committed.manifest).unwrap();
+        assert_eq!(
+            unloaded.resolve_current_region("s", 0, 0).unwrap_err().code,
+            "DATA_PAGE_UNAVAILABLE"
+        );
     }
 
     #[test]

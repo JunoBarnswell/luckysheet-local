@@ -9,12 +9,16 @@ import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookManifestEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntityRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,9 +28,11 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
     @Autowired private WorkbookOperationService operations;
     @Autowired private WorkbookEntityRepository workbooks;
     @Autowired private WorkbookManifestEntityRepository manifests;
+    @Autowired private WorkbookSourceArtifactEntityRepository artifacts;
     @Autowired private KernelHostClient kernel;
     @Autowired private GuestShareService shares;
     @Autowired private ObjectMapper mapper;
+    @Autowired private PlatformTransactionManager transactionManager;
 
     @Test
     void createPublishesNativeManifestAndReopensAfterProcessRestart() {
@@ -71,6 +77,10 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
         assertEquals(1, created.manifest().path("pages").size());
         assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 0).isPresent());
         assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 1).isPresent());
+        kernel.call("open", mapper.createObjectNode().set("manifest", created.manifest()));
+        var load = mapper.createObjectNode().put("unitId", created.unitId()).put("revision", created.revision());
+        load.set("page", operations.page(created.unitId(), created.revision(), "sheet-1", 0, 0, "template-owner"));
+        kernel.call("page.load", load);
         var address = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 3);
         var read = kernel.call("cell.get", mapper.createObjectNode()
                 .put("unitId", "native-template-create").put("revision", 1).set("address", address));
@@ -167,6 +177,79 @@ class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
                 () -> catalog.getArtifact(unitId, "export-owner")).code());
         assertEquals("CONFLICT", assertThrows(ServiceException.class,
                 () -> catalog.exportArtifact(unitId, 0, "stale.xlsx", "xlsx", "export-owner")).code());
+        var refreshed = catalog.exportArtifact(unitId, 1, null, null, "export-owner");
+        assertEquals("export.xlsx", refreshed.fileName());
+        assertEquals(1, refreshed.revision());
+        assertEquals("xlsx", refreshed.nativeMetadata().path("format").asText());
+    }
+
+    @Test
+    void repeatedExportDeletesReplacedArtifactAfterCommit() throws Exception {
+        String unitId = "native-export-repeat";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+
+        var first = catalog.exportArtifact(unitId, 0, "first.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path firstPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertTrue(java.nio.file.Files.isRegularFile(firstPath));
+
+        var second = catalog.exportArtifact(unitId, 0, "second.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path secondPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertNotEquals(firstPath, secondPath);
+        assertEquals(first.checksum(), second.checksum());
+        assertFalse(java.nio.file.Files.exists(firstPath));
+        assertTrue(java.nio.file.Files.isRegularFile(secondPath));
+    }
+
+    @Test
+    void exportRollbackRetainsPreviousArtifactAndRemovesCandidate() throws Exception {
+        String unitId = "native-export-rollback";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "first.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path firstPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        AtomicReference<java.nio.file.Path> candidatePath = new AtomicReference<>();
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            catalog.exportArtifact(unitId, 0, "second.xlsx", "xlsx", "export-owner");
+            candidatePath.set(java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath()));
+            assertTrue(java.nio.file.Files.isRegularFile(candidatePath.get()));
+            status.setRollbackOnly();
+        });
+
+        assertTrue(java.nio.file.Files.isRegularFile(firstPath));
+        assertFalse(java.nio.file.Files.exists(candidatePath.get()));
+        assertEquals(firstPath.toString(), catalog.getArtifact(unitId, "export-owner").getStoragePath());
+    }
+
+    @Test
+    void purgeDeletesCapturedArtifactAfterCommit() throws Exception {
+        String unitId = "native-export-purge";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "purge.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path artifactPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertTrue(java.nio.file.Files.isRegularFile(artifactPath));
+
+        catalog.moveToTrash(unitId, "export-owner");
+        catalog.purge(unitId, "export-owner");
+
+        assertFalse(java.nio.file.Files.exists(artifactPath));
+        assertTrue(artifacts.findById(unitId).isEmpty());
+    }
+
+    @Test
+    void purgeRollbackRetainsCapturedArtifact() throws Exception {
+        String unitId = "native-export-purge-rollback";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "purge.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path artifactPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        catalog.moveToTrash(unitId, "export-owner");
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            catalog.purge(unitId, "export-owner");
+            status.setRollbackOnly();
+        });
+
+        assertTrue(java.nio.file.Files.isRegularFile(artifactPath));
+        assertEquals(artifactPath.toString(), catalog.getArtifact(unitId, "export-owner").getStoragePath());
     }
 
     @Test

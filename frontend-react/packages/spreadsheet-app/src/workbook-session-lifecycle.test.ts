@@ -26,7 +26,7 @@ test('cloud session construction defers manifest-derived persistence metadata un
       manifest,
       pages: [],
       revision: manifest.revision,
-      access: { unitId: manifest.unitId, role: 'owner' },
+      access: { unitId: manifest.unitId, role: 'owner', nextClientSequence: 1 },
     },
   });
   try {
@@ -36,6 +36,48 @@ test('cloud session construction defers manifest-derived persistence metadata un
     assert.equal(snapshot.activeSheetId, 'imported-sheet');
     assert.equal(snapshot.phase, 'loading');
     assert.equal(snapshot.persistenceChecksum, '');
+  } finally {
+    session.dispose();
+  }
+});
+
+test('collaboration socket closure does not revoke the authoritative HTTP edit session', async () => {
+  await initializeNodeKernel();
+  const manifest = {
+    schema: 'WorkbookManifest' as const,
+    version: 11 as const,
+    unitId: 'unit-collaboration-status',
+    name: 'Connected workbook',
+    revision: 0,
+    sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 128, columnCount: 16, metadata: {} }],
+    pages: [],
+    metadata: {},
+  };
+  const session = new WorkbookSession({
+    initialPhase: 'ready',
+    resolution: {
+      schema: 'WorkbookResolution',
+      unitId: manifest.unitId,
+      source: 'remote',
+      mode: 'remote',
+      lifecycle: 'active',
+      manifest,
+      pages: [],
+      revision: manifest.revision,
+      access: { unitId: manifest.unitId, role: 'owner', nextClientSequence: 1 },
+    },
+  });
+  try {
+    const runtime = session['runtime'];
+    runtime.remoteConnected = true;
+    runtime.handlers.onAccessRole?.('owner');
+    assert.equal(session.getUiSnapshot().permissions.editCell, true);
+
+    runtime.handlers.onCollabStatus?.('closed');
+
+    assert.equal(runtime.remoteConnected, true);
+    assert.equal(session.getUiSnapshot().collabStatus, 'closed');
+    assert.equal(session.getUiSnapshot().permissions.editCell, true);
   } finally {
     session.dispose();
   }

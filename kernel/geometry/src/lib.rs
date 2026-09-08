@@ -70,8 +70,8 @@ pub struct Viewport {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PaneLayout {
     pub kind: PaneKind,
-    pub x_split: u32,
-    pub y_split: u32,
+    pub x_split: f64,
+    pub y_split: f64,
     pub start_row: u32,
     pub start_column: u32,
     #[serde(default)]
@@ -367,7 +367,10 @@ impl Geometry {
     fn pane_map(&self, pane: Option<&PaneLayout>) -> KernelResult<PaneMap> {
         let gw = (self.viewport.width - self.origin.x).max(0.0);
         let gh = (self.viewport.height - self.origin.y).max(0.0);
-        let p = pane.filter(|p| p.kind != PaneKind::None && (p.x_split > 0 || p.y_split > 0));
+        if let Some(pane) = pane {
+            validate_pane_split(pane)?;
+        }
+        let p = pane.filter(|p| p.kind != PaneKind::None && (p.x_split > 0.0 || p.y_split > 0.0));
         if p.is_none() {
             let rect = Rect {
                 x: self.origin.x,
@@ -396,26 +399,44 @@ impl Geometry {
         let p = p.unwrap();
         let frozen = p.kind == PaneKind::Frozen;
         let fx = if frozen {
-            p.x_split.min(self.columns.count)
+            freeze_split_count(p.x_split, self.columns.count, "xSplit")?
         } else {
             0
         };
         let fy = if frozen {
-            p.y_split.min(self.rows.count)
+            freeze_split_count(p.y_split, self.rows.count, "ySplit")?
         } else {
             0
         };
-        let left = self.columns.extent(0, fx.saturating_sub(1)).min(gw);
-        let top = self.rows.extent(0, fy.saturating_sub(1)).min(gh);
-        let sx = if frozen {
-            self.columns.total_before(fx) + self.viewport.scroll_x
+        // A zero split is a real single-axis freeze boundary.  Calling
+        // `extent(0, 0)` for it would incorrectly reserve the first row or
+        // column even though that axis has no frozen cells.
+        let left = if fx == 0 {
+            0.0
         } else {
-            (p.x_split as f64) * (96.0 / 72.0)
+            self.columns.extent(0, fx - 1).min(gw)
+        };
+        let top = if fy == 0 {
+            0.0
+        } else {
+            self.rows.extent(0, fy - 1).min(gh)
+        };
+        let sx = if frozen {
+            // The viewport scroll is already expressed in worksheet content
+            // coordinates.  When a saved frozen start cell seeded it, adding
+            // the frozen extent again skips that same extent twice.  Keep the
+            // main pane at or beyond the frozen boundary while preserving a
+            // normal zero-scroll freeze.
+            self.columns.total_before(fx).max(self.viewport.scroll_x)
+        } else {
+            // OOXML split positions are twentieths of a point.  Convert at
+            // the geometry boundary to CSS pixels (96 CSS px per inch).
+            p.x_split * (96.0 / (72.0 * 20.0))
         };
         let sy = if frozen {
-            self.rows.total_before(fy) + self.viewport.scroll_y
+            self.rows.total_before(fy).max(self.viewport.scroll_y)
         } else {
-            (p.y_split as f64) * (96.0 / 72.0)
+            p.y_split * (96.0 / (72.0 * 20.0))
         };
         let entries = [
             (
@@ -488,6 +509,39 @@ impl Geometry {
         Ok(PaneMap { panes })
     }
 }
+
+fn validate_pane_split(pane: &PaneLayout) -> KernelResult<()> {
+    if !pane.x_split.is_finite()
+        || !pane.y_split.is_finite()
+        || pane.x_split < 0.0
+        || pane.y_split < 0.0
+    {
+        return Err(KernelError::new(
+            "GEOMETRY_PANE_INVALID",
+            "Pane split positions must be finite and non-negative",
+        ));
+    }
+    if pane.kind == PaneKind::Frozen && (pane.x_split.fract() != 0.0 || pane.y_split.fract() != 0.0)
+    {
+        return Err(KernelError::new(
+            "GEOMETRY_PANE_INVALID",
+            "Frozen pane split counts must be integers",
+        ));
+    }
+    Ok(())
+}
+
+fn freeze_split_count(value: f64, count: u32, axis: &'static str) -> KernelResult<u32> {
+    if value.fract() != 0.0 || value < 0.0 || !value.is_finite() {
+        return Err(KernelError::new(
+            "GEOMETRY_PANE_INVALID",
+            "Frozen pane split counts must be finite non-negative integers",
+        )
+        .at(axis));
+    }
+    Ok(value.min(count as f64) as u32)
+}
+
 fn overlap(a: Option<CellRange>, b: Option<CellRange>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
@@ -523,6 +577,37 @@ fn clamp_range(
         end_column: r.end_column.min(ce),
     };
     (n.start_row <= n.end_row && n.start_column <= n.end_column).then_some(n)
+}
+
+fn owning_pane<'a>(
+    map: &'a PaneMap,
+    axis: HeaderAxis,
+    index: u32,
+    coordinate: f64,
+) -> Option<&'a RenderPane> {
+    let in_range = |pane: &&RenderPane| {
+        pane.visible_range
+            .map(|range| match axis {
+                HeaderAxis::Row => index >= range.start_row && index <= range.end_row,
+                HeaderAxis::Column => index >= range.start_column && index <= range.end_column,
+                HeaderAxis::Corner => false,
+            })
+            .unwrap_or(false)
+    };
+    map.panes
+        .iter()
+        .find(in_range)
+        .or_else(|| {
+            map.panes.iter().find(|pane| {
+                let (origin, extent) = match axis {
+                    HeaderAxis::Row => (pane.content_origin.y, pane.screen_rect.height),
+                    HeaderAxis::Column => (pane.content_origin.x, pane.screen_rect.width),
+                    HeaderAxis::Corner => (0.0, 0.0),
+                };
+                coordinate >= origin && coordinate < origin + extent
+            })
+        })
+        .or_else(|| map.panes.first())
 }
 
 pub fn compute_pane_map(request: &GeometryRequest) -> KernelResult<GeometryResponse> {
@@ -640,10 +725,16 @@ pub fn header_rect(
                     "Row header index is outside the worksheet",
                 ));
             }
+            let coordinate = g.rows.total_before(i);
+            let map = g.pane_map(request.pane.as_ref())?;
+            let pane = owning_pane(&map, axis, i, coordinate);
+            let (screen_y, content_y) = pane
+                .map(|pane| (pane.screen_rect.y, pane.content_origin.y))
+                .unwrap_or((y, g.viewport.scroll_y));
             Ok(HeaderRectResponse {
                 rect: Rect {
                     x: 0.0,
-                    y: y + g.rows.total_before(i) - g.viewport.scroll_y,
+                    y: screen_y + coordinate - content_y,
                     width: x,
                     height: g.rows.size(i),
                 },
@@ -664,9 +755,15 @@ pub fn header_rect(
                     "Column header index is outside the worksheet",
                 ));
             }
+            let coordinate = g.columns.total_before(i);
+            let map = g.pane_map(request.pane.as_ref())?;
+            let pane = owning_pane(&map, axis, i, coordinate);
+            let (screen_x, content_x) = pane
+                .map(|pane| (pane.screen_rect.x, pane.content_origin.x))
+                .unwrap_or((x, g.viewport.scroll_x));
             Ok(HeaderRectResponse {
                 rect: Rect {
-                    x: x + g.columns.total_before(i) - g.viewport.scroll_x,
+                    x: screen_x + coordinate - content_x,
                     y: 0.0,
                     width: g.columns.size(i),
                     height: y,
@@ -725,8 +822,8 @@ mod tests {
         let mut r = req();
         r.pane = Some(PaneLayout {
             kind: PaneKind::Frozen,
-            x_split: 2,
-            y_split: 2,
+            x_split: 2.0,
+            y_split: 2.0,
             start_row: 2,
             start_column: 2,
             active_pane: None,
@@ -746,6 +843,160 @@ mod tests {
         let rect = cell_rect(&r, &hit).unwrap();
         assert!(rect.x <= p.x && p.x < rect.x + rect.width);
     }
+
+    #[test]
+    fn single_axis_freeze_does_not_reserve_the_unfrozen_axis() {
+        let mut r = req();
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Frozen,
+            x_split: 2.0,
+            y_split: 0.0,
+            start_row: 0,
+            start_column: 2,
+            active_pane: None,
+            state: PaneState::Frozen,
+        });
+        let map = compute_pane_map(&r).unwrap().pane_map;
+        assert!(map
+            .panes
+            .iter()
+            .all(|pane| { !matches!(pane.id, PaneId::TopLeft | PaneId::TopRight) }));
+        assert_eq!(
+            map.panes.iter().map(|pane| pane.id).collect::<Vec<_>>(),
+            vec![PaneId::BottomLeft, PaneId::Main]
+        );
+        assert!(map
+            .panes
+            .iter()
+            .all(|pane| pane.screen_rect.height == 280.0));
+
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Frozen,
+            x_split: 0.0,
+            y_split: 2.0,
+            start_row: 2,
+            start_column: 0,
+            active_pane: None,
+            state: PaneState::Frozen,
+        });
+        let map = compute_pane_map(&r).unwrap().pane_map;
+        assert!(map
+            .panes
+            .iter()
+            .all(|pane| { !matches!(pane.id, PaneId::TopLeft | PaneId::BottomLeft) }));
+        assert_eq!(
+            map.panes.iter().map(|pane| pane.id).collect::<Vec<_>>(),
+            vec![PaneId::TopRight, PaneId::Main]
+        );
+        assert!(map.panes.iter().all(|pane| pane.screen_rect.width == 461.0));
+    }
+
+    #[test]
+    fn split_positions_are_converted_from_twentieths_of_a_point_to_css_pixels() {
+        let mut r = req();
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Split,
+            x_split: 1440.5,
+            y_split: 720.25,
+            start_row: 0,
+            start_column: 0,
+            active_pane: None,
+            state: PaneState::Split,
+        });
+        let main = compute_pane_map(&r)
+            .unwrap()
+            .pane_map
+            .panes
+            .into_iter()
+            .find(|pane| pane.id == PaneId::Main)
+            .unwrap();
+        assert!((main.content_origin.x - 96.03333333333333).abs() < 1e-12);
+        assert!((main.content_origin.y - 48.016666666666666).abs() < 1e-12);
+    }
+
+    #[test]
+    fn split_layout_contract_accepts_fractional_twentieths() {
+        let pane: PaneLayout = serde_json::from_value(serde_json::json!({
+            "kind": "split",
+            "xSplit": 15.5,
+            "ySplit": 30.25,
+            "startRow": 0,
+            "startColumn": 0,
+            "state": "split"
+        }))
+        .unwrap();
+        assert_eq!(pane.x_split, 15.5);
+        assert_eq!(pane.y_split, 30.25);
+    }
+
+    #[test]
+    fn frozen_split_counts_reject_fractional_positions() {
+        let mut r = req();
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Frozen,
+            x_split: 1.5,
+            y_split: 0.0,
+            start_row: 0,
+            start_column: 1,
+            active_pane: None,
+            state: PaneState::Frozen,
+        });
+        assert_eq!(
+            compute_pane_map(&r).unwrap_err().code,
+            "GEOMETRY_PANE_INVALID"
+        );
+    }
+
+    #[test]
+    fn saved_frozen_start_coordinates_are_not_offset_twice() {
+        let mut r = req();
+        r.viewport.scroll_x = 250.0;
+        r.viewport.scroll_y = 80.0;
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Frozen,
+            x_split: 2.0,
+            y_split: 2.0,
+            start_row: 4,
+            start_column: 5,
+            active_pane: None,
+            state: PaneState::Frozen,
+        });
+        let main = compute_pane_map(&r)
+            .unwrap()
+            .pane_map
+            .panes
+            .into_iter()
+            .find(|pane| pane.id == PaneId::Main)
+            .unwrap();
+        assert_eq!(main.content_origin, Point { x: 250.0, y: 80.0 });
+    }
+
+    #[test]
+    fn frozen_header_rect_uses_the_owning_pane_origin() {
+        let mut r = req();
+        r.viewport.scroll_x = 100.0;
+        r.viewport.scroll_y = 40.0;
+        r.pane = Some(PaneLayout {
+            kind: PaneKind::Frozen,
+            x_split: 2.0,
+            y_split: 2.0,
+            start_row: 2,
+            start_column: 2,
+            active_pane: None,
+            state: PaneState::Frozen,
+        });
+
+        let frozen_row = header_rect(&r, HeaderAxis::Row, Some(0)).unwrap();
+        let scrolling_row = header_rect(&r, HeaderAxis::Row, Some(2)).unwrap();
+        assert_eq!(frozen_row.rect.y, 20.0);
+        assert_eq!(scrolling_row.rect.y, 60.0);
+
+        let frozen_column = header_rect(&r, HeaderAxis::Column, Some(0)).unwrap();
+        let scrolling_column = header_rect(&r, HeaderAxis::Column, Some(2)).unwrap();
+        assert_eq!(frozen_column.rect.x, 39.0);
+        assert_eq!(scrolling_column.rect.x, 139.0);
+    }
+
     #[test]
     fn rejects_invalid_and_hidden() {
         let mut r = req();
@@ -787,11 +1038,14 @@ mod tests {
         r.hidden_rows.extend([1, 2]);
         r.hidden_columns.extend([1, 2]);
         let pane = compute_pane_map(&r).unwrap().pane_map.panes.remove(0);
-        assert_eq!(pane.visible_range, Some(CellRange {
-            start_row: 0,
-            end_row: 5,
-            start_column: 0,
-            end_column: 5,
-        }));
+        assert_eq!(
+            pane.visible_range,
+            Some(CellRange {
+                start_row: 0,
+                end_row: 5,
+                start_column: 0,
+                end_column: 5,
+            })
+        );
     }
 }

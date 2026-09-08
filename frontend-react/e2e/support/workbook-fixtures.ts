@@ -52,6 +52,9 @@ function connectedAuthFixture(): ConnectedAuthFixture | null {
 
 export async function openConnectedWorkbook(page: Page, locale: FixtureLocale, name: string): Promise<void> {
   const auth = connectedAuthFixture();
+  if (!auth && process.env.CI) {
+    throw new Error('Connected browser acceptance requires E2E_OIDC_AUTHORITY, E2E_OIDC_CLIENT_ID, and E2E_OIDC_USER_FILE in CI');
+  }
   test.skip(!auth, 'Requires a configured backend and a real OIDC user via E2E_OIDC_AUTHORITY, E2E_OIDC_CLIENT_ID, and E2E_OIDC_USER_FILE');
   if (!auth) return;
   await page.addInitScript((value) => window.localStorage.setItem('react-sheets:locale', value), locale);

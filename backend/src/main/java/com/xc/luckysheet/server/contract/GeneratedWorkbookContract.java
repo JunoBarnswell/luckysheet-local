@@ -49,7 +49,6 @@ public final class GeneratedWorkbookContract {
         Map.entry("sheet.extent.restore", new PermissionPolicy("navigate", "none", false, "none", "worksheet")),
         Map.entry("banded.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new PermissionPolicy("format", "format", true, "declared", "range")),
-        Map.entry("cell.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cell.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cells.inserted", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cells.deleted", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),

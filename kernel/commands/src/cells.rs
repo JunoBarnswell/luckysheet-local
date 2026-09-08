@@ -18,7 +18,6 @@ const MAX_COLUMNS: u32 = 16_384;
 pub fn apply(tx: &mut Transaction<'_>, id: &str, sheet_id: &str, p: &Value) -> KernelResult<bool> {
     match id {
         "cell.set" => cell_set(tx, sheet_id, p),
-        "cell.restore" => cell_restore(tx, sheet_id, p),
         "cell.editor.set" => editor_set(tx, sheet_id, p),
         "cellTemplate.set" => template_set(tx, p),
         "cellTemplate.remove" => template_remove(tx, p),
@@ -45,20 +44,6 @@ fn cell_set(tx: &mut Transaction<'_>, sheet_id: &str, p: &Value) -> KernelResult
         .ok_or_else(|| invalid("cell.set value is required"))?;
     let cell = parse_cell(value)?;
     tx.write(sheet_id, row, column, Some(cell))?;
-    Ok(true)
-}
-
-fn cell_restore(tx: &mut Transaction<'_>, sheet_id: &str, p: &Value) -> KernelResult<bool> {
-    require_sheet_param(p, sheet_id)?;
-    let row = integer(p, "row")?;
-    let column = integer(p, "column")?;
-    bounds(tx, sheet_id, row, column)?;
-    let previous = p.as_object().and_then(|object| object.get("previous"));
-    let cell = match previous {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(parse_cell(value)?),
-    };
-    tx.write(sheet_id, row, column, cell)?;
     Ok(true)
 }
 

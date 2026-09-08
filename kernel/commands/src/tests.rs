@@ -231,6 +231,65 @@ fn stale_revision_and_role_are_rejected() {
     assert_eq!(error.code, "FORBIDDEN");
     assert_eq!(pages.revision(), 0);
 }
+
+#[test]
+fn invalid_formula_is_rejected_before_revision_publication() {
+    let mut pages = book();
+    let invalid_formula = json!({
+        "id":"cell.set",
+        "sheetId":"s",
+        "params":{
+            "sheetId":"s",
+            "row":0,
+            "column":0,
+            "value":{"value":null,"formula":"=("}
+        }
+    });
+    let error = execute(&mut pages, request(0, "invalid-formula", json!([invalid_formula])))
+        .unwrap_err();
+    assert_eq!(error.code, "FORMULA_PARSE");
+    assert_eq!(pages.revision(), 0);
+    assert_eq!(pages.read_cell(&CellAddress { sheet_id: "s".into(), row: 0, column: 0 }).unwrap(), None);
+}
+
+#[test]
+fn client_cannot_submit_cell_restore_but_history_keeps_its_trusted_path() {
+    let mut pages = book();
+    let restore = json!([{"id":"cell.restore","sheetId":"s","params":{
+        "sheetId":"s","row":0,"column":0,"previous":{"value":99}
+    }}]);
+    let error = execute(&mut pages, request(0, "client-restore", restore)).unwrap_err();
+    assert_eq!(error.code, "COMMAND_UNKNOWN");
+    assert_eq!(pages.revision(), 0);
+
+    let committed = execute(&mut pages, request(0, "trusted-target", json!([set(0, 42)]))).unwrap();
+    let reverted = execute(&mut pages, undo(1, "trusted-undo", &committed.history)).unwrap();
+    assert_eq!(reverted.revision, 2);
+    assert_eq!(pages.read_cell(&CellAddress { sheet_id: "s".into(), row: 0, column: 0 }).unwrap(), None);
+}
+
+#[test]
+fn undo_uses_the_target_history_role() {
+    let mut pages = book();
+    let protection = json!({"id":"sheet.protect.set","sheetId":"s","params":{
+        "sheetId":"s","rule":{"id":"locked","scope":"sheet","sheetId":"s","locked":true,"allow":{}}
+    }});
+    let target = execute_authorized(
+        &mut pages,
+        request(0, "owner-target", json!([protection])),
+        AccessRole::Owner,
+    ).unwrap();
+    assert_eq!(target.history.required_role, AccessRole::Owner);
+    let denied = execute_authorized(
+        &mut pages,
+        undo(1, "editor-undo", &target.history),
+        AccessRole::Editor,
+    ).unwrap_err();
+    assert_eq!(denied.code, "FORBIDDEN");
+    assert_eq!(pages.revision(), 1);
+    execute_authorized(&mut pages, undo(1, "owner-undo", &target.history), AccessRole::Owner).unwrap();
+    assert_eq!(pages.revision(), 2);
+}
 #[test]
 fn protected_cells_reject_editor_but_owner_can_commit() {
     let mut pages = book();

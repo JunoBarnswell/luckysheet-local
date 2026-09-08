@@ -24,13 +24,53 @@ export class KernelPageReplica {
   get revision(): number { return this.manifest.revision; }
   open(manifest: KernelReplicaManifest, pages: readonly KernelReplicaPagePayload[] = []): void {
     if (manifest.unitId !== this.unitId) throw new KernelInvocationError({ code: 'WORKBOOK_ID_MISMATCH', message: 'Manifest belongs to another workbook.', object: manifest.unitId, recovery: 'reload-cloud-workbook' });
-    kernelInvoke('open', { manifest, pages });
+    const previousDirectory = this.pageDirectory;
+    const previousResidentPages = this.residentPages;
+    const nextDirectory = new Map<string, KernelReplicaPageDescriptor>();
+    const nextResidentPages = new Set<string>();
+    for (const page of manifest.pages) {
+      const key = this.pageKey(page.sheetId, page.pageRow, page.pageColumn);
+      nextDirectory.set(key, page);
+      const previous = previousDirectory.get(key);
+      if (previousResidentPages.has(key) && previous && this.samePage(previous, page)) nextResidentPages.add(key);
+    }
+
+    // The manifest is the directory boundary. Page bytes cross the kernel
+    // boundary independently so a large revision can never form one control
+    // frame. Keep the JS projection unchanged until every supplied page has
+    // been accepted by the new kernel revision.
+    kernelInvoke('open', { manifest });
+    try {
+      for (const page of pages) {
+        const key = this.pageKey(page.sheetId, page.pageRow, page.pageColumn);
+        if (!nextDirectory.has(key)) {
+          throw new KernelInvocationError({
+            code: 'PAGE_UNKNOWN',
+            message: 'Page payload is not present in the committed manifest.',
+            object: key,
+            recovery: 'reload-cloud-workbook',
+          });
+        }
+        kernelInvoke('page.load', { unitId: this.unitId, revision: manifest.revision, page });
+        nextResidentPages.add(key);
+      }
+    } catch (error) {
+      // A same-revision reload reused the prior kernel state, so preserve the
+      // old JS projection for callers that reject a corrupt replacement. A
+      // failed revision transition is fail-closed; the caller must reload the
+      // authoritative workbook before attempting another read.
+      if (!this.manifestValue || this.manifestValue.revision !== manifest.revision) {
+        try { kernelInvoke('close', { unitId: this.unitId }); } catch { /* preserve the original typed failure */ }
+      }
+      throw error;
+    }
+
     this.manifestValue = structuredClone(manifest);
     this.requests.clear();
-    this.residentPages.clear();
     this.pageDirectory.clear();
-    for (const page of manifest.pages) this.pageDirectory.set(this.pageKey(page.sheetId, page.pageRow, page.pageColumn), page);
-    for (const page of pages) this.residentPages.add(this.pageKey(page.sheetId, page.pageRow, page.pageColumn));
+    for (const [key, page] of nextDirectory) this.pageDirectory.set(key, page);
+    this.residentPages.clear();
+    for (const key of nextResidentPages) this.residentPages.add(key);
   }
   readCell(address: KernelReplicaCellAddress): CellData | undefined {
     return kernelInvoke<{ revision: number; cell: CellData | null }>('cell.get', { unitId: this.unitId, revision: this.revision, address }).cell ?? undefined;
@@ -40,6 +80,11 @@ export class KernelPageReplica {
   }
   readSheetStats(sheetId: string): { sheetId: string; cellCount: number; occupiedRange: RangeRef | null } {
     return kernelInvoke('sheet.stats', { unitId: this.unitId, revision: this.revision, sheetId });
+  }
+  resolveCurrentRegion(sheetId: string, activeRow: number, activeColumn: number): RangeRef {
+    return kernelInvoke<{ revision: number; range: RangeRef }>('dataRegion.resolve', {
+      unitId: this.unitId, revision: this.revision, sheetId, activeRow, activeColumn,
+    }).range;
   }
   async loadRange(range: RangeRef, transport: KernelPageTransport): Promise<void> {
     const manifest = this.manifest;
@@ -76,6 +121,16 @@ export class KernelPageReplica {
   private pageKey(sheetId: string, pageRow: number, pageColumn: number): string {
     return `${sheetId}:${pageRow}:${pageColumn}`;
   }
+  private samePage(left: KernelReplicaPageDescriptor, right: KernelReplicaPageDescriptor): boolean {
+    return left.sheetId === right.sheetId
+      && left.pageRow === right.pageRow
+      && left.pageColumn === right.pageColumn
+      && left.revision === right.revision
+      && left.checksum === right.checksum
+      && left.byteLength === right.byteLength
+      && left.cellCount === right.cellCount
+      && JSON.stringify(left.occupiedRange) === JSON.stringify(right.occupiedRange);
+  }
 }
 
 /** Read-only revision-pinned page projection. Hidden cells retain their canonical values. */
@@ -106,4 +161,5 @@ export class WorksheetCells {
   occupiedRange(sheetId: string): RangeRef {
     return this.replica.readSheetStats(this.sheetId).occupiedRange ?? { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   }
+  currentRegion(activeRow: number, activeColumn: number): RangeRef { return this.replica.resolveCurrentRegion(this.sheetId, activeRow, activeColumn); }
 }

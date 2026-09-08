@@ -18,8 +18,7 @@
 - POST `/api/workbooks` body `{unitId,name,sheets?,spaceId?,folderId?,source?}`。source仅native，拒client snapshot。返回 `{unitId,revision,manifest,checksum}`。
 - GET `/{unitId}/manifest?revision=`（可省revision）→ raw v11 manifest。
 - GET `/{unitId}/pages/{sheetId}/{pageRow}/{pageColumn}?revision=` → raw PagePayload。
-- POST `/{unitId}/kernel-operations` body `{operationId,baseRevision,clientSequence,mutations:[{id,sheetId,params}],intent?}` → raw ChangeSet。
-- POST `/{unitId}/operations` OperationEnvelope → `{operation,changeSet}`，同一 service core。
+- POST `/{unitId}/operations` body `OperationEnvelope` → `{operation,changeSet}`。这是唯一的 workbook mutation transport；客户端必须提交 `schema`、`unitId`、`createdAt` 与递增的 `clientSequence`。
 - POST `/{unitId}/checkpoints` → `{workbook:{unitId,revision,manifest,checksum},created:false}`，每个commit已存manifest checkpoint。
 - POST `/{unitId}/native-document-artifact` `{revision,fileName,format}` → artifact metadata（包含revision）。GET流文件，stale拒绝。
 - POST `/api/workbook-imports/tasks` → task；PUT `/tasks/{id}/chunks?offset=`；POST `/tasks/{id}/commit` → task `{result?:WorkbookImportResponse}`；GET/DELETE task。原multipart只接file/name/space/folder。

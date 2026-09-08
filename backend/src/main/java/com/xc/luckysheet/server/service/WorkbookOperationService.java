@@ -224,7 +224,9 @@ public class WorkbookOperationService {
     }
 
     public List<AclEntry> acl(String unitId, String actor) { return access.list(unitId, actor); }
-    public WorkbookAccessProjection accessProjection(String unitId, String actor) { return new WorkbookAccessProjection(unitId, access.currentRole(unitId, actor)); }
+    public WorkbookAccessProjection accessProjection(String unitId, String actor) {
+        return new WorkbookAccessProjection(unitId, access.currentRole(unitId, actor), store.nextClientSequence(unitId, actor));
+    }
     public AclEntry grantAcl(String unitId, String actor, String target, WorkbookAclRole role) { return access.grant(unitId, actor, target, role); }
     public void revokeAcl(String unitId, String actor, String target) { access.revoke(unitId, actor, target); }
     public List<AuditRecord> audit(String unitId, String actor, int limit) { readable(unitId, actor); return store.listAudit(unitId, Math.min(200, Math.max(1, limit))); }

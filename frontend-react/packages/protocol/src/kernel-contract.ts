@@ -22,7 +22,7 @@ export interface KernelChangeSet { readonly operationId: string; readonly baseRe
 export interface KernelAnalyticsRequest { readonly kind: 'filter' | 'query' | 'pivot'; readonly params: unknown; }
 export interface KernelAnalyticsResponse { readonly kind: KernelAnalyticsRequest['kind']; readonly revision: number; readonly [resultField: string]: unknown; }
 
-export type KernelOperation = 'init' | 'open' | 'create' | 'manifest' | 'sheet.stats' | 'cell.get' | 'range.get' | 'page.get' | 'page.load' | 'command' | 'close' | 'formula.evaluate' | 'formula.recalculate' | 'analytics.execute' | 'geometry.computePaneMap' | 'geometry.hitTest' | 'geometry.cellRect' | 'geometry.headerRect' | 'document.import' | 'document.export';
+export type KernelOperation = 'init' | 'open' | 'create' | 'manifest' | 'sheet.stats' | 'cell.get' | 'range.get' | 'dataRegion.resolve' | 'page.get' | 'page.load' | 'command' | 'close' | 'formula.evaluate' | 'formula.recalculate' | 'analytics.execute' | 'geometry.computePaneMap' | 'geometry.hitTest' | 'geometry.cellRect' | 'geometry.headerRect' | 'document.import' | 'document.export';
 export interface KernelInitResponse { readonly protocolVersion: typeof KERNEL_PROTOCOL_VERSION; readonly manifestVersion: typeof KERNEL_WORKBOOK_MANIFEST_VERSION; readonly operations: KernelOperation[]; }
 export interface KernelOpenRequest { readonly manifest: WorkbookManifest; readonly pages?: KernelPagePayload[]; }
 export interface KernelCreateRequest { readonly unitId: string; readonly name: string; readonly sheets: KernelSheetManifest[]; }
@@ -51,6 +51,7 @@ export interface KernelOperationMap {
   'sheet.stats': { request: KernelRevisionPin & { sheetId: string }; response: { sheetId: string; cellCount: number; occupiedRange: KernelRangeRef | null } };
   'cell.get': { request: KernelCellGetRequest; response: KernelCellGetResponse };
   'range.get': { request: KernelRangeGetRequest; response: KernelRangeGetResponse };
+  'dataRegion.resolve': { request: KernelRevisionPin & { sheetId: string; activeRow: number; activeColumn: number }; response: { revision: number; range: KernelRangeRef } };
   'page.get': { request: KernelPageGetRequest; response: KernelPagePayload };
   'page.load': { request: KernelPageLoadRequest; response: { revision: number; loaded: KernelPageDescriptor } };
   command: { request: KernelCommandRequest; response: KernelChangeSet };

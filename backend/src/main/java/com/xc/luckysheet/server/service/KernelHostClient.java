@@ -78,6 +78,18 @@ public final class KernelHostClient {
     /** Discards staged native state after a failed database transaction. */
     public synchronized void abortTransaction() { stopProcess(); }
 
+    /** Releases one workbook context without starting a stopped host solely to close it. */
+    public synchronized void closeWorkbookContext(String unitId) {
+        if (unitId == null || unitId.isBlank()) throw new IllegalArgumentException("unitId is required");
+        if (process == null || !process.isAlive()) return;
+        try {
+            call("close", mapper.createObjectNode().put("unitId", unitId));
+        } catch (RuntimeException error) {
+            stopProcess();
+            throw error;
+        }
+    }
+
     private void ensureStarted() {
         if (process != null && process.isAlive()) {
             if (!initialized) initialize();

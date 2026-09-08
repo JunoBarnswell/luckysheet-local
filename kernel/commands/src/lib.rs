@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub use kernel_core::AccessRole;
+
 mod catalog;
 mod cells;
 mod objects;
@@ -37,18 +39,13 @@ pub struct Mutation {
     pub params: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AccessRole {
-    Viewer,
-    Commenter,
-    Editor,
-    Owner,
-}
-
 pub fn required_role(request: &CommandRequest) -> KernelResult<AccessRole> {
     if request.command_id == "history.undo" {
-        return Ok(AccessRole::Editor);
+        let record: HistoryRecord = serde_json::from_value(
+            request.params.get("history").cloned().ok_or_else(|| invalid("history is required"))?,
+        )
+        .map_err(|error| invalid(format!("Invalid history record: {error}")))?;
+        return Ok(record.required_role);
     }
     let ids: Vec<&str> = if request.command_id == "operation.apply" {
         request.params["mutations"]
@@ -300,7 +297,10 @@ pub fn execute_authorized(
         let record: HistoryRecord = serde_json::from_value(
             request.params.get("history").cloned().ok_or_else(|| invalid("history is required"))?,
         ).map_err(|error| invalid(format!("Invalid history record: {error}")))?;
-        return pages.undo_history(request.operation_id, request.base_revision, record);
+        let required = record.required_role;
+        let mut result = pages.undo_history(request.operation_id, request.base_revision, record)?;
+        result.history.required_role = required;
+        return Ok(result);
     }
     let mutations: Vec<Mutation> = if request.command_id == "operation.apply" {
         serde_json::from_value(
@@ -374,6 +374,8 @@ pub fn execute_authorized(
         }
         validation::check(&tx, &m.id, &m.params, &tx.touched)?;
     }
+    let operation_required_role = required_role(&request)?;
+    validate_formula_writes(&tx)?;
     // A structural shrink removes trailing pages through the manifest. Blank
     // writes to the removed extent must not resurrect those pages.
     let writes = tx
@@ -395,8 +397,32 @@ pub fn execute_authorized(
         writes,
         manifest,
     )?;
+    result.history.required_role = operation_required_role;
     result.affected_ranges = affected;
     Ok(result)
+}
+
+/// Formula syntax and worksheet identities are part of the cell write
+/// contract. Validate against the final staged manifest before publishing the
+/// transaction so an invalid authored formula can never enter canonical state.
+fn validate_formula_writes(tx: &Transaction<'_>) -> KernelResult<()> {
+    let first = tx
+        .manifest
+        .sheets
+        .first()
+        .ok_or_else(|| KernelError::new("WORKBOOK_INVALID", "No worksheets"))?;
+    let mut runtime = kernel_formula::FormulaRuntime::new(first.sheet_id.clone());
+    for sheet in &tx.manifest.sheets {
+        runtime.register_sheet(&sheet.name, &sheet.sheet_id)?;
+    }
+    for (address, cell) in &tx.writes {
+        if let Some(cell) = cell {
+            if let Some(formula) = &cell.formula {
+                runtime.set_formula(address.clone(), formula)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn common(tx: &mut Transaction, id: &str, sheet: &str, p: &Value) -> KernelResult<bool> {
