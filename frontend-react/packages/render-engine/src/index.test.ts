@@ -698,15 +698,15 @@ test('saved frozen top-left cell seeds initial scroll without blocking earlier r
 test('split pane point geometry is independent of display DPR', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 50, columnCount: 20, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const pane = { kind: 'split' as const, xSplit: 1440, ySplit: 720, startRow: 0, startColumn: 0, state: 'split' as const };
-  const one = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, pane, defaultHeaderOffset());
-  const two = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 2 }, pane, defaultHeaderOffset());
+  const one = computePaneMap('sheet-1', renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, pane, defaultHeaderOffset());
+  const two = computePaneMap('sheet-1', renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 2 }, pane, defaultHeaderOffset());
   assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.x, two.panes.find((entry) => entry.id === 'main')?.screenRect.x);
   assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.y, two.panes.find((entry) => entry.id === 'main')?.screenRect.y);
 });
 
 test('frozen 2x2 pane map clamps the main origin and keeps four ranges disjoint', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
-  const map = computePaneMap(renderSkeleton, { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, {
+  const map = computePaneMap('sheet-1', renderSkeleton, { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, {
     kind: 'frozen', xSplit: 2, ySplit: 2, startRow: 0, startColumn: 0, state: 'frozen',
   }, defaultHeaderOffset());
   const byId = new Map(map.panes.map((pane) => [pane.id, pane]));

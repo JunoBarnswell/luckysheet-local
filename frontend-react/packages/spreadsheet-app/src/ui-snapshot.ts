@@ -129,7 +129,7 @@ export interface CanvasSheetSnapshot {
   snapSettings?: import('@react-sheets/core-model').WorksheetSnapSettings;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
-  pivotTaskErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>>;
+  pivotTaskErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>>;
   /** Derived worksheet overlay; never materialized in ordinary cells. */
   pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
@@ -228,7 +228,7 @@ export function buildCanvasSheetSnapshot(
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
   dateSystem: FilterDateSystem = '1900',
-  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
+  pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
   dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
   const conditionalRuntime = createConditionalFormatRuntime(sheet);
@@ -447,7 +447,7 @@ export function buildAllSheetSnapshots(
   formula: FormulaEngine,
   pivotResults: Readonly<Record<string, PivotResultTree>>,
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
-  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
+  pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
 ): CanvasSheetSnapshot[] {
   return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults, dataContent, '1900', pivotErrors));
 }

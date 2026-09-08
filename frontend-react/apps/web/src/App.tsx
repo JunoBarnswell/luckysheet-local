@@ -105,7 +105,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   };
 
   if (state.backstage.open) {
-    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
+    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : "error";
     const closeWorkbook = async () => { await session.saveWorkbook("Close workbook"); onOpenHub(); };
     const actions = [
       { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },

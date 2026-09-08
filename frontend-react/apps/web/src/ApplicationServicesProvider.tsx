@@ -96,7 +96,6 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       authTokenProvider,
       shareTokenProvider,
       collaborationUrl: resolveDesktopCollaborationUrl(),
-      pivotExecution: 'worker',
       nativeDocumentTransaction: nativeDocumentTransactions.getOrCreate(unitId),
       assetStore: useLocalAssets ? new LocalAssetStore(unitId, persistence.coordinator) : new RemoteAssetStore(unitId, workbookApi),
     });

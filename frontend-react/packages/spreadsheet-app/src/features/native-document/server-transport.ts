@@ -193,7 +193,9 @@ function requireImportResult(task: NativeDocumentImportTaskResponse): WorkbookIm
 }
 
 async function contentBuffer(content: Blob | ArrayBuffer): Promise<ArrayBuffer> {
-  return typeof Blob !== 'undefined' && content instanceof Blob ? content.arrayBuffer() : content.slice(0);
+  if (content instanceof ArrayBuffer) return content.slice(0);
+  if (typeof Blob !== 'undefined' && content instanceof Blob) return content.arrayBuffer();
+  throw new Error('NATIVE_DOCUMENT_CONTENT_INVALID');
 }
 
 /** Production native I/O adapter. Browser code only uploads/downloads opaque bytes. */

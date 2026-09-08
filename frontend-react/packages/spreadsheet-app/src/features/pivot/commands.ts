@@ -21,12 +21,6 @@ function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
 }
 
-function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
-  const index = items.findIndex((item) => item.id === id);
-  if (index < 0) return undefined;
-  return items.splice(index, 1)[0];
-}
-
 export interface PivotUpdateParams {
   sheetId: string;
   pivotId: string;
@@ -261,94 +255,6 @@ function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDown
     }
   }
   return columns;
-}
-
-function writePivotDrillDown(context: CommandContext, params: PivotDrillDownParams): void {
-  const sourceSheet = context.workbook.getSheet(params.sheetId);
-  const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
-  if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-  const plan = planPivotDrillDown(context, params);
-  const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
-  plan.columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
-  plan.records.forEach((record, rowOffset) => {
-    plan.columns.forEach((column, columnOffset) => {
-      const sourceKey = column.sourceId ?? '__single-source__';
-      const path = record.paths.get(sourceKey);
-      const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
-      const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
-      target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value: isPivotError(value) ? value.code : value });
-    });
-  });
-}
-
-function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): void {
-  const pivot = pivotFor(context, params.sheetId, params.pivotId);
-  if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-  const current = pivot as PivotDefinition;
-  const source = params.source ?? current.source;
-  const next: PivotModel = {
-    schema: 'PivotDefinition',
-    id: current.id,
-    source: structuredClone(source),
-    target: structuredClone(params.target ?? current.target),
-    fieldCatalog: structuredClone(params.fieldCatalog ?? current.fieldCatalog),
-    layout: structuredClone(params.layout ?? current.layout),
-    refreshPolicy: normalizePivotRefreshPolicy(structuredClone(params.refreshPolicy ?? current.refreshPolicy)),
-    presentation: structuredClone(params.presentation ?? current.presentation),
-    ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
-  };
-  const canonical = normalizePivotDefinitionFromCatalog(next);
-  assertPivotDefinition(context.workbook, canonical);
-  assertPivotCalculationProof(context.workbook, canonical, params.calculationProof);
-  const collision = detectPivotCollision(context.workbook, canonical, params.calculationProof.occupiedRange);
-  if (collision.status === 'collision') {
-    throw new Error(`Pivot target collision: ${collision.reasons.join(', ')}`);
-  }
-  assertPivotControlConnectionsRemainValid(context.workbook, current, canonical);
-  Object.assign(pivot, canonical);
-}
-
-function assertPivotControlConnectionsRemainValid(workbook: WorkbookModel, current: PivotModel, replacement: PivotModel): void {
-  const findPivot = (id: string): PivotModel | undefined => id === current.id ? replacement : workbook.getSheets().flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === id);
-  const field = (pivot: PivotModel | undefined, fieldId: string) => pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === fieldId);
-  for (const sheet of workbook.getSheets()) for (const drawing of sheet.drawings) {
-    const payload = sheet.drawingPayloads.get(drawing.payloadId);
-    if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) continue;
-    const primary = findPivot(payload.pivotId);
-    const primaryField = field(primary, payload.fieldId);
-    if (!primary || !primaryField) throw new Error(`Pivot control ${drawing.id} references a field removed from Pivot ${payload.pivotId}`);
-    const sourceKey = pivotSourceIdentity(primary.source);
-    for (const connection of payload.connections ?? []) {
-      const target = findPivot(connection.pivotId);
-      const targetField = target ? field(target, connection.fieldId) : undefined;
-      if (!target || !targetField || connection.sourceKey !== sourceKey || pivotSourceIdentity(target.source) !== sourceKey
-        || targetField.ordinal !== primaryField.ordinal || targetField.name !== primaryField.name || targetField.dataType !== primaryField.dataType
-        || (payload.kind === 'timeline' && (primaryField.dataType !== 'date' || targetField.dataType !== 'date'))) {
-        throw new Error(`Pivot control ${drawing.id} has a stale connection; update Report Connections before changing Pivot ${current.id}`);
-      }
-    }
-  }
-}
-
-function previousPivotUpdate(
-  pivot: PivotModel,
-  calculationProof: PivotCalculationProof,
-  previousCalculationProof: PivotCalculationProof,
-): PivotUpdateParams {
-  const definition = pivot as PivotDefinition;
-  return {
-    sheetId: definition.target.sheetId,
-    pivotId: pivot.id,
-    source: structuredClone(definition.source),
-    target: structuredClone(definition.target),
-    fieldCatalog: structuredClone(definition.fieldCatalog),
-    refreshPolicy: structuredClone(definition.refreshPolicy),
-    ...(definition.nativeMetadata ? { nativeMetadata: structuredClone(definition.nativeMetadata) } : {}),
-    ...(definition.presentation ? { presentation: structuredClone(definition.presentation) } : {}),
-    layout: structuredClone(pivot.layout),
-    calculationProof: structuredClone(calculationProof),
-    previousCalculationProof: structuredClone(previousCalculationProof),
-  };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
@@ -687,29 +593,6 @@ function planPivotRemoval(context: CommandContext, pivotId: string, sheetId: str
   return { pivot: structuredClone(pivot), removals, updates };
 }
 
-function applyDependentRemoval(context: CommandContext, dependency: PivotDependentRemoval): void {
-  const sheet = context.workbook.getSheet(dependency.sheetId);
-  const drawing = removeById(sheet.drawings, dependency.drawing.id);
-  if (!drawing) throw new Error(`Unknown dependent drawing: ${dependency.drawing.id}`);
-  if (!sheet.drawingPayloads.delete(dependency.drawing.payloadId)) throw new Error(`Missing dependent drawing payload: ${dependency.drawing.payloadId}`);
-}
-
-function applyDependentUpdate(context: CommandContext, update: PivotDependentUpdate): void {
-  const sheet = context.workbook.getSheet(update.sheetId);
-  const current = sheet.drawingPayloads.get(update.payloadId);
-  if (!current || JSON.stringify(current) !== JSON.stringify(update.before)) throw new Error(`Dependent payload changed before update: ${update.payloadId}`);
-  sheet.drawingPayloads.set(update.payloadId, structuredClone(update.after));
-}
-
-function applyPivotRemove(context: CommandContext, params: string, sheetId: string): void {
-  const dependencies = planPivotRemoval(context, params, sheetId);
-  if (dependencies.removals.length > 0 || dependencies.updates.length > 0) throw new Error(`Pivot ${params} still has dependent drawings`);
-  const sheet = context.workbook.getSheet(sheetId);
-  if (removeById(sheet.pivots, params)) return;
-  for (const candidate of context.workbook.getSheets()) if (candidate !== sheet && removeById(candidate.pivots, params)) return;
-  throw new Error(`Unknown pivot: ${params}`);
-}
-
 export function registerPivotCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
@@ -719,7 +602,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'PivotModel', validate: isPivotModel },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.remove'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<string>({
@@ -728,7 +610,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'PivotId', validate: isNonEmptyString },
     permission: { capability: 'pivot.delete' },
     affectedRanges: { resolve: () => [], mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.add'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<PivotUpdateParams>({
@@ -737,7 +618,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'PivotUpdateParams', validate: isPivotUpdate },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.update'], minCount: 1, maxCount: 1 },
   },
     });
 
@@ -759,13 +639,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           sheetId: destination.sheetId,
           params: sheetParams,
           affectedRanges: [],
-          inverse: [{
-            id: 'sheet.remove',
-            unitId: context.workbook.unitId,
-            sheetId: destination.sheetId,
-            params: { id: destination.sheetId },
-            affectedRanges: [],
-          }],
         });
       }
       context.applyMutation({
@@ -774,13 +647,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         sheetId: pivot.target.sheetId,
         params: structuredClone(pivot),
         affectedRanges,
-        inverse: [{
-          id: 'pivot.remove',
-          unitId: context.workbook.unitId,
-          sheetId: pivot.target.sheetId,
-          params: pivot.id,
-          affectedRanges,
-        }],
       });
       return { operationId: context.operationId, mutationCount: destination.kind === 'new-sheet' ? 2 : 1, affectedRanges };
     },
@@ -802,7 +668,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           sheetId: dependency.sheetId,
           params: { sheetId: dependency.sheetId, drawingId: dependency.drawing.id },
           affectedRanges: dependencyRanges,
-          inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: dependency.sheetId, params: { sheetId: dependency.sheetId, drawing: structuredClone(dependency.drawing), payload: structuredClone(dependency.payload) }, affectedRanges: dependencyRanges }],
         });
       }
       for (const update of plan.updates) {
@@ -813,7 +678,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
           sheetId: update.sheetId,
           params: structuredClone(update),
           affectedRanges: dependencyRanges,
-          inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: update.sheetId, params: { ...structuredClone(update), before: structuredClone(update.after), after: structuredClone(update.before) }, affectedRanges: dependencyRanges }],
         });
       }
       context.applyMutation({
@@ -822,7 +686,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         sheetId,
         params: pivotId,
         affectedRanges,
-        inverse: [{ id: 'pivot.add', unitId: context.workbook.unitId, sheetId, params: structuredClone(plan.pivot), affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1 + plan.removals.length + plan.updates.length, affectedRanges };
     },
@@ -835,7 +698,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
       if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       assertPivotCalculationProof(context.workbook, pivot, params.previousCalculationProof);
-      const previous = previousPivotUpdate(pivot, params.previousCalculationProof, params.calculationProof);
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'pivot.update',
@@ -843,7 +705,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: structuredClone(params),
         affectedRanges,
-        inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -871,7 +732,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'PivotDrillDownParams', validate: isPivotDrillDown },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.drilldown.remove'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<PivotDrillDownRemoveParams>({
@@ -880,7 +740,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: (value) => isPivotDrillDownRemove(value) ? sheetRange(value.targetSheetId) : [], mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.drilldown.add'], minCount: 1, maxCount: 1 },
   },
     });
 
@@ -905,13 +764,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawing: structuredClone(params.drawing), payload: structuredClone(params.payload) },
         affectedRanges,
-        inverse: [{
-          id: 'drawing.remove',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, drawingId: params.drawing.id },
-          affectedRanges,
-        }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -934,13 +786,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params: structuredClone(params),
         affectedRanges,
-        inverse: [{
-          id: 'pivot.drilldown.remove',
-          unitId: context.workbook.unitId,
-          sheetId: params.targetSheetId,
-          params: { targetSheetId: params.targetSheetId },
-          affectedRanges,
-        }],
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

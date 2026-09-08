@@ -1,17 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  ServerPivotTaskPort,
-  type ServerPivotTaskTransport,
-  type ServerPivotSourceRegisterRequest,
-  type ServerPivotPrepareRequest,
-  type ServerPivotExecuteRequest,
-} from './server-task-port';
+import { ServerPivotTaskPort, type ServerPivotRunRequest } from './server-task-port';
 
-function fixture() {
+function request(taskId = 'pivot-task'): ServerPivotRunRequest {
   const definition = {
     schema: 'PivotDefinition' as const,
-    id: 'server-pivot',
+    id: 'pivot-1',
     source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
     target: { sheetId: 'sheet-1', anchor: { row: 5, column: 0 } },
     fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [
@@ -28,78 +22,73 @@ function fixture() {
     },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
-  const revisions = { pivotId: definition.id, sourceRevision: 'source-r1', layoutRevision: 'layout-r1', filterRevision: 'filter-r1' };
-  return { definition, revisions };
+  return {
+    taskId,
+    generation: 1,
+    definition,
+    controls: [],
+    revisions: { pivotId: definition.id, sourceRevision: 'source-r1', layoutRevision: 'layout-r1', filterRevision: 'filter-r1' },
+    source: definition.source.range,
+    targetBounds: { rowCount: 100, columnCount: 20 },
+  };
 }
 
-class FakeServerPivotTransport implements ServerPivotTaskTransport {
-  cancelled: string[] = [];
-  executeResult: Promise<Awaited<ReturnType<ServerPivotTaskTransport['execute']>>> | undefined;
-
-  registerSource(request: ServerPivotSourceRegisterRequest): Promise<Awaited<ReturnType<ServerPivotTaskTransport['registerSource']>>> {
-    return Promise.resolve({ status: 'accepted', taskId: request.taskId, generation: request.generation, revision: 7, sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision });
-  }
-
-  prepare(request: ServerPivotPrepareRequest): Promise<Awaited<ReturnType<ServerPivotTaskTransport['prepare']>>> {
-    return Promise.resolve({ status: 'accepted', taskId: request.taskId, generation: request.generation, revision: request.revision, sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision, prepareToken: `prepared:${request.taskId}` });
-  }
-
-  execute(request: ServerPivotExecuteRequest): Promise<Awaited<ReturnType<ServerPivotTaskTransport['execute']>>> {
-    if (this.executeResult) return this.executeResult;
-    return Promise.resolve({ status: 'completed', taskId: request.taskId, generation: request.generation, revision: 7, sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision, result: { kind: 'pivot', revision: 7, rows: [{ rowId: 0, keys: ['East'], subtotal: false, grandTotal: false }], columns: [{ columnId: 0, keys: [] }], cells: [{ rowId: 0, columnId: 0, values: [10] }], totalGroups: 1, totalColumns: 1 } });
-  }
-
-  viewport = this.execute.bind(this);
-
-  drilldown(request: Parameters<ServerPivotTaskTransport['drilldown']>[0]): ReturnType<ServerPivotTaskTransport['drilldown']> {
-    return Promise.resolve({ status: 'completed', taskId: request.taskId, generation: request.generation, revision: 7, sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision, drilldown: { sourceRows: [1], values: [['East', 10]], columns: [0, 1], total: 1, offset: request.drilldown.offset } });
-  }
-
-  cancel(request: { taskId: string }): Promise<void> {
-    this.cancelled.push(request.taskId);
-    return Promise.resolve();
-  }
+function result(taskId: string, revision = 7) {
+  return {
+    kind: 'pivot', revision, queryId: taskId, sourceRevision: revision, executionToken: `token:${taskId}`,
+    rows: [{ rowId: 0, keys: ['East'], subtotal: false, grandTotal: false }],
+    columns: [{ columnId: 0, keys: [] }],
+    cells: [{ rowId: 0, columnId: 0, values: [10] }],
+    totalGroups: 1, totalColumns: 1,
+  };
 }
 
 describe('ServerPivotTaskPort', () => {
-  it('runs source registration, prepare, execute and sparse result conversion at one revision', async () => {
-    const { definition, revisions } = fixture();
-    const transport = new FakeServerPivotTransport();
-    const port = new ServerPivotTaskPort({ unitId: 'server-pivot-test', revision: () => 7, transport });
-    const sourceRequest = {
-      unitId: 'server-pivot-test', taskId: 'source-1', generation: 1, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision,
-      source: definition.source, ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
+  it('prepares and executes a revision-pinned Rust analytics request', async () => {
+    const calls: unknown[] = [];
+    const api = {
+      prepareAnalytics: async (_unitId: string, body: { queryId: string; revision: number; request: Readonly<Record<string, unknown>> }) => {
+        calls.push(body);
+        return { queryId: body.queryId, sourceRevision: body.revision, executionToken: `token:${body.queryId}`, expiresAt: new Date().toISOString() };
+      },
+      executeAnalytics: async (_unitId: string, taskId: string, body: { executionToken: string; request: Readonly<Record<string, unknown>> }) => {
+        calls.push(body);
+        return result(taskId);
+      },
+      cancelAnalytics: async () => undefined,
     };
-    assert.equal((await port.registerSource(sourceRequest)).status, 'accepted');
-    const prepare = await port.prepare({ unitId: 'server-pivot-test', taskId: 'task-1', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, definition, controls: [], targetBounds: { rowCount: 100, columnCount: 20 } });
-    const result = await port.execute({ unitId: 'server-pivot-test', taskId: 'task-1', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, prepareToken: prepare.prepareToken });
-    assert.equal(result.result.rows[0]?.label, 'East');
-    assert.equal(result.result.grandTotal, null);
-    port.dispose();
+    const port = new ServerPivotTaskPort({ unitId: 'unit-1', revision: () => 7, api });
+    const tree = await port.run(request());
+    assert.equal(tree.rows[0]?.label, 'East');
+    assert.equal((calls[0] as { request: { kind: string; revision: number } }).request.kind, 'pivot');
+    assert.equal((calls[0] as { request: { revision: number } }).request.revision, 7);
   });
 
-  it('rejects a server response pinned to a stale revision', async () => {
-    const { definition, revisions } = fixture();
-    const transport = new FakeServerPivotTransport();
-    transport.execute = (request) => Promise.resolve({ status: 'completed', taskId: request.taskId, generation: request.generation, revision: 6, sourceIdentity: request.sourceIdentity, sourceRevision: request.sourceRevision, result: { kind: 'pivot', revision: 6, rows: [], columns: [], cells: [], totalGroups: 0, totalColumns: 0 } });
-    const port = new ServerPivotTaskPort({ unitId: 'server-pivot-test', revision: () => 7, transport });
-    const prepare = await port.prepare({ unitId: 'server-pivot-test', taskId: 'stale-task', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, definition, controls: [], targetBounds: { rowCount: 100, columnCount: 20 } });
-    await assert.rejects(() => port.execute({ unitId: 'server-pivot-test', taskId: 'stale-task', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, prepareToken: prepare.prepareToken }), /PIVOT_TASK_REVISION_MISMATCH/);
-    port.dispose();
+  it('rejects a stale server response before publication', async () => {
+    const api = {
+      prepareAnalytics: async (_unitId: string, body: { queryId: string }) => ({ queryId: body.queryId, sourceRevision: 7, executionToken: `token:${body.queryId}`, expiresAt: new Date().toISOString() }),
+      executeAnalytics: async (_unitId: string, taskId: string) => result(taskId, 6),
+      cancelAnalytics: async () => undefined,
+    };
+    const port = new ServerPivotTaskPort({ unitId: 'unit-1', revision: () => 7, api });
+    await assert.rejects(() => port.run(request('stale-task')), /PIVOT_TASK_REVISION_MISMATCH/);
   });
 
-  it('cancels an in-flight task and rejects its late result', async () => {
-    const { definition, revisions } = fixture();
-    const transport = new FakeServerPivotTransport();
-    let resolve!: (value: Awaited<ReturnType<ServerPivotTaskTransport['execute']>>) => void;
-    transport.executeResult = new Promise((next) => { resolve = next; });
-    const port = new ServerPivotTaskPort({ unitId: 'server-pivot-test', revision: () => 7, transport });
-    const prepare = await port.prepare({ unitId: 'server-pivot-test', taskId: 'cancel-task', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, definition, controls: [], targetBounds: { rowCount: 100, columnCount: 20 } });
-    const pending = port.execute({ unitId: 'server-pivot-test', taskId: 'cancel-task', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, layoutRevision: revisions.layoutRevision, filterRevision: revisions.filterRevision, prepareToken: prepare.prepareToken });
+  it('cancels an in-flight request and rejects its late result', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const cancelled: string[] = [];
+    const api = {
+      prepareAnalytics: async (_unitId: string, body: { queryId: string }) => ({ queryId: body.queryId, sourceRevision: 7, executionToken: `token:${body.queryId}`, expiresAt: new Date().toISOString() }),
+      executeAnalytics: async (_unitId: string, taskId: string) => { await gate; return result(taskId); },
+      cancelAnalytics: async (_unitId: string, taskId: string) => { cancelled.push(taskId); },
+    };
+    const port = new ServerPivotTaskPort({ unitId: 'unit-1', revision: () => 7, api });
+    const pending = port.run(request('cancel-task'));
+    await Promise.resolve();
     port.cancel('cancel-task');
-    resolve({ status: 'completed', taskId: 'cancel-task', generation: 1, revision: 7, sourceIdentity: 'source-1', sourceRevision: revisions.sourceRevision, result: { kind: 'pivot', revision: 7, rows: [], columns: [], cells: [], totalGroups: 0, totalColumns: 0 } });
+    release();
     await assert.rejects(() => pending, /PIVOT_TASK_CANCELLED/);
-    assert.deepEqual(transport.cancelled, ['cancel-task']);
-    port.dispose();
+    assert.deepEqual(cancelled, ['cancel-task']);
   });
 });

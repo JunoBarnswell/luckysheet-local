@@ -237,10 +237,8 @@ export {
   type RestoreCommandParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { buildPivotGroupedFilterMembers, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskInput, type PivotGroupedFilterMember, type PivotTaskControl, type PivotTaskEvaluationInput } from './features/pivot/engine';
-export { BrowserPivotTaskPort, InlinePivotTaskPort, createBrowserPivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
-export { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError, type PivotTaskErrorCode, type PivotTaskResult } from './features/pivot/task-protocol';
-export { createPivotSourceIndex, estimatePivotSourceIndexBytes, type PivotSourceIndex } from './features/pivot/source-index';
+export { buildPivotGroupedFilterMembers, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, getPivotSourceRanges, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskDescriptor, type PivotGroupedFilterMember, type PivotRevisionKey, type PivotTaskControl, type PivotTaskDescriptor } from './features/pivot/engine';
+export { ServerPivotTaskPort, type PivotTaskError, type PivotTaskErrorCode, type ServerPivotRunRequest } from './features/pivot/server-task-port';
 export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
 export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';

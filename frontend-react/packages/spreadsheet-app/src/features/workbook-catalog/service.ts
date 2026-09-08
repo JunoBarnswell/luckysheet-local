@@ -56,6 +56,11 @@ function normalizeRole(role: WorkbookRole | undefined, fallback: WorkbookRole = 
   return role === 'owner' || role === 'editor' || role === 'commenter' || role === 'viewer' ? role : fallback;
 }
 
+function normalizeSyncState(state: WorkbookSummary['syncStatus']): WorkbookCatalogEntry['syncState'] {
+  if (state === undefined || state === 'synced' || state === 'syncing' || state === 'conflict' || state === 'error') return state ?? 'synced';
+  throw new WorkbookCatalogError('conflict', `Server returned obsolete workbook sync state: ${state}`);
+}
+
 function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
   return {
     unitId: summary.unitId,
@@ -63,7 +68,7 @@ function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
     revision: summary.revision,
     updatedAt: summary.updatedAt,
     storage: 'remote',
-    syncState: summary.syncStatus ?? 'synced',
+    syncState: normalizeSyncState(summary.syncStatus),
     role: normalizeRole(summary.role, 'viewer'),
     lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
     source: summary.source === 'document-import' ? 'document-import' : 'native',

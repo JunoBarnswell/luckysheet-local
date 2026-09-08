@@ -85,7 +85,7 @@ export interface SpreadsheetRuntime {
   nextClientSequence: number;
   kernelClientSequences: Map<string, number>;
   pivotResults: Record<string, import('@react-sheets/core-model').PivotResultTree>;
-  pivotErrors: Record<string, import('./features/pivot/task-protocol').PivotTaskError>;
+  pivotErrors: Record<string, import('./features/pivot/server-task-port').PivotTaskError>;
   collab: CollabSocketClient | null;
   collabDispose: (() => void) | null;
   broadcastPresence: (state: unknown) => boolean;

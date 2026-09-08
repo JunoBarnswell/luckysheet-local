@@ -19,8 +19,7 @@ function categoryItems(section: WorkbookHubSection, tab: WorkbookCategoryTab, it
     if (section === 'trash') return item.lifecycle === 'trashed';
     if (item.lifecycle === 'trashed') return false;
     if (section === 'shared' || tab === 'shared') return item.role !== 'owner';
-    if (tab === 'local') return item.storageLocation === 'local';
-    if (tab === 'cloud') return item.storageLocation !== 'local';
+    if (tab === 'cloud') return true;
     return true;
   });
   if (section === 'start' || section === 'recent' || tab === 'recent') {
@@ -98,7 +97,7 @@ export function WorkbookHubPage({
   const [selectedKeys, setSelectedKeys] = useState<readonly string[]>([]);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [filterOpen, setFilterOpen] = useState(false);
-  const [filters, setFilters] = useState<WorkbookFilterValues>({ favoritesOnly: false, localOnly: false, sharedOnly: false, needsSync: false });
+  const [filters, setFilters] = useState<WorkbookFilterValues>({ favoritesOnly: false, sharedOnly: false, needsSync: false });
   const [draftFilters, setDraftFilters] = useState<WorkbookFilterValues>(filters);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
@@ -108,9 +107,8 @@ export function WorkbookHubPage({
     const normalized = query.trim().toLocaleLowerCase();
     return categoryItems(activeSection, tab, items).filter((item) => {
       if (filters.favoritesOnly && !item.favorite) return false;
-      if (filters.localOnly && item.storageLocation !== 'local') return false;
       if (filters.sharedOnly && item.role === 'owner') return false;
-      if (filters.needsSync && !['pending', 'syncing', 'offline', 'conflict', 'error'].includes(item.syncStatus)) return false;
+      if (filters.needsSync && !['syncing', 'conflict', 'error'].includes(item.syncStatus)) return false;
       if (!normalized) return true;
       return [item.name, item.locationLabel, item.ownerName, item.ownerSubject, item.folderPath?.join(' / ')].filter(Boolean).some((value) => value?.toLocaleLowerCase().includes(normalized));
     });

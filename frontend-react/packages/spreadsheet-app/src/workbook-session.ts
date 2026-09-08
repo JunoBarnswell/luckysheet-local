@@ -74,7 +74,7 @@ import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } fro
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
+import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, getPivotSourceRanges, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -182,14 +182,8 @@ import {
 import {
   buildPivotCalculationProof,
   buildPivotModel,
-  createPivotCalculateRequest,
-  createBrowserPivotTaskPort,
-  createPivotSourceRegisterRequest,
-  createPivotSourceReleaseRequest,
-  InlinePivotTaskPort,
-  readPivotBlockSource,
+  ServerPivotTaskPort,
   type PivotTaskError,
-  type PivotTaskPort,
 } from './features/pivot';
 import {
   buildPivotSlicerDrawing,
@@ -382,9 +376,8 @@ export interface WorkbookSessionOptions {
   /** Only Node/unit harnesses may opt into the inline exchange implementation. */
   /** Catalog and editor resolve the same unit-scoped native transaction. */
   nativeDocumentTransaction?: NativeDocumentTransaction;
-  /** Production injects a browser Worker port; the default inline port is only for direct unit harnesses. */
-  pivotTaskPort?: PivotTaskPort;
-  pivotExecution?: 'worker' | 'inline-test';
+  /** Tests may inject the same server task boundary with a deterministic transport. */
+  pivotTaskPort?: ServerPivotTaskPort;
 }
 
 export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
@@ -611,7 +604,6 @@ export type PivotTaskState =
 interface ActivePivotTask {
   generation: number;
   taskId: string;
-  sourceTaskId?: string;
 }
 
 class PivotTaskExecutionError extends Error {
@@ -620,8 +612,6 @@ class PivotTaskExecutionError extends Error {
     this.name = 'PivotTaskExecutionError';
   }
 }
-
-const MAX_REGISTERED_PIVOT_SOURCES = 8;
 
 export interface DefinedNameCommandInput {
   name: string;
@@ -850,8 +840,7 @@ export class WorkbookSession {
    * across PivotTables. Per-pivot generations alone make a new PivotTable
    * with the same source look older than an existing one. */
   private pivotTaskGenerationSequence = 0;
-  private readonly pivotTaskPort: PivotTaskPort;
-  private readonly registeredPivotSources = new Map<string, { revision: string; epoch: number }>();
+  private readonly pivotTaskPort: ServerPivotTaskPort;
   /**
    * One logical Pivot run owns both source registration and calculation.  The
    * source-register request deliberately has a different task id from the
@@ -908,7 +897,7 @@ export class WorkbookSession {
   private refreshBatchDepth = 0;
   private refreshBatchPending = false;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'loading', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentTransaction, pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'loading', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentTransaction, pivotTaskPort }: WorkbookSessionOptions = {}) {
     this.nativeDocumentTransaction = nativeDocumentTransaction ?? createNativeDocumentTransaction();
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
@@ -932,9 +921,11 @@ export class WorkbookSession {
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
     });
-    const resolvedPivotTaskPort = pivotTaskPort ?? (pivotExecution === 'worker' ? createBrowserPivotTaskPort() : new InlinePivotTaskPort());
-    if (!resolvedPivotTaskPort) throw new Error('Pivot runtime requires a browser Worker; no Worker is available in this host');
-    this.pivotTaskPort = resolvedPivotTaskPort;
+    this.pivotTaskPort = pivotTaskPort ?? new ServerPivotTaskPort({
+      unitId: this.runtime.model.unitId,
+      revision: () => this.runtime.remoteRevision,
+      api: this.runtime.api,
+    });
     this.onReady = onReady;
     this.permission.setOnline(this.runtime.remoteConnected);
     this.actorId = resolveActorId();
@@ -1184,7 +1175,6 @@ export class WorkbookSession {
     this.assetUrlLoads.clear();
     this.pivotTaskPort.dispose();
     this.activePivotTasks.clear();
-    this.registeredPivotSources.clear();
     this.pendingPivotCommitResults.clear();
     this.pivotCreateAbort?.abort();
     this.pivotCreateAbort = null;
@@ -2497,7 +2487,7 @@ export class WorkbookSession {
       this.historyPreview?.dispose();
       const manifest = await this.runtime.api.getManifest(this.runtime.model.unitId, meta.revision);
       const pages = await Promise.all(manifest.pages.map(page => this.runtime.api.getPage({ unitId: manifest.unitId, revision: manifest.revision, sheetId: page.sheetId, pageRow: page.pageRow, pageColumn: page.pageColumn })));
-      this.historyPreview = await HistoryPreviewSession.fromManifest(meta, manifest, pages, this.pivotTaskPort);
+      this.historyPreview = await HistoryPreviewSession.fromManifest(meta, manifest, pages);
       this.notify(`Previewing revision #${revision}`);
       this.emit();
       return this.historyPreview;
@@ -4504,86 +4494,7 @@ export class WorkbookSession {
   }
 
   private cancelPivotTask(task: ActivePivotTask): void {
-    // Source acquisition is not a worker request, but once it reaches the
-    // port it has its own request id. Cancel that id first so a superseding
-    // layout edit cannot leave registration queued ahead of the new run.
-    if (task.sourceTaskId) this.pivotTaskPort.cancel(task.sourceTaskId);
     this.pivotTaskPort.cancel(task.taskId);
-  }
-
-  private async submitPivotSourceRegistration(
-    request: Parameters<PivotTaskPort['submit']>[0],
-    task?: ActivePivotTask,
-  ): Promise<Awaited<ReturnType<PivotTaskPort['submit']>>> {
-    if (task) task.sourceTaskId = request.taskId;
-    try {
-      return await this.pivotTaskPort.submit(request);
-    } finally {
-      if (task?.sourceTaskId === request.taskId) task.sourceTaskId = undefined;
-    }
-  }
-
-  private async rememberRegisteredPivotSource(pivot: PivotModel, sourceIdentity: string, sourceRevision: string, generation: number): Promise<void> {
-    this.registeredPivotSources.delete(sourceIdentity);
-    this.registeredPivotSources.set(sourceIdentity, { revision: sourceRevision, epoch: this.pivotTaskPort.sourceRegistrationEpoch });
-    if (this.registeredPivotSources.size <= MAX_REGISTERED_PIVOT_SOURCES) return;
-    const active = new Set(this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots.map((entry) => `${this.runtime.model.unitId}:${pivotSourceIdentity(entry.source)}`)));
-    const evict = [...this.registeredPivotSources.keys()].find((identity) => identity !== sourceIdentity && !active.has(identity));
-    if (!evict) {
-      this.registeredPivotSources.delete(sourceIdentity);
-      await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-release:${generation}`, generation, sourceIdentity, sourceRevision));
-      throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Pivot source cache exceeds ${String(MAX_REGISTERED_PIVOT_SOURCES)} active sources`, 'fix-source', sourceRevision));
-    }
-    const evictRevision = this.registeredPivotSources.get(evict)!.revision;
-    this.registeredPivotSources.delete(evict);
-    const released = await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-evict:${generation}`, generation, evict, evictRevision));
-    if (released.status === 'failed') throw new PivotTaskExecutionError(released.error);
-  }
-
-  private async prepareRegisteredPivotTask(pivot: PivotModel, generation: number, task?: ActivePivotTask) {
-    const sourceIdentity = `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`;
-    if (pivot.source.kind === 'data-source') {
-      const sourceId = pivot.source.dataSourceId;
-      const query = this.runtime.dataContent.get(sourceId);
-      const region = this.runtime.model.getSheets()
-        .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
-        .find(({ entry }) => entry.sourceId === sourceId);
-      if (!query || !region) throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', `PivotTable source ${sourceId} is unavailable`, 'fix-source'));
-      const loaded = await readPivotBlockSource(normalizePivotDefinitionFromCatalog(pivot), query, {
-        sourceSheetId: region.sheet.id,
-        sourceRowStart: region.entry.headerRow + 1,
-      });
-      if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
-      const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
-      descriptor.revisions.sourceRevision = `${loaded.state.sourceId}:${loaded.sourceRevision}`;
-      const registered = this.registeredPivotSources.get(sourceIdentity);
-      if (registered?.revision !== descriptor.revisions.sourceRevision || registered.epoch !== this.pivotTaskPort.sourceRegistrationEpoch) {
-        const taskId = `${pivot.id}:source:${generation}`;
-        const registration = await this.submitPivotSourceRegistration(
-          createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source),
-          task,
-        );
-        if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
-          ? registration.error
-          : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', descriptor.revisions.sourceRevision));
-        await this.rememberRegisteredPivotSource(pivot, sourceIdentity, descriptor.revisions.sourceRevision, generation);
-      }
-      return { sourceIdentity, descriptor };
-    }
-    const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
-    const registered = this.registeredPivotSources.get(sourceIdentity);
-    if (registered?.revision === descriptor.revisions.sourceRevision && registered.epoch === this.pivotTaskPort.sourceRegistrationEpoch) return { sourceIdentity, descriptor };
-    const prepared = await preparePivotTaskInputAsync(this.runtime.model, pivot, this.runtime.formula);
-    const taskId = `${pivot.id}:source:${generation}`;
-    const registration = await this.submitPivotSourceRegistration(
-      createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source),
-      task,
-    );
-    if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
-      ? registration.error
-      : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', prepared.revisions.sourceRevision));
-    await this.rememberRegisteredPivotSource(pivot, sourceIdentity, prepared.revisions.sourceRevision, generation);
-    return { sourceIdentity, descriptor: { definition: prepared.definition, controls: prepared.controls, revisions: prepared.revisions, targetBounds: prepared.targetBounds } };
   }
 
   private async calculatePivotTask(pivot: PivotModel): Promise<{ result: import('@react-sheets/core-model').PivotResultTree; calculationProof: ReturnType<typeof buildPivotCalculationProof> }> {
@@ -4595,29 +4506,49 @@ export class WorkbookSession {
     this.activePivotTasks.set(pivot.id, activeTask);
     delete this.runtime.pivotErrors[pivot.id];
     this.refresh();
-    let prepared: Awaited<ReturnType<WorkbookSession['prepareRegisteredPivotTask']>>;
-    try {
-      prepared = await this.prepareRegisteredPivotTask(pivot, generation, activeTask);
-    } catch (error) {
-      if (this.activePivotTasks.get(pivot.id) === activeTask) this.activePivotTasks.delete(pivot.id);
-      throw error;
+    const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
+    const sourceRanges = getPivotSourceRanges(this.runtime.model, pivot, this.runtime.formula);
+    if (sourceRanges.length !== 1) {
+      this.activePivotTasks.delete(pivot.id);
+      throw new PivotTaskExecutionError(this.pivotTaskError(
+        pivot,
+        'PIVOT_SOURCE_INVALID',
+        'Server Pivot analytics requires one canonical worksheet source range',
+        'fix-source',
+        descriptor.revisions.sourceRevision,
+      ));
     }
-    const { sourceIdentity, descriptor } = prepared;
     if (this.pivotTaskGeneration.get(pivot.id) !== generation || this.activePivotTasks.get(pivot.id) !== activeTask) {
       if (this.activePivotTasks.get(pivot.id) === activeTask) this.activePivotTasks.delete(pivot.id);
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was superseded by a newer generation', 'retry', descriptor.revisions.sourceRevision));
     }
-    const result = await this.pivotTaskPort.submit(createPivotCalculateRequest(taskId, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
+    let result: import('@react-sheets/core-model').PivotResultTree;
+    try {
+      result = await this.pivotTaskPort.run({
+        taskId,
+        generation,
+        definition: descriptor.definition,
+        controls: descriptor.controls,
+        revisions: descriptor.revisions,
+        source: sourceRanges[0]!,
+        targetBounds: descriptor.targetBounds,
+      });
+    } catch (error) {
+      if (this.activePivotTasks.get(pivot.id) === activeTask) this.activePivotTasks.delete(pivot.id);
+      const message = error instanceof Error ? error.message : 'Pivot server task failed';
+      const code = message.startsWith('PIVOT_TASK_CANCELLED') ? 'PIVOT_TASK_CANCELLED'
+        : message.startsWith('PIVOT_TASK_REVISION_MISMATCH') ? 'PIVOT_TASK_REVISION_MISMATCH'
+          : message.startsWith('PIVOT_TASK_PROTOCOL_ERROR') ? 'PIVOT_TASK_PROTOCOL_ERROR'
+            : 'PIVOT_TASK_FAILED';
+      throw new PivotTaskExecutionError(this.pivotTaskError(pivot, code, message, 'retry', descriptor.revisions.sourceRevision));
+    }
     const stillCurrent = this.activePivotTasks.get(pivot.id) === activeTask;
     if (stillCurrent) this.activePivotTasks.delete(pivot.id);
-    if (this.pivotTaskGeneration.get(pivot.id) !== generation || !stillCurrent || result.status === 'cancelled') {
+    if (this.pivotTaskGeneration.get(pivot.id) !== generation || !stillCurrent) {
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was cancelled', 'retry', descriptor.revisions.sourceRevision));
     }
-    if (result.status !== 'completed') throw new PivotTaskExecutionError(result.status === 'failed'
-      ? result.error
-      : this.pivotTaskError(pivot, 'PIVOT_TASK_PROTOCOL_ERROR', 'Pivot worker returned an invalid task state', 'retry', descriptor.revisions.sourceRevision));
-    const calculationProof = buildPivotCalculationProof(this.runtime.model, descriptor.definition, result.result);
-    return { result: result.result, calculationProof };
+    const calculationProof = buildPivotCalculationProof(this.runtime.model, descriptor.definition, result);
+    return { result, calculationProof };
   }
 
   async createPivotTable(params: CreatePivotTableParams): Promise<PivotCreateOutcome> {
@@ -4715,7 +4646,7 @@ export class WorkbookSession {
         && getPivotRevisionKey(this.runtime.model, entry, this.runtime.formula).sourceRevision === sourceRevision);
       const fieldCatalog = revisionPeer
         ? structuredClone(revisionPeer.fieldCatalog)
-        : (await preparePivotTaskInputAsync(this.runtime.model, pivotDraft, this.runtime.formula, { signal: createAbort.signal })).definition.fieldCatalog;
+        : buildPivotFieldCatalog(this.runtime.model, pivotDraft, this.runtime.formula);
       const pivot: PivotModel = { ...pivotDraft, fieldCatalog };
       pendingPivot = pivot;
       // Create and update share one complete source-register -> calculate run.
@@ -4795,7 +4726,7 @@ export class WorkbookSession {
       // request.  Recalculating the old layout here serialized two full worker
       // tasks for every first edit after opening an imported PivotTable.  A
       // retained result is used when available; otherwise the canonical
-      // definition footprint is sufficient for the inverse proof.
+      // definition footprint is sufficient for the integrity proof.
       const previousResult = this.runtime.pivotResults[pivotId] ?? getLastValidPivotResult(this.runtime.model, pivotId);
       const previousCalculationProof = buildPivotCalculationProof(this.runtime.model, current, previousResult);
       const calculated = await this.calculatePivotTask(candidate);
@@ -4845,7 +4776,7 @@ export class WorkbookSession {
       collect(node.children);
     });
     collect(result.rows);
-    if (!known.has(nodeId)) return { status: 'rejected', error: this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Unknown Pivot expansion node: ${nodeId}`, 'change-layout', result.sourceRevision) };
+    if (!known.has(nodeId)) return { status: 'rejected', error: this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Unknown Pivot expansion node: ${nodeId}`, 'fix-source', result.sourceRevision) };
     const expansion = structuredClone(pivot.layout.expansion ?? { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true });
     const collapsed = new Set(expansion.collapsedNodeIds);
     const expanded = new Set(expansion.expandedNodeIds);
@@ -7138,10 +7069,8 @@ export class WorkbookSession {
     const sourceRange = preprocessed.range;
     if (preprocessed.headerRow === null) throw new Error('RANGE_PREPROCESS_HEADER_REQUIRED: the selected data region has no unique header row');
     const sourceId = nextId('data-source');
-    const sheetSnapshot = this.runtime.model.manifest().sheets.find((candidate) => candidate.sheetId === sheet.id);
-    if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
     const encoded = await encodeSheetDataRegion({
-      sheet: sheetSnapshot,
+      sheet,
       range: sourceRange,
       sourceId,
       sourceName: `${sheet.name} data source`,

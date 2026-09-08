@@ -1,10 +1,8 @@
-import { pivotSourceIdentity, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
+import { WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import type { KernelPagePayload, WorkbookManifest } from '@react-sheets/protocol';
-import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
-import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
-import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
+import type { PivotTaskError } from '../pivot/server-task-port';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from '../../ui-snapshot';
 
 export interface HistoryEntryMeta {
@@ -54,57 +52,22 @@ export class HistoryPreviewSession {
     this.projection = projection;
   }
 
-  static async fromManifest(meta: HistoryEntryMeta, manifest: WorkbookManifest, pages: readonly KernelPagePayload[], taskPort?: PivotTaskPort): Promise<HistoryPreviewSession> {
+  static async fromManifest(meta: HistoryEntryMeta, manifest: WorkbookManifest, pages: readonly KernelPagePayload[]): Promise<HistoryPreviewSession> {
     if (manifest.revision !== meta.revision) throw new Error(`HISTORY_REVISION_MISMATCH: manifest ${manifest.revision} does not match requested ${meta.revision}`);
     const workbook = WorkbookModel.fromManifest(structuredClone(manifest), structuredClone(pages));
     const formula = new FormulaEngine({ unitId: workbook.unitId, revision: () => workbook.revision, defaultSheetId: workbook.primarySheetId });
     const derivedCache = new Map<string, PivotResultTree>();
     const pivotResults: Record<string, PivotResultTree> = {};
     const pivotErrors: Record<string, PivotTaskError> = {};
-    const activePort = taskPort ?? new InlinePivotTaskPort();
-    const registered = new Map<string, string>();
-    let generation = 0;
-    try {
-      for (const sheet of workbook.getSheets()) for (const pivot of sheet.pivots) {
-        const sourceIdentity = `history:${meta.revision}:${workbook.unitId}:${pivotSourceIdentity(pivot.source)}`;
-        generation += 1;
-        try {
-          let descriptor = preparePivotTaskDescriptor(workbook, pivot, formula);
-          if (registered.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
-            const prepared = await preparePivotTaskInputAsync(workbook, pivot, formula);
-            descriptor = { definition: prepared.definition, controls: prepared.controls, revisions: prepared.revisions, targetBounds: prepared.targetBounds };
-            const registration = await activePort.submit(createPivotSourceRegisterRequest(`history-source:${generation}`, generation, sourceIdentity, prepared.revisions.sourceRevision, prepared.source));
-            if (registration.status !== 'accepted') {
-              if (registration.status === 'failed') pivotErrors[pivot.id] = registration.error;
-              continue;
-            }
-            registered.set(sourceIdentity, prepared.revisions.sourceRevision);
-          }
-          const task = await activePort.submit(createPivotCalculateRequest(`history-calculate:${generation}`, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
-          if (task.status !== 'completed') {
-            if (task.status === 'failed') pivotErrors[pivot.id] = task.error;
-            continue;
-          }
-          const cacheKey = pivotCacheKey(meta.revision, pivot.id);
-          derivedCache.set(cacheKey, structuredClone(task.result));
-          pivotResults[pivot.id] = task.result;
-        } catch (error) {
-          pivotErrors[pivot.id] = {
-            code: 'PIVOT_TASK_FAILED',
-            message: error instanceof Error ? error.message : `Historical Pivot failed: ${pivot.id}`,
-            pivotId: pivot.id,
-            sourceIdentity,
-            sourceRevision: 'unknown',
-            recovery: 'retry',
-          };
-        }
-      }
-    } finally {
-      for (const [sourceIdentity, sourceRevision] of registered) {
-        generation += 1;
-        await activePort.submit(createPivotSourceReleaseRequest(`history-release:${generation}`, generation, sourceIdentity, sourceRevision));
-      }
-      if (!taskPort) activePort.dispose();
+    for (const sheet of workbook.getSheets()) for (const pivot of sheet.pivots) {
+      pivotErrors[pivot.id] = {
+        code: 'PIVOT_SOURCE_UNAVAILABLE',
+        message: 'Historical Pivot results are not embedded in this revision preview',
+        pivotId: pivot.id,
+        sourceIdentity: `${workbook.unitId}:${pivot.id}`,
+        sourceRevision: String(meta.revision),
+        recovery: 'retry',
+      };
     }
     const projection = buildAllSheetSnapshots(workbook, formula, pivotResults, new Map(), pivotErrors);
     return new HistoryPreviewSession(workbook, formula, meta, derivedCache, new Map(Object.entries(pivotErrors)), projection);
@@ -154,9 +117,6 @@ export function registerHistoryCommands(registry: CommandRegistry): void {
   });
 }
 
-function pivotCacheKey(revision: number, pivotId: string): string {
-  return `pivot:${pivotId}:source:${revision}:layout:${revision}:filter:${revision}`;
-}
 export class HistoryPanelStore {
   private entries: HistoryEntryMeta[] = [];
 

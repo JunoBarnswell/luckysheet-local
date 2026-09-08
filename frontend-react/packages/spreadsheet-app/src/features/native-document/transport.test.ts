@@ -46,7 +46,7 @@ function transport(): NativeDocumentTransport {
 test('native transaction imports the server manifest and exports through the transport', async () => {
   const transaction = createNativeDocumentTransaction(transport());
   const imported = await transaction.import({ fileName: 'source.xlsx', content: new ArrayBuffer(1), options: { compatibilityTarget: 'B' } });
-  assert.equal(imported.manifest.version, 11);
+  assert.equal(imported.manifest?.version, 11);
   assert.equal(transaction.artifact?.checksum, artifact.checksum);
   const exported = await transaction.export({ unitId: 'unit-1', revision: 1, fileName: 'source.xlsx', mode: 'save', options: { compatibilityTarget: 'B' } });
   assert.equal(exported.content?.byteLength, 1);

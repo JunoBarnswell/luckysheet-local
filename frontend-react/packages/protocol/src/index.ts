@@ -1562,6 +1562,26 @@ export interface WorkbookMetadataPatch {
   spaceId?: string | null;
 }
 
+export interface AnalyticsPrepareRequest {
+  queryId: string;
+  revision: number;
+  request: Readonly<Record<string, unknown>>;
+}
+
+export interface AnalyticsPrepareResponse {
+  queryId: string;
+  sourceRevision: number;
+  executionToken: string;
+  expiresAt: string;
+}
+
+export interface AnalyticsExecutionRequest {
+  executionToken: string;
+  request: Readonly<Record<string, unknown>>;
+}
+
+export type AnalyticsExecutionPhase = 'execute' | 'viewport' | 'drilldown';
+
 export interface WorkbookRenameRequest {
   name: string;
 }
@@ -2117,6 +2137,34 @@ export class WorkbookApiClient {
     await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/queries/${encodeURIComponent(queryId)}/cancel`, {
       method: 'POST',
     });
+  }
+
+  async prepareAnalytics(unitId: string, request: AnalyticsPrepareRequest, options: ApiRequestOptions = {}): Promise<AnalyticsPrepareResponse> {
+    return this.json<AnalyticsPrepareResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/prepare`, {
+      ...options,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async executeAnalytics(
+    unitId: string,
+    queryId: string,
+    request: AnalyticsExecutionRequest,
+    phase: AnalyticsExecutionPhase = 'execute',
+    options: ApiRequestOptions = {},
+  ): Promise<unknown> {
+    return this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/${encodeURIComponent(queryId)}/${phase}`, {
+      ...options,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async cancelAnalytics(unitId: string, queryId: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/${encodeURIComponent(queryId)}/cancel`, { method: 'POST' });
   }
 
   async createGuestShare(unitId: string, request: GuestShareRequest): Promise<GuestShareResponse> {

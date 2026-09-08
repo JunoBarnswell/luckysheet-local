@@ -27,8 +27,6 @@ export interface PersistenceSnapshotMeta {
   revision: number;
   checksum: string;
   updatedAt: string;
-  hasPendingOperations: false;
-  pendingOperationCount: 0;
 }
 
 function manifestPayload(manifest: KernelReplicaManifest): string {
@@ -44,8 +42,6 @@ export function buildPersistenceMeta(
     revision,
     checksum: computeChecksum(manifestPayload(manifest)),
     updatedAt: new Date().toISOString(),
-    hasPendingOperations: false,
-    pendingOperationCount: 0,
   };
 }
 

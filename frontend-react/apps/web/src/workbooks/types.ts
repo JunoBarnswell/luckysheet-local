@@ -28,7 +28,7 @@ export interface WorkbookCatalogItem {
 }
 
 export type WorkbookHubSection = 'start' | 'new' | 'open' | 'recent' | 'shared' | 'info' | 'save' | 'import' | 'export' | 'trash' | 'close' | 'options';
-export type WorkbookCategoryTab = 'recent' | 'cloud' | 'local' | 'shared';
+export type WorkbookCategoryTab = 'recent' | 'cloud' | 'shared';
 export type WorkbookViewMode = 'list' | 'grid';
 export type WorkbookTemplateKind = TemplatePreviewKind;
 

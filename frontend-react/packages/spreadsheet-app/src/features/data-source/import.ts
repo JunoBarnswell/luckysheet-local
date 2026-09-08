@@ -10,6 +10,7 @@ import type {
   SheetDataRegion,
   SheetId,
   SheetSnapshot,
+  WorksheetModel,
   TableScalar,
 } from '@react-sheets/core-model';
 import {
@@ -44,7 +45,7 @@ export interface SparseCellOverlayMetadata {
 }
 
 export interface SheetDataSourceImportInput {
-  sheet: SheetSnapshot;
+  sheet: SheetSnapshot | WorksheetModel;
   /** Inclusive range. The first row is the field-header row. */
   range: RangeRef;
   /** Stable identity supplied by the workbook/session owner. */
@@ -103,8 +104,12 @@ function validateInput(input: SheetDataSourceImportInput): void {
   if (input.sourceName !== undefined && !input.sourceName.trim()) fail('source name cannot be empty');
 }
 
-function cellAt(sheet: SheetSnapshot, row: number, column: number): CellData | undefined {
-  return sheet.cells[String(row)]?.[String(column)];
+function isWorksheetModel(sheet: SheetSnapshot | WorksheetModel): sheet is WorksheetModel {
+  return typeof (sheet as WorksheetModel).cells.get === 'function';
+}
+
+function cellAt(sheet: SheetSnapshot | WorksheetModel, row: number, column: number): CellData | undefined {
+  return isWorksheetModel(sheet) ? sheet.cells.get(row, column) : sheet.cells[String(row)]?.[String(column)];
 }
 
 /** Values/formulas are content; formatting by itself is not a non-empty cell. */
@@ -112,7 +117,7 @@ function isNonEmptyCell(cell: CellData | undefined): boolean {
   return cell !== undefined && (cell.value !== null || cell.formula !== undefined);
 }
 
-export function countNonEmptyCells(sheet: SheetSnapshot, range: RangeRef): number {
+export function countNonEmptyCells(sheet: SheetSnapshot | WorksheetModel, range: RangeRef): number {
   let count = 0;
   for (let row = range.startRow; row <= range.endRow; row += 1) {
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
@@ -134,9 +139,13 @@ function cloneComment(comment: CellComment): CellComment {
   return structuredClone(comment);
 }
 
-function reviewCommentAt(sheet: SheetSnapshot, row: number, column: number): CellComment | undefined {
-  const threadId = sheet.review.threadIdsByCell[`${row}:${column}`]?.[0];
-  const thread = threadId ? sheet.review.threadsById[threadId] : undefined;
+function reviewCommentAt(sheet: SheetSnapshot | WorksheetModel, row: number, column: number): CellComment | undefined {
+  const thread = isWorksheetModel(sheet)
+    ? sheet.review.getThreadsAt(row, column)[0]
+    : (() => {
+      const threadId = sheet.review.threadIdsByCell[`${row}:${column}`]?.[0];
+      return threadId ? sheet.review.threadsById[threadId] : undefined;
+    })();
   if (!thread) return undefined;
   return {
     id: thread.id,

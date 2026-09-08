@@ -1,8 +1,7 @@
 import type { QueryDefinitionSnapshot, TableScalar } from '@react-sheets/core-model';
-import { importOoxmlDocument } from '@react-sheets/exchange-excel-ooxml';
 import { validateQuerySteps, type QueryDefinition, type QueryRefreshPolicy, type QueryStep } from './query-steps';
 
-export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite' | 'jdbc';
+export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'sqlite' | 'jdbc';
 export type ConnectorExecution = 'local' | 'server';
 
 export type ConnectorInputKind = 'multiline-text' | 'file' | 'text' | 'select';
@@ -233,50 +232,6 @@ async function readText(config: Record<string, unknown>): Promise<string> {
   throw new Error('Local text connector requires text, data, or file input');
 }
 
-async function readBytes(config: Record<string, unknown>): Promise<Uint8Array> {
-  if (config.reattachRequired === true || (config.file && typeof config.file === 'object' && (config.file as Record<string, unknown>).reattachRequired === true)) {
-    throw new Error('QUERY_SOURCE_REATTACH_REQUIRED: select the original workbook before refreshing');
-  }
-  const data = config.bytes ?? config.buffer ?? config.file;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  if (data && typeof data === 'object' && 'arrayBuffer' in data && typeof (data as { arrayBuffer?: unknown }).arrayBuffer === 'function') return new Uint8Array(await (data as Blob).arrayBuffer());
-  const base64 = config.base64;
-  if (typeof base64 === 'string') {
-    const buffer = (globalThis as { Buffer?: { from(value: string, encoding: string): Uint8Array } }).Buffer;
-    const binary = typeof atob === 'function' ? atob(base64) : String.fromCharCode(...(buffer?.from(base64, 'base64') ?? new Uint8Array()));
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  }
-  throw new Error('Local binary connector requires bytes, buffer, file, or base64 input');
-}
-
-function snapshotSheetResult(snapshot: import('@react-sheets/core-model').WorkbookSnapshot['sheets'][number]): QueryResult {
-  const matrix = new Map<number, Map<number, TableScalar>>();
-  let maxRow = -1;
-  let maxColumn = -1;
-  for (const [rowKey, columns] of Object.entries(snapshot.cells)) {
-    const row = Number(rowKey);
-    if (!Number.isInteger(row)) continue;
-    const rowValues = matrix.get(row) ?? new Map<number, TableScalar>();
-    for (const [columnKey, cell] of Object.entries(columns)) {
-      const column = Number(columnKey);
-      if (!Number.isInteger(column)) continue;
-      rowValues.set(column, cell.value);
-      maxColumn = Math.max(maxColumn, column);
-    }
-    matrix.set(row, rowValues); maxRow = Math.max(maxRow, row);
-  }
-  if (maxRow < 0 || maxColumn < 0) return { columns: [], rows: [], rowCount: 0 };
-  const grid = Array.from({ length: maxRow + 1 }, (_, row) => Array.from({ length: maxColumn + 1 }, (_, column) => matrix.get(row)?.get(column) ?? null));
-  const header = grid.shift()!.map((value, index) => value == null || value === '' ? `Column${index + 1}` : String(value));
-  const columns = header.map((value, index) => {
-    const candidate = value.trim() || `Column${index + 1}`;
-    return header.slice(0, index).includes(candidate) ? `${candidate}_${index + 1}` : candidate;
-  });
-  const rows = grid.map((row) => row.slice(0, columns.length));
-  return { columns, rows, rowCount: rows.length };
-}
-
 /** Built-in JSON connector for in-memory local data. */
 export class JsonDataConnector implements DataConnector {
   readonly kind = 'json' as const;
@@ -335,30 +290,6 @@ export class TsvDataConnector extends CsvDataConnector {
   };
 }
 
-export class OoxmlDataConnector implements DataConnector {
-  readonly kind = 'xlsx' as const;
-  readonly id = 'xlsx';
-  readonly execution = 'local' as const;
-  readonly manifest: ConnectorManifest = {
-    id: this.id,
-    kind: this.kind,
-    execution: this.execution,
-    label: 'Excel workbook',
-    fields: [{ key: 'file', label: 'Excel workbook', kind: 'file', required: true, accept: '.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }],
-  };
-  private result: QueryResult = { columns: [], rows: [], rowCount: 0 };
-  async connect(config: Record<string, unknown>): Promise<void> {
-    const bytes = await readBytes(config);
-    const imported = await importOoxmlDocument({ fileName: typeof config.fileName === 'string' ? config.fileName : 'query.xlsx', buffer: bytes.slice().buffer as ArrayBuffer, options: { compatibilityTarget: 'A' } });
-    const first = imported.snapshot.sheets[0];
-    if (!first) throw new Error('XLSX workbook contains no worksheets');
-    this.result = snapshotSheetResult(first);
-  }
-  async disconnect(): Promise<void> { this.result = { columns: [], rows: [], rowCount: 0 }; }
-  async testConnection(config: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> { try { await this.connect(config); return { ok: true, message: `${this.result.rowCount} record(s) ready` }; } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Invalid XLSX data' }; } }
-  async executeQuery(_query: string): Promise<QueryResult> { return structuredClone(this.result); }
-}
-
 /** Server-only connector descriptor. It is never registered by the local default registry. */
 export class RestDataConnector implements DataConnector {
   readonly kind = 'rest' as const;
@@ -411,7 +342,6 @@ export function createDefaultConnectorRegistry(): ConnectorRegistry {
   registry.register(new JsonDataConnector());
   registry.register(new CsvDataConnector());
   registry.register(new TsvDataConnector());
-  registry.register(new OoxmlDataConnector());
   registry.register(new RestDataConnector());
   registry.register(new DatabaseDataConnector('sqlite'));
   registry.register(new DatabaseDataConnector('jdbc'));

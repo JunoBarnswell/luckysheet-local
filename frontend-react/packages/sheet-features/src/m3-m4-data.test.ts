@@ -17,7 +17,7 @@ test('sorting consumes canonical resolved values and commits a structural permut
       sheetId, range: { sheetId, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }, criteria: [{ column: 0, ascending: true }], hasHeader: true,
     });
     assert.deepEqual([1, 2, 3].map((row) => workbook.getSheet(sheetId).cells.get(row, 1)?.value), ['five', 'ten', 'twenty']);
-    assert.equal(runtime.getUndoEntries().at(-1)?.forwardMutations[0]?.id, 'rows.permuted');
+    assert.equal(runtime.getUndoEntries().at(-1)?.semanticCommandDescriptor.id, 'data.sort.rows');
   } finally {
     close();
   }
