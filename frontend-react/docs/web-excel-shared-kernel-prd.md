@@ -176,6 +176,28 @@
 | L08 回归与度量 | 只测 replica 局部语义，没有 route/runtime/browser 网络证据 | 全量读取可从新入口回归 | resolver/runtime/replica/Canvas 测试并记录真实 OCR 文件 Network、Console、TTI | 无 route-level 全页 waterfall；console 无未处理缺页 |
 | L09 E2E 构建溯源 | browser CI 用当前提交的 Linux WASM 覆盖仓库中的平台产物，v1 把这两个受控输出判为源码脏 | 浏览器用例在启动前失败，无法验证产品行为 | provenance v2 仅放行精确 kernel manifest/WASM 路径，并校验 manifest schema、artifact、byteLength、SHA-256；记录最终 WASM 身份，其它差异继续 fail-close | Linux CI 产物可运行 E2E；任意源码差异、字节数或 hash 不符均拒绝 |
 
+## 浏览器验收收敛设计（2026-09-08）
+
+### 产品状态、所有权与失败分类
+
+当前 Designer 已采用文档栏 36px、Ribbon 104px、公式栏 32px 的共享几何，并在 1600px 以下把每个完整 Ribbon group 收入该组菜单。浏览器验收仍把旧版 195px Ribbon、旧保存文案和“所有叶节点始终挂载”当作事实；这会把正确的响应式收纳判成能力缺失，也使 Page Layout、Formulas、Data、Home、Insert 的同一问题重复失败。另一方面，连接态实测确认 `Ctrl+Z` 后 `Ctrl+Y` 未恢复单元格值，属于真实 command/history 链缺陷，不能通过修改期望规避。
+
+Ribbon 的命令目录与 `RIBBON_LAYOUT_SPECS` 继续是唯一语义来源。宽屏叶节点直接呈现；compact/narrow 模式由 group trigger 暴露同一节点，验收必须沿真实 group 所有权打开菜单后检查相同 `data-ribbon-command`、`data-ribbon-layout-node`、`data-ribbon-surface` 或 `data-ribbon-variant`。保存完成只认 server acknowledgement 后的 canonical `saved` 状态；测试通过稳定的保存状态语义读取，不绑定已经删除的展示文案。Golden 覆盖固定视口、语言与五个主 Ribbon tab，使用仓库内单一基线命名和明确像素容差，缺失基线必须失败，不能在普通测试中静默创建并算通过。
+
+### 一次性整改 TODO
+
+| TODO | 现状 | 会导致的问题 | 统一优化方案 | 验收 |
+|---|---|---|---|---|
+| E01 Shell 几何契约 | Designer 与共享常量是 36/104/32px，测试仍断言 Ribbon 195px、公式栏 48px | 所有视口稳定误报，掩盖真实越界 | 测试直接按 `DESIGNER_GEOMETRY` 的产品尺寸验证完整纵向分区和无页面滚动 | 1280/1366/1440/1917/1920 五视口几何一致 |
+| E02 响应式命令可达性 | compact 模式只挂载 group trigger，测试直接找未打开的叶节点 | Home、Insert 与三张主 Ribbon 页在 1600px 以下全量失败 | 共享 E2E helper 按 catalog group 打开 owning menu，再验证叶节点原身份；每项检查后关闭菜单 | 四视口、双语言中每个目录节点均可达且身份不变 |
+| E03 Insert gallery | gallery root 在 compact 模式位于 group menu，部分 split gallery 还需打开自身 options | variant 验收停在不存在或尚未展开的 root | 先解析 root surface 的 group，再打开 group 与 gallery；在同一 menu 生命周期内验证全部 typed variants | chart/sparkline/shape/connector variants 全部可见 |
+| E04 Undo/Redo | server history undo 后 redo 没有恢复 committed authored value | 顶栏、快捷键和 History 面板显示的能力与真实结果不一致 | 沿 `keyboard → session → command runtime → server revision` 修复 redo 的事务/刷新语义，不建立第二历史栈 | 单次编辑→Undo→Redo 值、revision、焦点一致；失败不产生半提交 |
+| E05 稳定保存断言 | E2E 搜索已移除的“已保存到服务器”文本 | server 已确认仍等待至超时 | 在共享 fixture 读取可访问的 canonical save-state 标识，并等待 `saved` | 编辑、公式、持久化重载均以 server ack 后状态继续 |
+| E06 Canvas 手势 | 多个测试使用旧壳层坐标、过早点击或依赖并行创建后的偶发路由状态 | 滚动条、反向拖选、release-cell 编辑、Ctrl+Enter、fill handle 与剪贴板产生假阴性 | 所有坐标由当前 Canvas/PaneMap 可见矩形计算；输入后等待对应 canonical selection/value/state，不使用固定壳层偏移 | 手势不触发路由；commit 地址与 active/release cell 相同 |
+| E07 Ribbon 功能入口 | Format、Paste Special、Format Painter 等叶入口在 compact group 内，旧 selector 直接查找 | 对话框和真实行为超时 | 复用 E02 的 owning-group 打开链并点击 canonical surface/test id | 对话框与 transient action 从真实目录入口打开并完成 |
+| E08 Visual golden | snapshot 目录为空且默认文件名绑定执行平台 | 每个平台第一次运行必失败，CI 无可审查基线 | 固定跨平台 snapshot 路径、生成双语言四视口 shell+五 tab 基线，设置有限抗锯齿容差；产品结构差异仍失败 | 48 组图像全部有版本化基线，CI 比对通过 |
+| E09 诊断与清理 | 失败运行遗留临时工作簿、截图和输出；并发失败难定位首因 | 重跑污染 Hub 并降低可复现性 | fixture 记录创建对象并在 test teardown 通过真实 API 清理；console/page/network failures 继续零容忍 | 全套 108 用例完成后无测试工作簿残留、无 console/page/request error |
+
 ### 失败与恢复
 
 页面请求的 HTTP、身份、revision、descriptor、checksum、byteLength 或 WASM 接收任一失败，当前请求以 typed error 结束，失败页不进入 resident set。用户重试只重新请求失败或仍缺失的目标页。revision 改变时取消旧队列；无法取消的响应在 `page.load` 前由 revision guard 拒绝。应用层不自动重试、不返回空页、不改变 canonical selection/commit 地址。
