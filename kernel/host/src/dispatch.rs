@@ -16,6 +16,9 @@ const MAX_RANGE_RESPONSE_CELLS: usize = 65_536;
 #[cfg(test)]
 #[path = "analytics_tests.rs"]
 mod analytics_tests;
+#[cfg(test)]
+#[path = "formula_tests.rs"]
+mod formula_tests;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -433,7 +436,18 @@ impl KernelHost {
         if !self.formulas.contains_key(&id) {
             self.formulas.insert(id.clone(), build_formula_runtime(workbook)?);
         }
-        let values = self.formulas.get_mut(&id).unwrap().recalculate(workbook)?;
+        let values = if let Some(value) = params.get("address").filter(|value| !value.is_null()) {
+            let address: CellAddress = decode(value.clone())?;
+            self.formulas
+                .get_mut(&id)
+                .unwrap()
+                .recalculate_cell(&address, workbook)?
+                .into_iter()
+                .map(|value| (address.clone(), value))
+                .collect()
+        } else {
+            self.formulas.get_mut(&id).unwrap().recalculate(workbook)?
+        };
         let generation = self.formulas.get(&id).unwrap().generation();
         let pending = self.formulas.get(&id).unwrap().dirty_count() != 0;
         Ok(json!({

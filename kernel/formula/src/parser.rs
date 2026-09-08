@@ -38,7 +38,39 @@ fn err(message: impl Into<String>) -> kernel_core::KernelError {
 
 pub fn parse(source: &str, current: &CellAddress) -> KernelResult<Expr> {
     current.validate()?;
-    resolve(&crate::editor::parse_editor(source, current)?, current)
+    let normalized = normalize_external_formula(source);
+    resolve(&crate::editor::parse_editor(&normalized, current)?, current)
+}
+pub fn normalize_external_formula(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut offset = 0;
+    let mut in_string = false;
+    while offset < source.len() {
+        let tail = &source[offset..];
+        if in_string && tail.starts_with("\"\"") {
+            output.push_str("\"\"");
+            offset += 2;
+            continue;
+        }
+        if tail.starts_with('"') {
+            in_string = !in_string;
+            output.push('"');
+            offset += 1;
+            continue;
+        }
+        if !in_string
+            && tail
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("_xlfn.") || prefix.eq_ignore_ascii_case("_xlws."))
+        {
+            offset += 6;
+            continue;
+        }
+        let character = tail.chars().next().expect("offset is within source");
+        output.push(character);
+        offset += character.len_utf8();
+    }
+    output
 }
 fn normalize_function(s: &str) -> String {
     let mut name = s;

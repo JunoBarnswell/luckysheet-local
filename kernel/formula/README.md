@@ -10,10 +10,10 @@ Excel errors are `Ok(FormulaValue::Scalar(Scalar::Error(...)))`. Missing pages, 
 
 ## Host entrypoints
 
-- `register_sheet(name, id)`, `define_name(name, formula, scope)`, `define_table_reference(source, range)`, `set_context(CalculationContext)`.
+- `register_sheet(name, id)`, scoped `define_name`, typed `define_table`, and `set_context(CalculationContext)`.
 - `evaluate_with_services(formula, address, reader, services)`.
 - `recalculate_with_services(reader, services)` returns changed native results; the framed host response should contain a summary, not millions of serialized values.
-- `inspect_query_with_services(reader, query, services)`: projections `entries`, `spills`, `status`; default 512 entries, limit 1–4096, `CellAddress` keyset cursor, optional sheet and exact address.
+- `inspect_query_with_services(reader, query, services)`: projections `entries`, `spills`, `status`; default 512 entries, limit 1–4096, opaque keyset cursor, optional sheet and exact address.
 - `trace_with_services(address, reader, services)` executes the root expression and records actual expression results.
 - `spill_value_with_services(address, reader, services)` uses the same indexed spill owner and propagates failed reads.
 - `evaluate_with_overrides_and_services(formula, address, reader, overrides, services)` invalidates the affected calculation closure in an isolated session without modifying committed cached results.
@@ -23,6 +23,6 @@ Excel errors are `Ok(FormulaValue::Scalar(Scalar::Error(...)))`. Missing pages, 
 
 ## Evidence and remaining acceptance
 
-Native verification on this implementation batch: `cargo test -p kernel-formula --lib --test runtime_semantics` passed 21 library and 16 runtime integration tests. Cases include the reported AND/ADDRESS/OFFSET/XLOOKUP/INDIRECT regressions, both binary-search directions, matched error versus missing lookup, lexical/recursive LAMBDA and modern array functions, union references, local dirty propagation, spill resizing/collision/recovery, overrides, deterministic random contexts, cancellation, missing pages, budgets, and SUBTOTAL visibility reasons. These are kernel tests, not an Excel producer interoperability claim.
+Native verification includes the library/runtime suite and `tests/migration_corpus.rs`. The latter maps all 56 archived TypeScript semantic cases to 11 executable Rust integration groups. It covers persistent delta state, workbook/sheet names, external namespace normalization, trace, dynamic arrays and budgets, GROUPBY/PIVOTBY, SJS.TABLE, dependency/index behavior, partial recalculation, structured table selectors, and spill ownership. These are kernel tests, not an Excel producer interoperability claim.
 
-The complete F01–F10 acceptance is **not** established by those tests. Remaining integration/implementation work includes shared-formula templates and persistent aggregate indexes; canonical metadata wiring for scoped names, structured table selectors, Pivot/external dependencies and calculation modes; full number-format/locale behavior; exhaustive migration-corpus parity; framed/paged transport for large spill payloads; native/WASM differential runs; the million-row performance corpus; and real Excel producer/reopen verification. The current `TEXT` formatter covers common numeric/percentage/quoted-prefix/date masks, not the complete Excel number-format grammar. Structural transforms that would split a reference into unsupported noncontiguous regions reject rather than silently approximate.
+The complete F01–F10 acceptance still requires the native/WASM differential run, million-row performance corpus, and real Excel producer/reopen verification. Shared-formula templates, persistent aggregate indexes, full number-format/locale behavior, and paged transport for very large spill results remain explicit performance/interoperability work. The current `TEXT` formatter covers common numeric/percentage/quoted-prefix/date masks, not the complete Excel number-format grammar. Structural transforms that would split a reference into unsupported noncontiguous regions reject rather than silently approximate.

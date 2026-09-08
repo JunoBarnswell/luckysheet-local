@@ -386,6 +386,7 @@ impl FormulaRuntime {
 
     pub fn synchronize_range(&mut self, range: &RangeRef, reader: &dyn CellReader) -> KernelResult<()> {
         range.validate()?;
+        self.invalidate_range(range)?;
         let existing: Vec<_> = self.formulas.keys().filter(|address| range.contains(address)).cloned().collect();
         for address in existing {
             self.remove_formula(&address);
@@ -586,6 +587,59 @@ impl FormulaRuntime {
         self.dirty.clear();
         self.generation = next_generation;
         Ok(result)
+    }
+    pub fn recalculate_cell(
+        &mut self,
+        address: &CellAddress,
+        reader: &dyn CellReader,
+    ) -> KernelResult<Option<FormulaValue>> {
+        address.validate()?;
+        if !self.formulas.contains_key(address) {
+            return Ok(None);
+        }
+        let session = evaluator::Session::new(self, reader, &DEFAULT_SERVICES);
+        session.force(address);
+        let value = session.cell_output(address)?;
+        session.validate_revision()?;
+        let dynamic = session.dynamic.into_inner();
+        let spills = session.spill_updates.into_inner();
+        let spill_changes = session.spill_changed.into_inner();
+        if let Some(ranges) = dynamic.get(address) {
+            if let Some(entry) = self.formulas.get(address) {
+                self.index.replace(address, &entry.ast);
+                self.index.add_dynamic(address, ranges.clone());
+            }
+        }
+        if let Some(range) = spills.get(address) {
+            self.spill_index.remove(address);
+            match range {
+                Some(range) => {
+                    self.spill_index.add_dynamic(address, vec![range.clone()]);
+                    self.spills.insert(address.clone(), range.clone());
+                }
+                None => {
+                    self.spills.remove(address);
+                }
+            }
+        }
+        for root in spill_changes {
+            if let Some(range) = self.spills.get(&root) {
+                for dependent in self.index.affected_range(range) {
+                    if &dependent != address {
+                        self.dirty.insert(dependent);
+                    }
+                }
+            }
+        }
+        self.cached.insert(address.clone(), value.clone());
+        self.dirty.remove(address);
+        self.generation = self.generation.checked_add(1).ok_or_else(|| {
+            KernelError::new("GENERATION_EXHAUSTED", "Calculation generation overflow")
+        })?;
+        Ok(Some(value))
+    }
+    pub fn cached_value(&self, address: &CellAddress) -> Option<&FormulaValue> {
+        self.cached.get(address)
     }
     pub fn dependencies(&self, address: &CellAddress) -> Option<&BTreeSet<CellAddress>> {
         self.index.points(address)

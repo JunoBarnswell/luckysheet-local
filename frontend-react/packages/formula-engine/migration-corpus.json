@@ -2,22 +2,23 @@
   "policy": "Every existing semantic case must execute against the canonical Rust implementation before migration acceptance. Source is evidence only, never executable production fallback.",
   "baseline": "4fa80a2a879e6f5e0ac626f2fa45b6dd983a2cd4",
   "version": 1,
+  "status": "rust-parity",
   "files": [
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_calculation_session_is_persistent_and_delta_driven",
+          "status": "rust-parity",
           "name": "'persistent calculation worker opens once and applies only canonical deltas afterwards'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_calculation_session_is_persistent_and_delta_driven",
+          "status": "rust-parity",
           "name": "'worker entry rejects the removed snapshot task protocol'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_calculation_session_is_persistent_and_delta_driven",
+          "status": "rust-parity",
           "name": "'worker entry retains one FormulaEngine per session and restores its handler'"
         }
       ],
@@ -27,38 +28,38 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'normalizeDefinedNames uppercases keys'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'resolveDefinedNameSource supports scalar"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves defined names in formulas with current cell context'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'FormulaEngine recalculates formulas when a defined name changes'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves sheet-scoped names before workbook-scoped names'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'scoped names survive the persistent calculation bootstrap boundary'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_defined_names_preserve_scope_sources_and_invalidation",
+          "status": "rust-parity",
           "name": "'FormulaEngine recalculates volatile formulas when dependencies change'"
         }
       ],
@@ -68,13 +69,13 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_external_formula_namespaces_normalize_without_touching_text",
+          "status": "rust-parity",
           "name": "'normalizes Excel and WPS function namespaces without rewriting string literals'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_external_formula_namespaces_normalize_without_touching_text",
+          "status": "rust-parity",
           "name": "'normalizes the legacy SINGLE spelling into the canonical implicit-intersection operator'"
         }
       ],
@@ -84,8 +85,8 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_trace_uses_the_canonical_ast_evaluator",
+          "status": "rust-parity",
           "name": "'formula trace evaluates real AST nodes in order'"
         }
       ],
@@ -95,38 +96,38 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'dynamic array functions: FILTER UNIQUE SORT SEQUENCE'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'dynamic array functions: XMATCH HSTACK VSTACK TAKE DROP'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'dynamic array functions: SORTBY and RANDARRAY'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'dynamic array functions: FILTER empty uses if_empty'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'dynamic array functions: FILTER no match returns #CALC!'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'generated dynamic arrays accept output at the cell limit'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_dynamic_arrays_cover_functions_empty_results_and_budgets",
+          "status": "rust-parity",
           "name": "'generated dynamic arrays reject output above the cell limit before allocation'"
         }
       ],
@@ -136,43 +137,43 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'GROUPBY is enabled by default and aggregates multiple field and value columns deterministically'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'GROUPBY supports the five deterministic aggregations and treats blanks as non-numeric'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'GROUPBY uses typed keys and combines null with empty text as one blank group'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'GROUPBY validates shapes and propagates input errors instead of truncating or coercing rows'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'PIVOTBY builds stable row/column field headers and cross-aggregates every matching source row'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'PIVOTBY preserves multi-field and multi-value dimensions without stringifying keys'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'PIVOTBY rejects mismatched input heights and unsupported optional arguments'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_groupby_and_pivotby_preserve_typed_shapes_and_aggregations",
+          "status": "rust-parity",
           "name": "'FormulaEngine accepts bare aggregate identifiers"
         }
       ],
@@ -182,13 +183,13 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_sjs_table_is_an_isolated_what_if_array",
+          "status": "rust-parity",
           "name": "'SJS.TABLE returns a dynamic array without writing result cells'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_sjs_table_is_an_isolated_what_if_array",
+          "status": "rust-parity",
           "name": "'SJS.TABLE rejects non-paired input arguments'"
         }
       ],
@@ -198,78 +199,78 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'lexer and parser produce a precedence-aware AST without executable code'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'spill and implicit-intersection references round-trip and offset through the AST'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'AST formatter preserves explicit grouping and qualified sheet names'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'structural deletion invalidates references instead of clamping them'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'A1 addresses support zero-based engine coordinates and qualified sheets'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'RangeIndex tracks direct and rectangular dependencies'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine evaluates arithmetic"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine evaluates comprehensive math"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves spill references as dynamic ranges'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine recalculates a dependency chain and updates replaced dependencies'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine returns explicit errors and propagates them through formulas'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine evaluates only the selected lazy branch and tracks dynamic references'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'formula capability matrix is derived from executable functions and marks unsupported entries'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'calculation sessions fail closed when a persistent Worker is unavailable'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_formula_index_semantics_are_native_and_fail_closed",
+          "status": "rust-parity",
           "name": "'FormulaEngine supports qualified references and detects cycles'"
         }
       ],
@@ -279,13 +280,13 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_recalculation_modes_keep_pending_and_partial_closures",
+          "status": "rust-parity",
           "name": "'manual recalculation defers dependent formula updates until recalculate()'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_recalculation_modes_keep_pending_and_partial_closures",
+          "status": "rust-parity",
           "name": "'partial recalculate updates only the requested dependency subtree'"
         }
       ],
@@ -295,28 +296,28 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_structured_tables_resolve_columns_rows_and_specifiers",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves structured table column references'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_structured_tables_resolve_columns_rows_and_specifiers",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves this-row structured table references'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_structured_tables_resolve_columns_rows_and_specifiers",
+          "status": "rust-parity",
           "name": "'FormulaEngine evaluates SUBTOTAL on structured table columns'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_structured_tables_resolve_columns_rows_and_specifiers",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves #Data and #Headers structured table specifiers'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_structured_tables_resolve_columns_rows_and_specifiers",
+          "status": "rust-parity",
           "name": "'FormulaEngine resolves #All structured table specifier'"
         }
       ],
@@ -326,23 +327,23 @@
     {
       "cases": [
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_spills_share_one_owner_and_reject_blockers",
+          "status": "rust-parity",
           "name": "'resolveSpill detects blockers and ok states'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_spills_share_one_owner_and_reject_blockers",
+          "status": "rust-parity",
           "name": "'isSpillChild excludes anchor cell'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_spills_share_one_owner_and_reject_blockers",
+          "status": "rust-parity",
           "name": "'FormulaEngine tracks spill ranges and child values'"
         },
         {
-          "rustTest": null,
-          "status": "requires-rust-parity",
+          "rustTest": "migration_spills_share_one_owner_and_reject_blockers",
+          "status": "rust-parity",
           "name": "'FormulaEngine returns #SPILL! when spill area is blocked'"
         }
       ],

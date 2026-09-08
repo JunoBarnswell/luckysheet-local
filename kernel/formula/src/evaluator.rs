@@ -1014,6 +1014,29 @@ impl<'a> Session<'a> {
                 };
                 return Ok(Value::Data(FormulaValue::Array(output)));
             }
+            "GROUPBY" | "PIVOTBY" => {
+                let required = if name == "PIVOTBY" { 4 } else { 3 };
+                arity(args, required, required)?;
+                let mut values = Vec::with_capacity(args.len());
+                for (index, argument) in args.iter().enumerate() {
+                    if index == required - 1 {
+                        if let Expr::Name(aggregation) = argument {
+                            values.push(FormulaValue::Scalar(Scalar::Text(
+                                aggregation.to_uppercase(),
+                            )));
+                            continue;
+                        }
+                    }
+                    values.push(self.materialize(&self.eval(argument, current, env)?)?);
+                }
+                return array_functions::call_with_limit(
+                    name,
+                    &values,
+                    self.runtime.context.max_array_cells,
+                )
+                .expect("GROUPBY/PIVOTBY are registered")
+                .map(Value::Data);
+            }
             "INDEX" => {
                 arity(args, 2, 4)?;
                 let input = ev(0)?;
@@ -1559,8 +1582,10 @@ impl<'a> Session<'a> {
         {
             identity = (identity ^ byte as u64).wrapping_mul(0x100000001b3);
         }
-        let mut x =
-            self.runtime.context.random_seed ^ identity ^ ordinal.wrapping_mul(0x9e3779b97f4a7c15);
+        let mut x = self.runtime.context.random_seed
+            ^ self.runtime.generation.wrapping_mul(0xd6e8feb86659fd93)
+            ^ identity
+            ^ ordinal.wrapping_mul(0x9e3779b97f4a7c15);
         x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
         x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
         ((x ^ (x >> 31)) >> 11) as f64 / (1u64 << 53) as f64

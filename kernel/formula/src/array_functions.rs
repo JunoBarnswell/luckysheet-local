@@ -344,7 +344,7 @@ fn filter(a: &[FormulaValue]) -> ExcelResult<FormulaValue> {
         return Ok(err("#VALUE!", "FILTER include shape mismatch"));
     }
     let mut out = Vec::new();
-    if col_mode {
+    if col_mode && !row_mode {
         let selected: Vec<bool> = inc[0].iter().map(boolish).collect::<Result<_, _>>()?;
         for row in &x {
             out.push(
@@ -829,7 +829,11 @@ fn group_key(row: &[Scalar]) -> String {
         .iter()
         .map(|v| {
             if let Scalar::Text(text) = v {
-                Scalar::Text(text.to_lowercase())
+                if text.is_empty() {
+                    Scalar::Null
+                } else {
+                    Scalar::Text(text.to_lowercase())
+                }
             } else {
                 v.clone()
             }
@@ -858,7 +862,18 @@ fn groupby(a: &[FormulaValue], pivot: bool) -> ExcelResult<FormulaValue> {
             "Grouping fields and values must have equal row counts",
         ));
     }
-    let aggregation = text(&a[required - 1].scalar()).to_uppercase();
+    if fields.is_empty()
+        || values.is_empty()
+        || fields[0].is_empty()
+        || values[0].is_empty()
+        || columns.as_ref().is_some_and(|matrix| matrix.is_empty() || matrix[0].is_empty())
+    {
+        return Err(err("#VALUE!", "Grouping inputs must be nonempty matrices"));
+    }
+    let aggregation = match a[required - 1].scalar() {
+        Scalar::Number(value) if value == 1. => "SUM".into(),
+        value => text(&value).to_uppercase(),
+    };
     if !["SUM", "COUNT", "AVERAGE", "MIN", "MAX"].contains(&aggregation.as_str()) {
         return Err(err("#VALUE!", "Unsupported grouping aggregation"));
     }
@@ -896,6 +911,15 @@ fn groupby(a: &[FormulaValue], pivot: bool) -> ExcelResult<FormulaValue> {
             let mut header = vec![Scalar::Null; fields[0].len()];
             for col in &col_fields {
                 header.extend(std::iter::repeat_n(col[level].clone(), values[0].len()));
+            }
+            output.push(header);
+        }
+        if values[0].len() > 1 {
+            let mut header = vec![Scalar::Null; fields[0].len()];
+            for _ in &col_fields {
+                for value in 0..values[0].len() {
+                    header.push(Scalar::Text(format!("{} {}", aggregation, value + 1)));
+                }
             }
             output.push(header);
         }

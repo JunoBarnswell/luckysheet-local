@@ -134,6 +134,7 @@ export class FormulaEngine {
     return result.isSpill ? result.value : undefined;
   }
   recalculate(): RecalculationReport { return this.invoke<RecalculationReport>('formula.recalculate'); }
+  recalculateCell(address: CellAddressInput): RecalculationReport { return this.invoke<RecalculationReport>('formula.recalculate', { address: this.address(address) }); }
   async recalculateAsync(): Promise<RecalculationReport> { return this.recalculate(); }
   hasPendingRecalculation(): boolean { return this.inspect(undefined, 'status').pendingRecalculation; }
   getCalculationGeneration(): number { return this.inspect(undefined, 'status').generation; }

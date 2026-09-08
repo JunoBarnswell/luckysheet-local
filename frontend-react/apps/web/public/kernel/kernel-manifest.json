@@ -1,6 +1,6 @@
 {
   "artifact": "kernel_host.wasm",
-  "bytes": 3209628,
-  "sha256": "1485df2e30e1e0bdf4afdde13da0d0c36a85979a2ce4e2888e5c44d88c29d2be",
+  "bytes": 3411824,
+  "sha256": "a37260b763bc490cdfa61d7b532dedb3a95a58b4cd1a2f769386cf954ff39ccd",
   "source": "cargo build -p kernel-host --target wasm32-unknown-unknown --release"
 }
