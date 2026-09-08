@@ -53,8 +53,8 @@ function toResolutionError(error: unknown, unitId: string): Error {
   if (error instanceof ApiRequestError) {
     if (error.status === 404) return new WorkbookResolutionError('not-found', `Workbook not found: ${unitId}`, { cause: error });
     if (error.status === 401 || error.status === 403) return new WorkbookResolutionError('permission-denied', `Workbook access denied: ${unitId}`, { cause: error });
-    if (isRemoteUnavailable(error)) return new WorkbookResolutionError('remote-unavailable', `Cloud workbook service is unavailable: ${unitId}`, { cause: error });
   }
+  if (isRemoteUnavailable(error)) return new WorkbookResolutionError('remote-unavailable', `Cloud workbook service is unavailable: ${unitId}`, { cause: error });
   return error instanceof Error ? error : new Error(`Workbook resolution failed: ${unitId}`);
 }
 
@@ -62,6 +62,25 @@ function assertUnitId(unitId: string): string {
   const normalized = unitId.trim();
   if (!normalized) throw new WorkbookResolutionError('invalid-input', 'Workbook unitId is required');
   return normalized;
+}
+
+async function loadRevisionPages(
+  remote: WorkbookCatalogRemoteClient,
+  unitId: string,
+  manifest: Awaited<ReturnType<WorkbookCatalogRemoteClient['getManifest']>>,
+  options: ApiRequestOptions,
+) {
+  const pages: WorkbookResolution['pages'][number][] = [];
+  for (let offset = 0; offset < manifest.pages.length; offset += 4) {
+    pages.push(...await Promise.all(manifest.pages.slice(offset, offset + 4).map((page) => remote.getPage({
+      unitId,
+      revision: manifest.revision,
+      sheetId: page.sheetId,
+      pageRow: page.pageRow,
+      pageColumn: page.pageColumn,
+    }, options))));
+  }
+  return pages;
 }
 
 export class WorkbookResolver {
@@ -100,6 +119,10 @@ export class WorkbookResolver {
         remote.getManifest(normalized),
         remote.getAccess(normalized, options),
       ]);
+      // WorksheetCells and feature resolvers are synchronous projections over
+      // the committed revision. Resolve every sparse page before publishing a
+      // usable route so no renderer or command can observe a partial model.
+      const pages = await loadRevisionPages(remote, normalized, manifest, options);
       const isShared = Boolean((await this.shareTokenProvider?.())?.trim());
       return {
         schema: 'WorkbookResolution',
@@ -108,6 +131,7 @@ export class WorkbookResolver {
         mode: 'remote',
         lifecycle: 'active',
         manifest: clone(manifest),
+        pages: clone(pages),
         revision: manifest.revision,
         access,
       };

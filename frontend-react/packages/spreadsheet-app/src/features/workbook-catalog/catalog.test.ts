@@ -10,7 +10,7 @@ import { WorkbookResolutionError } from './resolver';
 import type { WorkbookCatalogRemoteClient } from './types';
 
 const manifest = {
-  schema: 'KernelReplicaManifest' as const,
+  schema: 'WorkbookManifest' as const,
   version: 11 as const,
   unitId: 'unit-1',
   name: 'Cloud workbook',
@@ -44,6 +44,46 @@ describe('cloud-only workbook catalog', () => {
     assert.equal(savedStates.length, 0);
     await catalog.markOpened(resolution);
     assert.equal(savedStates[0]?.lastOpenedAt, '2026-08-26T00:01:00.000Z');
+  });
+
+  it('loads the complete revision-pinned sparse page set before publishing a resolution', async () => {
+    const descriptors = [0, 1].map((pageRow) => ({
+      sheetId: 'sheet-1', pageRow, pageColumn: 0, revision: manifest.revision,
+      checksum: String(pageRow + 1).repeat(64), byteLength: 1, cellCount: 1,
+      occupiedRange: { sheetId: 'sheet-1', startRow: pageRow * 1024, endRow: pageRow * 1024, startColumn: 0, endColumn: 0 },
+    }));
+    const requested: number[] = [];
+    const catalog = new WorkbookCatalogService({
+      remote: remote({
+        getManifest: async () => ({ ...structuredClone(manifest), pages: descriptors }),
+        getPage: async (request) => {
+          requested.push(request.pageRow);
+          return { ...descriptors[request.pageRow]!, payloadBase64: 'AA==' };
+        },
+      }),
+    });
+    const resolution = await catalog.resolve(manifest.unitId);
+    assert.deepEqual(requested, [0, 1]);
+    assert.deepEqual(resolution.pages.map((page) => page.pageRow), [0, 1]);
+    assert.ok(resolution.pages.every((page) => page.revision === resolution.revision));
+  });
+
+  it('rejects route resolution when any committed page cannot be loaded', async () => {
+    const descriptor = {
+      sheetId: 'sheet-1', pageRow: 0, pageColumn: 0, revision: manifest.revision,
+      checksum: '1'.repeat(64), byteLength: 1, cellCount: 1,
+      occupiedRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    };
+    const catalog = new WorkbookCatalogService({
+      remote: remote({
+        getManifest: async () => ({ ...structuredClone(manifest), pages: [descriptor] }),
+        getPage: async () => { throw new TypeError('network unavailable'); },
+      }),
+    });
+    await assert.rejects(
+      () => catalog.resolve(manifest.unitId),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'remote-unavailable',
+    );
   });
 
   it('fails closed when cloud authority is unavailable', async () => {

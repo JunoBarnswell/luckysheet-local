@@ -150,7 +150,13 @@ export function createSpreadsheetRuntime(options: {
 } = {}): SpreadsheetRuntime {
   const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
   if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
-  const model = new WorkbookModel(unitId, 'Untitled workbook');
+  // Route resolution already owns an authenticated, revision-pinned manifest.
+  // Open that manifest synchronously so the first React snapshot and every
+  // formula/render projection observe the same workbook identity while page
+  // hydration continues asynchronously.
+  const model = options.resolution
+    ? WorkbookModel.fromManifest(options.resolution.manifest, options.resolution.pages)
+    : new WorkbookModel(unitId, 'Untitled workbook');
   const dateSystem = options.dateSystem ?? '1900';
   const canonicalReferenceDate = options.canonicalReferenceDate
     ? structuredClone(options.canonicalReferenceDate)
@@ -165,7 +171,7 @@ export function createSpreadsheetRuntime(options: {
   let formula: FormulaEngine | undefined;
   const resolveVisibility = createKernelWorkbookVisibilityResolver(model, () => model.revision);
   const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, resolveVisibility);
-  formula = new FormulaEngine({ unitId: model.unitId, revision: () => model.revision, defaultSheetId: 'sheet-1' });
+  formula = new FormulaEngine({ unitId: model.unitId, revision: () => model.revision, defaultSheetId: model.primarySheetId });
   // The session shell exists before the asynchronous cloud open has loaded a
   // committed manifest and its first page. Build the index only in
   // hydrateRuntime, after that revision boundary is resident.
@@ -587,19 +593,27 @@ async function loadChangedRevisionPages(
   return pages;
 }
 
-async function openResponseWithInitialPage(
+async function openResponseWithRevisionPages(
   runtime: SpreadsheetRuntime,
   manifest: WorkbookManifest,
+  resolvedPages: readonly import('@react-sheets/protocol').KernelPagePayload[] = [],
 ): Promise<WorkbookOpenResponse> {
-  const primarySheetId = manifest.sheets[0]?.sheetId;
-  const descriptor = manifest.pages.find((page) => page.sheetId === primarySheetId && page.pageRow === 0 && page.pageColumn === 0);
-  const pages = descriptor ? [await runtime.api.getPage({
-    unitId: manifest.unitId,
-    revision: manifest.revision,
-    sheetId: descriptor.sheetId,
-    pageRow: descriptor.pageRow,
-    pageColumn: descriptor.pageColumn,
-  })] : [];
+  const resolvedByIdentity = new Map(resolvedPages.map((page) => [pageIdentity(page), page]));
+  const pages: import('@react-sheets/protocol').KernelPagePayload[] = [];
+  for (let offset = 0; offset < manifest.pages.length; offset += 4) {
+    pages.push(...await Promise.all(manifest.pages.slice(offset, offset + 4).map(async (descriptor) => {
+      const resolved = resolvedByIdentity.get(pageIdentity(descriptor));
+      if (resolved && resolved.revision === descriptor.revision
+        && resolved.checksum === descriptor.checksum && resolved.byteLength === descriptor.byteLength) return resolved;
+      return runtime.api.getPage({
+        unitId: manifest.unitId,
+        revision: manifest.revision,
+        sheetId: descriptor.sheetId,
+        pageRow: descriptor.pageRow,
+        pageColumn: descriptor.pageColumn,
+      });
+    })));
+  }
   return { unitId: manifest.unitId, manifest, pages, revision: manifest.revision };
 }
 
@@ -835,7 +849,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   try {
     if (resolution && resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
     const manifest = await runtime.api.getManifest(runtime.model.unitId, resolution?.revision);
-    const snapshotResponse: WorkbookOpenResponse = await openResponseWithInitialPage(runtime, manifest);
+    const snapshotResponse: WorkbookOpenResponse = await openResponseWithRevisionPages(runtime, manifest, resolution?.pages);
     const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
     if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;

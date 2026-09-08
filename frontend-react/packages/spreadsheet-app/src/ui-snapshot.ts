@@ -231,8 +231,8 @@ export function buildCanvasSheetSnapshot(
   pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
   dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
-  const conditionalRuntime = createConditionalFormatRuntime(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
+  const conditionalRuntime = createConditionalFormatRuntime(sheet, undefined, formula);
   const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
     const cell = cellResolver.resolve(owner, row, column)?.cell;
     const spillValue = formula.getSpillValueAt(owner.id, row, column);

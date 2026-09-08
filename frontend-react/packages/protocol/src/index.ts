@@ -1768,7 +1768,7 @@ export class WorkbookApiClient {
     this.baseUrl = options.baseUrl ?? '';
     this.authTokenProvider = options.authTokenProvider;
     this.shareTokenProvider = options.shareTokenProvider;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {

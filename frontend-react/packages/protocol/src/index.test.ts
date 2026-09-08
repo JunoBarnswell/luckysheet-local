@@ -83,6 +83,25 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
   await assert.rejects(() => new WorkbookApiClient().getManifest('unit-1'), AuthenticationRequiredError);
 });
 
+test('WorkbookApiClient keeps the browser fetch receiver when no transport override is supplied', async () => {
+  const originalFetch = globalThis.fetch;
+  let receiver: unknown;
+  globalThis.fetch = async function (this: unknown) {
+    receiver = this;
+    return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  } as typeof fetch;
+  try {
+    const api = new WorkbookApiClient({ authTokenProvider: () => 'browser-token' });
+    await api.listWorkbookPage({ view: 'recent' });
+    assert.equal(receiver, globalThis);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('WorkbookApiClient uses a server-issued guest share token when no bearer exists', async () => {
   let request: RequestInit | undefined;
   const api = new WorkbookApiClient({

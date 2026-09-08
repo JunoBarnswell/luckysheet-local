@@ -20,6 +20,7 @@ import type {
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
   WorkbookManifest,
+  KernelPagePayload,
   KernelWorkbookCreateRequest,
   WorkbookLifecycle as ProtocolWorkbookLifecycle,
   WorkbookSourceKind as ProtocolWorkbookSourceKind,
@@ -121,12 +122,15 @@ export interface WorkbookResolution {
   mode: 'remote';
   lifecycle: 'active';
   manifest: WorkbookManifest;
+  /** Complete revision-pinned sparse page set required by synchronous model projections. */
+  pages: readonly KernelPagePayload[];
   revision: number;
   access: WorkbookAccessResponse | null;
 }
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'getManifest'
+  | 'getPage'
   | 'createKernelWorkbook'
   | 'commitKernelOperation'
   | 'listWorkbookAcl'

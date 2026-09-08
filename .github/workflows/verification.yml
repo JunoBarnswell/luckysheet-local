@@ -56,7 +56,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: kernel-artifacts
-          path: ci-kernel-artifacts
+          path: ${{ runner.temp }}/kernel-artifacts
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
@@ -64,7 +64,7 @@ jobs:
           cache-dependency-path: frontend-react/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: frontend-react
-      - run: mkdir -p frontend-react/apps/web/public/kernel && cp ci-kernel-artifacts/kernel-manifest.json frontend-react/apps/web/public/kernel/kernel-manifest.json && cp ci-kernel-artifacts/kernel_host.wasm frontend-react/apps/web/public/kernel/kernel_host.wasm
+      - run: mkdir -p frontend-react/apps/web/public/kernel && cp "$RUNNER_TEMP/kernel-artifacts/kernel-manifest.json" frontend-react/apps/web/public/kernel/kernel-manifest.json && cp "$RUNNER_TEMP/kernel-artifacts/kernel_host.wasm" frontend-react/apps/web/public/kernel/kernel_host.wasm
       - run: npm run typecheck
         working-directory: frontend-react
       - run: npm run test:unit
@@ -122,8 +122,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: kernel-artifacts
-          path: ci-kernel-artifacts
-      - run: chmod +x ci-kernel-artifacts/workbook-kernel-host
+          path: ${{ runner.temp }}/kernel-artifacts
+      - run: chmod +x "$RUNNER_TEMP/kernel-artifacts/workbook-kernel-host"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -142,7 +142,7 @@ jobs:
           DATABASE_USERNAME: ${{ matrix.user }}
           DATABASE_PASSWORD: ${{ matrix.password }}
           FLYWAY_BASELINE_ON_MIGRATE: 'false'
-          KERNEL_HOST_EXECUTABLE: ${{ github.workspace }}/ci-kernel-artifacts/workbook-kernel-host
+          KERNEL_HOST_EXECUTABLE: ${{ runner.temp }}/kernel-artifacts/workbook-kernel-host
         run: mvn --batch-mode --no-transfer-progress test -Dspring.profiles.active=${{ matrix.profile }}
         working-directory: backend
       - name: Migrate the selected SQL dialect and exercise an authenticated native transaction
@@ -155,7 +155,7 @@ jobs:
           AUTH_ISSUER: http://127.0.0.1:8090
           AUTH_AUDIENCE: ci-sql-session
           AUTH_JWKS_URL: http://127.0.0.1:8090/.well-known/jwks.json
-          KERNEL_HOST_EXECUTABLE: ${{ github.workspace }}/ci-kernel-artifacts/workbook-kernel-host
+          KERNEL_HOST_EXECUTABLE: ${{ runner.temp }}/kernel-artifacts/workbook-kernel-host
           KERNEL_HOST_WORKING_DIRECTORY: ${{ github.workspace }}
           KERNEL_HOST_TASK_DIRECTORY: ${{ runner.temp }}/native-document-tasks
         run: |
@@ -176,7 +176,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: kernel-artifacts
-          path: ci-kernel-artifacts
+          path: ${{ runner.temp }}/kernel-artifacts
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
@@ -184,7 +184,7 @@ jobs:
           cache-dependency-path: frontend-react/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: frontend-react
-      - run: mkdir -p frontend-react/apps/web/public/kernel && cp ci-kernel-artifacts/kernel-manifest.json frontend-react/apps/web/public/kernel/kernel-manifest.json && cp ci-kernel-artifacts/kernel_host.wasm frontend-react/apps/web/public/kernel/kernel_host.wasm
+      - run: mkdir -p frontend-react/apps/web/public/kernel && cp "$RUNNER_TEMP/kernel-artifacts/kernel-manifest.json" frontend-react/apps/web/public/kernel/kernel-manifest.json && cp "$RUNNER_TEMP/kernel-artifacts/kernel_host.wasm" frontend-react/apps/web/public/kernel/kernel_host.wasm
       - run: npx playwright install --with-deps chromium
         working-directory: frontend-react
       - run: npm run test:e2e

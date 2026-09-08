@@ -950,7 +950,6 @@ export class WorkbookSession {
     );
     this.rebuildFormulaAutocompleteIndex();
     this.wireRuntimeHandlers();
-    this.syncPersistenceMeta();
   }
 
   private ensureActiveSheetSession(): void {
