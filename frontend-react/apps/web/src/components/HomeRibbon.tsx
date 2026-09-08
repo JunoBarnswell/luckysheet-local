@@ -220,7 +220,7 @@ export function HomeRibbon({
       return <Inline key={surface.id} gap="none" className="w-full flex-nowrap">
         {renderCommand(surface.commandId, { className: 'min-w-0 flex-1 justify-start rounded-none', ribbonSurfaceId: surface.id })}
         <DropdownMenu align="left" trigger={<Button aria-label="More options" data-ribbon-menu={surface.id} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="w-5 shrink-0 justify-center rounded-none px-0" />}>
-          <Stack gap="none" className="min-w-[12rem] p-1">{members.map((member) => renderSurface(member, 'menu'))}</Stack>
+          <Stack gap="none" className="min-w-[12rem] p-1">{members.map((member) => <React.Fragment key={member.id}>{renderSurface(member, 'menu')}</React.Fragment>)}</Stack>
         </DropdownMenu>
       </Inline>;
     }
@@ -230,7 +230,7 @@ export function HomeRibbon({
       return <Inline gap="none" className="h-[58px] items-stretch">
         {renderCommand(surface.commandId, { iconNode, tile: true, className: `${HOME_LARGE_TILE_CLASS} !w-[42px] !min-w-[42px] rounded-r-none`, ribbonSurfaceId: surface.id })}
         <DropdownMenu align="left" trigger={<Button aria-label={translateRibbonText(locale, 'commands.pasteSpecial')} data-ribbon-menu={surface.id} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="!h-[58px] !min-h-0 !w-4 rounded-l-none px-0" />}>
-          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('clipboard.paste').map((member) => renderSurface(member, 'menu'))}</Stack>
+          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('clipboard.paste').map((member) => <React.Fragment key={member.id}>{renderSurface(member, 'menu')}</React.Fragment>)}</Stack>
         </DropdownMenu>
       </Inline>;
     }
@@ -266,7 +266,7 @@ export function HomeRibbon({
       return <Inline gap="none" className={`${mode === 'wide' ? 'w-16' : 'w-14'} h-6 items-stretch`}>
         {renderCommand(surface.commandId, { iconNode, className: `${HOME_EDITING_ACTION_CLASS} !w-12`, labelOverride: homeText(locale, 'fill'), ribbonSurfaceId: surface.id })}
         <DropdownMenu align="left" trigger={<Button aria-label="Fill options" data-ribbon-menu={surface.id} title="Fill options" disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={HOME_EDITING_MENU_CLASS} />}>
-          <Stack gap="none" className="min-w-[10rem] p-1">{menuMembers('editing.fill-down').map((member) => renderSurface(member, 'menu'))}</Stack>
+          <Stack gap="none" className="min-w-[10rem] p-1">{menuMembers('editing.fill-down').map((member) => <React.Fragment key={member.id}>{renderSurface(member, 'menu')}</React.Fragment>)}</Stack>
         </DropdownMenu>
       </Inline>;
     }
@@ -276,7 +276,7 @@ export function HomeRibbon({
       return <DropdownMenu align="left" disabled={disabled} trigger={<Button aria-label={triggerLabel} data-ribbon-menu={surface.id} data-ribbon-surface={surface.id} title={triggerLabel} disabled={disabled} iconNode={iconNode} size="sm" variant="ghost" className={`${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-[100px]' : '!w-[84px]'}`}>{triggerLabel}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>}>
         <Stack gap="none" className="min-w-[11rem] p-1">
           {renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id })}
-          {menuMembers(surface.id).map((member) => renderSurface(member, 'menu'))}
+          {menuMembers(surface.id).map((member) => <React.Fragment key={member.id}>{renderSurface(member, 'menu')}</React.Fragment>)}
         </Stack>
       </DropdownMenu>;
     }
@@ -357,7 +357,7 @@ export function HomeRibbon({
       case 'font-borders-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('grid-2x2')}>
           <Stack gap="none" className="min-w-[14rem] p-1">
-            {menuMembers('control.font-borders-menu').map((surface) => renderSurface(surface, 'menu'))}
+            {menuMembers('control.font-borders-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}
           </Stack>
         </DropdownMenu>;
       case 'number-format':
@@ -368,26 +368,26 @@ export function HomeRibbon({
         </Select>;
       case 'alignment-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('align-left')}>
-          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.alignment-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack>
+          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.alignment-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}</Stack>
         </DropdownMenu>;
       case 'orientation-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('text-wrap')}>
-          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.orientation-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack>
+          <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('control.orientation-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}</Stack>
         </DropdownMenu>;
       case 'cells-insert-menu':
       case 'cells-delete-menu':
       case 'cells-format-menu': {
         const icon: HomeRibbonIconName = controlId === 'cells-format-menu' ? 'table-properties' : 'file-spreadsheet';
-        return <DropdownMenu align="left" trigger={menuTrigger(icon, 'cell')}><Stack gap="none" className="min-w-[13rem] p-1">{menuMembers(`control.${controlId}`).map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
+        return <DropdownMenu align="left" trigger={menuTrigger(icon, 'cell')}><Stack gap="none" className="min-w-[13rem] p-1">{menuMembers(`control.${controlId}`).map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}</Stack></DropdownMenu>;
       }
       case 'cell-styles-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('file-spreadsheet', 'style')}>
           <Stack gap="none" className="min-w-[14rem] p-1">
-            {menuMembers('control.cell-styles-menu').map((surface) => renderSurface(surface, 'menu'))}
+            {menuMembers('control.cell-styles-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}
           </Stack>
         </DropdownMenu>;
       case 'clear-menu':
-        return <DropdownMenu align="left" trigger={menuTrigger('wand-sparkles', 'editing-inline')}><Stack gap="none" className="min-w-[14rem] p-1">{menuMembers('control.clear-menu').map((surface) => renderSurface(surface, 'menu'))}</Stack></DropdownMenu>;
+        return <DropdownMenu align="left" trigger={menuTrigger('wand-sparkles', 'editing-inline')}><Stack gap="none" className="min-w-[14rem] p-1">{menuMembers('control.clear-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}</Stack></DropdownMenu>;
       case 'column-width':
       case 'auto-fit-column-width':
       case 'hide-columns':
@@ -422,7 +422,7 @@ export function HomeRibbon({
       case 'merge-menu':
         return <DropdownMenu align="left" trigger={menuTrigger('table-cells-merge', 'inline')}>
           <Stack gap="none" className="min-w-[14rem] p-1">
-            {menuMembers('control.merge-menu').map((surface) => renderSurface(surface, 'menu'))}
+            {menuMembers('control.merge-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}
           </Stack>
         </DropdownMenu>;
       case 'auto-sum-menu':
@@ -430,7 +430,7 @@ export function HomeRibbon({
           {renderCommand('autoSum', { iconNode: <HomeRibbonIcon name="sigma-square" size="md" />, className: mode !== 'menu' ? `${HOME_EDITING_ACTION_CLASS} !w-[72px]` : 'w-full justify-start', labelOverride: homeText(locale, 'autoSumCompact'), ribbonSurfaceId: surfaceId })}
           <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} data-ribbon-menu={surfaceId} title={`${label} options`} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={mode !== 'menu' ? HOME_EDITING_MENU_CLASS : 'w-5 shrink-0 justify-center px-0'} />}>
             <Stack gap="none" className="min-w-[10rem] p-1">
-              {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}
+              {menuMembers('control.auto-sum-menu').map((surface) => <React.Fragment key={surface.id}>{renderSurface(surface, 'menu')}</React.Fragment>)}
             </Stack>
           </DropdownMenu>
         </Inline>;
