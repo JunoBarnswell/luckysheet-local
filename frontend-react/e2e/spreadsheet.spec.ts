@@ -81,7 +81,15 @@ test.describe('spreadsheet baseline', () => {
     });
     expect(geometry.ribbon).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight, height: DESIGNER_GEOMETRY.ribbonHeight });
     expect(geometry.formulaBar).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight + DESIGNER_GEOMETRY.ribbonHeight, height: DESIGNER_GEOMETRY.formulaBarHeight });
-    expect(geometry.workspace).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight + DESIGNER_GEOMETRY.ribbonHeight + DESIGNER_GEOMETRY.formulaBarHeight, height: 498 });
+    const workspaceY = DESIGNER_GEOMETRY.documentBarHeight + DESIGNER_GEOMETRY.ribbonHeight + DESIGNER_GEOMETRY.formulaBarHeight;
+    expect(geometry.workspace).toEqual({
+      y: workspaceY,
+      height: 720 - DESIGNER_GEOMETRY.statusBarHeight - workspaceY,
+    });
+    expect(geometry.sheetTabs).toEqual({
+      y: 720 - DESIGNER_GEOMETRY.statusBarHeight - DESIGNER_GEOMETRY.sheetTabsHeight,
+      height: DESIGNER_GEOMETRY.sheetTabsHeight,
+    });
     expect(geometry.statusBar).toEqual({ y: 720 - DESIGNER_GEOMETRY.statusBarHeight, height: DESIGNER_GEOMETRY.statusBarHeight });
     await page.screenshot({ path: 'test-results/designer-demo-1280-current.png' });
     await page.getByRole('tab', { name: '视图' }).click();

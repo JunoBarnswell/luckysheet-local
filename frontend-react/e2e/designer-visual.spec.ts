@@ -46,7 +46,12 @@ for (const viewport of viewports) {
     const tabsY = viewport.height - DESIGNER_GEOMETRY.statusBarHeight - DESIGNER_GEOMETRY.sheetTabsHeight;
     expect(geometry.ribbon).toMatchObject({ x: 0, y: ribbonY, width: viewport.width, height: DESIGNER_GEOMETRY.ribbonHeight });
     expect(geometry.formula).toMatchObject({ x: 0, y: formulaY, width: viewport.width, height: DESIGNER_GEOMETRY.formulaBarHeight });
-    expect(geometry.workspace).toMatchObject({ x: 0, y: workspaceY, width: viewport.width, height: tabsY - workspaceY });
+    expect(geometry.workspace).toMatchObject({
+      x: 0,
+      y: workspaceY,
+      width: viewport.width,
+      height: viewport.height - DESIGNER_GEOMETRY.statusBarHeight - workspaceY,
+    });
     expect(geometry.tabs).toMatchObject({ x: 0, y: tabsY, width: viewport.width, height: DESIGNER_GEOMETRY.sheetTabsHeight });
     expect(geometry.status).toMatchObject({ x: 0, y: viewport.height - DESIGNER_GEOMETRY.statusBarHeight, width: viewport.width, height: DESIGNER_GEOMETRY.statusBarHeight });
     expect(geometry.scrollWidth).toBeLessThanOrEqual(viewport.width);
