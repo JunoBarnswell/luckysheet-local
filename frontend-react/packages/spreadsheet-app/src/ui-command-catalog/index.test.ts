@@ -360,7 +360,7 @@ describe('Ribbon UI command catalog', () => {
       'control.font-family', 'control.font-size', 'control.font-increase', 'control.font-decrease', 'font.bold', 'font.italic',
       'font.underline', 'control.font-borders-menu', 'control.fill-color', 'control.font-color', 'font.phonetic-guide', 'font.dialog-launcher',
       'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
-      'alignment.center', 'alignment.right', 'control.alignment-menu', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
+      'alignment.center', 'alignment.right', 'alignment.indent-decrease', 'alignment.indent-increase', 'control.alignment-menu', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
       'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
       'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
       'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',

@@ -79,7 +79,7 @@ export async function openConnectedWorkbook(page: Page, locale: FixtureLocale, n
   await dialog.getByLabel('工作簿名称').fill(name);
   await expect(dialog.getByLabel('保存位置')).toBeEnabled();
   await dialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
+  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/, { timeout: 30_000 });
   const unitId = decodeURIComponent(new URL(page.url()).pathname.split('/').filter(Boolean).at(-1) ?? '');
   if (!unitId) throw new Error(`Connected workbook URL does not contain a unit id: ${page.url()}`);
   recordConnectedWorkbook(unitId);

@@ -1401,7 +1401,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         columnNode(
           'alignment.controls',
           rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
-          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.indent-increase')),
         ),
         homeSurfaceNode('control.alignment-menu'),
         columnNode(
