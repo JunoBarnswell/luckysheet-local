@@ -1,43 +1,74 @@
-# 共享内核整合输入与剩余整改
+# 共享内核整合交接与验收记录
 
-本文件汇总已有智能体报告及其落盘交接文档，作为 PRD 的执行输入。报告中的测试结果为该智能体当时报告的局部证据，不代表当前整合源码已重新验证，不提升整项验收状态。未经重新核对的接口风险保留为待确认，不推断为已修复。
+本文件记录 `codex/web-excel-shared-kernel` 相对基线 `4fa80a2a879e6f5e0ac626f2fa45b6dd983a2cd4` 的最终整合判断。批准范围仍以 [Web Excel 共享内核重构与体验增强 PRD](web-excel-shared-kernel-prd.md) 为准；64 项逐项状态、证据、删除路径和阻塞项只在 [机器可读台账](web-excel-shared-kernel-status.json) 中维护。
 
-## 已有交接信息
+## 最终产品与架构判断
 
-| 来源 | 已报告实现 | 已报告验证 | 尚未闭环 |
-|---|---|---|---|
-| analytics_integration / kernel/analytics/README.md | 列式源索引、revision cache、typed filter、稀疏 Pivot、12 种聚合、多级汇总、TopN、ShowAs、viewport、分页 drilldown、hash join、分组查询、取消与预算 | `cargo test -p kernel-analytics --lib` 23/23，含百万行用例，报告耗时 3.08 秒；WASM check 通过 | session source-register、主线程同步 WASM、TS engine 和 dense 结果转换仍存在；connector 批次、proof、spill sort、计算字段接线、collation、布局、筛选视觉与真实验收待完成 |
-| backend/docs/native-integration-handoff.md | ACL/native command/pages/history/outbox 事务；immutable pages/manifest；文件分块任务；query proof；删除 Java mutation/snapshot runtime；V7–V12 三方言迁移和测试代码 | 明确未编译、未运行测试 | host prepare/default create/undo/restore/copy/file ABI 需逐项复核；查询全量物化、offline DB importer、旧生成契约和用户偏好待整改 |
-| kernel/formula/README.md | 统一 parser/reference AST、依赖和 dirty closure、spill、服务化取消/可见性/外部执行边界、检查与 trace API、函数能力目录 | 报告 21 个 library + 16 个 runtime integration tests 通过 | host metadata/services 未闭环；共享公式模板、聚合索引、格式 locale、migration parity、分页 spill、WASM/native 差分、百万行和真实 Excel 待完成 |
-| kernel/README.md / docs/verification/README.md | protocol 1、manifest 11、1024×32 页和统一 build/verify 入口 | 文档本身不构成运行证据 | 全链消费者、前后端统一验证、浏览器 console/network、真实 producer/reopen 证据仍需完成 |
+工作簿产品链已经收敛为：
 
-## 整合 TODO（隶属既有 PRD，不扩充产品范围）
+`UI intent → typed command → Rust WASM preview/geometry/formula → Java OIDC/ACL/transaction → Rust native authority → immutable pages/history/outbox/artifact → committed revision → browser page replica`
 
-| TODO / PRD | 当前状态及问题 | 整改方案 | 验收边界 |
-|---|---|---|---|
-| I01 / A06、P04、P06 | host analytics.execute 使用 stateless 入口，丢失跨请求源缓存 | 工作簿独占 AnalyticsRuntime；成功 open/close 清理生命周期；revision 校验先于执行 | 跨工作簿隔离、重复计算、旧 revision 拒绝、取消恢复；不能替代前端任务验收 |
-| I02 / P01–P06、B06–B07 | frontend source-register 和 dense tree 仍与 Rust 新契约并存 | 将 session、任务 transport、稀疏结果消费者及 proof 一起切换，删除旧计算链 | 真实任务取消、分页、首块延迟、无主线程全量计算，旧结果不可发布 |
-| I03 / F01–F10、A01 | 公式模块的 services/metadata API 与 host 当前调用未完全对齐 | 接通 worksheet/name/table/context、可见性和取消服务，统一 command 后失效与分页读取 | 原回归案例、失败不发布、跨端差分、真实文件与性能证据 |
-| I04 / A03、B01–B05、B08、B10 | Java 交接列出多处未确认的 host ABI | 对照实际 host dispatch 和所有 Java 调用逐项核对 create/prepare/undo/restore/copy/import/export，移除失效契约 | native+H2 成功/拒绝路径、artifact provenance、权限、原子回滚 |
-| I05 / B06、B11 | 查询仍全量物化；数据库存量切换 importer 未实现 | connector 批次接入 Rust、结果页 proof；显式离线迁移和证明，运行时不读旧快照 | 内存预算、取消、三数据库 fresh/upgrade，未实现前不得标记完成 |
-| I06 / D01–D05 | 现有局部测试无法证明当前整合源码通过 | 完整开发后统一构建和验证，按实际证据更新原 64 项状态并交付 PR | frontend/backend/Rust/WASM/browser；真实 Excel 缺失标 Blocked；PR checks 必须记录 |
+以下边界均为单一所有者：
 
-整合顺序：先公共 host 生命周期与协议，再公式和分析消费者，再文件/持久化/迁移收口，最后统一验收。保留所有既有修改；不新增智能体。PRD 原有 64 项是完整范围，本表不是缩减交付清单。
+- `PaneMap` 拥有表头、冻结窗格、命中、选择、编辑和提交坐标；四个冻结区域互斥。
+- Rust `kernel/core` 使用固定 1024×32 列式页、manifest、内容哈希和有界缓存；隐藏行列属于 visibility projection，不改变 canonical cell read。
+- Rust `kernel/commands` 拥有 mutation validation、结构变换、保护、撤销与 restore；一次事务只发布一个 revision/history record，失败不发布部分页或 metadata。
+- Rust `kernel/formula` 拥有 parser、引用 AST、依赖图、spill、函数目录、数值/日期语义和服务上下文；native/WASM 使用同一实现。
+- Rust `kernel/analytics` 拥有 typed column source、filter ownership/visibility、query、pivot、取消、预算、稀疏 viewport 和分页 drilldown。
+- Rust `kernel/native-document` 拥有 OOXML package graph、导入、重写和保真边界；未知 part/node/extension/macro 被保留，数字签名和不安全转换显式拒绝。
+- Java 只拥有身份、ACL、事务、三方言持久化、连接器调度和 outbox；旧 Java mutation/snapshot reducer 已删除。
+- React 只拥有交互、视觉和 committed page replica；local-only、mirrored、offline commit、浏览器 Pivot worker 和 TypeScript OOXML 执行链已删除。
+- 云端 ack 是唯一 saved 事实源。未配置 OIDC/backend 时，Hub 和 workbook route 返回可观察错误，不创建本地工作簿、不显示假成功。
 
-## 本轮整合证据
+## 已删除的旧设计
 
-I04/A03 撤销链路整改：`history.undo` 现在是 Rust command 的显式 canonical 分支，不进入普通 mutation registry。服务端只传从 immutable history 读取并重新校验的 record；客户端提交的 inverse mutations 不参与执行。HistoryRecord 同时记录 metadataBefore/metadataAfter，页和 metadata 都必须仍等于目标操作的 after state；不相交页可保留，重叠页或 metadata 后续变化返回 `UNDO_CONFLICT`，revision、manifest、history、operation 均不产生部分提交。撤销结果始终发布 baseRevision+1，before 页通过同工作簿 content-addressed persistence 验证并由客户端按需补读。Rust command 12/12 通过，包含权限、页冲突、非重叠页、metadata 成功与冲突；真实 native/H2 的权威历史、跨主体拒绝、重叠冲突共 3/3 通过，另 persistence 6/6 通过。
+本次 clean-break 删除了 Java `mutation/**`、`WorkbookSnapshotValidator`、全量 checkpoint entity；删除浏览器 `offline-queue`、OT rebase、collaborative undo、本地 asset migration/native document store；删除 TypeScript Pivot source index、block source、worker/task protocol/dense projection；删除 TypeScript OOXML archive/import/export/binary codec。边界检查禁止重新引入这些运行时所有者、legacy manifest、双写或 fallback reader。
 
-I04/B04 复制文件身份整改：自研新建 OOXML 在受 Markup Compatibility 保护的 `urn:react-sheets:workbook:1` 属性中写出 canonical worksheet id，重开时按 namespace URI 解析；外部文件无该扩展时继续采用 OOXML `sheetId`。这删除了只存在于内存的临时映射，使新建→导出→重开→复制保持同一 sheet identity。Rust native document library/integration 共 12/12 通过；真实 native/H2 的复制原包当前值与恢复历史页测试 2/2 通过。真实 Excel/WPS 对该扩展的保存行为仍属于 D04 Blocked 验收，不在此宣称通过。
+数据库 V7–V12 为显式迁移边界。V10 只归档旧 snapshot，V12 验证 canonical cutover；运行时只接受 manifest 11、host protocol 1，不读旧字段。应用与数据迁移必须整体回滚，不能单独恢复任一旧消费者。
 
-后端重跑结果（2026-09-07）：`WorkbookCatalogServiceTest` 5/5、`KernelPersistenceServiceTest` 6/6，共 11 项全部通过，使用最新 `cargo build -p kernel-host` 生成的真实 native 进程与 H2。命令为 Maven `-Dtest=WorkbookCatalogServiceTest,KernelPersistenceServiceTest test`，本机附加 `-DargLine=-Djdk.net.unixdomain.tmpdir=D:/code/luckysheet-local/.tools/verification/sockets`。原 TEMP 短路径下 JDK Unix-domain pipe connect 失败；已用真实 HttpClient 初始化确认指定目录可用，不是跳过连接器或 mock HTTP。JSON 断言现比较序列化的完整字段和值，不依赖 Jackson IntNode/LongNode 实现类别。此验证尚不证明历史恢复/原文件复制的完整端到端场景，须继续补齐相应验收，亦不代表 64 项整体通过。
+## 当前整合验证
 
-I04/B11 集中后端验证发现：`cargo test -p kernel-host --lib` 当前 5/5 通过且最新 native 构建通过；Maven catalog/persistence 共 11 项运行，1 failure、8 errors，不能标记后端通过。持久化比较的根因是 JSON 整数在内存 LongNode 与重读 IntNode 表示不同，统一比较整数数值且保留其它类型严格相等；不修改测试数据。H2 启动错误为新 V9/V11 的 CLOB 与 JPA LONGVARCHAR 不一致，未发布迁移改为与现有 H2 页表一致的 text。历史引用 publication 同时计入已核验变更页集合，防止后续 history 校验再次误拒。修复后需重跑该组测试。
+2026-09-08 使用当前分支源码完成：
 
-I04 恢复链路整改：原 Java `restore` 调用无 native 实现，不能通过旧 revision 重新 open 冒充提交。现由 core `restore_manifest` 验证同一工作簿和历史 revision、生成当前 revision+1、页差量与 metadata before；host 校验 owner 并在控制帧预算验证后发布 staged 状态。持久化层对未附带 payload 的变更页核验同工作簿下既有 immutable 内容再发布，历史页不通过大 base64 控制帧传输。成功/越权/外工作簿/stale 测试已补，本轮尚待集中运行。前端缺页补读及撤销提交消费者还需同批收口。带原生数字签名的包在重写导出时一律显式拒绝，不能用相同 revision 绕过签名保真边界。
+| 门禁 | 结果 | 覆盖 |
+|---|---|---|
+| `cargo test --workspace` | PASS | analytics 23、commands 12、core 4、formula library 21、formula migration 11、formula runtime 16、geometry 5、host 7、native-document library 7 + integration 5；doc tests 通过 |
+| `npm run build:kernel` + `npm run verify:kernel` | PASS | 同一 Rust 源生成 native host、WASM 与 Vite 产物；manifest/protocol/hash 一致 |
+| `npm run typecheck` | PASS | 全前端 TypeScript |
+| `npm run check:boundaries` | PASS | contracts、mutation registry、artifact provenance、421 项 acceptance matrix、formula parity |
+| `npm run test:unit` | PASS，242/242 | canonical model/command/render/formula/persistence/permissions/query/pivot/native transport 等 |
+| `npm run test:performance` | PASS | 百万行 Rust 稀疏 Pivot + 分页 drilldown 约 3.06 秒；native 输入预算拒绝；45 项 render/edit 性能与几何用例 |
+| backend `mvn test` | PASS，80/80 | H2 migration、ACL、native host、pages/history、query proof、artifact/import/export transaction |
+| H2 authenticated SQL smoke | PASS | real server create=201、manifest=200、native cell commit=201、revision 1 page publication、anonymous=401 |
+| `npm run test:e2e` | PASS，6 passed / 102 skipped | kernel artifact、permission/elastic contracts、Hub、未知 workbook fail-close、1672×941 Hub geometry；跳过项不计通过 |
 
-I04 创建契约核对：HTTP `CreateWorkbookRequest.sheets` 可省略，Java 仅在非 null 时发送，而 native host 原先强制要求该字段，导致正常空白工作簿创建失败。整改为 native 创建入口拥有默认工作表（完整 Excel 行列容量、零已分配数据页）；显式提供非法、null 或空列表时拒绝，不以默认值覆盖错误输入。已有工作簿 identity 冲突继续拒绝。
+真实 in-app browser 在 `http://127.0.0.1:4180/workbooks` 检查了 1024、1366、1920 宽度：Hub 有有效内容，无框架错误遮罩，console 无 error/warning；未配置云身份时创建和未知工作簿均显式 fail-close。该结果只证明 disconnected Hub，不替代 connected editor 验收。
 
-I04 复制与导出核对：Java 已调用 `copy`，host 尚无入口，现实现显式新身份边界：复制 metadata 和页内容 hash、重置 workbook/page revision 为 0，页数据仍经 Java 验证复制和按需加载。Java 复制原生文件时在同事务中以原包为保真来源、目标 canonical pages 为数据来源重新导出，不能只关联旧 artifact 从而让下载返回旧单元格。导出统一使用 `pagesDirectory/pages.json`，删除 Java 冗余输入 `pagesManifestFile`；native 显式接收并核对 `format`。未经实现的跨格式转换返回 UNSUPPORTED_FEATURE，不能假成功。以上复制/导出本轮实现尚未运行整合验证，原生签名、宏、未知 part 的真实文件验收仍待完成。
+性能入口已从被删除的旧 TypeScript Pivot/OOXML 测试迁到当前所有者：Rust 百万行分析、Rust native-document 预算，以及前端 PaneMap/render/cell-edit 性能。当前证据不覆盖 PRD 中所有 P95、浏览器峰值、真实连接器或 2000 万格导入预算。
 
-I01 已接入 `KernelHost.analytics`，由每个工作簿独占运行时；成功 open 和 close 移除缓存，外层 revision 校验先于分析执行。`cargo test -p kernel-host --lib analytics_tests`：2 passed、0 failed，覆盖两个同 revision 工作簿的数据隔离、重复查询、重新打开、关闭后拒绝、stale revision 拒绝、取消后恢复。现有依赖仍有 unused/dead-code warnings。本结果不覆盖浏览器任务 transport、内存/P95 指标或完整 PRD 验收，不据此提升 P04/P06 为 verified。
+## 64 项状态
+
+当前机器台账为 64 项：21 `verified`、22 `implemented`、21 `blocked`、0 `not-started`。
+
+- `verified`：本地命令直接覆盖该项完整验收子句。
+- `implemented`：生产链和拒绝路径已实现，尚缺一项或多项完整验收证据。
+- `blocked`：生产链已实现，但批准验收依赖本机不存在的真实身份、服务、数据源、桌面产品或 PR 托管环境。每项阻塞条件写在机器台账中。
+
+不得将 E2E skip、synthetic OOXML self-roundtrip、H2 单方言或 disconnected Hub 计作对应外部验收通过。
+
+## 剩余外部验收
+
+| 范围 | Blocked 条件 | 完成证据 |
+|---|---|---|
+| connected editor、保存、协作、UI | 缺 `E2E_OIDC_AUTHORITY`、`E2E_OIDC_CLIENT_ID`、真实用户文件及运行中的 backend | 102 个连接态 E2E 在真实身份下执行；console/network、刷新恢复、断线拒写、双客户端、键盘/IME/屏幕阅读器记录 |
+| PostgreSQL/MySQL/Redis | 本机未提供三个真实服务 | PR workflow 的 fresh/upgrade/SQL smoke、事务、outbox、多实例重连结果 |
+| live connector/query | 未配置真实 connector 与高基数数据源 | bounded heap、首块延迟、cancel/stale proof、结果分页指标 |
+| 百万/2000 万真实工作簿 | 无连接态 dense/sparse/multisheet 语料 | PRD P95、browser/native peak memory、取消无残留、保存重开 |
+| Excel/WPS | 无桌面 Excel/WPS 和 real-producer XLSX/XLSM corpus | producer hash、导入→编辑→导出→Excel/WPS reopen 差异；宏、未知扩展和签名边界 |
+| GitHub 交付 | PR 尚待创建 | PR 描述、远端 checks、契约迁移、Blocked、整体 rollback 记录 |
+
+## PR 交付与回滚
+
+PR 必须以本分支为 head、`main` 为 base。描述需列出 shared-kernel ownership、公开 DTO/协议变化、V7–V12 迁移、删除的 legacy 设计、上述验证、所有 Blocked 条件和检查链接。
+
+回滚单位是本 PR 加数据库迁移边界：先停止写入并备份 canonical pages/history/artifacts，再回滚应用与数据库到基线对应版本。不得只回滚前端、Java 或 Rust，也不得恢复 runtime legacy reader、双写或 snapshot fallback。已导入的未知 OOXML/macro 原包须与数据库备份一起保留。

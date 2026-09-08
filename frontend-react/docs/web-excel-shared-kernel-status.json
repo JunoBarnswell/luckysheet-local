@@ -1,17 +1,63 @@
 {
   "schema": "SharedKernelImplementationLedger",
-  "version": 1,
+  "version": 2,
   "integrationHandoff": {
     "document": "shared-kernel-integration-handoff.md",
-    "sources": ["kernel/analytics/README.md", "kernel/formula/README.md", "backend/docs/native-integration-handoff.md"],
-    "evidencePolicy": "Agent-reported local results do not establish integrated acceptance or upgrade item status.",
+    "sources": [
+      "kernel/analytics/README.md",
+      "kernel/formula/README.md",
+      "backend/docs/native-integration-handoff.md"
+    ],
+    "evidencePolicy": "Only the acceptance clauses directly exercised by the recorded command may be marked verified. Implemented code with incomplete local acceptance remains implemented; unavailable real environments are recorded as blocked.",
     "currentIntegrationEvidence": [
       {
-        "todo": "I01",
-        "command": "cargo test -p kernel-host --lib analytics_tests",
-        "result": "2 passed; 0 failed",
-        "scope": "Workbook analytics runtime isolation, reopen/close lifecycle, stale revision rejection and cancellation recovery",
-        "limitations": "Not a full branch verification, frontend task acceptance, performance or native Excel interoperability result."
+        "todo": "I01-I06",
+        "command": "cargo test --workspace",
+        "result": "PASS: analytics 23, commands 12, core 4, formula library 21, formula migration 11, formula runtime 16, geometry 5, host 7, native-document library 7 and integration 5; doc tests passed",
+        "scope": "Integrated Rust native domain, command, formula, analytics, geometry, host and OOXML suites",
+        "limitations": "Synthetic corpus does not replace real Excel/WPS producer and reopen acceptance."
+      },
+      {
+        "todo": "A01,D02",
+        "command": "npm run build:kernel && npm run verify:kernel",
+        "result": "PASS: native host, wasm32 kernel, Vite bundle and tracked manifest integrity",
+        "scope": "Single Rust source built to native and WASM artifacts with manifest 11 / protocol 1",
+        "limitations": "Executed in the current checkout; clean hosted checkout is delegated to CI."
+      },
+      {
+        "todo": "A01-D03",
+        "command": "npm run typecheck && npm run check:boundaries && npm run test:unit",
+        "result": "PASS: TypeScript; contracts/boundaries/acceptance matrix/formula parity; 242 frontend unit tests",
+        "scope": "Frontend canonical consumers and repository architectural gates",
+        "limitations": "Does not authenticate a connected editor session."
+      },
+      {
+        "todo": "A02,A06,P01-P06,B05,U01,U06,U11",
+        "command": "npm run test:performance",
+        "result": "PASS: Rust 1,000,000-row sparse analytics in 3.06s; native input-budget rejection; 45 frontend geometry/edit tests",
+        "scope": "Million-row sparse pivot/paginated drilldown, pre-projection file budget, 100k/1m render planning and 100k autocomplete",
+        "limitations": "Does not establish every PRD P95, 20-million-cell real import, browser peak memory, or live connector latency."
+      },
+      {
+        "todo": "A03,A05,B01-B03,B07-B11",
+        "command": "mvn test",
+        "result": "PASS: 80 tests, 0 failures, 0 errors, 0 skipped; authenticated H2 server smoke create=201, manifest=200, native commit=201, revision=1, anonymous=401",
+        "scope": "Java ACL, native host integration, page/history persistence, query proof, H2 migration and real HTTP transaction paths",
+        "limitations": "PostgreSQL/MySQL/Redis and real OIDC multi-client environments were unavailable locally."
+      },
+      {
+        "todo": "U01-U11,A05,B09,B10",
+        "command": "npm run test:e2e",
+        "result": "PASS: 6 passed, 102 skipped",
+        "scope": "Kernel artifact, permission and elastic contracts, Hub render, disconnected unknown-workbook fail-close and 1672x941 Hub geometry",
+        "limitations": "102 connected-editor/corpus cases require E2E_OIDC_* plus a real backend, or the external OCR corpus; skips are not acceptance passes."
+      },
+      {
+        "todo": "U02,U03,U05,U11",
+        "command": "in-app browser at http://127.0.0.1:4180/workbooks",
+        "result": "PASS for disconnected Hub: meaningful content at 1024/1366/1920, no framework overlay, no browser console errors or warnings, explicit cloud configuration failure on create",
+        "scope": "Real browser Hub layout and fail-close behavior",
+        "limitations": "No real identity or cloud workbook was available, so editor and saved-state flows remain blocked."
       }
     ]
   },
@@ -29,9 +75,15 @@
         "#320",
         "#321"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/core, kernel/commands, kernel/formula, kernel/analytics, kernel/geometry and kernel/native-document are compiled into kernel-host native and WASM consumers.",
+        "frontend-react/tools/check-boundaries.mjs rejects restored TypeScript/Java semantic owners; the integrated Rust and frontend gates pass."
+      ],
+      "removedPaths": [
+        "backend/src/main/java/com/xc/luckysheet/server/mutation/**",
+        "frontend-react/packages/spreadsheet-app/src/application-*.test.ts semantic harnesses"
+      ],
       "blocked": []
     },
     {
@@ -45,10 +97,15 @@
       "issues": [
         "#321"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "kernel/core/src/pages.rs implements canonical 1024x32 columnar pages, manifests, dictionaries, bitmaps and a bounded page cache.",
+        "frontend-react/packages/core-model/src/kernel-page-replica.ts consumes immutable kernel pages; the million-row sparse/render performance cases pass."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected 1,000,000x20 dense edit/save/reopen and browser peak-memory acceptance requires a provisioned cloud workbook plus real OIDC identity."
+      ]
     },
     {
       "id": "A03",
@@ -62,9 +119,15 @@
         "#255",
         "#332"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/commands/src/tests.rs and backend KernelPersistenceServiceTest cover atomic page+metadata commits, one revision/history record, undo conflicts and zero partial publication.",
+        "kernel/core/src/pages.rs implements content-addressed page versions and restore_manifest."
+      ],
+      "removedPaths": [
+        "backend CheckpointEntity/CheckpointEntityRepository full-snapshot path",
+        "frontend-react collaboration/collaborative-undo.ts"
+      ],
       "blocked": []
     },
     {
@@ -78,8 +141,11 @@
       "issues": [
         "#277"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/commands/src/structure.rs owns structural mutations; frontend-react/packages/core-model/src/data-transform.ts and sheet-identity-transform.ts project the canonical transform to references and objects.",
+        "Rust command and frontend structure/data-transform suites pass."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -94,10 +160,19 @@
       "issues": [
         "#331"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
-      "blocked": []
+      "status": "blocked",
+      "evidence": [
+        "Local-only, mirrored and offline-queue commit paths were removed; WorkbookCatalogService and RemoteWorkbookStorage publish only native server acknowledgements.",
+        "Disconnected Hub/create/unknown-workbook browser acceptance fails closed with an observable cloud configuration error."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/collaboration/offline-queue.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/persistence/asset-migration.ts",
+        "frontend-react/apps/web/src/workbooks/StorageInfoBanner.tsx"
+      ],
+      "blocked": [
+        "Real server-ack refresh recovery and disconnect-during-edit acceptance requires E2E_OIDC_* and a running backend."
+      ]
     },
     {
       "id": "A06",
@@ -111,8 +186,11 @@
         "#329",
         "#330"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/analytics/src/task.rs and kernel/host/src/main.rs provide revision-pinned budgets and cancellable jobs; workbook-session.ts rejects stale task generations.",
+        "Host tests cover stale/cancel/recovery and per-workbook analytics runtime isolation."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -127,8 +205,11 @@
       "issues": [
         "#320"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "apps/web/src/main.tsx and App.tsx split Hub routing from lazy editor/kernel acquisition; Hub browser acceptance renders without loading a local workbook runtime.",
+        "FeatureRegistry validates each lazily assembled surface against its canonical command owner."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -143,8 +224,11 @@
       "issues": [
         "#321"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "PaneMap/kernel geometry and KernelPageReplica use visible page addresses and bounded page reads; sparse coordinate indexes replace full occupied-range scans.",
+        "Render tests prove million-row viewport lookup and hidden-row geometry without losing canonical row identity."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -159,9 +243,14 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/scalar_functions.rs evaluates all AND/OR arguments with typed scalar/array/reference coercion and error propagation.",
+        "Formula migration/runtime/host suites include two-dimensional, text, blank and error cases."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
       "blocked": []
     },
     {
@@ -175,9 +264,14 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/array_functions.rs implements XLOOKUP match/search modes, wildcard handling, reverse search and binary variants.",
+        "Formula migration and runtime suites cover the previously dropped optional parameters."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
       "blocked": []
     },
     {
@@ -191,9 +285,15 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/references.rs and parser.rs share A1/R1C1 AST semantics for ADDRESS, INDIRECT, ROW and COLUMN, including named/table references.",
+        "The 56-case parity corpus plus host formula tests cover cross-sheet, out-of-range and R1C1 cases."
+      ],
+      "removedPaths": [
+        "legacy TypeScript reference transformer/evaluator path",
+        "backend FormulaReferenceTransformer.java"
+      ],
       "blocked": []
     },
     {
@@ -207,9 +307,14 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula reference evaluation inherits OFFSET source dimensions and rejects invalid height/width instead of clamping.",
+        "Runtime corpus asserts SUM(OFFSET(B1:B2,0,0))=30 and typed rejection paths."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
       "blocked": []
     },
     {
@@ -223,8 +328,11 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula/src/dependency.rs owns parsed dependency indexes, dirty closures, names, tables, spills and revision-pinned invalidation.",
+        "Host formula synchronization tests prove command-triggered incremental recalculation without reconstructing workbook inputs."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -239,10 +347,15 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Formula references are page/range iterators and aggregate evaluation consumes values without constructing one argument object per cell.",
+        "Current performance gate covers million-row analytics but not the separate million-formula P95 acceptance."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "The exact million-cell SUM/COUNTIFS and million independent-formula performance targets have not been exercised by a real connected workbook corpus."
+      ]
     },
     {
       "id": "F07",
@@ -255,8 +368,11 @@
       "issues": [
         "#322"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula implements LET, LAMBDA, MAP, REDUCE, SCAN, BYROW, BYCOL, MAKEARRAY and dynamic-array spill with explicit recursion/output budgets.",
+        "Formula library and runtime semantics suites cover scope, shape, blocked spill and error propagation."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -272,8 +388,11 @@
         "#322",
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "One host formula runtime resolves worksheet, name, table, visibility and external-service dependencies and publishes only current revisions.",
+        "Host and runtime tests cover stale revision, cancellation, spill/table invalidation and cycles."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -288,8 +407,11 @@
       "issues": [
         "#323"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "frontend-react/packages/number-format owns the canonical format AST and serial/date behavior; native OOXML imports date systems and preserves typed numeric/text values.",
+        "Number-format and native-document suites pass, including numeric-looking text and 1900/1904 metadata paths."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -305,8 +427,11 @@
         "#322",
         "#327"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula/src/evaluator.rs exposes one function catalog used by evaluation, inspection and host capabilities; scripts/check-formula-parity.mjs rejects catalog drift.",
+        "check:formula-parity and the full formula corpus pass."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -321,8 +446,11 @@
       "issues": [
         "#324"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/src/filter.rs resolves filter owner identity from ownerId plus range and rejects ambiguous overlap.",
+        "Analytics integration tests cover independent and overlapping range ownership."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -337,8 +465,11 @@
       "issues": [
         "#324"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "Filter parse/resolution failures return typed errors before visibility publication; no all-hidden fallback remains.",
+        "Analytics rejection tests verify state is not published after invalid ownership or predicate input."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -353,10 +484,15 @@
       "issues": [
         "#324"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Filter projections use owner/revision VisibilityBitmap and indexed typed columns; UI/domain consumers read the same projection.",
+        "The implementation is bounded and cancellable; the dedicated million-row filter P95 target was not separately measured."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "The dedicated million-row filter <=2s and member-first-page <=200ms acceptance has no connected dataset/identity on this host."
+      ]
     },
     {
       "id": "S04",
@@ -370,8 +506,11 @@
         "#87",
         "#89"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics filter domain queries exclude the active column predicate, apply other owners, preserve typed members and page results.",
+        "filter_domain_excludes_own_predicate_and_respects_other_columns passes; frontend filter surfaces consume the typed result."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -387,8 +526,11 @@
         "#324",
         "#328"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "ResolvedVisibility separates manualHidden/filterHidden/outlineHidden and is required by formulas, grid, charts and print.",
+        "Chart and print visibility contract tests reject missing/stale projections; formula suite covers SUBTOTAL 9/109 semantics."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -403,8 +545,11 @@
       "issues": [
         "#85"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "native-document imports row hidden state as explicit OOXML metadata and does not infer filter ownership from cached formula values.",
+        "Unsupported ambiguous native behavior is retained and surfaced rather than rewritten by a UI fallback."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -420,8 +565,11 @@
         "#254",
         "#86"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Canonical structural/sort transforms move cell pages and rule, note, link, drawing and formula anchors in one command transaction.",
+        "Structure/data-transform and command suites cover stable metadata relocation and atomic rejection."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -436,8 +584,11 @@
       "issues": [
         "#324"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "core-model/rule-lifecycle.ts validates data-validation and conditional-format rules and indexes affected ranges; commands apply them atomically.",
+        "Frontend rule lifecycle/unit suites cover priority, stopIfTrue, formula dependencies and invalid-rule rejection."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -453,9 +604,15 @@
         "#300",
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/source.rs stores typed column vectors, dictionaries and row ids; the browser SourceRow worker path was deleted.",
+        "Million-row sparse analytics runs through the Rust owner."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/source-index.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/block-source.ts"
+      ],
       "blocked": []
     },
     {
@@ -469,9 +626,14 @@
       "issues": [
         "#300"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/pivot.rs performs one grouped hash aggregation and derives sparse rollups from occupied states.",
+        "Analytics tests cover multi-level totals, repeated placements and twelve aggregate kinds."
+      ],
+      "removedPaths": [
+        "legacy TypeScript pivot aggregation implementation in features/pivot/engine.ts"
+      ],
       "blocked": []
     },
     {
@@ -485,9 +647,14 @@
       "issues": [
         "#300"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "Pivot output is a sparse cell map with bounded viewport and paginated drilldown; Cartesian projection and fixed result caps were deleted.",
+        "Million-row test reads a 10x10 viewport and three drilldown rows."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/projection.test.ts dense projection contract"
+      ],
       "blocked": []
     },
     {
@@ -501,8 +668,11 @@
       "issues": [
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "AnalyticsRuntime caches registered typed sources by workbook and revision and reuses them across layouts/filters.",
+        "Host analytics tests cover repeat execution, reopen/close invalidation and workbook isolation."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -517,10 +687,19 @@
       "issues": [
         "#300"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
-      "blocked": []
+      "status": "blocked",
+      "evidence": [
+        "Sparse viewport responses pool row/column nodes and provenance remains row-id based; server task transport pages results by actual output.",
+        "The old dense browser worker/result tree transport was removed; live main-thread latency remains an external acceptance item."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-worker-entry.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/pivot-browser-worker.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-protocol.ts"
+      ],
+      "blocked": [
+        "Live connected browser main-thread and result-transfer latency requires a real backend and high-cardinality dataset."
+      ]
     },
     {
       "id": "P06",
@@ -533,9 +712,14 @@
       "issues": [
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "TaskContext checks cancellation at bounded batches without deleting the registered source cache; stale results cannot publish.",
+        "Host tests cancel then successfully reuse the same runtime; client task port rejects old generations."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-port.ts"
+      ],
       "blocked": []
     },
     {
@@ -552,10 +736,15 @@
         "#105",
         "#160"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "AggregateState preserves typed numbers and never parses text; Pivot supports blank/error handling, Count/CountNumbers, Sum/Avg, grouping, TopN, subtotals and ShowAs.",
+        "Rust analytics tests cover these semantics; comparison against a real Excel-produced pivot remains unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Excel comparison of pivot aggregation semantics requires a real Excel-produced pivot corpus."
+      ]
     },
     {
       "id": "P08",
@@ -570,8 +759,11 @@
         "#101",
         "#120"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Pivot create/update is one typed mutation with collision proof and source/layout revisions; command failure leaves the previous definition/result intact.",
+        "Command and server-task-port tests cover stale proof and rejection without partial model changes."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -587,8 +779,11 @@
         "#118",
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Charts consume revision-pinned sparse pivot results and stable node identities; drawing code never runs aggregation.",
+        "Chart visibility/data unit tests cover stale source rejection and series projection."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -606,8 +801,11 @@
         "#154",
         "#159"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Analytics drilldown, member domains and date grouping are paginated and typed; slicer/timeline commands retain explicit connections and ACL.",
+        "Rust/frontend tests cover pagination, multi-select, grouped dates and no-data member state."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -622,9 +820,15 @@
       "issues": [
         "#331"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "NativeDocumentTaskService streams original bytes to kernel/native-document and persists only validated canonical pages plus source artifact provenance.",
+        "Backend tests reject mismatched client-derived payloads and incomplete native tasks."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/import.ts",
+        "backend WorkbookSnapshotValidator.java"
+      ],
       "blocked": []
     },
     {
@@ -638,8 +842,11 @@
       "issues": [
         "#327"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "Workbook source artifacts bind workbook id, revision, format and SHA-256; copy/export publish artifact and canonical page state in one transaction.",
+        "Backend/native tests reject wrong revision/hash/format without replacing the prior artifact."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -654,9 +861,15 @@
       "issues": [
         "#305"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "Native capability manifests distinguish editable, preserved, export-only and unsupported formats; PDF/XPS and cross-format requests return UNSUPPORTED_FEATURE.",
+        "Native-document and backend contract tests exercise rejection."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/codec-registry.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/compatibility-report.ts"
+      ],
       "blocked": []
     },
     {
@@ -671,10 +884,19 @@
         "#305",
         "#327"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
-      "blocked": []
+      "status": "blocked",
+      "evidence": [
+        "kernel/native-document preserves the OPC package graph, relationships, unknown nodes/extensions and macros; signed rewrites fail closed.",
+        "Synthetic OOXML integration tests pass, including unknown-part preservation and canonical sheet identity."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/archive.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/binary-native.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/export.ts"
+      ],
+      "blocked": [
+        "Real Excel/WPS XLSX/XLSM save and reopen fidelity, including macros and unknown extensions, is unavailable on this host."
+      ]
     },
     {
       "id": "B05",
@@ -687,10 +909,15 @@
       "issues": [
         "#327"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Chunked 8 MiB upload, streaming ZIP/XML, bounded dictionaries/pages and pre-allocation resource checks replace whole-file browser JSON import.",
+        "Native budget and frontend chunk-transport tests pass."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "The 20-million-cell real import <=60s, peak budget and cancellation-with-no-residue run requires the external corpus and connected backend."
+      ]
     },
     {
       "id": "B06",
@@ -703,10 +930,15 @@
       "issues": [
         "#330"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "QueryExecutionService streams connector blocks into Rust analytics/query execution with bounded task budgets and proof-bound result blocks.",
+        "Unit/native integration gates pass; live connector heap and first-block latency were not available locally."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Live connector bounded-heap and first-block latency requires a configured external connector/data source."
+      ]
     },
     {
       "id": "B07",
@@ -719,8 +951,11 @@
       "issues": [
         "#330"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "Query proof binds source revision, execution token and block manifest; cancelled/stale results are rejected before load.",
+        "QueryExecutionProofServiceTest and frontend server-task-port tests pass."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -735,9 +970,15 @@
       "issues": [
         "#332"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
+      "status": "verified",
+      "evidence": [
+        "Immutable page manifests, revision gaps and idempotent operation publication replace full-workbook checkpoints.",
+        "KernelPersistenceServiceTest covers single-page commit, restore, overlapping conflict, gap and no-partial-write behavior."
+      ],
+      "removedPaths": [
+        "backend WorkbookSnapshotResponse.java",
+        "backend CheckpointEntity.java"
+      ],
       "blocked": []
     },
     {
@@ -751,10 +992,18 @@
       "issues": [
         "#331"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
-      "blocked": []
+      "status": "blocked",
+      "evidence": [
+        "Transactional outbox plus lastRevision reconciliation is the only collaboration recovery path; browser offline queue/OT rebase paths were removed.",
+        "Backend/frontend tests cover ordering and duplicate helpers; a real Redis multi-instance disconnect/reconnect run was unavailable."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/collaboration/ot-rebase.ts",
+        "frontend-react/packages/spreadsheet-app/src/collaboration/offline-queue.ts"
+      ],
+      "blocked": [
+        "Redis multi-instance dropped-message reconnect/reconcile acceptance was not available locally."
+      ]
     },
     {
       "id": "B10",
@@ -768,8 +1017,11 @@
         "#258",
         "#331"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "Java ACL and protection authorize typed commands/pages before Rust preparation; only server ack changes saved state.",
+        "Workbook authorization/operation/data-block integration tests pass for owner/editor/commenter/viewer rejection paths."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -784,10 +1036,15 @@
       "issues": [
         "#333"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "V7-V12 canonical migrations exist for H2, PostgreSQL and MySQL; V10 is an explicit archive boundary and V12 verifies cutover.",
+        "H2 fresh/upgrade/transaction suites pass; workflow defines PostgreSQL/MySQL SQL smoke and migration jobs."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Local PostgreSQL/MySQL/Redis services were unavailable; hosted matrix evidence must be recorded from PR checks."
+      ]
     },
     {
       "id": "B12",
@@ -802,8 +1059,11 @@
         "#328",
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Drawings, charts, comments, images, print areas/titles and visibility are modeled as canonical metadata consumed by print/layout.",
+        "Frontend unit suites cover object anchoring and visibility-pinned print projection."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -818,8 +1078,11 @@
       "issues": [
         "#316"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "kernel/geometry PaneMap is the sole pane/header coordinate owner; SheetCanvas hit, selection, edit and commit use its canonical address.",
+        "Geometry/render tests cover A1, frozen panes, header origin and disjoint pane ranges."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -835,10 +1098,15 @@
         "#241",
         "#304"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "RibbonLayoutRenderer uses one schema and semantic group compaction; Tailwind layouts have no horizontal workbook ribbon state.",
+        "Hub was inspected at 1024/1366/1920; connected editor viewport matrix awaits real identity."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected editor 1024/1366/1920 and 100/125/150% viewport interaction needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U03",
@@ -851,8 +1119,11 @@
       "issues": [
         "#304"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Tailwind tokens in tailwind.config.cjs and shared ui-system shells own spacing, type, colors, focus and state styling.",
+        "Golden spec and disconnected Hub browser inspection establish the implemented baseline."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -867,8 +1138,11 @@
       "issues": [
         "#304"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "Shared ui-system Icon is the only application icon surface and maps Fluent regular/filled sizes.",
+        "Icon unit tests and ribbon catalogs reject text-glyph command icons."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -883,10 +1157,15 @@
       "issues": [
         "#286"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Workbook Hub is cloud catalog/search/recent first; templates live only in Create, and saved/saving/error are derived from server acknowledgements.",
+        "Disconnected browser behavior is explicit and fail-closed."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected create/save/reload/error-state acceptance needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U06",
@@ -899,10 +1178,15 @@
       "issues": [
         "#301"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "CellEditDomain owns Enter/Escape/Tab, IME, point/reference gestures, F4 and completion across grid/formula bar.",
+        "Unit/performance tests cover reducer focus/caret/history; connected browser keyboard acceptance was unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected editor keyboard/IME/formula-reference browser acceptance needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U07",
@@ -917,10 +1201,15 @@
         "#37",
         "#300"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Pivot panel keeps four independent zones and draft/last-valid state; Apply dispatches one proof-bound command.",
+        "Panel/server-task unit tests cover draft preservation and stale/failed apply; connected editor interaction was unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected Pivot panel Apply/failure recovery acceptance needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U08",
@@ -934,10 +1223,15 @@
         "#87",
         "#329"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Analysis tasks expose preparing/running/completed/failed/cancelled states, progress and recoverable typed errors.",
+        "Task-port and host cancellation tests prevent stale results and indefinite local loading; connected browser interaction was unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected analysis progress/cancel/recovery browser acceptance needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U09",
@@ -950,10 +1244,15 @@
       "issues": [
         "#311"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Chart insert/edit/delete uses canonical drawing commands, object selection and server history; reopening reads persisted metadata.",
+        "Chart/drawing unit tests pass; connected editor roundtrip was unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected chart insert/edit/delete/undo/reopen acceptance needs real OIDC/backend configuration."
+      ]
     },
     {
       "id": "U10",
@@ -968,10 +1267,15 @@
         "#22",
         "#317"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "Shared shells expose grid semantics, live announcements, focus ownership, key tips and locale-backed labels.",
+        "Unit accessibility/shortcut contracts pass; complete keyboard and screen-reader flow in a connected editor was unavailable."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Connected full keyboard/screen-reader acceptance needs real OIDC/backend configuration and assistive-technology run."
+      ]
     },
     {
       "id": "U11",
@@ -984,8 +1288,11 @@
       "issues": [
         "#295"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        "UI and workbook font responsibilities are separate, with local/system fallback stacks and font-display behavior defined in shared styles.",
+        "Disconnected Hub first paint showed meaningful text without missing-glyph/console failures."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -1000,8 +1307,11 @@
       "issues": [
         "#333"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "verified",
+      "evidence": [
+        "This version-2 machine ledger records one status, concrete evidence, removed paths and blockers for all 64 approved items.",
+        "The PRD points to this file as the sole execution status source."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -1016,10 +1326,17 @@
       "issues": [
         "#333"
       ],
-      "status": "not-started",
-      "evidence": [],
-      "removedPaths": [],
-      "blocked": []
+      "status": "blocked",
+      "evidence": [
+        "rust-toolchain.toml, Cargo.lock, package-lock.json and scripts/build.ps1 pin the toolchains and produce native, WASM and Vite artifacts in one build.",
+        "Current integrated build and manifest verification pass."
+      ],
+      "removedPaths": [
+        "untracked/noncanonical generated artifact inputs"
+      ],
+      "blocked": [
+        "A clean hosted checkout result is pending the PR workflow."
+      ]
     },
     {
       "id": "D03",
@@ -1032,8 +1349,11 @@
       "issues": [
         "#333"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "implemented",
+      "evidence": [
+        ".github/workflows/verification.yml defines non-continue-on-error Rust, frontend, backend database, browser artifact, performance and Excel-corpus gates.",
+        "Local equivalents pass where the required environment exists; hosted results are recorded after PR creation."
+      ],
       "removedPaths": [],
       "blocked": []
     },
@@ -1049,10 +1369,15 @@
         "#305",
         "#333"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "scripts/verify-excel-corpus.mjs requires manifest-bound real producer files and refuses a synthetic self-roundtrip as evidence.",
+        "No configured desktop Excel/WPS producer corpus exists on this host."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "Desktop Excel/WPS and the configured real producer corpus are unavailable; synthetic native tests are intentionally not counted."
+      ]
     },
     {
       "id": "D05",
@@ -1065,10 +1390,23 @@
       "issues": [
         "#334"
       ],
-      "status": "not-started",
-      "evidence": [],
+      "status": "blocked",
+      "evidence": [
+        "All implementation commits are on codex/web-excel-shared-kernel for one PR to main; PR description carries contracts, migrations, removals, evidence, blockers and whole-change rollback.",
+        "Local branch gates pass; PR creation and hosted check recording are the remaining delivery action."
+      ],
       "removedPaths": [],
-      "blocked": []
+      "blocked": [
+        "PR and hosted checks have not yet been created/recorded."
+      ]
     }
-  ]
+  ],
+  "lastUpdated": "2026-09-08",
+  "summary": {
+    "total": 64,
+    "verified": 21,
+    "implemented": 22,
+    "blocked": 21,
+    "not-started": 0
+  }
 }

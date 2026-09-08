@@ -11,8 +11,8 @@ import java.nio.file.Path;
 /** Every integration test starts the real native host; a missing build is a failure, never a skip. */
 @SpringBootTest
 @TestPropertySource(properties = {
-        "DATABASE_USERNAME=sa", "DATABASE_PASSWORD=", "JPA_DDL_AUTO=validate",
-        "FLYWAY_BASELINE_ON_MIGRATE=false", "AUTH_ISSUER=https://issuer.test", "AUTH_AUDIENCE=test",
+        "JPA_DDL_AUTO=validate", "FLYWAY_BASELINE_ON_MIGRATE=false",
+        "AUTH_ISSUER=https://issuer.test", "AUTH_AUDIENCE=test",
         "AUTH_JWKS_URL=https://issuer.test/.well-known/jwks.json",
         "COORDINATION_MULTI_INSTANCE=false", "COORDINATION_REDIS_ENABLED=false"
 })

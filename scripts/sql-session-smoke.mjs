@@ -31,16 +31,21 @@ async function waitForServer() {
 }
 await waitForServer();
 const unitId = `ci-sql-${Date.now()}`;
-const snapshot = { schema: 'WorkbookSnapshot', version: 10, unitId, name: 'CI SQL Session', dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 }, calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false }, editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null }, definedNameModels: [], dataModel: { sources: [], tables: [], relationships: [], views: [] }, sheets: [{ kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 1000, columnCount: 26, cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} } }] };
 
-const create = await fetch(`${baseUrl}/api/workbooks`, { method: 'POST', headers: auth, body: JSON.stringify({ unitId, name: 'CI SQL Session', snapshot }) });
+const create = await fetch(`${baseUrl}/api/workbooks`, { method: 'POST', headers: auth, body: JSON.stringify({ unitId, name: 'CI SQL Session' }) });
 if (create.status !== 201) throw new Error(`Authenticated workbook create failed: ${create.status} ${await create.text()}`);
-const read = await fetch(`${baseUrl}/api/workbooks/${unitId}/snapshot`, { headers: auth });
-if (read.status !== 200) throw new Error(`Authenticated snapshot read failed: ${read.status} ${await read.text()}`);
-const operation = { schema: 'OperationEnvelope', operationId: `${unitId}-op`, unitId, clientSequence: 1, baseRevision: 0, createdAt: new Date().toISOString(), mutations: [{ id: 'sheet.extent.grow', sheetId: 'sheet-1', params: { rowCount: 1000, columnCount: 26 } }] };
+const read = await fetch(`${baseUrl}/api/workbooks/${unitId}/manifest`, { headers: auth });
+if (read.status !== 200) throw new Error(`Authenticated manifest read failed: ${read.status} ${await read.text()}`);
+const operation = { schema: 'OperationEnvelope', operationId: `${unitId}-op`, unitId, clientSequence: 1, baseRevision: 0, createdAt: new Date().toISOString(), mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 42 } } }] };
 const commit = await fetch(`${baseUrl}/api/workbooks/${unitId}/operations`, { method: 'POST', headers: auth, body: JSON.stringify(operation) });
 if (![200, 201].includes(commit.status)) throw new Error(`Authenticated operation commit failed: ${commit.status} ${await commit.text()}`);
-const anonymous = await fetch(`${baseUrl}/api/workbooks/${unitId}/snapshot`);
+const committed = await fetch(`${baseUrl}/api/workbooks/${unitId}/manifest?revision=1`, { headers: auth });
+if (committed.status !== 200) throw new Error(`Committed manifest read failed: ${committed.status} ${await committed.text()}`);
+const committedManifest = await committed.json();
+if (committedManifest.revision !== 1 || !Array.isArray(committedManifest.pages) || committedManifest.pages.length !== 1) {
+  throw new Error(`Canonical commit did not publish one revision-one page: ${JSON.stringify(committedManifest)}`);
+}
+const anonymous = await fetch(`${baseUrl}/api/workbooks/${unitId}/manifest`);
 if (anonymous.status !== 401) throw new Error(`Anonymous rejection path expected 401, got ${anonymous.status}`);
-console.log(`SQL session verified: create=${create.status} read=${read.status} commit=${commit.status} anonymous=${anonymous.status}`);
+console.log(`SQL session verified: create=${create.status} manifest=${read.status} commit=${commit.status} revision=${committedManifest.revision} anonymous=${anonymous.status}`);
 jwksServer.close();
