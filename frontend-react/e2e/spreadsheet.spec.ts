@@ -480,6 +480,7 @@ test.describe('spreadsheet baseline', () => {
     const findDialog = page.getByTestId('find-replace-dialog');
     await expect(findDialog).toBeVisible();
     await findDialog.getByLabel(/^(Find|查找)$/).fill('home-dialog-check');
+    await findDialog.getByLabel(/^(Replace|替换)$/).fill('replacement');
     await expect(findDialog.getByRole('button', { name: /(replace all|全部替换)/i })).toBeEnabled();
     await findDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
 
@@ -514,7 +515,8 @@ test.describe('spreadsheet baseline', () => {
 
     const visibility = pane.getByLabel(/KPI tile: (Visible|可见)/);
     await expect(visibility).toBeChecked();
-    await visibility.uncheck();
+    await visibility.click();
+    await waitForServerSaved(page);
     await expect(visibility).not.toBeChecked();
   });
 
