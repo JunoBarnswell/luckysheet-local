@@ -32,8 +32,8 @@ function keyTipFor(commandId: string): string | undefined {
   return EXCEL_KEY_TIP_BINDINGS.find((binding) => binding.target.kind === 'command' && binding.target.id === commandId)?.sequence;
 }
 
-function RibbonLarge({ children, compact = false, icon, iconNode, disabled, surfaceId, title, onClick, className, keyTip }: { children: React.ReactNode; compact?: boolean; icon?: React.ComponentProps<typeof Button>['icon']; iconNode?: React.ReactNode; disabled?: boolean; surfaceId: string; title: string; onClick?: () => void; className?: string; keyTip?: string }) {
-  return <Button aria-label={title} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={title} disabled={disabled} icon={iconNode ? undefined : icon} iconNode={iconNode} onClick={onClick} size="sm" variant="ghost" className={`${compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[58px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-0.5 overflow-hidden rounded-none px-1 text-center text-[11px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>img]:!h-5 [&>img]:!w-5 [&>img]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
+function RibbonLarge({ children, compact = false, icon, iconNode, disabled, menuId, surfaceId, title, variantId, onClick, className, keyTip }: { children: React.ReactNode; compact?: boolean; icon?: React.ComponentProps<typeof Button>['icon']; iconNode?: React.ReactNode; disabled?: boolean; menuId?: string; surfaceId: string; title: string; variantId?: string; onClick?: () => void; className?: string; keyTip?: string }) {
+  return <Button aria-label={title} data-ribbon-keytip={keyTip} data-ribbon-menu={menuId} data-ribbon-surface={surfaceId} data-ribbon-variant={variantId} title={title} disabled={disabled} icon={iconNode ? undefined : icon} iconNode={iconNode} onClick={onClick} size="sm" variant="ghost" className={`${compact ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[58px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-0.5 overflow-hidden rounded-none px-1 text-center text-[11px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>img]:!h-5 [&>img]:!w-5 [&>img]:!shrink-0'} ${className ?? ''}`}>{compact ? null : children}</Button>;
 }
 
 function variantButton({ id, icon, label, onSelect, surfaceId, disabled }: { id: string; icon: React.ComponentProps<typeof Button>['icon']; label: string; onSelect: () => void; surfaceId: string; disabled?: boolean }) {
@@ -101,7 +101,7 @@ export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, r
       const familyLabel = insertText(locale, family.labelKey);
       return <Inline key={family.id} gap="none" className="items-stretch">
         <Button aria-label={familyLabel} data-ribbon-surface={surfaceId} data-ribbon-variant={family.id} title={familyLabel} icon={fluentIcon(family.icon, 'md') ? undefined : family.icon} iconNode={fluentIcon(family.icon, 'md')} iconOnly disabled={!permitted('chart.insert')} size="sm" variant="ghost" className={CHART_ICON_BTN} onClick={() => onInsertChart(primary.chartType, primary.subtype)} />
-        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={!permitted('chart.insert')} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
+        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-gallery-family={family.id} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={!permitted('chart.insert')} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
           {chartFamilyMenu(locale, family, !permitted('chart.insert'), surfaceId, onInsertChart, onOpenMoreCharts)}
         </DropdownMenu>
       </Inline>;
@@ -123,7 +123,7 @@ export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, r
       <RibbonLarge compact={isNarrow} disabled={actionDisabled} icon={icon} keyTip={keyTipFor(surface.commandId ?? '')} onClick={onSelect} surfaceId={surface.id} title={title}>
         {title}
       </RibbonLarge>
-      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={actionDisabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[58px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
+      <DropdownMenu align="left" trigger={<Button aria-label={`${title} options`} data-ribbon-menu={surface.id} data-ribbon-surface={`${surface.id}.menu`} title={`${title} options`} disabled={actionDisabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={isNarrow ? '!h-7 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3.5 [&>svg]:!w-3.5' : '!h-[58px] !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3'} />}>
         <Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack>
       </DropdownMenu>
     </Inline>
@@ -153,16 +153,16 @@ export function InsertRibbon({ locale, layout, disabled, featureSurfaceSchema, r
     const variants = galleryItems(surface.commandId, surface.id);
     if (variants.length > 0) {
       const title = insertText(locale, surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : surface.commandId === 'forms' ? 'formControl' : 'shape');
-      if (mode === 'menu') return <React.Fragment key={surface.id}>{variants}</React.Fragment>;
+      if (mode === 'menu') return <Stack key={surface.id} data-ribbon-surface={surface.id} gap="none" className="min-w-[14rem] p-1">{variants}</Stack>;
       if (surface.commandId === 'sparkline') {
-        if (mode === 'wide' && !isNarrow) return <Inline key={surface.id} gap="none" className="h-[58px] w-[181px] min-w-[181px] items-stretch justify-center">{INSERT_SPARKLINE_VARIANTS.map((variant) => <RibbonLarge key={variant.id} disabled={!permitted('sparkline.insert')} icon={fluentIcon(variant.icon, 'lg') ? undefined : variant.icon} iconNode={fluentIcon(variant.icon, 'lg')} surfaceId={variant.id} title={insertText(locale, variant.labelKey)} className="!w-[58px] !min-w-[58px] !max-w-[58px]" onClick={() => onInsertSparkline(variant.value)}>{insertText(locale, variant.labelKey)}</RibbonLarge>)}</Inline>;
+        if (mode === 'wide' && !isNarrow) return <Inline key={surface.id} data-ribbon-surface={surface.id} gap="none" className="h-[58px] w-[181px] min-w-[181px] items-stretch justify-center">{INSERT_SPARKLINE_VARIANTS.map((variant) => <RibbonLarge key={variant.id} disabled={!permitted('sparkline.insert')} icon={fluentIcon(variant.icon, 'lg') ? undefined : variant.icon} iconNode={fluentIcon(variant.icon, 'lg')} surfaceId={variant.id} variantId={variant.id} title={insertText(locale, variant.labelKey)} className="!w-[58px] !min-w-[58px] !max-w-[58px]" onClick={() => onInsertSparkline(variant.value)}>{insertText(locale, variant.labelKey)}</RibbonLarge>)}</Inline>;
         const first = INSERT_SPARKLINE_VARIANTS[0];
         return renderSplitGallery(surface, title, 'sparkline', variants, () => onInsertSparkline(first.value), !permitted('sparkline.insert'));
       }
       if (surface.commandId === 'forms') return renderSplitGallery(surface, title, 'form-control', variants, () => onInsertFormControl(INSERT_FORM_CONTROL_VARIANTS[0]!.value), !permitted('drawing.add.form-control'));
       const icon = surface.commandId === 'chartBuilder' ? 'chart-column' : 'shape-square';
       const galleryDisabled = surface.commandId === 'chartBuilder' ? !permitted('chart.insert') : !permitted('drawing.add.shape');
-      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={galleryDisabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} keyTip={keyTipFor(surface.commandId)} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
+      return <DropdownMenu key={surface.id} align="left" trigger={<RibbonLarge compact={isNarrow} disabled={galleryDisabled} icon={fluentIcon(icon, 'lg') ? undefined : icon} iconNode={fluentIcon(icon, 'lg')} keyTip={keyTipFor(surface.commandId)} menuId={surface.id} surfaceId={surface.id} title={title}>{title}</RibbonLarge>}><Stack gap="none" className="min-w-[14rem] p-1">{variants}</Stack></DropdownMenu>;
     }
 
     // SpreadJS parity: 'large', 'tile', 'gallery', and 'split' all render as full-height tiles.

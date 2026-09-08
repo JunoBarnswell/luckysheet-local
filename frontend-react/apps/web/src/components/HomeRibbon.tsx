@@ -214,13 +214,22 @@ export function HomeRibbon({
   const renderSurface = (surface: RibbonSurfaceDefinition, mode: RibbonLayoutState['mode'] | 'menu'): React.ReactNode => {
     if (surface.controlId) return renderControl(surface.controlId, mode, surface.id);
     if (!surface.commandId) return null;
-    if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
+    if (mode === 'menu') {
+      const members = menuMembers(surface.id);
+      if (members.length === 0) return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
+      return <Inline key={surface.id} gap="none" className="w-full flex-nowrap">
+        {renderCommand(surface.commandId, { className: 'min-w-0 flex-1 justify-start rounded-none', ribbonSurfaceId: surface.id })}
+        <DropdownMenu align="left" trigger={<Button aria-label="More options" data-ribbon-menu={surface.id} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="w-5 shrink-0 justify-center rounded-none px-0" />}>
+          <Stack gap="none" className="min-w-[12rem] p-1">{members.map((member) => renderSurface(member, 'menu'))}</Stack>
+        </DropdownMenu>
+      </Inline>;
+    }
     const iconNode = iconForSurface(surface.id);
     if (surface.id.endsWith('.dialog-launcher')) return renderCommand(surface.commandId, { iconOverride: 'arrow-down', iconOnly: true, className: '!h-4 !min-h-0 !w-4 rotate-[-45deg] rounded-none p-0', ribbonSurfaceId: surface.id });
     if (surface.id === 'clipboard.paste') {
       return <Inline gap="none" className="h-[58px] items-stretch">
         {renderCommand(surface.commandId, { iconNode, tile: true, className: `${HOME_LARGE_TILE_CLASS} !w-[42px] !min-w-[42px] rounded-r-none`, ribbonSurfaceId: surface.id })}
-        <DropdownMenu align="left" trigger={<Button aria-label={translateRibbonText(locale, 'commands.pasteSpecial')} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="!h-[58px] !min-h-0 !w-4 rounded-l-none px-0" />}>
+        <DropdownMenu align="left" trigger={<Button aria-label={translateRibbonText(locale, 'commands.pasteSpecial')} data-ribbon-menu={surface.id} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className="!h-[58px] !min-h-0 !w-4 rounded-l-none px-0" />}>
           <Stack gap="none" className="min-w-[15rem] p-1">{menuMembers('clipboard.paste').map((member) => renderSurface(member, 'menu'))}</Stack>
         </DropdownMenu>
       </Inline>;
@@ -256,7 +265,7 @@ export function HomeRibbon({
     if (surface.id === 'editing.fill-down') {
       return <Inline gap="none" className={`${mode === 'wide' ? 'w-16' : 'w-14'} h-6 items-stretch`}>
         {renderCommand(surface.commandId, { iconNode, className: `${HOME_EDITING_ACTION_CLASS} !w-12`, labelOverride: homeText(locale, 'fill'), ribbonSurfaceId: surface.id })}
-        <DropdownMenu align="left" trigger={<Button aria-label="Fill options" title="Fill options" disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={HOME_EDITING_MENU_CLASS} />}>
+        <DropdownMenu align="left" trigger={<Button aria-label="Fill options" data-ribbon-menu={surface.id} title="Fill options" disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={HOME_EDITING_MENU_CLASS} />}>
           <Stack gap="none" className="min-w-[10rem] p-1">{menuMembers('editing.fill-down').map((member) => renderSurface(member, 'menu'))}</Stack>
         </DropdownMenu>
       </Inline>;
@@ -264,7 +273,7 @@ export function HomeRibbon({
     if (surface.id === 'editing.sort' || surface.id === 'editing.find') {
       const isSort = surface.id === 'editing.sort';
       const triggerLabel = homeText(locale, isSort ? 'sortAndFilter' : 'findAndSelect');
-      return <DropdownMenu align="left" disabled={disabled} trigger={<Button aria-label={triggerLabel} data-ribbon-surface={surface.id} title={triggerLabel} disabled={disabled} iconNode={iconNode} size="sm" variant="ghost" className={`${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-[100px]' : '!w-[84px]'}`}>{triggerLabel}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>}>
+      return <DropdownMenu align="left" disabled={disabled} trigger={<Button aria-label={triggerLabel} data-ribbon-menu={surface.id} data-ribbon-surface={surface.id} title={triggerLabel} disabled={disabled} iconNode={iconNode} size="sm" variant="ghost" className={`${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-[100px]' : '!w-[84px]'}`}>{triggerLabel}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>}>
         <Stack gap="none" className="min-w-[11rem] p-1">
           {renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id })}
           {menuMembers(surface.id).map((member) => renderSurface(member, 'menu'))}
@@ -281,11 +290,11 @@ export function HomeRibbon({
     const compactMenu = controlId === 'font-borders-menu' || controlId === 'orientation-menu';
     const menuTrigger = (iconName: HomeRibbonIconName, presentation: 'tile' | 'inline' | 'editing-inline' | 'style' | 'cell' = 'tile') => mode !== 'menu'
       ? compactMenu
-        ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} iconOnly size="sm" variant="ghost" className={controlId === 'orientation-menu' ? HOME_SMALL_ACTION_CLASS : HOME_SMALL_ACTION_CLASS} />
+        ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-menu={surfaceId} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} iconOnly size="sm" variant="ghost" className={controlId === 'orientation-menu' ? HOME_SMALL_ACTION_CLASS : HOME_SMALL_ACTION_CLASS} />
         : presentation === 'inline' || presentation === 'editing-inline'
-          ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-16' : '!w-14'}` : `${HOME_INLINE_ACTION_CLASS} ${mode === 'wide' ? '!w-[97px]' : '!w-[84px]'}`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
-        : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="xl" />} type="button" className={presentation === 'style' ? `${mode === 'wide' ? '!w-[86px] !min-w-[86px]' : '!w-[70px] !min-w-[70px]'}` : presentation === 'cell' ? `${mode === 'wide' ? '!w-[50px] !min-w-[50px]' : '!w-[44px] !min-w-[44px]'}` : undefined}><Inline gap="none" className="gap-0.5">{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Inline></HomeTile>
-      : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
+          ? <Button aria-label={label} data-ribbon-keytip={keyTip} data-ribbon-menu={surfaceId} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size={presentation === 'inline' ? 'sm' : 'md'} />} size="sm" variant="ghost" className={presentation === 'editing-inline' ? `${HOME_EDITING_ACTION_CLASS} ${mode === 'wide' ? '!w-16' : '!w-14'}` : `${HOME_INLINE_ACTION_CLASS} ${mode === 'wide' ? '!w-[97px]' : '!w-[84px]'}`}>{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Button>
+        : <HomeTile aria-label={label} data-ribbon-menu={surfaceId} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="xl" />} type="button" className={presentation === 'style' ? `${mode === 'wide' ? '!w-[86px] !min-w-[86px]' : '!w-[70px] !min-w-[70px]'}` : presentation === 'cell' ? `${mode === 'wide' ? '!w-[50px] !min-w-[50px]' : '!w-[44px] !min-w-[44px]'}` : undefined}><Inline gap="none" className="gap-0.5">{label}<HomeRibbonIcon name="chevron-down" size="xs" /></Inline></HomeTile>
+      : <Button aria-label={label} data-ribbon-menu={surfaceId} data-ribbon-surface={surfaceId} title={label} disabled={disabled} iconNode={<HomeRibbonIcon name={iconName} size="md" />} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
         return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-keytip="HFP" data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} iconNode={<HomeRibbonIcon name="paintbrush-2" size="md" />} iconOnly={false} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? `${HOME_INLINE_ACTION_CLASS} !w-16` : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{label}</Button>;
@@ -419,7 +428,7 @@ export function HomeRibbon({
       case 'auto-sum-menu':
         return <Inline gap="none" className={mode !== 'menu' ? 'h-6 w-[88px] items-stretch' : 'w-full'}>
           {renderCommand('autoSum', { iconNode: <HomeRibbonIcon name="sigma-square" size="md" />, className: mode !== 'menu' ? `${HOME_EDITING_ACTION_CLASS} !w-[72px]` : 'w-full justify-start', labelOverride: homeText(locale, 'autoSumCompact'), ribbonSurfaceId: surfaceId })}
-          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={mode !== 'menu' ? HOME_EDITING_MENU_CLASS : 'w-5 shrink-0 justify-center px-0'} />}>
+          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} data-ribbon-menu={surfaceId} title={`${label} options`} disabled={disabled} iconNode={<HomeRibbonIcon name="chevron-down" size="xs" />} iconOnly size="sm" variant="ghost" className={mode !== 'menu' ? HOME_EDITING_MENU_CLASS : 'w-5 shrink-0 justify-center px-0'} />}>
             <Stack gap="none" className="min-w-[10rem] p-1">
               {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}
             </Stack>

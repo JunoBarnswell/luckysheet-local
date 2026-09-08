@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PERSISTENCE_CASES } from './acceptance-matrix';
-import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook } from './support/workbook-fixtures';
+import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, waitForServerSaved } from './support/workbook-fixtures';
 
 test.describe('Persistence acceptance', () => {
   test('retains a server-acknowledged cell edit after reload', async ({ page }) => {
@@ -15,7 +15,7 @@ test.describe('Persistence acceptance', () => {
     await page.keyboard.press('Enter');
     await canvas.press('ArrowUp');
     await expect(page.getByTestId('formula-input')).toHaveValue('persisted-acceptance-value');
-    await expect(page.getByText('已保存到服务器', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await waitForServerSaved(page);
     await page.reload();
     await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
     await page.getByTestId('name-box').fill('A1');

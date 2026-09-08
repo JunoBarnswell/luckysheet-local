@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { openConnectedWorkbook } from './support/workbook-fixtures';
+import { DESIGNER_GEOMETRY } from '@react-sheets/ui-system';
+import { openConnectedWorkbook, revealRibbonSurfaceById, waitForServerSaved } from './support/workbook-fixtures';
 
 const DEFAULT_COLUMN_WIDTH_PX = 64;
 const ROW_HEADER_WIDTH_PX = 39;
@@ -78,10 +79,10 @@ test.describe('spreadsheet baseline', () => {
         statusBar: rect('[data-testid="designer-status-bar"]'),
       };
     });
-    expect(geometry.ribbon).toEqual({ y: 0, height: 195 });
-    expect(geometry.formulaBar).toEqual({ y: 195, height: 48 });
-    expect(geometry.workspace).toEqual({ y: 243, height: 455 });
-    expect(geometry.statusBar).toEqual({ y: 698, height: 22 });
+    expect(geometry.ribbon).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight, height: DESIGNER_GEOMETRY.ribbonHeight });
+    expect(geometry.formulaBar).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight + DESIGNER_GEOMETRY.ribbonHeight, height: DESIGNER_GEOMETRY.formulaBarHeight });
+    expect(geometry.workspace).toEqual({ y: DESIGNER_GEOMETRY.documentBarHeight + DESIGNER_GEOMETRY.ribbonHeight + DESIGNER_GEOMETRY.formulaBarHeight, height: 498 });
+    expect(geometry.statusBar).toEqual({ y: 720 - DESIGNER_GEOMETRY.statusBarHeight, height: DESIGNER_GEOMETRY.statusBarHeight });
     await page.screenshot({ path: 'test-results/designer-demo-1280-current.png' });
     await page.getByRole('tab', { name: '视图' }).click();
     await page.getByRole('button', { name: '命令面板' }).click();
@@ -377,9 +378,7 @@ test.describe('spreadsheet baseline', () => {
 
     // Ribbon and context-menu entries route through the same controller.
     await page.getByTestId('ribbon-tab-home').click();
-    await page.getByRole('button', { name: 'Format', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'AutoFit Column Width', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'AutoFit Column Width', exact: true }).click();
+    await (await revealRibbonSurfaceById(page, 'control.auto-fit-column-width')).click();
 
     await page.mouse.click(box.x + ROW_HEADER_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
     await page.getByRole('menuitem', { name: 'Hide Columns', exact: true }).click();
@@ -442,7 +441,7 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('');
     await canvas.press('ArrowUp');
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
-    await expect(page.getByText('已保存到服务器', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await waitForServerSaved(page);
     await page.reload();
     await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
@@ -455,42 +454,55 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('home-ribbon-groups')).toBeVisible();
     await expect(page.getByRole('button', { name: /add-ins/i })).toHaveCount(0);
 
-    await page.getByTestId('ribbon-format-cells').click();
+    await (await revealRibbonSurfaceById(page, 'styles.format-cells')).click();
     const formatDialog = page.getByTestId('format-cells-dialog');
     await expect(formatDialog).toBeVisible();
     await formatDialog.getByTestId('format-tab-font').click();
     await expect(formatDialog.getByLabel(/(font size|字号)/i)).toBeVisible();
     await formatDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
 
-    await page.getByRole('button', { name: /(sort range|排序区域)/i }).click();
+    const sortRoot = await revealRibbonSurfaceById(page, 'editing.sort');
+    if (await sortRoot.getAttribute('data-ribbon-command') === 'sortRange') await sortRoot.click();
+    else {
+      await sortRoot.click();
+      await page.locator('[data-ribbon-surface="editing.sort"][data-ribbon-command="sortRange"]').click();
+    }
     const sortDialog = page.getByTestId('sort-dialog');
     await expect(sortDialog).toBeVisible();
     await sortDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
 
-    await page.getByRole('button', { name: /(find & replace|查找与替换)/i }).click();
+    const findRoot = await revealRibbonSurfaceById(page, 'editing.find');
+    if (await findRoot.getAttribute('data-ribbon-command') === 'findReplace') await findRoot.click();
+    else {
+      await findRoot.click();
+      await page.locator('[data-ribbon-surface="editing.find"][data-ribbon-command="findReplace"]').click();
+    }
     const findDialog = page.getByTestId('find-replace-dialog');
     await expect(findDialog).toBeVisible();
     await findDialog.getByLabel(/^(Find|查找)$/).fill('home-dialog-check');
     await expect(findDialog.getByRole('button', { name: /(replace all|全部替换)/i })).toBeEnabled();
     await findDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
 
-    await page.getByRole('button', { name: /(paste special|选择性粘贴)/i }).click();
+    await (await revealRibbonSurfaceById(page, 'clipboard.paste-special')).click();
     const pasteDialog = page.getByTestId('paste-special-dialog');
     await expect(pasteDialog).toBeVisible();
     await expect(pasteDialog.getByTestId('paste-special-formats')).toBeVisible();
     await pasteDialog.getByRole('button', { name: /^(Cancel|取消)$/ }).click();
 
-    await page.getByTestId('home-selection-pane').click();
+    await (await revealRibbonSurfaceById(page, 'editing.selection-pane')).click();
     await expect(page.getByTestId('selection-pane')).toBeVisible();
   });
 
   test('Selection Pane selects, renames, and toggles a drawing through host callbacks', async ({ page }) => {
     await waitForWorkspace(page);
     await page.getByTestId('ribbon-tab-insert').click();
-    await page.getByRole('button', { name: /(rectangle|矩形)/i }).click();
+    const shapeRoot = await revealRibbonSurfaceById(page, 'illustrations.shape');
+    const rectangle = page.locator('[data-ribbon-variant="shape.rectangle"]');
+    if (!await rectangle.isVisible()) await shapeRoot.click();
+    await rectangle.click();
 
     await page.getByTestId('ribbon-tab-home').click();
-    await page.getByTestId('home-selection-pane').click();
+    await (await revealRibbonSurfaceById(page, 'editing.selection-pane')).click();
     const pane = page.getByTestId('selection-pane');
     await expect(pane).toBeVisible();
 
@@ -511,11 +523,11 @@ test.describe('spreadsheet baseline', () => {
     const canvas = await focusCanvas(page);
     await canvas.press('Control+B');
 
-    const painter = page.getByTestId('home-format-painter');
+    const painter = await revealRibbonSurfaceById(page, 'control.format-painter');
     await painter.click();
     await expect(painter).toHaveAttribute('aria-pressed', 'true');
 
     await canvas.click({ position: { x: 142, y: 34 } });
-    await expect(painter).toHaveAttribute('aria-pressed', 'false');
+    await expect(await revealRibbonSurfaceById(page, 'control.format-painter')).toHaveAttribute('aria-pressed', 'false');
   });
 });

@@ -765,6 +765,7 @@
       "textToColumns": "分列",
       "findReplace": "查找与替换",
       "goTo": "定位",
+      "selectionPane": "选择窗格",
       "transpose": "转置",
       "flipHorizontal": "水平翻转",
       "flipVertical": "垂直翻转",

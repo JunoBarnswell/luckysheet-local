@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_VIEWPORTS, HOME_BEHAVIOR_CASES, HOME_SURFACE_CASES } from './acceptance-matrix';
-import { assertSurfaceVisible, focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, selectRibbonTab } from './support/workbook-fixtures';
+import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, revealRibbonSurface, selectRibbonTab } from './support/workbook-fixtures';
 
 for (const locale of ACCEPTANCE_LOCALES) {
   for (const viewport of ACCEPTANCE_VIEWPORTS) {
@@ -12,15 +12,9 @@ for (const locale of ACCEPTANCE_LOCALES) {
         await openConnectedWorkbook(page, locale, `Home matrix ${locale} ${viewport.width}`);
         await selectRibbonTab(page, 'home');
         for (const entry of HOME_SURFACE_CASES) {
-          if (entry.surface.menuId) {
-            await assertSurfaceVisible(page, entry.surface.menuId);
-            await page.locator(`[data-ribbon-surface="${entry.surface.menuId}"]`).first().click();
-            await assertSurfaceVisible(page, entry.surface.id);
-            await page.keyboard.press('Escape');
-          } else {
-            await assertSurfaceVisible(page, entry.surface.id);
-          }
+          await revealRibbonSurface(page, entry.surface);
         }
+        await page.keyboard.press('Escape');
         diagnostics.assertClean();
       });
 

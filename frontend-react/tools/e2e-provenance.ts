@@ -8,6 +8,7 @@ import { chromium, type FullConfig } from '@playwright/test';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const frontendRoot = path.join(repoRoot, 'frontend-react');
 const manifestPath = path.join(frontendRoot, 'test-results', 'provenance.json');
+const connectedWorkbookLedgerPath = path.join(frontendRoot, 'test-results', 'connected-workbooks.ndjson');
 const kernelDirectory = path.join(frontendRoot, 'apps', 'web', 'public', 'kernel');
 const kernelManifestPath = path.join(kernelDirectory, 'kernel-manifest.json');
 const generatedKernelPaths = new Set([
@@ -164,6 +165,8 @@ function readManifest(): E2EProvenanceManifest {
 }
 
 export default async function globalSetup(_config: FullConfig): Promise<void> {
+  fs.mkdirSync(path.dirname(connectedWorkbookLedgerPath), { recursive: true });
+  fs.writeFileSync(connectedWorkbookLedgerPath, '', 'utf8');
   await writeE2EProvenance();
 }
 

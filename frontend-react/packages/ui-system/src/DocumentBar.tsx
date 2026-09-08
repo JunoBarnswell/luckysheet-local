@@ -35,7 +35,7 @@ export function DocumentBar({ workbookName, saveState, onSave, onSearch, onUndo,
           <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 20 20"><rect x="2.5" y="2.5" width="15" height="15" rx="1.5" stroke="currentColor" strokeWidth="1.5" /><path d="M2.5 7h15M7 2.5v15M12 7v10.5" stroke="currentColor" strokeWidth="1.2" /><path d="M12 10h5.5" stroke="currentColor" strokeWidth="1.2" /></svg>
         </Box>
         <Text className="truncate font-semibold text-[#242424]" title={workbookName}>{workbookName}</Text>
-        <Button aria-label={`保存状态：${status}`} icon="cloud-check" iconOnly onClick={onSave} size="xs" variant="ghost" className={`!h-7 !w-7 ${statusTone}`} title={status} />
+        <Button aria-label={`保存状态：${status}`} data-save-state={saveState} data-testid="document-save-state" icon="cloud-check" iconOnly onClick={onSave} size="xs" variant="ghost" className={`!h-7 !w-7 ${statusTone}`} title={status} />
         <Text size="xs" tone="muted" className="hidden whitespace-nowrap sm:inline">{status}</Text>
       </Inline>
       <Inline gap="xs" className="shrink-0">

@@ -146,7 +146,12 @@ public class WorkbookOperationService {
         store.insertOutbox(new OutboxRow(UUID.randomUUID(), row.unitId(), source.operationId(), revision, json, now, 0));
         store.updateWorkbookRevisionAndName(row.unitId(), revision, result.path("manifest").path("name").asText(), now);
         audit(source.operationId(), row.unitId(), actor, "OPERATION_COMMIT", null, mapper.createObjectNode().put("revision", revision));
-        return new CommitResult(committed, true, result);
+        // Use the durable reconstruction for both the first acknowledgement and
+        // idempotent replay. History undo can restore a content-addressed page
+        // without asking native to re-emit its bytes; readChangeSet resolves the
+        // verified payload so the browser replica never receives a manifest-only
+        // changed page.
+        return new CommitResult(committed, true, persistence.readChangeSet(row.unitId(), source.operationId()));
     }
 
     private void validateExternalData(String unitId, long revision, String actor, ObjectNode commandParams) {

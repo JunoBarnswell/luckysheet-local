@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_VIEWPORTS, DATA_CASES, FORMULAS_CASES, PAGE_LAYOUT_CASES } from './acceptance-matrix';
-import { installBrowserDiagnostics, openConnectedWorkbook, selectRibbonTab } from './support/workbook-fixtures';
+import { installBrowserDiagnostics, openConnectedWorkbook, openRibbonGroup, selectRibbonTab } from './support/workbook-fixtures';
 
 const primaryTabCases = [
   ['pageLayout', PAGE_LAYOUT_CASES],
@@ -21,9 +21,12 @@ for (const locale of ACCEPTANCE_LOCALES) {
           const layout = page.getByTestId(`ribbon-layout-${tab}`);
           await expect(layout).toHaveAttribute('data-ribbon-layout', tab);
           for (const entry of cases) {
+            await page.keyboard.press('Escape');
             const command = page.locator(`[data-ribbon-command="${entry.commandIds[0]}"][data-ribbon-layout-node="${entry.nodeId}"]`).first();
+            if (await command.count() === 0) await openRibbonGroup(page, entry.groupId);
             await expect(command, `${entry.id} must retain its layout-node and command identity`).toBeAttached();
           }
+          await page.keyboard.press('Escape');
           diagnostics.assertClean();
         });
       }

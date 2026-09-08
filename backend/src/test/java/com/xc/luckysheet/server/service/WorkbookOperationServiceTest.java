@@ -179,6 +179,34 @@ class WorkbookOperationServiceTest extends NativeKernelIntegrationTestSupport {
     }
 
     @Test
+    void redoAcknowledgementRestoresTheVerifiedHistoricalPagePayload() throws Exception {
+        String unitId = "native-redo";
+        create(unitId);
+        var edit = operations.commit(unitId, operation(unitId, "native-redo-target", 1, 0, set(0, 0, 42)), "owner");
+        var undoEnvelope = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-redo-undo", unitId, 2, 1,
+                List.of(), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-redo-target", 0));
+        var undo = operations.commit(unitId, undoEnvelope, "owner");
+        var redoEnvelope = new OperationEnvelope(OperationEnvelope.SCHEMA, "native-redo-replay", unitId, 3, 2,
+                List.of(), Instant.now(), new OperationIntent(OperationIntent.UNDO, "native-redo-undo", 1));
+
+        var redo = operations.commit(unitId, redoEnvelope, "owner");
+
+        assertTrue(redo.committed());
+        assertEquals(3, redo.changeSet().path("revision").asLong());
+        assertEquals(1, redo.changeSet().path("pages").size());
+        assertFalse(redo.changeSet().path("pages").get(0).path("payloadBase64").asText().isBlank());
+        assertEquals(edit.changeSet().path("pages").get(0).path("checksum").asText(),
+                redo.changeSet().path("pages").get(0).path("checksum").asText());
+        assertEquals(0, undo.changeSet().path("pages").size());
+        reopenNative(unitId, "owner", true);
+        assertEquals(42, cell(unitId, 3, 0, 0).path("value").asInt());
+
+        var duplicate = operations.commit(unitId, redoEnvelope, "owner");
+        assertFalse(duplicate.committed());
+        assertEquals(redo.changeSet(), duplicate.changeSet());
+    }
+
+    @Test
     void undoRejectsOverlappingLaterPageWithoutPartialCommit() throws Exception {
         String unitId = "native-undo-conflict";
         create(unitId);

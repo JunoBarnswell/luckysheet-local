@@ -241,6 +241,7 @@ export type RibbonCommandId =
   | 'textToColumns'
   | 'findReplace'
   | 'goTo'
+  | 'selectionPane'
   | 'transpose'
   | 'flipHorizontal'
   | 'flipVertical'
@@ -987,6 +988,7 @@ export const RIBBON_TEXT = {
     textToColumns: 'commands.textToColumns',
     findReplace: 'commands.findReplace',
     goTo: 'commands.goTo',
+    selectionPane: 'commands.selectionPane',
     transpose: 'commands.transpose',
     flipHorizontal: 'commands.flipHorizontal',
     flipVertical: 'commands.flipVertical',
@@ -1308,6 +1310,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
   ribbonSurface('home', 'editing.go-to', 'editing', 101, 'menu', 'goTo', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
+  ribbonSurface('home', 'editing.selection-pane', 'editing', 102, 'menu', 'selectionPane', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -2038,6 +2041,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     placements: [{ tab: 'data', group: 'findTransform' }, { tab: 'home', group: 'editing' }],
   },
   intent('goTo', 'data', 'findTransform', RIBBON_TEXT.commands.goTo, () => ({ type: 'dialog.open', dialog: 'goto' })),
+  intent('selectionPane', 'home', 'editing', RIBBON_TEXT.commands.selectionPane, () => ({ type: 'panel.open', panel: 'selectionPane' }), 'shape-square'),
   callback('transpose', 'data', 'findTransform', RIBBON_TEXT.commands.transpose, (context) => context.actions.onTransposeSelection(), 'layout'),
   callback('flipHorizontal', 'data', 'findTransform', RIBBON_TEXT.commands.flipHorizontal, (context) => context.actions.onFlipSelection('h')),
   callback('flipVertical', 'data', 'findTransform', RIBBON_TEXT.commands.flipVertical, (context) => context.actions.onFlipSelection('v')),
