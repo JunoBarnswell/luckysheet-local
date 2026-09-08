@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_VIEWPORTS, HOME_BEHAVIOR_CASES, HOME_SURFACE_CASES } from './acceptance-matrix';
-import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, revealRibbonSurface, selectRibbonTab } from './support/workbook-fixtures';
+import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook, revealRibbonSurface, selectRibbonTab, waitForServerSaved } from './support/workbook-fixtures';
 
 for (const locale of ACCEPTANCE_LOCALES) {
   for (const viewport of ACCEPTANCE_VIEWPORTS) {
@@ -24,6 +24,11 @@ for (const locale of ACCEPTANCE_LOCALES) {
         const canvas = await focusCanvas(page);
         await page.keyboard.type('home-matrix-value');
         await page.keyboard.press('Enter');
+        // Enter begins an acknowledged cloud commit. Wait until the editor has
+        // closed and the canonical selection has moved before sending history
+        // shortcuts; otherwise Ctrl+Z correctly targets the committing draft.
+        await expect(page.getByTestId('formula-input')).toHaveValue('');
+        await waitForServerSaved(page);
         await canvas.press('ArrowUp');
         await expect(page.getByTestId('formula-input')).toHaveValue('home-matrix-value');
         await canvas.press('Control+Z');
