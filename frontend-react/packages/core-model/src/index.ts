@@ -1,3 +1,5 @@
+import { KernelPageReplica, WorksheetCells, type KernelReplicaManifest, type KernelReplicaPagePayload } from './kernel-page-replica';
+export * from './kernel-page-replica';
 export type UnitId = string;
 export type SheetId = string;
 export type Row = number;
@@ -58,7 +60,6 @@ import {
 import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
-import { planSheetIdentityTransform } from './sheet-identity-transform';
 import { ReviewStore } from './review-store';
 import type { ReviewStoreSnapshot } from './review-store';
 
@@ -308,7 +309,8 @@ export type WorksheetPane =
       state: 'split';
     };
 
-export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
+export function normalizeWorksheetPane(pane: WorksheetPane | null | undefined): WorksheetPane {
+  if (!pane) return { kind: 'none' };
   if (pane.kind === 'none') return { kind: 'none' };
   const activePane = pane.activePane ?? (pane.xSplit > 0 && pane.ySplit > 0 ? 'bottomRight' : pane.xSplit > 0 ? 'topRight' : pane.ySplit > 0 ? 'bottomLeft' : 'topLeft');
   return pane.kind === 'frozen'
@@ -484,7 +486,7 @@ export {
   type ConnectorTransformOverride,
   type DrawingGraphSheet,
 } from './drawing-planner';
-export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export type { StructuralTransformIntent, CellShiftIntent } from './structural-transform';
 export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';
 export {
   planBorderChange,
@@ -514,11 +516,9 @@ export {
   type ExcelDateEvaluationContext,
   type ExcelDateSystem,
 } from '@react-sheets/formula-engine';
-export { applyRowPermutation, createRowPermutationPlan, validatePermutationMetadata, type RowPermutationPlan } from './data-transform';
+export { createRowPermutationPlan, type RowPermutationPlan } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {
-  loadWorkbookFromSnapshot,
-  createWorkbookSnapshot,
   migrateStoredWorkbookSnapshot,
   assertCanonicalWorkbookSnapshot,
   assertCanonicalDataRegionOverlays,
@@ -542,6 +542,7 @@ import type { GanttSheetDefinition, ReportSheetDefinition, TableSheetDefinition,
 import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
 export * from './data-model';
 export * from './data-source';
+export * from './kernel-page-replica';
 
 export type SheetKind = 'worksheet' | 'table-sheet' | 'gantt-sheet' | 'report-sheet';
 
@@ -953,248 +954,13 @@ class DataRegionBoundsIndex {
   }
 }
 
-export class CellMatrix {
-  private readonly rows = new Map<Row, Map<Column, CellData>>();
-  private orderedRowsCache: Row[] | null = null;
-  private readonly rowBounds = new SparseAxisBounds();
-  private readonly columnBounds = new SparseAxisBounds();
-  private cellCount = 0;
-  private revisionCounter = 0;
-
-  /** Monotonic content revision used by derived caches; it is not persisted. */
-  get revision(): number {
-    return this.revisionCounter;
-  }
-
-  get(row: Row, column: Column): CellData | undefined {
-    return this.rows.get(row)?.get(column);
-  }
-
-  set(row: Row, column: Column, cell: CellData): void {
-    let rowMap = this.rows.get(row);
-    if (!rowMap) {
-      rowMap = new Map<Column, CellData>();
-      this.rows.set(row, rowMap);
-      this.orderedRowsCache = null;
-    }
-    const fontFamily = cell.style?.fontFamily;
-    const normalizedCell = fontFamily === undefined
-      ? cell
-      : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
-    const existed = rowMap.has(column);
-    rowMap.set(column, normalizedCell);
-    if (!existed) {
-      this.cellCount += 1;
-      this.rowBounds.add(row);
-      this.columnBounds.add(column);
-    }
-    this.revisionCounter += 1;
-  }
-
-  delete(row: Row, column: Column): void {
-    const rowMap = this.rows.get(row);
-    const existed = rowMap?.has(column) ?? false;
-    rowMap?.delete(column);
-    if (rowMap?.size === 0) {
-      this.rows.delete(row);
-      this.orderedRowsCache = null;
-    }
-    if (existed) {
-      this.cellCount -= 1;
-      this.rowBounds.remove(row);
-      this.columnBounds.remove(column);
-      this.revisionCounter += 1;
-    }
-  }
-
-  has(row: Row, column: Column): boolean {
-    return this.rows.get(row)?.has(column) ?? false;
-  }
-
-  clear(): void {
-    if (this.rows.size > 0) this.revisionCounter += 1;
-    this.rows.clear();
-    this.orderedRowsCache = null;
-    this.rowBounds.clear();
-    this.columnBounds.clear();
-    this.cellCount = 0;
-  }
-
-  count(): number {
-    return this.cellCount;
-  }
-
-  /** Read the persisted-cell extent without walking CellMatrix rows. */
-  occupiedRange(sheetId: SheetId): RangeRef {
-    const startRow = this.rowBounds.minimum;
-    const endRow = this.rowBounds.maximum;
-    const startColumn = this.columnBounds.minimum;
-    const endColumn = this.columnBounds.maximum;
-    return {
-      sheetId,
-      startRow: startRow ?? 0,
-      endRow: endRow ?? 0,
-      startColumn: startColumn ?? 0,
-      endColumn: endColumn ?? 0,
-    };
-  }
-
-  forEach(callback: (cell: CellData, row: Row, column: Column) => void): void {
-    for (const [row, columns] of this.rows) {
-      for (const [column, cell] of columns) callback(cell, row, column);
-    }
-  }
-
-  /** Iterate authored cells without exposing the backing maps or requiring a range scan. */
-  *entries(): IterableIterator<{ cell: CellData; row: Row; column: Column }> {
-    for (const [row, columns] of this.rows) {
-      for (const [column, cell] of columns) yield { cell, row, column };
-    }
-  }
-
-  forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
-    for (const row of rows) {
-      const columns = this.rows.get(row);
-      if (!columns) continue;
-      for (const [column, cell] of columns) callback(cell, row, column);
-    }
-  }
-
-  forEachInColumns(columns: ReadonlySet<Column>, callback: (cell: CellData, row: Row, column: Column) => void): void {
-    for (const [row, rowCells] of this.rows) {
-      for (const column of columns) {
-        const cell = rowCells.get(column);
-        if (cell) callback(cell, row, column);
-      }
-    }
-  }
-
-  *entriesInColumn(column: Column): IterableIterator<{ row: Row; cell: CellData }> {
-    for (const [row, rowCells] of this.rows) {
-      const cell = rowCells.get(column);
-      if (cell) yield { row, cell };
-    }
-  }
-
-  /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
-  forEachInRange(
-    startRow: Row,
-    endRow: Row,
-    startColumn: Column,
-    endColumn: Column,
-    callback: (cell: CellData, row: Row, column: Column) => void,
-  ): void {
-    const orderedRows = this.orderedRows();
-    const startIndex = lowerBound(orderedRows, startRow);
-    for (let index = startIndex; index < orderedRows.length; index += 1) {
-      const row = orderedRows[index]!;
-      if (row > endRow) break;
-      const columns = this.rows.get(row);
-      if (!columns) throw new Error(`CellMatrix row index is stale: ${row}`);
-      for (const [column, cell] of columns) {
-        if (column >= startColumn && column <= endColumn) callback(cell, row, column);
-      }
-    }
-  }
-
-  private orderedRows(): readonly Row[] {
-    return this.orderedRowsCache ??= [...this.rows.keys()].sort((left, right) => left - right);
-  }
-
-  clone(): CellMatrix {
-    const copy = new CellMatrix();
-    this.forEach((cell, row, column) => copy.set(row, column, { ...cell }));
-    return copy;
-  }
-
-  toJSON(): Record<string, Record<string, CellData>> {
-    const result: Record<string, Record<string, CellData>> = {};
-    this.forEach((cell, row, column) => {
-      result[row] ??= {};
-      result[row][column] = { ...cell };
-    });
-    return result;
-  }
-
-  static fromJSON(input: Record<string, Record<string, CellData>> | undefined): CellMatrix {
-    const matrix = new CellMatrix();
-    for (const [row, columns] of Object.entries(input ?? {})) {
-      for (const [column, cell] of Object.entries(columns)) {
-        matrix.set(Number(row), Number(column), { ...cell });
-      }
-    }
-    return matrix;
-  }
-
-  /** 沿行轴整体平移:dir=+1 下移(插入),dir=-1 上移(删除);越界丢弃 */
-  shiftRows(at: Row, count: number, direction: 1 | -1): void {
-    const entries: Array<[Row, Column, CellData]> = [];
-    const delta = direction * count;
-    this.forEach((cell, row, column) => {
-      if (row >= at) entries.push([row, column, cell]);
-    });
-    if (direction === -1) {
-      // 从小到大删除,避免覆盖
-      entries.sort((a, b) => a[0] - b[0]);
-    } else {
-      entries.sort((a, b) => b[0] - a[0]);
-    }
-    for (const [row, column] of entries) this.delete(row, column);
-    for (const [row, column, cell] of entries) {
-      this.set(row + delta, column, cell);
-    }
-  }
-
-  /** 沿列轴整体平移:dir=+1 右移(插入),dir=-1 左移(删除) */
-  shiftColumns(at: Column, count: number, direction: 1 | -1): void {
-    const entries: Array<[Row, Column, CellData]> = [];
-    const delta = direction * count;
-    this.forEach((cell, row, column) => {
-      if (column >= at) entries.push([row, column, cell]);
-    });
-    if (direction === -1) entries.sort((a, b) => a[1] - b[1]);
-    else entries.sort((a, b) => b[1] - a[1]);
-    for (const [row, column] of entries) this.delete(row, column);
-    for (const [row, column, cell] of entries) {
-      this.set(row, column + delta, cell);
-    }
-  }
-
-  /** 摘除区间内全部单元格并返回(用于删除行的逆操作恢复) */
-  extractRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
-    const extracted: Array<{ row: Row; column: Column; cell: CellData }> = [];
-    this.forEach((cell, row, column) => {
-      if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
-        extracted.push({ row, column, cell: structuredClone(cell) });
-      }
-    });
-    for (const item of extracted) this.delete(item.row, item.column);
-    return extracted;
-  }
-
-  placeRegion(items: ReadonlyArray<{ row: Row; column: Column; cell: CellData }>): void {
-    for (const item of items) this.set(item.row, item.column, structuredClone(item.cell));
-  }
-}
-
-function lowerBound(values: readonly number[], target: number): number {
-  let low = 0;
-  let high = values.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (values[middle]! < target) low = middle + 1;
-    else high = middle;
-  }
-  return low;
-}
-
 export class WorksheetModel {
   kind: SheetKind = 'worksheet';
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
-  readonly cells = new CellMatrix();
-  /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
+  readonly cells: WorksheetCells;
+  /** Structured source metadata belongs to the committed manifest. */
   private readonly dataRegionStore: SheetDataRegion[] = [];
   private readonly dataRegionBounds = new DataRegionBoundsIndex();
   readonly merges: MergeSpan[] = [];
@@ -1229,53 +995,6 @@ export class WorksheetModel {
   tabColor?: string;
   pane: WorksheetPane = { kind: 'none' };
 
-  /** 深拷贝当前工作表(删除工作表撤销恢复用) */
-  cloneSheet(): WorksheetModel {
-    return this.cloneWithIdentity(this.id, this.name);
-  }
-
-  cloneWithIdentity(id: SheetId, name: string): WorksheetModel {
-    const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
-    copy.kind = this.kind;
-    copy.tableSheet = this.tableSheet ? structuredClone(this.tableSheet) : undefined;
-    copy.ganttSheet = this.ganttSheet ? structuredClone(this.ganttSheet) : undefined;
-    copy.reportSheet = this.reportSheet ? structuredClone(this.reportSheet) : undefined;
-    this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
-    copy.replaceDataRegions(this.dataRegions);
-    copy.merges.push(...structuredClone(this.merges));
-    copy.pivots.push(...structuredClone(this.pivots));
-    copy.sparklines.push(...structuredClone(this.sparklines));
-    copy.conditionalFormats.push(...structuredClone(this.conditionalFormats));
-    copy.dataValidations.push(...structuredClone(this.dataValidations));
-    copy.autoFilter = this.autoFilter ? structuredClone(this.autoFilter) : undefined;
-    copy.bandedRule = this.bandedRule ? structuredClone(this.bandedRule) : undefined;
-    copy.defaultRowHeightPx = this.defaultRowHeightPx;
-    copy.defaultColumnWidthPx = this.defaultColumnWidthPx;
-    Object.assign(copy.rowHeightsPx, this.rowHeightsPx);
-    Object.assign(copy.columnWidthsPx, this.columnWidthsPx);
-    for (const row of this.hiddenRows) copy.hiddenRows.add(row);
-    for (const column of this.hiddenColumns) copy.hiddenColumns.add(column);
-    copy.sheetTables.push(...structuredClone(this.sheetTables));
-    copy.drawings.push(...structuredClone(this.drawings));
-    for (const [key, payload] of this.drawingPayloads) copy.drawingPayloads.set(key, structuredClone(payload));
-    copy.drawingGroups.push(...structuredClone(this.drawingGroups));
-    copy.snapSettings = structuredClone(this.snapSettings);
-    for (const [key, hyperlink] of this.hyperlinks) copy.hyperlinks.set(key, structuredClone(hyperlink));
-    copy.review.replaceNotes(this.review.noteEntries());
-    copy.review.replaceThreads(this.review.threadEntries());
-    copy.spillRanges.push(...structuredClone(this.spillRanges));
-    copy.protectionRules.push(...structuredClone(this.protectionRules));
-    copy.sparklineGroups.push(...structuredClone(this.sparklineGroups));
-    copy.outline = this.outline ? structuredClone(this.outline) : undefined;
-    copy.showGridlines = this.showGridlines;
-    copy.showHeaders = this.showHeaders;
-    copy.zoom = this.zoom;
-    copy.hidden = this.hidden;
-    copy.tabColor = this.tabColor;
-    copy.pane = normalizeWorksheetPane(this.pane);
-    return copy;
-  }
-
   private readonly extent: SheetExtent;
 
   constructor(
@@ -1283,7 +1002,9 @@ export class WorksheetModel {
     public name: string,
     rowCount: number = DEFAULT_SHEET_ROW_COUNT,
     columnCount: number = DEFAULT_SHEET_COLUMN_COUNT,
+    readonly replica: KernelPageReplica,
   ) {
+    this.cells = new WorksheetCells(replica, id);
     this.extent = new SheetExtent(rowCount, columnCount);
     this.review = new ReviewStore(id);
   }
@@ -1420,12 +1141,15 @@ export interface SheetSnapshot {
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
-  /** Lifecycle inverse payload; owned workbook documents travel with the sheet. */
+  /** Sheet lifecycle payload; owned workbook documents travel with the sheet. */
   lifecycleDefinedNames?: DefinedNameModel[];
   lifecyclePrintDocument?: PrintDocumentSnapshot;
 }
 
 export class WorkbookModel {
+  readonly pageReplica: KernelPageReplica;
+  get revision(): number { return this.pageReplica.revision; }
+  manifest(): KernelReplicaManifest { return this.pageReplica.manifest; }
   readonly sheets = new Map<SheetId, WorksheetModel>();
   /** Sole canonical structured-data owner; bytes referenced by sources remain in the block store. */
   readonly dataModel = {
@@ -1468,8 +1192,9 @@ export class WorkbookModel {
     this.theme = structuredClone({ id: theme.id.trim(), colors: theme.colors });
   }
 
-  constructor(readonly unitId: UnitId, public name: string) {
-    const sheet = new WorksheetModel('sheet-1', 'Sheet1');
+  constructor(readonly unitId: UnitId, public name: string, pageReplica?: KernelPageReplica) {
+    this.pageReplica = pageReplica ?? new KernelPageReplica(unitId);
+    const sheet = new WorksheetModel('sheet-1', 'Sheet1', DEFAULT_SHEET_ROW_COUNT, DEFAULT_SHEET_COLUMN_COUNT, this.pageReplica);
     this.sheets.set(sheet.id, sheet);
     this.sheetOrder = [sheet.id];
   }
@@ -1679,200 +1404,47 @@ export class WorkbookModel {
     return table;
   }
 
-  addSheet(id: SheetId, name: string, rowCount: number = DEFAULT_SHEET_ROW_COUNT, columnCount: number = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
-    if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
-    const sheet = new WorksheetModel(id, name, rowCount, columnCount);
-    this.sheets.set(id, sheet);
-    this.sheetOrder.push(id);
-    return sheet;
+  static fromManifest(manifest: KernelReplicaManifest, pages: readonly KernelReplicaPagePayload[] = []): WorkbookModel {
+    const workbook = new WorkbookModel(manifest.unitId, manifest.name);
+    workbook.applyCommittedManifest(manifest, pages);
+    return workbook;
   }
 
-  addAdvancedSheet(input: {
-    id: SheetId;
-    name: string;
-    kind: Exclude<SheetKind, 'worksheet'>;
-    rowCount?: number;
-    columnCount?: number;
-    tableSheet?: TableSheetDefinition;
-    ganttSheet?: GanttSheetDefinition;
-    reportSheet?: ReportSheetDefinition;
-  }): WorksheetModel {
-    const sheet = this.addSheet(input.id, input.name, input.rowCount, input.columnCount);
-    sheet.kind = input.kind;
-    sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
-    sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
-    sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
-    return sheet;
-  }
-
-  duplicateSheet(sourceSheetId: SheetId, newId: SheetId, newName: string): WorksheetModel {
-    const source = this.getSheet(sourceSheetId);
-    const plan = planSheetIdentityTransform(this, {
-      kind: 'duplicate',
-      sourceSheetId,
-      sourceName: source.name,
-      targetSheetId: newId,
-      targetName: newName,
-    });
-    plan.apply();
-    return this.getSheet(newId);
-  }
-
-  reorderSheet(sheetId: SheetId, toIndex: number): void {
-    const fromIndex = this.sheetOrder.indexOf(sheetId);
-    if (fromIndex < 0) throw new Error(`Unknown sheet: ${sheetId}`);
-    const clamped = Math.max(0, Math.min(toIndex, this.sheetOrder.length - 1));
-    this.sheetOrder.splice(fromIndex, 1);
-    this.sheetOrder.splice(clamped, 0, sheetId);
-  }
-
-  removeSheet(sheetId: SheetId): WorksheetModel {
-    const sheet = this.getSheet(sheetId);
-    const plan = planSheetIdentityTransform(this, {
-      kind: 'delete',
-      sourceSheetId: sheetId,
-      sourceName: sheet.name,
-    });
-    plan.apply();
-    return sheet;
-  }
-
-  renameSheet(sheetId: SheetId, name: string): void {
-    const source = this.getSheet(sheetId);
-    planSheetIdentityTransform(this, {
-      kind: 'rename',
-      sourceSheetId: sheetId,
-      sourceName: source.name,
-      targetName: name,
-    }).apply();
-  }
-
-  getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
-    const sheet = this.snapshot().sheets.find((entry) => entry.id === sheetId);
-    if (!sheet) throw new Error(`Unknown sheet: ${sheetId}`);
-    sheet.lifecycleDefinedNames = structuredClone(this.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sheetId));
-    const printDocument = this.printDocuments.get(sheetId);
-    if (printDocument) sheet.lifecyclePrintDocument = structuredClone(printDocument);
-    return structuredClone(sheet);
-  }
-
-  restoreSheetSnapshot(snapshot: SheetSnapshot, index = this.sheetOrder.length): void {
-    if (this.sheets.has(snapshot.id)) throw new Error(`Sheet already exists: ${snapshot.id}`);
-    const current = this.snapshot();
-    const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
-    const sheet = hydrated.getSheet(snapshot.id);
-    this.sheets.set(sheet.id, sheet);
-    if (snapshot.lifecycleDefinedNames) this.definedNameModels.push(...structuredClone(snapshot.lifecycleDefinedNames));
-    if (snapshot.lifecyclePrintDocument) this.printDocuments.set(snapshot.id, structuredClone(snapshot.lifecyclePrintDocument));
-    const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
-    this.sheetOrder.splice(bounded, 0, sheet.id);
-  }
-
-  snapshot(): WorkbookSnapshot {
-    return {
-      schema: 'WorkbookSnapshot',
-      version: 10,
-      unitId: this.unitId,
-      name: this.name,
-      dimensionMetrics: structuredClone(this.dimensionMetrics),
-      collationContext: structuredClone(this.collationContext),
-      calculationSettings: structuredClone(this.calculationSettings),
-      editingOptions: structuredClone(this.editingOptions),
-      theme: structuredClone(this.theme),
-      definedNameModels: structuredClone(this.definedNameModels),
-      dataModel: this.getDataModel(),
-      printDocuments: this.listPrintDocuments(),
-      queryDefinitions: this.listQueryDefinitions(),
-      cellStyleTemplates: this.listCellStyleTemplates(),
-      sheets: this.getSheets().map((sheet) => ({
-        kind: sheet.kind,
-        id: sheet.id,
-        name: sheet.name,
-        rowCount: sheet.rowCount,
-        columnCount: sheet.columnCount,
-        cells: sheet.cells.toJSON(),
-        dataRegions: sheet.dataRegions.map((region) => structuredClone(region)),
-        merges: structuredClone(sheet.merges),
-        pane: normalizeWorksheetPane(sheet.pane),
-        pivots: structuredClone(sheet.pivots),
-        sparklines: structuredClone(sheet.sparklines),
-        conditionalFormats: structuredClone(sheet.conditionalFormats),
-        dataValidations: structuredClone(sheet.dataValidations),
-        defaultRowHeightPx: sheet.defaultRowHeightPx,
-        defaultColumnWidthPx: sheet.defaultColumnWidthPx,
-        rowHeightsPx: { ...sheet.rowHeightsPx },
-        columnWidthsPx: { ...sheet.columnWidthsPx },
-        hiddenRows: [...sheet.hiddenRows],
-        hiddenColumns: [...sheet.hiddenColumns],
-        tabColor: sheet.tabColor,
-        bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
-        autoFilter: sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined,
-        sheetTables: structuredClone(sheet.sheetTables),
-        sparklineGroups: structuredClone(sheet.sparklineGroups),
-        drawings: structuredClone(sheet.drawings),
-        drawingPayloads: Object.fromEntries([...sheet.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
-        drawingGroups: structuredClone(sheet.drawingGroups),
-        snapSettings: structuredClone(sheet.snapSettings),
-        hyperlinks: [...sheet.hyperlinks.entries()].map(([key, hyperlink]) => {
-          const [row, column] = key.split(':').map(Number);
-          return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
-        }),
-        review: sheet.review.toSnapshot(),
-        spillRanges: structuredClone(sheet.spillRanges),
-        protectionRules: structuredClone(sheet.protectionRules),
-        showGridlines: sheet.showGridlines,
-        showHeaders: sheet.showHeaders,
-        zoom: sheet.zoom,
-        hidden: sheet.hidden,
-        outline: sheet.outline ? structuredClone(sheet.outline) : undefined,
-        tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
-        ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
-        reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
-      })),
-    };
-  }
-
-  static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
-    if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
-    if (Object.prototype.hasOwnProperty.call(snapshot as object, 'definedNames')) throw new Error('Workbook snapshot contains the removed definedNames field');
-    if (!Array.isArray(snapshot.definedNameModels)) throw new Error('Workbook snapshot definedNameModels must be an array');
-    if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
-    const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
-    workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
+  /** Replace the read projection only after the server has acknowledged the transaction. */
+  applyCommittedManifest(manifest: KernelReplicaManifest, pages: readonly KernelReplicaPagePayload[] = []): void {
+    if (manifest.unitId !== this.unitId) throw new Error('KERNEL_MANIFEST_IDENTITY_MISMATCH');
+    // Keep one replica identity for the lifetime of the workbook. Feature
+    // domains may retain a worksheet projection between commits; replacing
+    // the replica would leave those projections pinned to an obsolete
+    // revision even though the owning WorkbookModel had advanced.
+    const workbook = new WorkbookModel(this.unitId, manifest.name, this.pageReplica);
+    const snapshot = manifest.metadata as unknown as Omit<WorkbookSnapshot, 'schema' | 'version' | 'unitId' | 'name' | 'sheets'>;
+    if (snapshot.dimensionMetrics) workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     if (snapshot.theme) workbook.setTheme(snapshot.theme);
     workbook.collationContext = normalizeWorkbookCollation(snapshot.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
-    workbook.setCalculationSettings(snapshot.calculationSettings);
-    workbook.setEditingOptions(snapshot.editingOptions);
+    if (snapshot.calculationSettings) workbook.setCalculationSettings(snapshot.calculationSettings);
+    if (snapshot.editingOptions) workbook.setEditingOptions(snapshot.editingOptions);
     workbook.sheets.clear();
-    for (const entry of snapshot.definedNameModels) workbook.setDefinedName(entry);
-    for (const table of snapshot.dataModel.tables) workbook.dataModel.tables.set(table.id, structuredClone(table));
-    for (const source of snapshot.dataModel.sources) workbook.addDataSource(source);
-    for (const relationship of snapshot.dataModel.relationships) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
-    for (const view of snapshot.dataModel.views) workbook.dataModel.views.set(view.id, structuredClone(view));
-    for (const input of snapshot.sheets) {
-      assertCanonicalDataRegionOverlays(input);
-      const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
-      sheet.kind = input.kind;
+    for (const entry of snapshot.definedNameModels ?? []) workbook.setDefinedName(entry);
+    for (const table of snapshot.dataModel?.tables ?? []) workbook.dataModel.tables.set(table.id, structuredClone(table));
+    for (const source of snapshot.dataModel?.sources ?? []) workbook.addDataSource(source);
+    for (const relationship of snapshot.dataModel?.relationships ?? []) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
+    for (const view of snapshot.dataModel?.views ?? []) workbook.dataModel.views.set(view.id, structuredClone(view));
+    for (const descriptor of manifest.sheets) {
+      const input = descriptor.metadata as unknown as Omit<SheetSnapshot, 'id' | 'name' | 'rowCount' | 'columnCount' | 'cells'>;
+      const sheet = new WorksheetModel(descriptor.sheetId, descriptor.name, descriptor.rowCount, descriptor.columnCount, workbook.pageReplica);
+      sheet.kind = input.kind ?? 'worksheet';
       sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
       sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
       sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
-      const matrix = CellMatrix.fromJSON(input.cells);
-      matrix.forEach((cell, row, column) => {
-        const normalized = structuredClone(cell);
-        if ('hyperlink' in normalized || 'hyperlinkDetail' in normalized) {
-          throw new Error(`Cell ${input.id}!${row}:${column} contains legacy hyperlink metadata`);
-        }
-        sheet.cells.set(row, column, normalized);
-      });
       if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
-      sheet.merges.push(...structuredClone(input.merges));
+      sheet.merges.push(...structuredClone(input.merges ?? []));
       sheet.pane = normalizeWorksheetPane(input.pane);
-      sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
-      sheet.sparklines.push(...structuredClone(input.sparklines));
+      sheet.pivots.push(...(input.pivots ?? []).map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
+      sheet.sparklines.push(...structuredClone(input.sparklines ?? []));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
-      sheet.drawings.push(...structuredClone(input.drawings));
-      for (const [key, payload] of Object.entries(input.drawingPayloads)) {
+      sheet.drawings.push(...structuredClone(input.drawings ?? []));
+      for (const [key, payload] of Object.entries(input.drawingPayloads ?? {})) {
         sheet.drawingPayloads.set(key, structuredClone(payload));
       }
       if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
@@ -1880,13 +1452,13 @@ export class WorkbookModel {
       if (input.hyperlinks) {
         for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       }
-      const review = ReviewStore.fromSnapshot(input.id, input.review);
+      const review = ReviewStore.fromSnapshot(descriptor.sheetId, input.review ?? { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} });
       sheet.review.replaceNotes(review.noteEntries());
       sheet.review.replaceThreads(review.threadEntries());
-      if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
-      if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
-      sheet.defaultRowHeightPx = input.defaultRowHeightPx;
-      sheet.defaultColumnWidthPx = input.defaultColumnWidthPx;
+      if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats ?? []));
+      if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations ?? []));
+      if (input.defaultRowHeightPx !== undefined) sheet.defaultRowHeightPx = input.defaultRowHeightPx;
+      if (input.defaultColumnWidthPx !== undefined) sheet.defaultColumnWidthPx = input.defaultColumnWidthPx;
       if (input.rowHeightsPx) Object.assign(sheet.rowHeightsPx, input.rowHeightsPx);
       if (input.columnWidthsPx) Object.assign(sheet.columnWidthsPx, input.columnWidthsPx);
       if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
@@ -1907,7 +1479,8 @@ export class WorkbookModel {
     for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);
     for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
     for (const template of snapshot.cellStyleTemplates ?? []) workbook.setCellStyleTemplate(template);
-    workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
-    return workbook;
+    workbook.sheetOrder = manifest.sheets.map((sheet) => sheet.sheetId);
+    workbook.pageReplica.open(manifest, pages);
+    Object.assign(this, workbook);
   }
 }

@@ -27,7 +27,9 @@ public record OperationEnvelope(
         if (unitId == null || unitId.isBlank()) throw new IllegalArgumentException("unitId is required");
         if (clientSequence < 1) throw new IllegalArgumentException("clientSequence must be positive");
         if (baseRevision < 0) throw new IllegalArgumentException("baseRevision must be non-negative");
-        if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
+        if (mutations == null) throw new IllegalArgumentException("mutations are required");
+        if (intent == null && mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
+        if (intent != null && !mutations.isEmpty()) throw new IllegalArgumentException("undo intent must not include client mutations");
         mutations = List.copyOf(mutations);
         Objects.requireNonNull(createdAt, "createdAt is required");
     }

@@ -27,6 +27,7 @@ import java.util.Map;
  */
 @Component
 public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandshakeHandler {
+    public static final String COLLABORATION_PROTOCOL = "react-sheets.v1";
     private static final String BEARER_PROTOCOL_PREFIX = "bearer.";
     private static final String WEBSOCKET_PROTOCOL_HEADER = "Sec-WebSocket-Protocol";
 
@@ -36,6 +37,10 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
     public WebSocketAuthenticationHandshakeHandler(JwtDecoder jwtDecoder, GuestShareService shares) {
         this.jwtDecoder = jwtDecoder;
         this.shares = shares;
+        // The stable protocol is echoed by Spring during the upgrade. The
+        // bearer credential remains a second requested protocol used only for
+        // authentication and is never reflected in the response header.
+        setSupportedProtocols(COLLABORATION_PROTOCOL);
     }
 
     @Override

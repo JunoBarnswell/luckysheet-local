@@ -5,6 +5,7 @@ import { Scene } from "./scene";
 import { SheetSkeleton } from "./sheet-skeleton";
 import { Viewport } from "./viewport";
 import { drawChromeLayer } from "./chrome-renderer";
+import { cellRectFromKernel, headerIndexAtKernel, hitTestFromKernel } from './kernel-geometry';
 import { resolveCellContentLayout, type CellContentLayoutMode, type CellContentLayoutResult, type CellLayoutNeighbor } from './cell-content-layout';
 import {
   COL_HEADER_HEIGHT,
@@ -32,6 +33,7 @@ import {
 } from "./types";
 
 export interface CanvasRenderEngineOptions {
+  sheetId?: string;
   skeleton?: SheetSkeleton;
   viewport?: Partial<ViewportSnapshot>;
   cellProvider?: CellProvider;
@@ -42,6 +44,8 @@ export interface CanvasRenderEngineOptions {
   assetUrlCache?: Map<string, string>;
   assetUrlPending?: Set<string>;
   assetUrlErrors?: Map<string, string>;
+  prepareVisibleRanges?: (ranges: readonly CellRange[]) => Promise<void>;
+  onVisibleRangePreparationError?: (error: unknown) => void;
 }
 
 function cellMapKey(row: number, column: number): string {
@@ -83,6 +87,7 @@ export class CanvasRenderEngine {
   private disposed = false;
 
   private paneLayout: PaneLayout | null = null;
+  private sheetId?: string;
   private readonly headerOrigin: Point = defaultHeaderOffset();
   private chrome: ChromeState = createEmptyChromeState();
   private floatables: readonly FloatingDrawable[] = [];
@@ -91,10 +96,15 @@ export class CanvasRenderEngine {
   private readonly assetUrlCache: Map<string, string>;
   private readonly assetUrlPending: Set<string>;
   private readonly assetUrlErrors: Map<string, string>;
+  private readonly prepareVisibleRanges?: (ranges: readonly CellRange[]) => Promise<void>;
+  private readonly onVisibleRangePreparationError?: (error: unknown) => void;
+  private renderRequestVersion = 0;
+  private preparationPending = false;
   private readonly layoutNeighborCache = new Map<string, { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] }>();
 
   constructor(options: CanvasRenderEngineOptions = {}) {
     this.skeletonModel = options.skeleton ?? new SheetSkeleton({ rowCount: 1000, columnCount: 26 });
+    this.sheetId = options.sheetId;
     this.viewport = new Viewport(options.viewport);
     this.theme = mergeTheme(options.theme);
     this.layerDefinitions = (options.layers ?? DEFAULT_LAYERS_SOURCE).map((definition) => ({ ...definition }));
@@ -103,6 +113,8 @@ export class CanvasRenderEngine {
     this.assetUrlCache = options.assetUrlCache ?? new Map<string, string>();
     this.assetUrlPending = options.assetUrlPending ?? new Set<string>();
     this.assetUrlErrors = options.assetUrlErrors ?? new Map<string, string>();
+    this.prepareVisibleRanges = options.prepareVisibleRanges;
+    this.onVisibleRangePreparationError = options.onVisibleRangePreparationError;
     this.cellProvider = options.cellProvider
       ?? (options.cells ? createMapProvider(options.cells) : () => undefined);
     this.viewport.clampTo(this.skeletonModel.contentSize);
@@ -138,7 +150,7 @@ export class CanvasRenderEngine {
     this.scene.resize({ width, height }, devicePixelRatio);
     this.previousViewport = null;
     this.forceFullRedraw = true;
-    this.render();
+    this.requestRender();
   }
 
   unmount(): void {
@@ -351,14 +363,15 @@ export class CanvasRenderEngine {
   cellAtLocalPoint(local: Point): CellAddress | null {
     const origin = this.headerOrigin;
     if (local.x < origin.x || local.y < origin.y) return null;
-    const content = this.localToContent(local);
-    return this.skeletonModel.getCellAtPoint(content);
+    if (!this.sheetId) throw new Error('Geometry requires a canonical sheetId');
+    const result = hitTestFromKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, local);
+    return result.address;
   }
 
   /** Resolve a double-click point to a UTF-16 caret offset using render-owned text geometry. */
   textCaretAtLocalPoint(local: Point, cell: CellAddress, text: string): number | null {
     const data = this.cellProvider(cell);
-    const rect = this.skeletonModel.getCellRect(cell.row, cell.column);
+    const rect = this.contentCellRect(cell);
     const context = this.scene.getLayer('content')?.renderingContext;
     if (!data || !rect || !context) return null;
     if (data.style?.textOrientation && data.style.textOrientation !== 'horizontal') return null;
@@ -416,7 +429,7 @@ export class CanvasRenderEngine {
   /** Resolve display/edit geometry through the same content layout owner. */
   cellContentLayout(cell: CellAddress, text: string, mergedRange?: CellRange, caretOffset?: number): CellContentLayoutResult | null {
     const data = this.cellProvider(cell);
-    const rect = this.skeletonModel.getRangeRect(mergedRange ?? { startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column });
+    const rect = mergedRange ? this.skeletonModel.getRangeRect(mergedRange) : this.contentCellRect(cell);
     const context = this.scene.getLayer('content')?.renderingContext;
     if (!data || !rect || !context) return null;
     return resolveCellContentLayout({
@@ -432,16 +445,34 @@ export class CanvasRenderEngine {
     });
   }
 
+  setSheetId(sheetId: string): void {
+    this.assertActive();
+    if (this.sheetId === sheetId) return;
+    this.sheetId = sheetId;
+    this.previousViewport = null;
+    this.forceFullRedraw = true;
+    this.requestRender();
+  }
+
+  private contentCellRect(cell: CellAddress): Rect | null {
+    if (!this.sheetId) throw new Error('Geometry requires a canonical sheetId');
+    const screen = cellRectFromKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, cell);
+    const pane = this.currentPaneMap().paneForCell(cell);
+    if (!pane) return null;
+    return { x: screen.x - pane.screenRect.x + pane.contentOrigin.x, y: screen.y - pane.screenRect.y + pane.contentOrigin.y, width: screen.width, height: screen.height };
+  }
+
   /** 表头命中:角块/行头/列头 + 调整热区 */
   headerHitAtLocal(local: Point): HeaderHit | null {
     const origin = this.headerOrigin;
+    if (!this.sheetId) throw new Error('Geometry requires a canonical sheetId');
     if (local.x < origin.x && local.y < origin.y) return { kind: "corner", index: 0 };
     if (local.y < origin.y && local.x >= origin.x) {
       const pane = this.paneAtLocalPoint({ x: local.x, y: origin.y + 1 });
       if (!pane) return null;
+      const column = headerIndexAtKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, 'column', local);
+      if (column === null) return null;
       const contentX = local.x - pane.screenRect.x + pane.contentOrigin.x;
-      const column = this.skeletonModel.findColumnAt(contentX);
-      if (column < 0) return null;
       const hiddenBoundary = this.hiddenColumnBoundaryAt(contentX);
       if (hiddenBoundary) return { kind: "col", index: column, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.findNearestColumnBoundary(contentX, RESIZE_HIT_TOLERANCE_PX);
@@ -452,9 +483,9 @@ export class CanvasRenderEngine {
     if (local.x < origin.x && local.y >= origin.y) {
       const pane = this.paneAtLocalPoint({ x: origin.x + 1, y: local.y });
       if (!pane) return null;
+      const row = headerIndexAtKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, 'row', local);
+      if (row === null) return null;
       const contentY = local.y - pane.screenRect.y + pane.contentOrigin.y;
-      const row = this.skeletonModel.findRowAt(contentY);
-      if (row < 0) return null;
       const hiddenBoundary = this.hiddenRowBoundaryAt(contentY);
       if (hiddenBoundary) return { kind: "row", index: row, resizeBoundaryPx: hiddenBoundary.deltaPx, hiddenIndices: hiddenBoundary.indices };
       const boundary = this.skeletonModel.getRowTop(row) + this.skeletonModel.getRowHeight(row) - contentY;
@@ -657,6 +688,7 @@ export class CanvasRenderEngine {
       chromeDirty: this.chromeDirty,
       layers: this.layerDefinitions,
       pane: this.paneLayout,
+      sheetId: this.sheetId,
       headerOffset: this.headerOrigin,
     });
     if (this.scene.mounted) this.applyPlan(plan);
@@ -678,20 +710,47 @@ export class CanvasRenderEngine {
 
   requestRender(): void {
     this.assertActive();
-    if (!this.scene.mounted || this.frameHandle !== null) return;
+    this.renderRequestVersion += 1;
+    this.schedulePreparedRender();
+  }
+
+  private schedulePreparedRender(): void {
+    if (!this.scene.mounted || this.frameHandle !== null || this.preparationPending) return;
     if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
       this.frameUsesAnimationFrame = true;
       this.frameHandle = window.requestAnimationFrame(() => {
         this.frameHandle = null;
-        this.render();
+        void this.renderPreparedViewport();
       });
       return;
     }
     this.frameUsesAnimationFrame = false;
     this.frameHandle = setTimeout(() => {
       this.frameHandle = null;
-      this.render();
+      void this.renderPreparedViewport();
     }, 0) as unknown as number;
+  }
+
+  private async renderPreparedViewport(): Promise<void> {
+    if (this.disposed || !this.scene.mounted || this.preparationPending) return;
+    this.preparationPending = true;
+    let preparedVersion = -1;
+    try {
+      do {
+        preparedVersion = this.renderRequestVersion;
+        if (this.prepareVisibleRanges) {
+          const paneMap = computePaneMap(this.sheetId ?? '', this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin);
+          const ranges = paneMap.panes.flatMap((pane) => pane.visibleRange ? [pane.visibleRange] : []);
+          await this.prepareVisibleRanges(ranges);
+        }
+      } while (!this.disposed && this.scene.mounted && preparedVersion !== this.renderRequestVersion);
+      if (!this.disposed && this.scene.mounted) this.render();
+    } catch (error) {
+      this.onVisibleRangePreparationError?.(error);
+    } finally {
+      this.preparationPending = false;
+      if (!this.disposed && this.scene.mounted && preparedVersion !== this.renderRequestVersion) this.schedulePreparedRender();
+    }
   }
 
   getCanvas(layerId: string): HTMLCanvasElement | null {
@@ -776,7 +835,7 @@ export class CanvasRenderEngine {
 
   private currentPaneMap() {
     return this.lastPlan?.paneMap
-      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin);
+      ?? computePaneMap(this.sheetId ?? '', this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin);
   }
 
   private reviveIfDisposed(): void {

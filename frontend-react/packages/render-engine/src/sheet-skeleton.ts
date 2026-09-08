@@ -159,6 +159,10 @@ export class SheetSkeleton {
     return [...this.hiddenColumnSet].sort((left, right) => left - right);
   }
 
+  /** Sparse dimension overrides for the canonical Rust geometry request. */
+  getRowHeightOverrides(): ReadonlyMap<number, number> { return this.rowHeightOverrides; }
+  getColumnWidthOverrides(): ReadonlyMap<number, number> { return this.columnWidthOverrides; }
+
   private getVirtualRowHeight(row: number): number {
     return normalizeSize((this.rowHeightOverrides.get(row) ?? this.defaultRowHeight) * this.zoom, 0);
   }

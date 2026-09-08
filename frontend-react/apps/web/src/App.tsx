@@ -7,7 +7,7 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { getInitialSessionPhase, isWorkbookResolutionError, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { getInitialSessionPhase, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
@@ -33,20 +33,17 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
     return () => { active = false; controller.abort(); };
   }, [authSnapshot.phase, catalog, shareToken, unitId]);
 
-  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在确认本地缓存或云端访问权限。" /></Box>;
+  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在确认云端工作簿与访问权限。" /></Box>;
   if (localState === "denied") {
     const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !shareToken;
-    const memorySessionReset = isWorkbookResolutionError(resolutionError) && resolutionError.code === "memory-session-reset";
-    const title = memorySessionReset ? "内存会话已重置" : canSignIn ? "需要云端登录" : "无法打开工作簿";
-    const description = memorySessionReset
-      ? "本地工作簿只存在于当前页面的内存会话中；刷新或关闭页面后无法恢复。请返回工作簿中心重新创建或导入。"
-      : canSignIn
-        ? "当前页面内存会话中没有这个本地工作簿；请登录后打开云端文件。"
-        : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "该工作簿不在当前页面内存会话中，且云端服务未配置。" : "工作簿解析失败。");
-    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={memorySessionReset || !canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn && !memorySessionReset ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
+    const title = canSignIn ? "需要云端登录" : "无法打开工作簿";
+    const description = canSignIn
+      ? "请登录后打开云端工作簿。"
+      : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "云端工作簿服务尚未配置。" : "工作簿解析失败。");
+    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={!canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;
-  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "local"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
+  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "unresolved"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
 }
 
 /** Route-level orchestration. Visual responsibilities live in editor/* hosts. */
@@ -108,7 +105,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   };
 
   if (state.backstage.open) {
-    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
+    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : "error";
     const closeWorkbook = async () => { await session.saveWorkbook("Close workbook"); onOpenHub(); };
     const actions = [
       { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },
@@ -121,12 +118,12 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     ];
     return (
       <>
-      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
         {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>
             <Stack gap="xs">
-              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">待同步操作：{state.pendingChangeSetCount}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "原生文档导入" : "原生工作簿"}</Text>
+              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "原生文档导入" : "原生工作簿"}</Text>
             </Stack>
           </Stack>
         ) : (
@@ -156,7 +153,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           </Stack>
         )}
       </WorkbookBackstageShell>
-      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.ssjson`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
+      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.xlsx`} supportedFormats={[session.getNativeDocumentFormat()]} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
       </>
     );
   }

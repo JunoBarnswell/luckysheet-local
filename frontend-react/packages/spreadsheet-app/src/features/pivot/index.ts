@@ -6,12 +6,10 @@ export * from './commands';
 export * from './helpers';
 export * from './recommendation';
 export * from './engine';
-export * from './source-index';
-export * from './task-protocol';
-export * from './task-port';
-export * from './block-source';
 export * from './panel-state';
 export * from './writeback';
+export * from './rust-analytics';
+export * from './server-task-port';
 
 export function registerPivotFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   return {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, Button, Dialog, Inline, ScrollArea, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { FUNCTION_LIBRARY, type FunctionLibraryCategory } from '@react-sheets/formula-engine';
+import { listFunctionLibrary, type FunctionLibraryCategory } from '@react-sheets/formula-engine';
 
 export interface FunctionWizardDialogProps {
   open: boolean;
@@ -41,9 +41,10 @@ export function FunctionWizardDialog({ open, onClose, onInsertFormula }: Functio
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<FunctionLibraryCategory | 'all'>('all');
 
-  const fnList = FUNCTION_LIBRARY.filter((entry) => (category === 'all' || entry.category === category)
+  const functionLibrary = listFunctionLibrary();
+  const fnList = functionLibrary.filter((entry) => (category === 'all' || entry.category === category)
     && entry.id.toLowerCase().includes(search.toLowerCase()));
-  const selected = FUNCTION_LIBRARY.find((entry) => entry.id === selectedFunction);
+  const selected = functionLibrary.find((entry) => entry.id === selectedFunction);
 
   const meta = FUNCTION_DESCRIPTIONS[selectedFunction] || {
     category: 'General',

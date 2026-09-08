@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test';
 import { ELASTIC_GRID_CASES } from './acceptance-matrix';
-import { focusCanvas, installBrowserDiagnostics, openLocalWorkbook } from './support/workbook-fixtures';
+import { focusCanvas, installBrowserDiagnostics, openConnectedWorkbook } from './support/workbook-fixtures';
 
 test.describe('Elastic Grid acceptance', () => {
   test('resolves a high canonical address and keeps the viewport bounded', async ({ page }) => {
     const diagnostics = installBrowserDiagnostics(page);
-    await openLocalWorkbook(page, 'zh-CN', 'Elastic extent high address');
+    await openConnectedWorkbook(page, 'zh-CN', 'Elastic extent high address');
     const nameBox = page.getByTestId('name-box');
     await nameBox.fill('ZZZ1000');
     await nameBox.press('Enter');

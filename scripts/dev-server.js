@@ -1,112 +1,54 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const dist = path.join(__dirname, '..', 'frontend', 'dist');
-const backend = { host: '127.0.0.1', port: 9004 };
-const PORT = 3000;
+const root = path.resolve(__dirname, '..');
+const dist = path.join(root, 'frontend-react', 'dist', 'web');
+const backend = { host: '127.0.0.1', port: Number(process.env.BACKEND_PORT ?? 8082) };
+const port = Number(process.env.PORT ?? 4180);
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
-const types = {
-  '.html': 'text/html',
-  '.js': 'application/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.png': 'image/png',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf',
-};
-
-function proxyHttp(req, res, target = backend, backendPath) {
-  const options = {
-    hostname: target.host,
-    port: target.port,
-    path: backendPath || req.url,
-    method: req.method,
-    headers: { ...req.headers, host: `${target.host}:${target.port}` },
-  };
-
-  const proxyReq = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(res);
-  });
-
-  proxyReq.on('error', (err) => {
-    res.writeHead(502);
-    res.end(`Backend proxy error: ${err.message}`);
-  });
-
-  req.pipe(proxyReq);
-}
-
-function serveStatic(req, res) {
-  let filePath = path.join(dist, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(dist, 'index.html');
-  }
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
-    const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream' });
-    res.end(data);
-  });
+function proxy(req, res) {
+  const upstream = http.request({ hostname: backend.host, port: backend.port, path: req.url, method: req.method, headers: { ...req.headers, host: `${backend.host}:${backend.port}` } }, (reply) => { res.writeHead(reply.statusCode ?? 502, reply.headers); reply.pipe(res); });
+  upstream.on('error', (error) => { res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }); res.end(`Backend unavailable: ${error.message}`); });
+  req.pipe(upstream);
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url.startsWith('/luckysheet/')) {
-    return proxyHttp(req, res, backend);
-  }
-  // 兼容旧 dist 仍请求 /luckyToXlsx、/luckyexcel/*
-  if (req.url.startsWith('/luckyToXlsx') || req.url.startsWith('/luckyexcel')) {
-    const queryIndex = req.url.indexOf('?');
-    const pathname = queryIndex >= 0 ? req.url.slice(0, queryIndex) : req.url;
-    const query = queryIndex >= 0 ? req.url.slice(queryIndex) : '';
-    return proxyHttp(req, res, backend, `/luckysheet${pathname}${query}`);
-  }
-  return serveStatic(req, res);
+  if (req.url?.startsWith('/api/') || req.url?.startsWith('/ws')) return proxy(req, res);
+  const pathname = (req.url ?? '/').split('?')[0];
+  const candidate = path.resolve(dist, `.${pathname === '/' ? '/index.html' : pathname}`);
+  const file = candidate.startsWith(`${dist}${path.sep}`) ? candidate : path.join(dist, 'index.html');
+  const actual = fs.existsSync(file) && fs.statSync(file).isFile() ? file : path.join(dist, 'index.html');
+  fs.readFile(actual, (error, data) => { if (error) { res.writeHead(404); res.end('Build output is unavailable; run scripts/build.ps1'); return; } res.writeHead(200, { 'content-type': types[path.extname(actual)] ?? 'application/octet-stream' }); res.end(data); });
 });
 
 server.on('upgrade', (req, socket, head) => {
-  if (!req.url.startsWith('/luckysheet/')) {
+  if (!req.url?.startsWith('/ws')) {
     socket.destroy();
     return;
   }
-
-  const options = {
+  const upstream = http.request({
     hostname: backend.host,
     port: backend.port,
     path: req.url,
     method: req.method,
     headers: { ...req.headers, host: `${backend.host}:${backend.port}` },
-  };
-
-  const proxyReq = http.request(options);
-  proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
-    socket.write(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`);
-    Object.entries(proxyRes.headers).forEach(([key, value]) => {
-      socket.write(`${key}: ${value}\r\n`);
-    });
-    socket.write('\r\n');
-    if (proxyHead && proxyHead.length) {
-      socket.write(proxyHead);
-    }
-    proxySocket.pipe(socket);
-    socket.pipe(proxySocket);
   });
-
-  proxyReq.on('error', () => socket.destroy());
-  proxyReq.end();
+  upstream.on('upgrade', (reply, upstreamSocket, upstreamHead) => {
+    const headers = Object.entries(reply.headers)
+      .flatMap(([name, value]) => Array.isArray(value) ? value.map((entry) => `${name}: ${entry}`) : value === undefined ? [] : [`${name}: ${value}`]);
+    socket.write(`HTTP/${reply.httpVersion} ${reply.statusCode} ${reply.statusMessage}\r\n${headers.join('\r\n')}\r\n\r\n`);
+    if (head.length > 0) upstreamSocket.write(head);
+    if (upstreamHead.length > 0) socket.write(upstreamHead);
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+  });
+  upstream.on('response', (reply) => {
+    socket.write(`HTTP/${reply.httpVersion} ${reply.statusCode} ${reply.statusMessage}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  });
+  upstream.on('error', () => socket.destroy());
+  upstream.end();
 });
-
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Luckysheet frontend: http://127.0.0.1:${PORT}/`);
-  console.log(
-    `Collaboration: http://127.0.0.1:${PORT}/?share=1&gridKey=1079500#-8803#7c45f52b7d01486d88bc53cb17dcd2c3`
-  );
-  console.log('Excel import/export: Java /luckysheet/luckyToXlsx and /luckysheet/luckyexcel/upload');
-});
+server.listen(port, '127.0.0.1', () => console.log(`React web app: http://127.0.0.1:${port}/`));

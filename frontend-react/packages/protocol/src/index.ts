@@ -11,6 +11,35 @@ import type {
 } from '@react-sheets/core-model';
 import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
+export * from './kernel-contract';
+import type { WorkbookManifest, KernelPagePayload, KernelChangeSet, KernelSheetManifest, KernelCell } from './kernel-contract';
+
+function assertManifestResponse(value: unknown, unitId: string): WorkbookManifest {
+  if (!value || typeof value !== 'object') throw new Error('KERNEL_MANIFEST_INVALID');
+  const manifest = value as WorkbookManifest;
+  if (manifest.schema !== 'WorkbookManifest' || manifest.version !== 11 || manifest.unitId !== unitId || !Number.isSafeInteger(manifest.revision) || manifest.revision < 0 || !Array.isArray(manifest.sheets) || !manifest.sheets.length || !Array.isArray(manifest.pages) || !manifest.metadata || typeof manifest.metadata !== 'object') throw new Error('KERNEL_MANIFEST_INVALID');
+  return manifest;
+}
+
+export interface KernelWorkbookCreateRequest {
+  readonly unitId: string;
+  readonly name: string;
+  readonly sheets?: readonly KernelSheetManifest[];
+  readonly spaceId?: string;
+  readonly folderId?: string;
+  readonly source?: string;
+  readonly initialMutations?: readonly {
+    readonly id: 'cell.set';
+    readonly sheetId: string;
+    readonly params: {
+      readonly sheetId: string;
+      readonly row: number;
+      readonly column: number;
+      readonly value: KernelCell;
+    };
+  }[];
+}
+export interface WorkbookOpenResponse { readonly unitId: string; readonly revision: number; readonly manifest: WorkbookManifest; readonly checksum?: string; readonly pages?: readonly KernelPagePayload[]; }
 import {
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
@@ -37,7 +66,7 @@ export {
 
 export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';
 
-export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
+export type ProtocolErrorCode = ContractErrorCode | Uppercase<string>;
 
 export interface ApiError {
   code: ProtocolErrorCode;
@@ -135,15 +164,17 @@ export interface WorkbookAclRecord {
 export interface WorkbookAccessResponse {
   unitId: string;
   role: WorkbookAclRole;
+  nextClientSequence: number;
 }
 
 export interface OperationCommitResponse {
   operation: CommittedOperationEnvelope;
+  changeSet: KernelChangeSet;
 }
 
 export interface CheckpointResponse {
   created: boolean;
-  snapshot: SnapshotResponse;
+  workbook: WorkbookOpenResponse;
 }
 
 /**
@@ -1134,23 +1165,6 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   return value as WorkbookSnapshot;
 }
 
-function validateSnapshotResponse(value: unknown, expectedUnitId?: string): SnapshotResponse {
-  const input = requireRecord(value, 'Snapshot response');
-  validateExactKeys(input, ['unitId', 'snapshot', 'revision', 'checksum'], 'Snapshot response');
-  const snapshot = validateWorkbookSnapshot(input.snapshot);
-  if (input.unitId !== undefined && !isNonEmptyString(input.unitId)) throw new Error('Snapshot response unitId is invalid');
-  if (expectedUnitId && snapshot.unitId !== expectedUnitId) throw new Error('Snapshot response snapshot unitId does not match request');
-  if (input.unitId !== undefined && input.unitId !== snapshot.unitId) throw new Error('Snapshot response unitId does not match snapshot');
-  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Snapshot response revision is invalid');
-  if (input.checksum !== undefined && !isNonEmptyString(input.checksum)) throw new Error('Snapshot response checksum is invalid');
-  return {
-    ...(input.unitId === undefined ? {} : { unitId: input.unitId }),
-    snapshot,
-    revision: Number(input.revision),
-    ...(input.checksum === undefined ? {} : { checksum: input.checksum }),
-  };
-}
-
 function validateIsoTimestamp(value: unknown, label: string): string {
   if (!isNonEmptyString(value) || Number.isNaN(Date.parse(value))) throw new Error(`${label} must be an ISO timestamp`);
   return value;
@@ -1160,7 +1174,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   const input = requireRecord(value, 'Workbook summary');
   validateExactKeys(input, [
     'unitId', 'name', 'revision', 'updatedAt', 'role', 'ownerSubject', 'spaceId', 'spaceName', 'folderId',
-    'locationPath', 'storageLocation', 'syncStatus', 'lifecycle', 'source', 'sourceFileName', 'deletedAt',
+    'locationPath', 'syncStatus', 'lifecycle', 'source', 'sourceFileName', 'deletedAt',
     'lastOpenedAt', 'favorite',
   ], 'Workbook summary');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) throw new Error('Workbook summary identity is invalid');
@@ -1168,8 +1182,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Workbook summary revision is invalid');
   validateIsoTimestamp(input.updatedAt, 'Workbook summary updatedAt');
   if (input.role !== undefined && !['owner', 'editor', 'commenter', 'viewer'].includes(String(input.role))) throw new Error('Workbook summary role is invalid');
-  if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
-  if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
+  if (input.syncStatus !== undefined && !['synced', 'syncing', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
   if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
   if (input.source !== undefined && !['native', 'document-import'].includes(String(input.source))) throw new Error('Workbook summary source is invalid');
   if (input.locationPath !== undefined && (!Array.isArray(input.locationPath) || input.locationPath.some((entry) => typeof entry !== 'string'))) throw new Error('Workbook summary locationPath is invalid');
@@ -1191,7 +1204,6 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
     ...(input.spaceName == null ? {} : { spaceName: input.spaceName as string }),
     ...(input.folderId == null ? {} : { folderId: input.folderId as string }),
     ...(input.locationPath === undefined ? {} : { locationPath: input.locationPath as string[] }),
-    ...(input.storageLocation === undefined ? {} : { storageLocation: input.storageLocation as WorkbookStorageLocation }),
     ...(input.syncStatus === undefined ? {} : { syncStatus: input.syncStatus as WorkbookSyncStatus }),
     ...(input.lifecycle === undefined ? {} : { lifecycle: input.lifecycle as WorkbookLifecycle }),
     ...(input.source === undefined ? {} : { source: input.source as WorkbookSourceKind }),
@@ -1228,8 +1240,8 @@ function validateRevisionRecord(value: unknown): RevisionRecord {
 
 export function validateUserPreferences(value: unknown): UserPreferences {
   const input = requireRecord(value, 'User preferences');
-  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme', 'updatedAt'], 'User preferences');
-  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'importCompatibility', 'language', 'theme', 'updatedAt'], 'User preferences');
+  for (const key of ['autoSave', 'autoSync'] as const) {
     if (typeof input[key] !== 'boolean') throw new Error(`User preferences ${key} is invalid`);
   }
   if (!['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences importCompatibility is invalid');
@@ -1240,7 +1252,6 @@ export function validateUserPreferences(value: unknown): UserPreferences {
   if (input.updatedAt !== undefined && input.updatedAt !== null) validateIsoTimestamp(input.updatedAt, 'User preferences updatedAt');
   const autoSave = input.autoSave as boolean;
   const autoSync = input.autoSync as boolean;
-  const offlineCache = input.offlineCache as boolean;
   const defaultSpaceId = input.defaultSpaceId as string | null | undefined;
   const defaultFolderId = input.defaultFolderId as string | null | undefined;
   const language = input.language as string | null | undefined;
@@ -1250,7 +1261,6 @@ export function validateUserPreferences(value: unknown): UserPreferences {
     ...(defaultFolderId == null ? {} : { defaultFolderId }),
     autoSave,
     autoSync,
-    offlineCache,
     importCompatibility: input.importCompatibility as UserPreferences['importCompatibility'],
     ...(language == null ? {} : { language }),
     theme: input.theme as UserPreferences['theme'],
@@ -1260,12 +1270,12 @@ export function validateUserPreferences(value: unknown): UserPreferences {
 
 export function validateUserPreferencesPatch(value: unknown): UserPreferencesPatch {
   const input = requireRecord(value, 'User preferences patch');
-  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme'], 'User preferences patch');
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'importCompatibility', 'language', 'theme'], 'User preferences patch');
   if (Object.keys(input).length === 0) throw new Error('User preferences patch cannot be empty');
   for (const key of ['defaultSpaceId', 'defaultFolderId', 'language'] as const) {
     if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`User preferences patch ${key} is invalid`);
   }
-  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+  for (const key of ['autoSave', 'autoSync'] as const) {
     if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`User preferences patch ${key} is invalid`);
   }
   if (input.importCompatibility !== undefined && !['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences patch importCompatibility is invalid');
@@ -1282,7 +1292,10 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
   if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
     throw new Error('workbook access response has an invalid role');
   }
-  return { unitId: input.unitId, role: input.role };
+  if (!Number.isSafeInteger(input.nextClientSequence) || Number(input.nextClientSequence) < 1) {
+    throw new Error('workbook access response has an invalid client sequence cursor');
+  }
+  return { unitId: input.unitId, role: input.role, nextClientSequence: Number(input.nextClientSequence) };
 }
 
 /** Strict runtime validation used at the REST/WebSocket trust boundary. */
@@ -1302,9 +1315,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   if (!isNonEmptyString(input.createdAt) || Number.isNaN(Date.parse(input.createdAt))) {
     throw new Error('createdAt must be an ISO timestamp');
   }
-  if (!Array.isArray(input.mutations) || input.mutations.length === 0) {
-    throw new Error('mutations must contain at least one mutation');
-  }
+  if (!Array.isArray(input.mutations)) throw new Error('mutations must be an array');
 
   // Reject fields that used to be client-controlled security inputs instead
   // of silently ignoring them. This prevents accidental reintroduction of
@@ -1331,6 +1342,11 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
       targetOperationId: rawIntent.targetOperationId,
       targetBaseRevision: Number(rawIntent.targetBaseRevision),
     };
+  }
+  if (intent ? input.mutations.length !== 0 : input.mutations.length === 0) {
+    throw new Error(intent
+      ? 'undo intent must not include client mutations'
+      : 'mutations must contain at least one mutation');
   }
 
   const mutations = input.mutations.map((raw, index) => {
@@ -1366,14 +1382,6 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   };
 }
 
-export interface SnapshotResponse {
-  /** Present on Java responses; optional for local-only test and cache records. */
-  unitId?: string;
-  snapshot: WorkbookSnapshot;
-  revision: number;
-  checksum?: string;
-}
-
 /**
  * The only client-authored history restore request.  The historical snapshot
  * is deliberately absent: the server resolves targetRevision from its own
@@ -1387,7 +1395,8 @@ export interface HistoryRestoreRequest {
 /** Server response after committing a server-generated workbook.restore op. */
 export interface HistoryRestoreResponse {
   operation: CommittedOperationEnvelope;
-  snapshot: SnapshotResponse;
+  workbook: WorkbookOpenResponse;
+  changeSet: KernelChangeSet;
 }
 
 export interface HistoryAuditRecord {
@@ -1445,7 +1454,7 @@ export interface CompatibilityReportPayload {
   };
 }
 
-export interface NativeDocumentImportResponse extends SnapshotResponse {
+export interface NativeDocumentImportResponse extends WorkbookOpenResponse {
   report: CompatibilityReportPayload;
 }
 
@@ -1511,7 +1520,6 @@ export interface WorkbookSummary {
   spaceName?: string;
   folderId?: string;
   locationPath?: string[];
-  storageLocation?: WorkbookStorageLocation;
   syncStatus?: WorkbookSyncStatus;
   lifecycle?: WorkbookLifecycle;
   source?: WorkbookSourceKind;
@@ -1522,8 +1530,7 @@ export interface WorkbookSummary {
 }
 
 export type WorkbookSourceKind = 'native' | 'document-import';
-export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
-export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookSyncStatus = 'synced' | 'syncing' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
 export type WorkbookCatalogView = 'all' | 'owned' | 'recent' | 'shared' | 'trash';
 
@@ -1547,6 +1554,30 @@ export interface WorkbookMetadataPatch {
   spaceId?: string | null;
 }
 
+export interface AnalyticsPrepareRequest {
+  queryId: string;
+  revision: number;
+  request: Readonly<Record<string, unknown>>;
+}
+
+export interface AnalyticsPrepareResponse {
+  queryId: string;
+  sourceRevision: number;
+  executionToken: string;
+  expiresAt: string;
+}
+
+export interface AnalyticsExecutionRequest {
+  executionToken: string;
+  request: Readonly<Record<string, unknown>>;
+}
+
+export type AnalyticsExecutionPhase = 'execute' | 'viewport' | 'drilldown';
+
+export interface WorkbookRenameRequest {
+  name: string;
+}
+
 export interface WorkbookCopyRequest {
   folderId?: string;
   name?: string;
@@ -1556,22 +1587,23 @@ export interface WorkbookCopyRequest {
 export interface WorkbookUserState {
   autoSave?: boolean;
   autoSync?: boolean;
-  defaultCreateLocation?: 'local' | 'remote';
   favorite?: boolean;
   importCompatibilityLevel?: 'standard' | 'strict';
   language?: string;
   lastOpenedAt?: string;
-  offlineCache?: boolean;
   theme?: 'light' | 'system';
   unitId: string;
+  /** Server-owned optimistic timestamp; never accepted by the PUT contract. */
+  updatedAt?: string;
 }
+
+export type WorkbookUserStatePatch = Omit<WorkbookUserState, 'unitId' | 'updatedAt'>;
 
 export interface UserPreferences {
   defaultSpaceId?: string;
   defaultFolderId?: string;
   autoSave: boolean;
   autoSync: boolean;
-  offlineCache: boolean;
   importCompatibility: 'A' | 'B' | 'C';
   language?: string;
   theme: 'light' | 'dark' | 'system';
@@ -1614,23 +1646,65 @@ export interface WorkbookSourceArtifactMetadata {
   fileName: string;
   mimeType?: string;
   unitId: string;
+  revision: number;
   updatedAt: string;
   format?: string;
   codecRevision?: number;
+  nativeMetadata?: Record<string, unknown>;
 }
 
 export interface WorkbookImportRequest extends WorkbookCreateMetadata {
-  artifact: Blob;
-  artifactFileName: string;
-  snapshot: WorkbookSnapshot;
-  format: string;
-  nativeMetadata: Record<string, unknown>;
+  content: Blob | ArrayBuffer;
+  fileName: string;
+  name?: string;
 }
 
 export interface WorkbookImportResponse {
+  unitId: string;
+  revision: number;
+  checksum: string;
   artifact: WorkbookSourceArtifactMetadata;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   summary: WorkbookSummary;
+}
+
+export interface NativeDocumentImportTaskRequest {
+  fileName: string;
+  name?: string;
+  spaceId?: string;
+  folderId?: string;
+  byteLength: number;
+  sha256: string;
+}
+
+export interface NativeDocumentImportTaskResponse {
+  taskId: string;
+  state: 'uploading' | 'importing' | 'completed' | 'failed' | 'cancelled';
+  uploadedBytes: number;
+  byteLength: number;
+  result?: WorkbookImportResponse | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+function validateNativeDocumentImportTask(value: unknown): NativeDocumentImportTaskResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_INVALID');
+  const task = value as Record<string, unknown>;
+  if (!isNonEmptyString(task.taskId)
+    || !['uploading', 'importing', 'completed', 'failed', 'cancelled'].includes(String(task.state))
+    || !Number.isSafeInteger(task.uploadedBytes) || Number(task.uploadedBytes) < 0
+    || !Number.isSafeInteger(task.byteLength) || Number(task.byteLength) < 1
+    || Number(task.uploadedBytes) > Number(task.byteLength)) {
+    throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_INVALID');
+  }
+  if (task.result != null) {
+    const result = task.result as WorkbookImportResponse;
+    assertManifestResponse(result.manifest, result.unitId);
+    if (result.revision !== result.manifest.revision || result.artifact?.unitId !== result.unitId) {
+      throw new Error('NATIVE_DOCUMENT_IMPORT_RESULT_INVALID');
+    }
+  }
+  return task as unknown as NativeDocumentImportTaskResponse;
 }
 
 export interface RevisionRecord {
@@ -1656,12 +1730,30 @@ export interface RemoteAssetMetadata extends AssetRef {
   updatedAt: string;
 }
 
-async function sha256(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
-}
-
 export class WorkbookApiClient {
+  /** Cloud-authored revision-pinned manifest. No browser snapshot is accepted. */
+  async getManifest(unitId: string, revision?: number, options: ApiRequestOptions = {}): Promise<WorkbookManifest> {
+    if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw new Error('KERNEL_REVISION_INVALID');
+    const query = revision === undefined ? '' : `?revision=${revision}`;
+    const manifest = assertManifestResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/manifest${query}`, options), unitId);
+    if (revision !== undefined && manifest.revision !== revision) throw new Error('KERNEL_MANIFEST_REVISION_MISMATCH');
+    return manifest;
+  }
+
+  async getPage(params: { unitId: string; revision: number; sheetId: string; pageRow: number; pageColumn: number }, options: ApiRequestOptions = {}): Promise<KernelPagePayload> {
+    const { unitId, revision, sheetId, pageRow, pageColumn } = params;
+    if (![revision, pageRow, pageColumn].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error('KERNEL_PAGE_ADDRESS_INVALID');
+    const page = await this.json<KernelPagePayload>(`/api/workbooks/${encodeURIComponent(unitId)}/pages/${encodeURIComponent(sheetId)}/${pageRow}/${pageColumn}?revision=${revision}`, options);
+    if (!page || page.sheetId !== sheetId || page.pageRow !== pageRow || page.pageColumn !== pageColumn || !Number.isSafeInteger(page.revision) || page.revision > revision || typeof page.payloadBase64 !== 'string' || typeof page.checksum !== 'string' || !Number.isSafeInteger(page.byteLength)) throw new Error('KERNEL_PAGE_IDENTITY_MISMATCH');
+    return page;
+  }
+
+  async createKernelWorkbook(request: KernelWorkbookCreateRequest): Promise<WorkbookOpenResponse> {
+    const response = await this.json<WorkbookOpenResponse>('/api/workbooks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+    assertManifestResponse(response?.manifest, request.unitId);
+    if (response.unitId !== request.unitId || response.revision !== response.manifest.revision) throw new Error('KERNEL_MANIFEST_REVISION_MISMATCH');
+    return response;
+  }
   private readonly baseUrl: string;
   private readonly authTokenProvider?: AuthTokenProvider;
   private readonly shareTokenProvider?: ShareTokenProvider;
@@ -1671,7 +1763,7 @@ export class WorkbookApiClient {
     this.baseUrl = options.baseUrl ?? '';
     this.authTokenProvider = options.authTokenProvider;
     this.shareTokenProvider = options.shareTokenProvider;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -1693,7 +1785,7 @@ export class WorkbookApiClient {
       // failure body.  Do not swallow the request failure itself.
     }
     const code = typeof payload?.code === 'string'
-      && (CONTRACT_ERROR_CODES as readonly string[]).includes(payload.code)
+      && /^[A-Z][A-Z0-9_]{1,63}$/.test(payload.code)
       ? payload.code as ProtocolErrorCode
       : 'INTERNAL_ERROR';
     throw new ApiRequestError(
@@ -1711,13 +1803,6 @@ export class WorkbookApiClient {
     } catch {
       throw new ApiRequestError(`Invalid JSON response from ${path}`, response.status, 'INTERNAL_ERROR');
     }
-  }
-
-  async getSnapshot(unitId: string, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
-    return validateSnapshotResponse(await this.json<unknown>(
-      `/api/workbooks/${encodeURIComponent(unitId)}/snapshot`,
-      options,
-    ), unitId);
   }
 
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
@@ -1739,15 +1824,6 @@ export class WorkbookApiClient {
 
   async deleteWorkbookAcl(unitId: string, subject: string): Promise<void> {
     await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, { method: 'DELETE' });
-  }
-
-  async createWorkbook(snapshot: WorkbookSnapshot, metadata: WorkbookCreateMetadata = {}): Promise<SnapshotResponse> {
-    validateWorkbookSnapshot(snapshot);
-    return validateSnapshotResponse(await this.json<unknown>('/api/workbooks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ unitId: snapshot.unitId, name: snapshot.name, snapshot, ...metadata }),
-    }), snapshot.unitId);
   }
 
   async listWorkbookPage(query: WorkbookCatalogQuery = {}, options: ApiRequestOptions = {}): Promise<CursorPage<WorkbookSummary>> {
@@ -1818,11 +1894,20 @@ export class WorkbookApiClient {
     return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`);
   }
 
-  async putWorkbookUserState(unitId: string, state: Omit<WorkbookUserState, 'unitId'>): Promise<WorkbookUserState> {
+  async putWorkbookUserState(unitId: string, state: WorkbookUserStatePatch): Promise<WorkbookUserState> {
+    const payload: WorkbookUserStatePatch = {
+      autoSave: state.autoSave,
+      autoSync: state.autoSync,
+      favorite: state.favorite,
+      importCompatibilityLevel: state.importCompatibilityLevel,
+      language: state.language,
+      lastOpenedAt: state.lastOpenedAt,
+      theme: state.theme,
+    };
     return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(state),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -1893,35 +1978,57 @@ export class WorkbookApiClient {
   }
 
   async createWorkbookImport(input: WorkbookImportRequest): Promise<WorkbookImportResponse> {
-    validateWorkbookSnapshot(input.snapshot);
     const form = new FormData();
-    form.append('file', input.artifact, input.artifactFileName);
-    form.append('snapshot', JSON.stringify(input.snapshot));
-    form.append('format', input.format);
-    form.append('nativeMetadata', JSON.stringify(input.nativeMetadata));
-    if (input.snapshot.name) form.append('name', input.snapshot.name);
+    const content = input.content instanceof Blob ? input.content : new Blob([input.content]);
+    form.append('file', content, input.fileName);
+    if (input.name) form.append('name', input.name);
     if (input.spaceId) form.append('spaceId', input.spaceId);
     if (input.folderId) form.append('folderId', input.folderId);
     const response = await this.json<WorkbookImportResponse>('/api/workbook-imports', { method: 'POST', body: form });
-    validateWorkbookSnapshot(response.snapshot);
+    assertManifestResponse(response.manifest, response.unitId);
     validateWorkbookSummary(response.summary);
-    if (response.summary.unitId !== input.snapshot.unitId || response.snapshot.unitId !== input.snapshot.unitId) {
+    if (response.summary.unitId !== response.unitId || response.manifest.unitId !== response.unitId
+      || response.revision !== response.manifest.revision || response.summary.revision !== response.revision
+      || response.artifact.unitId !== response.unitId || response.artifact.revision !== response.revision) {
       throw new ApiRequestError('Workbook import returned a mismatched identity', 200, 'INTERNAL_ERROR');
     }
     return response;
   }
 
-  async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
-    const checksum = await sha256(artifact);
-    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/octet-stream',
-        'x-content-sha256': checksum,
-        'x-file-name': encodeURIComponent(fileName),
-      },
-      body: artifact,
+  async createNativeDocumentTask(request: NativeDocumentImportTaskRequest): Promise<NativeDocumentImportTaskResponse> {
+    return validateNativeDocumentImportTask(await this.json<unknown>('/api/workbook-imports/tasks', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    }));
+  }
+
+  async uploadNativeDocumentTaskChunk(taskId: string, offset: number, bytes: ArrayBuffer): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim() || !Number.isSafeInteger(offset) || offset < 0 || bytes.byteLength < 1) throw new Error('NATIVE_DOCUMENT_UPLOAD_CHUNK_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}/chunks?offset=${offset}`, {
+      method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes,
+    }));
+  }
+
+  async commitNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim()) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_ID_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}/commit`, { method: 'POST' }));
+  }
+
+  async cancelNativeDocumentTask(taskId: string): Promise<NativeDocumentImportTaskResponse> {
+    if (!taskId.trim()) throw new Error('NATIVE_DOCUMENT_IMPORT_TASK_ID_INVALID');
+    return validateNativeDocumentImportTask(await this.json<unknown>(`/api/workbook-imports/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }));
+  }
+
+  async renameWorkbook(unitId: string, request: WorkbookRenameRequest): Promise<WorkbookOpenResponse> {
+    const response = await this.json<WorkbookOpenResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
     });
+    assertManifestResponse(response?.manifest, unitId);
+    if (response.unitId !== unitId || response.revision !== response.manifest.revision || response.manifest.name !== request.name.trim()) {
+      throw new Error('KERNEL_RENAME_IDENTITY_MISMATCH');
+    }
+    return response;
   }
 
   async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
@@ -1932,8 +2039,9 @@ export class WorkbookApiClient {
     const checksum = response.headers.get('x-content-sha256');
     const byteLength = Number(response.headers.get('content-length') ?? 0);
     const codecRevision = Number(response.headers.get('x-native-codec-revision') ?? 1);
+    const revision = Number(response.headers.get('x-workbook-revision') ?? -1);
     const format = response.headers.get('x-native-format') ?? undefined;
-    if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
+    if (!fileName || !checksum || !Number.isSafeInteger(revision) || revision < 0) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
     return {
       artifact,
@@ -1943,6 +2051,7 @@ export class WorkbookApiClient {
         fileName,
         mimeType: response.headers.get('content-type') ?? undefined,
         unitId,
+        revision,
         updatedAt: response.headers.get('last-modified') ?? new Date().toISOString(),
         format,
         codecRevision: Number.isSafeInteger(codecRevision) && codecRevision > 0 ? codecRevision : 1,
@@ -1951,15 +2060,44 @@ export class WorkbookApiClient {
   }
 
   async commitOperation(unitId: string, operation: OperationEnvelope): Promise<OperationCommitResponse> {
-    return this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations`, {
+    if (operation.unitId !== unitId) throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
+    const request = validateOperationEnvelope(operation);
+    const result = await this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(operation),
+      body: JSON.stringify(request),
     });
+    const committed = validateCommittedOperationEnvelope(result?.operation);
+    const changeSet = result?.changeSet;
+    assertManifestResponse(changeSet?.manifest, unitId);
+    if (committed.operationId !== request.operationId
+      || committed.unitId !== unitId
+      || committed.clientSequence !== request.clientSequence
+      || committed.baseRevision !== request.baseRevision
+      || committed.revision !== request.baseRevision + 1
+      || changeSet.operationId !== request.operationId
+      || changeSet.baseRevision !== request.baseRevision
+      || changeSet.revision !== committed.revision
+      || changeSet.manifest.revision !== committed.revision
+      || !Array.isArray(changeSet.pages)
+      || !Array.isArray(changeSet.removedPages)
+      || !Array.isArray(changeSet.affectedRanges)) {
+      throw new Error('KERNEL_COMMIT_IDENTITY_MISMATCH');
+    }
+    return { operation: committed, changeSet };
   }
 
   async checkpointWorkbook(unitId: string): Promise<CheckpointResponse> {
-    return this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
+    const result = await this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
+    assertManifestResponse(result?.workbook?.manifest, unitId);
+    if (result.workbook.unitId !== unitId || result.workbook.revision !== result.workbook.manifest.revision) throw new Error('KERNEL_CHECKPOINT_IDENTITY_MISMATCH');
+    return result;
+  }
+
+  async saveNativeDocumentArtifact(unitId: string, request: { revision: number; fileName?: string; format?: string }): Promise<WorkbookSourceArtifactMetadata> {
+    const result = await this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+    if (result.unitId !== unitId || result.revision !== request.revision || (request.fileName !== undefined && result.fileName !== request.fileName) || typeof result.checksum !== 'string') throw new Error('NATIVE_ARTIFACT_REVISION_MISMATCH');
+    return result;
   }
 
   async listRevisionPage(unitId: string, query: { cursor?: string; limit?: number } = {}, options: ApiRequestOptions = {}): Promise<CursorPage<RevisionRecord>> {
@@ -1990,13 +2128,6 @@ export class WorkbookApiClient {
     return items;
   }
 
-  async getRevisionSnapshot(unitId: string, revision: number, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
-    return validateSnapshotResponse(await this.json<unknown>(
-      `/api/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
-      options,
-    ), unitId);
-  }
-
   async restoreToRevision(unitId: string, targetRevision: number, reason?: string): Promise<HistoryRestoreResponse> {
     const body = validateHistoryRestoreRequest({ targetRevision, ...(reason === undefined ? {} : { reason }) });
     return this.json<HistoryRestoreResponse>(
@@ -2021,6 +2152,34 @@ export class WorkbookApiClient {
     await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/queries/${encodeURIComponent(queryId)}/cancel`, {
       method: 'POST',
     });
+  }
+
+  async prepareAnalytics(unitId: string, request: AnalyticsPrepareRequest, options: ApiRequestOptions = {}): Promise<AnalyticsPrepareResponse> {
+    return this.json<AnalyticsPrepareResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/prepare`, {
+      ...options,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async executeAnalytics(
+    unitId: string,
+    queryId: string,
+    request: AnalyticsExecutionRequest,
+    phase: AnalyticsExecutionPhase = 'execute',
+    options: ApiRequestOptions = {},
+  ): Promise<unknown> {
+    return this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/${encodeURIComponent(queryId)}/${phase}`, {
+      ...options,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async cancelAnalytics(unitId: string, queryId: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/analytics/${encodeURIComponent(queryId)}/cancel`, { method: 'POST' });
   }
 
   async createGuestShare(unitId: string, request: GuestShareRequest): Promise<GuestShareResponse> {
@@ -2165,6 +2324,17 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
   if (!isNonEmptyString(input.committedAt) || Number.isNaN(Date.parse(input.committedAt))) {
     throw new Error('Invalid committed operation timestamp');
   }
+  const mutationInputs = Array.isArray(input.mutations)
+    ? input.mutations.map((mutation) => {
+      if (!mutation || typeof mutation !== 'object') return mutation;
+      const candidate = mutation as Record<string, unknown>;
+      return {
+        id: candidate.id,
+        sheetId: candidate.sheetId,
+        params: candidate.params,
+      };
+    })
+    : input.mutations;
   const operation = validateOperationEnvelope({
     schema: input.schema,
     operationId: input.operationId,
@@ -2173,24 +2343,21 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     baseRevision: input.baseRevision,
     createdAt: input.createdAt,
     ...(input.intent === undefined ? {} : { intent: input.intent }),
-    mutations: Array.isArray(input.mutations)
-      ? input.mutations.map((mutation) => {
-        if (!mutation || typeof mutation !== 'object') return mutation;
-        const candidate = mutation as Record<string, unknown>;
-        return {
-          id: candidate.id,
-          sheetId: candidate.sheetId,
-          params: candidate.params,
-        };
-      })
-      : input.mutations,
+    mutations: input.intent === undefined ? mutationInputs : [],
   });
+  const committedMutationInputs = input.intent === undefined
+    ? operation.mutations
+    : validateOperationEnvelope({
+      ...operation,
+      intent: undefined,
+      mutations: mutationInputs,
+    }).mutations;
   const mutations = (input.mutations as unknown[]).map((raw, index) => {
     if (!raw || typeof raw !== 'object') throw new Error(`committed mutation[${index}] must be an object`);
     const mutation = raw as Record<string, unknown>;
     if (!Array.isArray(mutation.affectedRanges)) throw new Error(`committed mutation[${index}] requires affectedRanges`);
     if (!mutation.affectedRanges.every(isRangeRef)) throw new Error(`committed mutation[${index}] contains invalid affectedRanges`);
-    return { ...operation.mutations[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
+    return { ...committedMutationInputs[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
   });
   return {
     ...operation,
@@ -2272,6 +2439,7 @@ type StatusListener = (status: CollabSocketStatus) => void;
 type ProtocolErrorListener = (error: Error) => void;
 
 const BEARER_SUBPROTOCOL_PREFIX = 'bearer.';
+export const COLLABORATION_SUBPROTOCOL = 'react-sheets.v1';
 
 function encodeBase64Url(value: string): string {
   const bytes = new TextEncoder().encode(value);
@@ -2337,7 +2505,7 @@ export class CollabSocketClient {
     this.emitStatus('closed');
   }
 
-  /** 发送客户端消息；未连接时返回 false，由 OfflineQueue 保留 operation。 */
+  /** Send ephemeral presence/cursor state; disconnected messages are dropped. */
   send(message: ClientOperationMessage): boolean {
     const encoded = encodeClientOperationMessage(message);
     if (this.socket?.readyState === 1) {
@@ -2387,7 +2555,7 @@ export class CollabSocketClient {
     }
     const factory = this.options.webSocketFactory ?? ((target: string, protocols: string | string[]) => new WebSocket(target, protocols));
     const socket = token
-      ? factory(this.url, createBearerSubprotocol(token))
+      ? factory(this.url, [COLLABORATION_SUBPROTOCOL, createBearerSubprotocol(token)])
       : factory(withShareToken(this.url, shareToken!), []);
     this.socket = socket;
     this.connecting = false;

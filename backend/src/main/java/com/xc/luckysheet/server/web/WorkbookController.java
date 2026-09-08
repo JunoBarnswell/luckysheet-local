@@ -11,11 +11,12 @@ import com.xc.luckysheet.server.contract.AssetReconcileRequest;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
-import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
+import com.xc.luckysheet.server.contract.WorkbookOpenResponse;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
+import com.xc.luckysheet.server.contract.RenameWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
 import com.xc.luckysheet.server.contract.WorkbookUserState;
@@ -87,9 +88,9 @@ public class WorkbookController {
     }
 
     @PostMapping
-    public ResponseEntity<WorkbookSnapshotResponse> create(@Valid @RequestBody CreateWorkbookRequest request, Authentication authentication) {
+    public ResponseEntity<WorkbookOpenResponse> create(@Valid @RequestBody CreateWorkbookRequest request, Authentication authentication) {
         ActorIdentity.requireRegisteredActor(authentication);
-        WorkbookSnapshotResponse response = catalog.create(request, ActorIdentity.subject(authentication));
+        WorkbookOpenResponse response = catalog.create(request, ActorIdentity.subject(authentication));
         return ResponseEntity.created(URI.create("/api/workbooks/" + request.unitId())).body(response);
     }
 
@@ -110,6 +111,16 @@ public class WorkbookController {
     @PatchMapping("/{unitId}")
     public WorkbookSummary update(@PathVariable String unitId, @Valid @RequestBody UpdateWorkbookRequest request, Authentication authentication) {
         return catalog.update(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/rename")
+    public WorkbookOpenResponse rename(@PathVariable String unitId, @Valid @RequestBody RenameWorkbookRequest request, Authentication authentication) {
+        String actor = ActorIdentity.subject(authentication);
+        var params = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("name", request.name());
+        var result = operations.commitServerMutation(unitId,
+                new com.xc.luckysheet.server.contract.OperationMutation("workbook.renamed", "workbook", params), actor, "workbook-rename");
+        if (result.committed()) sessions.broadcastRevision(result.operation());
+        return operations.open(unitId, actor);
     }
 
     @PostMapping("/{unitId}/copy")
@@ -144,41 +155,39 @@ public class WorkbookController {
         return catalog.putUserState(unitId, request, ActorIdentity.subject(authentication));
     }
 
-    @PutMapping(value = "/{unitId}/native-document-artifact", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public WorkbookArtifactResponse putSourceArtifact(
-            @PathVariable String unitId,
-            @RequestHeader(value = "X-File-Name", required = false) String fileName,
-            @RequestHeader(value = "Content-Type", required = false) String mimeType,
-            @RequestHeader("X-Content-SHA256") String checksum,
-            @RequestBody byte[] content,
-            Authentication authentication
-    ) {
-        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, ActorIdentity.subject(authentication));
+    public record ExportArtifactRequest(long revision, String fileName, String format) { }
+
+    @PostMapping("/{unitId}/native-document-artifact")
+    public WorkbookArtifactResponse exportArtifact(@PathVariable String unitId, @RequestBody ExportArtifactRequest request, Authentication authentication) {
+        return catalog.exportArtifact(unitId, request.revision(), request.fileName(), request.format(), ActorIdentity.subject(authentication));
     }
 
     @GetMapping(value = "/{unitId}/native-document-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
+    public ResponseEntity<org.springframework.core.io.Resource> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
         WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(artifact.getMimeType()))
-                .contentLength(artifact.getByteLength())
-                .header("X-Content-SHA256", artifact.getChecksum())
-                .header("X-Native-Codec-Revision", Integer.toString(artifact.getCodecRevision()))
-                .header("X-Native-Format", artifact.getFormat())
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(artifact.getMimeType())).contentLength(artifact.getByteLength())
+                .header("X-Content-SHA256", artifact.getChecksum()).header("X-Workbook-Revision", Long.toString(artifact.getWorkbookRevision()))
+                .header("X-Native-Codec-Revision", Integer.toString(artifact.getCodecRevision())).header("X-Native-Format", artifact.getFormat())
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + artifact.getFileName().replace("\"", "") + "\"")
-                .body(artifact.getContent());
+                .body(new org.springframework.core.io.FileSystemResource(catalog.verifiedArtifactPath(artifact)));
     }
 
-    @GetMapping("/{unitId}/snapshot")
-    public WorkbookSnapshotResponse snapshot(@PathVariable String unitId, Authentication authentication) {
-        return operations.readSnapshot(unitId, ActorIdentity.subject(authentication));
+    @GetMapping("/{unitId}/manifest")
+    public com.fasterxml.jackson.databind.JsonNode manifest(@PathVariable String unitId, @RequestParam(required = false) Long revision, Authentication authentication) {
+        return operations.manifest(unitId, revision, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping("/{unitId}/pages/{sheetId}/{pageRow}/{pageColumn}")
+    public com.fasterxml.jackson.databind.JsonNode page(@PathVariable String unitId, @PathVariable String sheetId,
+            @PathVariable int pageRow, @PathVariable int pageColumn, @RequestParam long revision, Authentication authentication) {
+        return operations.page(unitId, revision, sheetId, pageRow, pageColumn, ActorIdentity.subject(authentication));
     }
 
     @PostMapping("/{unitId}/operations")
     public ResponseEntity<CommitResponse> commit(@PathVariable String unitId, @Valid @RequestBody OperationEnvelope operation, Authentication authentication) {
         WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication));
-        sessions.broadcastRevision(result.operation());
-        return ResponseEntity.status(result.committed() ? 201 : 200).body(new CommitResponse(result.operation()));
+        if (result.committed()) sessions.broadcastRevision(result.operation());
+        return ResponseEntity.status(result.committed() ? 201 : 200).body(new CommitResponse(result.operation(), result.changeSet()));
     }
 
     @GetMapping("/{unitId}/revisions")
@@ -198,8 +207,8 @@ public class WorkbookController {
         return operations.revisions(unitId, ActorIdentity.subject(authentication), before, CursorPageRequest.limit(limit), cursor);
     }
 
-    @GetMapping("/{unitId}/revisions/{revision}/snapshot")
-    public WorkbookSnapshotResponse revisionSnapshot(@PathVariable String unitId, @PathVariable long revision, Authentication authentication) {
+    @GetMapping("/{unitId}/revisions/{revision}/manifest")
+    public WorkbookOpenResponse revisionManifest(@PathVariable String unitId, @PathVariable long revision, Authentication authentication) {
         return operations.readRevision(unitId, revision, ActorIdentity.subject(authentication));
     }
 

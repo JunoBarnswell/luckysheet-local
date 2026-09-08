@@ -2,9 +2,7 @@ import { Button, CheckToggle, Dialog, Stack, Text } from '@react-sheets/ui-syste
 
 export interface WorkbookFilterValues {
   favoritesOnly: boolean;
-  localOnly: boolean;
   sharedOnly: boolean;
-  needsSync: boolean;
 }
 
 export interface WorkbookFilterDialogProps {
@@ -32,9 +30,7 @@ export function WorkbookFilterDialog({ open, value, onChange, onClose, onApply }
         <Text size="sm" weight="medium">文件条件</Text>
         <Stack gap="sm">
           <CheckToggle checked={value.favoritesOnly} label="仅显示星标文件" onChange={(event) => set('favoritesOnly', event.target.checked)} />
-          <CheckToggle checked={value.localOnly} label="仅显示本地文件" onChange={(event) => set('localOnly', event.target.checked)} />
           <CheckToggle checked={value.sharedOnly} label="仅显示与我共享" onChange={(event) => set('sharedOnly', event.target.checked)} />
-          <CheckToggle checked={value.needsSync} label="仅显示待同步或冲突文件" onChange={(event) => set('needsSync', event.target.checked)} />
         </Stack>
       </Stack>
     </Dialog>

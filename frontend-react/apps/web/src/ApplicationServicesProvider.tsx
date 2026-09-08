@@ -5,6 +5,7 @@ import {
   LocalAssetStore,
   WorkbookCatalogService,
   NativeDocumentTransactionRegistry,
+  WorkbookApiNativeDocumentTransport,
   WorkspacePersistence,
   WorkspaceStorageError,
   isWorkspaceStorageError,
@@ -81,9 +82,8 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     const retryStorage = (): Promise<void> => ensureStorageReady();
     const shareTokenProvider = () => resolveShareToken();
     const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
-    const nativeDocumentTransactions = new NativeDocumentTransactionRegistry();
+    const nativeDocumentTransactions = new NativeDocumentTransactionRegistry(new WorkbookApiNativeDocumentTransport(workbookApi));
     const catalog = new WorkbookCatalogService({
-      persistence,
       remote: workbookApi,
       remoteAvailable: () => auth.getSnapshot().phase === 'authenticated' || Boolean(shareTokenProvider()),
       shareTokenProvider,
@@ -96,7 +96,6 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       authTokenProvider,
       shareTokenProvider,
       collaborationUrl: resolveDesktopCollaborationUrl(),
-      pivotExecution: 'worker',
       nativeDocumentTransaction: nativeDocumentTransactions.getOrCreate(unitId),
       assetStore: useLocalAssets ? new LocalAssetStore(unitId, persistence.coordinator) : new RemoteAssetStore(unitId, workbookApi),
     });

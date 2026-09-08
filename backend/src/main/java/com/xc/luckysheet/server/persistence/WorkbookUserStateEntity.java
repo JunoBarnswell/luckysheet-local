@@ -30,36 +30,30 @@ public class WorkbookUserStateEntity {
     private boolean autoSave;
     @Column(name = "auto_sync", nullable = false)
     private boolean autoSync;
-    @Column(name = "default_create_location", nullable = false, length = 16)
-    private String defaultCreateLocation;
     @Column(name = "import_compatibility_level", nullable = false, length = 16)
     private String importCompatibilityLevel;
     @Column(name = "language", length = 32)
     private String language;
-    @Column(name = "offline_cache", nullable = false)
-    private boolean offlineCache;
     @Column(name = "theme", nullable = false, length = 16)
     private String theme;
 
     protected WorkbookUserStateEntity() {}
 
     public WorkbookUserStateEntity(String unitId, String subject, boolean favorite, Instant lastOpenedAt, Instant updatedAt) {
-        this(unitId, subject, favorite, lastOpenedAt, true, true, "local", "standard", null, true, "system", updatedAt);
+        this(unitId, subject, favorite, lastOpenedAt, true, true, "standard", null, "system", updatedAt);
     }
 
     public WorkbookUserStateEntity(String unitId, String subject, boolean favorite, Instant lastOpenedAt,
-                                   boolean autoSave, boolean autoSync, String defaultCreateLocation,
-                                   String importCompatibilityLevel, String language, boolean offlineCache,
+                                   boolean autoSave, boolean autoSync,
+                                   String importCompatibilityLevel, String language,
                                    String theme, Instant updatedAt) {
         this.id = new Id(unitId, subject);
         this.favorite = favorite;
         this.lastOpenedAt = lastOpenedAt;
         this.autoSave = autoSave;
         this.autoSync = autoSync;
-        this.defaultCreateLocation = defaultCreateLocation == null ? "remote" : defaultCreateLocation;
         this.importCompatibilityLevel = importCompatibilityLevel == null ? "standard" : importCompatibilityLevel;
         this.language = language;
-        this.offlineCache = offlineCache;
         this.theme = theme == null ? "system" : theme;
         this.updatedAt = updatedAt;
     }
@@ -70,23 +64,18 @@ public class WorkbookUserStateEntity {
     public Instant getUpdatedAt() { return updatedAt; }
     public boolean isAutoSave() { return autoSave; }
     public boolean isAutoSync() { return autoSync; }
-    public String getDefaultCreateLocation() { return defaultCreateLocation; }
     public String getImportCompatibilityLevel() { return importCompatibilityLevel; }
     public String getLanguage() { return language; }
-    public boolean isOfflineCache() { return offlineCache; }
     public String getTheme() { return theme; }
 
     public void update(Boolean favorite, Instant lastOpenedAt, Boolean autoSave, Boolean autoSync,
-                       String defaultCreateLocation, String importCompatibilityLevel, String language,
-                       Boolean offlineCache, String theme, Instant updatedAt) {
+                       String importCompatibilityLevel, String language, String theme, Instant updatedAt) {
         if (favorite != null) this.favorite = favorite;
         if (lastOpenedAt != null) this.lastOpenedAt = lastOpenedAt;
         if (autoSave != null) this.autoSave = autoSave;
         if (autoSync != null) this.autoSync = autoSync;
-        if (defaultCreateLocation != null) this.defaultCreateLocation = defaultCreateLocation;
         if (importCompatibilityLevel != null) this.importCompatibilityLevel = importCompatibilityLevel;
         if (language != null) this.language = language;
-        if (offlineCache != null) this.offlineCache = offlineCache;
         if (theme != null) this.theme = theme;
         this.updatedAt = updatedAt;
     }

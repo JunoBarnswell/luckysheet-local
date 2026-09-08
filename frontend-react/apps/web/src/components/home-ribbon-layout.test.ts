@@ -7,17 +7,16 @@ import { ribbonGroupWidthClass } from './RibbonLayoutRenderer';
 import { ribbonLayoutModeForWidth } from '@react-sheets/ui-system';
 
 describe('Home Ribbon responsive group geometry', () => {
-  it('keeps the same wide group widths at every viewport', () => {
-    assert.equal(ribbonLayoutModeForWidth(1581), 'wide');
-    assert.equal(ribbonLayoutModeForWidth(1183), 'wide');
-    for (const width of [1581, 1183]) {
-      assert.equal(ribbonGroupWidthClass('clipboard', 'wide', width, 'home'), 'w-[141px]');
-      assert.equal(ribbonGroupWidthClass('font', 'wide', width, 'home'), 'w-[347px]');
-      assert.equal(ribbonGroupWidthClass('alignment', 'wide', width, 'home'), 'w-[342px]');
-      assert.equal(ribbonGroupWidthClass('styles', 'wide', width, 'home'), 'w-[251px]');
-      assert.equal(ribbonGroupWidthClass('cells', 'wide', width, 'home'), 'w-[191px]');
-      assert.equal(ribbonGroupWidthClass('editing', 'wide', width, 'home'), 'w-[310px]');
-    }
+  it('uses the canonical breakpoints and keeps each Home group explicit', () => {
+    assert.equal(ribbonLayoutModeForWidth(1600), 'wide');
+    assert.equal(ribbonLayoutModeForWidth(1581), 'compact');
+    assert.equal(ribbonLayoutModeForWidth(1183), 'narrow');
+    assert.equal(ribbonGroupWidthClass('clipboard', 'compact', 1581, 'home'), 'w-[141px]');
+    assert.equal(ribbonGroupWidthClass('font', 'compact', 1581, 'home'), 'w-[347px]');
+    assert.equal(ribbonGroupWidthClass('alignment', 'compact', 1581, 'home'), 'w-[342px]');
+    assert.equal(ribbonGroupWidthClass('styles', 'narrow', 1183, 'home'), 'w-[220px]');
+    assert.equal(ribbonGroupWidthClass('cells', 'narrow', 1183, 'home'), 'w-[144px]');
+    assert.equal(ribbonGroupWidthClass('editing', 'narrow', 1183, 'home'), 'w-[300px]');
   });
 
   it('ships every Figma SVG and the exact Noto Sans SC font used by the Home design', () => {

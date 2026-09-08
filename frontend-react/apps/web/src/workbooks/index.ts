@@ -1,5 +1,4 @@
 export { CreateTemplateGrid } from './CreateTemplateGrid';
-export { StorageInfoBanner } from './StorageInfoBanner';
 export { WorkbookActionBar } from './WorkbookActionBar';
 export { WorkbookBackstageShell } from './WorkbookBackstageShell';
 export { WorkbookCategoryTabs } from './WorkbookCategoryTabs';
@@ -19,7 +18,6 @@ export { SaveAsDocumentDialog } from './dialogs/SaveAsDocumentDialog';
 export { RenameWorkbookDialog } from './dialogs/RenameWorkbookDialog';
 export { ShareWorkbookDialog } from './dialogs/ShareWorkbookDialog';
 export { WorkbookInfoDialog } from './dialogs/WorkbookInfoDialog';
-export { WorkbookOptionsDialog } from './dialogs/WorkbookOptionsDialog';
 export {
   workbookTemplates,
   type WorkbookBackstageAction,
@@ -33,7 +31,6 @@ export {
   type WorkbookOpenOptions,
   type WorkbookRole,
   type WorkbookSourceKind,
-  type WorkbookStorageLocation,
   type WorkbookSyncStatus,
   type WorkbookTemplateDefinition,
   type WorkbookTemplateKind,
@@ -47,4 +44,3 @@ export type { SaveAsDocumentDialogProps } from './dialogs/SaveAsDocumentDialog';
 export type { RenameWorkbookDialogProps } from './dialogs/RenameWorkbookDialog';
 export type { ShareWorkbookDialogProps, ShareWorkbookDialogValue } from './dialogs/ShareWorkbookDialog';
 export type { WorkbookInfoDialogProps } from './dialogs/WorkbookInfoDialog';
-export type { WorkbookOptionsDialogProps, WorkbookPreferences } from './dialogs/WorkbookOptionsDialog';

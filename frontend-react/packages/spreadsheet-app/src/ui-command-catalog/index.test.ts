@@ -297,6 +297,22 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(buildRibbonCommand('pivotTable', context()), undefined);
   });
 
+  it('checks explicit availability without constructing selection-dependent parameters', () => {
+    let builds = 0;
+    const current = context({
+      buildSortDescriptor: () => {
+        builds += 1;
+        throw new Error('Current region must be resolved only after activation');
+      },
+    });
+    const definition = getRibbonCommandDefinition('sortAscending');
+
+    assert.equal(isRibbonCommandEnabled(definition, current), true);
+    assert.equal(builds, 0);
+    assert.throws(() => buildRibbonCommand('sortAscending', current), /Current region must be resolved only after activation/);
+    assert.equal(builds, 1);
+  });
+
   it('routes Forms and Screenshot through canonical executable host actions', () => {
     let forms = 0;
     let screenshots = 0;
@@ -328,6 +344,23 @@ describe('Ribbon UI command catalog', () => {
       positions.add(`${surface.group}:${surface.order}`);
       if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
     }
+    const layoutRoots = new Set<string>();
+    const visit = (nodes: readonly RibbonLayoutNode[]): void => nodes.forEach((node) => {
+      if (node.kind === 'surface') layoutRoots.add(node.surfaceId);
+      if ('children' in node) visit(node.children);
+    });
+    for (const group of RIBBON_LAYOUT_SPECS.home.groups) visit(group.children);
+    let discovered = true;
+    while (discovered) {
+      discovered = false;
+      for (const surface of HOME_RIBBON_SURFACES) {
+        if (!layoutRoots.has(surface.id) && surface.menuId && layoutRoots.has(surface.menuId)) {
+          layoutRoots.add(surface.id);
+          discovered = true;
+        }
+      }
+    }
+    assert.deepEqual(HOME_RIBBON_SURFACES.filter((surface) => !layoutRoots.has(surface.id)).map((surface) => surface.id), []);
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
   });
 
@@ -344,8 +377,8 @@ describe('Ribbon UI command catalog', () => {
       'control.font-family', 'control.font-size', 'control.font-increase', 'control.font-decrease', 'font.bold', 'font.italic',
       'font.underline', 'control.font-borders-menu', 'control.fill-color', 'control.font-color', 'font.phonetic-guide', 'font.dialog-launcher',
       'alignment.top', 'alignment.middle', 'alignment.bottom', 'alignment.left',
-      'alignment.center', 'alignment.right', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
-      'control.number-format', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
+      'alignment.center', 'alignment.right', 'alignment.indent-decrease', 'alignment.indent-increase', 'control.alignment-menu', 'alignment.wrap', 'control.merge-menu', 'alignment.dialog-launcher', 'control.orientation-menu',
+      'control.number-format', 'number.currency', 'number.percent', 'number.comma', 'number.decimal-increase', 'number.decimal-decrease', 'number.dialog-launcher',
       'styles.conditional-format', 'styles.table', 'control.cell-styles-menu',
       'control.cells-insert-menu', 'control.cells-delete-menu', 'control.cells-format-menu',
       'control.auto-sum-menu', 'editing.fill-down', 'control.clear-menu', 'editing.sort', 'editing.find',

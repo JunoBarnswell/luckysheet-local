@@ -30,7 +30,7 @@ class GuestShareServiceTest {
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         when(authorization.role("unit-1", "owner")).thenReturn(Optional.of(WorkbookAclRole.OWNER));
         when(store.findForUpdate("unit-1")).thenReturn(Optional.of(new WorkbookRow(
-                "unit-1", "Book", "{}", 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
+                "unit-1", "Book", 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         ShareProperties properties = new ShareProperties(Duration.ofHours(1), Duration.ofDays(7));
         GuestShareService service = new GuestShareService(store, properties, lifecycle, authorization);
         ShareRow[] stored = new ShareRow[1];

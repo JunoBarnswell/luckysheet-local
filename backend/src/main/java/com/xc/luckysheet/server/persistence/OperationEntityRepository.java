@@ -5,9 +5,14 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface OperationEntityRepository extends JpaRepository<OperationEntity, String> {
     Optional<OperationEntity> findByUnitIdAndActorSubjectAndClientSequence(String unitId, String actorSubject, long clientSequence);
+
+    @Query("select coalesce(max(o.clientSequence), 0) from OperationEntity o where o.unitId = :unitId and o.actorSubject = :actor")
+    long maxClientSequence(@Param("unitId") String unitId, @Param("actor") String actor);
 
     /**
      * The only replay query.  Both bounds are required so a checkpoint or a

@@ -46,13 +46,13 @@ const coreAllowFields = allowFieldEntries.map(([action, field]) =>
   `  ${JSON.stringify(action)}: ${JSON.stringify(field)},`,
 ).join('\n');
 const javaMutations = entries.map(([id, capability]) =>
-  `        Map.entry(${JSON.stringify(id)}, new MutationCapability(${JSON.stringify(capability.durability)}, ${Boolean(capability.remote)}, ${JSON.stringify(capability.schema)}, ${JSON.stringify(capability.minRole)}, ${JSON.stringify(capability.rebasePolicy)}, ${Boolean(capability.javaReducer)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).protectionAction)}, ${Boolean(normalizePermission(permissionSource.mutations[id]).checksProtection)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).affectedRangeMode)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).objectScope)}))`,
+  `        Map.entry(${JSON.stringify(id)}, new MutationCapability(${JSON.stringify(capability.durability)}, ${Boolean(capability.remote)}, ${JSON.stringify(capability.schema)}, ${JSON.stringify(capability.minRole)}, ${JSON.stringify(capability.rebasePolicy)}, ${Boolean(capability.kernelReducer)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).protectionAction)}, ${Boolean(normalizePermission(permissionSource.mutations[id]).checksProtection)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).affectedRangeMode)}, ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).objectScope)}))`,
 ).join(',\n');
 const javaPermissionPolicies = permissionEntries.map(([id, policy]) =>
   `        Map.entry(${JSON.stringify(id)}, ${permissionPolicy(policy)})`,
 ).join(',\n');
 const tsMutations = entries.map(([id, capability]) =>
-  `  ${JSON.stringify(id)}: { durability: ${JSON.stringify(capability.durability)}, remote: ${Boolean(capability.remote)}, schema: ${JSON.stringify(capability.schema)}, minRole: ${JSON.stringify(capability.minRole)}, rebasePolicy: ${JSON.stringify(capability.rebasePolicy)}, javaReducer: ${Boolean(capability.javaReducer)}, protectionAction: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).protectionAction)}, checksProtection: ${Boolean(normalizePermission(permissionSource.mutations[id]).checksProtection)}, affectedRangeMode: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).affectedRangeMode)}, objectScope: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).objectScope)}${capability.replacement ? `, replacement: ${JSON.stringify(capability.replacement)}` : ''}${capability.collaborationKind ? `, collaborationKind: ${JSON.stringify(capability.collaborationKind)}` : ''} },`,
+  `  ${JSON.stringify(id)}: { durability: ${JSON.stringify(capability.durability)}, remote: ${Boolean(capability.remote)}, schema: ${JSON.stringify(capability.schema)}, minRole: ${JSON.stringify(capability.minRole)}, rebasePolicy: ${JSON.stringify(capability.rebasePolicy)}, kernelReducer: ${Boolean(capability.kernelReducer)}, protectionAction: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).protectionAction)}, checksProtection: ${Boolean(normalizePermission(permissionSource.mutations[id]).checksProtection)}, affectedRangeMode: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).affectedRangeMode)}, objectScope: ${JSON.stringify(normalizePermission(permissionSource.mutations[id]).objectScope)}${capability.replacement ? `, replacement: ${JSON.stringify(capability.replacement)}` : ''}${capability.collaborationKind ? `, collaborationKind: ${JSON.stringify(capability.collaborationKind)}` : ''} },`,
 ).join('\n');
 const tsCommandPermissions = commandEntries.map(([id, policy]) =>
   `  ${JSON.stringify(id)}: ${permissionPolicyJson(policy)},`,
@@ -101,7 +101,7 @@ ${javaAllowFields}
         return PROTECTION_ALLOW_FIELDS.get(action);
     }
 
-    public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
+    public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean kernelReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
     public record PermissionPolicy(String capability, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
 }
 `;
@@ -129,7 +129,7 @@ export interface MutationCapability {
   schema: string;
   minRole: 'owner' | 'editor' | 'commenter' | 'viewer';
   rebasePolicy: 'none' | 'range' | 'exact';
-  javaReducer: boolean;
+  kernelReducer: boolean;
   protectionAction: ProtectionAction;
   checksProtection: boolean;
   affectedRangeMode: 'none' | 'declared' | 'exact';

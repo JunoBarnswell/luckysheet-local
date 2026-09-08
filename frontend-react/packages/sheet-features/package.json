@@ -8,6 +8,7 @@
     "@react-sheets/core-model": "file:../core-model",
     "@react-sheets/exchange-excel-ooxml": "file:../exchange-excel-ooxml",
     "@react-sheets/formula-engine": "file:../formula-engine",
+    "@react-sheets/kernel-client": "file:../kernel-client",
     "@react-sheets/number-format": "file:../number-format"
   }
 }

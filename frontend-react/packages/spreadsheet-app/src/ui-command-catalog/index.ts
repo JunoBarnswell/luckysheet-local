@@ -241,6 +241,7 @@ export type RibbonCommandId =
   | 'textToColumns'
   | 'findReplace'
   | 'goTo'
+  | 'selectionPane'
   | 'transpose'
   | 'flipHorizontal'
   | 'flipVertical'
@@ -987,6 +988,7 @@ export const RIBBON_TEXT = {
     textToColumns: 'commands.textToColumns',
     findReplace: 'commands.findReplace',
     goTo: 'commands.goTo',
+    selectionPane: 'commands.selectionPane',
     transpose: 'commands.transpose',
     flipHorizontal: 'commands.flipHorizontal',
     flipVertical: 'commands.flipVertical',
@@ -1218,7 +1220,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   homeControl('fill-color', 'font', 100),
   ribbonSurface('home', 'font.phonetic-guide', 'font', 105, 'small', 'phoneticGuide'),
   ribbonSurface('home', 'font.dialog-launcher', 'font', 110, 'small', 'formatCellsFont'),
-  homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
+  homeControl('alignment-menu', 'alignment', 10),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1251,7 +1253,6 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
   ribbonSurface('home', 'number.comma', 'number', 40, 'small', 'numberFormatComma'),
-  ribbonSurface('home', 'number.decimal', 'number', 50, 'menu', 'numberFormatDecimal', ['wide', 'compact', 'narrow'], undefined, 'control.number-format'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
   ribbonSurface('home', 'number.dialog-launcher', 'number', 99, 'small', 'formatCellsNumber'),
@@ -1268,8 +1269,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'styles.table', 'styles', 30, 'tile', 'formatAsTable'),
   ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'menu', 'formatCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-format-menu'),
   ribbonSurface('home', 'styles.validation', 'styles', 50, 'menu', 'dataValidation', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
-  ribbonSurface('home', 'styles.template', 'styles', 60, 'tile', 'cellTemplate'),
-  ribbonSurface('home', 'styles.editor', 'styles', 70, 'tile', 'cellEditor'),
+  ribbonSurface('home', 'styles.template', 'styles', 60, 'menu', 'cellTemplate', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.editor', 'styles', 70, 'menu', 'cellEditor', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   homeControl('cells-insert-menu', 'cells', 10),
   homeControl('cells-delete-menu', 'cells', 20),
   homeControl('cells-format-menu', 'cells', 30),
@@ -1308,6 +1309,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
   ribbonSurface('home', 'editing.go-to', 'editing', 101, 'menu', 'goTo', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
+  ribbonSurface('home', 'editing.selection-pane', 'editing', 102, 'menu', 'selectionPane', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1398,8 +1400,9 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         columnNode(
           'alignment.controls',
           rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
-          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.indent-increase')),
         ),
+        homeSurfaceNode('control.alignment-menu'),
         columnNode(
           'alignment.wrap-merge',
           homeSurfaceNode('alignment.wrap'),
@@ -1414,7 +1417,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'number.layout',
         rowNode('number.format', homeSurfaceNode('control.number-format')),
-        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
+        rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
       ),
     ),
     groupSpec(
@@ -2017,8 +2020,12 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...dynamicCommand('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
     placements: [{ tab: 'data', group: 'dataTools' }, { tab: 'home', group: 'editing' }],
+    enabled: (context) => Boolean(context.actions.onApplyFilterSelection),
   },
-  dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
+  {
+    ...dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
+    enabled: (context) => Boolean(context.actions.onClearFilter),
+  },
   dynamicCommand('groupRows', 'data', 'outline', RIBBON_TEXT.commands.groupRows, (context) => context.actions.onGroupRows()),
   dynamicCommand('ungroupRows', 'data', 'outline', RIBBON_TEXT.commands.ungroupRows, (context) => context.actions.onUngroupRows()),
   dynamicCommand('groupColumns', 'data', 'outline', RIBBON_TEXT.commands.groupColumns, (context) => context.actions.onGroupColumns()),
@@ -2034,6 +2041,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     placements: [{ tab: 'data', group: 'findTransform' }, { tab: 'home', group: 'editing' }],
   },
   intent('goTo', 'data', 'findTransform', RIBBON_TEXT.commands.goTo, () => ({ type: 'dialog.open', dialog: 'goto' })),
+  intent('selectionPane', 'home', 'editing', RIBBON_TEXT.commands.selectionPane, () => ({ type: 'panel.open', panel: 'selectionPane' }), 'shape-square'),
   callback('transpose', 'data', 'findTransform', RIBBON_TEXT.commands.transpose, (context) => context.actions.onTransposeSelection(), 'layout'),
   callback('flipHorizontal', 'data', 'findTransform', RIBBON_TEXT.commands.flipHorizontal, (context) => context.actions.onFlipSelection('h')),
   callback('flipVertical', 'data', 'findTransform', RIBBON_TEXT.commands.flipVertical, (context) => context.actions.onFlipSelection('v')),
@@ -2135,7 +2143,8 @@ export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonComma
 }
 
 export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {
-  if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
+  if (context.disabled) return false;
+  if (definition.enabled) return definition.enabled(context);
   return definition.build(context) !== undefined;
 }
 

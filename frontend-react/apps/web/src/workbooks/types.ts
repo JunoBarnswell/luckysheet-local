@@ -2,8 +2,7 @@ import type { ReactNode } from 'react';
 import type { IconName, TemplatePreviewKind } from '@react-sheets/ui-system';
 
 export type WorkbookRole = 'owner' | 'editor' | 'commenter' | 'viewer';
-export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
-export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookSyncStatus = 'synced' | 'syncing' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
 export type WorkbookSourceKind = 'native' | 'document-import';
 
@@ -12,7 +11,6 @@ export interface WorkbookCatalogItem {
   name: string;
   updatedAt: string;
   locationLabel: string;
-  storageLocation: WorkbookStorageLocation;
   syncStatus: WorkbookSyncStatus;
   lifecycle: WorkbookLifecycle;
   role: WorkbookRole;
@@ -23,15 +21,12 @@ export interface WorkbookCatalogItem {
   folderPath?: readonly string[];
   favorite: boolean;
   revision?: number;
-  localRevision?: number;
-  serverRevision?: number;
-  pendingOperationCount?: number;
   sourceFileName?: string;
   sizeBytes?: number;
 }
 
 export type WorkbookHubSection = 'start' | 'new' | 'open' | 'recent' | 'shared' | 'info' | 'save' | 'import' | 'export' | 'trash' | 'close' | 'options';
-export type WorkbookCategoryTab = 'recent' | 'cloud' | 'local' | 'shared';
+export type WorkbookCategoryTab = 'recent' | 'cloud' | 'shared';
 export type WorkbookViewMode = 'list' | 'grid';
 export type WorkbookTemplateKind = TemplatePreviewKind;
 
@@ -53,7 +48,6 @@ export const workbookTemplates: readonly WorkbookTemplateDefinition[] = [
   { kind: 'pivot', title: '数据透视表模板', description: '快速分析业务数据', icon: 'table-pivot' },
   { kind: 'project', title: '项目计划模板', description: '规划项目进度与任务', icon: 'chart' },
   { kind: 'budget', title: '预算模板', description: '管理收支与预算', icon: 'calculator' },
-  { kind: 'designer-demo', title: 'Designer Demo', description: 'SpreadJS Designer 视觉验收', icon: 'grid' },
 ];
 
 export interface WorkbookHubController {
@@ -63,7 +57,6 @@ export interface WorkbookHubController {
   onOpenInNewWindow: (unitId: string) => void;
   onImportWorkbook: () => void;
   onExportWorkbook: (unitId: string) => void;
-  onSyncWorkbook: (unitId: string) => void;
   onRenameWorkbook: (unitId: string) => void;
   onCopyWorkbook: (unitId: string) => void;
   onMoveWorkbook: (unitId: string) => void;

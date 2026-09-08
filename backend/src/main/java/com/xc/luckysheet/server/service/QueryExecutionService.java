@@ -4,13 +4,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.config.QueryProperties;
 import com.xc.luckysheet.server.config.QuerySource;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.store.WorkbookStore;
+import com.xc.luckysheet.server.contract.AnalyticsExecutionRequest;
+import com.xc.luckysheet.server.contract.AnalyticsExecutionResponse;
+import com.xc.luckysheet.server.contract.AnalyticsPrepareRequest;
+import com.xc.luckysheet.server.contract.AnalyticsPrepareResponse;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
@@ -67,34 +71,237 @@ public class QueryExecutionService {
     private final QueryProperties properties;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
-    private final WorkbookStore store;
+    private final QueryExecutionProofService proofs;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
-    private final HttpClient http;
-    private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final AtomicReference<HttpClient> http = new AtomicReference<>();
+    private final KernelHostClient kernel;
+    private final KernelPersistenceService persistence;
+    private final Map<ActiveTaskKey, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final Map<ActiveTaskKey, ActiveAnalytics> analyticsActive = new ConcurrentHashMap<>();
 
+    @org.springframework.beans.factory.annotation.Autowired
     public QueryExecutionService(
             QueryProperties properties,
             AccessControlService access,
             WorkbookLifecycleService lifecycle,
-            WorkbookStore store,
+            QueryExecutionProofService proofs,
             AuditRecorder audit,
-            ObjectMapper mapper
+            ObjectMapper mapper,
+            KernelHostClient kernel,
+            KernelPersistenceService persistence
     ) {
         this.properties = properties;
         this.access = access;
         this.lifecycle = lifecycle;
-        this.store = store;
+        this.proofs = proofs;
         this.audit = audit;
         this.mapper = mapper;
+        this.kernel = kernel;
+        this.persistence = persistence;
         this.workers = new ThreadPoolExecutor(properties.workerThreads(), properties.workerThreads(), 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(Math.max(8, properties.workerThreads() * 8)), runnable -> {
             Thread thread = new Thread(runnable, "server-query-worker");
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-        this.http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
+    }
+
+    /** Compatibility constructor for connector-only unit tests. Native
+     * analytics calls fail closed when no kernel boundary was supplied. */
+    public QueryExecutionService(QueryProperties properties, AccessControlService access,
+            WorkbookLifecycleService lifecycle, QueryExecutionProofService proofs,
+            AuditRecorder audit, ObjectMapper mapper) {
+        this(properties, access, lifecycle, proofs, audit, mapper, null, null);
+    }
+
+    public AnalyticsPrepareResponse prepareAnalytics(String unitId, AnalyticsPrepareRequest request, String actor) {
+        if (!properties.enabled()) throw ServiceException.unavailable("Server analytics is disabled");
+        validateAnalyticsRequest(request.request(), request.revision());
+        QueryExecutionProofService.StartedExecution execution = proofs.beginAnalytics(unitId, request.queryId(), actor,
+                request.revision(), properties.timeout().plus(Duration.ofMinutes(15)));
+        Instant expiresAt = execution.expiresAt() == null
+                ? Instant.now().plus(properties.timeout()).plus(Duration.ofMinutes(15)) : execution.expiresAt();
+        return new AnalyticsPrepareResponse(request.queryId(), execution.sourceRevision(), execution.executionToken(), expiresAt);
+    }
+
+    public AnalyticsExecutionResponse executeAnalytics(String unitId, String queryId,
+            AnalyticsExecutionRequest request, String actor) {
+        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_EXECUTE");
+    }
+
+    public AnalyticsExecutionResponse viewportAnalytics(String unitId, String queryId,
+            AnalyticsExecutionRequest request, String actor) {
+        requireViewport(request.request());
+        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_VIEWPORT");
+    }
+
+    public AnalyticsExecutionResponse drilldownAnalytics(String unitId, String queryId,
+            AnalyticsExecutionRequest request, String actor) {
+        requireDrilldown(request.request());
+        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_DRILLDOWN");
+    }
+
+    public void cancelAnalytics(String unitId, String queryId, String actor) {
+        // Seal cancellation in the database first. A worker racing this call
+        // can no longer publish a result after the proof becomes CANCELLED.
+        proofs.cancelAnalytics(unitId, queryId, actor);
+        ActiveAnalytics running = analyticsActive.get(new ActiveTaskKey(unitId, queryId));
+        if (running != null) {
+            running.control().cancel();
+            running.future().cancel(true);
+        }
+        audit.accepted(queryId, unitId, actor, "ANALYTICS_CANCEL", null, mapper.createObjectNode());
+    }
+
+    private AnalyticsExecutionResponse runAnalyticsPage(String unitId, String queryId,
+            AnalyticsExecutionRequest request, String actor, String auditKind) {
+        if (!properties.enabled()) throw ServiceException.unavailable("Server analytics is disabled");
+        QueryExecutionProofService.AnalyticsExecution proof = proofs.authorizeAnalytics(unitId, queryId,
+                request.executionToken(), actor);
+        validateAnalyticsRequest(request.request(), proof.sourceRevision());
+        ActiveTaskKey key = new ActiveTaskKey(unitId, queryId);
+        ExecutionControl control = new ExecutionControl();
+        FutureTask<JsonNode> future = new FutureTask<>(() -> executeNativeAnalytics(unitId, proof.sourceRevision(), request.request(), control));
+        ActiveAnalytics running = new ActiveAnalytics(control, future);
+        ActiveAnalytics previous = analyticsActive.putIfAbsent(key, running);
+        if (previous != null) throw ServiceException.conflict("An analytics request with this id is already running");
+        Instant started = Instant.now();
+        try {
+            workers.execute(future);
+            JsonNode result = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            control.ensureActive();
+            if (result == null || !result.isObject() || !request.request().path("kind").asText().equals(result.path("kind").asText())
+                    || result.path("revision").asLong(-1) != proof.sourceRevision()) {
+                proofs.invalidate(unitId, queryId, proof.executionToken());
+                throw new KernelHostException("ANALYTICS_RESPONSE_INVALID", "Native analytics response is not revision or kind pinned",
+                        queryId, "deploy-matching-kernel-host");
+            }
+            String resultHash = proofs.publishAnalytics(unitId, queryId, proof.executionToken(), actor, result);
+            long duration = Duration.between(started, Instant.now()).toMillis();
+            audit.accepted(queryId, unitId, actor, auditKind, null,
+                    mapper.createObjectNode().put("revision", proof.sourceRevision()).put("durationMs", duration));
+            return new AnalyticsExecutionResponse(queryId, proof.sourceRevision(), proof.executionToken(), resultHash,
+                    result, Instant.now(), duration);
+        } catch (TimeoutException error) {
+            control.cancel(); future.cancel(true); proofs.invalidate(unitId, queryId, proof.executionToken());
+            audit.rejected(queryId, unitId, actor, auditKind, "Analytics task timed out");
+            throw ServiceException.timeout("Analytics task timed out");
+        } catch (InterruptedException error) {
+            control.cancel(); future.cancel(true); proofs.invalidate(unitId, queryId, proof.executionToken());
+            Thread.currentThread().interrupt();
+            throw ServiceException.timeout("Analytics task was cancelled");
+        } catch (CancellationException error) {
+            proofs.invalidate(unitId, queryId, proof.executionToken());
+            throw ServiceException.timeout("Analytics task was cancelled");
+        } catch (ExecutionException error) {
+            proofs.invalidate(unitId, queryId, proof.executionToken());
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            if (control.cancelled() || cause instanceof CancellationException) throw ServiceException.timeout("Analytics task was cancelled");
+            if (cause instanceof KernelHostException kernelError) throw kernelError;
+            if (cause instanceof ServiceException serviceError) throw serviceError;
+            throw ServiceException.validation("Analytics task failed");
+        } finally {
+            analyticsActive.remove(key, running);
+        }
+    }
+
+    private JsonNode executeNativeAnalytics(String unitId, long revision, JsonNode request, ExecutionControl control) {
+        if (kernel == null || persistence == null) {
+            throw ServiceException.unavailable("Native analytics kernel is not configured");
+        }
+        control.ensureActive();
+        synchronized (kernel) {
+            RuntimeException primaryFailure = null;
+            try {
+                control.ensureActive();
+                persistence.reopen(unitId, revision, kernel);
+                loadAnalyticsPages(unitId, revision, request, kernel, control);
+                control.ensureActive();
+                ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision);
+                params.set("request", request.deepCopy());
+                return kernel.call("analytics.execute", params);
+            } catch (RuntimeException error) {
+                primaryFailure = error;
+                throw error;
+            } finally {
+                try {
+                    kernel.closeWorkbookContext(unitId);
+                } catch (RuntimeException closeFailure) {
+                    if (primaryFailure == null) throw closeFailure;
+                    primaryFailure.addSuppressed(closeFailure);
+                }
+            }
+        }
+    }
+
+    /** Loads only pages intersecting canonical source/range references. */
+    private void loadAnalyticsPages(String unitId, long revision, JsonNode request,
+            KernelHostClient host, ExecutionControl control) {
+        List<JsonNode> ranges = analyticsRanges(request);
+        JsonNode manifest = persistence.readManifest(unitId, revision);
+        for (JsonNode descriptor : manifest.path("pages")) {
+            control.ensureActive();
+            if (ranges.stream().anyMatch(range -> intersectsPage(range, descriptor))) {
+                persistence.loadPage(unitId, revision, descriptor.path("sheetId").asText(),
+                        descriptor.path("pageRow").asInt(-1), descriptor.path("pageColumn").asInt(-1), host);
+            }
+        }
+    }
+
+    private List<JsonNode> analyticsRanges(JsonNode request) {
+        List<JsonNode> ranges = new ArrayList<>();
+        JsonNode range = request.get("range");
+        if (range == null) range = request.get("source");
+        if (range != null && range.isObject()) ranges.add(range);
+        if (request.path("joins").isArray()) for (JsonNode join : request.path("joins")) {
+            if (join.path("range").isObject()) ranges.add(join.path("range"));
+        }
+        return ranges;
+    }
+
+    private boolean intersectsPage(JsonNode range, JsonNode descriptor) {
+        String sheet = range.path("sheetId").asText();
+        if (!sheet.equals(descriptor.path("sheetId").asText())) return false;
+        long startRow = range.path("startRow").asLong(-1), endRow = range.path("endRow").asLong(-1);
+        long startColumn = range.path("startColumn").asLong(-1), endColumn = range.path("endColumn").asLong(-1);
+        long pageRow = descriptor.path("pageRow").asLong(-1), pageColumn = descriptor.path("pageColumn").asLong(-1);
+        return startRow >= 0 && endRow >= startRow && startColumn >= 0 && endColumn >= startColumn
+                && startRow <= pageRow * 1024L + 1023 && endRow >= pageRow * 1024L
+                && startColumn <= pageColumn * 32L + 31 && endColumn >= pageColumn * 32L;
+    }
+
+    private void validateAnalyticsRequest(JsonNode request, long revision) {
+        if (request == null || !request.isObject() || !request.path("kind").isTextual()
+                || !Set.of("filter", "query", "pivot").contains(request.path("kind").asText())) {
+            throw ServiceException.validation("Analytics request kind is invalid");
+        }
+        if (!request.path("revision").isIntegralNumber() || request.path("revision").asLong(-1) != revision) {
+            throw ServiceException.conflict("Analytics request revision does not match its proof");
+        }
+        if (request.path("kind").asText().equals("query") && request.path("limit").asLong(0) <= 0) {
+            throw ServiceException.validation("Query analytics requires a positive result limit");
+        }
+    }
+
+    private void requireViewport(JsonNode request) {
+        if (!request.path("kind").asText().equals("pivot") || !request.path("viewport").isObject()) {
+            throw ServiceException.validation("Viewport endpoint requires a pivot viewport");
+        }
+        JsonNode viewport = request.path("viewport");
+        if (viewport.path("rowLimit").asLong(0) <= 0 || viewport.path("columnLimit").asLong(0) <= 0) {
+            throw ServiceException.validation("Pivot viewport limits must be positive");
+        }
+    }
+
+    private void requireDrilldown(JsonNode request) {
+        if (!request.path("kind").asText().equals("pivot") || !request.path("drilldown").isObject()) {
+            throw ServiceException.validation("Drilldown endpoint requires a pivot drilldown request");
+        }
+        if (request.path("drilldown").path("limit").asLong(0) <= 0) {
+            throw ServiceException.validation("Pivot drilldown limit must be positive");
+        }
     }
 
     public QueryExecutionResponse execute(String unitId, QueryExecutionRequest request, String actor) {
@@ -110,13 +317,16 @@ public class QueryExecutionService {
             throw ServiceException.validation(error.getMessage());
         }
 
+        QueryExecutionProofService.StartedExecution execution = proofs.begin(unitId, request.queryId(), actor,
+                properties.timeout().plus(Duration.ofMinutes(15)));
         Instant started = Instant.now();
         ExecutionControl control = new ExecutionControl();
         FutureTask<QueryTable> future = new FutureTask<>(() -> executeInternal(request, source, control));
-        String executionKey = unitId + ":" + request.queryId();
-        ActiveQuery running = new ActiveQuery(actor, control, future);
+        ActiveTaskKey executionKey = new ActiveTaskKey(unitId, request.queryId());
+        ActiveQuery running = new ActiveQuery(control, future);
         ActiveQuery previous = active.putIfAbsent(executionKey, running);
         if (previous != null) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             throw ServiceException.conflict("A query with this id is already running");
@@ -124,6 +334,7 @@ public class QueryExecutionService {
         try {
             workers.execute(future);
         } catch (RejectedExecutionException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             active.remove(executionKey, running);
             control.cancel();
             future.cancel(true);
@@ -131,31 +342,40 @@ public class QueryExecutionService {
         }
         try {
             QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            control.ensureActive();
             checkFinalSize(table);
+            com.fasterxml.jackson.databind.node.ObjectNode result = mapper.createObjectNode();
+            result.set("columns", mapper.valueToTree(table.columns));
+            result.set("rows", mapper.valueToTree(table.rows));
+            String resultHash = proofs.publish(unitId, request.queryId(), execution.executionToken(), actor, result);
             long duration = Duration.between(started, Instant.now()).toMillis();
             audit.accepted(request.queryId(), unitId, actor, "QUERY_EXECUTION", null, mapper.createObjectNode()
                     .put("connectorId", request.connectorId())
                     .put("sourceRef", request.sourceRef())
                     .put("rowCount", table.rows.size())
                     .put("durationMs", duration));
-            long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
-            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), sourceRevision,
+            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), execution.sourceRevision(),
+                    execution.executionToken(), resultHash,
                     table.columns, table.rows, table.rows.size(), Instant.now(), duration);
         } catch (TimeoutException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query timed out");
             throw ServiceException.timeout("Query timed out");
         } catch (InterruptedException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             control.cancel();
             future.cancel(true);
             Thread.currentThread().interrupt();
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (CancellationException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (ExecutionException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             Throwable cause = error.getCause() == null ? error : error.getCause();
             if (control.cancelled() || cause instanceof CancellationException) {
                 audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
@@ -165,6 +385,12 @@ public class QueryExecutionService {
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", reason);
             if (cause instanceof QueryFailure failure) throw failure.exception();
             throw ServiceException.validation(reason);
+        } catch (QueryFailure error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
+            throw error.exception();
+        } catch (ServiceException error) {
+            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
+            throw error;
         } finally {
             active.remove(executionKey, running);
         }
@@ -173,13 +399,12 @@ public class QueryExecutionService {
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         lifecycle.requireActive(unitId);
-        ActiveQuery query = active.get(unitId + ":" + queryId);
-        if (query == null) throw ServiceException.notFound("Running query not found");
-        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
-            throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
+        proofs.cancel(unitId, queryId, actor);
+        ActiveQuery query = active.get(new ActiveTaskKey(unitId, queryId));
+        if (query != null) {
+            query.control().cancel();
+            query.future().cancel(true);
         }
-        query.control().cancel();
-        query.future().cancel(true);
         audit.accepted(queryId, unitId, actor, "QUERY_CANCEL", null, mapper.createObjectNode());
     }
 
@@ -268,7 +493,7 @@ public class QueryExecutionService {
             } else {
                 builder.GET();
             }
-            CompletableFuture<HttpResponse<InputStream>> pending = http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            CompletableFuture<HttpResponse<InputStream>> pending = httpClient().sendAsync(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
             control.bind(pending);
             HttpResponse<InputStream> response;
             try {
@@ -986,19 +1211,40 @@ public class QueryExecutionService {
     }
 
     private static final class ActiveQuery {
-        private final String actor;
         private final ExecutionControl control;
         private final Future<QueryTable> future;
 
-        private ActiveQuery(String actor, ExecutionControl control, Future<QueryTable> future) {
-            this.actor = actor;
+        private ActiveQuery(ExecutionControl control, Future<QueryTable> future) {
             this.control = control;
             this.future = future;
         }
 
-        private String actor() { return actor; }
         private ExecutionControl control() { return control; }
         private Future<QueryTable> future() { return future; }
+    }
+
+    private record ActiveTaskKey(String unitId, String queryId) {}
+
+    /** REST transport is initialized only when a configured REST source runs. */
+    private HttpClient httpClient() {
+        HttpClient existing = http.get();
+        if (existing != null) return existing;
+        HttpClient created = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
+        if (http.compareAndSet(null, created)) return created;
+        return http.get();
+    }
+
+    private static final class ActiveAnalytics {
+        private final ExecutionControl control;
+        private final Future<JsonNode> future;
+
+        private ActiveAnalytics(ExecutionControl control, Future<JsonNode> future) {
+            this.control = control;
+            this.future = future;
+        }
+
+        private ExecutionControl control() { return control; }
+        private Future<JsonNode> future() { return future; }
     }
 
     /** Cancellation propagates into JDBC statements and HTTP request futures. */

@@ -1,23 +1,11 @@
 export type WorkspaceMemoryBucket =
-  | 'workspaceHeads'
-  | 'workspaceSnapshots'
-  | 'workspaceOperations'
-  | 'workspaceCatalog'
-  | 'operationJournals'
   | 'dataBlocks'
   | 'sparseOverlays'
-  | 'nativeDocuments'
   | 'assets';
 
 export interface WorkspaceMemoryState {
-  workspaceHeads: Map<string, unknown>;
-  workspaceSnapshots: Map<string, unknown>;
-  workspaceOperations: Map<string, unknown>;
-  workspaceCatalog: Map<string, unknown>;
-  operationJournals: Map<string, unknown>;
   dataBlocks: Map<string, unknown>;
   sparseOverlays: Map<string, unknown>;
-  nativeDocuments: Map<string, unknown>;
   assets: Map<string, unknown>;
 }
 
@@ -29,15 +17,10 @@ export interface WorkspaceMemoryTransaction {
 }
 
 export type WorkspacePersistenceState = 'ready' | 'disposed';
-export type WorkspacePersistenceMode = 'memory';
 
 export type WorkspaceStorageErrorCode =
   | 'STORAGE_MEMORY_DISPOSED'
-  | 'STORAGE_MEMORY_TRANSACTION_FAILED'
-  | 'STORAGE_WRITER_UNAVAILABLE'
-  | 'STORAGE_REVISION_CONFLICT'
-  | 'STORAGE_TRANSACTION_FAILED'
-  | 'STORAGE_SCHEMA_INVALID';
+  | 'STORAGE_MEMORY_TRANSACTION_FAILED';
 
 export class WorkspaceStorageError extends Error {
   readonly code: WorkspaceStorageErrorCode;
@@ -64,10 +47,6 @@ export function isWorkspaceStorageError(error: unknown): error is WorkspaceStora
   return [
     'STORAGE_MEMORY_DISPOSED',
     'STORAGE_MEMORY_TRANSACTION_FAILED',
-    'STORAGE_WRITER_UNAVAILABLE',
-    'STORAGE_REVISION_CONFLICT',
-    'STORAGE_TRANSACTION_FAILED',
-    'STORAGE_SCHEMA_INVALID',
   ].includes(String((error as { code: unknown }).code));
 }
 
@@ -77,14 +56,8 @@ function clone<T>(value: T): T {
 
 function createState(): WorkspaceMemoryState {
   return {
-    workspaceHeads: new Map(),
-    workspaceSnapshots: new Map(),
-    workspaceOperations: new Map(),
-    workspaceCatalog: new Map(),
-    operationJournals: new Map(),
     dataBlocks: new Map(),
     sparseOverlays: new Map(),
-    nativeDocuments: new Map(),
     assets: new Map(),
   };
 }
@@ -123,12 +96,9 @@ function memoryTransaction(state: WorkspaceMemoryState): WorkspaceMemoryTransact
 export class WorkspaceMemoryCoordinator {
   private stateValue = createState();
   private stateValueStatus: WorkspacePersistenceState = 'ready';
-  private readonly activeWriters = new Set<string>();
   private transactionTail: Promise<void> = Promise.resolve();
 
   get state(): WorkspacePersistenceState { return this.stateValueStatus; }
-
-  get mode(): WorkspacePersistenceMode { return 'memory'; }
 
   ensureReady(): void {
     if (this.stateValueStatus === 'disposed') throw this.disposedError('ensure-ready');
@@ -166,28 +136,9 @@ export class WorkspaceMemoryCoordinator {
     return run;
   }
 
-  async withWorkbookWriter<T>(unitId: string, operation: () => Promise<T>): Promise<T> {
-    this.ensureReady();
-    if (this.activeWriters.has(unitId)) {
-      throw new WorkspaceStorageError({
-        code: 'STORAGE_WRITER_UNAVAILABLE',
-        operation: 'acquire-writer',
-        message: `工作簿正在由当前页面的其他编辑会话写入：${unitId}`,
-        recovery: '请等待当前写入完成后重试；当前工作簿不会被覆盖。',
-      });
-    }
-    this.activeWriters.add(unitId);
-    try {
-      return await operation();
-    } finally {
-      this.activeWriters.delete(unitId);
-    }
-  }
-
   async disposeAsync(): Promise<void> {
     if (this.stateValueStatus === 'disposed') return;
     this.stateValueStatus = 'disposed';
-    this.activeWriters.clear();
     this.stateValue = createState();
   }
 
@@ -195,8 +146,8 @@ export class WorkspaceMemoryCoordinator {
     return new WorkspaceStorageError({
       code: 'STORAGE_MEMORY_DISPOSED',
       operation,
-      message: '当前页面内存工作簿会话已经结束。',
-      recovery: '请返回文件中心或刷新页面，重新创建或导入工作簿。',
+      message: '当前页面缓存会话已经结束。',
+      recovery: '请刷新页面，重新建立缓存会话。',
     });
   }
 
@@ -204,8 +155,8 @@ export class WorkspaceMemoryCoordinator {
     return new WorkspaceStorageError({
       code: 'STORAGE_MEMORY_TRANSACTION_FAILED',
       operation,
-      message: '内存工作簿事务失败，未提交任何部分数据。',
-      recovery: '请重试当前操作；如果问题持续，请重新开始页面内存会话。',
+      message: '页面缓存事务失败，未提交任何部分数据。',
+      recovery: '请重试当前操作；如果问题持续，请重新开始页面缓存会话。',
       cause,
     });
   }

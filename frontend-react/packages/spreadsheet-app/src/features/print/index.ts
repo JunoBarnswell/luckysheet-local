@@ -1,4 +1,5 @@
 import { normalizePrintDocumentSnapshot, type AssetRef, type CellData, type DrawingObject, type DrawingPayload, type PrintDocumentSnapshot, type RangeRef, type SheetId, type WorkbookModel } from '@react-sheets/core-model';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 
 export type PaperSize = PrintDocumentSnapshot['pageSetup']['paperSize'];
 export type PageOrientation = PrintDocumentSnapshot['pageSetup']['orientation'];
@@ -54,11 +55,10 @@ export interface PrintLayoutModel {
   repeatColumns?: { start: number; end: number };
   rowHeights?: Readonly<Record<number, number>>;
   columnWidths?: Readonly<Record<number, number>>;
-  hiddenRows?: ReadonlySet<number>;
-  hiddenColumns?: ReadonlySet<number>;
+  resolvedVisibility: ResolvedVisibility;
 }
 
-export function createDefaultPrintLayout(unitId: string, sheetId: SheetId): PrintLayoutModel {
+export function createDefaultPrintLayout(unitId: string, sheetId: SheetId, resolvedVisibility: ResolvedVisibility): PrintLayoutModel {
   return {
     unitId,
     pageSetup: { ...DEFAULT_PAGE_SETUP, margins: { ...DEFAULT_PAGE_SETUP.margins } },
@@ -67,6 +67,7 @@ export function createDefaultPrintLayout(unitId: string, sheetId: SheetId): Prin
       range: { sheetId, startRow: 0, endRow: 999, startColumn: 0, endColumn: 25 },
     }],
     pageBreaks: [],
+    resolvedVisibility,
   };
 }
 
@@ -182,8 +183,6 @@ export interface PrintProjection {
 export interface PrintPaginationOptions {
   rowHeights?: Readonly<Record<number, number>>;
   columnWidths?: Readonly<Record<number, number>>;
-  hiddenRows?: ReadonlySet<number>;
-  hiddenColumns?: ReadonlySet<number>;
 }
 
 const PAPER_POINTS: Record<PaperSize, { width: number; height: number }> = {
@@ -249,13 +248,14 @@ function trimHidden(segment: { start: number; end: number }, hidden: ReadonlySet
 
 /** One pagination implementation shared by browser and Node print hosts. */
 export function computePrintPages(layout: PrintLayoutModel, rowHeight = 20, colWidth = 80, options: PrintPaginationOptions = {}): PrintPageInfo[] {
+  if (!layout.resolvedVisibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: print pagination requires the kernel visibility projection');
   const pages: PrintPageInfo[] = [];
   const capacity = pageCapacity(layout);
   const scale = Math.max(0.01, layout.pageSetup.scale / 100);
   const rows = options.rowHeights ?? layout.rowHeights ?? {};
   const columns = options.columnWidths ?? layout.columnWidths ?? {};
-  const hiddenRows = options.hiddenRows ?? layout.hiddenRows ?? new Set<number>();
-  const hiddenColumns = options.hiddenColumns ?? layout.hiddenColumns ?? new Set<number>();
+  const hiddenRows = new Set([...layout.resolvedVisibility.rows.keys()]);
+  const hiddenColumns = new Set([...layout.resolvedVisibility.columns.keys()]);
   const rowSize = (row: number) => (rows[row] ?? rowHeight) * 0.75 * scale;
   const columnSize = (column: number) => (columns[column] ?? colWidth) * 0.75 * scale;
 

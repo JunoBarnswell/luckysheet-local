@@ -507,8 +507,8 @@ export function resolveCameraSourceGeometry(source: CanvasSheetSnapshot, range: 
     defaultColumnWidth: source.defaultColumnWidthPx,
     rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([key, value]) => [Number(key), value])),
     columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([key, value]) => [Number(key), value])),
-    hiddenRows: new Set(source.hiddenRows),
-    hiddenColumns: new Set(source.hiddenColumns),
+    hiddenRows: new Set(source.resolvedVisibility.rows.keys()),
+    hiddenColumns: new Set(source.resolvedVisibility.columns.keys()),
   });
   let firstRow = range.startRow;
   while (firstRow <= range.endRow && skeleton.isRowHidden(firstRow)) firstRow += 1;
@@ -607,8 +607,8 @@ function cameraSurface(source: CanvasSheetSnapshot, range: RangeRef): HTMLCanvas
     defaultColumnWidth: source.defaultColumnWidthPx,
     rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([entry, value]) => [Number(entry), value])),
     columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([entry, value]) => [Number(entry), value])),
-    hiddenRows: new Set(source.hiddenRows),
-    hiddenColumns: new Set(source.hiddenColumns),
+    hiddenRows: new Set(source.resolvedVisibility.rows.keys()),
+    hiddenColumns: new Set(source.resolvedVisibility.columns.keys()),
   });
   const cellProvider = cameraCellProvider(source, range);
   const options = { context: surfaceContext, skeleton, pane, visibleRange: pane.visibleRange, cellProvider, theme: DEFAULT_RENDER_THEME };

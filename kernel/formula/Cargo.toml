@@ -1,0 +1,11 @@
+[package]
+name = "kernel-formula"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kernel-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+

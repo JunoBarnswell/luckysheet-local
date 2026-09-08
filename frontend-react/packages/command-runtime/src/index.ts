@@ -1,4 +1,4 @@
-import { WorkbookModel, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type KernelReplicaManifest, type KernelReplicaPagePayload, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -6,7 +6,7 @@ export interface MutationInfo<P = unknown> {
   sheetId: string;
   params: P;
   affectedRanges: RangeRef[];
-  /** Explicit semantic override used by inverses whose storage mutation id is shared. */
+  /** Explicit authorization metadata for mutations whose storage id alone is insufficient. */
   permission?: {
     capability: string;
     protectionAction: ProtectionAction | 'none';
@@ -50,24 +50,10 @@ export interface MutationRegistrationMetadata<P = unknown> {
   readonly permission: MutationPermissionMetadata;
   /** Canonical affected-range resolver; every production mutation must provide it. */
   readonly affectedRanges: MutationAffectedRangesMetadata<P>;
-  /**
-   * Inverse contract; all applied inverse ids must be declared here. Exactly
-   * one of `inversePolicy` and `inverseIds` is required; `inverseIds` is
-   * normalized into this policy at registration time.
-   */
-  readonly inversePolicy?: MutationInversePolicy;
-  /** Explicit inverse allow-list accepted by the registry and normalized to `inversePolicy`. */
-  readonly inverseIds?: readonly string[];
 }
 
 /** Short public name for feature packages that expose a mutation contract. */
 export type MutationMetadata<P = unknown> = MutationRegistrationMetadata<P>;
-
-export interface MutationInversePolicy {
-  readonly allowedMutationIds: readonly string[];
-  readonly minCount: number;
-  readonly maxCount?: number;
-}
 
 export interface CommandResult {
   operationId: string;
@@ -93,9 +79,9 @@ export interface OperationResult {
 export interface Command<P = unknown> {
   id: string;
   /**
-   * Commands driven by view geometry may persist canonical local state while
-   * intentionally staying out of the user's edit history.  Rollback still
-   * uses the mutation inverse plan if execution fails.
+   * Commands that only publish ephemeral UI events may stay out of edit
+   * history. Any command with workbook mutations is committed atomically by
+   * the cloud kernel before the browser replica changes.
    */
   history?: 'record' | 'none';
   execute(params: P, context: CommandContext): CommandResult;
@@ -107,8 +93,6 @@ export interface Operation<P = unknown> {
 }
 
 export interface Mutation<P = unknown> extends MutationInfo<P> {
-  apply(context: CommandContext): void;
-  inverse: MutationInfo[];
 }
 
 export interface CommandContext {
@@ -116,6 +100,12 @@ export interface CommandContext {
   readonly operationId: string;
   /** Optional canonical worksheet-value authority supplied by the host runtime. */
   readonly resolveCellValue?: (sheet: WorksheetModel, row: number, column: number) => unknown;
+  /**
+   * Compose another command into the current plan. The nested command shares
+   * this operation identity and may only append mutations to this transaction;
+   * it never enters the serialized commit queue on its own.
+   */
+  executeCommand<P>(commandId: string, params: P): CommandResult;
   applyMutation<P>(mutation: Mutation<P>): void;
   recordOperation<P>(operation: Operation<P>, params: P): OperationResult;
 }
@@ -124,7 +114,6 @@ export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: Comm
 
 export interface MutationRegistration<P = unknown> {
   readonly id: string;
-  readonly handler: MutationHandler<P>;
   readonly metadata: MutationRegistrationMetadata<P>;
 }
 
@@ -133,9 +122,7 @@ export interface CommandRegistryOptions {
   readonly requireMutationMetadata?: true;
 }
 
-export type CanonicalMutationMetadata<P = unknown> = MutationRegistrationMetadata<P> & {
-  readonly inversePolicy: MutationInversePolicy;
-};
+export type CanonicalMutationMetadata<P = unknown> = MutationRegistrationMetadata<P>;
 
 type RegisteredMutation<P = unknown> = Omit<MutationRegistration<P>, 'metadata'> & {
   readonly metadata: CanonicalMutationMetadata<P>;
@@ -147,17 +134,13 @@ export type MutationRegistryIssueCode =
   | 'missing-permission'
   | 'missing-affected-ranges'
   | 'unknown-mutation'
-  | 'unknown-inverse'
-  | 'invalid-inverse'
   | 'invalid-params'
   | 'invalid-affected-ranges'
-  | 'inverse-not-allowed'
-  | 'invalid-inverse-policy';
+  ;
 
 export interface MutationRegistryIssue {
   readonly code: MutationRegistryIssueCode;
   readonly mutationId: string;
-  readonly inverseId?: string;
   readonly message: string;
 }
 
@@ -170,9 +153,8 @@ function issue(
   code: MutationRegistryIssueCode,
   mutationId: string,
   message: string,
-  inverseId?: string,
 ): MutationRegistryIssue {
-  return inverseId === undefined ? { code, mutationId, message } : { code, mutationId, inverseId, message };
+  return { code, mutationId, message };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,15 +197,6 @@ function formatIssues(issues: readonly MutationRegistryIssue[]): string {
   return issues.map((entry) => entry.message).join('; ');
 }
 
-function isValidInversePolicy(value: unknown): value is MutationInversePolicy {
-  if (!isRecord(value) || !Array.isArray(value.allowedMutationIds) || value.allowedMutationIds.length === 0
-    || !value.allowedMutationIds.every((entry) => typeof entry === 'string' && entry.length > 0)
-    || !Number.isSafeInteger(value.minCount) || Number(value.minCount) < 1) return false;
-  const minCount = Number(value.minCount);
-  return value.maxCount === undefined
-    || (Number.isSafeInteger(value.maxCount) && Number(value.maxCount) >= minCount);
-}
-
 function validateRegistrationMetadata(
   id: string,
   metadata: unknown,
@@ -250,24 +223,9 @@ function validateRegistrationMetadata(
   } else if (affectedRanges.mode !== undefined && affectedRanges.mode !== 'exact' && affectedRanges.mode !== 'declared') {
     issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid affected-range mode`));
   }
-  const inversePolicy = metadata.inversePolicy;
-  const inverseIds = metadata.inverseIds;
-  if (inversePolicy !== undefined && inverseIds !== undefined) {
-    issues.push(issue('invalid-inverse-policy', id, `Mutation ${id} must declare one inverse policy form`));
-  }
-  const normalizedPolicy = inversePolicy ?? (Array.isArray(inverseIds)
-    ? { allowedMutationIds: inverseIds, minCount: 1 }
-    : undefined);
-  if (!isValidInversePolicy(normalizedPolicy)) {
-    issues.push(issue('invalid-inverse-policy', id, `Mutation ${id} must declare a valid inverse policy`));
-  }
   if (issues.length > 0) return { issues };
-  const { inversePolicy: _inversePolicy, inverseIds: _inverseIds, ...baseMetadata } = metadata;
   return {
-    metadata: {
-      ...baseMetadata,
-      inversePolicy: normalizedPolicy as MutationInversePolicy,
-    } as CanonicalMutationMetadata,
+    metadata: metadata as unknown as CanonicalMutationMetadata,
     issues,
   };
 }
@@ -311,13 +269,9 @@ export class CommandRegistry {
     if (!candidate.id || typeof candidate.id !== 'string') {
       throw new Error('Mutation registration requires a non-empty id');
     }
-    if (typeof candidate.handler !== 'function') {
-      throw new Error(`Mutation registration requires a handler: ${candidate.id}`);
-    }
     if (this.mutations.has(candidate.id)) throw new Error(`Duplicate mutation: ${candidate.id}`);
     this.mutations.set(candidate.id, {
       id: candidate.id,
-      handler: candidate.handler as MutationHandler<unknown>,
       metadata: normalized.metadata as CanonicalMutationMetadata<unknown>,
     });
   }
@@ -332,12 +286,6 @@ export class CommandRegistry {
     const operation = this.operations.get(id);
     if (!operation) throw new Error(`Unknown operation: ${id}`);
     return operation as Operation<P>;
-  }
-
-  getMutation<P>(id: string): MutationHandler<P> {
-    const registration = this.mutations.get(id);
-    if (!registration) throw new Error(`Unknown mutation: ${id}`);
-    return registration.handler as MutationHandler<P>;
   }
 
   getMutationRegistration<P>(id: string): MutationRegistration<P> {
@@ -369,7 +317,6 @@ export class CommandRegistry {
   listMutationRegistrations(): readonly MutationRegistration[] {
     return [...this.mutations.values()].map((registration) => ({
       id: registration.id,
-      handler: registration.handler,
       metadata: registration.metadata,
     }));
   }
@@ -383,19 +330,14 @@ export class CommandRegistry {
     const issues: MutationRegistryIssue[] = [];
 
     for (const registration of this.mutations.values()) {
-      const { id, handler, metadata } = registration;
-      if (!id || typeof id !== 'string' || typeof handler !== 'function') {
+      const { id, metadata } = registration;
+      if (!id || typeof id !== 'string') {
         issues.push(issue('invalid-registration', id || '<empty>', `Invalid mutation registration: ${id || '<empty>'}`));
         continue;
       }
       const normalized = validateRegistrationMetadata(id, metadata);
       issues.push(...normalized.issues);
       if (!normalized.metadata) continue;
-      for (const inverseId of normalized.metadata.inversePolicy.allowedMutationIds) {
-        if (!this.mutations.has(inverseId)) {
-          issues.push(issue('unknown-inverse', id, `Mutation ${id} declares unknown inverse mutation ${inverseId}`, inverseId));
-        }
-      }
     }
 
     return { ok: issues.length === 0, issues };
@@ -416,36 +358,6 @@ export class CommandRegistry {
     }
 
     this.validateMutationInfo(mutation, issues);
-    const inversePolicy = registration.metadata.inversePolicy;
-    if (!Array.isArray(mutation.inverse)
-      || mutation.inverse.length < inversePolicy.minCount
-      || (inversePolicy.maxCount !== undefined && mutation.inverse.length > inversePolicy.maxCount)) {
-      issues.push(issue(
-        'invalid-inverse',
-        mutation.id,
-        `Mutation ${mutation.id} inverse count violates its policy (${inversePolicy.minCount}${inversePolicy.maxCount === undefined ? '+' : `-${inversePolicy.maxCount}`})`,
-      ));
-    } else {
-      for (const inverse of mutation.inverse) {
-        if (!isRecord(inverse) || typeof inverse.id !== 'string' || !inverse.id) {
-          issues.push(issue('invalid-inverse', mutation.id, `Mutation ${mutation.id} contains an invalid inverse mutation`));
-          continue;
-        }
-        if (!this.mutations.has(inverse.id)) {
-          issues.push(issue('unknown-inverse', mutation.id, `Mutation ${mutation.id} references unknown inverse ${inverse.id}`, inverse.id));
-          continue;
-        }
-        if (inverse.unitId !== mutation.unitId) {
-          issues.push(issue('invalid-inverse', mutation.id, `Mutation ${mutation.id} inverse ${inverse.id} targets a different workbook unit`, inverse.id));
-        }
-        const inverseIssues: MutationRegistryIssue[] = [];
-        this.validateMutationInfo(inverse as MutationInfo, inverseIssues, mutation.id, inverse.id);
-        issues.push(...inverseIssues);
-        if (!inversePolicy.allowedMutationIds.includes(inverse.id)) {
-          issues.push(issue('inverse-not-allowed', mutation.id, `Mutation ${mutation.id} does not allow inverse ${inverse.id}`, inverse.id));
-        }
-      }
-    }
     return issues;
   }
 
@@ -457,20 +369,18 @@ export class CommandRegistry {
   validateMutationInfo<P>(
     item: MutationInfo<P>,
     issues: MutationRegistryIssue[] = [],
-    ownerMutationId = item.id,
-    inverseId?: string,
   ): MutationRegistryIssue[] {
     const registration = this.mutations.get(item.id);
     if (!registration) {
-      issues.push(issue('unknown-mutation', ownerMutationId, `Unknown mutation: ${item.id}`, inverseId));
+      issues.push(issue('unknown-mutation', item.id, `Unknown mutation: ${item.id}`));
       return issues;
     }
 
     if (!isRecord(item) || typeof item.unitId !== 'string' || !item.unitId || typeof item.sheetId !== 'string' || !item.sheetId) {
-      issues.push(issue('invalid-registration', ownerMutationId, `Mutation ${item.id} has invalid unitId or sheetId`, inverseId));
+      issues.push(issue('invalid-registration', item.id, `Mutation ${item.id} has invalid unitId or sheetId`));
     }
     if (!Array.isArray(item.affectedRanges) || !item.affectedRanges.every(isValidRangeRef)) {
-      issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} has invalid affected ranges`, inverseId));
+      issues.push(issue('invalid-affected-ranges', item.id, `Mutation ${item.id} has invalid affected ranges`));
     }
 
     const schema = registration.metadata.schema;
@@ -481,7 +391,7 @@ export class CommandRegistry {
       valid = false;
     }
     if (!valid) {
-      issues.push(issue('invalid-params', ownerMutationId, `Mutation ${item.id} parameters do not match ${schema.name ?? 'its schema'}`, inverseId));
+      issues.push(issue('invalid-params', item.id, `Mutation ${item.id} parameters do not match ${schema.name ?? 'its schema'}`));
     }
 
     const affectedRanges = registration.metadata.affectedRanges;
@@ -489,12 +399,12 @@ export class CommandRegistry {
       try {
         const declared = affectedRanges.resolve(item.params as never);
         if (!Array.isArray(declared) || !declared.every(isValidRangeRef)) {
-          issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} declared an invalid affected-range result`, inverseId));
+          issues.push(issue('invalid-affected-ranges', item.id, `Mutation ${item.id} declared an invalid affected-range result`));
         } else if ((affectedRanges.mode ?? 'exact') === 'exact' && !rangesEqual(item.affectedRanges, declared)) {
-          issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} affected ranges differ from its declaration`, inverseId));
+          issues.push(issue('invalid-affected-ranges', item.id, `Mutation ${item.id} affected ranges differ from its declaration`));
         }
       } catch {
-        issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} affected-range resolver failed`, inverseId));
+        issues.push(issue('invalid-affected-ranges', item.id, `Mutation ${item.id} affected-range resolver failed`));
       }
     }
     return issues;
@@ -502,209 +412,29 @@ export class CommandRegistry {
 }
 
 export interface HistoryEntry {
+  /** Identity of the original semantic command shown to the user. */
   operationId: string;
   baseRevision: number;
-  committedRevision?: number;
+  committedRevision: number;
+  /**
+   * The immutable committed operation that the next undo/redo request targets.
+   * Every replay is itself a committed operation, so this target advances after
+   * each successful replay without reconstructing client-side mutation payloads.
+   */
+  replayTargetOperationId: string;
+  replayTargetBaseRevision: number;
+  replayTargetRevision: number;
   semanticCommandDescriptor: {
     id: string;
     params: unknown;
   };
-  forwardMutations: MutationInfo[];
-  inversePlan: MutationInfo[];
   affectedRanges: RangeRef[];
-  status: 'active' | 'invalid';
-  invalidReason?: string;
-  /** Existing consumers read these exact same arrays; they are not a second state. */
-  undo: MutationInfo[];
-  redo: MutationInfo[];
   description?: string;
   timestamp: number;
 }
 
 export interface CommandRuntimeOptions {
   readonly getRevision?: () => number;
-}
-
-export interface RemoteMutationContext {
-  readonly operationId?: string;
-  readonly baseRevision?: number;
-  readonly revision?: number;
-}
-
-interface StructuralDelta {
-  readonly axis: 'row' | 'column';
-  readonly at: number;
-  readonly count: number;
-  readonly direction: 1 | -1;
-  readonly sheetId: string;
-}
-
-interface TransformValueResult {
-  readonly value: unknown;
-  readonly safe: boolean;
-}
-
-interface TransformedHistoryEntry {
-  readonly ok: true;
-  readonly inversePlan: MutationInfo[];
-  readonly forwardMutations: MutationInfo[];
-  readonly affectedRanges: RangeRef[];
-}
-
-interface InvalidHistoryTransform {
-  readonly ok: false;
-  readonly reason: string;
-}
-
-type HistoryTransformResult = TransformedHistoryEntry | InvalidHistoryTransform;
-
-function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
-  const axis = mutation.id.includes('column') ? 'column' : mutation.id.includes('row') ? 'row' : undefined;
-  if (!axis) return undefined;
-  const direction = mutation.id.includes('insert') ? 1 : mutation.id.includes('delete') ? -1 : undefined;
-  if (!direction || !isRecord(mutation.params)) return undefined;
-  const at = mutation.params.at;
-  const count = mutation.params.count;
-  if (typeof at !== 'number' || typeof count !== 'number' || !Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
-  return { axis, at, count, direction, sheetId: mutation.sheetId };
-}
-
-function transformIndex(index: number, delta: StructuralDelta): number | undefined {
-  if (!Number.isSafeInteger(index) || index < 0) return undefined;
-  if (delta.direction === 1) return index >= delta.at ? index + delta.count : index;
-  const deletedEnd = delta.at + delta.count - 1;
-  if (index >= delta.at && index <= deletedEnd) return undefined;
-  return index > deletedEnd ? index - delta.count : index;
-}
-
-function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | undefined {
-  if (range.sheetId !== delta.sheetId) return structuredClone(range);
-  const start = delta.axis === 'row' ? range.startRow : range.startColumn;
-  const end = delta.axis === 'row' ? range.endRow : range.endColumn;
-  if (delta.direction === -1) {
-    const deletedEnd = delta.at + delta.count - 1;
-    if (start <= deletedEnd && end >= delta.at) return undefined;
-  }
-  const nextStart = transformIndex(start, delta);
-  const nextEnd = transformIndex(end, delta);
-  if (nextStart === undefined || nextEnd === undefined) return undefined;
-  let mappedStart = nextStart;
-  let mappedEnd = nextEnd;
-  if (delta.direction === 1 && start < delta.at && delta.at <= end) mappedEnd += delta.count;
-  return delta.axis === 'row'
-    ? { ...range, startRow: mappedStart, endRow: mappedEnd }
-    : { ...range, startColumn: mappedStart, endColumn: mappedEnd };
-}
-
-function mutationAxis(id: string): 'row' | 'column' | undefined {
-  if (id.includes('column')) return 'column';
-  if (id.includes('row')) return 'row';
-  return undefined;
-}
-
-function isCoordinateKey(key: string, axis: 'row' | 'column'): boolean {
-  const normalized = key.toLowerCase();
-  if (axis === 'row') {
-    return normalized === 'row'
-      || normalized === 'rowindex'
-      || /^(start|end|top|bottom|anchor|target|source)row$/.test(normalized);
-  }
-  return normalized === 'column'
-    || normalized === 'columnindex'
-    || /^(start|end|top|bottom|anchor|target|source)column$/.test(normalized);
-}
-
-function isCoordinateListKey(key: string, axis: 'row' | 'column'): boolean {
-  const normalized = key.toLowerCase();
-  return axis === 'row'
-    ? normalized === 'rows' || normalized === 'sourcerows' || normalized === 'rowindices' || normalized === 'rowindexes'
-    : normalized === 'columns' || normalized === 'sourcecolumns' || normalized === 'columnindices' || normalized === 'columnindexes';
-}
-
-function transformPayload(value: unknown, delta: StructuralDelta, id: string, keyHint = ''): TransformValueResult {
-  if (Array.isArray(value)) {
-    const values: unknown[] = [];
-    for (const item of value) {
-      if (typeof item === 'number' && isCoordinateListKey(keyHint, delta.axis)) {
-        const mapped = transformIndex(item, delta);
-        if (mapped === undefined) return { value, safe: false };
-        values.push(mapped);
-        continue;
-      }
-      const transformed = transformPayload(item, delta, id, keyHint);
-      if (!transformed.safe) return transformed;
-      values.push(transformed.value);
-    }
-    return { value: values, safe: true };
-  }
-  if (!isRecord(value)) return { value, safe: true };
-  if (isValidRangeRef(value)) {
-    const mapped = transformRange(value, delta);
-    return mapped ? { value: mapped, safe: true } : { value, safe: false };
-  }
-
-  const result: Record<string, unknown> = {};
-  const structuralAxis = mutationAxis(id);
-  for (const [key, child] of Object.entries(value)) {
-    if (isCoordinateKey(key, delta.axis) && typeof child === 'number') {
-      const mapped = transformIndex(child, delta);
-      if (mapped === undefined) return { value, safe: false };
-      result[key] = mapped;
-      continue;
-    }
-    if (key === 'at' && typeof child === 'number' && (structuralAxis === delta.axis || 'count' in value)) {
-      const mapped = transformIndex(child, delta);
-      if (mapped === undefined) return { value, safe: false };
-      result[key] = mapped;
-      continue;
-    }
-    const transformed = transformPayload(child, delta, id, key);
-    if (!transformed.safe) return transformed;
-    result[key] = transformed.value;
-  }
-  return { value: result, safe: true };
-}
-
-function transformMutation(item: MutationInfo, delta: StructuralDelta): MutationInfo | undefined {
-  const affectedRanges: RangeRef[] = [];
-  for (const range of item.affectedRanges) {
-    const mapped = transformRange(range, delta);
-    if (!mapped) return undefined;
-    affectedRanges.push(mapped);
-  }
-  if (item.sheetId !== delta.sheetId) return { ...item, affectedRanges };
-  const params = transformPayload(item.params, delta, item.id);
-  if (!params.safe) return undefined;
-  return { ...item, params: params.value, affectedRanges };
-}
-
-function transformHistoryEntry(entry: HistoryEntry, remote: MutationInfo): HistoryTransformResult {
-  const delta = structuralDelta(remote);
-  if (!delta) return {
-    ok: true,
-    inversePlan: [...entry.inversePlan],
-    forwardMutations: [...entry.forwardMutations],
-    affectedRanges: [...entry.affectedRanges],
-  };
-  const inversePlan: MutationInfo[] = [];
-  const forwardMutations: MutationInfo[] = [];
-  for (const mutation of entry.inversePlan) {
-    const transformed = transformMutation(mutation, delta);
-    if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
-    inversePlan.push(transformed);
-  }
-  for (const mutation of entry.forwardMutations) {
-    const transformed = transformMutation(mutation, delta);
-    if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
-    forwardMutations.push(transformed);
-  }
-  const affectedRanges: RangeRef[] = [];
-  for (const range of entry.affectedRanges) {
-    const transformed = transformRange(range, delta);
-    if (!transformed) return { ok: false, reason: `History ${entry.operationId} affected range intersects ${remote.id}` };
-    affectedRanges.push(transformed);
-  }
-  return { ok: true, inversePlan, forwardMutations, affectedRanges };
 }
 
 /** 变更来源:正向命令、本地撤销、本地重做、远端协同重放 */
@@ -715,312 +445,176 @@ export type MutationGuard = (mutation: MutationInfo, source: MutationSource) => 
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
 export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
+export interface KernelCommitRequest {
+  readonly operationId: string;
+  readonly baseRevision: number;
+  readonly mutations: readonly MutationInfo[];
+  readonly intent?: {
+    readonly type: 'undo';
+    readonly targetOperationId: string;
+    readonly targetBaseRevision: number;
+  };
+}
+export interface KernelCommittedOperation {
+  readonly operationId: string;
+  readonly baseRevision: number;
+  readonly revision: number;
+  readonly manifest: KernelReplicaManifest;
+  readonly pages: readonly KernelReplicaPagePayload[];
+  readonly removedPages: readonly { sheetId: string; pageRow: number; pageColumn: number }[];
+  readonly affectedRanges: readonly RangeRef[];
+}
+export type KernelCommitPort = (request: KernelCommitRequest) => Promise<KernelCommittedOperation>;
+
+export class CommandCommitError extends Error {
+  readonly recovery = 'reload-the-committed-cloud-revision';
+  constructor(readonly code: 'CLOUD_COMMIT_UNAVAILABLE' | 'COMMITTED_REVISION_MISMATCH' | 'KERNEL_COMMIT_IDENTITY_MISMATCH' | 'MUTATION_WORKBOOK_MISMATCH', readonly object: string) {
+    super(`${code}: ${object}`);
+    this.name = 'CommandCommitError';
+  }
+}
+
+/** Plans typed intents and publishes only server-acknowledged Rust transactions. */
 export class CommandRuntime {
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
-  private activeEntry: HistoryEntry | null = null;
-  private transactionDepth = 0;
   private readonly mutationListeners: MutationListener[] = [];
   private readonly commandListeners: CommandListener[] = [];
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
   private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   private mutationGuard?: MutationGuard;
   private revisionProvider?: () => number;
-  private currentRevision = 0;
-  private readonly invalidHistory: HistoryEntry[] = [];
+  private commitPort?: KernelCommitPort;
+  private serial: Promise<unknown> = Promise.resolve();
+  private transactionDepth = 0;
 
-  constructor(
-    readonly workbook: WorkbookModel,
-    readonly registry = new CommandRegistry(),
-    options: CommandRuntimeOptions = {},
-  ) {
-    this.revisionProvider = options.getRevision;
-  }
+  constructor(readonly workbook: WorkbookModel, readonly registry = new CommandRegistry(), options: CommandRuntimeOptions = {}) { this.revisionProvider = options.getRevision; }
+  setCommitPort(port: KernelCommitPort): void { this.commitPort = port; }
+  async whenIdle(): Promise<void> { await this.serial; }
+  setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void { this.cellValueResolver = resolver; }
+  setMutationGuard(guard: MutationGuard | undefined): void { this.mutationGuard = guard; }
+  setRevisionProvider(provider: (() => number) | undefined): void { this.revisionProvider = provider; }
+  setRevision(revision: number): void { if (revision !== this.workbook.revision) throw new CommandCommitError('COMMITTED_REVISION_MISMATCH', this.workbook.unitId); }
+  onMutation(listener: MutationListener): () => void { this.mutationListeners.push(listener); return () => { const i = this.mutationListeners.indexOf(listener); if (i >= 0) this.mutationListeners.splice(i, 1); }; }
+  onCommand(listener: CommandListener): () => void { this.commandListeners.push(listener); return () => { const i = this.commandListeners.indexOf(listener); if (i >= 0) this.commandListeners.splice(i, 1); }; }
+  onHistoryReplay(listener: HistoryReplayListener): () => void { this.historyReplayListeners.push(listener); return () => { const i = this.historyReplayListeners.indexOf(listener); if (i >= 0) this.historyReplayListeners.splice(i, 1); }; }
 
-  setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
-    this.cellValueResolver = resolver;
-  }
-
-  /** Guard every local, undo/redo, and remote mutation at one boundary. */
-  setMutationGuard(guard: MutationGuard | undefined): void {
-    this.mutationGuard = guard;
-  }
-
-  setRevisionProvider(provider: (() => number) | undefined): void {
-    this.revisionProvider = provider;
-  }
-
-  setRevision(revision: number): void {
-    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Revision must be a non-negative safe integer');
-    this.currentRevision = revision;
-  }
-
-  onMutation(listener: MutationListener): () => void {
-    this.mutationListeners.push(listener);
-    return () => {
-      const idx = this.mutationListeners.indexOf(listener);
-      if (idx >= 0) this.mutationListeners.splice(idx, 1);
-    };
-  }
-
-  onCommand(listener: CommandListener): () => void {
-    this.commandListeners.push(listener);
-    return () => {
-      const idx = this.commandListeners.indexOf(listener);
-      if (idx >= 0) this.commandListeners.splice(idx, 1);
-    };
-  }
-
-  onHistoryReplay(listener: HistoryReplayListener): () => void {
-    this.historyReplayListeners.push(listener);
-    return () => {
-      const idx = this.historyReplayListeners.indexOf(listener);
-      if (idx >= 0) this.historyReplayListeners.splice(idx, 1);
-    };
-  }
-
-  execute<P>(id: string, params: P): CommandResult {
-    // Resolve the command before opening a transaction. An unknown command is
-    // a protocol error and must not create an empty history entry or invoke a
-    // host fallback.
-    const command = this.registry.getCommand<P>(id);
-    this.registry.assertComplete();
-    const operationId = createOperationId();
-    const mutations: MutationInfo[] = [];
-    const isRootTransaction = this.transactionDepth === 0;
-
-    if (isRootTransaction) {
-      const inversePlan: MutationInfo[] = [];
+  execute<P>(id: string, params: P): Promise<CommandResult> {
+    return this.enqueue(async () => {
+      const command = this.registry.getCommand<P>(id);
+      this.registry.assertComplete();
+      const operationId = createOperationId();
+      const baseRevision = this.readRevision();
       const forwardMutations: MutationInfo[] = [];
-      this.activeEntry = {
-        operationId,
-        baseRevision: this.readRevision(),
-        semanticCommandDescriptor: { id, params: structuredClone(params) },
-        forwardMutations,
-        inversePlan,
-        affectedRanges: [],
-        status: 'active',
-        // Keep old public field names as references to the canonical arrays.
-        undo: inversePlan,
-        redo: forwardMutations,
-        description: id,
-        timestamp: Date.now(),
+      const context: CommandContext = {
+        workbook: this.workbook, operationId,
+        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
+        executeCommand: (commandId, parameters) => this.registry.getCommand(commandId).execute(parameters, context),
+        applyMutation: mutation => {
+          if (mutation.unitId !== this.workbook.unitId) throw new CommandCommitError('MUTATION_WORKBOOK_MISMATCH', mutation.unitId);
+          this.registry.assertMutation(mutation);
+          this.mutationGuard?.(mutation, 'command');
+          const info: MutationInfo = structuredClone({ id: mutation.id, unitId: mutation.unitId, sheetId: mutation.sheetId, params: mutation.params, affectedRanges: mutation.affectedRanges, ...(mutation.permission ? { permission: mutation.permission } : {}) });
+          forwardMutations.push(info);
+        },
+        recordOperation: (operation, parameters) => this.registry.getOperation(operation.id).execute(parameters, context),
       };
-    }
-    this.transactionDepth += 1;
-
-    const context: CommandContext = {
-      workbook: this.workbook,
-      operationId,
-      resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
-      applyMutation: (mutation) => {
-        if (mutation.unitId !== this.workbook.unitId) {
-          throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${mutation.unitId}`);
-        }
-        // Registration and inverse validation happen before the mutation's
-        // callback is allowed to touch the workbook. This makes both local
-        // execution and every replay path fail closed on protocol drift.
-        this.registry.assertMutation(mutation);
-        this.mutationGuard?.(mutation, 'command');
-        mutation.apply(context);
-        const info: MutationInfo = {
-          id: mutation.id,
-          unitId: mutation.unitId,
-          sheetId: mutation.sheetId,
-          params: mutation.params,
-          affectedRanges: mutation.affectedRanges,
-          ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
-        };
-        mutations.push(info);
-        this.activeEntry?.inversePlan.unshift(...mutation.inverse);
-        this.activeEntry?.forwardMutations.push(info);
-        if (this.activeEntry) {
-          this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
-        }
-
-        for (const listener of this.mutationListeners) {
-          listener(info, 'command');
-        }
-      },
-      recordOperation: (operation, operationParams) => {
-        const registered = this.registry.getOperation(operation.id);
-        return registered.execute(operationParams, context);
-      },
-    };
-
-    try {
-      const commandResult = command.execute(params, context);
-      this.transactionDepth -= 1;
-
-      if (isRootTransaction) {
-        if (command.history !== 'none' && this.activeEntry && (this.activeEntry.inversePlan.length > 0 || this.activeEntry.forwardMutations.length > 0)) {
-          this.undoStack.push(this.activeEntry);
+      // Planning has no model writes. A rejected native/ACL transaction leaves this replica untouched.
+      const planned = command.execute(params, context);
+      let affectedRanges: RangeRef[] = [];
+      if (forwardMutations.length) {
+        const committed = await this.commit(operationId, forwardMutations, 'command');
+        affectedRanges = [...committed.affectedRanges];
+        if (command.history !== 'none') {
+          const entry: HistoryEntry = {
+            operationId,
+            baseRevision,
+            committedRevision: committed.revision,
+            replayTargetOperationId: operationId,
+            replayTargetBaseRevision: baseRevision,
+            replayTargetRevision: committed.revision,
+            semanticCommandDescriptor: { id, params: structuredClone(params) },
+            affectedRanges,
+            description: id,
+            timestamp: Date.now(),
+          };
+          this.undoStack.push(entry);
           if (this.undoStack.length > 200) this.undoStack.shift();
           this.redoStack.length = 0;
         }
-        this.activeEntry = null;
       }
-
-      const result: CommandResult = {
-        ...commandResult,
-        operationId,
-        mutationCount: mutations.length,
-      };
-
-      for (const listener of this.commandListeners) {
-        listener(id, params, result);
-      }
-
+      const result = { ...planned, operationId, mutationCount: forwardMutations.length, affectedRanges };
+      for (const listener of this.commandListeners) listener(id, params, result);
       return result;
-    } catch (err) {
-      this.transactionDepth -= 1;
-      if (isRootTransaction) {
-        // Rollback applied mutations in this transaction if failed
-        if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
-          this.applyHistory(this.activeEntry.inversePlan, 'undo');
-        }
-        this.activeEntry = null;
-      }
-      throw err;
-    }
+    });
   }
-
-  undo(): boolean {
-    this.registry.assertComplete();
-    const entry = this.undoStack.pop();
+  undo(): Promise<boolean> { return this.enqueue(async () => {
+    const entry = this.undoStack.at(-1);
     if (!entry) return false;
-    if (entry.status !== 'active') return false;
-    this.applyHistory(entry.inversePlan, 'undo');
+    const replayOperationId = createOperationId();
+    const committed = await this.commit(replayOperationId, [], 'undo', {
+      type: 'undo',
+      targetOperationId: entry.replayTargetOperationId,
+      targetBaseRevision: entry.replayTargetBaseRevision,
+    });
+    this.undoStack.pop();
+    entry.replayTargetOperationId = replayOperationId;
+    entry.replayTargetBaseRevision = committed.baseRevision;
+    entry.replayTargetRevision = committed.revision;
+    entry.affectedRanges = [...committed.affectedRanges];
     this.redoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('undo', entry);
     return true;
-  }
-
-  redo(): boolean {
-    this.registry.assertComplete();
-    const entry = this.redoStack.pop();
+  }); }
+  redo(): Promise<boolean> { return this.enqueue(async () => {
+    const entry = this.redoStack.at(-1);
     if (!entry) return false;
-    if (entry.status !== 'active') return false;
-    this.applyHistory(entry.forwardMutations, 'redo');
+    const replayOperationId = createOperationId();
+    const committed = await this.commit(replayOperationId, [], 'redo', {
+      type: 'undo',
+      targetOperationId: entry.replayTargetOperationId,
+      targetBaseRevision: entry.replayTargetBaseRevision,
+    });
+    this.redoStack.pop();
+    entry.replayTargetOperationId = replayOperationId;
+    entry.replayTargetBaseRevision = committed.baseRevision;
+    entry.replayTargetRevision = committed.revision;
+    entry.affectedRanges = [...committed.affectedRanges];
     this.undoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('redo', entry);
     return true;
+  }); }
+  applyRemoteCommit(committed: KernelCommittedOperation, mutations: readonly MutationInfo[] = []): void {
+    this.assertCommit(committed, committed.operationId, this.workbook.revision);
+    this.workbook.applyCommittedManifest(committed.manifest, committed.pages);
+    for (const item of mutations) for (const listener of this.mutationListeners) listener(item, 'remote');
   }
-
-  /**
-   * 应用来自远端协同的变更序列:执行已注册的 mutation 处理器,
-   * 以 'remote' 来源通知监听器(用于引擎同步/视图刷新),但不进入本地撤销栈。
-   */
-  applyRemoteMutations(items: readonly MutationInfo[], remoteContext: RemoteMutationContext = {}): void {
-    this.registry.assertComplete();
-    // A committed operation may contain several dependent mutations. Replay
-    // them against an isolated snapshot first so a later rejection cannot
-    // leave the live workbook partially changed.
-    const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
-    preview.applyHistory(items, 'remote');
-    this.applyHistory(items, 'remote');
-    for (const item of items) this.transformHistoryAgainstRemote(item);
-    if (remoteContext.revision !== undefined) {
-      if (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1) throw new Error('Remote revision is invalid');
-      this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
-    }
+  markOperationCommitted(operationId: string, revision: number): void { if (revision !== this.workbook.revision) throw new Error('COMMITTED_REVISION_MISMATCH'); for (const entry of [...this.undoStack, ...this.redoStack]) if (entry.operationId === operationId) entry.committedRevision = revision; }
+  get activeDepth(): number { return this.transactionDepth; }
+  getHistoryDepth(): { undo: number; redo: number } { return { undo: this.undoStack.length, redo: this.redoStack.length }; }
+  getUndoEntries(): readonly HistoryEntry[] { return [...this.undoStack]; }
+  getRedoEntries(): readonly HistoryEntry[] { return [...this.redoStack]; }
+  clearHistory(): void { this.undoStack.length = 0; this.redoStack.length = 0; }
+  private readRevision(): number { const revision = this.revisionProvider?.() ?? this.workbook.revision; if (!Number.isSafeInteger(revision) || revision < 0 || revision !== this.workbook.revision) throw new Error('COMMITTED_REVISION_MISMATCH'); return revision; }
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.serial.then(async () => { this.transactionDepth++; try { return await action(); } finally { this.transactionDepth--; } });
+    this.serial = result.then(() => undefined, () => undefined);
+    return result;
   }
-
-  markOperationCommitted(operationId: string, revision: number): void {
-    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
-    for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) {
-      if (entry.operationId === operationId) entry.committedRevision = revision;
-    }
-    this.currentRevision = Math.max(this.currentRevision, revision);
-  }
-
-  getInvalidHistoryEntries(): readonly HistoryEntry[] {
-    return [...this.invalidHistory];
-  }
-
-  /** 当前事务嵌套深度(workspace 用以判断根事务冲刷协同队列) */
-  get activeDepth(): number {
-    return this.transactionDepth;
-  }
-
-  getHistoryDepth(): { undo: number; redo: number } {
-    return { undo: this.undoStack.length, redo: this.redoStack.length };
-  }
-
-  getUndoEntries(): readonly HistoryEntry[] {
-    return [...this.undoStack];
-  }
-
-  /** Read-only projection used by hosts to preflight a permission-safe redo. */
-  getRedoEntries(): readonly HistoryEntry[] {
-    return [...this.redoStack];
-  }
-
-  clearHistory(): void {
-    this.undoStack.length = 0;
-    this.redoStack.length = 0;
-    this.invalidHistory.length = 0;
-  }
-
-  private readRevision(): number {
-    const revision = this.revisionProvider?.() ?? this.currentRevision;
-    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('History base revision is invalid');
-    this.currentRevision = Math.max(this.currentRevision, revision);
-    return revision;
-  }
-
-  private transformHistoryAgainstRemote(remote: MutationInfo): void {
-    const stacks = [this.undoStack, this.redoStack];
-    for (const stack of stacks) {
-      for (let index = stack.length - 1; index >= 0; index -= 1) {
-        const entry = stack[index]!;
-        const transformed = transformHistoryEntry(entry, remote);
-        if (!transformed.ok) {
-          stack.splice(index, 1);
-          entry.status = 'invalid';
-          entry.invalidReason = transformed.reason;
-          this.invalidHistory.push(entry);
-          continue;
-        }
-        entry.inversePlan.splice(0, entry.inversePlan.length, ...transformed.inversePlan);
-        entry.forwardMutations.splice(0, entry.forwardMutations.length, ...transformed.forwardMutations);
-        entry.affectedRanges = transformed.affectedRanges;
-      }
-    }
-  }
-
-  private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {
+  private async commit(operationId: string, mutations: readonly MutationInfo[], source: MutationSource, intent?: KernelCommitRequest['intent']): Promise<KernelCommittedOperation> {
+    if (!this.commitPort) throw new CommandCommitError('CLOUD_COMMIT_UNAVAILABLE', this.workbook.unitId);
+    if ((intent === undefined) === (mutations.length === 0)) throw new Error('KERNEL_COMMIT_PAYLOAD_INVALID');
     const issues: MutationRegistryIssue[] = [];
-    for (const item of items) {
-      if (item.unitId !== this.workbook.unitId) {
-        throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${item.unitId}`);
-      }
-      this.registry.validateMutationInfo(item, issues);
-    }
-    if (issues.length > 0) {
-      throw new Error(`Invalid mutation history: ${formatIssues(issues)}`);
-    }
-    for (const item of items) this.mutationGuard?.(item, source);
-    for (const item of items) {
-      const handler = this.registry.getMutation(item.id);
-      const replayContext: CommandContext = {
-        workbook: this.workbook,
-        operationId: createOperationId(),
-        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
-        applyMutation: () => {
-          throw new Error('Nested mutation application is not allowed during mutation replay');
-        },
-        recordOperation: (operation, operationParams) => {
-          const registered = this.registry.getOperation(operation.id);
-          return registered.execute(operationParams, replayContext);
-        },
-      };
-      handler(item, {
-        ...replayContext,
-      });
-      for (const listener of this.mutationListeners) {
-        listener(item, source);
-      }
-    }
+    for (const item of mutations) { this.registry.validateMutationInfo(item, issues); this.mutationGuard?.(item, source); }
+    if (issues.length) throw new Error(formatIssues(issues));
+    const baseRevision = this.readRevision();
+    const committed = await this.commitPort({ operationId, baseRevision, mutations, ...(intent ? { intent } : {}) });
+    this.assertCommit(committed, operationId, baseRevision);
+    this.workbook.applyCommittedManifest(committed.manifest, committed.pages);
+    for (const item of mutations) for (const listener of this.mutationListeners) listener(item, source);
+    return committed;
+  }
+  private assertCommit(commit: KernelCommittedOperation, operationId: string, baseRevision: number): void {
+    if (commit.operationId !== operationId || commit.baseRevision !== baseRevision || commit.revision !== baseRevision + 1 || commit.manifest.revision !== commit.revision || commit.manifest.unitId !== this.workbook.unitId) throw new CommandCommitError('KERNEL_COMMIT_IDENTITY_MISMATCH', operationId);
   }
 }

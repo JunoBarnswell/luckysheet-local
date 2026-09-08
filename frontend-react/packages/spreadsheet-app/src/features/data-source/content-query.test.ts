@@ -16,14 +16,6 @@ import {
   DataSourceContentQuery,
   type DataBlockReader,
 } from './content-query';
-import {
-  applyDataRegionMaterialization,
-  prepareDataRegionMaterialization,
-  resolveCell,
-  restoreDataRegionMaterialization,
-  writeCellPatch,
-} from './resolved-cell';
-import { WorkbookModel } from '@react-sheets/core-model';
 
 const fields: ColumnarBlockField[] = [
   { id: 'code', name: 'Code', ordinal: 0, type: 'text' },
@@ -107,7 +99,6 @@ test('content query reads blocks, publishes loading/ready, and applies block-loc
   assert.deepEqual(events, [`${block.ref.id}:loading`, `${block.ref.id}:ready`]);
   unsubscribe();
 });
-
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
@@ -187,111 +178,3 @@ test('invalid ranges and fields are errors, while empty ranges are ready and emp
   assert.deepEqual(empty.value, []);
 });
 
-test('canonical overlay patches preserve immutable block values', async () => {
-  const sourceId = nextSourceId();
-  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
-  const block = await buildBlock(sourceId, 'resolved-block', 0, [['A', 10], ['B', 20]]);
-  await store.put(block.ref, block.bytes);
-  const query = new DataSourceContentQuery(manifest(sourceId, 2, [block.ref]), store);
-  const workbook = new WorkbookModel('resolved-cell', 'Resolved Cell');
-  workbook.addDataSource(query.manifest);
-  const sheet = workbook.getSheet('sheet-1');
-  sheet.rowCount = 4;
-  sheet.columnCount = 2;
-  sheet.addDataRegion({
-    id: 'resolved-region',
-    sourceId,
-    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
-    headerRow: 0,
-    revision: 0,
-  });
-
-  sheet.cells.set(1, 1, { value: 999, style: { bold: true } });
-  assert.throws(
-    () => resolveCell(sheet, 1, 1, new Map([[sourceId, query]])),
-    /non-canonical cell overlay/,
-  );
-  sheet.cells.delete(1, 1);
-  writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'inherit' }, style: { kind: 'set', value: { bold: true } } });
-  await query.getRowValues(0);
-  const loaded = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
-  assert.equal(loaded?.source, 'data-block-overlay');
-  assert.equal(loaded?.base?.value, 10);
-  assert.equal(loaded?.cell?.value, 10);
-  assert.equal(loaded?.cell?.style?.bold, true);
-
-  writeCellPatch(sheet, 1, 1, {
-    schema: 'CellPatch',
-    value: { kind: 'inherit' },
-    style: { kind: 'set', value: { italic: true } },
-  });
-  const styled = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
-  assert.equal(styled?.cell?.value, 10);
-  assert.deepEqual(styled?.cell?.style, { italic: true });
-
-  writeCellPatch(sheet, 1, 1, {
-    schema: 'CellPatch',
-    value: { kind: 'set', value: 42 },
-  });
-  const changed = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
-  assert.equal(changed?.cell?.value, 42);
-  assert.equal(changed?.cell?.style?.italic, true);
-
-  writeCellPatch(sheet, 1, 1, {
-    schema: 'CellPatch',
-    style: { kind: 'clear' },
-  });
-  const cleared = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
-  assert.equal(cleared?.cell?.value, 42);
-  assert.equal(cleared?.cell?.style, undefined);
-
-  const restored = WorkbookModel.fromSnapshot(workbook.snapshot());
-  const restoredCell = resolveCell(restored.getSheet(sheet.id), 1, 1, new Map([[sourceId, query]]));
-  assert.equal(restoredCell?.cell?.value, 42);
-  assert.equal(restoredCell?.cell?.style, undefined);
-
-  const prepared = await prepareDataRegionMaterialization(workbook, sheet.id, 'resolved-region', new Map([[sourceId, query]]));
-  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
-  assert.equal(workbook.dataModel.sources.has(sourceId), true);
-  const transaction = applyDataRegionMaterialization(workbook, prepared);
-  assert.equal(transaction.sourceRemoved, true);
-  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 0);
-  assert.equal(workbook.dataModel.sources.has(sourceId), false);
-  assert.equal(workbook.getSheet(sheet.id).cells.get(1, 1)?.value, 42);
-  restoreDataRegionMaterialization(workbook, transaction);
-  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
-  assert.equal(workbook.dataModel.sources.has(sourceId), true);
-  const restoredTransactionCell = resolveCell(workbook.getSheet(sheet.id), 1, 1, new Map([[sourceId, query]]));
-  assert.equal(restoredTransactionCell?.cell?.value, 42);
-});
-
-test('resolved cells expose loading and missing states without replacing a block with an empty cell', async () => {
-  const sourceId = nextSourceId();
-  const block = await buildBlock(sourceId, 'unloaded-block', 0, [['A', 10]]);
-  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
-  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), store);
-  const workbook = new WorkbookModel('resolved-unloaded', 'Resolved Unloaded');
-  const sheet = workbook.getSheet('sheet-1');
-  workbook.addDataSource(query.manifest);
-  sheet.addDataRegion({
-    id: 'unloaded-region',
-    sourceId,
-    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
-    headerRow: 0,
-    revision: 0,
-  });
-
-  const loading = resolveCell(sheet, 1, 0, new Map([[sourceId, query]]));
-  assert.equal(loading?.state?.availability, 'loading');
-  assert.equal(loading?.cell?.value, 'Loading…');
-  const missing = await query.getCellValue(0, 0);
-  assert.equal(missing.state.availability, 'missing');
-  const afterFailure = resolveCell(sheet, 1, 0, new Map([[sourceId, query]]));
-  assert.equal(afterFailure?.state?.availability, 'missing');
-  assert.equal(afterFailure?.cell?.value, '#BLOCK!');
-  await assert.rejects(
-    prepareDataRegionMaterialization(workbook, sheet.id, 'unloaded-region', new Map([[sourceId, query]])),
-    /could not be fully loaded|missing from local storage/i,
-  );
-  assert.equal(sheet.dataRegions.length, 1);
-});

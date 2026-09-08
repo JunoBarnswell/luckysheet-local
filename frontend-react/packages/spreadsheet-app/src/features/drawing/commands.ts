@@ -1,5 +1,6 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type {
+  CameraDrawingPayload,
   DrawingObject,
   DrawingPayload,
   ConnectorDrawingPayload,
@@ -14,7 +15,6 @@ import type {
   WorksheetSnapSettings,
 } from '@react-sheets/core-model';
 import {
-  assertCanonicalConnector,
   isAssetRef,
   isDrawingConnectorPayload,
   isShapeDrawingPayload,
@@ -34,16 +34,10 @@ import {
   planConnectorRoute,
   recomputeConnectorRoutes,
 } from '@react-sheets/core-model';
-import { DrawingRuntime, reorderDrawing } from './runtime';
+import { DrawingRuntime } from './runtime';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
-}
-
-function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
-  const index = items.findIndex((item) => item.id === id);
-  if (index < 0) return undefined;
-  return items.splice(index, 1)[0];
 }
 
 export interface DrawingSelectParams {
@@ -220,13 +214,40 @@ function isTransform(value: unknown): value is DrawingTransform {
 function isAnchor(value: unknown): value is DrawingObject['anchor'] {
   if (!objectParams(value) || !['absolute', 'one-cell', 'two-cell'].includes(String(value.kind))) return false;
   const anchor = value as Record<string, unknown>;
-  if (anchor.kind === 'absolute') return true;
+  if (anchor.kind === 'absolute') {
+    return anchor.row === undefined && anchor.column === undefined && anchor.endRow === undefined && anchor.endColumn === undefined;
+  }
   if (!Number.isInteger(anchor.row) || !Number.isInteger(anchor.column) || (anchor.row as number) < 0 || (anchor.column as number) < 0) return false;
   if (anchor.kind === 'two-cell') {
     return Number.isInteger(anchor.endRow) && Number.isInteger(anchor.endColumn)
       && (anchor.endRow as number) >= (anchor.row as number) && (anchor.endColumn as number) >= (anchor.column as number);
   }
-  return true;
+  return anchor.endRow === undefined && anchor.endColumn === undefined;
+}
+
+const drawingKinds = ['image', 'shape', 'connector', 'chart', 'camera', 'screenshot', 'textbox', 'form-control', 'icon', 'model3d', 'smartart', 'wordart', 'signature-line', 'embedded-object', 'equation', 'slicer', 'timeline'] as const;
+
+function isRangeRef(value: unknown): boolean {
+  if (!objectParams(value)) return false;
+  return typeof value.sheetId === 'string' && value.sheetId.trim().length > 0
+    && Number.isSafeInteger(value.startRow) && (value.startRow as number) >= 0
+    && Number.isSafeInteger(value.endRow) && (value.endRow as number) >= (value.startRow as number)
+    && Number.isSafeInteger(value.startColumn) && (value.startColumn as number) >= 0
+    && Number.isSafeInteger(value.endColumn) && (value.endColumn as number) >= (value.startColumn as number);
+}
+
+function isChartPayload(value: unknown): value is DrawingPayload & { kind: 'chart' } {
+  if (!objectParams(value) || value.kind !== 'chart') return false;
+  return typeof value.chartId === 'string' && value.chartId.trim().length > 0
+    && typeof value.chartType === 'string' && value.chartType.trim().length > 0
+    && typeof value.subtype === 'string' && value.subtype.trim().length > 0
+    && objectParams(value.source)
+    && objectParams(value.elements)
+    && ['show', 'hideRows', 'hideColumns'].includes(String(value.elements.hiddenData));
+}
+
+function isCameraPayload(value: unknown): value is CameraDrawingPayload {
+  return objectParams(value) && value.kind === 'camera' && isRangeRef(value.sourceRange) && value.refreshPolicy === 'live';
 }
 
 function isDrawingPayload(value: unknown): value is DrawingPayload {
@@ -236,7 +257,8 @@ function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
   if (value.kind === 'textbox') return isTextBoxPayload(value);
   if (value.kind === 'shape') return isShapeDrawingPayload(value);
-  if (['chart', 'camera'].includes(String(value.kind))) return true;
+  if (value.kind === 'chart') return isChartPayload(value);
+  if (value.kind === 'camera') return isCameraPayload(value);
   if (value.kind === 'icon') return isIconDrawingPayload(value);
   if (value.kind === 'model3d') return isModel3dDrawingPayload(value);
   if (value.kind === 'smartart') return isSmartArtDrawingPayload(value);
@@ -273,10 +295,10 @@ function isTextBoxPayload(value: unknown): value is TextBoxDrawingPayload {
 
 function isDrawing(value: unknown): value is DrawingObject {
   if (!objectParams(value)) return false;
-  return typeof value.id === 'string'
-    && typeof value.sheetId === 'string'
-    && typeof value.kind === 'string'
-    && typeof value.payloadId === 'string'
+  return typeof value.id === 'string' && value.id.trim().length > 0
+    && typeof value.sheetId === 'string' && value.sheetId.trim().length > 0
+    && drawingKinds.includes(value.kind as typeof drawingKinds[number])
+    && typeof value.payloadId === 'string' && value.payloadId.trim().length > 0
     && isAnchor(value.anchor)
     && isTransform(value.transform)
     && isFiniteNumber(value.zIndex);
@@ -285,7 +307,9 @@ function isDrawing(value: unknown): value is DrawingObject {
 function isDrawingAddParams(value: unknown): value is DrawingAddParams {
   if (!hasSheetId(value) || !objectParams(value)) return false;
   const params = value as Record<string, unknown>;
-  return isDrawing(params.drawing) && isDrawingPayload(params.payload);
+  return isDrawing(params.drawing) && isDrawingPayload(params.payload)
+    && params.drawing.sheetId === params.sheetId
+    && params.drawing.kind === params.payload.kind;
 }
 
 function isConnectorRouteState(value: unknown): value is DrawingConnectorRouteState {
@@ -317,7 +341,10 @@ function isConnectorUpdateParams(value: unknown): value is DrawingConnectorUpdat
 
 function isGroupParams(value: unknown): value is DrawingGroupParams {
   if (!hasSheetId(value) || !objectParams(value)) return false;
-  return isDrawingGroup((value as Record<string, unknown>).group);
+  const group = (value as Record<string, unknown>).group;
+  if (!isDrawingGroup(group)) return false;
+  const typedGroup = group as DrawingGroup;
+  return typedGroup.sheetId === value.sheetId && new Set(typedGroup.memberDrawingIds).size === typedGroup.memberDrawingIds.length;
 }
 
 function isUngroupParams(value: unknown): value is DrawingUngroupParams {
@@ -351,11 +378,12 @@ function isTransformCommitParams(value: unknown): value is DrawingTransformCommi
 function isTransformBatchParams(value: unknown): value is DrawingTransformBatchParams {
   if (!hasSheetId(value) || !objectParams(value)) return false;
   const entries = (value as Record<string, unknown>).entries;
-  return Array.isArray(entries) && entries.every((entry) => {
+  return Array.isArray(entries) && entries.length > 0 && entries.length <= 1000 && entries.every((entry) => {
     if (!objectParams(entry)) return false;
     const item = entry as Record<string, unknown>;
-    return typeof item.drawingId === 'string' && isTransform(item.before) && isTransform(item.after);
-  }) && isConnectorRoutes((value as Record<string, unknown>).connectorRoutes);
+    return typeof item.drawingId === 'string' && item.drawingId.trim().length > 0 && isTransform(item.before) && isTransform(item.after);
+  }) && new Set(entries.map((entry) => (entry as Record<string, unknown>).drawingId)).size === entries.length
+    && isConnectorRoutes((value as Record<string, unknown>).connectorRoutes);
 }
 
 function isAnchorParams(value: unknown): value is DrawingAnchorParams {
@@ -431,7 +459,7 @@ function isImageEffectsParams(value: unknown): value is DrawingImageEffectsParam
 }
 
 function isDrawingPairValid(drawing: DrawingObject, payload: DrawingPayload): void {
-  if (!drawing.id || !drawing.sheetId || !drawing.payloadId) throw new Error(`Drawing identity is required: ${drawing.id}`);
+  if (!drawing.id.trim() || !drawing.sheetId.trim() || !drawing.payloadId.trim()) throw new Error(`Drawing identity is required: ${drawing.id}`);
   if (!isAnchor(drawing.anchor)) throw new Error(`Invalid drawing anchor: ${drawing.id}`);
   if (!isTransform(drawing.transform)) throw new Error(`Invalid drawing transform: ${drawing.id}`);
   if (!isDrawingPayload(payload)) throw new Error(`Invalid drawing payload: ${drawing.payloadId}`);
@@ -441,91 +469,24 @@ function isDrawingPairValid(drawing: DrawingObject, payload: DrawingPayload): vo
   }
 }
 
+/** Validate group membership without mutating the browser replica. Rust owns the commit. */
+function validateGroupMembers(sheet: WorksheetModel, group: DrawingGroup): void {
+  if (group.sheetId !== sheet.id) throw new Error(`Drawing group worksheet mismatch: ${group.id}`);
+  const memberIds = new Set(group.memberDrawingIds);
+  if (memberIds.size !== group.memberDrawingIds.length) throw new Error(`Drawing group contains duplicate members: ${group.id}`);
+  for (const drawingId of memberIds) {
+    if (!sheet.drawings.some((drawing) => drawing.id === drawingId)) {
+      throw new Error(`Drawing group references missing drawing: ${drawingId}`);
+    }
+    if (sheet.drawingGroups.some((entry) => entry.id !== group.id && entry.memberDrawingIds.includes(drawingId))) {
+      throw new Error(`Drawing belongs to another group: ${drawingId}`);
+    }
+  }
+}
+
 function canonicalConnectorAggregate(sheet: WorksheetModel, drawing: DrawingObject, payload: ConnectorDrawingPayload): { drawing: DrawingObject; payload: ConnectorDrawingPayload } {
   const planned = planConnectorRoute(sheet, drawing, payload);
   return { drawing: { ...structuredClone(drawing), transform: planned.transform }, payload: planned.payload };
-}
-
-function addDrawing(sheet: WorksheetModel, drawing: DrawingObject, payload: DrawingPayload): void {
-  if (payload.kind === 'connector') {
-    const canonical = canonicalConnectorAggregate(sheet, drawing, payload);
-    if (JSON.stringify(canonical.drawing.transform) !== JSON.stringify(drawing.transform)
-      || JSON.stringify(canonical.payload.route) !== JSON.stringify(payload.route)) {
-      throw new Error(`Connector aggregate is not canonical: ${drawing.id}`);
-    }
-  }
-  isDrawingPairValid(drawing, payload);
-  if (drawing.sheetId !== sheet.id) throw new Error(`Drawing sheet mismatch: ${drawing.id}`);
-  if (sheet.drawings.some((entry) => entry.id === drawing.id)) throw new Error(`Drawing already exists: ${drawing.id}`);
-  if (sheet.drawingPayloads.has(drawing.payloadId)) throw new Error(`Drawing payload already exists: ${drawing.payloadId}`);
-  sheet.drawings.push(structuredClone(drawing));
-  sheet.drawingPayloads.set(drawing.payloadId, structuredClone(payload));
-}
-
-function addGroup(sheet: WorksheetModel, group: DrawingGroup): void {
-  if (!isDrawingGroup(group) || group.sheetId !== sheet.id) throw new Error(`Drawing group is invalid: ${group.id}`);
-  if (sheet.drawingGroups.some((entry) => entry.id === group.id)) throw new Error(`Drawing group already exists: ${group.id}`);
-  const ids = new Set(group.memberDrawingIds);
-  if (ids.size !== group.memberDrawingIds.length) throw new Error(`Drawing group contains duplicate members: ${group.id}`);
-  for (const id of ids) {
-    findDrawing(sheet, id);
-    if (sheet.drawingGroups.some((entry) => entry.memberDrawingIds.includes(id))) throw new Error(`Drawing belongs to another group: ${id}`);
-  }
-  sheet.drawingGroups.push(structuredClone(group));
-}
-
-function removeGroup(sheet: WorksheetModel, groupId: string): DrawingGroup {
-  const index = sheet.drawingGroups.findIndex((entry) => entry.id === groupId);
-  if (index < 0) throw new Error(`Unknown drawing group: ${groupId}`);
-  return structuredClone(sheet.drawingGroups.splice(index, 1)[0]!);
-}
-
-function applyConnectorRouteState(sheet: WorksheetModel, drawingId: string, state: DrawingConnectorRouteState, expectedBefore?: DrawingConnectorRouteState): void {
-  const drawing = findDrawing(sheet, drawingId);
-  if (drawing.kind !== 'connector') throw new Error(`Drawing is not a connector: ${drawingId}`);
-  const current = sheet.drawingPayloads.get(drawing.payloadId);
-  if (!current || current.kind !== 'connector') throw new Error(`Missing connector payload: ${drawing.payloadId}`);
-  if (expectedBefore && (JSON.stringify(current) !== JSON.stringify(expectedBefore.payload) || JSON.stringify(drawing.transform) !== JSON.stringify(expectedBefore.transform))) {
-    throw new Error(`Connector route changed before update: ${drawingId}`);
-  }
-  const canonical = canonicalConnectorAggregate(sheet, drawing, state.payload);
-  if (JSON.stringify(canonical.drawing.transform) !== JSON.stringify(state.transform)
-    || JSON.stringify(canonical.payload) !== JSON.stringify(state.payload)) throw new Error(`Connector route is not canonical: ${drawingId}`);
-  sheet.drawingPayloads.set(drawing.payloadId, structuredClone(state.payload));
-  drawing.transform = structuredClone(state.transform);
-}
-
-function applyTransformMutation(sheet: WorksheetModel, entries: readonly DrawingTransformBatchEntry[], connectorRoutes: readonly DrawingConnectorRouteChange[] | undefined): void {
-  const overrides = entries.map((entry) => ({ drawingId: entry.drawingId, transform: entry.after }));
-  const expectedRoutes = recomputeConnectorRoutes(sheet, overrides);
-  const expectedById = new Map(expectedRoutes.map((entry) => [entry.drawingId, entry]));
-  const provided = connectorRoutes ?? [];
-  if (provided.length !== expectedRoutes.length || provided.some((entry) => {
-    const expected = expectedById.get(entry.drawingId);
-    return !expected || JSON.stringify(entry.after) !== JSON.stringify(expected.after) || JSON.stringify(entry.before) !== JSON.stringify(expected.before);
-  })) throw new Error('Connector route changes do not match the canonical transform plan');
-  for (const entry of entries) {
-    const drawing = findDrawing(sheet, entry.drawingId);
-    if (JSON.stringify(drawing.transform) !== JSON.stringify(entry.before)) throw new Error(`Drawing transform changed before update: ${entry.drawingId}`);
-  }
-  for (const route of provided) {
-    const drawing = findDrawing(sheet, route.drawingId);
-    const current = sheet.drawingPayloads.get(drawing.payloadId);
-    if (!current || current.kind !== 'connector' || JSON.stringify(current) !== JSON.stringify(route.before.payload)
-      || JSON.stringify(drawing.transform) !== JSON.stringify(route.before.transform)) throw new Error(`Connector route changed before transform: ${route.drawingId}`);
-  }
-  for (const entry of entries) findDrawing(sheet, entry.drawingId).transform = structuredClone(entry.after);
-  for (const route of provided) applyConnectorRouteState(sheet, route.drawingId, route.after);
-}
-
-function removeDrawing(sheet: WorksheetModel, drawingId: string): { drawing: DrawingObject; payload: DrawingPayload } {
-  const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
-  if (!drawing) throw new Error(`Unknown drawing: ${drawingId}`);
-  const payload = sheet.drawingPayloads.get(drawing.payloadId);
-  if (!payload) throw new Error(`Missing drawing payload: ${drawing.payloadId}`);
-  removeById(sheet.drawings, drawingId);
-  sheet.drawingPayloads.delete(drawing.payloadId);
-  return { drawing: structuredClone(drawing), payload: structuredClone(payload) };
 }
 
 function findDrawing(sheet: WorksheetModel, drawingId: string): DrawingObject {
@@ -534,27 +495,13 @@ function findDrawing(sheet: WorksheetModel, drawingId: string): DrawingObject {
   return drawing;
 }
 
-function updatePayload(sheet: WorksheetModel, params: DrawingPayloadUpdateParams): void {
-  const drawing = sheet.drawings.find((entry) => entry.payloadId === params.payloadId);
-  if (!drawing) throw new Error(`Unknown drawing payload: ${params.payloadId}`);
-  isDrawingPairValid(drawing, params.after);
-  const current = sheet.drawingPayloads.get(params.payloadId);
-  if (!current) throw new Error(`Missing drawing payload: ${params.payloadId}`);
-  if (current.kind !== params.before.kind) throw new Error(`Drawing payload kind mismatch: ${params.payloadId}`);
-  if (JSON.stringify(current) !== JSON.stringify(params.before)) throw new Error(`Drawing payload changed before update: ${params.payloadId}`);
-  sheet.drawingPayloads.set(params.payloadId, structuredClone(params.after));
-}
-
-function restoreZOrder(sheet: WorksheetModel, params: DrawingZOrderRestoreParams): void {
-  for (const entry of params.entries) findDrawing(sheet, entry.drawingId).zIndex = entry.zIndex;
-}
-
 function rangesForParams(params: unknown): ReturnType<typeof sheetRange> {
   return hasSheetId(params) ? sheetRange(params.sheetId) : [];
 }
 
 function executeConnectorAdd(params: DrawingConnectorAddParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const sheet = context.workbook.getSheet(params.sheetId);
+  isDrawingPairValid(params.drawing, params.payload);
   const canonical = canonicalConnectorAggregate(sheet, params.drawing, params.payload);
   const next: DrawingConnectorAddParams = { sheetId: params.sheetId, drawing: canonical.drawing, payload: canonical.payload };
   const affectedRanges = sheetRange(params.sheetId);
@@ -564,13 +511,11 @@ function executeConnectorAdd(params: DrawingConnectorAddParams, context: Command
     sheetId: params.sheetId,
     params: next,
     affectedRanges,
-    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: canonical.drawing.id }, affectedRanges }],
-    apply: () => addDrawing(context.workbook.getSheet(params.sheetId), canonical.drawing, canonical.payload),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
 
-function connectorRouteChanges(sheet: WorksheetModel, entries: readonly DrawingTransformBatchEntry[]): DrawingConnectorRouteChange[] {
+function connectorRouteChanges(sheet: WorksheetModel, entries: ReadonlyArray<{ drawingId: string; after: DrawingTransform }>): DrawingConnectorRouteChange[] {
   return recomputeConnectorRoutes(sheet, entries.map((entry) => ({ drawingId: entry.drawingId, transform: entry.after }))).map((entry) => ({
     drawingId: entry.drawingId,
     before: entry.before,
@@ -594,17 +539,14 @@ function executeAdd(params: DrawingAddParams, context: CommandContext, kind?: Dr
     sheetId: params.sheetId,
     params: next,
     affectedRanges,
-    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
-    apply: () => addDrawing(context.workbook.getSheet(params.sheetId), drawing, params.payload),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
 
 function executeTransform(params: DrawingTransformParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const sheet = context.workbook.getSheet(params.sheetId);
-  const drawing = findDrawing(sheet, params.drawingId);
-  const previous = structuredClone(drawing.transform);
-  const entries = [{ drawingId: params.drawingId, before: previous, after: structuredClone(params.transform) }];
+  findDrawing(sheet, params.drawingId);
+  const entries = [{ drawingId: params.drawingId, after: structuredClone(params.transform) }];
   const connectorRoutes = connectorRouteChanges(sheet, entries);
   assertProvidedRoutes(connectorRoutes, params.connectorRoutes);
   const canonicalParams: DrawingTransformParams = { ...params, connectorRoutes };
@@ -615,8 +557,6 @@ function executeTransform(params: DrawingTransformParams, context: CommandContex
     sheetId: params.sheetId,
     params: canonicalParams,
     affectedRanges,
-    inverse: [{ id: 'drawing.transform', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...canonicalParams, transform: previous, connectorRoutes: connectorRoutes.map((entry) => ({ drawingId: entry.drawingId, before: entry.after, after: entry.before })) }, affectedRanges }],
-    apply: () => applyTransformMutation(context.workbook.getSheet(params.sheetId), entries, connectorRoutes),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -625,7 +565,7 @@ function executeTransformCommit(params: DrawingTransformCommitParams, context: C
   const sheet = context.workbook.getSheet(params.sheetId);
   const drawing = findDrawing(sheet, params.drawingId);
   if (JSON.stringify(drawing.transform) !== JSON.stringify(params.before)) throw new Error(`Drawing transform changed before pointer commit: ${params.drawingId}`);
-  const entries = [{ drawingId: params.drawingId, before: structuredClone(params.before), after: structuredClone(params.after) }];
+  const entries = [{ drawingId: params.drawingId, after: structuredClone(params.after) }];
   const connectorRoutes = connectorRouteChanges(sheet, entries);
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
@@ -634,8 +574,6 @@ function executeTransformCommit(params: DrawingTransformCommitParams, context: C
     sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawingId: params.drawingId, transform: structuredClone(params.after), connectorRoutes },
     affectedRanges,
-    inverse: [{ id: 'drawing.transform', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawingId, transform: structuredClone(params.before), connectorRoutes: connectorRoutes.map((entry) => ({ drawingId: entry.drawingId, before: entry.after, after: entry.before })) }, affectedRanges }],
-    apply: () => applyTransformMutation(sheet, entries, connectorRoutes),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -651,21 +589,12 @@ function executeTransformBatch(params: DrawingTransformBatchParams, context: Com
   assertProvidedRoutes(connectorRoutes, params.connectorRoutes);
   const canonicalParams: DrawingTransformBatchParams = { ...params, connectorRoutes };
   const affectedRanges = sheetRange(params.sheetId);
-  const inverse: DrawingTransformBatchParams = {
-    sheetId: params.sheetId,
-    entries: params.entries.map((entry) => ({ drawingId: entry.drawingId, before: entry.after, after: entry.before })),
-    connectorRoutes: connectorRoutes.map((entry) => ({ drawingId: entry.drawingId, before: entry.after, after: entry.before })),
-  };
   context.applyMutation({
     id: 'drawing.transform.batch',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: canonicalParams,
     affectedRanges,
-    inverse: [{ id: 'drawing.transform.batch', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges }],
-    apply: () => {
-      applyTransformMutation(context.workbook.getSheet(params.sheetId), params.entries, connectorRoutes);
-    },
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -681,17 +610,6 @@ function prepareConnectorUpdate(params: DrawingConnectorUpdateParams, context: C
   return { canonicalParams, current, affectedRanges: sheetRange(params.sheetId) };
 }
 
-function applyPreparedConnectorUpdate(params: DrawingConnectorUpdateParams, context: CommandContext): void {
-  const target = context.workbook.getSheet(params.sheetId);
-  const targetDrawing = findDrawing(target, params.drawingId);
-  const targetPayload = target.drawingPayloads.get(targetDrawing.payloadId);
-  if (!targetPayload || targetDrawing.kind !== 'connector' || targetPayload.kind !== 'connector' || JSON.stringify(targetPayload) !== JSON.stringify(params.before)) throw new Error(`Connector payload changed before update: ${params.drawingId}`);
-  const planned = canonicalConnectorAggregate(target, targetDrawing, params.after);
-  if (JSON.stringify(planned.payload) !== JSON.stringify(params.after)) throw new Error(`Connector route is not canonical: ${params.drawingId}`);
-  target.drawingPayloads.set(targetDrawing.payloadId, structuredClone(params.after));
-  targetDrawing.transform = structuredClone(planned.drawing.transform);
-}
-
 function executeConnectorUpdate(params: DrawingConnectorUpdateParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const prepared = prepareConnectorUpdate(params, context);
   const canonicalParams = prepared.canonicalParams;
@@ -702,8 +620,6 @@ function executeConnectorUpdate(params: DrawingConnectorUpdateParams, context: C
     sheetId: params.sheetId,
     params: canonicalParams,
     affectedRanges,
-    inverse: [{ id: 'drawing.connector.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawingId, before: canonicalParams.after, after: canonicalParams.before }, affectedRanges }],
-    apply: () => applyPreparedConnectorUpdate(canonicalParams, context),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -718,8 +634,6 @@ function executeConnectorRoute(params: DrawingConnectorUpdateParams, context: Co
     sheetId: params.sheetId,
     params: canonicalParams,
     affectedRanges,
-    inverse: [{ id: 'drawing.connector.route', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawingId, before: canonicalParams.after, after: canonicalParams.before }, affectedRanges }],
-    apply: () => applyPreparedConnectorUpdate(canonicalParams, context),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -727,8 +641,8 @@ function executeConnectorRoute(params: DrawingConnectorUpdateParams, context: Co
 function executeGroup(params: DrawingGroupParams, context: CommandContext): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const sheet = context.workbook.getSheet(params.sheetId);
   const group = structuredClone(params.group);
-  addGroup(sheet, group);
-  removeGroup(sheet, group.id);
+  validateGroupMembers(sheet, group);
+  if (sheet.drawingGroups.some((entry) => entry.id === group.id)) throw new Error(`Drawing group already exists: ${group.id}`);
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
     id: 'drawing.group',
@@ -736,8 +650,6 @@ function executeGroup(params: DrawingGroupParams, context: CommandContext): { op
     sheetId: params.sheetId,
     params: { sheetId: params.sheetId, group },
     affectedRanges,
-    inverse: [{ id: 'drawing.ungroup', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, groupId: group.id }, affectedRanges }],
-    apply: () => addGroup(context.workbook.getSheet(params.sheetId), group),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -753,8 +665,6 @@ function executeUngroup(params: DrawingUngroupParams, context: CommandContext): 
     sheetId: params.sheetId,
     params,
     affectedRanges,
-    inverse: [{ id: 'drawing.group', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, group }, affectedRanges }],
-    apply: () => removeGroup(context.workbook.getSheet(params.sheetId), params.groupId),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -763,181 +673,120 @@ function executeSnapSettings(params: DrawingSnapSettingsParams, context: Command
   const sheet = context.workbook.getSheet(params.sheetId);
   if (JSON.stringify(sheet.snapSettings) !== JSON.stringify(params.before)) throw new Error('Worksheet snap settings changed before update');
   if (!isWorksheetSnapSettings(params.after)) throw new Error('Worksheet snap settings are invalid');
-  const canonical: DrawingSnapSettingsParams = { sheetId: params.sheetId, before: structuredClone(sheet.snapSettings), after: structuredClone(params.after) };
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
     id: 'drawing.snapSettings',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
-    params: canonical,
+    params,
     affectedRanges,
-    inverse: [{ id: 'drawing.snapSettings', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, before: canonical.after, after: canonical.before }, affectedRanges }],
-    apply: () => { context.workbook.getSheet(params.sheetId).snapSettings = structuredClone(canonical.after); },
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-}
-
-function handleConnectorUpdate(item: { params: DrawingConnectorUpdateParams }, context: CommandContext): void {
-  const sheet = context.workbook.getSheet(item.params.sheetId);
-  const drawing = findDrawing(sheet, item.params.drawingId);
-  const current = sheet.drawingPayloads.get(drawing.payloadId);
-  if (drawing.kind !== 'connector' || !current || current.kind !== 'connector' || JSON.stringify(current) !== JSON.stringify(item.params.before)) throw new Error(`Connector payload changed before update: ${item.params.drawingId}`);
-  const canonical = canonicalConnectorAggregate(sheet, drawing, item.params.after);
-  if (JSON.stringify(canonical.payload) !== JSON.stringify(item.params.after)) throw new Error(`Connector route is not canonical: ${item.params.drawingId}`);
-  sheet.drawingPayloads.set(drawing.payloadId, structuredClone(item.params.after));
-  drawing.transform = structuredClone(canonical.drawing.transform);
 }
 
 export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): string[] {
   runtime.registry.registerMutation<DrawingAddParams>({
       id: 'drawing.add',
-      handler: (item, context) => {
-    addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload);
-  },
       metadata: {
     schema: { name: 'DrawingAddParams', validate: isDrawingAddParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.remove'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingRemoveParams>({
       id: 'drawing.remove',
-      handler: (item, context) => {
-    removeDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId);
-  },
       metadata: {
     schema: { name: 'DrawingRemoveParams', validate: isDrawingRemoveParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.add'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingTransformParams>({
       id: 'drawing.transform',
-      handler: (item, context) => {
-    applyTransformMutation(context.workbook.getSheet(item.params.sheetId), [{ drawingId: item.params.drawingId, before: findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).transform, after: item.params.transform }], item.params.connectorRoutes);
-  },
       metadata: {
     schema: { name: 'DrawingTransformParams', validate: isTransformParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.transform'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingTransformBatchParams>({
       id: 'drawing.transform.batch',
-      handler: (item, context) => {
-    applyTransformMutation(context.workbook.getSheet(item.params.sheetId), item.params.entries, item.params.connectorRoutes);
-  },
       metadata: {
     schema: { name: 'DrawingTransformBatchParams', validate: isTransformBatchParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.transform.batch'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingAnchorParams>({
       id: 'drawing.anchor',
-      handler: (item, context) => {
-    findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).anchor = structuredClone(item.params.anchor);
-  },
       metadata: {
     schema: { name: 'DrawingAnchorParams', validate: isAnchorParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.anchor'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingPayloadUpdateParams>({
       id: 'drawing.payload.update',
-      handler: (item, context) => {
-    updatePayload(context.workbook.getSheet(item.params.sheetId), item.params);
-  },
       metadata: {
     schema: { name: 'DrawingPayloadUpdateParams', validate: isPayloadUpdateParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.payload.update'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingConnectorUpdateParams>({
     id: 'drawing.connector.update',
-    handler: (item, context) => handleConnectorUpdate(item, context),
     metadata: {
       schema: { name: 'DrawingConnectorUpdateParams', validate: isConnectorUpdateParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.connector.update'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerMutation<DrawingConnectorUpdateParams>({
     id: 'drawing.connector.route',
-    handler: (item, context) => handleConnectorUpdate(item, context),
     metadata: {
       schema: { name: 'DrawingConnectorRouteParams', validate: isConnectorUpdateParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.connector.route'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerMutation<DrawingGroupParams>({
     id: 'drawing.group',
-    handler: (item, context) => addGroup(context.workbook.getSheet(item.params.sheetId), item.params.group),
     metadata: {
       schema: { name: 'DrawingGroupParams', validate: isGroupParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.ungroup'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerMutation<DrawingUngroupParams>({
     id: 'drawing.ungroup',
-    handler: (item, context) => removeGroup(context.workbook.getSheet(item.params.sheetId), item.params.groupId),
     metadata: {
       schema: { name: 'DrawingUngroupParams', validate: isUngroupParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.group'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerMutation<DrawingSnapSettingsParams>({
     id: 'drawing.snapSettings',
-    handler: (item, context) => {
-      const sheet = context.workbook.getSheet(item.params.sheetId);
-      if (JSON.stringify(sheet.snapSettings) !== JSON.stringify(item.params.before)) throw new Error('Worksheet snap settings changed before update');
-      if (!isWorksheetSnapSettings(item.params.after)) throw new Error('Worksheet snap settings are invalid');
-      sheet.snapSettings = structuredClone(item.params.after);
-    },
     metadata: {
       schema: { name: 'DrawingSnapSettingsParams', validate: isSnapSettingsParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-      inversePolicy: { allowedMutationIds: ['drawing.snapSettings'], minCount: 1, maxCount: 1 },
     },
   });
   runtime.registry.registerMutation<DrawingZOrderParams>({
       id: 'drawing.zorder',
-      handler: (item, context) => {
-    reorderDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId, item.params.direction);
-  },
       metadata: {
     schema: { name: 'DrawingZOrderParams', validate: isZOrderParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
   },
     });
   runtime.registry.registerMutation<DrawingZOrderRestoreParams>({
       id: 'drawing.zorder.restore',
-      handler: (item, context) => {
-    restoreZOrder(context.workbook.getSheet(item.params.sheetId), item.params);
-  },
       metadata: {
     schema: { name: 'DrawingZOrderRestoreParams', validate: isZOrderRestoreParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
   },
     });
 
@@ -993,8 +842,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) }, affectedRanges }],
-        apply: () => removeDrawing(context.workbook.getSheet(params.sheetId), params.drawingId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1014,7 +861,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     id: 'drawing.anchor.set',
     execute: (params, context) => {
       const drawing = findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId);
-      const previous = structuredClone(drawing.anchor);
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'drawing.anchor',
@@ -1022,8 +868,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'drawing.anchor', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, anchor: previous }, affectedRanges }],
-        apply: () => { findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId).anchor = structuredClone(params.anchor); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1044,8 +888,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: params.payloadId, before: params.after, after: params.before }, affectedRanges }],
-        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1071,8 +913,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) },
         affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId, before: structuredClone(params.payload), after: before }, affectedRanges }],
-        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1084,7 +924,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const drawing = findDrawing(sheet, params.drawingId);
-      const previous = sheet.drawings.map((entry) => ({ drawingId: entry.id, zIndex: entry.zIndex }));
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'drawing.zorder',
@@ -1092,8 +931,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'drawing.zorder.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, entries: previous }, affectedRanges }],
-        apply: () => { reorderDrawing(context.workbook.getSheet(params.sheetId), drawing.id, params.direction); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1177,8 +1014,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawing, payload },
         affectedRanges,
-        inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
-        apply: () => addDrawing(context.workbook.getSheet(params.sheetId), drawing, payload),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1202,8 +1037,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
         affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
-        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1227,8 +1060,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
         affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
-        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1253,8 +1084,6 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
         affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
-        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

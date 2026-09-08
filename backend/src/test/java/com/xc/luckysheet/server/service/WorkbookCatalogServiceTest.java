@@ -1,120 +1,266 @@
 package com.xc.luckysheet.server.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.xc.luckysheet.server.NativeKernelIntegrationTestSupport;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.contract.WorkbookLifecycle;
-import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
-import com.xc.luckysheet.server.contract.WorkbookSource;
-import com.xc.luckysheet.server.contract.WorkbookStorageLocation;
-import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntity;
-import com.xc.luckysheet.server.persistence.AuditEntityRepository;
-import com.xc.luckysheet.server.persistence.CheckpointEntityRepository;
-import com.xc.luckysheet.server.persistence.DataBlockEntityRepository;
-import com.xc.luckysheet.server.persistence.OperationEntityRepository;
-import com.xc.luckysheet.server.persistence.OutboxEntityRepository;
-import com.xc.luckysheet.server.persistence.ShareEntityRepository;
-import com.xc.luckysheet.server.persistence.SpaceMemberEntityRepository;
-import com.xc.luckysheet.server.persistence.WorkbookAclEntityRepository;
+import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
+import com.xc.luckysheet.server.contract.OperationEnvelope;
+import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
-import com.xc.luckysheet.server.persistence.WorkbookEntity;
-import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntity;
+import com.xc.luckysheet.server.persistence.WorkbookManifestEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntityRepository;
-import com.xc.luckysheet.server.persistence.WorkbookUserStateEntityRepository;
-import com.xc.luckysheet.server.persistence.WorkspaceFolderEntityRepository;
-import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntityRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
-import java.util.Optional;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.junit.jupiter.api.Assertions.*;
 
-class WorkbookCatalogServiceTest {
+@TestPropertySource(properties = "DATABASE_URL=jdbc:h2:mem:native_catalog;DB_CLOSE_DELAY=-1")
+class WorkbookCatalogServiceTest extends NativeKernelIntegrationTestSupport {
+    @Autowired private WorkbookCatalogService catalog;
+    @Autowired private WorkbookOperationService operations;
+    @Autowired private WorkbookEntityRepository workbooks;
+    @Autowired private WorkbookManifestEntityRepository manifests;
+    @Autowired private WorkbookSourceArtifactEntityRepository artifacts;
+    @Autowired private KernelHostClient kernel;
+    @Autowired private GuestShareService shares;
+    @Autowired private ObjectMapper mapper;
+    @Autowired private PlatformTransactionManager transactionManager;
+
     @Test
-    void sourceArtifactRequiresEditorAndPersistsVerifiedSha256Bytes() throws Exception {
-        WorkbookEntityRepository workbooks = mock(WorkbookEntityRepository.class);
-        WorkbookAclEntityRepository acl = mock(WorkbookAclEntityRepository.class);
-        WorkbookUserStateEntityRepository states = mock(WorkbookUserStateEntityRepository.class);
-        WorkbookSourceArtifactEntityRepository artifacts = mock(WorkbookSourceArtifactEntityRepository.class);
-        WorkspaceSpaceEntityRepository spaces = mock(WorkspaceSpaceEntityRepository.class);
-        WorkspaceFolderEntityRepository folders = mock(WorkspaceFolderEntityRepository.class);
-        SpaceMemberEntityRepository members = mock(SpaceMemberEntityRepository.class);
-        WorkspaceService workspace = mock(WorkspaceService.class);
-        WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
-        WorkbookOperationService operations = mock(WorkbookOperationService.class);
-        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookAclRole.EDITOR));
-        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
-                Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
-                WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));
-        when(artifacts.findById("book-1")).thenReturn(Optional.empty());
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        WorkbookCatalogService service = new WorkbookCatalogService(workbooks, acl, states, artifacts, spaces, folders,
-                members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
-                mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
-                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class), mapper);
-
-        byte[] content = "xlsx-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(content));
-        var response = service.putArtifact("book-1", "report.xlsx", null, checksum, content, "editor");
-
-        assertEquals(checksum, response.checksum());
-        assertEquals(content.length, response.byteLength());
-        verify(artifacts).save(any(WorkbookSourceArtifactEntity.class));
+    void createPublishesNativeManifestAndReopensAfterProcessRestart() {
+        var created = catalog.create(new CreateWorkbookRequest("native-catalog", "Catalog", null, null, null, null, null), "owner");
+        assertEquals(0, created.revision());
+        assertEquals("WorkbookManifest", created.manifest().path("schema").asText());
+        assertEquals(11, created.manifest().path("version").asInt());
+        assertFalse(created.manifest().has("cells"));
+        assertTrue(manifests.findByUnitIdAndRevision("native-catalog", 0).isPresent());
+        kernel.close();
+        var reopened = operations.open("native-catalog", "owner");
+        assertEquals(created.manifest(), reopened.manifest());
+        assertEquals(created.checksum(), reopened.checksum());
     }
 
     @Test
-    void copyRewritesWorkbookAndPrintDocumentIdentitiesBeforePersistence() throws Exception {
-        WorkbookEntityRepository workbooks = mock(WorkbookEntityRepository.class);
-        WorkbookAclEntityRepository acl = mock(WorkbookAclEntityRepository.class);
-        WorkbookUserStateEntityRepository states = mock(WorkbookUserStateEntityRepository.class);
-        WorkbookSourceArtifactEntityRepository artifacts = mock(WorkbookSourceArtifactEntityRepository.class);
-        WorkspaceSpaceEntityRepository spaces = mock(WorkspaceSpaceEntityRepository.class);
-        WorkspaceFolderEntityRepository folders = mock(WorkspaceFolderEntityRepository.class);
-        SpaceMemberEntityRepository members = mock(SpaceMemberEntityRepository.class);
-        WorkspaceService workspace = mock(WorkspaceService.class);
-        WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
-        WorkbookOperationService operations = mock(WorkbookOperationService.class);
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        Instant now = Instant.parse("2026-08-24T00:00:00Z");
-        WorkspaceSpaceEntity space = new WorkspaceSpaceEntity("space-1", "个人空间",
-                com.xc.luckysheet.server.contract.WorkspaceSpaceType.PERSONAL, "actor", now, now);
-        WorkbookEntity source = new WorkbookEntity("source-1", "Source", "{}", 0, 0, now, now,
-                "actor", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
-                WorkbookLifecycle.ACTIVE, null);
-        JsonNode snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":10,"unitId":"source-1","name":"Source","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"calculationSettings":{"mode":"automatic","iterativeCalculation":false,"maximumIterations":100,"maximumChange":0.001,"precisionAsDisplayed":false,"calculateBeforeSave":true,"fullCalculationOnLoad":false},"editingOptions":{"allowEditDirectly":true,"moveAfterEnter":true,"enterDirection":"down","formulaAutoComplete":true,"valueAutoComplete":true,"fixedDecimalPlaces":null},"definedNameModels":[],"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"printDocuments":[{"schema":"PrintDocument","unitId":"source-1","sheetId":"sheet-1"}],"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+    void invalidSheetManifestIsRejectedWithoutWorkbookOrManifestPersistence() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Invalid","rowCount":0,"columnCount":26,"metadata":{}}]
                 """);
-        when(workbooks.findById("source-1")).thenReturn(Optional.of(source));
-        when(workbooks.existsById(any())).thenReturn(false);
-        when(authorization.role(any(), eq("actor"))).thenReturn(Optional.of(WorkbookAclRole.OWNER));
-        when(authorization.role("source-1", "actor")).thenReturn(Optional.of(WorkbookAclRole.VIEWER));
-        when(operations.readSnapshot("source-1", "actor")).thenReturn(new WorkbookSnapshotResponse("source-1", snapshot, 0, "checksum"));
-        when(workspace.require("space-1", "actor", WorkbookAclRole.EDITOR)).thenReturn(space);
-        when(spaces.findById("space-1")).thenReturn(Optional.of(space));
-        when(folders.findBySpaceIdOrderByName("space-1")).thenReturn(java.util.List.of());
-        when(artifacts.findById(any())).thenReturn(Optional.empty());
+        var request = new CreateWorkbookRequest("invalid-native-catalog", "Invalid", sheets, null, null, null, null);
+        var error = assertThrows(KernelHostException.class, () -> catalog.create(request, "owner"));
+        assertEquals("SHEET_INVALID", error.code());
+        assertFalse(workbooks.existsById(request.unitId()));
+        assertTrue(manifests.findByUnitIdAndRevision(request.unitId(), 0).isEmpty());
+    }
 
-        WorkbookCatalogService service = new WorkbookCatalogService(workbooks, acl, states, artifacts, spaces, folders,
-                members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
-                mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
-                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class), mapper);
+    @Test
+    void createCommitsTemplateCellsThroughTheCanonicalOperationChain() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Template","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 3);
+        params.putObject("value").put("value", "created through Rust");
 
-        service.copy("source-1", new CopyWorkbookRequest("Copied", null, null), "actor");
+        var created = catalog.create(new CreateWorkbookRequest(
+                "native-template-create", "Template", sheets, null, null, null,
+                List.of(new OperationMutation("cell.set", "sheet-1", params))), "template-owner");
 
-        var capture = org.mockito.ArgumentCaptor.forClass(com.xc.luckysheet.server.persistence.WorkbookEntity.class);
-        verify(workbooks).save(capture.capture());
-        JsonNode copied = mapper.readTree(capture.getValue().getSnapshotJson());
-        assertEquals(capture.getValue().getUnitId(), copied.path("unitId").asText());
-        assertEquals("Copied", copied.path("name").asText());
-        assertEquals(capture.getValue().getUnitId(), copied.path("printDocuments").get(0).path("unitId").asText());
-        assertEquals("source-1", snapshot.path("unitId").asText());
-        assertEquals("source-1", snapshot.path("printDocuments").get(0).path("unitId").asText());
+        assertEquals(1, created.revision());
+        assertEquals(1, created.manifest().path("revision").asLong());
+        assertEquals(1, created.manifest().path("pages").size());
+        assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 0).isPresent());
+        assertTrue(manifests.findByUnitIdAndRevision("native-template-create", 1).isPresent());
+        kernel.call("open", mapper.createObjectNode().set("manifest", created.manifest()));
+        var load = mapper.createObjectNode().put("unitId", created.unitId()).put("revision", created.revision());
+        load.set("page", operations.page(created.unitId(), created.revision(), "sheet-1", 0, 0, "template-owner"));
+        kernel.call("page.load", load);
+        var address = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 3);
+        var read = kernel.call("cell.get", mapper.createObjectNode()
+                .put("unitId", "native-template-create").put("revision", 1).set("address", address));
+        assertEquals("created through Rust", read.path("cell").path("value").asText());
+    }
+
+    @Test
+    void rejectedTemplateCellRollsBackWorkbookAndEveryCheckpoint() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Template","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        var invalid = mapper.createObjectNode().put("row", 0).put("column", 0);
+        invalid.putObject("value").put("value", "missing sheet identity");
+        var request = new CreateWorkbookRequest(
+                "invalid-template-create", "Invalid template", sheets, null, null, null,
+                List.of(new OperationMutation("cell.set", "sheet-1", invalid)));
+
+        assertThrows(KernelHostException.class, () -> catalog.create(request, "template-owner"));
+        assertFalse(workbooks.existsById(request.unitId()));
+        assertTrue(manifests.findByUnitIdAndRevision(request.unitId(), 0).isEmpty());
+        assertTrue(manifests.findByUnitIdAndRevision(request.unitId(), 1).isEmpty());
+    }
+
+    @Test
+    void nativeCopyHasIndependentIdentityAndCellsAcrossPersistedReopen() throws Exception {
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        catalog.create(new CreateWorkbookRequest("native-copy-source", "Source", sheets, null, null, null, null), "copy-owner");
+        catalog.exportArtifact("native-copy-source", 0, "source.xlsx", "xlsx", "copy-owner");
+        var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 0).put("column", 0);
+        params.putObject("value").put("value", 42);
+        var write = new OperationEnvelope(OperationEnvelope.SCHEMA, "copy-source-write", "native-copy-source", 1, 0,
+                List.of(new OperationMutation("cell.set", "sheet-1", params)), Instant.now());
+        operations.commit("native-copy-source", write, "copy-owner");
+
+        var copied = catalog.copy("native-copy-source", new CopyWorkbookRequest("Copied", null, null), "copy-owner");
+
+        assertNotEquals("native-copy-source", copied.unitId());
+        var copiedArtifact = catalog.getArtifact(copied.unitId(), "copy-owner");
+        assertEquals(0, copiedArtifact.getWorkbookRevision());
+        try (var zip = new java.util.zip.ZipFile(copiedArtifact.getStoragePath())) {
+            var documentFactory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            documentFactory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            documentFactory.setNamespaceAware(true);
+            try (var xml = zip.getInputStream(zip.getEntry("xl/worksheets/sheet1.xml"))) {
+                var document = documentFactory.newDocumentBuilder().parse(xml);
+                var values = document.getElementsByTagNameNS("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "v");
+                assertEquals(1, values.getLength());
+                assertEquals(42, Double.parseDouble(values.item(0).getTextContent()));
+            }
+        }
+        kernel.close();
+        var opened = operations.open(copied.unitId(), "copy-owner");
+        assertEquals(copied.unitId(), opened.manifest().path("unitId").asText());
+        assertEquals("Copied", opened.manifest().path("name").asText());
+        kernel.call("open", mapper.createObjectNode().set("manifest", opened.manifest()));
+        var load = mapper.createObjectNode().put("unitId", copied.unitId()).put("revision", opened.revision());
+        load.set("page", operations.page(copied.unitId(), opened.revision(), "sheet-1", 0, 0, "copy-owner"));
+        kernel.call("page.load", load);
+        var read = mapper.createObjectNode().put("unitId", copied.unitId()).put("revision", opened.revision());
+        read.putObject("address").put("sheetId", "sheet-1").put("row", 0).put("column", 0);
+        assertEquals(42, kernel.call("cell.get", read).path("cell").path("value").asInt());
+        var source = operations.open("native-copy-source", "copy-owner");
+        assertEquals("native-copy-source", source.manifest().path("unitId").asText());
+        assertEquals("Source", source.manifest().path("name").asText());
+        assertEquals(1, source.revision());
+    }
+
+    @Test
+    void exportPersistsNativeBytesBoundToRevisionAndRejectsStaleDownload() throws Exception {
+        String unitId = "native-export";
+        var sheets = mapper.readTree("""
+                [{"sheetId":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"metadata":{}}]
+                """);
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", sheets, null, null, null, null), "export-owner");
+
+        var exported = catalog.exportArtifact(unitId, 0, "export.xlsx", "xlsx", "export-owner");
+
+        var stored = catalog.getArtifact(unitId, "export-owner");
+        byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(stored.getStoragePath()));
+        assertEquals(0, stored.getWorkbookRevision());
+        assertEquals(bytes.length, exported.byteLength());
+        assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)), exported.checksum());
+        try (var zip = new java.util.zip.ZipFile(stored.getStoragePath())) {
+            assertNotNull(zip.getEntry("[Content_Types].xml"));
+            assertNotNull(zip.getEntry("xl/workbook.xml"));
+        }
+        var params = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 0).put("column", 0);
+        params.putObject("value").put("value", 42);
+        operations.commit(unitId, new OperationEnvelope(OperationEnvelope.SCHEMA, "export-next-revision", unitId, 1, 0,
+                List.of(new OperationMutation("cell.set", "sheet-1", params)), Instant.now()), "export-owner");
+        assertEquals("CONFLICT", assertThrows(ServiceException.class,
+                () -> catalog.getArtifact(unitId, "export-owner")).code());
+        assertEquals("CONFLICT", assertThrows(ServiceException.class,
+                () -> catalog.exportArtifact(unitId, 0, "stale.xlsx", "xlsx", "export-owner")).code());
+        var refreshed = catalog.exportArtifact(unitId, 1, null, null, "export-owner");
+        assertEquals("export.xlsx", refreshed.fileName());
+        assertEquals(1, refreshed.revision());
+        assertEquals("xlsx", refreshed.nativeMetadata().path("format").asText());
+    }
+
+    @Test
+    void repeatedExportDeletesReplacedArtifactAfterCommit() throws Exception {
+        String unitId = "native-export-repeat";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+
+        var first = catalog.exportArtifact(unitId, 0, "first.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path firstPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertTrue(java.nio.file.Files.isRegularFile(firstPath));
+
+        var second = catalog.exportArtifact(unitId, 0, "second.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path secondPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertNotEquals(firstPath, secondPath);
+        assertEquals(first.checksum(), second.checksum());
+        assertFalse(java.nio.file.Files.exists(firstPath));
+        assertTrue(java.nio.file.Files.isRegularFile(secondPath));
+    }
+
+    @Test
+    void exportRollbackRetainsPreviousArtifactAndRemovesCandidate() throws Exception {
+        String unitId = "native-export-rollback";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "first.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path firstPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        AtomicReference<java.nio.file.Path> candidatePath = new AtomicReference<>();
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            catalog.exportArtifact(unitId, 0, "second.xlsx", "xlsx", "export-owner");
+            candidatePath.set(java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath()));
+            assertTrue(java.nio.file.Files.isRegularFile(candidatePath.get()));
+            status.setRollbackOnly();
+        });
+
+        assertTrue(java.nio.file.Files.isRegularFile(firstPath));
+        assertFalse(java.nio.file.Files.exists(candidatePath.get()));
+        assertEquals(firstPath.toString(), catalog.getArtifact(unitId, "export-owner").getStoragePath());
+    }
+
+    @Test
+    void purgeDeletesCapturedArtifactAfterCommit() throws Exception {
+        String unitId = "native-export-purge";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "purge.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path artifactPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        assertTrue(java.nio.file.Files.isRegularFile(artifactPath));
+
+        catalog.moveToTrash(unitId, "export-owner");
+        catalog.purge(unitId, "export-owner");
+
+        assertFalse(java.nio.file.Files.exists(artifactPath));
+        assertTrue(artifacts.findById(unitId).isEmpty());
+    }
+
+    @Test
+    void purgeRollbackRetainsCapturedArtifact() throws Exception {
+        String unitId = "native-export-purge-rollback";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        catalog.exportArtifact(unitId, 0, "purge.xlsx", "xlsx", "export-owner");
+        java.nio.file.Path artifactPath = java.nio.file.Path.of(catalog.getArtifact(unitId, "export-owner").getStoragePath());
+        catalog.moveToTrash(unitId, "export-owner");
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            catalog.purge(unitId, "export-owner");
+            status.setRollbackOnly();
+        });
+
+        assertTrue(java.nio.file.Files.isRegularFile(artifactPath));
+        assertEquals(artifactPath.toString(), catalog.getArtifact(unitId, "export-owner").getStoragePath());
+    }
+
+    @Test
+    void viewerCannotPublishNativeArtifact() {
+        String unitId = "native-export-role";
+        catalog.create(new CreateWorkbookRequest(unitId, "Export", null, null, null, null, null), "export-owner");
+        var share = shares.create(unitId, new ShareCreateRequest("viewer", Instant.now().plusSeconds(600)), "export-owner");
+        var error = assertThrows(ServiceException.class, () -> catalog.exportArtifact(
+                unitId, 0, "forbidden.xlsx", "xlsx", "guest:" + share.shareId()));
+        assertEquals("FORBIDDEN", error.code());
+        assertEquals("NOT_FOUND", assertThrows(ServiceException.class,
+                () -> catalog.getArtifact(unitId, "export-owner")).code());
     }
 }

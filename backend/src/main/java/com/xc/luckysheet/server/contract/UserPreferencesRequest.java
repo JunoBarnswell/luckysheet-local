@@ -8,14 +8,13 @@ public record UserPreferencesRequest(
         @JsonProperty("defaultFolderId") String defaultFolderId,
         @JsonProperty("autoSave") Boolean autoSave,
         @JsonProperty("autoSync") Boolean autoSync,
-        @JsonProperty("offlineCache") Boolean offlineCache,
         @JsonProperty("importCompatibility") String importCompatibility,
         @JsonProperty("language") String language,
         @JsonProperty("theme") String theme
 ) {
     @JsonCreator
     public UserPreferencesRequest {
-        if (defaultSpaceId == null && defaultFolderId == null && autoSave == null && autoSync == null && offlineCache == null
+        if (defaultSpaceId == null && defaultFolderId == null && autoSave == null && autoSync == null
                 && importCompatibility == null && language == null && theme == null) {
             throw new IllegalArgumentException("User preferences are empty");
         }

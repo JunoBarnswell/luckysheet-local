@@ -8,14 +8,12 @@ public record WorkbookUserState(
         Instant lastOpenedAt,
         boolean autoSave,
         boolean autoSync,
-        String defaultCreateLocation,
         String importCompatibilityLevel,
         String language,
-        boolean offlineCache,
         String theme,
         Instant updatedAt
 ) {
     public WorkbookUserState(String unitId, boolean favorite, Instant lastOpenedAt, Instant updatedAt) {
-        this(unitId, favorite, lastOpenedAt, true, true, "remote", "standard", null, true, "system", updatedAt);
+        this(unitId, favorite, lastOpenedAt, true, true, "standard", null, "system", updatedAt);
     }
 }

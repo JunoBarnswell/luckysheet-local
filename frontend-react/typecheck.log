@@ -1,0 +1,326 @@
+
+> react-sheets-reimplementation@1.0.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+apps/web/src/App.tsx(121,390): error TS2322: Type '"error" | "synced" | "syncing" | "offline" | "conflict"' is not assignable to type 'WorkbookSyncStatus'.
+  Type '"offline"' is not assignable to type 'WorkbookSyncStatus'.
+apps/web/src/components/canvas/drawing-renderers.test.ts(10,3): error TS2739: Type '{ id: string; name: string; columns: never[]; columnCount: number; rowCount: number; occupiedCellCount: number; getCell: () => undefined; usedRange: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number; }; ... 33 more ...; forEachOccupiedCell: () => void; }' is missing the following properties from type 'CanvasSheetSnapshot': revision, resolvedVisibility
+apps/web/src/components/pivot/SheetCanvasPivot.test.ts(28,3): error TS2739: Type '{ id: string; name: string; columns: string[]; columnCount: number; rowCount: number; occupiedCellCount: number; getCell: () => undefined; usedRange: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number; }; ... 33 more ...; forEachOccupiedCell: () => void; }' is missing the following properties from type 'CanvasSheetSnapshot': revision, resolvedVisibility
+apps/web/src/workbooks/WorkbookHubPage.tsx(22,33): error TS2367: This comparison appears to be unintentional because the types '"remote"' and '"local"' have no overlap.
+apps/web/src/workbooks/WorkbookHubPage.tsx(23,33): error TS2367: This comparison appears to be unintentional because the types '"remote"' and '"local"' have no overlap.
+apps/web/src/workbooks/WorkbookHubPage.tsx(111,32): error TS2367: This comparison appears to be unintentional because the types '"remote"' and '"local"' have no overlap.
+apps/web/src/workbooks/WorkbookStatusBadge.tsx(8,7): error TS2367: This comparison appears to be unintentional because the types '"synced" | "syncing"' and '"offline"' have no overlap.
+apps/web/src/workbooks/WorkbookStatusBadge.tsx(10,7): error TS2367: This comparison appears to be unintentional because the types '"synced"' and '"pending"' have no overlap.
+apps/web/src/workbooks/WorkbookStatusBadge.tsx(11,7): error TS2367: This comparison appears to be unintentional because the types '"remote"' and '"local"' have no overlap.
+packages/render-engine/src/index.test.ts(701,15): error TS2554: Expected 5 arguments, but got 4.
+packages/render-engine/src/index.test.ts(702,15): error TS2554: Expected 5 arguments, but got 4.
+packages/render-engine/src/index.test.ts(709,15): error TS2554: Expected 5 arguments, but got 4.
+packages/sheet-features/src/m3-m4-data.test.ts(20,51): error TS2339: Property 'forwardMutations' does not exist on type 'HistoryEntry'.
+packages/sheet-features/src/outline-features.test.ts(24,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/outline-features.test.ts(31,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/outline-features.test.ts(37,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/outline-features.test.ts(45,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/outline-features.test.ts(67,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/outline-features.test.ts(74,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(41,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(62,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(79,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(126,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(137,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(147,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(164,17): error TS2554: Expected 5 arguments, but got 2.
+packages/sheet-features/src/sheet-table-features.test.ts(174,17): error TS2554: Expected 5 arguments, but got 2.
+packages/spreadsheet-app/src/application-core-editing.test.ts(34,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/application-core-editing.test.ts(35,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/application-core-editing.test.ts(100,57): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-core-editing.test.ts(105,43): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-core-editing.test.ts(284,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/application-core-editing.test.ts(285,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/application-extended.test.ts(3,10): error TS2305: Module '"@react-sheets/formula-engine"' has no exported member 'createLocalCalculationSessionPort'.
+packages/spreadsheet-app/src/application-extended.test.ts(7,32): error TS2353: Object literal may only specify known properties, and 'calculationSessionPort' does not exist in type 'WorkbookSessionOptions'.
+packages/spreadsheet-app/src/application-extended.test.ts(34,25): error TS2339: Property 'status' does not exist on type 'Promise<GoalSeekResult>'.
+packages/spreadsheet-app/src/application-extended.test.ts(48,25): error TS2339: Property 'status' does not exist on type 'Promise<GoalSeekResult>'.
+packages/spreadsheet-app/src/application-extended.test.ts(49,25): error TS2339: Property 'message' does not exist on type 'Promise<GoalSeekResult>'.
+packages/spreadsheet-app/src/application-extended.test.ts(66,25): error TS2339: Property 'status' does not exist on type 'Promise<ScenarioResult>'.
+packages/spreadsheet-app/src/application-extended.test.ts(67,25): error TS2339: Property 'outputs' does not exist on type 'Promise<ScenarioResult>'.
+packages/spreadsheet-app/src/application-formula.test.ts(3,10): error TS2305: Module '"@react-sheets/formula-engine"' has no exported member 'createLocalCalculationSessionPort'.
+packages/spreadsheet-app/src/application-formula.test.ts(8,32): error TS2353: Object literal may only specify known properties, and 'calculationSessionPort' does not exist in type 'WorkbookSessionOptions'.
+packages/spreadsheet-app/src/application-formula.test.ts(120,26): error TS2339: Property 'scope' does not exist on type 'Promise<DefinedNameModel>'.
+packages/spreadsheet-app/src/application-history.test.ts(16,43): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-history.test.ts(45,43): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-persistence.test.ts(9,39): error TS2353: Object literal may only specify known properties, and 'nativeDocumentExecution' does not exist in type 'WorkbookSessionOptions'.
+packages/spreadsheet-app/src/application-persistence.test.ts(26,62): error TS2339: Property 'load' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/application-persistence.test.ts(33,39): error TS2353: Object literal may only specify known properties, and 'nativeDocumentExecution' does not exist in type 'WorkbookSessionOptions'.
+packages/spreadsheet-app/src/application-persistence.test.ts(36,64): error TS2339: Property 'nativeDocuments' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/application-persistence.test.ts(43,78): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-persistence.test.ts(54,32): error TS2339: Property 'getSnapshot' does not exist on type 'WorkbookApiClient'.
+packages/spreadsheet-app/src/application-persistence.test.ts(70,34): error TS2339: Property 'getSnapshot' does not exist on type 'WorkbookApiClient'.
+packages/spreadsheet-app/src/application-pivot.test.ts(5,57): error TS2307: Cannot find module './features/pivot/task-port' or its corresponding type declarations.
+packages/spreadsheet-app/src/application-pivot.test.ts(6,56): error TS2307: Cannot find module './features/pivot/task-protocol' or its corresponding type declarations.
+packages/spreadsheet-app/src/application-xlsx.test.ts(4,58): error TS2305: Module '"./features/native-document"' has no exported member 'exchangeSaveAsDocument'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(4,82): error TS2724: '"./features/native-document"' has no exported member named 'exchangeSaveDocument'. Did you mean 'exchangeExportDocument'?
+packages/spreadsheet-app/src/application-xlsx.test.ts(10,54): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(11,58): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(11,70): error TS2554: Expected 1 arguments, but got 2.
+packages/spreadsheet-app/src/application-xlsx.test.ts(12,22): error TS2339: Property 'buffer' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(12,39): error TS2339: Property 'buffer' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(19,39): error TS2353: Object literal may only specify known properties, and 'nativeDocumentExecution' does not exist in type 'WorkbookSessionOptions'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(50,58): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(50,70): error TS2554: Expected 1 arguments, but got 2.
+packages/spreadsheet-app/src/application-xlsx.test.ts(51,77): error TS2353: Object literal may only specify known properties, and 'buffer' does not exist in type 'NativeDocumentImportParams'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(51,94): error TS2339: Property 'buffer' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(52,56): error TS2339: Property 'snapshot' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/application-xlsx.test.ts(53,58): error TS2339: Property 'snapshot' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(9,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(10,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(13,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(14,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(17,22): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(27,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(28,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(29,23): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(35,154): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/chart/recommendation.test.ts(37,22): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/data-source/range-preprocess.test.ts(10,64): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/data-source/range-preprocess.test.ts(12,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/extended/extended.test.ts(47,25): error TS2339: Property 'mutationCount' does not exist on type 'Promise<CommandResult>'.
+packages/spreadsheet-app/src/features/extended/extended.test.ts(73,25): error TS2339: Property 'mutationCount' does not exist on type 'Promise<CommandResult>'.
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(28,39): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(29,13): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(30,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(52,39): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(53,13): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/extended/runtime.test.ts(54,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(17,37): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(18,11): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(19,11): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(20,11): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(21,11): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/formula-audit/formula-audit.test.ts(22,11): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/features/history/index.ts(5,38): error TS2305: Module '"../pivot/engine"' has no exported member 'preparePivotTaskInputAsync'.
+packages/spreadsheet-app/src/features/history/index.ts(6,57): error TS2307: Cannot find module '../pivot/task-port' or its corresponding type declarations.
+packages/spreadsheet-app/src/features/history/index.ts(7,133): error TS2307: Cannot find module '../pivot/task-protocol' or its corresponding type declarations.
+packages/spreadsheet-app/src/features/history/replay.test.ts(5,10): error TS2305: Module '"@react-sheets/formula-engine"' has no exported member 'createLocalCalculationSessionPort'.
+packages/spreadsheet-app/src/features/history/replay.test.ts(51,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/history/replay.test.ts(52,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/history/replay.test.ts(53,49): error TS2339: Property 'fromSnapshot' does not exist on type 'typeof HistoryPreviewSession'.
+packages/spreadsheet-app/src/features/history/replay.test.ts(58,15): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(34,40): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(42,36): error TS2339: Property 'fromSnapshot' does not exist on type 'typeof WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(42,58): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(54,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(55,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(81,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(82,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(150,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(160,29): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(164,31): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(203,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(204,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(238,45): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(240,31): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(256,34): error TS2339: Property 'event' does not exist on type 'Promise<CommandResult>'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(257,30): error TS2339: Property 'mutationCount' does not exist on type 'Promise<CommandResult>'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(266,29): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/insert/commands.test.ts(272,31): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/native-document/server-transport.ts(196,91): error TS2322: Type 'Blob | ArrayBuffer' is not assignable to type 'ArrayBuffer'.
+  Type 'Blob' is missing the following properties from type 'ArrayBuffer': byteLength, [Symbol.toStringTag]
+packages/spreadsheet-app/src/features/native-document/transport.test.ts(49,16): error TS18048: 'imported.manifest' is possibly 'undefined'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(271,35): error TS2339: Property 'addSheet' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(722,5): error TS2353: Object literal may only specify known properties, and 'inversePolicy' does not exist in type 'MutationRegistrationMetadata<PivotDefinition>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(731,5): error TS2353: Object literal may only specify known properties, and 'inversePolicy' does not exist in type 'MutationRegistrationMetadata<string>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(740,5): error TS2353: Object literal may only specify known properties, and 'inversePolicy' does not exist in type 'MutationRegistrationMetadata<PivotUpdateParams>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(762,11): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<{ columnCount?: number | undefined; rowCount?: number | undefined; id: string; name: string; }>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(777,9): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<PivotDefinition>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(805,11): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<{ sheetId: string; drawingId: string; }>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(816,11): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<PivotDependentUpdate>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(825,9): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<string>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(846,9): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<PivotUpdateParams>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(874,5): error TS2353: Object literal may only specify known properties, and 'inversePolicy' does not exist in type 'MutationRegistrationMetadata<PivotDrillDownParams>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(883,5): error TS2353: Object literal may only specify known properties, and 'inversePolicy' does not exist in type 'MutationRegistrationMetadata<PivotDrillDownRemoveParams>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(908,9): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<{ sheetId: string; drawing: DrawingObject; payload: ChartDrawingPayload; }>'.
+packages/spreadsheet-app/src/features/pivot/commands.ts(937,9): error TS2353: Object literal may only specify known properties, and 'inverse' does not exist in type 'Mutation<PivotDrillDownParams>'.
+packages/spreadsheet-app/src/features/pivot/recommendation.test.ts(9,75): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/pivot/recommendation.test.ts(10,114): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/pivot/recommendation.test.ts(22,15): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/pivot/refresh-coordinator.test.ts(11,129): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(5,8): error TS2724: '"./server-task-port"' has no exported member named 'ServerPivotTaskTransport'. Did you mean 'ServerPivotTaskPort'?
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(6,8): error TS2305: Module '"./server-task-port"' has no exported member 'ServerPivotSourceRegisterRequest'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(7,8): error TS2724: '"./server-task-port"' has no exported member named 'ServerPivotPrepareRequest'. Did you mean 'ServerPivotRunRequest'?
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(8,8): error TS2724: '"./server-task-port"' has no exported member named 'ServerPivotExecuteRequest'. Did you mean 'ServerPivotRunRequest'?
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(55,59): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(55,87): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(55,136): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(55,176): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(55,289): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(68,92): error TS2353: Object literal may only specify known properties, and 'transport' does not exist in type 'ServerPivotTaskPortOptions'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(73,30): error TS2339: Property 'registerSource' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(74,32): error TS2339: Property 'prepare' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(75,31): error TS2339: Property 'execute' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(85,92): error TS2353: Object literal may only specify known properties, and 'transport' does not exist in type 'ServerPivotTaskPortOptions'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(86,32): error TS2339: Property 'prepare' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(87,37): error TS2339: Property 'execute' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(96,92): error TS2353: Object literal may only specify known properties, and 'transport' does not exist in type 'ServerPivotTaskPortOptions'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(97,32): error TS2339: Property 'prepare' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/pivot/server-task-port.test.ts(98,26): error TS2339: Property 'execute' does not exist on type 'ServerPivotTaskPort'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(18,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(19,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(20,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(27,22): error TS2554: Expected 5 arguments, but got 3.
+packages/spreadsheet-app/src/features/print/layout.test.ts(38,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(39,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(48,22): error TS2554: Expected 5 arguments, but got 4.
+packages/spreadsheet-app/src/features/print/layout.test.ts(76,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(90,19): error TS2554: Expected 5-6 arguments, but got 4.
+packages/spreadsheet-app/src/features/print/layout.test.ts(113,19): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/print/layout.test.ts(129,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(130,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/print/layout.test.ts(151,22): error TS2554: Expected 5 arguments, but got 2.
+packages/spreadsheet-app/src/features/print/pdf-export.test.ts(128,6): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/print/pdf-export.test.ts(130,8): error TS2554: Expected 3 arguments, but got 2.
+packages/spreadsheet-app/src/features/query/index.ts(2,10): error TS2305: Module '"@react-sheets/exchange-excel-ooxml"' has no exported member 'importOoxmlDocument'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(4,10): error TS2305: Module '"@react-sheets/exchange-excel-ooxml"' has no exported member 'exportSnapshotToOoxmlBase64'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(10,3): error TS2305: Module '"./runtime"' has no exported member 'executeQueryDefinition'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(54,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(55,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(56,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(57,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/query/runtime.test.ts(59,76): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(9,27): error TS2339: Property 'addSheet' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(95,29): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(102,25): error TS2339: Property 'mutationCount' does not exist on type 'Promise<CommandResult>'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(103,31): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(157,29): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/commands.test.ts(169,31): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/helpers.test.ts(8,19): error TS2554: Expected 5 arguments, but got 2.
+packages/spreadsheet-app/src/features/sparkline/helpers.test.ts(9,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/sparkline/helpers.test.ts(10,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/sparkline/helpers.test.ts(11,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/sparkline/helpers.test.ts(25,29): error TS2339: Property 'addSheet' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/sparkline/helpers.ts(104,54): error TS2345: Argument of type '(sheetId: string) => { getCell: (row: number, column: number) => CellData | undefined; hiddenRows: Set<number>; hiddenColumns: Set<number>; } | undefined' is not assignable to parameter of type '(sheetId: string) => StructuredChartSheet | undefined'.
+  Type '{ getCell: (row: number, column: number) => CellData | undefined; hiddenRows: Set<number>; hiddenColumns: Set<number>; } | undefined' is not assignable to type 'StructuredChartSheet | undefined'.
+    Type '{ getCell: (row: number, column: number) => CellData | undefined; hiddenRows: Set<number>; hiddenColumns: Set<number>; }' is missing the following properties from type 'StructuredChartSheet': resolvedVisibility, revision
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(11,10): error TS2305: Module '"./templates"' has no exported member 'createTemplateSnapshot'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(17,5): error TS2353: Object literal may only specify known properties, and 'persistence' does not exist in type 'WorkbookCatalogServiceOptions'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(29,50): error TS2353: Object literal may only specify known properties, and 'persistence' does not exist in type 'WorkbookCatalogServiceOptions'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(30,44): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(31,38): error TS2339: Property 'store' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(34,29): error TS2339: Property 'binding' does not exist on type 'WorkbookResolution'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(35,37): error TS2339: Property 'store' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(39,37): error TS2339: Property 'store' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(44,45): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(48,71): error TS2367: This comparison appears to be unintentional because the types 'WorkbookResolutionErrorCode' and '"memory-session-reset"' have no overlap.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(56,23): error TS2339: Property 'checkpoint' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(64,50): error TS2353: Object literal may only specify known properties, and 'persistence' does not exist in type 'WorkbookCatalogServiceOptions'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(70,37): error TS2339: Property 'store' does not exist on type 'WorkspacePersistence'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(75,42): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(76,43): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(79,56): error TS2339: Property 'snapshot' does not exist on type 'WorkbookResolution'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(80,57): error TS2339: Property 'snapshot' does not exist on type 'WorkbookResolution'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(86,44): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(98,71): error TS2367: This comparison appears to be unintentional because the types 'WorkbookResolutionErrorCode' and '"memory-session-reset"' have no overlap.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(104,45): error TS2353: Object literal may only specify known properties, and 'snapshot' does not exist in type 'WorkbookCatalogCreateInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(106,50): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(107,59): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(107,71): error TS2554: Expected 1 arguments, but got 2.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(108,25): error TS2339: Property 'buffer' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(110,94): error TS2339: Property 'buffer' does not exist on type 'NativeDocumentExchangeResult'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(110,103): error TS2353: Object literal may only specify known properties, and 'execution' does not exist in type 'WorkbookCatalogImportInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(113,59): error TS2339: Property 'snapshot' does not exist on type 'WorkbookResolution'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(114,74): error TS2353: Object literal may only specify known properties, and 'execution' does not exist in type 'WorkbookCatalogExportInput'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(120,50): error TS2339: Property 'snapshot' does not exist on type 'WorkbookModel'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(128,30): error TS7006: Parameter 'snapshot' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(152,46): error TS2322: Type 'Promise<{ snapshot: any; summary: { unitId: any; name: any; revision: number; updatedAt: string; role: "owner"; }; artifact: { unitId: any; fileName: any; byteLength: any; checksum: string; updatedAt: string; }; }>' is not assignable to type 'Promise<WorkbookImportResponse>'.
+  Type '{ snapshot: any; summary: { unitId: any; name: any; revision: number; updatedAt: string; role: "owner"; }; artifact: { unitId: any; fileName: any; byteLength: any; checksum: string; updatedAt: string; }; }' is missing the following properties from type 'WorkbookImportResponse': unitId, revision, checksum, manifest
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(153,41): error TS2339: Property 'snapshot' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(154,34): error TS2339: Property 'snapshot' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(154,63): error TS2339: Property 'snapshot' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(155,35): error TS2339: Property 'snapshot' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(155,68): error TS2339: Property 'artifactFileName' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(155,104): error TS2339: Property 'artifact' does not exist on type 'WorkbookImportRequest'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(157,41): error TS7006: Parameter 'unitId' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(157,49): error TS7006: Parameter 'artifact' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(157,59): error TS7006: Parameter 'fileName' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(159,31): error TS7006: Parameter '_unitId' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(159,40): error TS7006: Parameter 'operation' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(159,208): error TS7006: Parameter 'mutation' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(160,39): error TS2322: Type 'Promise<{ created: true; snapshot: { snapshot: any; revision: number; }; }>' is not assignable to type 'Promise<CheckpointResponse>'.
+  Property 'workbook' is missing in type '{ created: true; snapshot: { snapshot: any; revision: number; }; }' but required in type 'CheckpointResponse'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(163,7): error TS2353: Object literal may only specify known properties, and 'persistence' does not exist in type 'WorkbookCatalogServiceOptions'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(166,42): error TS2322: Type '"local"' is not assignable to type '"remote"'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(179,84): error TS2339: Property 'offline' does not exist on type 'Readonly<Record<WorkbookSyncState, number>>'.
+packages/spreadsheet-app/src/features/workbook-catalog/catalog.test.ts(223,44): error TS7006: Parameter 'merge' implicitly has an 'any' type.
+packages/spreadsheet-app/src/features/workbook-catalog/service.ts(66,5): error TS2322: Type 'WorkbookSyncStatus' is not assignable to type 'WorkbookSyncState'.
+  Type '"pending"' is not assignable to type 'WorkbookSyncState'.
+packages/spreadsheet-app/src/features/workbook-catalog/service.ts(109,76): error TS2345: Argument of type 'WorkbookCatalogRemoteClient' is not assignable to parameter of type 'NativeDocumentServerApi'.
+  Type 'Pick<WorkbookApiClient, "getManifest" | "commitKernelOperation" | "createKernelWorkbook" | "getAccess" | "listWorkbookAcl" | "putWorkbookAcl" | "deleteWorkbookAcl" | ... 23 more ... | "saveNativeDocumentArtifact">' is missing the following properties from type 'NativeDocumentServerApi': createNativeDocumentTask, uploadNativeDocumentTaskChunk, commitNativeDocumentTask, cancelNativeDocumentTask
+packages/spreadsheet-app/src/features/workbook-catalog/service.ts(240,62): error TS2345: Argument of type 'WorkbookCatalogRemoteClient' is not assignable to parameter of type 'NativeDocumentServerApi'.
+  Type 'Pick<WorkbookApiClient, "getManifest" | "commitKernelOperation" | "createKernelWorkbook" | "getAccess" | "listWorkbookAcl" | "putWorkbookAcl" | "deleteWorkbookAcl" | ... 23 more ... | "saveNativeDocumentArtifact">' is missing the following properties from type 'NativeDocumentServerApi': createNativeDocumentTask, uploadNativeDocumentTaskChunk, commitNativeDocumentTask, cancelNativeDocumentTask
+packages/spreadsheet-app/src/features/workbook-catalog/service.ts(252,120): error TS2345: Argument of type 'WorkbookCatalogRemoteClient' is not assignable to parameter of type 'NativeDocumentServerApi'.
+  Type 'Pick<WorkbookApiClient, "getManifest" | "commitKernelOperation" | "createKernelWorkbook" | "getAccess" | "listWorkbookAcl" | "putWorkbookAcl" | "deleteWorkbookAcl" | ... 23 more ... | "saveNativeDocumentArtifact">' is missing the following properties from type 'NativeDocumentServerApi': createNativeDocumentTask, uploadNativeDocumentTaskChunk, commitNativeDocumentTask, cancelNativeDocumentTask
+packages/spreadsheet-app/src/features/workbook-catalog/service.ts(265,108): error TS2345: Argument of type 'WorkbookCatalogRemoteClient' is not assignable to parameter of type 'NativeDocumentServerApi'.
+  Type 'Pick<WorkbookApiClient, "getManifest" | "commitKernelOperation" | "createKernelWorkbook" | "getAccess" | "listWorkbookAcl" | "putWorkbookAcl" | "deleteWorkbookAcl" | ... 23 more ... | "saveNativeDocumentArtifact">' is missing the following properties from type 'NativeDocumentServerApi': createNativeDocumentTask, uploadNativeDocumentTaskChunk, commitNativeDocumentTask, cancelNativeDocumentTask
+packages/spreadsheet-app/src/index.ts(240,42): error TS2305: Module '"./features/pivot/engine"' has no exported member 'computePivotResult'.
+packages/spreadsheet-app/src/index.ts(240,62): error TS2305: Module '"./features/pivot/engine"' has no exported member 'evaluatePivotTask'.
+packages/spreadsheet-app/src/index.ts(240,214): error TS2305: Module '"./features/pivot/engine"' has no exported member 'preparePivotTaskInput'.
+packages/spreadsheet-app/src/index.ts(240,296): error TS2305: Module '"./features/pivot/engine"' has no exported member 'PivotTaskEvaluationInput'.
+packages/spreadsheet-app/src/index.ts(242,94): error TS2307: Cannot find module './features/pivot/source-index' or its corresponding type declarations.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(6,10): error TS2724: '"./features/review"' has no exported member named 'setCellHyperlink'. Did you mean 'getCellHyperlink'?
+packages/spreadsheet-app/src/ui-snapshot.test.ts(13,3): error TS2724: '"./features/data-source"' has no exported member named 'writeCellPatch'. Did you mean 'readCellPatch'?
+packages/spreadsheet-app/src/ui-snapshot.test.ts(20,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(21,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(27,84): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(41,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(42,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(43,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(44,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(45,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(46,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(56,82): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(66,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(67,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(68,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(69,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(70,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(71,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(72,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(73,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(81,39): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(82,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(83,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(84,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(85,13): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(86,13): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(87,13): error TS2339: Property 'setFormula' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(95,13): error TS2339: Property 'setValue' does not exist on type 'FormulaEngine'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(107,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(108,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(109,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(131,82): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(163,82): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(225,25): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/ui-snapshot.test.ts(248,17): error TS2339: Property 'set' does not exist on type 'WorksheetCells'.
+packages/spreadsheet-app/src/ui-snapshot.test.ts(261,82): error TS2345: Argument of type '{ defaultSheetId: string; }' is not assignable to parameter of type 'FormulaEngineOptions'.
+  Type '{ defaultSheetId: string; }' is missing the following properties from type 'FormulaEngineOptions': unitId, revision
+packages/spreadsheet-app/src/workbook-session.ts(77,250): error TS2305: Module '"./features/pivot/engine"' has no exported member 'preparePivotTaskInputAsync'.
+packages/spreadsheet-app/src/workbook-session.ts(185,3): error TS2305: Module '"./features/pivot"' has no exported member 'createPivotCalculateRequest'.
+packages/spreadsheet-app/src/workbook-session.ts(186,3): error TS2305: Module '"./features/pivot"' has no exported member 'createBrowserPivotTaskPort'.
+packages/spreadsheet-app/src/workbook-session.ts(187,3): error TS2305: Module '"./features/pivot"' has no exported member 'createPivotSourceRegisterRequest'.
+packages/spreadsheet-app/src/workbook-session.ts(188,3): error TS2305: Module '"./features/pivot"' has no exported member 'createPivotSourceReleaseRequest'.
+packages/spreadsheet-app/src/workbook-session.ts(189,3): error TS2305: Module '"./features/pivot"' has no exported member 'InlinePivotTaskPort'.
+packages/spreadsheet-app/src/workbook-session.ts(190,3): error TS2305: Module '"./features/pivot"' has no exported member 'readPivotBlockSource'.
+packages/spreadsheet-app/src/workbook-session.ts(192,8): error TS2724: '"./features/pivot"' has no exported member named 'PivotTaskPort'. Did you mean 'PivotTaskError'?
+packages/spreadsheet-app/src/workbook-session.ts(4518,35): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/workbook-session.ts(4522,34): error TS18046: 'request' is of type 'unknown'.
+packages/spreadsheet-app/src/workbook-session.ts(4522,50): error TS18048: 'task' is possibly 'undefined'.
+packages/spreadsheet-app/src/workbook-session.ts(4848,159): error TS2345: Argument of type '"change-layout"' is not assignable to parameter of type '"retry" | "fix-source"'.
+packages/spreadsheet-app/src/workbook-session.ts(7144,7): error TS2740: Type 'KernelReplicaSheetManifest' is missing the following properties from type 'SheetSnapshot': kind, id, cells, merges, and 8 more.

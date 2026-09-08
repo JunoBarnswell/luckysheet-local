@@ -10,24 +10,18 @@ public record UserStateRequest(
         @JsonProperty("lastOpenedAt") Instant lastOpenedAt,
         @JsonProperty("autoSave") Boolean autoSave,
         @JsonProperty("autoSync") Boolean autoSync,
-        @JsonProperty("defaultCreateLocation") String defaultCreateLocation,
         @JsonProperty("importCompatibilityLevel") String importCompatibilityLevel,
         @JsonProperty("language") String language,
-        @JsonProperty("offlineCache") Boolean offlineCache,
         @JsonProperty("theme") String theme
 ) {
     public UserStateRequest(Boolean favorite, Instant lastOpenedAt) {
-        this(favorite, lastOpenedAt, null, null, null, null, null, null, null);
+        this(favorite, lastOpenedAt, null, null, null, null, null);
     }
 
     @JsonCreator
     public UserStateRequest {
         if (favorite == null && lastOpenedAt == null && autoSave == null && autoSync == null
-                && defaultCreateLocation == null && importCompatibilityLevel == null && language == null
-                && offlineCache == null && theme == null) throw new IllegalArgumentException("User state is empty");
-        if (defaultCreateLocation != null && !java.util.Set.of("local", "remote").contains(defaultCreateLocation)) {
-            throw new IllegalArgumentException("defaultCreateLocation must be local or remote");
-        }
+                && importCompatibilityLevel == null && language == null && theme == null) throw new IllegalArgumentException("User state is empty");
         if (importCompatibilityLevel != null && !java.util.Set.of("standard", "strict").contains(importCompatibilityLevel)) {
             throw new IllegalArgumentException("importCompatibilityLevel is invalid");
         }

@@ -12,10 +12,8 @@ export interface CreateWorkbookDialogProps {
   locationOptions: readonly LocationOption[];
   defaultLocationId?: string;
   error?: string;
-  errorRecovery?: string;
   onClose: () => void;
   onSubmit: (value: CreateWorkbookDialogValue) => void;
-  onRetryStorage?: () => void;
   submitting?: boolean;
 }
 
@@ -25,10 +23,8 @@ export function CreateWorkbookDialog({
   locationOptions,
   defaultLocationId,
   error,
-  errorRecovery,
   onClose,
   onSubmit,
-  onRetryStorage,
   submitting = false,
 }: CreateWorkbookDialogProps) {
   const [name, setName] = useState(defaultName);
@@ -46,8 +42,6 @@ export function CreateWorkbookDialog({
     onSubmit({ name: trimmedName, locationId });
   };
 
-  const errorDescription = errorRecovery ? `${error} ${errorRecovery}` : error;
-
   return (
     <Dialog
       closeLabel="关闭新建工作簿"
@@ -62,10 +56,8 @@ export function CreateWorkbookDialog({
       <Stack gap="md">
         {error ? (
           <StatePanel
-            actionLabel={onRetryStorage ? '重试打开存储' : undefined}
-            description={errorDescription}
+            description={error}
             kind="error"
-            onAction={onRetryStorage}
             title="无法创建工作簿"
           />
         ) : null}

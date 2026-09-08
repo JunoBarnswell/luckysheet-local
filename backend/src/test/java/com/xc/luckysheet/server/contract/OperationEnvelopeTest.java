@@ -50,4 +50,20 @@ class OperationEnvelopeTest {
         assertEquals(serverClock, operation.createdAt());
         assertEquals(serverClock, operation.committedAt());
     }
+
+    @Test
+    void undoIntentRequiresAnEmptyClientMutationList() throws Exception {
+        Instant now = Instant.parse("2026-08-23T00:00:00Z");
+        OperationIntent intent = new OperationIntent(OperationIntent.UNDO, "target-op", 0);
+        OperationEnvelope undo = new OperationEnvelope(
+                OperationEnvelope.SCHEMA, "undo-op", "unit-1", 2, 1, List.of(), now, intent);
+
+        assertEquals(intent, undo.intent());
+        assertTrue(undo.mutations().isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> new OperationEnvelope(
+                OperationEnvelope.SCHEMA, "empty-op", "unit-1", 2, 1, List.of(), now));
+        assertThrows(IllegalArgumentException.class, () -> new OperationEnvelope(
+                OperationEnvelope.SCHEMA, "mixed-op", "unit-1", 2, 1,
+                List.of(new OperationMutation("cell.set", "sheet-1", mapper.createObjectNode())), now, intent));
+    }
 }

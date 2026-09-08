@@ -17,20 +17,20 @@ import {
  */
 export function runGoalSeek(
   workbook: WorkbookModel,
-  _formula: FormulaEngine,
+  formula: FormulaEngine,
   sheetId: string,
   params: GoalSeekParams,
 ): GoalSeekResult {
-  return planGoalSeek(workbook, sheetId, params).result;
+  return planGoalSeek(workbook, formula, sheetId, params).result;
 }
 
 export function runScenario(
   workbook: WorkbookModel,
-  _formula: FormulaEngine,
+  formula: FormulaEngine,
   sheetId: string,
   scenario: ScenarioDefinition,
 ): ScenarioResult {
-  return planScenario(workbook, sheetId, scenario).result;
+  return planScenario(workbook, formula, sheetId, scenario).result;
 }
 
 export function summarizeGoalSeekResult(result: GoalSeekResult): string {

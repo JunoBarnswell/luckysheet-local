@@ -2,7 +2,6 @@ package com.xc.luckysheet.server.persistence;
 
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSource;
-import com.xc.luckysheet.server.contract.WorkbookStorageLocation;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -11,12 +10,10 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 
-/** Canonical workbook state. JSON is deliberately stored as portable text. */
+/** Workbook catalog metadata. Canonical content is owned by the kernel manifest and pages. */
 @Entity
 @Table(name = "workbooks", indexes = {
         @Index(name = "workbooks_owner_updated_idx", columnList = "owner_subject,updated_at"),
@@ -29,13 +26,6 @@ public class WorkbookEntity {
 
     @Column(name = "name", nullable = false, length = 255)
     private String name;
-
-    @JdbcTypeCode(SqlTypes.LONGVARCHAR)
-    @Column(name = "snapshot_json", nullable = false)
-    private String snapshotJson;
-
-    @Column(name = "snapshot_revision", nullable = false)
-    private long snapshotRevision;
 
     @Column(name = "revision", nullable = false)
     private long revision;
@@ -61,10 +51,6 @@ public class WorkbookEntity {
     private String folderId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "storage_location", nullable = false, length = 16)
-    private WorkbookStorageLocation storageLocation;
-
-    @Enumerated(EnumType.STRING)
     @Column(name = "source", nullable = false, length = 32)
     private WorkbookSource source;
 
@@ -78,27 +64,18 @@ public class WorkbookEntity {
     protected WorkbookEntity() {
     }
 
-    public WorkbookEntity(String unitId, String name, String snapshotJson, long snapshotRevision, long revision,
-                          Instant createdAt, Instant updatedAt) {
-        this(unitId, name, snapshotJson, snapshotRevision, revision, createdAt, updatedAt, "", null, null,
-                WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null);
-    }
-
-    public WorkbookEntity(String unitId, String name, String snapshotJson, long snapshotRevision, long revision,
+    public WorkbookEntity(String unitId, String name, long revision,
                           Instant createdAt, Instant updatedAt, String ownerSubject, String spaceId, String folderId,
-                          WorkbookStorageLocation storageLocation, WorkbookSource source, WorkbookLifecycle lifecycle,
+                          WorkbookSource source, WorkbookLifecycle lifecycle,
                           Instant deletedAt) {
         this.unitId = unitId;
         this.name = name;
-        this.snapshotJson = snapshotJson;
-        this.snapshotRevision = snapshotRevision;
         this.revision = revision;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.ownerSubject = ownerSubject == null ? "" : ownerSubject;
         this.spaceId = spaceId;
         this.folderId = folderId;
-        this.storageLocation = storageLocation == null ? WorkbookStorageLocation.REMOTE : storageLocation;
         this.source = source == null ? WorkbookSource.NATIVE : source;
         this.lifecycle = lifecycle == null ? WorkbookLifecycle.ACTIVE : lifecycle;
         this.deletedAt = deletedAt;
@@ -110,14 +87,6 @@ public class WorkbookEntity {
 
     public String getName() {
         return name;
-    }
-
-    public String getSnapshotJson() {
-        return snapshotJson;
-    }
-
-    public long getSnapshotRevision() {
-        return snapshotRevision;
     }
 
     public long getRevision() {
@@ -135,7 +104,6 @@ public class WorkbookEntity {
     public String getOwnerSubject() { return ownerSubject; }
     public String getSpaceId() { return spaceId; }
     public String getFolderId() { return folderId; }
-    public WorkbookStorageLocation getStorageLocation() { return storageLocation; }
     public WorkbookSource getSource() { return source; }
     public WorkbookLifecycle getLifecycle() { return lifecycle; }
     public Instant getDeletedAt() { return deletedAt; }
@@ -148,13 +116,6 @@ public class WorkbookEntity {
     public void updateRevisionAndName(long revision, String name, Instant updatedAt) {
         this.revision = revision;
         if (name != null && !name.isBlank()) this.name = name;
-        this.updatedAt = updatedAt;
-    }
-
-    public void updateSnapshot(long revision, String snapshotJson, long snapshotRevision, Instant updatedAt) {
-        this.revision = revision;
-        this.snapshotJson = snapshotJson;
-        this.snapshotRevision = snapshotRevision;
         this.updatedAt = updatedAt;
     }
 

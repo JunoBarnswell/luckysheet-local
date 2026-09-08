@@ -1,255 +1,133 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CommandRuntime } from '@react-sheets/command-runtime';
-import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
+import { createPivotMemberKey, pivotMemberKey, type PivotResultTree } from '@react-sheets/core-model';
+import { buildChartLayout, buildPivotChartData, registerChartCommands, type ChartPayload } from './index';
+import { resolveChartDataFromSources } from './data';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 import { registerDrawingFeature } from '../drawing';
-import { buildChartLayout, buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
+import { openCanonicalTestRuntime, seedCanonicalCells } from '../../../../core-model/src/canonical-test-runtime.test';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
     sheetId,
     drawing: {
-      id: `drawing-${chartId}`,
-      sheetId,
-      kind: 'chart' as const,
-      payloadId: chartId,
+      id: `drawing-${chartId}`, sheetId, kind: 'chart' as const, payloadId: chartId,
       anchor: { kind: 'two-cell' as const, row: 1, column: 1, endRow: 8, endColumn: 8 },
-      transform: { x: 40, y: 50, width: 360, height: 240, rotation: 0 },
-      zIndex: 1,
+      transform: { x: 40, y: 50, width: 360, height: 240, rotation: 0 }, zIndex: 1,
     },
     payload,
   };
 }
 
+async function setup(unitId: string) {
+  const fixture = await openCanonicalTestRuntime(unitId, 'Chart');
+  registerDrawingFeature(fixture.runtime);
+  registerChartCommands(fixture.runtime);
+  return fixture;
+}
+
+function visibility(revision: number): ResolvedVisibility {
+  const rows = new Map<number, { manualHidden: boolean; filterHidden: boolean; outlineHidden: boolean }>();
+  const columns = new Map<number, { manualHidden: boolean }>();
+  return { revision, rows, columns, isRowHidden: (row) => rows.has(row), isColumnHidden: (column) => columns.has(column) };
+}
+
 describe('chart feature', () => {
-  it('persists full chart payload through one canonical drawing aggregate', () => {
-    const workbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
-    const runtime = new CommandRuntime(workbook);
-    registerDrawingFeature(runtime);
-    registerChartCommands(runtime);
-    const payload: ChartPayload = {
-      kind: 'chart',
-      chartId: 'chart-1',
-      chartType: 'combo',
-      subtype: 'custom-combo',
-      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }] },
-      series: [
-        { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 1, endColumn: 1 }, chartType: 'column', axis: 'primary', color: '#2563eb' },
-        { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 2, endColumn: 2 }, chartType: 'line', axis: 'secondary', color: '#dc2626', smooth: true },
-      ],
-      categoryRange: { sheetId: 'sheet-1', startRow: 1, endRow: 4, startColumn: 0, endColumn: 0 },
-      stacked: 'none',
-      elements: {
-        title: 'Revenue',
-        legend: { visible: true, position: 'bottom' },
-        dataLabels: { visible: true },
-        hiddenData: 'show',
-        categoryAxis: { id: 'x', position: 'bottom', title: 'Month' },
-        valueAxis: { id: 'y', position: 'left', title: 'Revenue', minimum: 0, maximum: 1000, majorUnit: 100 },
-        secondaryValueAxis: { id: 'y2', position: 'right', title: 'Margin', minimum: 0, maximum: 1, scale: 'linear' },
-      },
-    };
-    runtime.execute('chart.insert', chartPair('sheet-1', 'chart-1', payload));
-    const sheet = workbook.getSheet('sheet-1');
-    assert.deepEqual(sheet.drawings[0]?.anchor, { kind: 'two-cell', row: 1, column: 1, endRow: 8, endColumn: 8 });
-    assert.deepEqual(sheet.drawingPayloads.get('chart-1'), payload);
-    const reloaded = WorkbookModel.fromSnapshot(workbook.snapshot());
-    assert.deepEqual(reloaded.getSheet('sheet-1').drawingPayloads.get('chart-1'), payload);
-    assert.equal(runtime.getHistoryDepth().undo, 1);
-
-    runtime.execute('chart.setSecondaryAxis', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', enabled: true });
-    assert.equal((sheet.drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'secondary');
-    assert.equal(runtime.undo(), true);
-    assert.equal((sheet.drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'primary');
-    assert.equal(runtime.redo(), true);
-
-    runtime.execute('chart.setElements', { sheetId: 'sheet-1', chartId: 'chart-1', elements: { hiddenData: 'hideRows', plotArea: { fill: '#f8fafc' }, valueAxis: { id: 'y', position: 'left', minimum: 0, maximum: 2000, majorGridlines: { visible: false } } } });
-    runtime.execute('chart.setSeriesStyle', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', style: { marker: { enabled: true, shape: 'circle', size: 6 }, trendlines: [{ type: 'linear', color: '#2563eb' }] } });
-    const edited = sheet.drawingPayloads.get('chart-1') as ChartPayload;
-    assert.equal(edited.elements.hiddenData, 'hideRows');
-    assert.equal(edited.elements.valueAxis?.majorGridlines?.visible, false);
-    assert.equal(edited.series?.[0]?.marker?.shape, 'circle');
-    assert.equal(edited.series?.[0]?.trendlines?.[0]?.type, 'linear');
-
-    const remoteWorkbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
-    const remoteRuntime = new CommandRuntime(remoteWorkbook);
-    registerDrawingFeature(remoteRuntime);
-    registerChartCommands(remoteRuntime);
-    remoteRuntime.applyRemoteMutations(runtime.getUndoEntries().flatMap((entry) => entry.redo));
-    assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'secondary');
-    assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).elements.hiddenData, 'hideRows');
+  it('persists chart inserts and edits through canonical drawing mutations', async () => {
+    const { workbook, runtime, close } = await setup('chart-canonical-mutations');
+    try {
+      const payload: ChartPayload = {
+        kind: 'chart', chartId: 'chart-1', chartType: 'combo', subtype: 'custom-combo',
+        source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }] },
+        series: [
+          { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 1, endColumn: 1 }, chartType: 'column', axis: 'primary', color: '#2563eb' },
+          { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 2, endColumn: 2 }, chartType: 'line', axis: 'secondary', color: '#dc2626' },
+        ],
+        categoryRange: { sheetId: 'sheet-1', startRow: 1, endRow: 4, startColumn: 0, endColumn: 0 },
+        stacked: 'none', elements: { title: 'Revenue', hiddenData: 'show', legend: { visible: true, position: 'bottom' } },
+      };
+      const planned: string[] = [];
+      runtime.onMutation((mutation) => planned.push(mutation.id));
+      await runtime.execute('chart.insert', chartPair('sheet-1', 'chart-1', payload));
+      await runtime.execute('chart.setSecondaryAxis', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', enabled: true });
+      await runtime.execute('chart.setElements', { sheetId: 'sheet-1', chartId: 'chart-1', elements: { hiddenData: 'hideRows' } });
+      const sheet = workbook.getSheet('sheet-1');
+      assert.deepEqual(planned, ['drawing.add', 'drawing.payload.update', 'drawing.payload.update']);
+      assert.deepEqual(sheet.drawings[0]?.anchor, { kind: 'two-cell', row: 1, column: 1, endRow: 8, endColumn: 8 });
+      const edited = sheet.drawingPayloads.get('chart-1') as ChartPayload;
+      assert.equal(edited.elements.hiddenData, 'hideRows');
+      assert.equal(edited.series?.[0]?.axis, 'secondary');
+      assert.equal(await runtime.undo(), true);
+      assert.equal((sheet.drawingPayloads.get('chart-1') as ChartPayload).elements.hiddenData, 'show');
+      assert.equal(await runtime.redo(), true);
+    } finally {
+      close();
+    }
   });
 
-  it('supports local range data, scatter series, pivot result data and remote replay', () => {
-    const workbook = new WorkbookModel('chart-data-test', 'Chart Data');
-    const sheet = workbook.getSheet('sheet-1');
-    const values = [
-      ['Month', 'Revenue', 'Margin'],
-      ['Jan', 100, 0.2],
-      ['Feb', 120, 0.3],
-      ['Mar', 150, 0.4],
-    ];
-    values.forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
-    const payload: ChartPayload = {
-      kind: 'chart',
-      chartId: 'scatter-1',
-      chartType: 'scatter',
-      subtype: 'scatter-markers',
-      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
-      elements: { hiddenData: 'show' },
-      series: [
-        { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, xRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
-        { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 2, endColumn: 2 }, xRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 }, yRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 }, chartType: 'scatter', axis: 'secondary' },
-      ],
-    };
-    const local = resolveChartData(workbook, payload);
-    assert.deepEqual(local.categories, ['Jan', 'Feb', 'Mar']);
-    assert.deepEqual(local.series[0]?.values, [100, 120, 150]);
-    assert.equal(local.series[1]?.axis, 'secondary');
-
-    const pivotTree: PivotResultTree = {
-      schema: 'PivotResultTree',
-      pivotId: 'pivot-1',
-      fields: { fields: [{ fieldId: 'Month', name: 'Month', dataType: 'text', ordinal: 0 }] },
-      columnPaths: [['Revenue'], ['Margin']],
-      rows: [
-        { kind: 'leaf', key: 'Jan', label: 'Jan', depth: 0, children: [], values: [{ columnPath: ['Revenue'], values: [100, 0.2], sourceRowPaths: [] }], subtotal: false, sourceRowPaths: [] },
-        { kind: 'leaf', key: 'Feb', label: 'Feb', depth: 0, children: [], values: [{ columnPath: ['Revenue'], values: [120, 0.3], sourceRowPaths: [] }], subtotal: false, sourceRowPaths: [] },
-      ],
-      grandTotal: null,
-      sourceRowPaths: [],
-    };
-    const pivotPayload: ChartPayload = { ...payload, chartId: 'pivot-chart', chartType: 'combo', subtype: 'custom-combo', source: { kind: 'pivot', pivotId: 'pivot-1' }, series: undefined };
-    const pivotData = resolveChartData(workbook, pivotPayload, { 'pivot-1': pivotTree });
-    assert.equal(pivotData.source, 'pivot');
-    assert.deepEqual(pivotData.categories, ['Jan', 'Feb']);
-    assert.deepEqual(pivotData.series[0]?.values, [100, 120]);
-
-    const runtime = new CommandRuntime(workbook);
-    registerDrawingFeature(runtime);
-    registerChartCommands(runtime);
-    runtime.execute('chart.insert', chartPair('sheet-1', 'remote-chart', { ...payload, chartId: 'remote-chart' }));
-    const remoteWorkbook = new WorkbookModel('chart-data-test', 'Chart Data');
-    const remoteRuntime = new CommandRuntime(remoteWorkbook);
-    registerDrawingFeature(remoteRuntime);
-    registerChartCommands(remoteRuntime);
-    const operation = runtime.getUndoEntries()[0]?.redo ?? [];
-    remoteRuntime.applyRemoteMutations(operation);
-    assert.equal(remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('remote-chart')?.kind, 'chart');
-    assert.equal(remoteWorkbook.getSheet('sheet-1').drawings[0]?.kind, 'chart');
+  it('resolves worksheet ranges and XY bindings from canonical cells', async () => {
+    const { workbook, runtime, close } = await setup('chart-canonical-data');
+    try {
+      await seedCanonicalCells(runtime, 'sheet-1', [
+        { row: 0, column: 0, value: 'Month' }, { row: 0, column: 1, value: 'Revenue' }, { row: 0, column: 2, value: 'Margin' },
+        { row: 1, column: 0, value: 'Jan' }, { row: 1, column: 1, value: 100 }, { row: 1, column: 2, value: 0.2 },
+        { row: 2, column: 0, value: 'Feb' }, { row: 2, column: 1, value: 120 }, { row: 2, column: 2, value: 0.3 },
+        { row: 3, column: 0, value: 'Mar' }, { row: 3, column: 1, value: 150 }, { row: 3, column: 2, value: 0.4 },
+      ]);
+      const range = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+      const xRange = { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 };
+      const yRange = { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 };
+      const payload: ChartPayload = {
+        kind: 'chart', chartId: 'scatter-1', chartType: 'scatter', subtype: 'scatter-markers', source: { kind: 'worksheet-ranges', ranges: [range] },
+        series: [{ name: 'Margin', range: yRange, xRange, yRange, chartType: 'scatter' }],
+        categoryRange: { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }, elements: { hiddenData: 'show', emptyCells: 'gap' },
+      };
+      const sheet = workbook.getSheet('sheet-1');
+      const resolvedVisibility = visibility(sheet.cells.revision);
+      const data = resolveChartDataFromSources(payload, () => ({
+        getCell: (row: number, column: number) => sheet.cells.get(row, column),
+        resolvedVisibility,
+        revision: sheet.cells.revision,
+      }));
+      assert.deepEqual(data.categories, ['Jan', 'Feb', 'Mar']);
+      assert.deepEqual(data.series[0]?.xValues, [100, 120, 150]);
+      assert.deepEqual(data.series[0]?.values, [0.2, 0.3, 0.4]);
+      const layout = buildChartLayout(payload, data, 400, 240);
+      assert.equal(layout.status.kind, 'ready');
+    } finally {
+      close();
+    }
   });
 
-  it('projects the complete Pivot row-path × column-path × values matrix', () => {
+  it('projects the complete pivot row-path by column-path matrix', () => {
     const member = (fieldId: string, value: string): string => `${fieldId}=${pivotMemberKey(createPivotMemberKey(value))}`;
     const pivotTree: PivotResultTree = {
-      schema: 'PivotResultTree',
-      pivotId: 'matrix-pivot',
-      fields: {
-        fields: [
-          { fieldId: 'region', name: 'Region', dataType: 'text', ordinal: 0, values: ['East', 'West'] },
-          { fieldId: 'product', name: 'Product', dataType: 'text', ordinal: 1, values: ['Widget', 'Gadget'] },
-        ],
-      },
+      schema: 'PivotResultTree', pivotId: 'matrix-pivot', fields: { fields: [{ fieldId: 'region', name: 'Region', dataType: 'text', ordinal: 0 }] },
       columnPaths: [['Jan'], ['Feb']],
-      valueFields: [
-        { valueId: 'value:sales', fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' },
-        { valueId: 'value:count', fieldId: 'count', sourceFieldId: 'count', displayName: 'Orders', summarizeBy: 'count' },
-      ],
+      valueFields: [{ valueId: 'value:sales', fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' }],
       rows: [
-        {
-          kind: 'subtotal', key: 'East', label: 'East', depth: 0, subtotal: true,
-          path: [member('region', 'East')], children: [
-            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Widget')], children: [], values: [
-              { columnPath: ['Jan'], values: [10, 1], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [20, 2], sourceRowPaths: [] },
-            ], sourceRowPaths: [] },
-            { kind: 'leaf', key: 'Gadget', label: 'Gadget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Gadget')], children: [], values: [
-              { columnPath: ['Jan'], values: [11, 3], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [21, 4], sourceRowPaths: [] },
-            ], sourceRowPaths: [] },
-          ], values: [], sourceRowPaths: [],
-        },
-        {
-          kind: 'subtotal', key: 'West', label: 'West', depth: 0, subtotal: true,
-          path: [member('region', 'West')], children: [
-            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'West'), member('product', 'Widget')], children: [], values: [
-              { columnPath: ['Jan'], values: [30, 5], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [40, 6], sourceRowPaths: [] },
-            ], sourceRowPaths: [] },
-          ], values: [], sourceRowPaths: [],
-        },
+        { kind: 'leaf', key: 'East', label: 'East', depth: 0, subtotal: false, path: [member('region', 'East')], children: [], values: [{ columnPath: ['Jan'], values: [10], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [20], sourceRowPaths: [] }], sourceRowPaths: [] },
+        { kind: 'leaf', key: 'West', label: 'West', depth: 0, subtotal: false, path: [member('region', 'West')], children: [], values: [{ columnPath: ['Jan'], values: [30], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [40], sourceRowPaths: [] }], sourceRowPaths: [] },
       ],
-      grandTotal: null,
-      sourceRowPaths: [],
-    };
-    const projected = buildPivotChartData(pivotTree);
-    assert.deepEqual(projected.categories.map((category) => category.label), ['East / Widget', 'East / Gadget', 'West / Widget']);
-    assert.deepEqual(projected.series.map((entry) => entry.name), ['Jan Sales', 'Jan Orders', 'Feb Sales', 'Feb Orders']);
-    assert.deepEqual(projected.series.map((entry) => entry.values), [[10, 11, 30], [1, 3, 5], [20, 21, 40], [2, 4, 6]]);
-    assert.notEqual(projected.categories[0]?.id, projected.categories[2]?.id);
-
-    const noRows: PivotResultTree = {
-      schema: 'PivotResultTree', pivotId: 'root-pivot', fields: { fields: [] }, columnPaths: [[]],
-      valueFields: [{ valueId: 'value:amount', fieldId: 'amount', sourceFieldId: 'amount', displayName: 'Amount', summarizeBy: 'sum' }],
-      rows: [{ kind: 'leaf', key: null, label: 'Values', depth: 0, path: ['__root__'], children: [], subtotal: false, values: [{ columnPath: [], values: [null], sourceRowPaths: [] }], sourceRowPaths: [] }],
       grandTotal: null, sourceRowPaths: [],
     };
-    const rootProjection = buildPivotChartData(noRows);
-    assert.deepEqual(rootProjection.categories.map((category) => category.label), ['Values']);
-    assert.deepEqual(rootProjection.series[0]?.values, [null]);
+    const projected = buildPivotChartData(pivotTree);
+    assert.deepEqual(projected.categories.map((category) => category.label), ['East', 'West']);
+    assert.deepEqual(projected.series.map((entry) => entry.name), ['Jan Sales', 'Feb Sales']);
+    assert.deepEqual(projected.series.map((entry) => entry.values), [[10, 30], [20, 40]]);
   });
 
-  it('resolves XY and Bubble bindings positionally and applies empty-cell policy before layout', () => {
-    const workbook = new WorkbookModel('chart-xy-test', 'XY Charts');
-    const sheet = workbook.getSheet('sheet-1');
-    [
-      ['Label', 'X', 'Y', 'Size'],
-      ['A', 1, 10, 5],
-      ['B', 2, null, 12],
-      ['C', 4, 40, 8],
-    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
-    const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 3 };
-    const xRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 };
-    const yRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 2, endColumn: 2 };
-    const sizeRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 3, endColumn: 3 };
-    const scatter: ChartPayload = {
-      kind: 'chart', chartId: 'xy-chart', chartType: 'scatter', subtype: 'scatter-markers', source: { kind: 'worksheet-ranges', ranges: [range] },
-      series: [{ id: 'xy-series', name: 'Y', range: yRange, xRange, yRange, chartType: 'scatter' }], categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }, elements: { hiddenData: 'show', emptyCells: 'gap' },
-    };
-    const scatterData = resolveChartData(workbook, scatter);
-    assert.deepEqual(scatterData.series[0]?.xValues, [1, 2, 4]);
-    assert.deepEqual(scatterData.series[0]?.values, [10, null, 40]);
-    const scatterLayout = buildChartLayout(scatter, scatterData, 400, 240);
-    assert.equal(scatterLayout.status.kind, 'ready');
-    assert.deepEqual(scatterLayout.series[0]?.points.map((point) => point.xValue), [1, 2, 4]);
-    assert.equal(scatterLayout.series[0]?.points[1]?.visible, false);
-
-    const bubble: ChartPayload = { ...scatter, chartId: 'bubble-chart', chartType: 'bubble', subtype: 'bubble', series: [{ id: 'bubble-series', name: 'Y', range: yRange, xRange, yRange, sizeRange, chartType: 'bubble' }] };
-    const bubbleData = resolveChartData(workbook, bubble);
-    assert.deepEqual(bubbleData.series[0]?.sizeValues, [5, 12, 8]);
-    const bubbleLayout = buildChartLayout(bubble, bubbleData, 400, 240);
-    assert.equal(bubbleLayout.status.kind, 'ready');
-    assert.deepEqual(bubbleLayout.series[0]?.points.map((point) => point.sizeValue), [5, 12, 8]);
-
-    const zeroData = resolveChartData(workbook, { ...scatter, chartId: 'xy-zero', elements: { hiddenData: 'show', emptyCells: 'zero' } });
-    assert.deepEqual(zeroData.series[0]?.values, [10, 0, 40]);
-    assert.deepEqual(zeroData.series[0]?.missing, [false, false, false]);
-  });
-
-  it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
-    const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
-    const sheet = workbook.getSheet('sheet-1');
-    [['', 'Jan', 'Feb', 'Mar'], ['Revenue', 10, 20, 30], ['Cost', 4, 8, 12]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
-    const payload: ChartPayload = { kind: 'chart', chartId: 'row-chart', chartType: 'line', subtype: 'line-markers', dataOrientation: 'rows', source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 3 }] }, elements: { hiddenData: 'show' } };
-    const data = resolveChartData(workbook, payload);
-    assert.deepEqual(data.categories, ['Jan', 'Feb', 'Mar']);
-    assert.deepEqual(data.series.map((series) => series.values), [[10, 20, 30], [4, 8, 12]]);
-    assert.deepEqual(data.series.map((series) => series.name), ['Revenue', 'Cost']);
-  });
-
-  it('rejects a chart that declares a semantic XY family without independent bindings', () => {
-    const workbook = new WorkbookModel('chart-reject-test', 'Chart Reject');
-    const runtime = new CommandRuntime(workbook);
-    registerDrawingFeature(runtime);
-    registerChartCommands(runtime);
-    const payload: ChartPayload = { kind: 'chart', chartId: 'invalid-xy', chartType: 'scatter', subtype: 'scatter-markers', source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] }, series: [{ name: 'Y', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter' }], elements: { hiddenData: 'show' } };
-    assert.throws(() => runtime.execute('chart.insert', chartPair('sheet-1', 'invalid-xy', payload)), /explicit X\/Y range bindings/);
+  it('rejects an XY chart without independent bindings before commit', async () => {
+    const { runtime, close } = await setup('chart-canonical-rejection');
+    try {
+      const payload: ChartPayload = {
+        kind: 'chart', chartId: 'invalid-xy', chartType: 'scatter', subtype: 'scatter-markers',
+        source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
+        series: [{ name: 'Y', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter' }], elements: { hiddenData: 'show' },
+      };
+      await assert.rejects(() => runtime.execute('chart.insert', chartPair('sheet-1', 'invalid-xy', payload)), /explicit X\/Y range bindings/);
+    } finally {
+      close();
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ACCEPTANCE_LOCALES, ACCEPTANCE_RIBBON_TABS, ACCEPTANCE_VIEWPORTS, RIBBON_VISUAL_GOLDEN_CASES } from './acceptance-matrix';
-import { installBrowserDiagnostics, openLocalWorkbook, selectRibbonTab } from './support/workbook-fixtures';
+import { installBrowserDiagnostics, openConnectedWorkbook, selectRibbonTab } from './support/workbook-fixtures';
 
 for (const locale of ACCEPTANCE_LOCALES) {
   for (const viewport of ACCEPTANCE_VIEWPORTS) {
@@ -9,7 +9,7 @@ for (const locale of ACCEPTANCE_LOCALES) {
 
       test('matches the Designer shell and every primary ribbon tab visual golden', async ({ page }) => {
         const diagnostics = installBrowserDiagnostics(page);
-        await openLocalWorkbook(page, locale, `Ribbon golden ${locale} ${viewport.width}`);
+        await openConnectedWorkbook(page, locale, `Ribbon golden ${locale} ${viewport.width}`);
         const shellGolden = RIBBON_VISUAL_GOLDEN_CASES.find((entry) => entry.locale === locale && entry.viewport.width === viewport.width && entry.tab === 'home');
         if (!shellGolden) throw new Error(`Missing shell visual golden contract for ${locale} ${viewport.width}x${viewport.height}`);
         await expect(page.getByTestId('designer-shell')).toHaveScreenshot(shellGolden.shellScreenshot, { animations: 'disabled', caret: 'hide' });

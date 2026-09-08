@@ -14,6 +14,7 @@ import {
   type WorkbookTableModel,
 } from '@react-sheets/core-model';
 import type { ChartPayload, ChartSeries } from './commands';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 
 export type ChartDataSourceKind = 'range' | 'pivot' | 'table' | 'report-range';
 
@@ -74,9 +75,14 @@ export interface ResolvedChartData {
 
 export interface StructuredChartSheet {
   getCell(row: number, column: number): { value?: PivotScalar } | undefined;
-  hiddenRows: ReadonlySet<number> | readonly number[];
-  hiddenColumns: ReadonlySet<number> | readonly number[];
-  revision?: string | number;
+  resolvedVisibility: ResolvedVisibility;
+  revision: number;
+}
+
+function assertPinnedVisibility(sheet: StructuredChartSheet): void {
+  if (sheet.revision !== sheet.resolvedVisibility.revision) {
+    throw new Error(`STALE_VISIBILITY: chart source revision ${sheet.revision} does not match visibility revision ${sheet.resolvedVisibility.revision}`);
+  }
 }
 
 export function chartSourceRevision(
@@ -87,15 +93,46 @@ export function chartSourceRevision(
 ): string {
   const source = payload.source;
   const revisions: unknown[] = [source];
+  const rangeRevision = (range: RangeRef): unknown => {
+    const sheet = getSheet(range.sheetId);
+    if (sheet) assertPinnedVisibility(sheet);
+    return {
+      range,
+      revision: sheet?.revision ?? 'unknown',
+      visibilityRevision: sheet?.resolvedVisibility.revision ?? 'missing',
+    };
+  };
   if (source.kind === 'pivot') {
     const tree = pivotResults[source.pivotId];
     revisions.push(tree ? { sourceRevision: tree.sourceRevision, layoutRevision: tree.layoutRevision, filterRevision: tree.filterRevision } : 'missing');
   } else if (source.kind === 'worksheet-ranges') {
-    for (const range of source.ranges) revisions.push({ range, revision: getSheet(range.sheetId)?.revision ?? 'unknown' });
+    for (const range of source.ranges) revisions.push(rangeRevision(range));
+    if (payload.categoryRange) revisions.push(rangeRevision(payload.categoryRange));
+    for (const series of payload.series ?? []) {
+      for (const range of [
+        series.range,
+        series.xRange,
+        series.yRange,
+        series.sizeRange,
+        series.errorBars?.plusRange,
+        series.errorBars?.minusRange,
+        series.stockRoles?.open,
+        series.stockRoles?.high,
+        series.stockRoles?.low,
+        series.stockRoles?.close,
+        series.stockRoles?.volume,
+      ]) if (range) revisions.push(rangeRevision(range));
+    }
   } else if (source.kind === 'report-range') {
-    revisions.push({ range: source.range, revision: getSheet(source.range.sheetId)?.revision ?? 'unknown' });
+    revisions.push(rangeRevision(source.range));
+    if (payload.categoryRange) revisions.push(rangeRevision(payload.categoryRange));
   } else {
-    revisions.push({ tableId: source.tableId, revision: tables.find((table) => table.id === source.tableId)?.revision ?? 'unknown' });
+    const table = tables.find((entry) => entry.id === source.tableId);
+    revisions.push({
+      tableId: source.tableId,
+      revision: table?.revision ?? 'unknown',
+      sourceRange: table?.sourceRange ? rangeRevision(table.sourceRange) : 'missing',
+    });
   }
   return fingerprintChartRevision(revisions);
 }
@@ -242,8 +279,12 @@ function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember
 function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
 function fieldName(fieldId: string | undefined, tree: PivotResultTree): string { return tree.fields.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Value'; }
 
-function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
-  return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
+function rowHidden(sheet: StructuredChartSheet, row: number): boolean {
+  return sheet.resolvedVisibility.isRowHidden(row);
+}
+
+function columnHidden(sheet: StructuredChartSheet, column: number): boolean {
+  return sheet.resolvedVisibility.isColumnHidden(column);
 }
 
 function isMissing(value: PivotScalar | undefined): boolean {
@@ -278,10 +319,10 @@ function readRange(
 ): PivotScalar[][] {
   const rows: PivotScalar[][] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
-    if (hiddenData === 'hideRows' && containsHidden(sheet.hiddenRows, row)) continue;
+    if (hiddenData === 'hideRows' && rowHidden(sheet, row)) continue;
     const values: PivotScalar[] = [];
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      if (hiddenData === 'hideColumns' && containsHidden(sheet.hiddenColumns, column)) continue;
+      if (hiddenData === 'hideColumns' && columnHidden(sheet, column)) continue;
       values.push(scalarValue(sheet, row, column));
     }
     rows.push(values);
@@ -303,6 +344,7 @@ function seriesName(sheet: StructuredChartSheet, range: RangeRef, fallback: stri
 function sheetFor(getSheet: (sheetId: string) => StructuredChartSheet | undefined, range: RangeRef): StructuredChartSheet {
   const sheet = getSheet(range.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${range.sheetId}`);
+  assertPinnedVisibility(sheet);
   return sheet;
 }
 
@@ -496,12 +538,16 @@ export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sh
 }
 
 /** Resolve chart data from the live WorkbookModel for command/unit-test consumers. */
-export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload, pivotResults: Readonly<Record<string, PivotResultTree>> = {}): ResolvedChartData {
+export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, visibility: ResolvedVisibility): ResolvedChartData {
+  if (!visibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: chart resolution requires the kernel visibility projection');
+  if (visibility.revision !== workbook.revision) {
+    throw new Error(`STALE_VISIBILITY: chart workbook revision ${workbook.revision} does not match visibility revision ${visibility.revision}`);
+  }
   const result = resolveChartDataFromSources(
     payload,
     (sheetId) => {
       const sheet = workbook.getSheet(sheetId);
-      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns, revision: sheet.cells.revision };
+      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), resolvedVisibility: visibility, revision: sheet.cells.revision };
     },
     pivotResults,
     [...workbook.dataModel.tables.values()],
@@ -520,19 +566,20 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   if (!sourceRange) throw new Error(`Chart source ${source.kind} has no worksheet-backed range`);
   const sheet = getSheet(sourceRange.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${sourceRange.sheetId}`);
+  assertPinnedVisibility(sheet);
   const fields = source.kind === 'table'
     ? table!.fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
     : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const showHiddenData = payload.elements.hiddenData === 'show';
-  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
+  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !columnHidden(sheet, sourceRange.startColumn + field.ordinal)));
   const categoryBinding = source.bindings.category[0];
   const categoryField = categoryBinding && visible(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
   const valueBindings = source.bindings.values.filter((binding) => visible(fieldById.get(binding.fieldId)));
   if (!valueBindings.length) throw new Error(`Chart source ${source.kind} has no visible numeric value bindings`);
   const buckets = new Map<string, Map<string, number[]>>();
   for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
-    if (!showHiddenData && containsHidden(sheet.hiddenRows, row)) continue;
+    if (!showHiddenData && rowHidden(sheet, row)) continue;
     const category = String(categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow);
     const byField = buckets.get(category) ?? new Map<string, number[]>();
     for (const binding of valueBindings) {
@@ -604,13 +651,14 @@ export function resolveSparklineSeries(
   const source = sparkline.sourceRange;
   const sheet = getSheet(source.sheetId);
   if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
+  assertPinnedVisibility(sheet);
   const orientation = group?.dataOrientation ?? sparkline.dataOrientation ?? 'rows';
   const rows: Array<Array<PivotScalar>> = [];
   for (let row = source.startRow; row <= source.endRow; row += 1) {
-    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenRows, row)) continue;
+    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && rowHidden(sheet, row)) continue;
     const values: PivotScalar[] = [];
     for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenColumns, column)) continue;
+      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && columnHidden(sheet, column)) continue;
       values.push(scalarValue(sheet, row, column));
     }
     rows.push(values);

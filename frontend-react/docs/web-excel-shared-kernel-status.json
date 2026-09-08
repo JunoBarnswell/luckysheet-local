@@ -1,0 +1,1412 @@
+{
+  "schema": "SharedKernelImplementationLedger",
+  "version": 2,
+  "integrationHandoff": {
+    "document": "shared-kernel-integration-handoff.md",
+    "sources": [
+      "kernel/analytics/README.md",
+      "kernel/formula/README.md",
+      "backend/docs/native-integration-handoff.md"
+    ],
+    "evidencePolicy": "Only the acceptance clauses directly exercised by the recorded command may be marked verified. Implemented code with incomplete local acceptance remains implemented; unavailable real environments are recorded as blocked.",
+    "currentIntegrationEvidence": [
+      {
+        "todo": "I01-I06",
+        "command": "cargo test --workspace",
+        "result": "PASS: analytics 23, commands 12, core 4, formula library 21, formula migration 11, formula runtime 16, geometry 5, host 7, native-document library 7 and integration 5; doc tests passed",
+        "scope": "Integrated Rust native domain, command, formula, analytics, geometry, host and OOXML suites",
+        "limitations": "Synthetic corpus does not replace real Excel/WPS producer and reopen acceptance."
+      },
+      {
+        "todo": "A01,D02",
+        "command": "npm run build:kernel && npm run verify:kernel",
+        "result": "PASS: native host, wasm32 kernel, Vite bundle and tracked manifest integrity",
+        "scope": "Single Rust source built to native and WASM artifacts with manifest 11 / protocol 1",
+        "limitations": "Executed in the current checkout; clean hosted checkout is delegated to CI."
+      },
+      {
+        "todo": "A01-D03",
+        "command": "npm run typecheck && npm run check:boundaries && npm run test:unit",
+        "result": "PASS: TypeScript; contracts/boundaries/acceptance matrix/formula parity; 242 frontend unit tests",
+        "scope": "Frontend canonical consumers and repository architectural gates",
+        "limitations": "Does not authenticate a connected editor session."
+      },
+      {
+        "todo": "A02,A06,P01-P06,B05,U01,U06,U11",
+        "command": "npm run test:performance",
+        "result": "PASS: Rust 1,000,000-row sparse analytics in 3.06s; native input-budget rejection; 45 frontend geometry/edit tests",
+        "scope": "Million-row sparse pivot/paginated drilldown, pre-projection file budget, 100k/1m render planning and 100k autocomplete",
+        "limitations": "Does not establish every PRD P95, 20-million-cell real import, browser peak memory, or live connector latency."
+      },
+      {
+        "todo": "A03,A05,B01-B03,B07-B11",
+        "command": "mvn test",
+        "result": "PASS: 80 tests, 0 failures, 0 errors, 0 skipped; authenticated H2 server smoke create=201, manifest=200, native commit=201, revision=1, anonymous=401",
+        "scope": "Java ACL, native host integration, page/history persistence, query proof, H2 migration and real HTTP transaction paths",
+        "limitations": "PostgreSQL/MySQL/Redis and real OIDC multi-client environments were unavailable locally."
+      },
+      {
+        "todo": "U01-U11,A05,B09,B10",
+        "command": "npm run test:e2e",
+        "result": "PASS: 6 passed, 102 skipped",
+        "scope": "Kernel artifact, permission and elastic contracts, Hub render, disconnected unknown-workbook fail-close and 1672x941 Hub geometry",
+        "limitations": "102 connected-editor/corpus cases require E2E_OIDC_* plus a real backend, or the external OCR corpus; skips are not acceptance passes."
+      },
+      {
+        "todo": "U02,U03,U05,U11",
+        "command": "in-app browser at http://127.0.0.1:4180/workbooks",
+        "result": "PASS for disconnected Hub: meaningful content at 1024/1366/1920, no framework overlay, no browser console errors or warnings, explicit cloud configuration failure on create",
+        "scope": "Real browser Hub layout and fail-close behavior",
+        "limitations": "No real identity or cloud workbook was available, so editor and saved-state flows remain blocked."
+      }
+    ]
+  },
+  "baseline": "4fa80a2a879e6f5e0ac626f2fa45b6dd983a2cd4",
+  "items": [
+    {
+      "id": "A01",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "共享内核",
+      "current": "TypeScript/Java 重复工作簿语义",
+      "solution": "Rust 同一领域内核编译 native/WASM；迁移全部消费者并删除旧算法",
+      "acceptance": "WASM/native 语义差分一致；旧算法链删除",
+      "issues": [
+        "#320",
+        "#321"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/core, kernel/commands, kernel/formula, kernel/analytics, kernel/geometry and kernel/native-document are compiled into kernel-host native and WASM consumers.",
+        "frontend-react/tools/check-boundaries.mjs rejects restored TypeScript/Java semantic owners; the integrated Rust and frontend gates pass."
+      ],
+      "removedPaths": [
+        "backend/src/main/java/com/xc/luckysheet/server/mutation/**",
+        "frontend-react/packages/spreadsheet-app/src/application-*.test.ts semantic harnesses"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "A02",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "页式单元格存储",
+      "current": "CellMatrix 嵌套 Map/逐格对象无法承载密集2000万格",
+      "solution": "1024×32列式页、页目录、有限缓存、字典/bitmap",
+      "acceptance": "百万行完整编辑且内存受预算控制",
+      "issues": [
+        "#321"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "kernel/core/src/pages.rs implements canonical 1024x32 columnar pages, manifests, dictionaries, bitmaps and a bounded page cache.",
+        "frontend-react/packages/core-model/src/kernel-page-replica.ts consumes immutable kernel pages; the million-row sparse/render performance cases pass."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected 1,000,000x20 dense edit/save/reopen and browser peak-memory acceptance requires a provisioned cloud workbook plus real OIDC identity."
+      ]
+    },
+    {
+      "id": "A03",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "批量事务与撤销",
+      "current": "逐格 revision、clone和全量snapshot放大成本",
+      "solution": "页版本、copy-on-write、事务revision、增量undo",
+      "acceptance": "单用户操作一次history；拒绝零部分写入",
+      "issues": [
+        "#255",
+        "#332"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/commands/src/tests.rs and backend KernelPersistenceServiceTest cover atomic page+metadata commits, one revision/history record, undo conflicts and zero partial publication.",
+        "kernel/core/src/pages.rs implements content-addressed page versions and restore_manifest."
+      ],
+      "removedPaths": [
+        "backend CheckpointEntity/CheckpointEntityRepository full-snapshot path",
+        "frontend-react collaboration/collaborative-undo.ts"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "A04",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "结构变换",
+      "current": "移动清除重排依赖逐格处理",
+      "solution": "统一range move/fill/clear与引用/对象变换",
+      "acceptance": "大区域可撤销、公式规则锚点一致",
+      "issues": [
+        "#277"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/commands/src/structure.rs owns structural mutations; frontend-react/packages/core-model/src/data-transform.ts and sheet-identity-transform.ts project the canonical transform to references and objects.",
+        "Rust command and frontend structure/data-transform suites pass."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A05",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "云端唯一持久化",
+      "current": "local-only/mirrored/内存保存多种语义",
+      "solution": "删除本地创建和离线提交；serverack唯一保存确认",
+      "acceptance": "刷新恢复已提交内容；断线停写且无假成功",
+      "issues": [
+        "#331"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Local-only, mirrored and offline-queue commit paths were removed; WorkbookCatalogService and RemoteWorkbookStorage publish only native server acknowledgements.",
+        "Disconnected Hub/create/unknown-workbook browser acceptance fails closed with an observable cloud configuration error."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/collaboration/offline-queue.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/persistence/asset-migration.ts",
+        "frontend-react/apps/web/src/workbooks/StorageInfoBanner.tsx"
+      ],
+      "blocked": [
+        "Real server-ack refresh recovery and disconnect-during-edit acceptance requires E2E_OIDC_* and a running backend."
+      ]
+    },
+    {
+      "id": "A06",
+      "group": "内核、存储与加载",
+      "priority": "P0",
+      "title": "任务调度",
+      "current": "功能分别维护generation取消预算",
+      "solution": "统一任务状态、优先级、revision和取消检查点",
+      "acceptance": "旧结果不发布，取消有界、错误可恢复",
+      "issues": [
+        "#329",
+        "#330"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/analytics/src/task.rs and kernel/host/src/main.rs provide revision-pinned budgets and cancellable jobs; workbook-session.ts rejects stale task generations.",
+        "Host tests cover stale/cancel/recovery and per-workbook analytics runtime isolation."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A07",
+      "group": "内核、存储与加载",
+      "priority": "P1",
+      "title": "按需加载",
+      "current": "lazy面板仍依赖静态全量功能注册",
+      "solution": "按Hub/编辑器/分析/文件拆分装配",
+      "acceptance": "Hub不加载完整计算/文件内核",
+      "issues": [
+        "#320"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "apps/web/src/main.tsx and App.tsx split Hub routing from lazy editor/kernel acquisition; Hub browser acceptance renders without loading a local workbook runtime.",
+        "FeatureRegistry validates each lazily assembled surface against its canonical command owner."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "A08",
+      "group": "内核、存储与加载",
+      "priority": "P1",
+      "title": "页读取与预取",
+      "current": "occupied-cell/data-region可能全范围扫描",
+      "solution": "PaneMap可见页请求、预取及空间索引",
+      "acceptance": "滚动选择局部成本；隐藏格仍可读",
+      "issues": [
+        "#321"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "PaneMap/kernel geometry and KernelPageReplica use visible page addresses and bounded page reads; sparse coordinate indexes replace full occupied-range scans.",
+        "Render tests prove million-row viewport lookup and hidden-row geometry without losing canonical row identity."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F01",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "AND/OR",
+      "current": "数组取首值且提前返回会遗漏错误",
+      "solution": "统一标量/数组/引用和错误传播",
+      "acceptance": "TRUE/FALSE二维/文本/空白/错误与Excel一致",
+      "issues": [
+        "#322"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/scalar_functions.rs evaluates all AND/OR arguments with typed scalar/array/reference coercion and error propagation.",
+        "Formula migration/runtime/host suites include two-dimensional, text, blank and error cases."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "F02",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "XLOOKUP",
+      "current": "lazy分支遗漏match/search参数",
+      "solution": "完整参数策略和合法惰性求值",
+      "acceptance": "精确近似通配正反向二分均正确",
+      "issues": [
+        "#322"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/array_functions.rs implements XLOOKUP match/search modes, wildcard handling, reverse search and binary variants.",
+        "Formula migration and runtime suites cover the previously dropped optional parameters."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "F03",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "引用函数",
+      "current": "ADDRESS模式反转、INDIRECT无R1C1、ROW/COLUMN引用不完整",
+      "solution": "统一A1/R1C1 AST与引用返回",
+      "acceptance": "六个回归案例、名称跨表及越界",
+      "issues": [
+        "#322"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula/src/references.rs and parser.rs share A1/R1C1 AST semantics for ADDRESS, INDIRECT, ROW and COLUMN, including named/table references.",
+        "The 56-case parity corpus plus host formula tests cover cross-sheet, out-of-range and R1C1 cases."
+      ],
+      "removedPaths": [
+        "legacy TypeScript reference transformer/evaluator path",
+        "backend FormulaReferenceTransformer.java"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "F04",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "OFFSET",
+      "current": "默认尺寸1且非法尺寸钳制",
+      "solution": "继承源范围尺寸并严格验证",
+      "acceptance": "SUM(OFFSET(B1:B2,0,0))=30；非法无伪范围",
+      "issues": [
+        "#322"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/formula reference evaluation inherits OFFSET source dimensions and rejects invalid height/width instead of clamping.",
+        "Runtime corpus asserts SUM(OFFSET(B1:B2,0,0))=30 and typed rejection paths."
+      ],
+      "removedPaths": [
+        "legacy TypeScript formula semantic evaluation path"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "F05",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "增量依赖图",
+      "current": "持久Worker仍有全量输入扫描/副本",
+      "solution": "AST/点区间名称表索引与dirty闭包",
+      "acceptance": "单格编辑不重建全工作簿",
+      "issues": [
+        "#322"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula/src/dependency.rs owns parsed dependency indexes, dirty closures, names, tables, spills and revision-pinned invalidation.",
+        "Host formula synchronization tests prove command-triggered incremental recalculation without reconstructing workbook inputs."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F06",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "大范围计算",
+      "current": "整列引用与聚合materialize风险",
+      "solution": "页游标、共享公式模板、聚合索引",
+      "acceptance": "百万SUM/COUNTIFS无百万参数对象",
+      "issues": [
+        "#322"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Formula references are page/range iterators and aggregate evaluation consumes values without constructing one argument object per cell.",
+        "Current performance gate covers million-row analytics but not the separate million-formula P95 acceptance."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "The exact million-cell SUM/COUNTIFS and million independent-formula performance targets have not been exercised by a real connected workbook corpus."
+      ]
+    },
+    {
+      "id": "F07",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "现代函数",
+      "current": "LET/LAMBDA等缺失",
+      "solution": "LET/LAMBDA/MAP/REDUCE/SCAN/BYROW/BYCOL/MAKEARRAY及动态数组",
+      "acceptance": "作用域、形状、错误、递归预算、spill",
+      "issues": [
+        "#322"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula implements LET, LAMBDA, MAP, REDUCE, SCAN, BYROW, BYCOL, MAKEARRAY and dynamic-array spill with explicit recursion/output budgets.",
+        "Formula library and runtime semantics suites cover scope, shape, blocked spill and error propagation."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F08",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "跨域依赖",
+      "current": "spill/Table/Pivot/dynamic更新边界分散",
+      "solution": "一个依赖调度器和确定性计算上下文",
+      "acceptance": "结构更改/刷新/循环/stale均正确",
+      "issues": [
+        "#322",
+        "#329"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "One host formula runtime resolves worksheet, name, table, visibility and external-service dependencies and publishes only current revisions.",
+        "Host and runtime tests cover stale revision, cancellation, spill/table invalidation and cycles."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F09",
+      "group": "公式与数值语义",
+      "priority": "P1",
+      "title": "数字日期",
+      "current": "格式类型与日期locale存在Partial项",
+      "solution": "统一1900/1904/Excel数值/格式AST，数字形文本保留文本",
+      "acceptance": "金额日期精度文本错误往返",
+      "issues": [
+        "#323"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "frontend-react/packages/number-format owns the canonical format AST and serial/date behavior; native OOXML imports date systems and preserves typed numeric/text values.",
+        "Number-format and native-document suites pass, including numeric-looking text and 1900/1904 metadata paths."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "F10",
+      "group": "公式与数值语义",
+      "priority": "P0",
+      "title": "能力目录",
+      "current": "runtime/autocomplete/OOXML能力报告分叉",
+      "solution": "单一函数定义生成各消费者",
+      "acceptance": "完整覆盖公开入口，不支持精确定位",
+      "issues": [
+        "#322",
+        "#327"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/formula/src/evaluator.rs exposes one function catalog used by evaluation, inspection and host capabilities; scripts/check-formula-parity.mjs rejects catalog drift.",
+        "check:formula-parity and the full formula corpus pass."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S01",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "筛选所有者",
+      "current": "按列首匹配丢失多区域owner",
+      "solution": "全链ownerId/range/column",
+      "acceptance": "A1:B10与A20:B30独立",
+      "issues": [
+        "#324"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/src/filter.rs resolves filter owner identity from ownerId plus range and rejects ambiguous overlap.",
+        "Analytics integration tests cover independent and overlapping range ownership."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S02",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "筛选失败",
+      "current": "解析异常转成全表隐藏",
+      "solution": "typed failure中止事务/投影",
+      "acceptance": "损坏筛选不修改状态",
+      "issues": [
+        "#324"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Filter parse/resolution failures return typed errors before visibility publication; no all-hidden fallback remains.",
+        "Analytics rejection tests verify state is not published after invalid ownership or predicate input."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S03",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "百万行筛选",
+      "current": "UI/公式/菜单重复扫描",
+      "solution": "owner/revision bitmap/列域增量索引",
+      "acceptance": "局部变更不全扫，百万筛选达标",
+      "issues": [
+        "#324"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Filter projections use owner/revision VisibilityBitmap and indexed typed columns; UI/domain consumers read the same projection.",
+        "The implementation is bounded and cancellable; the dedicated million-row filter P95 target was not separately measured."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "The dedicated million-row filter <=2s and member-first-page <=200ms acceptance has no connected dataset/identity on this host."
+      ]
+    },
+    {
+      "id": "S04",
+      "group": "筛选、排序与规则",
+      "priority": "P1",
+      "title": "筛选菜单",
+      "current": "颜色/图标候选不统一其它列条件",
+      "solution": "排除自身条件的domain query、服务端分页搜索、虚拟列表",
+      "acceptance": "值日期颜色图标候选一致",
+      "issues": [
+        "#87",
+        "#89"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics filter domain queries exclude the active column predicate, apply other owners, preserve typed members and page results.",
+        "filter_domain_excludes_own_predicate_and_respects_other_columns passes; frontend filter surfaces consume the typed result."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S05",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "可见性链",
+      "current": "Chart/Print部分只读manual hiddenRows",
+      "solution": "按原因统一visibility projection",
+      "acceptance": "网格图表打印一致，SUBTOTAL9/109区分",
+      "issues": [
+        "#324",
+        "#328"
+      ],
+      "status": "verified",
+      "evidence": [
+        "ResolvedVisibility separates manualHidden/filterHidden/outlineHidden and is required by formulas, grid, charts and print.",
+        "Chart and print visibility contract tests reject missing/stale projections; formula suite covers SUBTOTAL 9/109 semantics."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S06",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "导入隐藏",
+      "current": "公式缓存可能错误固化manual hidden",
+      "solution": "导入明确来源；歧义保留并限制相关编辑",
+      "acceptance": "重算clearfilter正确，不猜缓存",
+      "issues": [
+        "#85"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "native-document imports row hidden state as explicit OOXML metadata and does not infer filter ownership from cached formula values.",
+        "Unsupported ambiguous native behavior is retained and surfaced rather than rewritten by a UI fallback."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S07",
+      "group": "筛选、排序与规则",
+      "priority": "P0",
+      "title": "排序元数据",
+      "current": "对象式重排成本及关联复杂",
+      "solution": "页式稳定排序和引用metadata统一变换",
+      "acceptance": "计算值排序，批注链接规则锚点不脱离",
+      "issues": [
+        "#254",
+        "#86"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Canonical structural/sort transforms move cell pages and rule, note, link, drawing and formula anchors in one command transaction.",
+        "Structure/data-transform and command suites cover stable metadata relocation and atomic rejection."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "S08",
+      "group": "筛选、排序与规则",
+      "priority": "P1",
+      "title": "验证条件格式",
+      "current": "规则读值缓存分散且成本风险",
+      "solution": "共享值/依赖/priority/stopIfTrue",
+      "acceptance": "公式变更触发，非法规则原子拒绝",
+      "issues": [
+        "#324"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "core-model/rule-lifecycle.ts validates data-validation and conditional-format rules and indexes affected ranges; commands apply them atomically.",
+        "Frontend rule lifecycle/unit suites cover priority, stopIfTrue, formula dependencies and invalid-rule rejection."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P01",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "列式计算",
+      "current": "Worker仍重建SourceRow对象",
+      "solution": "rowId/dictionary/vector/bitmap唯一聚合",
+      "acceptance": "删除SourceRow主链",
+      "issues": [
+        "#300",
+        "#329"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/source.rs stores typed column vectors, dictionaries and row ids; the browser SourceRow worker path was deleted.",
+        "Million-row sparse analytics runs through the Rust owner."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/source-index.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/block-source.ts"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "P02",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "一次聚合",
+      "current": "axisGroups/resultCells/resultNodes重复扫描",
+      "solution": "一次grouped hash聚合后稀疏转置",
+      "acceptance": "成本随input/group增长",
+      "issues": [
+        "#300"
+      ],
+      "status": "verified",
+      "evidence": [
+        "kernel/analytics/pivot.rs performs one grouped hash aggregation and derives sparse rollups from occupied states.",
+        "Analytics tests cover multi-level totals, repeated placements and twelve aggregate kinds."
+      ],
+      "removedPaths": [
+        "legacy TypeScript pivot aggregation implementation in features/pivot/engine.ts"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "P03",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "稀疏投影",
+      "current": "全量projection.cells及固定结果cap",
+      "solution": "结果字典索引与viewport查询",
+      "acceptance": "未访问不物化；越界事前拒绝",
+      "issues": [
+        "#300"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Pivot output is a sparse cell map with bounded viewport and paginated drilldown; Cartesian projection and fixed result caps were deleted.",
+        "Million-row test reads a 10x10 viewport and three drilldown rows."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/projection.test.ts dense projection contract"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "P04",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "源缓存",
+      "current": "worksheet缓存存在但block仍重读",
+      "solution": "页版本源缓存复用field/layout/filter",
+      "acceptance": "同revision不重新获取全量",
+      "issues": [
+        "#329"
+      ],
+      "status": "verified",
+      "evidence": [
+        "AnalyticsRuntime caches registered typed sources by workbook and revision and reuses them across layouts/filters.",
+        "Host analytics tests cover repeat execution, reopen/close invalidation and workbook isolation."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P05",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "结果传输",
+      "current": "普通对象树/重复provenance",
+      "solution": "二进制结果页、路径池offset",
+      "acceptance": "实际结果量成本，main无长任务",
+      "issues": [
+        "#300"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Sparse viewport responses pool row/column nodes and provenance remains row-id based; server task transport pages results by actual output.",
+        "The old dense browser worker/result tree transport was removed; live main-thread latency remains an external acceptance item."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-worker-entry.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/pivot-browser-worker.ts",
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-protocol.ts"
+      ],
+      "blocked": [
+        "Live connected browser main-thread and result-transfer latency requires a real backend and high-cardinality dataset."
+      ]
+    },
+    {
+      "id": "P06",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "取消",
+      "current": "terminate丢sourcecache",
+      "solution": "批次检查取消保留source",
+      "acceptance": "及时取消且旧结果不覆盖",
+      "issues": [
+        "#329"
+      ],
+      "status": "verified",
+      "evidence": [
+        "TaskContext checks cancellation at bounded batches without deleting the registered source cache; stale results cannot publish.",
+        "Host tests cancel then successfully reuse the same runtime; client task port rejects old generations."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/features/pivot/task-port.ts"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "P07",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "聚合语义",
+      "current": "模型广但尚需实体验收",
+      "solution": "空白/错误/Count/Sum/Avg/分组/值过滤/TopN/汇总/ShowValuesAs统一",
+      "acceptance": "Excel对照、文本不数值强转",
+      "issues": [
+        "#90",
+        "#96",
+        "#105",
+        "#160"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "AggregateState preserves typed numbers and never parses text; Pivot supports blank/error handling, Count/CountNumbers, Sum/Avg, grouping, TopN, subtotals and ShowAs.",
+        "Rust analytics tests cover these semantics; comparison against a real Excel-produced pivot remains unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Excel comparison of pivot aggregation semantics requires a real Excel-produced pivot corpus."
+      ]
+    },
+    {
+      "id": "P08",
+      "group": "透视与分析",
+      "priority": "P0",
+      "title": "生命周期",
+      "current": "定义目标关联多对象事务",
+      "solution": "一次定义+proof+collision+reference事务",
+      "acceptance": "一次history，失败无半成品",
+      "issues": [
+        "#18",
+        "#101",
+        "#120"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Pivot create/update is one typed mutation with collision proof and source/layout revisions; command failure leaves the previous definition/result intact.",
+        "Command and server-task-port tests cover stale proof and rejection without partial model changes."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P09",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "透视图查询",
+      "current": "series×leaf重复find",
+      "solution": "稳定lookup及source/layout分层cache",
+      "acceptance": "局部series更新、绘制不聚合",
+      "issues": [
+        "#118",
+        "#329"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Charts consume revision-pinned sparse pivot results and stable node identities; drawing code never runs aggregation.",
+        "Chart visibility/data unit tests cover stale source rejection and series projection."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "P10",
+      "group": "透视与分析",
+      "priority": "P1",
+      "title": "明细控件",
+      "current": "大明细/切片器/时间线边界分散",
+      "solution": "分页、typedmembers、显式连接、时间粒度",
+      "acceptance": "多选日期no-data联动权限",
+      "issues": [
+        "#100",
+        "#122",
+        "#154",
+        "#159"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Analytics drilldown, member domains and date grouping are paginated and typed; slicer/timeline commands retain explicit connections and ACL.",
+        "Rust/frontend tests cover pagination, multi-select, grouped dates and no-data member state."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B01",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "权威导入",
+      "current": "browser snapshot/hash不能证明文件语义",
+      "solution": "native从原bytes解析canonicalpages",
+      "acceptance": "伪snapshot不可入库",
+      "issues": [
+        "#331"
+      ],
+      "status": "verified",
+      "evidence": [
+        "NativeDocumentTaskService streams original bytes to kernel/native-document and persists only validated canonical pages plus source artifact provenance.",
+        "Backend tests reject mismatched client-derived payloads and incomplete native tasks."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/import.ts",
+        "backend WorkbookSnapshotValidator.java"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "B02",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "artifact绑定",
+      "current": "PUT无workbookrevision绑定",
+      "solution": "唯一native save transaction，删除任意替换",
+      "acceptance": "错revision/hash/format保留原文件",
+      "issues": [
+        "#327"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Workbook source artifacts bind workbook id, revision, format and SHA-256; copy/export publish artifact and canonical page state in one transaction.",
+        "Backend/native tests reject wrong revision/hash/format without replacing the prior artifact."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B03",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "格式能力",
+      "current": "edit/preserve/export混用",
+      "solution": "统一edit/preserve/export-only/unsupported",
+      "acceptance": "PDF/XPS不能冒充工作簿",
+      "issues": [
+        "#305"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Native capability manifests distinguish editable, preserved, export-only and unsupported formats; PDF/XPS and cross-format requests return UNSUPPORTED_FEATURE.",
+        "Native-document and backend contract tests exercise rejection."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/codec-registry.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/compatibility-report.ts"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "B04",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "OOXML保真",
+      "current": "未知part机制缺真实producer验收",
+      "solution": "Rust packagegraph/rels/nodes/unknown/macro preserve",
+      "acceptance": "xlsx/xlsm保真，不可安全编辑拒绝",
+      "issues": [
+        "#305",
+        "#327"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "kernel/native-document preserves the OPC package graph, relationships, unknown nodes/extensions and macros; signed rewrites fail closed.",
+        "Synthetic OOXML integration tests pass, including unknown-part preservation and canonical sheet identity."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/exchange-excel-ooxml/src/archive.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/binary-native.ts",
+        "frontend-react/packages/exchange-excel-ooxml/src/export.ts"
+      ],
+      "blocked": [
+        "Real Excel/WPS XLSX/XLSM save and reopen fidelity, including macros and unknown extensions, is unavailable on this host."
+      ]
+    },
+    {
+      "id": "B05",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "大文件",
+      "current": "50MiB限/整bytes/全JSON",
+      "solution": "chunkupload、streamZIP/XML、字典分页与直接产页",
+      "acceptance": "2000万格、预算、取消无残留",
+      "issues": [
+        "#327"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Chunked 8 MiB upload, streaming ZIP/XML, bounded dictionaries/pages and pre-allocation resource checks replace whole-file browser JSON import.",
+        "Native budget and frontend chunk-transport tests pass."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "The 20-million-cell real import <=60s, peak budget and cancellation-with-no-residue run requires the external corpus and connected backend."
+      ]
+    },
+    {
+      "id": "B06",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "查询流水线",
+      "current": "分块容器仍全量物化全局算子",
+      "solution": "Java批次connector+Rust投影/hashjoin/group/pivot/spillsort",
+      "acceptance": "boundedheap与首块延迟",
+      "issues": [
+        "#330"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "QueryExecutionService streams connector blocks into Rust analytics/query execution with bounded task budgets and proof-bound result blocks.",
+        "Unit/native integration gates pass; live connector heap and first-block latency were not available locally."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Live connector bounded-heap and first-block latency requires a configured external connector/data source."
+      ]
+    },
+    {
+      "id": "B07",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "查询绑定",
+      "current": "结束时revision不代表读取时",
+      "solution": "起始revision/executiontoken/blockmanifest",
+      "acceptance": "旧结果及取消不可load",
+      "issues": [
+        "#330"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Query proof binds source revision, execution token and block manifest; cancelled/stale results are rejected before load.",
+        "QueryExecutionProofServiceTest and frontend server-task-port tests pass."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B08",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "页checkpoint",
+      "current": "tail有界但snapshot大对象",
+      "solution": "页checkpoint、增量log、幂等compaction",
+      "acceptance": "单格不整表clone，gap拒绝",
+      "issues": [
+        "#332"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Immutable page manifests, revision gaps and idempotent operation publication replace full-workbook checkpoints.",
+        "KernelPersistenceServiceTest covers single-page commit, restore, overlapping conflict, gap and no-partial-write behavior."
+      ],
+      "removedPaths": [
+        "backend WorkbookSnapshotResponse.java",
+        "backend CheckpointEntity.java"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "B09",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "协作恢复",
+      "current": "PubSub不证明消息全达",
+      "solution": "outbox+lastRevision对账+bounded补读",
+      "acceptance": "丢消息重连去重乱序正确",
+      "issues": [
+        "#331"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Transactional outbox plus lastRevision reconciliation is the only collaboration recovery path; browser offline queue/OT rebase paths were removed.",
+        "Backend/frontend tests cover ordering and duplicate helpers; a real Redis multi-instance disconnect/reconnect run was unavailable."
+      ],
+      "removedPaths": [
+        "frontend-react/packages/spreadsheet-app/src/collaboration/ot-rebase.ts",
+        "frontend-react/packages/spreadsheet-app/src/collaboration/offline-queue.ts"
+      ],
+      "blocked": [
+        "Redis multi-instance dropped-message reconnect/reconcile acceptance was not available locally."
+      ]
+    },
+    {
+      "id": "B10",
+      "group": "文件、后端与协作",
+      "priority": "P0",
+      "title": "权限保存",
+      "current": "模式和确认状态分散",
+      "solution": "ACL控制commands/pages，serverack决定saved",
+      "acceptance": "viewer/commenter/protection无绕过",
+      "issues": [
+        "#258",
+        "#331"
+      ],
+      "status": "verified",
+      "evidence": [
+        "Java ACL and protection authorize typed commands/pages before Rust preparation; only server ack changes saved state.",
+        "Workbook authorization/operation/data-block integration tests pass for owner/editor/commenter/viewer rejection paths."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "B11",
+      "group": "文件、后端与协作",
+      "priority": "P1",
+      "title": "数据库审计",
+      "current": "真实三方言验证不足、无auditcursor",
+      "solution": "provider matrix及time/id游标",
+      "acceptance": "空库升级锁事务分页一致",
+      "issues": [
+        "#333"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "V7-V12 canonical migrations exist for H2, PostgreSQL and MySQL; V10 is an explicit archive boundary and V12 verifies cutover.",
+        "H2 fresh/upgrade/transaction suites pass; workflow defines PostgreSQL/MySQL SQL smoke and migration jobs."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Local PostgreSQL/MySQL/Redis services were unavailable; hosted matrix evidence must be recorded from PR checks."
+      ]
+    },
+    {
+      "id": "B12",
+      "group": "文件、后端与协作",
+      "priority": "P1",
+      "title": "对象打印",
+      "current": "图形/评论/图片/打印跨链需完整验证",
+      "solution": "共享对象值可见性排版",
+      "acceptance": "公式筛选打印重复标题对象正确",
+      "issues": [
+        "#326",
+        "#328",
+        "#329"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Drawings, charts, comments, images, print areas/titles and visibility are modeled as canonical metadata consumed by print/layout.",
+        "Frontend unit suites cover object anchoring and visibility-pinned print projection."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U01",
+      "group": "UI与交互",
+      "priority": "P0",
+      "title": "网格列头",
+      "current": "标题下移覆盖首行",
+      "solution": "Rust PaneMap统一header/cell/select/editor",
+      "acceptance": "A1显命中编辑提交一致",
+      "issues": [
+        "#316"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "kernel/geometry PaneMap is the sole pane/header coordinate owner; SheetCanvas hit, selection, edit and commit use its canonical address.",
+        "Geometry/render tests cover A1, frozen panes, header origin and disjoint pane ranges."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U02",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "Ribbon响应式",
+      "current": "固定组宽横滚截断",
+      "solution": "唯一schema按组收纳不改command",
+      "acceptance": "1024/1366/1920无遮挡/横滚",
+      "issues": [
+        "#241",
+        "#304"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "RibbonLayoutRenderer uses one schema and semantic group compaction; Tailwind layouts have no horizontal workbook ribbon state.",
+        "Hub was inspected at 1024/1366/1920; connected editor viewport matrix awaits real identity."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected editor 1024/1366/1920 and 100/125/150% viewport interaction needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U03",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "设计tokens",
+      "current": "globalfont覆盖与局部!important互盖",
+      "solution": "Tailwind token/密度/共享组件",
+      "acceptance": "各状态排版一致",
+      "issues": [
+        "#304"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Tailwind tokens in tailwind.config.cjs and shared ui-system shells own spacing, type, colors, focus and state styling.",
+        "Golden spec and disconnected Hub browser inspection establish the implemented baseline."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U04",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "图标",
+      "current": "Fluent/Figma/selfSVG/文字符混用",
+      "solution": "Fluent16/20/24 regular/filled语义映射",
+      "acceptance": "一致线宽光学尺寸状态",
+      "issues": [
+        "#304"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "Shared ui-system Icon is the only application icon surface and maps Fluent regular/filled sizes.",
+        "Icon unit tests and ribbon catalogs reject text-glyph command icons."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "U05",
+      "group": "UI与交互",
+      "priority": "P0",
+      "title": "Hub与保存",
+      "current": "假saved，模板优先文件",
+      "solution": "cloudlogin/recent/search优先，模板入new",
+      "acceptance": "各连接保存状态真实",
+      "issues": [
+        "#286"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Workbook Hub is cloud catalog/search/recent first; templates live only in Create, and saved/saving/error are derived from server acknowledgements.",
+        "Disconnected browser behavior is explicit and fail-closed."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected create/save/reload/error-state acceptance needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U06",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "公式编辑",
+      "current": "focus/引用/帮助待系统验收",
+      "solution": "统一EnterEscTabIMEPointF4completion",
+      "acceptance": "键盘闭环焦点正确",
+      "issues": [
+        "#301"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "CellEditDomain owns Enter/Escape/Tab, IME, point/reference gestures, F4 and completion across grid/formula bar.",
+        "Unit/performance tests cover reducer focus/caret/history; connected browser keyboard acceptance was unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected editor keyboard/IME/formula-reference browser acceptance needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U07",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "透视面板",
+      "current": "四区已存在，信息高级项待整理",
+      "solution": "保留四区、搜索拖放键盘重复值字段defer/error",
+      "acceptance": "一次Apply，失败保留draft/lastvalid",
+      "issues": [
+        "#36",
+        "#37",
+        "#300"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Pivot panel keeps four independent zones and draft/last-valid state; Apply dispatches one proof-bound command.",
+        "Panel/server-task unit tests cover draft preservation and stale/failed apply; connected editor interaction was unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected Pivot panel Apply/failure recovery acceptance needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U08",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "分析面板",
+      "current": "大domain/条件/task状态需一致",
+      "solution": "virtual日期层级摘要进度cancel/recovery",
+      "acceptance": "无无限loading或瞬时错误",
+      "issues": [
+        "#87",
+        "#329"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Analysis tasks expose preparing/running/completed/failed/cancelled states, progress and recoverable typed errors.",
+        "Task-port and host cancellation tests prevent stale results and indefinite local loading; connected browser interaction was unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected analysis progress/cancel/recovery browser acceptance needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U09",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "图表对象",
+      "current": "入口与内部标签体验欠缺",
+      "solution": "context/properties/elementediting统一",
+      "acceptance": "inserteditdeleteundoreopen闭环",
+      "issues": [
+        "#311"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Chart insert/edit/delete uses canonical drawing commands, object selection and server history; reopening reads persisted metadata.",
+        "Chart/drawing unit tests pass; connected editor roundtrip was unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected chart insert/edit/delete/undo/reopen acceptance needs real OIDC/backend configuration."
+      ]
+    },
+    {
+      "id": "U10",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "a11y与语言",
+      "current": "CanvasAX及中英混用",
+      "solution": "可见语义grid、livecell、focus/keytips、locale",
+      "acceptance": "键盘读屏操作全链",
+      "issues": [
+        "#16",
+        "#22",
+        "#317"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "Shared shells expose grid semantics, live announcements, focus ownership, key tips and locale-backed labels.",
+        "Unit accessibility/shortcut contracts pass; complete keyboard and screen-reader flow in a connected editor was unavailable."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Connected full keyboard/screen-reader acceptance needs real OIDC/backend configuration and assistive-technology run."
+      ]
+    },
+    {
+      "id": "U11",
+      "group": "UI与交互",
+      "priority": "P1",
+      "title": "字体资源",
+      "current": "CJK font-display:block",
+      "solution": "UI字体分包与文档字体分离",
+      "acceptance": "首屏无空字，替代明确",
+      "issues": [
+        "#295"
+      ],
+      "status": "implemented",
+      "evidence": [
+        "UI and workbook font responsibilities are separate, with local/system fallback stacks and font-display behavior defined in shared styles.",
+        "Disconnected Hub first paint showed meaningful text without missing-glyph/console failures."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D01",
+      "group": "交付",
+      "priority": "P0",
+      "title": "PRD台账",
+      "current": "历史文档完成与证据不一致",
+      "solution": "本PRD唯一执行台账，历史按被替代标记",
+      "acceptance": "每todo证据与状态唯一",
+      "issues": [
+        "#333"
+      ],
+      "status": "verified",
+      "evidence": [
+        "This version-2 machine ledger records one status, concrete evidence, removed paths and blockers for all 64 approved items.",
+        "The PRD points to this file as the sole execution status source."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D02",
+      "group": "交付",
+      "priority": "P0",
+      "title": "可复现构建",
+      "current": "lock被忽略，脚本旧目录",
+      "solution": "固定Node/Rust/Java/Maven，lock与统一构建",
+      "acceptance": "cleancheckout四端artifact",
+      "issues": [
+        "#333"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "rust-toolchain.toml, Cargo.lock, package-lock.json and scripts/build.ps1 pin the toolchains and produce native, WASM and Vite artifacts in one build.",
+        "Current integrated build and manifest verification pass."
+      ],
+      "removedPaths": [
+        "untracked/noncanonical generated artifact inputs"
+      ],
+      "blocked": [
+        "A clean hosted checkout result is pending the PR workflow."
+      ]
+    },
+    {
+      "id": "D03",
+      "group": "交付",
+      "priority": "P0",
+      "title": "CI",
+      "current": "无Actions",
+      "solution": "Rust/WASM/diff/frontend/backend/db/browser/perf",
+      "acceptance": "失败阻交付，不continue-on-error",
+      "issues": [
+        "#333"
+      ],
+      "status": "implemented",
+      "evidence": [
+        ".github/workflows/verification.yml defines non-continue-on-error Rust, frontend, backend database, browser artifact, performance and Excel-corpus gates.",
+        "Local equivalents pass where the required environment exists; hosted results are recorded after PR creation."
+      ],
+      "removedPaths": [],
+      "blocked": []
+    },
+    {
+      "id": "D04",
+      "group": "交付",
+      "priority": "P0",
+      "title": "Excelcorpus",
+      "current": "上一轮真实ExcelBlocked",
+      "solution": "真实producer+hash+reopen差异",
+      "acceptance": "不能synthetic自验替代",
+      "issues": [
+        "#305",
+        "#333"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "scripts/verify-excel-corpus.mjs requires manifest-bound real producer files and refuses a synthetic self-roundtrip as evidence.",
+        "No configured desktop Excel/WPS producer corpus exists on this host."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "Desktop Excel/WPS and the configured real producer corpus are unavailable; synthetic native tests are intentionally not counted."
+      ]
+    },
+    {
+      "id": "D05",
+      "group": "交付",
+      "priority": "P0",
+      "title": "一次PR交付",
+      "current": "closed不等于达标",
+      "solution": "同codex分支64项全过后一个PR",
+      "acceptance": "契约迁移证据状态整体rollback",
+      "issues": [
+        "#334"
+      ],
+      "status": "blocked",
+      "evidence": [
+        "All implementation commits are on codex/web-excel-shared-kernel for one PR to main; PR description carries contracts, migrations, removals, evidence, blockers and whole-change rollback.",
+        "Local branch gates pass; PR creation and hosted check recording are the remaining delivery action."
+      ],
+      "removedPaths": [],
+      "blocked": [
+        "PR and hosted checks have not yet been created/recorded."
+      ]
+    }
+  ],
+  "lastUpdated": "2026-09-08",
+  "summary": {
+    "total": 64,
+    "verified": 21,
+    "implemented": 22,
+    "blocked": 21,
+    "not-started": 0
+  }
+}

@@ -1,5 +1,7 @@
+import { versionedKernelResourceUrls, versionedServiceWorkerUrl } from './kernel-build';
+
 function sameOriginResourceUrls(): string[] {
-  const urls = new Set<string>(['/', '/index.html', '/manifest.webmanifest']);
+  const urls = new Set<string>(['/', '/index.html', '/manifest.webmanifest', ...versionedKernelResourceUrls()]);
   for (const entry of performance.getEntriesByType('resource')) {
     if (!(entry instanceof PerformanceResourceTiming)) continue;
     const url = new URL(entry.name, window.location.origin);
@@ -27,7 +29,7 @@ export function registerOfflineShell(): void {
   }
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    void navigator.serviceWorker.register(versionedServiceWorkerUrl(), { scope: '/' })
       .then(async (registration) => {
         await navigator.serviceWorker.ready;
         registration.active?.postMessage({ type: 'react-sheets.precache', urls: sameOriginResourceUrls() });

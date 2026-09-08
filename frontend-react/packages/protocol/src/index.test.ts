@@ -6,10 +6,13 @@ import {
   encodeMessage,
   encodeOperationMessage,
   AuthenticationRequiredError,
+  COLLABORATION_SUBPROTOCOL,
+  CollabSocketClient,
   WorkbookApiClient,
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
   validateUserPreferences,
+  validateUserPreferencesPatch,
   validatePivotDefinition,
   validateWorkbookSnapshot,
 } from './index';
@@ -68,43 +71,37 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
     fetchImpl: async (_input, init) => {
       request = init;
       return new Response(JSON.stringify({
-        snapshot: {
-          schema: 'WorkbookSnapshot',
-          version: 10,
-          unitId: 'unit-1',
-          name: 'Workbook',
-          dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
-          editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          definedNameModels: [],
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
-          sheets: [{
-            kind: 'worksheet', id: 'sheet-1',
-            name: 'Sheet1',
-            rowCount: 100,
-            columnCount: 26,
-            cells: {},
-            merges: [],
-            pane: { kind: 'none' },
-            defaultRowHeightPx: 20,
-            defaultColumnWidthPx: 64,
-            pivots: [],
-            sparklines: [],
-            drawings: [],
-            drawingPayloads: {},
-            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
-          }],
-        },
-        revision: 0,
+        schema: 'WorkbookManifest', version: 11, unitId: 'unit-1', name: 'Workbook', revision: 0,
+        sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 100, columnCount: 26, metadata: {} }],
+        pages: [], metadata: {},
       }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     },
   });
-  await api.getSnapshot('unit-1');
+  await api.getManifest('unit-1');
   assert.equal(new Headers(request?.headers).get('authorization'), 'Bearer token-123');
-  await assert.rejects(() => new WorkbookApiClient().getSnapshot('unit-1'), AuthenticationRequiredError);
+  await assert.rejects(() => new WorkbookApiClient().getManifest('unit-1'), AuthenticationRequiredError);
+});
+
+test('WorkbookApiClient keeps the browser fetch receiver when no transport override is supplied', async () => {
+  const originalFetch = globalThis.fetch;
+  let receiver: unknown;
+  globalThis.fetch = async function (this: unknown) {
+    receiver = this;
+    return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  } as typeof fetch;
+  try {
+    const api = new WorkbookApiClient({ authTokenProvider: () => 'browser-token' });
+    await api.listWorkbookPage({ view: 'recent' });
+    assert.equal(receiver, globalThis);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('WorkbookApiClient uses a server-issued guest share token when no bearer exists', async () => {
@@ -114,42 +111,183 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
     fetchImpl: async (_input, init) => {
       request = init;
       return new Response(JSON.stringify({
-        snapshot: {
-          schema: 'WorkbookSnapshot',
-          version: 10,
-          unitId: 'unit-guest',
-          name: 'Guest workbook',
-          dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
-          editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          definedNameModels: [],
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
-          sheets: [{
-            kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
-            cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
-            pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
-            review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
-          }],
-        },
-        revision: 0,
+        schema: 'WorkbookManifest', version: 11, unitId: 'unit-guest', name: 'Guest workbook', revision: 0,
+        sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10, metadata: {} }],
+        pages: [], metadata: {},
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     },
   });
-  await api.getSnapshot('unit-guest');
+  await api.getManifest('unit-guest');
   const headers = new Headers(request?.headers);
   assert.equal(headers.get('x-workbook-share-token'), 'guest-token');
   assert.equal(headers.has('authorization'), false);
 });
 
+test('WorkbookApiClient sends only client-owned user-state fields', async () => {
+  let request: RequestInit | undefined;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'token-123',
+    fetchImpl: async (_input, init) => {
+      request = init;
+      return new Response(JSON.stringify({ unitId: 'unit-1', favorite: true, updatedAt: '2026-09-08T00:00:00.000Z' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await api.putWorkbookUserState('unit-1', {
+    favorite: true,
+    lastOpenedAt: '2026-09-08T00:00:00.000Z',
+    unitId: 'unit-1',
+    updatedAt: 'server-owned',
+  } as unknown as Parameters<typeof api.putWorkbookUserState>[1]);
+
+  assert.deepEqual(JSON.parse(String(request?.body)), {
+    favorite: true,
+    lastOpenedAt: '2026-09-08T00:00:00.000Z',
+  });
+});
+
+test('CollabSocketClient negotiates a stable protocol without using the bearer credential as the selected protocol', async () => {
+  let requestedProtocols: string | string[] | undefined;
+  const socket = {
+    readyState: 0,
+    close() {},
+    send() {},
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  } as unknown as WebSocket;
+  const client = new CollabSocketClient('ws://localhost/ws', {
+    authTokenProvider: () => 'token-123',
+    webSocketFactory: (_url, protocols) => {
+      requestedProtocols = protocols;
+      return socket;
+    },
+  });
+
+  client.open();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(Array.isArray(requestedProtocols));
+  assert.equal(requestedProtocols[0], COLLABORATION_SUBPROTOCOL);
+  assert.match(requestedProtocols[1]!, /^bearer\./);
+  client.close();
+});
+
+test('OperationEnvelope accepts an undo intent only with an empty mutation list', () => {
+  const envelope = {
+    schema: 'OperationEnvelope' as const,
+    operationId: 'undo-1',
+    unitId: 'unit-1',
+    clientSequence: 2,
+    baseRevision: 1,
+    mutations: [],
+    createdAt: new Date().toISOString(),
+    intent: { type: 'undo' as const, targetOperationId: 'op-1', targetBaseRevision: 0 },
+  };
+  assert.deepEqual(validateOperationEnvelope(envelope), envelope);
+  assert.throws(() => validateOperationEnvelope({ ...envelope, intent: undefined }), /at least one mutation/);
+  assert.throws(() => validateOperationEnvelope({
+    ...envelope,
+    mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }],
+  }), /must not include client mutations/);
+});
+
+test('WorkbookApiClient commits through the sole OperationEnvelope endpoint and validates the change set', async () => {
+  const createdAt = new Date('2026-09-08T00:00:00.000Z').toISOString();
+  const operation = {
+    schema: 'OperationEnvelope' as const,
+    operationId: 'commit-1',
+    unitId: 'unit-1',
+    clientSequence: 4,
+    baseRevision: 2,
+    mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: { row: 0, column: 0, value: { value: 'ok' } } }],
+    createdAt,
+  };
+  const manifest = {
+    schema: 'WorkbookManifest', version: 11, unitId: 'unit-1', name: 'Workbook', revision: 3,
+    sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 100, columnCount: 26, metadata: {} }],
+    pages: [], metadata: {},
+  };
+  let path = '';
+  let body: unknown;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'commit-token',
+    fetchImpl: async (input, init) => {
+      path = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        operation: {
+          ...operation,
+          actorId: 'user-1',
+          origin: 'client',
+          revision: 3,
+          committedAt: createdAt,
+          mutations: operation.mutations.map(mutation => ({ ...mutation, affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }] })),
+        },
+        changeSet: {
+          operationId: operation.operationId,
+          baseRevision: 2,
+          revision: 3,
+          manifest,
+          pages: [],
+          removedPages: [],
+          affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+          history: { operationId: operation.operationId, baseRevision: 2, revision: 3, pageDeltas: [], metadataBefore: null, metadataAfter: null },
+        },
+      }), { status: 201, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await api.commitOperation(operation.unitId, operation);
+
+  assert.equal(path, '/api/workbooks/unit-1/operations');
+  assert.deepEqual(body, operation);
+  assert.equal(result.operation.revision, 3);
+  assert.equal(result.changeSet.manifest.revision, 3);
+});
+
+test('WorkbookApiClient renames through the canonical semantic endpoint and verifies the returned manifest', async () => {
+  let path = '';
+  let body: unknown;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'rename-token',
+    fetchImpl: async (input, init) => {
+      path = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        unitId: 'rename-unit',
+        revision: 4,
+        checksum: 'a'.repeat(64),
+        manifest: {
+          schema: 'WorkbookManifest', version: 11, unitId: 'rename-unit', name: 'Renamed', revision: 4,
+          sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 1000, columnCount: 26, metadata: {} }],
+          pages: [], metadata: {},
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await api.renameWorkbook('rename-unit', { name: '  Renamed  ' });
+
+  assert.equal(path, '/api/workbooks/rename-unit/rename');
+  assert.deepEqual(body, { name: '  Renamed  ' });
+  assert.equal(result.manifest.name, 'Renamed');
+  assert.equal(result.revision, 4);
+});
+
 test('WorkbookApiClient accepts access roles only from the server projection', async () => {
   const api = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',
-    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor' }), {
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor', nextClientSequence: 12 }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }),
   });
-  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor' });
+  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor', nextClientSequence: 12 });
 
   const malformed = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',
@@ -159,6 +297,29 @@ test('WorkbookApiClient accepts access roles only from the server projection', a
     }),
   });
   await assert.rejects(() => malformed.getAccess('unit-access'), /invalid role/);
+
+  const missingCursor = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'owner' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  await assert.rejects(() => missingCursor.getAccess('unit-access'), /client sequence cursor/);
+});
+
+test('WorkbookApiClient preserves typed kernel failure codes from the server', async () => {
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ code: 'UNSUPPORTED_FEATURE', message: 'Calculation settings changed' }), {
+      status: 422,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  await assert.rejects(
+    () => api.getManifest('unit-error'),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'UNSUPPORTED_FEATURE',
+  );
 });
 
 test('WorkbookApiClient validates cursor pages and forwards cursor, limit, and abort signal', async () => {
@@ -188,12 +349,31 @@ test('WorkbookApiClient validates cursor pages and forwards cursor, limit, and a
 test('User preferences response validation rejects lossy or malformed preference values', () => {
   assert.deepEqual(validateUserPreferences({
     defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
-    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+    importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
   }), {
     defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
-    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+    importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
   });
-  assert.throws(() => validateUserPreferences({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'strict', theme: 'system' }), /importCompatibility/);
+  assert.throws(() => validateUserPreferences({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'C', theme: 'system' }), /unsupported field/);
+  assert.throws(() => validateUserPreferencesPatch({ offlineCache: true }), /unsupported field/);
+});
+
+test('Workbook catalog validation rejects local storage and obsolete offline states', async () => {
+  const staleFields = [
+    { storageLocation: 'remote' },
+    { syncStatus: 'pending' },
+    { syncStatus: 'offline' },
+  ];
+  for (const staleField of staleFields) {
+    const api = new WorkbookApiClient({
+      authTokenProvider: () => 'server-token',
+      fetchImpl: async () => new Response(JSON.stringify({
+        items: [{ unitId: 'unit-stale', name: 'Stale', revision: 1, updatedAt: '2026-08-24T00:00:00Z', role: 'owner', ...staleField }],
+        nextCursor: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    });
+    await assert.rejects(() => api.listWorkbookPage(), /unsupported field|syncStatus is invalid/);
+  }
 });
 
 test('history restore request is target-revision-only and client API posts no snapshot', async () => {

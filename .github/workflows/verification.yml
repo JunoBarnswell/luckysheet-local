@@ -1,0 +1,239 @@
+name: Canonical verification
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: frontend-react/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+      - run: cargo build --manifest-path Cargo.toml -p kernel-host --release
+      - run: cargo build --manifest-path Cargo.toml -p kernel-host --target wasm32-unknown-unknown --release
+      - run: cargo test --manifest-path Cargo.toml --workspace
+      - name: Check native and WASM host artifacts
+        run: |
+          test -x target/release/workbook-kernel-host
+          test -s target/wasm32-unknown-unknown/release/kernel_host.wasm
+      - run: mkdir -p frontend-react/apps/web/public/kernel && cp target/wasm32-unknown-unknown/release/kernel_host.wasm frontend-react/apps/web/public/kernel/kernel_host.wasm && node scripts/write-kernel-manifest.mjs frontend-react/apps/web/public/kernel
+        shell: bash
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend-react
+      - run: npm run verify:kernel
+        working-directory: frontend-react
+      - run: npm run test:performance
+        working-directory: frontend-react
+      - run: mkdir -p ci-kernel-artifacts && cp target/release/workbook-kernel-host ci-kernel-artifacts/workbook-kernel-host && cp target/wasm32-unknown-unknown/release/kernel_host.wasm ci-kernel-artifacts/kernel_host.wasm && cp frontend-react/apps/web/public/kernel/kernel-manifest.json ci-kernel-artifacts/kernel-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: ci-kernel-artifacts
+          if-no-files-found: error
+
+  frontend:
+    runs-on: ubuntu-latest
+    needs: kernel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: ${{ runner.temp }}/kernel-artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: frontend-react/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend-react
+      - run: mkdir -p frontend-react/apps/web/public/kernel && cp "$RUNNER_TEMP/kernel-artifacts/kernel-manifest.json" frontend-react/apps/web/public/kernel/kernel-manifest.json && cp "$RUNNER_TEMP/kernel-artifacts/kernel_host.wasm" frontend-react/apps/web/public/kernel/kernel_host.wasm
+      - run: npm run typecheck
+        working-directory: frontend-react
+      - run: npm run test:unit
+        working-directory: frontend-react
+      - run: npm run check:contracts
+        working-directory: frontend-react
+      - run: npm run check:boundaries
+        working-directory: frontend-react
+      - run: npm run build
+        working-directory: frontend-react
+
+  backend:
+    runs-on: ubuntu-latest
+    needs: kernel
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - profile: h2
+            url: jdbc:h2:mem:ci;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+            user: sa
+            password: ''
+          - profile: postgres
+            url: jdbc:postgresql://127.0.0.1:5432/luckysheet
+            user: luckysheet
+            password: luckysheet
+          - profile: mysql
+            url: jdbc:mysql://127.0.0.1:3306/luckysheet?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+            user: luckysheet
+            password: luckysheet
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: luckysheet
+          POSTGRES_USER: luckysheet
+          POSTGRES_PASSWORD: luckysheet
+        options: >-
+          --health-cmd="pg_isready -U luckysheet -d luckysheet"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+        ports: ['5432:5432']
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: luckysheet
+          MYSQL_USER: luckysheet
+          MYSQL_PASSWORD: luckysheet
+          MYSQL_ROOT_PASSWORD: root
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uluckysheet -pluckysheet"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+        ports: ['3306:3306']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: ${{ runner.temp }}/kernel-artifacts
+      - run: chmod +x "$RUNNER_TEMP/kernel-artifacts/workbook-kernel-host"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Run the full backend suite against H2
+        if: matrix.profile == 'h2'
+        env:
+          DATABASE_URL: ${{ matrix.url }}
+          DATABASE_USERNAME: ${{ matrix.user }}
+          DATABASE_PASSWORD: ${{ matrix.password }}
+          FLYWAY_BASELINE_ON_MIGRATE: 'false'
+          KERNEL_HOST_EXECUTABLE: ${{ runner.temp }}/kernel-artifacts/workbook-kernel-host
+        run: mvn --batch-mode --no-transfer-progress test -Dspring.profiles.active=${{ matrix.profile }}
+        working-directory: backend
+      - name: Migrate the selected SQL dialect and exercise an authenticated native transaction
+        if: matrix.profile != 'h2'
+        env:
+          DATABASE_URL: ${{ matrix.url }}
+          DATABASE_USERNAME: ${{ matrix.user }}
+          DATABASE_PASSWORD: ${{ matrix.password }}
+          FLYWAY_BASELINE_ON_MIGRATE: 'false'
+          AUTH_ISSUER: http://127.0.0.1:8090
+          AUTH_AUDIENCE: ci-sql-session
+          AUTH_JWKS_URL: http://127.0.0.1:8090/.well-known/jwks.json
+          KERNEL_HOST_EXECUTABLE: ${{ runner.temp }}/kernel-artifacts/workbook-kernel-host
+          KERNEL_HOST_WORKING_DIRECTORY: ${{ github.workspace }}
+          KERNEL_HOST_TASK_DIRECTORY: ${{ runner.temp }}/native-document-tasks
+        run: |
+          mkdir -p "$KERNEL_HOST_TASK_DIRECTORY"
+          nohup mvn --batch-mode --no-transfer-progress spring-boot:run -Dspring-boot.run.profiles=${{ matrix.profile }} > "$RUNNER_TEMP/luckysheet-${{ matrix.profile }}.log" 2>&1 &
+          node ../scripts/sql-session-smoke.mjs
+        working-directory: backend
+
+  browser:
+    runs-on: ubuntu-latest
+    needs: [frontend, kernel]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: ${{ runner.temp }}/kernel-artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: frontend-react/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.9
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend-react
+      - run: mkdir -p frontend-react/apps/web/public/kernel && cp "$RUNNER_TEMP/kernel-artifacts/kernel-manifest.json" frontend-react/apps/web/public/kernel/kernel-manifest.json && cp "$RUNNER_TEMP/kernel-artifacts/kernel_host.wasm" frontend-react/apps/web/public/kernel/kernel_host.wasm
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend-react
+      - name: Start authenticated H2 workbook service
+        env:
+          AUTH_ISSUER: http://127.0.0.1:8090
+          AUTH_AUDIENCE: react-sheets-api
+          AUTH_JWKS_URL: http://127.0.0.1:8090/.well-known/jwks.json
+          DATABASE_URL: jdbc:h2:file:${{ runner.temp }}/browser-e2e;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+          FLYWAY_BASELINE_ON_MIGRATE: 'false'
+          KERNEL_HOST_EXECUTABLE: ${{ runner.temp }}/kernel-artifacts/workbook-kernel-host
+          KERNEL_HOST_WORKING_DIRECTORY: ${{ github.workspace }}
+          KERNEL_HOST_TASK_DIRECTORY: ${{ runner.temp }}/native-document-tasks
+        run: |
+          chmod +x "$KERNEL_HOST_EXECUTABLE"
+          mkdir -p "$KERNEL_HOST_TASK_DIRECTORY"
+          node scripts/e2e-oidc-server.mjs "$RUNNER_TEMP/e2e-oidc-user.json" > "$RUNNER_TEMP/e2e-oidc.log" 2>&1 &
+          (cd backend && nohup mvn --batch-mode --no-transfer-progress spring-boot:run -Dspring-boot.run.profiles=h2 > "$RUNNER_TEMP/browser-backend.log" 2>&1 &)
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8082/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/e2e-oidc.log"
+          cat "$RUNNER_TEMP/browser-backend.log"
+          exit 1
+      - name: Run connected browser acceptance
+        env:
+          VITE_OIDC_ISSUER: http://127.0.0.1:8090
+          VITE_OIDC_CLIENT_ID: react-sheets-web
+          VITE_OIDC_AUDIENCE: react-sheets-api
+          E2E_OIDC_AUTHORITY: http://127.0.0.1:8090
+          E2E_OIDC_CLIENT_ID: react-sheets-web
+          E2E_OIDC_USER_FILE: ${{ runner.temp }}/e2e-oidc-user.json
+        run: npm run test:e2e
+        working-directory: frontend-react
+
+  excel-corpus:
+    if: ${{ vars.EXCEL_CORPUS_MANIFEST != '' }}
+    runs-on: ${{ vars.EXCEL_CORPUS_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - run: node scripts/verify-excel-corpus.mjs "${{ vars.EXCEL_CORPUS_MANIFEST }}"

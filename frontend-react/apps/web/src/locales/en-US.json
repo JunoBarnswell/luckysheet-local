@@ -765,6 +765,7 @@
       "textToColumns": "Text to Columns",
       "findReplace": "Find & Replace",
       "goTo": "Go To",
+      "selectionPane": "Selection Pane",
       "transpose": "Transpose",
       "flipHorizontal": "Flip H",
       "flipVertical": "Flip V",

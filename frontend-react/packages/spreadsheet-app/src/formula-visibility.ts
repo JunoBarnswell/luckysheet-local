@@ -1,12 +1,5 @@
-import {
-  computeFilterHiddenRows,
-  computeOutlineHiddenRows,
-} from '@react-sheets/sheet-features';
-import {
-  resolveFilterCellValue,
-  type WorkbookModel,
-  type WorksheetModel,
-} from '@react-sheets/core-model';
+import type { WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
+import { executeKernelFilter, resolvedVisibilityFromKernel, resolveAutoFilters, type ResolvedVisibility } from '@react-sheets/sheet-features';
 import type {
   FormulaVisibilitySnapshot,
   RowVisibility,
@@ -22,6 +15,27 @@ export interface WorkbookRowVisibilityResolver extends RowVisibilityResolver {
   invalidate(): void;
 }
 
+export type KernelVisibilityResolver = (sheet: WorksheetModel) => ResolvedVisibility;
+
+export function createKernelWorkbookVisibilityResolver(
+  workbook: WorkbookModel,
+  revision: () => number,
+): KernelVisibilityResolver {
+  return (sheet) => {
+    const filters = resolveAutoFilters(sheet);
+    const owners = filters.map(({ owner, autoFilter }) => ({
+      id: owner.kind === 'worksheet' ? `${sheet.id}:worksheet` : `${sheet.id}:table:${owner.tableId}`,
+      range: structuredClone(autoFilter.range),
+      // Criteria cross the boundary in their canonical typed form. Rust owns
+      // conjunctions, dynamic/date/color/icon/top10-percent semantics.
+      columns: Object.values(autoFilter.columns).filter((column) => column.criterion).map((column) => ({ column: column.column, predicate: column.criterion })),
+    }));
+    const range = { sheetId: sheet.id, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) };
+    const result = executeKernelFilter(workbook.unitId, { revision: revision(), range, owners, limit: sheet.rowCount });
+    return resolvedVisibilityFromKernel(sheet, result, range.startRow);
+  };
+}
+
 /**
  * Workbook-owned visibility projection shared by canvas/filter/formula paths.
  * The resolver caches only the derived row flags; CellMatrix and filter models
@@ -29,36 +43,15 @@ export interface WorkbookRowVisibilityResolver extends RowVisibilityResolver {
  */
 export function createWorkbookRowVisibilityResolver(
   workbook: WorkbookModel,
-  dateSystem: '1900' | '1904',
-  readFormulaValue: (sheet: WorksheetModel, row: number, column: number) => unknown,
+  resolveKernelVisibility: KernelVisibilityResolver,
 ): WorkbookRowVisibilityResolver {
   let revision = 0;
   const caches = new Map<string, VisibilityCache>();
 
   const rebuild = (sheet: WorksheetModel): VisibilityCache => {
-    const readFilterCell = (row: number, column: number) => resolveFilterCellValue(
-      sheet.cells.get(row, column),
-      readFormulaValue(sheet, row, column),
-      dateSystem,
-    );
-    const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem);
-    const outlineHidden = computeOutlineHiddenRows(sheet);
+    const kernelVisibility = resolveKernelVisibility(sheet);
     const rows = new Map<number, RowVisibility>();
-    for (const row of sheet.hiddenRows) rows.set(row, {
-      manualHidden: true,
-      filterHidden: filterHidden.has(row),
-      outlineHidden: outlineHidden.has(row),
-    });
-    for (const row of filterHidden) rows.set(row, {
-      manualHidden: sheet.hiddenRows.has(row),
-      filterHidden: true,
-      outlineHidden: outlineHidden.has(row),
-    });
-    for (const row of outlineHidden) rows.set(row, {
-      manualHidden: sheet.hiddenRows.has(row),
-      filterHidden: filterHidden.has(row),
-      outlineHidden: true,
-    });
+    for (const [row, flags] of kernelVisibility.rows) rows.set(row, { ...flags });
     const cache = { revision, rows };
     caches.set(sheet.id, cache);
     return cache;

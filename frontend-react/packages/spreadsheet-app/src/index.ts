@@ -134,6 +134,7 @@ export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
   createNativeDocumentTransaction,
   NativeDocumentTransactionRegistry,
+  WorkbookApiNativeDocumentTransport,
   summarizeCompatibilityReport,
   type NativeDocumentExchangeResult,
   type NativeDocumentTransaction,
@@ -141,32 +142,19 @@ export {
 export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
-  LocalWorkspaceStore,
-  MemoryWorkspaceStore,
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalNativeDocumentStore,
   LocalAssetStore,
   RemoteAssetStore,
-  migrateLegacyImageAssets,
-  buildWorkspaceRecord,
-  verifyWorkspaceRecord,
-  verifyPendingOperationJournal,
   WorkspaceStorageError,
   isWorkspaceStorageError,
   WorkspaceMemoryCoordinator,
   type WorkspacePersistenceState,
-  type WorkspacePersistenceMode,
   type PersistenceSnapshotMeta,
-  type WorkspaceRecord,
-  type WorkspaceRecordInput,
-  type PendingOperationJournal,
-  type LocalWorkspaceSummary,
   type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type NativeDocumentRecord,
   type AssetStore,
   type AssetPutInput,
 } from './features/persistence';
@@ -227,7 +215,7 @@ export {
 export {
   buildQueryResultSnapshot,
   summarizeQueryResult,
-  executeQueryDefinition,
+  executeCanonicalQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
   prepareQueryLoadPayload,
@@ -247,13 +235,10 @@ export {
   type HistoryEntryMeta,
   type HistoryPreviewProjection,
   type RestoreCommandParams,
-  type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { buildPivotGroupedFilterMembers, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskInput, type PivotGroupedFilterMember, type PivotTaskControl, type PivotTaskEvaluationInput } from './features/pivot/engine';
-export { BrowserPivotTaskPort, InlinePivotTaskPort, createBrowserPivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
-export { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError, type PivotTaskErrorCode, type PivotTaskResult } from './features/pivot/task-protocol';
-export { createPivotSourceIndex, estimatePivotSourceIndexBytes, type PivotSourceIndex } from './features/pivot/source-index';
+export { buildPivotGroupedFilterMembers, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, getPivotSourceRanges, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskDescriptor, type PivotGroupedFilterMember, type PivotRevisionKey, type PivotTaskControl, type PivotTaskDescriptor } from './features/pivot/engine';
+export { ServerPivotTaskPort, type PivotTaskError, type PivotTaskErrorCode, type ServerPivotRunRequest } from './features/pivot/server-task-port';
 export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
 export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';

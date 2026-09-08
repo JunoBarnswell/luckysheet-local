@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { DesignerShell, Box, Inline } from "@react-sheets/ui-system";
+import { DesignerShell, Box, DocumentBar, Inline } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
 import { StatusBar } from "../components/StatusBar";
@@ -81,6 +81,18 @@ export function EditorShell({
   return (
     <>
       <DesignerShell
+        documentBar={(
+          <DocumentBar
+            workbookName={state.workbookName}
+            saveState={state.saveState}
+            onSave={saveWorkbook}
+            onUndo={() => session.undo()}
+            onRedo={() => session.redo()}
+            onSearch={() => dispatchSessionIntent({ type: "notice", message: "搜索请使用 Ctrl+F 或开始选项卡中的查找和选择。" })}
+            onComments={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "选择单元格后可在审阅工具中查看评论。" })}
+            onShare={copyWorkbookLink}
+          />
+        )}
         formulaBar={(
           <FormulaBar
             cellName={state.activeCell}
@@ -151,9 +163,7 @@ export function EditorShell({
             sheetCount={state.sheets.length}
             zoom={state.zoom}
             collabStatus={state.collabStatus}
-            pendingChangeSetCount={state.pendingChangeSetCount}
             collabRevision={state.collabRevision}
-            hasPendingOperations={state.hasPendingOperations}
             fixedDecimalPlaces={state.editingOptions.fixedDecimalPlaces}
           />
         )}
@@ -176,18 +186,16 @@ export function EditorShell({
                 textBoxPlacementActive={state.textBoxPlacement}
                 textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
-                onActivateHyperlink={(row, column) => {
+                onActivateHyperlink={async (row, column) => {
                   try {
-                    const result = session.activateHyperlinkAt(row, column);
-                    if (result.kind === 'none') return false;
+                    const result = await session.activateHyperlinkAt(row, column);
+                    if (result.kind === 'none') return;
                     if (result.kind === 'external') {
                       const opened = window.open(result.href, '_blank', 'noopener,noreferrer');
                       if (!opened) throw new Error('HYPERLINK_POPUP_BLOCKED: allow popups and retry');
                     }
-                    return true;
                   } catch (cause) {
                     dispatchSessionIntent({ type: 'notice', message: cause instanceof Error ? cause.message : 'Hyperlink activation failed' });
-                    return true;
                   }
                 }}
                 onPivotContextHit={(hit) => {
@@ -276,6 +284,7 @@ export function EditorShell({
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
+                onEnsureVisibleRanges={(ranges) => session.ensureVisibleRanges(ranges)}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
                 onSelectAllDrawings={session.selectAllDrawings.bind(session)}

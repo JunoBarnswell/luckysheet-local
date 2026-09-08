@@ -7,8 +7,6 @@ import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.persistence.AuditEntity;
 import com.xc.luckysheet.server.persistence.AuditEntityRepository;
-import com.xc.luckysheet.server.persistence.CheckpointEntity;
-import com.xc.luckysheet.server.persistence.CheckpointEntityRepository;
 import com.xc.luckysheet.server.persistence.DataBlockEntity;
 import com.xc.luckysheet.server.persistence.DataBlockEntityRepository;
 import com.xc.luckysheet.server.persistence.OperationEntity;
@@ -55,7 +53,6 @@ public class WorkbookStore {
     private final WorkbookAclEntityRepository acl;
     private final ShareEntityRepository shares;
     private final OperationEntityRepository operations;
-    private final CheckpointEntityRepository checkpoints;
     private final OutboxEntityRepository outbox;
     private final AuditEntityRepository audits;
     private final DataBlockEntityRepository dataBlocks;
@@ -71,7 +68,6 @@ public class WorkbookStore {
             WorkbookAclEntityRepository acl,
             ShareEntityRepository shares,
             OperationEntityRepository operations,
-            CheckpointEntityRepository checkpoints,
             OutboxEntityRepository outbox,
             AuditEntityRepository audits,
             DataBlockEntityRepository dataBlocks,
@@ -81,7 +77,6 @@ public class WorkbookStore {
         this.acl = acl;
         this.shares = shares;
         this.operations = operations;
-        this.checkpoints = checkpoints;
         this.outbox = outbox;
         this.audits = audits;
         this.dataBlocks = dataBlocks;
@@ -96,10 +91,8 @@ public class WorkbookStore {
         return workbooks.findForUpdate(unitId).map(this::workbookRow);
     }
 
-    public void updateWorkbook(String unitId, long revision, String snapshotJson, long snapshotRevision, Instant now) {
-        WorkbookEntity entity = workbooks.findById(unitId).orElseThrow(() -> new IllegalStateException("Workbook not found: " + unitId));
-        entity.updateSnapshot(revision, snapshotJson, snapshotRevision, now);
-        workbooks.save(entity);
+    public long nextClientSequence(String unitId, String actor) {
+        return Math.addExact(operations.maxClientSequence(unitId, actor), 1L);
     }
 
     public void updateWorkbookRevision(String unitId, long revision, Instant now) {
@@ -306,23 +299,6 @@ public class WorkbookStore {
         }
     }
 
-    @Transactional
-    public void insertCheckpoint(String unitId, long revision, String snapshotJson, String checksum, Instant now) {
-        CheckpointEntity entity = checkpoints.findAtRevision(unitId, revision)
-                .orElseGet(() -> new CheckpointEntity(unitId, revision, snapshotJson, checksum, now));
-        entity.update(snapshotJson, checksum, now);
-        checkpoints.save(entity);
-    }
-
-    public Optional<CheckpointRow> findCheckpoint(String unitId, long revision) {
-        return checkpoints.findAtRevision(unitId, revision).map(this::checkpointRow);
-    }
-
-    public Optional<CheckpointRow> findLatestCheckpointAtOrBefore(String unitId, long revision) {
-        return checkpoints.findLatestAtOrBefore(unitId, revision, PageRequest.of(0, 1)).stream()
-                .map(this::checkpointRow).findFirst();
-    }
-
     public void insertAudit(AuditRecord record) {
         String details = record.details() == null ? "{}" : record.details().toString();
         audits.save(new AuditEntity(record.auditId(), record.operationId(), record.unitId(), record.actorId(), record.eventType(),
@@ -335,8 +311,8 @@ public class WorkbookStore {
     }
 
     private WorkbookRow workbookRow(WorkbookEntity entity) {
-        return new WorkbookRow(entity.getUnitId(), entity.getName(), entity.getSnapshotJson(), entity.getSnapshotRevision(),
-                entity.getRevision(), entity.getLifecycle(), entity.getCreatedAt(), entity.getUpdatedAt());
+        return new WorkbookRow(entity.getUnitId(), entity.getName(), entity.getRevision(),
+                entity.getLifecycle(), entity.getCreatedAt(), entity.getUpdatedAt());
     }
 
     private OperationRow operationRow(OperationEntity entity) {
@@ -352,10 +328,6 @@ public class WorkbookStore {
     private OutboxRow outboxRow(OutboxEntity entity) {
         return new OutboxRow(entity.getEventId(), entity.getUnitId(), entity.getOperationId(), entity.getRevision(), entity.getPayloadJson(),
                 entity.getCreatedAt(), entity.getAttempts());
-    }
-
-    private CheckpointRow checkpointRow(CheckpointEntity entity) {
-        return new CheckpointRow(entity.getId().getUnitId(), entity.getId().getRevision(), entity.getSnapshotJson(), entity.getChecksum(), entity.getCreatedAt());
     }
 
     private AuditRecord auditRecord(AuditEntity entity) {

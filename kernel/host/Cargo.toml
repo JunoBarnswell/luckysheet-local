@@ -1,0 +1,25 @@
+[package]
+name = "kernel-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "workbook-kernel-host"
+path = "src/main.rs"
+
+[dependencies]
+kernel-core.workspace = true
+kernel-formula.workspace = true
+kernel-analytics.workspace = true
+kernel-geometry.workspace = true
+kernel-commands.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kernel-native-document.workspace = true

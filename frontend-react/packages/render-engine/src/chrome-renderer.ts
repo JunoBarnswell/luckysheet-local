@@ -7,7 +7,6 @@ import {
   type RenderTheme,
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
-import { defaultHeaderOffset } from "./render-plan";
 import type { RenderPlan } from "./render-plan";
 
 export interface ChromeDrawOptions {
@@ -185,7 +184,7 @@ function drawResizePreview(options: ChromeDrawOptions): void {
   const { context, skeleton, chrome, plan } = options;
   const preview = chrome.resizePreview;
   if (!preview) return;
-  const origin = defaultHeaderOffset();
+  const origin = plan.headerOffset;
   context.save();
   context.strokeStyle = "#2563eb";
   context.lineWidth = 1.5;
@@ -277,7 +276,7 @@ function drawOutlineButton(context: CanvasRenderingContext2D, buttonLeft: number
 function drawOutlineControls(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome } = options;
   if (chrome.outlineControls.length === 0) return;
-  const origin = defaultHeaderOffset();
+  const origin = plan.headerOffset;
   for (const control of chrome.outlineControls) {
     if (control.axis === 'row') {
       const rowTop = skeleton.getRowTop(control.index);
@@ -390,7 +389,7 @@ function drawDrawingMarquee(options: ChromeDrawOptions): void {
 function drawHeaderStrips(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome, theme } = options;
   const viewport = plan.viewport;
-  const origin = defaultHeaderOffset();
+  const origin = plan.headerOffset;
 
   // 背景
   context.fillStyle = theme.headerBackground;

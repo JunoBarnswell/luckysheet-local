@@ -1,4 +1,5 @@
 import type { RangeRef, SparklineGroup, SparklineModel, WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
+import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 import { resolveSparklineSeries, type ResolvedSparklineSeries, type StructuredChartSheet } from '../chart/data';
 
 export interface SparklineInsertLocationParams {
@@ -100,14 +101,20 @@ export function resolveQuickSparklinePlacement(range: RangeRef): { dataRange: Ra
   };
 }
 
-export function extractSparklineValues(workbookOrSheet: WorkbookModel | WorksheetModel, sparkline: SparklineModel): number[] {
+export function extractSparklineValues(
+  workbookOrSheet: WorkbookModel | WorksheetModel,
+  sparkline: SparklineModel,
+  resolveVisibility: (sheet: WorksheetModel) => ResolvedVisibility,
+): number[] {
   const resolved = resolveSparklineSeries(sparkline, (sheetId) => {
     const sheet = 'getSheet' in workbookOrSheet
       ? workbookOrSheet.getSheet(sheetId)
       : workbookOrSheet.id === sheetId
         ? workbookOrSheet
         : undefined;
-    return sheet ? { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns } : undefined;
+    if (!sheet) return undefined;
+    const resolvedVisibility = resolveVisibility(sheet);
+    return { getCell: (row: number, column: number) => sheet.cells.get(row, column), resolvedVisibility, revision: resolvedVisibility.revision };
   });
   return resolved.values.filter((value): value is number => value !== null);
 }

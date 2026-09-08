@@ -24,7 +24,7 @@ test('ReviewStore snapshot validation rejects dangling and incompatible indexes'
   store.addThread(thread('t1', 1, 1));
   const snapshot = store.toSnapshot();
   delete snapshot.notesById.n1;
-  assert.throws(() => ReviewStore.fromSnapshot('sheet-1', snapshot), /missing id/);
+  assert.throws(() => ReviewStore.fromSnapshot('sheet-1', snapshot), /invalid: 0:0/);
   const incompatible = store.toSnapshot();
   incompatible.threadIdsByCell['1:2'] = ['t1'];
   assert.throws(() => ReviewStore.fromSnapshot('sheet-1', incompatible), /incompatible/);

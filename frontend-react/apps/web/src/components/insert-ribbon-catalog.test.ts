@@ -3,11 +3,16 @@ import { describe, it } from 'node:test';
 import enUS from '../locales/en-US.json';
 import zhCN from '../locales/zh-CN.json';
 import { CHART_SUBTYPES_BY_TYPE, isChartSubtypeForType } from '@react-sheets/core-model';
-import { INSERT_CHART_FAMILIES, INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { INSERT_CHART_FAMILIES, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 import { getRibbonSurfaces } from '@react-sheets/spreadsheet-app';
 
 const variants = [
-  ...INSERT_CHART_VARIANTS,
+  ...INSERT_CHART_FAMILIES.flatMap((family) => family.variants.map((variant) => ({
+    id: variant.id,
+    labelKey: family.labelKey,
+    ariaLabelKey: family.labelKey,
+    tooltipKey: family.labelKey,
+  }))),
   ...INSERT_SPARKLINE_VARIANTS,
   ...INSERT_SHAPE_GALLERY.flatMap((category) => category.variants),
   ...INSERT_FORM_CONTROL_VARIANTS,

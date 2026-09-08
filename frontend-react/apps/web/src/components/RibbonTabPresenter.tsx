@@ -22,7 +22,7 @@ export function RibbonTabPresenter({ tab, locale, layout, renderCommand, feature
     .map((id) => getRibbonGroupDefinition(id))
     .sort((left, right) => left.priority - right.priority);
   return (
-    <Inline gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={`ribbon-groups-${tab}`} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-hidden`} data-testid={`ribbon-groups-${tab}`} data-ribbon-breakpoint={layout.mode}>
       {groups.map((group, groupIndex) => {
         const commands = surfaces
           .filter((surface) => surface.group === group.id && surface.commandId)

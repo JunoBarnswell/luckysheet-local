@@ -14,7 +14,7 @@ public final class GeneratedWorkbookContract {
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
-        Map.entry("sheet.extent.restore", new MutationCapability("local", false, "SheetExtentRestore", "viewer", "none", false, "none", false, "none", "worksheet")),
+        Map.entry("sheet.extent.restore", new MutationCapability("local", false, "SheetExtentRestore", "viewer", "none", true, "none", false, "none", "worksheet")),
         Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false, "edit-objects", true, "declared", "drawing")),
         Map.entry("sheet.add", new MutationCapability("remote", true, "SheetAdd", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.remove", new MutationCapability("remote", true, "SheetRemove", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -49,7 +49,6 @@ public final class GeneratedWorkbookContract {
         Map.entry("sheet.extent.restore", new PermissionPolicy("navigate", "none", false, "none", "worksheet")),
         Map.entry("banded.set", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cell.editor.set", new PermissionPolicy("format", "format", true, "declared", "range")),
-        Map.entry("cell.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cell.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cells.inserted", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("cells.deleted", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
@@ -214,6 +213,6 @@ public final class GeneratedWorkbookContract {
         return PROTECTION_ALLOW_FIELDS.get(action);
     }
 
-    public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
+    public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean kernelReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
     public record PermissionPolicy(String capability, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
 }

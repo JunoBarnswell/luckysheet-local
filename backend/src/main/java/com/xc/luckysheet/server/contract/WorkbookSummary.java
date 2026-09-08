@@ -23,7 +23,6 @@ public record WorkbookSummary(
         List<String> locationPath,
         String spaceName,
         String sourceFileName,
-        WorkbookStorageLocation storageLocation,
         WorkbookSyncStatus syncStatus,
         WorkbookLifecycle lifecycle,
         WorkbookSource source,
@@ -34,7 +33,7 @@ public record WorkbookSummary(
     /** Existing operation tests and non-catalog callers retain a valid item. */
     public WorkbookSummary(String unitId, String name, long revision, Instant updatedAt) {
         this(unitId, name, revision, updatedAt, null, null, null, null, null, null, null,
-                WorkbookStorageLocation.REMOTE, WorkbookSyncStatus.SYNCED,
+                WorkbookSyncStatus.SYNCED,
                 WorkbookLifecycle.ACTIVE, WorkbookSource.NATIVE, false, null, null);
     }
 }

@@ -4,11 +4,13 @@ import { join, relative, resolve } from 'node:path';
 /**
  * Static mutation-contract gate.
  *
- * Every production mutation registration must carry one explicit contract:
- * schema, permission, affected-range resolver, and inverse policy. Runtime
- * validation remains authoritative for dynamically constructed payloads; this
- * gate refuses dynamic registration/reference syntax so a feature cannot hide
- * a missing contract behind a helper or computed id.
+ * Every production mutation registration must carry one explicit host planning
+ * contract: schema, permission and affected-range resolver. Undo records and
+ * inverse execution are owned by the Rust kernel, so browser registrations must
+ * not introduce a second inverse policy. Runtime validation remains authoritative
+ * for dynamically constructed payloads; this gate refuses dynamic registration
+ * and reference syntax so a feature cannot hide a missing contract behind a
+ * helper or computed id.
  */
 
 const root = resolve(process.argv[2] ?? process.cwd());
@@ -233,9 +235,6 @@ for (const file of files) {
     const metadata = metadataObject(call);
     for (const field of ['schema', 'permission', 'affectedRanges']) {
       if (!hasMetadataField(metadata, field)) violations.push(`${location}: mutation ${id} missing metadata.${field}`);
-    }
-    if (!hasMetadataField(metadata, 'inversePolicy') && !hasMetadataField(metadata, 'inverseIds')) {
-      violations.push(`${location}: mutation ${id} missing metadata.inversePolicy`);
     }
     const owners = registered.get(id) ?? [];
     owners.push(location);

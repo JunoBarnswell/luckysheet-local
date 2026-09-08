@@ -152,7 +152,7 @@ export interface CanvasInteractionOptions {
   onCancelTextBoxPlacement: () => void;
   onBeginTextBoxEdit: (drawingId: string, initialText?: string) => void;
   onToggleOutline?: (groupId: string) => void;
-  onActivateHyperlink?: (row: number, column: number) => boolean;
+  onActivateHyperlink?: (row: number, column: number) => void | Promise<void>;
   onShortcut?: (id: string) => boolean;
   onCancelFormatPainter?: () => void;
   onPivotResolve: (sheet: CanvasSheetSnapshot, row: number, column: number) => ResolvedContextHit | null;
@@ -1022,8 +1022,11 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
-    if (onActivateHyperlink?.(cell.row, cell.column)) return;
     const sourceCell = sheet.getCell(cell.row, cell.column);
+    if (sourceCell?.hyperlink && onActivateHyperlink) {
+      void onActivateHyperlink(cell.row, cell.column);
+      return;
+    }
     const text = sourceCell?.formula ?? (sourceCell?.value == null ? '' : String(sourceCell.value));
     const caretOffset = engine.textCaretAtLocalPoint(local, cell, text);
     cellEdit.dispatch({ type: 'begin.request', source: 'double-click', surface: 'grid', ...(caretOffset === null ? {} : { caret: { start: caretOffset, end: caretOffset } }) });

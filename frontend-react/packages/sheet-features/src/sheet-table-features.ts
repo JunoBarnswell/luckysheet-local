@@ -92,7 +92,6 @@ export function planSheetTableCreation(request: SheetTableCreationRequest, sheet
     }, sheet),
   };
 }
-
 const TABLE_HEADER_STYLE: Partial<CellStyle> = {
   background: '#4472C4',
   textColor: '#FFFFFF',
@@ -542,17 +541,4 @@ export function planTotalRowToggle(table: SheetTableModel, enabled: boolean): To
     values: [],
     clearTotalRow: true,
   };
-}
-
-export function snapshotTotalRowCells(
-  sheet: WorksheetModel,
-  totalRow: number,
-  startColumn: number,
-  endColumn: number,
-): Array<{ row: number; column: number; previous?: CellData }> {
-  const snapshots: Array<{ row: number; column: number; previous?: CellData }> = [];
-  for (let column = startColumn; column <= endColumn; column++) {
-    snapshots.push({ row: totalRow, column, previous: sheet.cells.get(totalRow, column) });
-  }
-  return snapshots;
 }

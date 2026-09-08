@@ -244,27 +244,3 @@ export function nextZIndex(sheet: WorksheetModel): number {
   if (sheet.drawings.length === 0) return 1;
   return Math.max(...sheet.drawings.map((drawing) => drawing.zIndex)) + 1;
 }
-
-export function reorderDrawing(sheet: WorksheetModel, drawingId: string, direction: 'forward' | 'backward' | 'front' | 'back'): void {
-  const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
-  if (!drawing) return;
-  const ordered = [...sheet.drawings].sort((left, right) => left.zIndex - right.zIndex);
-  const index = ordered.findIndex((entry) => entry.id === drawingId);
-  if (index < 0) return;
-  if (direction === 'front') {
-    const max = Math.max(...ordered.map((entry) => entry.zIndex));
-    drawing.zIndex = max + 1;
-    return;
-  }
-  if (direction === 'back') {
-    const min = Math.min(...ordered.map((entry) => entry.zIndex));
-    drawing.zIndex = min - 1;
-    return;
-  }
-  const swapIndex = direction === 'forward' ? index + 1 : index - 1;
-  const swap = ordered[swapIndex];
-  if (!swap) return;
-  const current = drawing.zIndex;
-  drawing.zIndex = swap.zIndex;
-  swap.zIndex = current;
-}

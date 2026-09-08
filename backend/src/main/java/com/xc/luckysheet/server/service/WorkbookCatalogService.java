@@ -8,20 +8,20 @@ import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
+import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
 import com.xc.luckysheet.server.contract.WorkbookImportResponse;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
-import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
-import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
+import com.xc.luckysheet.server.contract.WorkbookOpenResponse;
 import com.xc.luckysheet.server.contract.WorkbookSource;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookSyncStatus;
 import com.xc.luckysheet.server.contract.WorkbookUserState;
+import com.xc.luckysheet.server.config.KernelHostProperties;
 import com.xc.luckysheet.server.persistence.AuditEntityRepository;
-import com.xc.luckysheet.server.persistence.CheckpointEntityRepository;
 import com.xc.luckysheet.server.persistence.DataBlockEntityRepository;
 import com.xc.luckysheet.server.persistence.OperationEntityRepository;
 import com.xc.luckysheet.server.persistence.OutboxEntityRepository;
@@ -41,10 +41,14 @@ import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntity;
 import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntityRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -59,7 +63,7 @@ import java.util.HexFormat;
 /** The sole backend catalog boundary for workbook resources and their artifacts. */
 @Service
 public class WorkbookCatalogService {
-    public static final long MAX_NATIVE_DOCUMENT_BYTES = 50L * 1024L * 1024L;
+    public static final long MAX_NATIVE_DOCUMENT_BYTES = 1024L * 1024L * 1024L;
     /** The server accepts one canonical exchange contract at a time. */
     public static final int NATIVE_DOCUMENT_CODEC_REVISION = 1;
 
@@ -73,13 +77,15 @@ public class WorkbookCatalogService {
     private final WorkspaceService workspace;
     private final WorkbookAuthorizationService authorization;
     private final WorkbookOperationService operations;
-    private final CheckpointEntityRepository checkpoints;
     private final OperationEntityRepository operationEntities;
     private final OutboxEntityRepository outbox;
     private final AuditEntityRepository audits;
     private final ShareEntityRepository shares;
     private final DataBlockEntityRepository blocks;
     private final ObjectMapper mapper;
+    private final KernelHostClient kernel;
+    private final KernelPersistenceService kernelPersistence;
+    private final KernelHostProperties kernelProperties;
 
     public WorkbookCatalogService(
             WorkbookEntityRepository workbooks,
@@ -92,13 +98,12 @@ public class WorkbookCatalogService {
             WorkspaceService workspace,
             WorkbookAuthorizationService authorization,
             WorkbookOperationService operations,
-            CheckpointEntityRepository checkpoints,
             OperationEntityRepository operationEntities,
             OutboxEntityRepository outbox,
             AuditEntityRepository audits,
             ShareEntityRepository shares,
             DataBlockEntityRepository blocks,
-            ObjectMapper mapper
+            ObjectMapper mapper, KernelHostClient kernel, KernelPersistenceService kernelPersistence, KernelHostProperties kernelProperties
     ) {
         this.workbooks = workbooks;
         this.acl = acl;
@@ -110,19 +115,42 @@ public class WorkbookCatalogService {
         this.workspace = workspace;
         this.authorization = authorization;
         this.operations = operations;
-        this.checkpoints = checkpoints;
         this.operationEntities = operationEntities;
         this.outbox = outbox;
         this.audits = audits;
         this.shares = shares;
         this.blocks = blocks;
         this.mapper = mapper;
+        this.kernel = kernel; this.kernelPersistence = kernelPersistence; this.kernelProperties = kernelProperties;
     }
 
     @Transactional
-    public WorkbookSnapshotResponse create(CreateWorkbookRequest request, String actor) {
-        WorkbookEntity entity = createEntity(request, actor);
-        return snapshotResponse(entity, request.snapshot());
+    public WorkbookOpenResponse create(CreateWorkbookRequest request, String actor) {
+        if (workbooks.existsById(request.unitId())) throw ServiceException.conflict("Workbook already exists");
+        ObjectNode params = mapper.createObjectNode().put("unitId", request.unitId()).put("name", request.name().trim());
+        if (request.sheets() != null) params.set("sheets", request.sheets());
+        JsonNode manifest;
+        synchronized (kernel) {
+            invalidateOnRollback();
+            manifest = kernel.call("create", params);
+        }
+        WorkbookEntity entity = createNativeEntity(request.unitId(), manifest, request.spaceId(), request.folderId(), WorkbookSource.NATIVE, actor);
+        ObjectNode result = mapper.createObjectNode(); result.set("manifest", manifest); result.putArray("pages");
+        kernelPersistence.publish(result, request.unitId(), 0);
+        if (request.initialMutations().isEmpty()) return openResponse(entity, manifest);
+        OperationEnvelope initialOperation = new OperationEnvelope(
+                OperationEnvelope.SCHEMA,
+                "workbook-create-" + UUID.randomUUID(),
+                request.unitId(),
+                1,
+                0,
+                request.initialMutations(),
+                Instant.now()
+        );
+        var committed = operations.commit(request.unitId(), initialOperation, actor);
+        WorkbookEntity committedEntity = workbooks.findById(request.unitId())
+                .orElseThrow(() -> ServiceException.notFound("Workbook creation was not persisted"));
+        return openResponse(committedEntity, committed.changeSet().path("manifest"));
     }
 
     public CursorPage<WorkbookSummary> list(String actor, String view, String spaceId, String folderId, String query, int page, int limit) {
@@ -189,30 +217,54 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor) {
-        WorkbookEntity source = requireActiveOrTrashed(unitId);
-        if (source.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be copied");
+        WorkbookEntity source = lockActiveOrTrashed(unitId);
+        if (source.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
-        WorkbookSnapshotResponse sourceSnapshot = operations.readSnapshot(unitId, actor);
-        String targetSpaceId = request == null || request.spaceId() == null ? source.getSpaceId() : blankToNull(request.spaceId());
-        if (targetSpaceId == null) targetSpaceId = workspace.ensurePersonalSpace(actor).getSpaceId();
-        workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
-        String targetFolderId = request == null || request.folderId() == null ? source.getFolderId() : blankToNull(request.folderId());
-        workspace.requireFolder(targetSpaceId, targetFolderId, actor, WorkbookAclRole.EDITOR);
-        String name = request == null || request.name() == null || request.name().isBlank()
-                ? source.getName() + " - 副本" : request.name().trim();
+        String spaceId = request == null || request.spaceId() == null ? source.getSpaceId() : blankToNull(request.spaceId());
+        String folderId = request == null || request.folderId() == null ? source.getFolderId() : blankToNull(request.folderId());
+        String name = request == null || request.name() == null || request.name().isBlank() ? source.getName() + " - 副本" : request.name().trim();
         String targetId = UUID.randomUUID().toString();
-        JsonNode copiedSnapshot = normalizeCopiedSnapshot(sourceSnapshot.snapshot(), targetId, name);
-        CreateWorkbookRequest create = new CreateWorkbookRequest(targetId, name, copiedSnapshot, targetSpaceId,
-                targetFolderId, source.getSource());
-        WorkbookEntity copied = createEntity(create, actor);
-        WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
-        if (sourceArtifact != null) {
-            Instant now = Instant.now();
-            artifacts.save(new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
-                    sourceArtifact.getChecksum(), sourceArtifact.getByteLength(), sourceArtifact.getContent().clone(),
-                    sourceArtifact.getNativeMetadataJson(), now, now));
+        ObjectNode params = mapper.createObjectNode().put("sourceUnitId", unitId).put("sourceRevision", source.getRevision())
+                .put("targetUnitId", targetId).put("name", name);
+        JsonNode result;
+        synchronized (kernel) {
+            invalidateOnRollback();
+            kernelPersistence.reopen(unitId, source.getRevision(), kernel);
+            result = kernel.call("copy", params);
         }
+        JsonNode manifest = result.path("manifest");
+        WorkbookEntity copied = createNativeEntity(targetId, manifest, spaceId, folderId, source.getSource(), actor);
+        kernelPersistence.copyPages(unitId, source.getRevision(), targetId, manifest);
+        WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
+        if (sourceArtifact != null) copyNativeArtifact(targetId, sourceArtifact);
         return summaryForActor(copied, actor);
+    }
+
+    private void copyNativeArtifact(String targetId, WorkbookSourceArtifactEntity source) {
+        Path directory = null;
+        try {
+            directory = Files.createTempDirectory(taskRoot(), "native-copy-");
+            Path pagesDirectory = Files.createDirectory(directory.resolve("pages"));
+            Path output = directory.resolve("copy.artifact");
+            // Copy is an explicit identity boundary: bind the preserved package to
+            // revision zero, then export every copied canonical page into that package.
+            ObjectNode params = mapper.createObjectNode().put("unitId", targetId).put("revision", 0)
+                    .put("fileHandle", output.toString()).put("format", source.getFormat())
+                    .put("sourceFileHandle", verifiedArtifactPath(source).toString())
+                    .put("sourceChecksum", source.getChecksum()).put("sourceRevision", 0)
+                    .put("pagesDirectory", pagesDirectory.toString());
+            JsonNode result;
+            synchronized (kernel) {
+                kernelPersistence.reopen(targetId, 0, kernel);
+                kernelPersistence.stagePages(targetId, 0, pagesDirectory);
+                result = kernel.call("document.export", params);
+            }
+            storeArtifact(targetId, 0, source.getFileName(), output, result.path("artifact"));
+        } catch (IOException error) {
+            throw ServiceException.unavailable("Native copy I/O failed: " + error.getMessage());
+        } finally {
+            deleteTaskDirectory(directory);
+        }
     }
 
     @Transactional
@@ -240,23 +292,26 @@ public class WorkbookCatalogService {
         WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) throw ServiceException.conflict("Workbook must be in trash before purge");
+        WorkbookSourceArtifactEntity artifact = artifacts.findById(unitId).orElse(null);
+        Path artifactPath = artifact == null ? null : verifiedArtifactPath(artifact);
         artifacts.deleteById(unitId);
         userStates.deleteByIdUnitId(unitId);
         blocks.deleteByIdUnitId(unitId);
-        checkpoints.deleteByIdUnitId(unitId);
+        kernelPersistence.purge(unitId);
         operationEntities.deleteByUnitId(unitId);
         outbox.deleteByUnitId(unitId);
         audits.deleteByUnitId(unitId);
         shares.deleteByUnitId(unitId);
         acl.deleteAll(acl.findAllForWorkbook(unitId));
         workbooks.deleteById(unitId);
+        deleteAfterCommit(artifactPath);
     }
 
     public WorkbookUserState getUserState(String unitId, String actor) {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
         return userStates.findByIdUnitIdAndIdSubject(unitId, actor)
                 .map(this::userState)
-                .orElseGet(() -> new WorkbookUserState(unitId, false, null, true, true, "remote", "standard", null, true, "system", null));
+                .orElseGet(() -> new WorkbookUserState(unitId, false, null, true, true, "standard", null, "system", null));
     }
 
     @Transactional
@@ -266,208 +321,195 @@ public class WorkbookCatalogService {
         WorkbookUserStateEntity state = userStates.findByIdUnitIdAndIdSubject(unitId, actor)
                 .orElseGet(() -> new WorkbookUserStateEntity(unitId, actor, false, null, now));
         state.update(request.favorite(), request.lastOpenedAt(), request.autoSave(), request.autoSync(),
-                request.defaultCreateLocation(), request.importCompatibilityLevel(), request.language(),
-                request.offlineCache(), request.theme(), now);
+                request.importCompatibilityLevel(), request.language(), request.theme(), now);
         userStates.save(state);
         return userState(state);
     }
 
+    /** Artifacts are exclusively generated by native from a committed revision. */
     @Transactional
-    public WorkbookArtifactResponse putArtifact(String unitId, String fileName, String mimeType, String checksum,
-                                                byte[] content, String actor) {
-        requireActive(unitId);
+    public WorkbookArtifactResponse exportArtifact(String unitId, long revision, String fileName, String format, String actor) {
+        WorkbookEntity workbook = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.EDITOR);
-        validateArtifact(fileName, checksum, content);
-        String actual = checksum(content);
-        if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("Native document artifact checksum mismatch");
-        Instant now = Instant.now();
-        WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() ->
-                new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
-                        content.length, content.clone(), nativeArtifactMetadata(fileName), now, now));
-        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), nativeArtifactMetadata(fileName), now);
-        artifacts.save(entity);
-        return artifactResponse(entity);
+        if (workbook.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
+        if (workbook.getRevision() != revision) throw ServiceException.conflict("Artifact revision must match current workbook revision");
+        Path root = taskRoot();
+        Path output = null;
+        Path exportDirectory = null;
+        Path pagesDirectory = null;
+        try {
+            exportDirectory = Files.createTempDirectory(root, "native-export-");
+            output = exportDirectory.resolve("export.artifact");
+            WorkbookSourceArtifactEntity previous = artifacts.findById(unitId).orElse(null);
+            Path previousPath = previous == null ? null : verifiedArtifactPath(previous);
+            String resolvedFileName = safeFileName(nonBlank(fileName)
+                    ? fileName
+                    : previous != null ? previous.getFileName() : workbook.getName() + ".xlsx");
+            String resolvedFormat = nonBlank(format)
+                    ? format.trim().toLowerCase()
+                    : previous != null ? previous.getFormat() : fileExtension(resolvedFileName);
+            ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision)
+                    .put("fileHandle", output.toString()).put("format", resolvedFormat);
+            if (previous != null) {
+                params.put("sourceFileHandle", previousPath.toString());
+                params.put("sourceChecksum", previous.getChecksum());
+                params.put("sourceRevision", previous.getWorkbookRevision());
+            }
+            JsonNode result;
+            synchronized (kernel) {
+                kernelPersistence.reopen(unitId, revision, kernel);
+                pagesDirectory = Files.createTempDirectory(root, "native-export-pages-");
+                kernelPersistence.stagePages(unitId, revision, pagesDirectory);
+                params.put("pagesDirectory", pagesDirectory.toString());
+                result = kernel.call("document.export", params);
+            }
+            JsonNode metadata = artifactMetadata(result);
+            if (metadata.path("revision").asLong(-1) != revision) throw new KernelHostException("REVISION_CONFLICT", "Native artifact revision mismatch", unitId, "regenerate-artifact");
+            WorkbookSourceArtifactEntity saved = storeArtifact(unitId, revision, resolvedFileName, output, metadata);
+            deleteAfterCommit(previousPath);
+            output = null;
+            return artifactResponse(saved);
+        } catch (IOException error) { throw ServiceException.unavailable("Native export I/O failed: " + error.getMessage()); }
+        finally { deleteTemporary(output); deleteTaskDirectory(pagesDirectory); deleteTaskDirectory(exportDirectory); }
     }
 
     public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor) {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
-        return artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native document artifact not found"));
+        WorkbookEntity workbook = requireActiveOrTrashed(unitId);
+        WorkbookSourceArtifactEntity artifact = artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native artifact not found"));
+        if (artifact.getWorkbookRevision() != workbook.getRevision()) throw ServiceException.conflict("Artifact is stale; export the current revision first");
+        verifiedArtifactPath(artifact);
+        return artifact;
     }
 
     @Transactional
-    public WorkbookImportResponse importWorkbook(MultipartFile file, String name, String spaceId, String folderId,
-                                                 String snapshotJson, String format, String nativeMetadataJson, String actor) {
-        if (file == null || file.isEmpty()) throw ServiceException.validation("Native document file is required");
-        if (file.getSize() > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document exceeds 50 MiB");
-        if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
-        JsonNode snapshot;
+    public WorkbookImportResponse importNativePath(Path input, String name, String spaceId, String folderId, String actor,
+                                                    java.util.function.BooleanSupplier cancelled) {
+        Path root = taskRoot();
+        Path directory = null;
+        Path retained = null;
         try {
-            snapshot = mapper.readTree(snapshotJson);
-        } catch (IOException error) {
-            throw ServiceException.validation("Parsed workbook snapshot is invalid");
-        }
-        if (snapshot == null || !snapshot.isObject()) throw ServiceException.validation("Parsed workbook snapshot must be an object");
-        byte[] content;
-        try {
-            content = file.getBytes();
-        } catch (IOException error) {
-            throw ServiceException.unavailable("Unable to read native document artifact");
-        }
-        if (content.length == 0 || content.length > MAX_NATIVE_DOCUMENT_BYTES) {
-            throw ServiceException.validation("Native document size is invalid");
-        }
-        String resolvedName = name == null || name.isBlank() ? file.getOriginalFilename() : name;
-        if (resolvedName == null || resolvedName.isBlank()) resolvedName = "导入的工作簿";
-        String unitId = snapshot.path("unitId").asText("").trim();
-        if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
-        WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
-        JsonNode nativeMetadata;
-        try {
-            nativeMetadata = mapper.readTree(nativeMetadataJson);
-        } catch (Exception error) {
-            throw ServiceException.validation("Native package metadata is invalid");
-        }
-        String digest = validateNativeImportBinding(nativeMetadata, format, content, snapshot);
-        ObjectNode artifactMetadata = ((ObjectNode) nativeMetadata).deepCopy();
-        artifactMetadata.put("format", format.trim().toLowerCase(java.util.Locale.ROOT));
-        WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
-                WorkbookSource.DOCUMENT_IMPORT), actor);
+            Path file = input.toRealPath();
+            if (!file.startsWith(root) || !Files.isRegularFile(file)) throw ServiceException.forbidden("Import file is outside native task storage");
+            long length = Files.size(file);
+            if (length < 1 || length > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native import must be between 1 byte and 1 GiB");
+            String unitId = UUID.randomUUID().toString();
+            String resolvedName = name == null || name.isBlank() ? file.getFileName().toString() : name.trim();
+            directory = Files.createTempDirectory(root, "native-import-pages-");
+            ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("name", resolvedName)
+                    .put("fileHandle", file.toString()).put("outputDirectory", directory.toString());
+            JsonNode result;
+            synchronized (kernel) { invalidateOnRollback(); result = kernel.call("document.import", params); }
+            JsonNode manifest = result.path("manifest");
+            WorkbookEntity entity = createNativeEntity(unitId, manifest, spaceId, folderId, WorkbookSource.DOCUMENT_IMPORT, actor);
+            kernelPersistence.publishImported(result, unitId, 0, root);
+            JsonNode metadata = artifactMetadata(result);
+            retained = Files.createTempFile(root, "source-artifact-", ".artifact");
+            Files.copy(file, retained, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            WorkbookSourceArtifactEntity artifact = storeArtifact(unitId, 0, resolvedName, retained, metadata);
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+                @Override public void beforeCommit(boolean readOnly) {
+                    if (cancelled.getAsBoolean()) throw new ServiceException("TASK_CANCELLED", 409, "Import task was cancelled before database commit");
+                }
+            });
+            return new WorkbookImportResponse(unitId, 0, artifact.getChecksum(), summaryForActor(entity, actor), manifest, artifactResponse(artifact));
+        } catch (IOException error) { throw new KernelHostException("DOCUMENT_IMPORT_FAILED", error.getMessage(), input.toString(), "retry-import-after-repairing-task-storage"); }
+        finally { deleteTemporary(retained); deleteTaskDirectory(directory); }
+    }
+
+    private WorkbookEntity createNativeEntity(String unitId, JsonNode manifest, String spaceId, String folderId, WorkbookSource source, String actor) {
+        if (!manifest.isObject() || manifest.path("version").asInt(-1) != 11 || manifest.path("revision").asLong(-1) != 0 || !unitId.equals(manifest.path("unitId").asText()))
+            throw new KernelHostException("MANIFEST_INVALID", "Native creation must return the requested v11 resource at revision zero", unitId, "reject-creation");
+        if (workbooks.existsById(unitId)) throw ServiceException.conflict("Workbook already exists");
+        WorkspaceSpaceEntity space = spaceId == null || spaceId.isBlank() ? workspace.ensurePersonalSpace(actor) : workspace.require(spaceId, actor, WorkbookAclRole.EDITOR);
+        String normalizedFolder = blankToNull(folderId);
+        workspace.requireFolder(space.getSpaceId(), normalizedFolder, actor, WorkbookAclRole.EDITOR);
         Instant now = Instant.now();
-        WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
-                safeFileName(file.getOriginalFilename() == null ? resolvedName + ".ssjson" : file.getOriginalFilename()),
-                safeMimeType(file.getContentType()), digest, content.length, content, writeJson(artifactMetadata), now, now);
-        artifacts.save(artifact);
-        return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
-                summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));
-    }
-
-    /**
-     * Establishes the trust boundary for browser-parsed native documents.
-     * The server hashes the actual multipart bytes and the exact canonical
-     * snapshot; the browser cannot substitute a hash, format, or codec
-     * revision that was not proven against this request.
-     */
-    private String validateNativeImportBinding(JsonNode rawMetadata, String requestedFormat, byte[] content, JsonNode snapshot) {
-        if (requestedFormat == null || requestedFormat.isBlank() || rawMetadata == null || !rawMetadata.isObject()) {
-            throw ServiceException.validation("Native document metadata is invalid");
-        }
-        ObjectNode metadata = (ObjectNode) rawMetadata;
-        Set<String> allowed = Set.of("schema", "format", "codecRevision", "checksum", "byteLength", "sourceSnapshotHash", "detectedFeatures", "compatibility");
-        metadata.fieldNames().forEachRemaining(key -> {
-            if (!allowed.contains(key)) throw ServiceException.validation("Native document metadata contains an unsupported field: " + key);
-        });
-        if (!"NativeDocumentMetadata".equals(metadata.path("schema").asText())) {
-            throw ServiceException.validation("Native document metadata schema is invalid");
-        }
-        String format = requestedFormat.trim().toLowerCase(java.util.Locale.ROOT);
-        if (!isSupportedNativeFormat(format) || !format.equals(metadata.path("format").asText("").trim().toLowerCase(java.util.Locale.ROOT))) {
-            throw ServiceException.validation("Native document format binding is invalid");
-        }
-        JsonNode codecRevision = metadata.get("codecRevision");
-        if (codecRevision == null || !codecRevision.isIntegralNumber() || codecRevision.intValue() != NATIVE_DOCUMENT_CODEC_REVISION) {
-            throw ServiceException.validation("Native document codecRevision is unsupported");
-        }
-        String actualChecksum = checksum(content);
-        if (!metadata.path("checksum").isTextual() || !actualChecksum.equalsIgnoreCase(metadata.path("checksum").asText())) {
-            throw ServiceException.validation("Native document file checksum binding is invalid");
-        }
-        if (!metadata.path("byteLength").canConvertToLong() || metadata.path("byteLength").longValue() != content.length) {
-            throw ServiceException.validation("Native document byteLength binding is invalid");
-        }
-        String expectedSnapshotHash = nativeSnapshotHash(snapshot);
-        if (!metadata.path("sourceSnapshotHash").isTextual() || !expectedSnapshotHash.equalsIgnoreCase(metadata.path("sourceSnapshotHash").asText())) {
-            throw ServiceException.validation("Native document snapshot hash binding is invalid");
-        }
-        if (metadata.has("detectedFeatures") && !metadata.get("detectedFeatures").isArray()) {
-            throw ServiceException.validation("Native document detectedFeatures is invalid");
-        }
-        if (metadata.has("compatibility") && (!metadata.get("compatibility").isObject()
-                || !"CompatibilityReport".equals(metadata.get("compatibility").path("schema").asText()))) {
-            throw ServiceException.validation("Native document compatibility report is invalid");
-        }
-        return actualChecksum;
-    }
-
-    private boolean isSupportedNativeFormat(String format) {
-        String[] parts = format.split("/", -1);
-        if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()
-                || !format.matches("[a-z0-9-]+/[a-z0-9-]+")) return false;
-        return switch (parts[0]) {
-            case "ooxml" -> Set.of("xlsx", "xlsm", "xltx", "xltm", "xlam").contains(parts[1]);
-            case "xlsb" -> parts[1].equals("xlsb");
-            case "biff" -> Set.of("xls", "xlt", "xla", "biff5", "xlw").contains(parts[1]);
-            case "xmlss" -> parts[1].equals("xml");
-            case "text" -> Set.of("csv", "txt", "prn", "dif", "sylk").contains(parts[1]);
-            case "ods", "sjs", "ssjson", "dbf" -> parts[0].equals(parts[1]);
-            case "works" -> parts[1].equals("xlr");
-            case "web" -> Set.of("html", "mht").contains(parts[1]);
-            case "presentation" -> Set.of("pdf", "xps").contains(parts[1]);
-            default -> false;
-        };
-    }
-
-    /** Same compact FNV-1a snapshot identity as the native exchange codec. */
-    private String nativeSnapshotHash(JsonNode value) {
-        ObjectNode identity = ((ObjectNode) value).deepCopy();
-        identity.put("unitId", "");
-        JsonNode printDocuments = identity.get("printDocuments");
-        if (printDocuments == null || printDocuments.isNull()) {
-            identity.putArray("printDocuments");
-        } else if (printDocuments.isArray()) {
-            for (JsonNode raw : printDocuments) if (raw.isObject()) ((ObjectNode) raw).put("unitId", "");
-        }
-        String text = writeJson(identity);
-        int hash = 0x811c9dc5;
-        for (int index = 0; index < text.length(); index++) {
-            hash ^= text.charAt(index);
-            hash *= 0x01000193;
-        }
-        return "fnv1a-" + String.format("%08x", hash);
-    }
-
-    private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor) {
-        if (workbooks.existsById(request.unitId())) throw ServiceException.conflict("Workbook already exists");
-        WorkbookSnapshotValidator.requireCanonical(request.snapshot(), request.unitId());
-        if (!request.name().trim().equals(request.snapshot().path("name").asText().trim())) {
-            throw ServiceException.validation("Workbook name must match the canonical snapshot name");
-        }
-        WorkspaceSpaceEntity space = request.spaceId() == null || request.spaceId().isBlank()
-                ? workspace.ensurePersonalSpace(actor)
-                : workspace.require(request.spaceId(), actor, WorkbookAclRole.EDITOR);
-        String folderId = blankToNull(request.folderId());
-        workspace.requireFolder(space.getSpaceId(), folderId, actor, WorkbookAclRole.EDITOR);
-        Instant now = Instant.now();
-        WorkbookEntity entity = new WorkbookEntity(request.unitId(), request.name().trim(), writeJson(request.snapshot()), 0, 0,
-                now, now, actor, space.getSpaceId(), folderId,
-                com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE,
-                request.source(), WorkbookLifecycle.ACTIVE, null);
+        WorkbookEntity entity = new WorkbookEntity(unitId, manifest.path("name").asText(), 0, now, now, actor, space.getSpaceId(), normalizedFolder,
+                source, WorkbookLifecycle.ACTIVE, null);
         workbooks.save(entity);
-        acl.save(new WorkbookAclEntity(request.unitId(), actor, WorkbookAclRole.OWNER, now, now));
-        checkpoints.save(new com.xc.luckysheet.server.persistence.CheckpointEntity(request.unitId(), 0, entity.getSnapshotJson(),
-                checksum(entity.getSnapshotJson().getBytes(StandardCharsets.UTF_8)), now));
+        acl.save(new WorkbookAclEntity(unitId, actor, WorkbookAclRole.OWNER, now, now));
         return entity;
     }
 
-    /**
-     * A copied workbook is a new resource identity. All workbook-scoped
-     * embedded documents must follow that identity before persistence; this
-     * prevents the copied print state from being rejected or remaining bound
-     * to the source workbook at the next load.
-     */
-    private JsonNode normalizeCopiedSnapshot(JsonNode source, String targetUnitId, String targetName) {
-        if (source == null || !source.isObject()) throw ServiceException.validation("Workbook snapshot must be an object");
-        ObjectNode copy = ((ObjectNode) source).deepCopy();
-        copy.put("unitId", targetUnitId);
-        copy.put("name", targetName);
-        JsonNode printDocuments = copy.get("printDocuments");
-        if (printDocuments != null && !printDocuments.isNull()) {
-            if (!printDocuments.isArray()) throw ServiceException.validation("printDocuments must be an array");
-            for (JsonNode raw : (ArrayNode) printDocuments) {
-                if (!raw.isObject()) throw ServiceException.validation("Print document must be an object");
-                ((ObjectNode) raw).put("unitId", targetUnitId);
+    public Path verifiedArtifactPath(WorkbookSourceArtifactEntity artifact) {
+        try {
+            Path path = Path.of(artifact.getStoragePath()).toRealPath();
+            if (!path.startsWith(taskRoot()) || !Files.isRegularFile(path) || Files.size(path) != artifact.getByteLength() || !checksumFile(path).equals(artifact.getChecksum()))
+                throw ServiceException.conflict("Native artifact storage does not match its durable metadata");
+            return path;
+        } catch (IOException error) { throw ServiceException.unavailable("Native artifact is unavailable: " + error.getMessage()); }
+    }
+
+    private WorkbookSourceArtifactEntity storeArtifact(String unitId, long revision, String fileName, Path file, JsonNode metadata) throws IOException {
+        String digest = checksumFile(file);
+        if (metadata.path("revision").asLong(-1) != revision || !digest.equals(metadata.path("checksum").asText())
+                || Files.size(file) != metadata.path("byteLength").asLong(-1) || metadata.path("format").asText().isBlank())
+            throw new KernelHostException("ARTIFACT_INVALID", "Native artifact identity, size or checksum does not match bytes", unitId, "reject-artifact-publication");
+        Path durableDirectory = taskRoot().resolve("committed-artifacts");
+        Files.createDirectories(durableDirectory);
+        Path durable = durableDirectory.resolve(UUID.randomUUID() + ".artifact");
+        Files.move(file, durable, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+            @Override public void afterCompletion(int status) { if (status != STATUS_COMMITTED) deleteTemporary(durable); }
+        });
+        Instant now = Instant.now();
+        WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() -> new WorkbookSourceArtifactEntity(unitId, fileName,
+                "application/octet-stream", digest, revision, metadata.path("byteLength").asLong(), durable.toString(), writeJson(metadata), now, now));
+        entity.update(fileName, "application/octet-stream", digest, revision, metadata.path("byteLength").asLong(), durable.toString(), writeJson(metadata), now);
+        artifacts.save(entity);
+        return entity;
+    }
+
+    private Path taskRoot() {
+        try {
+            if (kernelProperties.taskDirectory() == null || kernelProperties.taskDirectory().isBlank()) throw ServiceException.unavailable("KERNEL_HOST_TASK_DIRECTORY is required");
+            Path root = Path.of(kernelProperties.taskDirectory()).toAbsolutePath().normalize();
+            Files.createDirectories(root);
+            return root.toRealPath();
+        } catch (IOException error) { throw ServiceException.unavailable("Native task storage is unavailable"); }
+    }
+    private String checksumFile(Path path) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (var input = Files.newInputStream(path)) { byte[] buffer = new byte[65536]; int read; while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read); }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
+    }
+    private void deleteTaskDirectory(Path directory) {
+        if (directory == null) return;
+        Path normalized = directory.toAbsolutePath().normalize();
+        if (!normalized.startsWith(taskRoot()) || normalized.equals(taskRoot())) throw new IllegalStateException("Task cleanup outside task storage");
+        try (var entries = Files.walk(normalized)) {
+            for (Path path : entries.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        } catch (IOException error) { org.slf4j.LoggerFactory.getLogger(getClass()).error("Native task directory cleanup failed: {}", normalized, error); }
+    }
+    private void deleteTemporary(Path path) {
+        if (path == null) return;
+        Path validated = validateTaskFile(path);
+        try { Files.deleteIfExists(validated); } catch (IOException error) { org.slf4j.LoggerFactory.getLogger(getClass()).error("Native temporary file cleanup failed: {}", validated, error); }
+    }
+    private void deleteAfterCommit(Path path) {
+        if (path == null) return;
+        Path validated = validateTaskFile(path);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) throw new IllegalStateException("Artifact deletion requires an active transaction");
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) deleteTemporary(validated);
             }
-        }
-        return copy;
+        });
+    }
+    private Path validateTaskFile(Path path) {
+        Path root = taskRoot();
+        Path normalized = path.toAbsolutePath().normalize();
+        if (normalized.equals(root) || !normalized.startsWith(root)) throw new IllegalStateException("Native artifact cleanup outside task storage");
+        return normalized;
+    }
+    private void invalidateOnRollback() {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) throw new IllegalStateException("Native mutation requires transaction");
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+            @Override public void afterCompletion(int status) { if (status != STATUS_COMMITTED) kernel.abortTransaction(); }
+        });
     }
 
     private WorkbookSummary summaryForActor(WorkbookEntity entity, String actor) {
@@ -486,7 +528,7 @@ public class WorkbookCatalogService {
         List<String> path = locationPath(space, folder, folderMap);
         return new WorkbookSummary(row.getUnitId(), row.getName(), row.getRevision(), row.getUpdatedAt(), role,
                 blankToNull(row.getOwnerSubject()), row.getSpaceId(), row.getFolderId(), path,
-                space == null ? null : space.getName(), sourceFileName, row.getStorageLocation(),
+                space == null ? null : space.getName(), sourceFileName,
                 WorkbookSyncStatus.SYNCED, row.getLifecycle(), row.getSource(), state != null && state.isFavorite(),
                 state == null ? null : state.getLastOpenedAt(), row.getDeletedAt());
     }
@@ -505,20 +547,30 @@ public class WorkbookCatalogService {
         return List.copyOf(path);
     }
 
-    private WorkbookSnapshotResponse snapshotResponse(WorkbookEntity entity, JsonNode snapshot) {
-        String json = writeJson(snapshot);
-        return new WorkbookSnapshotResponse(entity.getUnitId(), snapshot.deepCopy(), entity.getRevision(), checksum(json.getBytes(StandardCharsets.UTF_8)));
+    private WorkbookOpenResponse openResponse(WorkbookEntity entity, JsonNode manifest) {
+        String json = writeJson(manifest);
+        return new WorkbookOpenResponse(entity.getUnitId(), entity.getRevision(), manifest, checksum(json.getBytes(StandardCharsets.UTF_8)));
     }
 
     private WorkbookUserState userState(WorkbookUserStateEntity state) {
         return new WorkbookUserState(state.getId().getUnitId(), state.isFavorite(), state.getLastOpenedAt(), state.isAutoSave(),
-                state.isAutoSync(), state.getDefaultCreateLocation(), state.getImportCompatibilityLevel(), state.getLanguage(),
-                state.isOfflineCache(), state.getTheme(), state.getUpdatedAt());
+                state.isAutoSync(), state.getImportCompatibilityLevel(), state.getLanguage(), state.getTheme(), state.getUpdatedAt());
     }
 
     private WorkbookArtifactResponse artifactResponse(WorkbookSourceArtifactEntity artifact) {
-        return new WorkbookArtifactResponse(artifact.getUnitId(), artifact.getFileName(), artifact.getMimeType(), artifact.getChecksum(),
-                artifact.getByteLength(), artifact.getCreatedAt(), artifact.getUpdatedAt());
+        JsonNode nativeMetadata;
+        try { nativeMetadata = mapper.readTree(artifact.getNativeMetadataJson()); }
+        catch (Exception error) { throw new KernelHostException("ARTIFACT_INVALID", "Stored native artifact metadata is invalid", artifact.getUnitId(), "reimport-or-regenerate-artifact"); }
+        return new WorkbookArtifactResponse(artifact.getUnitId(), artifact.getFileName(), artifact.getMimeType(), artifact.getChecksum(), artifact.getWorkbookRevision(),
+                artifact.getByteLength(), nativeMetadata, artifact.getCreatedAt(), artifact.getUpdatedAt());
+    }
+
+    private JsonNode artifactMetadata(JsonNode nativeResult) {
+        if (!nativeResult.path("artifact").isObject() || !nativeResult.path("metadata").isObject())
+            throw new KernelHostException("ARTIFACT_INVALID", "Native result omitted artifact or document metadata", null, "deploy-matching-kernel-host");
+        ObjectNode metadata = ((ObjectNode) nativeResult.path("artifact")).deepCopy();
+        metadata.set("documentMetadata", nativeResult.path("metadata").deepCopy());
+        return metadata;
     }
 
     private WorkbookEntity requireActiveOrTrashed(String unitId) {
@@ -553,14 +605,6 @@ public class WorkbookCatalogService {
         return left.includes(right) ? left : right;
     }
 
-    private void validateArtifact(String fileName, String checksum, byte[] content) {
-        if (content == null || content.length == 0 || content.length > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document artifact size is invalid");
-        if (checksum == null || !checksum.matches("[A-Fa-f0-9]{64}")) throw ServiceException.validation("Native document artifact checksum is invalid");
-        if (fileName != null && fileName.length() > GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
-            throw ServiceException.validation("Native document file name is too long");
-        }
-    }
-
     private String safeFileName(String value) {
         if (value == null || value.isBlank()) throw ServiceException.validation("Native document file name is required");
         try {
@@ -569,13 +613,12 @@ public class WorkbookCatalogService {
             return value.replaceAll("[\\r\\n]", "_");
         }
     }
-    private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/octet-stream" : value; }
-    private String nativeArtifactMetadata(String fileName) {
-        String lower = safeFileName(fileName).toLowerCase(java.util.Locale.ROOT);
-        String family = lower.endsWith(".xlsb") ? "xlsb" : lower.endsWith(".xls") || lower.endsWith(".xlt") || lower.endsWith(".xla") || lower.endsWith(".xlw") ? "biff" : lower.endsWith(".xlsm") || lower.endsWith(".xltm") || lower.endsWith(".xltx") || lower.endsWith(".xlam") || lower.endsWith(".xlsx") ? "ooxml" : lower.endsWith(".ods") ? "ods" : lower.endsWith(".sjs") ? "sjs" : lower.endsWith(".ssjson") ? "ssjson" : lower.endsWith(".xml") ? "xmlss" : "text";
-        String variant = lower.endsWith(".slk") ? "sylk" : lower.contains(".") ? lower.substring(lower.lastIndexOf('.') + 1) : "ssjson";
-        return "{\"schema\":\"NativeDocumentMetadata\",\"format\":\"" + family + "/" + variant + "\",\"codecRevision\":1}";
+    private String fileExtension(String fileName) {
+        int separator = fileName.lastIndexOf('.');
+        if (separator < 0 || separator == fileName.length() - 1) throw ServiceException.validation("Native document file name requires a format extension");
+        return fileName.substring(separator + 1).toLowerCase();
     }
+    private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/octet-stream" : value; }
     private String writeJson(Object value) { try { return mapper.writeValueAsString(value); } catch (Exception error) { throw new IllegalStateException("Unable to serialize workbook snapshot", error); } }
     private String checksum(byte[] content) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content)); } catch (Exception error) { throw new IllegalStateException("SHA-256 is unavailable", error); } }
     private boolean nonBlank(String value) { return value != null && !value.isBlank(); }

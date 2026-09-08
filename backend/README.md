@@ -21,7 +21,7 @@ Single-instance mode leaves Redis disabled and uses the local WebSocket session
 registry. Set `COORDINATION_MULTI_INSTANCE=true` for multiple backend
 instances; this requires `COORDINATION_REDIS_URL` and fails startup when Redis
 coordination is not configured. The configured relational database remains the authority for ACL,
-operations, revisions, snapshots, and the durable coordination outbox. Redis
+operations, immutable manifest revisions, content-addressed pages, and the durable coordination outbox. Redis
 contains only published notifications and expiring presence/cursor state.
 
 `/health` is a liveness endpoint. Every `/api/**` route and the `/ws` handshake require a verified Bearer token. The JWT `sub` claim is the only actor identity used for ACL decisions; request actor fields are not accepted.
@@ -29,22 +29,21 @@ contains only published notifications and expiring presence/cursor state.
 The workbook catalog contract is:
 
 - `GET /api/workbooks?view=recent|shared|trash&spaceId=&folderId=&query=` returns actor-enriched `WorkbookSummary` items. `locationPath` is a structured string array.
-- `POST /api/workbooks` creates a native workbook in the actor's personal space unless `spaceId`/`folderId` are supplied.
+- `POST /api/workbooks` accepts `{unitId,name,sheets?,spaceId?,folderId?}` creation intent and returns `{unitId,revision,manifest,checksum}`. Only Rust creates the canonical v11 manifest; client snapshots are rejected.
+- `GET /api/workbooks/{unitId}/manifest?revision=` reads a manifest and `GET /api/workbooks/{unitId}/pages/{sheetId}/{pageRow}/{pageColumn}?revision=` reads one proven page. Both require current viewer ACL.
 - `PATCH /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/copy`, `DELETE /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/restore-from-trash`, and `DELETE /api/workbooks/{unitId}/purge` manage metadata and lifecycle. Purge requires a previously trashed owner workbook.
-- `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, autosave/sync, default cloud location, offline cache, import compatibility, language, and theme state.
-- `GET/PUT /api/workbooks/{unitId}/native-document-artifact` streams the original native document bytes with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically. `nativeMetadata` must carry the exact `format`, `codecRevision`, file `checksum`, file `byteLength`, and `sourceSnapshotHash` proven against this request; mismatches are rejected before any catalog row is written.
+- `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, cloud autosave/sync, import compatibility, language, and theme state.
+- `POST /api/workbooks/{unitId}/native-document-artifact` accepts `{revision,fileName,format}` and generates bytes through native for that exact committed revision. `GET` streams the bound artifact; stale artifacts are rejected. Arbitrary artifact PUT is removed.
+- `POST /api/workbook-imports/tasks`, `PUT /tasks/{id}/chunks?offset=`, `POST /tasks/{id}/commit`, and `GET/DELETE /tasks/{id}` implement persistent upload/cancel/publication. Uploads are limited to 1 GiB, each chunk to 8 MiB, using a 64 KiB buffer. Multipart `POST /api/workbook-imports` accepts `file` and catalog location/name only and uses the same task chain. Native parsing receives scoped file handles, never browser snapshots or whole-file base64.
 - `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
 
-Workbook mutations are written only through `POST /api/workbooks/{unitId}/operations`. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
+Workbook mutations enter one authority through `POST /api/workbooks/{unitId}/operations` using the canonical `OperationEnvelope` request and `{operation,changeSet}` response. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
 
 The request contract is `OperationEnvelope`. It contains operation identity, workbook identity, revision metadata and mutation intent only. The committed response adds server-owned `actorId`, `revision`, `committedAt` and `affectedRanges`.
 
-Revision replay is addressed by an explicit `(unitId, fromExclusive,
-toInclusive)` interval. The store reads at most 512 operation envelopes per
-tail, verifies row/envelope identity and revision continuity, and fails closed
-with `HISTORY_GAP` when a checkpoint window is missing, corrupt, or too large.
-Checkpoint threshold accounting reuses the same tail read used to build the
-current snapshot; no business path can request the complete operation log.
+Every successful transaction stores one immutable manifest checkpoint, changed content-addressed pages, proven history deltas, the committed operation, and an outbox entry. Unchanged pages remain referenced at their original versions. Reopen sends only the manifest; commands hydrate the native preparation plan page by page. History and manifest reads never replay Java reducers or accept v10 runtime payloads.
+
+The native database cutover is described in [native-kernel-cutover.md](docs/native-kernel-cutover.md). Existing databases require an explicit offline importer and complete history proof before V12 can remove the old snapshot columns. The offline importer is not yet implemented; an unproven existing database deliberately fails the cutover gate.
 
 Build and run with Java 21:
 
@@ -53,7 +52,7 @@ mvn test
 mvn spring-boot:run
 ```
 
-Snapshot replacement is not exposed to ordinary editors. Checkpoints are server-generated and restore accepts only a target revision and reason; the server loads the historical snapshot and records a committed restore operation.
+Restore is owner-only and accepts a target revision and reason; Java resolves the proven historical manifest and native produces a new committed revision. Checkpoint requests acknowledge the already committed page checkpoint and never clone workbook cells.
 
 Query execution is server-only for configured `sqlite`, `jdbc`, and `rest`
 sources. The request contains a sanitized definition, `sourceRef`, statement,
@@ -89,8 +88,21 @@ the JDBC statement or REST request future; a cancelled query never publishes a
 data region. Local/offline database execution is unavailable through this
 backend endpoint and must not be represented as a successful server query.
 
+Workbook semantics are executed by the managed Rust `workbook-kernel-host`.
+The Java service retains OIDC, ACL, transaction, repository, and connector
+ownership and communicates with the host through one serialized protocol-v1
+transport. Frames contain a four-byte big-endian payload length followed by
+UTF-8 JSON and are bounded to 16 MiB; page payloads are bounded to 1 MiB.
+The executable is configured with `KERNEL_HOST_EXECUTABLE` and defaults to
+`target/release/workbook-kernel-host.exe` on Windows (or the same path without
+`.exe` on other platforms). A missing host, invalid response, version mismatch,
+or oversized frame fails closed with a typed kernel error; no Java workbook semantic
+fallback is allowed. Configure durable `KERNEL_HOST_TASK_DIRECTORY` storage for native files; its canonical path is passed to the child as `KERNEL_TASK_DIRECTORY`. `KERNEL_HOST_STARTUP_TIMEOUT` defaults to 10 seconds and `KERNEL_HOST_REQUEST_TIMEOUT` to 2 minutes. Native import/export stages one bounded page file at a time. Query operator migration to native remains pending; see the integration handoff.
+
 Owners can create expiring, revocable guest share tokens with
 `POST /api/workbooks/{unitId}/shares`. Guests send the returned token in
 `X-Workbook-Share-Token` for REST or `shareToken` on the `/ws` handshake. The
 server derives an anonymous subject and re-checks the persisted share role and
 expiry on every request; a client-supplied actor or role is never accepted.
+
+Implementation and remaining native ABI/verification items are tracked in [native-integration-handoff.md](docs/native-integration-handoff.md). This document does not assert the new branch has passed runtime acceptance.

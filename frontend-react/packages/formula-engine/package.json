@@ -4,6 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@react-sheets/number-format": "file:../number-format"
+    "@react-sheets/number-format": "file:../number-format",
+    "@react-sheets/kernel-client": "file:../kernel-client"
   }
 }

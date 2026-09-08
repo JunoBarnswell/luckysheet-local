@@ -1,4 +1,3 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type {
   CompatibilityReport,
   NativeDocumentExportOptions,
@@ -20,24 +19,22 @@ import type {
   UserPreferencesPatch,
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
+  WorkbookManifest,
+  KernelWorkbookCreateRequest,
+  WorkbookLifecycle as ProtocolWorkbookLifecycle,
+  WorkbookSourceKind as ProtocolWorkbookSourceKind,
+  WorkbookSyncStatus as ProtocolWorkbookSyncStatus,
   WorkbookUserState as ProtocolWorkbookUserState,
+  WorkbookUserStatePatch as ProtocolWorkbookUserStatePatch,
   WorkspaceFolder as ProtocolWorkspaceFolder,
   WorkspaceSpace as ProtocolWorkspaceSpace,
 } from '@react-sheets/protocol';
-import type {
-  WorkspaceRecord,
-  WorkspaceRecordMetadata,
-  WorkspaceRole,
-  WorkspaceStorageLocation,
-  WorkspaceUserState,
-} from '../persistence/storage';
 
-export type WorkbookRole = WorkbookAclRole | WorkspaceRole;
-export type WorkbookCatalogView = 'all' | 'recent' | 'local' | 'owned' | 'shared' | 'trash';
-export type WorkbookStorageLocation = WorkspaceStorageLocation;
-export type WorkbookLifecycle = WorkspaceRecordMetadata['lifecycle'];
-export type WorkbookSource = WorkspaceRecordMetadata['source'];
-export type WorkbookSyncState = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookRole = WorkbookAclRole;
+export type WorkbookCatalogView = 'all' | 'recent' | 'owned' | 'shared' | 'trash';
+export type WorkbookLifecycle = ProtocolWorkbookLifecycle;
+export type WorkbookSource = ProtocolWorkbookSourceKind;
+export type WorkbookSyncState = ProtocolWorkbookSyncStatus;
 
 export interface WorkbookCatalogQuery {
   view?: WorkbookCatalogView;
@@ -60,7 +57,6 @@ export interface WorkbookCatalogEntry {
   name: string;
   revision: number;
   updatedAt: string;
-  storage: WorkbookStorageLocation;
   syncState: WorkbookSyncState;
   role: WorkbookRole;
   lifecycle: WorkbookLifecycle;
@@ -75,13 +71,11 @@ export interface WorkbookCatalogEntry {
   deletedAt?: string;
   favorite: boolean;
   lastOpenedAt?: string;
-  pendingOperationCount: number;
-  localRecord?: WorkspaceRecord;
 }
 
 export interface WorkbookCatalogCreateInput {
-  snapshot: WorkbookSnapshot;
-  destination?: 'local' | 'remote';
+  plan: Pick<KernelWorkbookCreateRequest, 'unitId' | 'name' | 'sheets' | 'initialMutations'>;
+  destination?: 'remote';
   metadata?: WorkbookCreateMetadata;
   role?: WorkbookRole;
   source?: WorkbookSource;
@@ -90,17 +84,15 @@ export interface WorkbookCatalogCreateInput {
 export interface WorkbookCatalogImportInput {
   fileName: string;
   buffer: ArrayBuffer;
-  destination?: 'local' | 'remote';
+  destination?: 'remote';
   folderId?: string;
   spaceId?: string;
   options?: Partial<NativeDocumentImportOptions>;
-  execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogImportResult {
   entry: WorkbookCatalogEntry;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   report: CompatibilityReport;
   artifact: NativeDocumentArtifact;
 }
@@ -108,8 +100,6 @@ export interface WorkbookCatalogImportResult {
 export interface WorkbookCatalogExportInput {
   fileName?: string;
   options?: Partial<NativeDocumentExportOptions>;
-  execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-excel-ooxml').NativeDocumentWorkerPort;
 }
 
 export interface WorkbookCatalogExportResult {
@@ -117,11 +107,6 @@ export interface WorkbookCatalogExportResult {
   fileName: string;
   buffer: ArrayBuffer;
   report: CompatibilityReport;
-}
-
-export interface WorkbookResolutionBinding {
-  location: WorkbookStorageLocation;
-  syncMode: WorkspaceRecord['syncMode'];
 }
 
 /**
@@ -133,25 +118,26 @@ export interface WorkbookResolution {
   schema: 'WorkbookResolution';
   unitId: string;
   /** Resolution source identifies the authoritative owner, never a cache. */
-  source: 'local' | 'remote' | 'shared';
-  mode: 'local' | 'remote';
+  source: 'remote' | 'shared';
+  mode: 'remote';
   lifecycle: 'active';
-  binding: WorkbookResolutionBinding;
-  snapshot: WorkbookSnapshot;
+  manifest: WorkbookManifest;
   revision: number;
   access: WorkbookAccessResponse | null;
-  localRecord: WorkspaceRecord | null;
 }
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
-  | 'getSnapshot'
+  | 'getManifest'
+  | 'getPage'
+  | 'createKernelWorkbook'
+  | 'commitOperation'
   | 'listWorkbookAcl'
   | 'putWorkbookAcl'
   | 'deleteWorkbookAcl'
   | 'getAccess'
-  | 'createWorkbook'
   | 'listWorkbookPage'
   | 'updateWorkbook'
+  | 'renameWorkbook'
   | 'copyWorkbook'
   | 'moveToTrash'
   | 'restoreFromTrash'
@@ -159,9 +145,12 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'getWorkbookUserState'
   | 'putWorkbookUserState'
   | 'createWorkbookImport'
-  | 'putWorkbookSourceArtifact'
+  | 'createNativeDocumentTask'
+  | 'uploadNativeDocumentTaskChunk'
+  | 'commitNativeDocumentTask'
+  | 'cancelNativeDocumentTask'
   | 'getWorkbookSourceArtifact'
-  | 'commitOperation'
+  | 'saveNativeDocumentArtifact'
   | 'checkpointWorkbook'
   | 'listSpaces'
   | 'getUserPreferences'
@@ -190,7 +179,11 @@ export type WorkbookCatalogProtocolArtifactMetadata = WorkbookSourceArtifactMeta
 export type WorkbookCatalogProtocolSpace = ProtocolWorkspaceSpace;
 export type WorkbookCatalogProtocolFolder = ProtocolWorkspaceFolder;
 export type WorkbookCatalogProtocolRole = WorkbookAclRole;
-export type WorkbookCatalogProtocolUserStateInput = Omit<ProtocolWorkbookUserState, 'unitId'>;
+export type WorkbookCatalogProtocolUserStateInput = ProtocolWorkbookUserStatePatch;
 
-export type WorkbookCatalogLocation = Pick<WorkspaceRecordMetadata, 'spaceId' | 'folderId' | 'locationPath'>;
-export type WorkbookCatalogUserState = WorkspaceUserState;
+export interface WorkbookCatalogLocation {
+  spaceId?: string;
+  folderId?: string;
+  locationPath: readonly string[];
+}
+export type WorkbookCatalogUserState = ProtocolWorkbookUserState;

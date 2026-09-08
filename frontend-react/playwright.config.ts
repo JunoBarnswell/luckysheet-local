@@ -4,11 +4,16 @@ export default defineConfig({
   testDir: './e2e',
   outputDir: 'test-results',
   globalSetup: './tools/e2e-provenance.ts',
+  globalTeardown: './tools/e2e-cleanup.ts',
+  snapshotPathTemplate: '{testDir}/{testFilePath}-snapshots/{arg}{ext}',
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: [['list']],
+  expect: {
+    toHaveScreenshot: { threshold: 0.2, maxDiffPixelRatio: 0.01 },
+  },
   use: {
     baseURL: 'http://127.0.0.1:4180',
     trace: 'on-first-retry',

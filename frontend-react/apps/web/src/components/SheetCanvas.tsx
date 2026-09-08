@@ -15,6 +15,7 @@ import {
   CanvasRenderEngine,
   SheetSkeleton,
   type CellRenderData,
+  type CellRange,
   type ChromeState,
   type FloatingDrawable,
   type FloatingHit,
@@ -102,11 +103,12 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
-  onActivateHyperlink?: (row: number, column: number) => boolean;
+  onActivateHyperlink?: (row: number, column: number) => void | Promise<void>;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
+  onEnsureVisibleRanges?: (ranges: readonly RangeRef[]) => Promise<void>;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onSelectAllDrawings?: () => void;
@@ -400,6 +402,7 @@ export function SheetCanvas({
   onSelectionChange,
   onMovePrimary,
   onEnsureSheetExtent,
+  onEnsureVisibleRanges,
   onJumpEdge,
   onSelectAll,
   onSelectAllDrawings,
@@ -464,7 +467,38 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
+  const [pageLoadState, setPageLoadState] = useState<{ status: 'idle' | 'loading' | 'error'; blocking?: boolean; message?: string }>({ status: 'idle' });
+  const pageLoadGenerationRef = useRef(0);
+  const hasPreparedViewportRef = useRef(false);
   const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+  const visibleRangeLoaderRef = useRef(onEnsureVisibleRanges);
+  const visibleRangeSheetIdRef = useRef(sheetId);
+  visibleRangeLoaderRef.current = onEnsureVisibleRanges;
+  visibleRangeSheetIdRef.current = sheetId;
+
+  const prepareVisibleRanges = useCallback(async (ranges: readonly CellRange[]) => {
+    const loader = visibleRangeLoaderRef.current;
+    if (!loader || ranges.length === 0) return;
+    const generation = ++pageLoadGenerationRef.current;
+    const blocking = !hasPreparedViewportRef.current;
+    setPageLoadState({ status: 'loading', blocking });
+    try {
+      await loader(ranges.map((range) => ({ ...range, sheetId: visibleRangeSheetIdRef.current })));
+      if (generation !== pageLoadGenerationRef.current) return;
+      hasPreparedViewportRef.current = true;
+      setPageLoadState({ status: 'idle' });
+    } catch (error) {
+      if (generation !== pageLoadGenerationRef.current) return;
+      setPageLoadState({ status: 'error', blocking: !hasPreparedViewportRef.current, message: error instanceof Error ? error.message : 'Worksheet pages could not be loaded' });
+      throw error;
+    }
+  }, []);
+
+  useEffect(() => {
+    pageLoadGenerationRef.current += 1;
+    hasPreparedViewportRef.current = false;
+    setPageLoadState({ status: 'idle' });
+  }, [sheetId]);
 
   const zoomFactor = zoom / 100;
 
@@ -747,6 +781,12 @@ export function SheetCanvas({
     zoom,
     textBoxPlacementActive: Boolean(textBoxPlacementActive),
   });
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setSheetId(sheetId);
+  }, [sheetId]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -1040,7 +1080,16 @@ export function SheetCanvas({
           >
             <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
               <CanvasRenderSurface
-                options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
+                options={{
+                  sheetId,
+                  skeleton,
+                  cellProvider,
+                  prepareVisibleRanges,
+                  resolveAssetUrl,
+                  assetUrlCache: assetUrlCacheRef.current,
+                  assetUrlPending: assetUrlPendingRef.current,
+                  assetUrlErrors: assetUrlErrorsRef.current,
+                }}
                 onReady={(engine) => {
                   engineRef.current = engine;
                   setEngineReady(true);
@@ -1052,6 +1101,21 @@ export function SheetCanvas({
                 className="absolute inset-0"
               />
             </Box>
+            {pageLoadState.status === 'error' || (pageLoadState.status === 'loading' && pageLoadState.blocking) ? (
+              <StatePanel
+                kind={pageLoadState.status === 'error' ? 'error' : 'loading'}
+                className={`absolute inset-0 z-40 min-h-0 rounded-none bg-white/90 ${pageLoadState.status === 'loading' ? 'pointer-events-none' : ''}`}
+                title={pageLoadState.status === 'error' ? 'Worksheet page unavailable' : 'Loading worksheet pages'}
+                description={pageLoadState.message}
+                actionLabel={pageLoadState.status === 'error' ? 'Retry' : undefined}
+                onAction={pageLoadState.status === 'error' ? () => engineRef.current?.requestRender() : undefined}
+              />
+            ) : pageLoadState.status === 'loading' ? (
+              <Box aria-live="polite" className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2 rounded-md border border-[#D1D1D1] bg-white/95 px-3 py-2 text-xs text-[#424242] shadow-sm">
+                <Box aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-[#C8E6D4] border-t-[#107C41]" />
+                Loading visible cells
+              </Box>
+            ) : null}
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} />
             ) : null}

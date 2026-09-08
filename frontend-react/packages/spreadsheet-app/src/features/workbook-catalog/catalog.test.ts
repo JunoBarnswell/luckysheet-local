@@ -1,225 +1,132 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WorkbookModel } from '@react-sheets/core-model';
-import { exchangeExportDocument } from '../native-document';
-import { WorkspaceMemoryCoordinator, WorkspacePersistence } from '../persistence';
+import { WorkspaceMemoryCoordinator } from '../persistence';
 import { LocalDataBlockStore } from '../persistence';
 import { computeBinaryChecksum } from '../persistence/checksum';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import { filterWorkbookCatalog, WORKBOOK_SYNC_STATE_PRIORITY } from './state';
-import { WorkbookCatalogService } from './service';
-import { createTemplateSnapshot } from './templates';
+import { WorkbookCatalogError, WorkbookCatalogService } from './service';
 import { WorkbookResolutionError } from './resolver';
 import type { WorkbookCatalogRemoteClient } from './types';
 
-function service(name: string): WorkbookCatalogService {
-  return new WorkbookCatalogService({
-    persistence: new WorkspacePersistence(),
-    unitIdFactory: (() => {
-      let sequence = 0;
-      return () => `catalog-${name}-${++sequence}`;
-    })(),
-  });
+const manifest = {
+  schema: 'WorkbookManifest' as const,
+  version: 11 as const,
+  unitId: 'unit-1',
+  name: 'Cloud workbook',
+  revision: 7,
+  sheets: [{ sheetId: 'sheet-1', name: 'Sheet1', rowCount: 1000, columnCount: 26, metadata: {} }],
+  pages: [],
+  metadata: {},
+};
+
+function remote(overrides: Partial<WorkbookCatalogRemoteClient> = {}): WorkbookCatalogRemoteClient {
+  return {
+    getManifest: async () => structuredClone(manifest),
+    getAccess: async () => ({ unitId: manifest.unitId, role: 'owner' }),
+    getWorkbookUserState: async () => ({ unitId: manifest.unitId, favorite: false }),
+    putWorkbookUserState: async (_unitId, state) => ({ unitId: manifest.unitId, ...state }),
+    listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: manifest.revision, updatedAt: '2026-01-01T00:00:00.000Z', role: 'owner', syncStatus: 'synced' }], nextCursor: null }),
+    ...overrides,
+  } as WorkbookCatalogRemoteClient;
 }
 
-describe('WorkbookCatalogService', () => {
-  it('keeps resolution read-only and records MRU only after the session is ready', async () => {
-    let now = new Date('2026-08-26T00:00:00.000Z');
-    const persistence = new WorkspacePersistence();
-    const catalog = new WorkbookCatalogService({ persistence, now: () => now });
-    const created = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'resolution-unit') });
-    const before = await persistence.store.open(created.unitId);
-
-    const resolution = await catalog.resolve(created.unitId);
-    assert.equal(resolution.binding.location, 'local');
-    assert.equal((await persistence.store.open(created.unitId))?.userState.lastOpenedAt, before?.userState.lastOpenedAt);
-
-    now = new Date('2026-08-26T00:01:00.000Z');
+describe('cloud-only workbook catalog', () => {
+  it('resolves an authoritative manifest and records MRU only after ready', async () => {
+    const savedStates: Array<{ lastOpenedAt?: string }> = [];
+    const catalog = new WorkbookCatalogService({
+      remote: remote({ putWorkbookUserState: async (_unitId, state) => (savedStates.push(state), { unitId: manifest.unitId, ...state }) }),
+      now: () => new Date('2026-08-26T00:01:00.000Z'),
+    });
+    const resolution = await catalog.resolve(manifest.unitId);
+    assert.equal(resolution.mode, 'remote');
+    assert.equal(resolution.revision, 7);
+    assert.equal(savedStates.length, 0);
     await catalog.markOpened(resolution);
-    assert.equal((await persistence.store.open(created.unitId))?.userState.lastOpenedAt, now.toISOString());
+    assert.equal(savedStates[0]?.lastOpenedAt, '2026-08-26T00:01:00.000Z');
   });
 
-  it('rejects an unknown route without discovering another local workbook', async () => {
-    const catalog = service('unknown-route');
-    const existing = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'existing-unit') });
-
-    await assert.rejects(
-      () => catalog.resolve('unknown-unit'),
-      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'memory-session-reset',
-    );
-    assert.equal((await catalog.resolve(existing.unitId)).unitId, existing.unitId);
-  });
-
-  it('fails closed for a remote mirror when the authoritative service is unavailable', async () => {
-    const persistence = new WorkspacePersistence();
-    const unitId = 'remote-mirror-unavailable';
-    await persistence.checkpoint(
-      createTemplateSnapshot('blank', unitId),
-      4,
-      9,
-      'remote',
-      undefined,
-      { location: 'remote', lifecycle: 'active', source: 'native', role: 'owner' },
-    );
-    const catalog = new WorkbookCatalogService({ persistence, remoteAvailable: () => false });
-
-    await assert.rejects(
-      () => catalog.resolve(unitId),
-      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'remote-unavailable',
-    );
-    assert.equal((await persistence.store.open(unitId))?.serverRevision, 9);
-  });
-
-  it('creates independent template workbooks and keeps one local record per unitId', async () => {
-    const catalog = service('identity');
-    const first = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'workbook-a') });
-    const second = await catalog.create({ snapshot: createTemplateSnapshot('budget', 'workbook-b') });
-
-    assert.notEqual(first.unitId, second.unitId);
-    assert.equal((await catalog.resolve(first.unitId)).snapshot.name, '空白工作簿');
-    assert.equal((await catalog.resolve(second.unitId)).snapshot.name, '预算模板');
-    assert.equal((await catalog.list()).length, 2);
-  });
-
-  it('moves local workbooks to trash, restores them, and purges source artifacts', async () => {
-    const catalog = service('trash');
-    const created = await catalog.create({ snapshot: createTemplateSnapshot('blank', 'trash-source') });
-    const trashed = await catalog.moveToTrash(created.unitId);
-    assert.equal(trashed.lifecycle, 'trashed');
-    assert.equal((await catalog.list()).some((entry) => entry.unitId === created.unitId), false);
-    assert.equal((await catalog.list({ view: 'trash' })).some((entry) => entry.unitId === created.unitId), true);
-
-    const restored = await catalog.restore(created.unitId);
-    assert.equal(restored.lifecycle, 'active');
-    assert.equal((await catalog.list()).some((entry) => entry.unitId === created.unitId), true);
-    await catalog.purge(created.unitId);
-    await assert.rejects(
-      () => catalog.resolve(created.unitId),
-      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'memory-session-reset',
-    );
-  });
-
-  it('imports XLSX as a new workbook and exports it through the same catalog boundary', async () => {
-    const catalog = service('xlsx');
-    const original = await catalog.create({ snapshot: createTemplateSnapshot('template', 'original') });
-    const source = new WorkbookModel('source-xlsx', 'Source XLSX');
-    source.getSheet(source.primarySheetId).cells.set(0, 0, { value: 'preserve' });
-    const generated = await exchangeExportDocument(source.snapshot(), { fileName: 'source.xlsx', execution: 'inline-test' });
-    assert.ok(generated.buffer);
-
-  const imported = await catalog.importWorkbook({ fileName: 'source.xlsx', buffer: generated.buffer!, execution: 'inline-test' });
-    assert.notEqual(imported.entry.unitId, original.unitId);
-    assert.notEqual(imported.entry.unitId, source.unitId);
-    assert.equal((await catalog.resolve(original.unitId)).snapshot.name, '会议记录模板');
-  const exported = await catalog.exportWorkbook(imported.entry.unitId, { execution: 'inline-test' });
-    assert.ok(exported.buffer.byteLength > 0);
-    assert.equal(exported.fileName, 'source.xlsx');
-  });
-
-  it('upgrades an explicit local workbook to the remote catalog through create plus checkpoint', async () => {
-    let remoteSnapshot: ReturnType<WorkbookModel['snapshot']> | null = null;
-    let syncedUnitId: string | null = null;
-    const remote: WorkbookCatalogRemoteClient = {
-      getSnapshot: async () => ({ snapshot: remoteSnapshot!, revision: 1 }),
-      getAccess: async (unitId) => ({ unitId, role: 'owner' }),
-      listWorkbookAcl: async () => [],
-      putWorkbookAcl: async (unitId, subject, role) => ({ unitId, subject, role, createdAt: '', updatedAt: '' }),
-      deleteWorkbookAcl: async () => undefined,
-      createWorkbook: async (snapshot) => {
-        remoteSnapshot = structuredClone(snapshot);
-        syncedUnitId = snapshot.unitId;
-        return { snapshot: structuredClone(snapshot), revision: 1 };
-      },
-      listWorkbookPage: async () => ({ items: remoteSnapshot ? [{ unitId: remoteSnapshot.unitId, name: remoteSnapshot.name, revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }] : [], nextCursor: null }),
-      updateWorkbook: async (unitId) => ({ unitId, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
-      copyWorkbook: async (unitId) => ({ unitId: `${unitId}-copy`, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
-      moveToTrash: async () => undefined,
-      restoreFromTrash: async (unitId) => ({ unitId, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
-      purgeWorkbook: async () => undefined,
-      getWorkbookUserState: async (unitId) => ({ unitId }),
-      putWorkbookUserState: async (unitId) => ({ unitId }),
-      getUserPreferences: async () => ({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'B', theme: 'system' }),
-      putUserPreferences: async (input) => ({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'B', theme: 'system', ...input }),
-      listSpaces: async () => [],
-      createSpace: async (input) => ({ ...input, spaceId: 'space', createdAt: '', createdBy: '', updatedAt: '' }),
-      listFolders: async () => [],
-      createFolder: async () => ({ folderId: 'folder', name: 'folder', spaceId: 'space', updatedAt: '' }),
-      updateFolder: async () => ({ folderId: 'folder', name: 'folder', spaceId: 'space', updatedAt: '' }),
-      deleteFolder: async () => undefined,
-      listSpaceMembers: async () => [],
-      putSpaceMember: async (spaceId, subject, role) => ({ spaceId, subject, role, updatedAt: '' }),
-      deleteSpaceMember: async () => undefined,
-      createWorkbookImport: async (input) => ({
-        snapshot: structuredClone(input.snapshot),
-        summary: { unitId: input.snapshot.unitId, name: input.snapshot.name, revision: 1, updatedAt: new Date().toISOString(), role: 'owner' },
-        artifact: { unitId: input.snapshot.unitId, fileName: input.artifactFileName, byteLength: input.artifact.size, checksum: '', updatedAt: new Date().toISOString() },
+  it('publishes a revision-pinned manifest without loading worksheet pages', async () => {
+    const descriptors = [0, 1].map((pageRow) => ({
+      sheetId: 'sheet-1', pageRow, pageColumn: 0, revision: manifest.revision,
+      checksum: String(pageRow + 1).repeat(64), byteLength: 1, cellCount: 1,
+      occupiedRange: { sheetId: 'sheet-1', startRow: pageRow * 1024, endRow: pageRow * 1024, startColumn: 0, endColumn: 0 },
+    }));
+    const requested: number[] = [];
+    const catalog = new WorkbookCatalogService({
+      remote: remote({
+        getManifest: async () => ({ ...structuredClone(manifest), pages: descriptors }),
+        getPage: async (request) => {
+          requested.push(request.pageRow);
+          return { ...descriptors[request.pageRow]!, payloadBase64: 'AA==' };
+        },
       }),
-      putWorkbookSourceArtifact: async (unitId, artifact, fileName) => ({ unitId, fileName, byteLength: artifact.size, checksum: '', updatedAt: '' }),
-      getWorkbookSourceArtifact: async () => { throw new Error('no artifact'); },
-      commitOperation: async (_unitId, operation) => ({ operation: { ...operation, actorId: 'actor', origin: 'client', revision: 1, committedAt: new Date().toISOString(), mutations: operation.mutations.map((mutation) => ({ ...mutation, affectedRanges: [] })) } }),
-      checkpointWorkbook: async () => ({ created: true, snapshot: { snapshot: structuredClone(remoteSnapshot!), revision: 1 } }),
+    });
+    const resolution = await catalog.resolve(manifest.unitId);
+    assert.deepEqual(requested, []);
+    assert.equal(resolution.manifest.pages.length, 2);
+    assert.equal(resolution.manifest.revision, resolution.revision);
+  });
+
+  it('does not let an unavailable worksheet page reject route resolution', async () => {
+    const descriptor = {
+      sheetId: 'sheet-1', pageRow: 0, pageColumn: 0, revision: manifest.revision,
+      checksum: '1'.repeat(64), byteLength: 1, cellCount: 1,
+      occupiedRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
     };
     const catalog = new WorkbookCatalogService({
-      persistence: new WorkspacePersistence(),
-      remote,
+      remote: remote({
+        getManifest: async () => ({ ...structuredClone(manifest), pages: [descriptor] }),
+        getPage: async () => { throw new TypeError('network unavailable'); },
+      }),
     });
-    const local = await catalog.create({ destination: 'local', snapshot: createTemplateSnapshot('blank', 'offline-unit') });
-    const synced = await catalog.syncToServer(local.unitId);
-    assert.equal(syncedUnitId, local.unitId);
-    assert.equal(synced.entry.storage, 'remote');
-    const page = await catalog.listPage({ limit: 20 });
-    assert.equal(page.nextCursor, null);
-    assert.equal(page.entries.some((entry) => entry.unitId === local.unitId), true);
+    const resolution = await catalog.resolve(manifest.unitId);
+    assert.equal(resolution.manifest.pages.length, 1);
+    assert.equal(resolution.revision, manifest.revision);
+  });
+
+  it('fails closed when cloud authority is unavailable', async () => {
+    const catalog = new WorkbookCatalogService({ remote: remote(), remoteAvailable: () => false });
+    await assert.rejects(
+      () => catalog.resolve(manifest.unitId),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'remote-unavailable',
+    );
+  });
+
+  it('rejects obsolete pending/offline catalog states from the server', async () => {
+    const catalog = new WorkbookCatalogService({
+      remote: remote({ listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: 7, updatedAt: '', syncStatus: 'pending' }], nextCursor: null }) as never }),
+    });
+    await assert.rejects(() => catalog.list(), (error: unknown) => error instanceof WorkbookCatalogError && error.code === 'conflict');
   });
 });
 
-describe('Workbook catalog state', () => {
-  it('keeps failure/conflict states ahead of offline and synced entries', () => {
-    assert.ok(WORKBOOK_SYNC_STATE_PRIORITY.error < WORKBOOK_SYNC_STATE_PRIORITY.conflict);
-    assert.ok(WORKBOOK_SYNC_STATE_PRIORITY.conflict < WORKBOOK_SYNC_STATE_PRIORITY.offline);
+describe('catalog projection and browser caches', () => {
+  it('orders actionable cloud failures ahead of saved workbooks', () => {
+    assert.ok(WORKBOOK_SYNC_STATE_PRIORITY.error < WORKBOOK_SYNC_STATE_PRIORITY.synced);
+    const base = { revision: 1, role: 'owner' as const, lifecycle: 'active' as const, source: 'native' as const, locationPath: [], favorite: false };
     const entries = [
-      { unitId: 'synced', name: 'Synced', revision: 1, updatedAt: '2026-01-01', storage: 'remote' as const, syncState: 'synced' as const, role: 'owner' as const, lifecycle: 'active' as const, source: 'native' as const, locationPath: [], favorite: false, pendingOperationCount: 0 },
-      { unitId: 'error', name: 'Error', revision: 1, updatedAt: '2026-01-02', storage: 'remote' as const, syncState: 'error' as const, role: 'owner' as const, lifecycle: 'active' as const, source: 'native' as const, locationPath: [], favorite: false, pendingOperationCount: 0 },
+      { ...base, unitId: 'saved', name: 'Saved', updatedAt: '2026-01-01', syncState: 'synced' as const },
+      { ...base, unitId: 'error', name: 'Error', updatedAt: '2026-01-02', syncState: 'error' as const },
     ];
-    assert.deepEqual(filterWorkbookCatalog(entries).map((entry) => entry.unitId), ['error', 'synced']);
+    assert.deepEqual(filterWorkbookCatalog(entries).map((entry) => entry.unitId), ['error', 'saved']);
   });
 
-  it('namespaces block storage by workbook while keeping the manifest source id stable', async () => {
-    const bytesA = new TextEncoder().encode('workbook-a').buffer;
-    const bytesB = new TextEncoder().encode('workbook-b').buffer;
-    const checksumA = await computeBinaryChecksum(bytesA);
-    const checksumB = await computeBinaryChecksum(bytesB);
-    const ref = (checksum: string) => ({
-      id: 'block-1', dataSourceId: 'source-1', startRow: 0, rowCount: 1,
-      storageKey: 'source-1:block-1', checksum, byteLength: 10, encoding: 'columnar-v1' as const, revision: 1,
-    });
+  it('namespaces block and sparse overlay caches by workbook', async () => {
+    const bytes = new TextEncoder().encode('unit-a').buffer;
+    const checksum = await computeBinaryChecksum(bytes);
+    const ref = { id: 'block-1', dataSourceId: 'source-1', startRow: 0, rowCount: 1, storageKey: 'source-1:block-1', checksum, byteLength: bytes.byteLength, encoding: 'columnar-v1' as const, revision: 1 };
     const coordinator = new WorkspaceMemoryCoordinator();
     const first = new LocalDataBlockStore(coordinator, 'unit-a');
     const second = new LocalDataBlockStore(coordinator, 'unit-b');
-    await first.put(ref(checksumA), bytesA);
-    await second.put(ref(checksumB), bytesB);
-    assert.deepEqual(new Uint8Array((await first.get(ref(checksumA)))!.bytes), new Uint8Array(bytesA));
-    assert.deepEqual(new Uint8Array((await second.get(ref(checksumB)))!.bytes), new Uint8Array(bytesB));
-  });
-
-  it('keeps sparse overlays isolated by workbook namespace', async () => {
+    await first.put(ref, bytes);
+    assert.ok(await first.get(ref));
+    assert.equal(await second.get(ref), null);
     const overlay = { schema: 'SparseCellOverlayMetadata' as const, revision: 1, cells: [{ row: 0, column: 0, formula: '=1' }] };
-    const coordinator = new WorkspaceMemoryCoordinator();
-    const first = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-a' });
-    const second = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-b' });
-    await first.put('source-1', 'block-1', overlay);
-    assert.ok(await first.get('source-1', 'block-1', 1));
-    assert.equal(await second.get('source-1', 'block-1', 1), null);
-  });
-
-  it('creates the deterministic Designer Demo fixture without changing blank defaults', () => {
-    const blank = createTemplateSnapshot('blank', 'blank-fixture');
-    const demo = createTemplateSnapshot('designer-demo', 'demo-fixture');
-    assert.equal(blank.name, '空白工作簿');
-    assert.equal(demo.name, 'SpreadJS Designer Demo');
-    assert.equal(demo.sheets.length, 7);
-    assert.equal(demo.sheets[0]?.name, '目录索引');
-    assert.match(String(demo.sheets[0]?.cells['1']?.['1']?.value ?? ''), /SpreadJS/);
-    assert.ok(demo.sheets[0]?.merges.some((merge) => merge.range.startRow === 1 && merge.range.endRow === 1));
+    const firstOverlay = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-a' });
+    const secondOverlay = new LocalSparseOverlayStore({ coordinator, unitId: 'unit-b' });
+    await firstOverlay.put('source-1', 'block-1', overlay);
+    assert.ok(await firstOverlay.get('source-1', 'block-1', 1));
+    assert.equal(await secondOverlay.get('source-1', 'block-1', 1), null);
   });
 });

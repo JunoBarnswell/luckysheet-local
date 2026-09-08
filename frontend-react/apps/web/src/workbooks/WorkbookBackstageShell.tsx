@@ -27,7 +27,7 @@ export function WorkbookBackstageShell({ workbookName, syncStatus, readOnly = fa
               <Stack gap="xs">
                 <Text className="text-[12px] font-medium uppercase tracking-[0.12em] text-slate-400">文件</Text>
                 <Text className="text-[26px] font-semibold tracking-[-0.03em] text-slate-900" weight="semibold">{workbookName}</Text>
-                <Inline gap="sm"><WorkbookStatusBadge item={{ unitId: 'backstage', name: workbookName, updatedAt: new Date().toISOString(), locationLabel: '当前工作簿', storageLocation: 'remote', syncStatus: statusKind(syncStatus), lifecycle: 'active', role: readOnly ? 'viewer' : 'editor', sourceKind: 'native', favorite: false }} /><Text size="xs" tone="muted">{readOnly ? '只读模式' : '可编辑'}</Text></Inline>
+                <Inline gap="sm"><WorkbookStatusBadge item={{ unitId: 'backstage', name: workbookName, updatedAt: new Date().toISOString(), locationLabel: '当前工作簿', syncStatus: statusKind(syncStatus), lifecycle: 'active', role: readOnly ? 'viewer' : 'editor', sourceKind: 'native', favorite: false }} /><Text size="xs" tone="muted">{readOnly ? '只读模式' : '可编辑'}</Text></Inline>
               </Stack>
               <Button icon="arrow-left" onClick={onBack} size="sm" variant="outline">返回编辑器</Button>
             </Inline>

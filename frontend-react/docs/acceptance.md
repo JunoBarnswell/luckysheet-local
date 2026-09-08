@@ -1,15 +1,19 @@
 # React Sheets 验收准则
 
-## 离线工作簿
+## 云端工作簿
 
-在干净浏览器 profile 中只启动 Web，不启动 Java、PostgreSQL、Redis 或 OIDC。
+使用 Java backend、适用数据库和真实 OIDC 身份启动干净浏览器 profile。Playwright 通过 `E2E_OIDC_AUTHORITY`、`E2E_OIDC_CLIENT_ID` 和指向未过期 `oidc-client-ts` User 序列化结果的 `E2E_OIDC_USER_FILE` 注入同一真实身份；Vite 的 OIDC 配置与该身份必须一致。缺少任一前提时，连接态用例必须明确跳过并在交付台账记为 `Blocked`，不得切回本地内存工作簿。
 
-1. 新建本地工作簿，双击、F2、Formula Bar 和中文输入法分别输入文本、数字、公式及首尾空格。
+1. 新建云端工作簿，双击、F2、Formula Bar 和中文输入法分别输入文本、数字、公式及首尾空格。
 2. 验证 Enter、Shift+Enter、Tab、Escape、Delete、复制、剪切、HTML/TSV 粘贴、格式、行列、工作表、Undo/Redo。
 3. 编辑公式依赖、动态数组、条件格式、数据验证、Table、Outline、Drawing、Chart、Pivot、Sparkline、Review、Print 和 Query 定义。
-4. 等待 checkpoint 后硬刷新、关闭并重新打开；比较工作簿快照 checksum、公式文本和值、sheet order、对象、Review、Print 与 Query 定义。
+4. 等待服务端确认后硬刷新、关闭并重新打开；比较 manifest revision、checksum、公式文本和值、sheet order、对象、Review、Print 与 Query 定义。
 5. 从 UI 导入真实 XLSX、编辑、导出、重新导入；导出 PDF 必须以 `%PDF-` 开头并包含 Unicode 文本。
-6. Network 不得出现 API 或 WebSocket 请求；状态栏仅显示本地已保存、离线待同步、错误或计算中。
+6. 检查 API 与 WebSocket 的身份、revision、payload、取消和错误响应；状态栏只有收到服务端确认后才显示已保存。
+
+## 未配置与断线
+
+在不提供 OIDC 或 backend 的 profile 中验证 Hub 仍可渲染，目录与云端操作返回可观察错误；未知工作簿、断线写入和匿名 REST/WebSocket 均 fail-close，不能创建本地会话、显示假保存或积累待同步队列。
 
 ## 在线协同
 

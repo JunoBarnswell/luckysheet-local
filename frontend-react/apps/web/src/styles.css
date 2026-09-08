@@ -2,42 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-@font-face {
-  font-family: "Noto Sans SC";
-  src: url("/fonts/NotoSansSC-VF.ttf") format("truetype-variations");
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: block;
-}
-
-@media (max-width: 1366px), (max-height: 800px) {
-  .designer-shell {
-    font-size: 12px;
-  }
-
-  .designer-shell .text-lg {
-    font-size: 14px;
-    line-height: 18px;
-  }
-
-  .designer-shell .text-sm {
-    font-size: 12px;
-    line-height: 16px;
-  }
-
-  .designer-shell .text-xs {
-    font-size: 11px;
-    line-height: 14px;
-  }
-
-  .designer-shell button,
-  .designer-shell input,
-  .designer-shell select,
-  .designer-shell textarea {
-    font-size: 11px;
-  }
-}
-
 @layer base {
   :root {
     --designer-color-fg: #3d3c41;
@@ -48,10 +12,10 @@
     --designer-color-bg-hover: #eef0f0;
     --designer-color-bg-selected: #e5f0e9;
     --designer-color-bg-disabled: #f2f2f2;
-    --designer-color-brand: #217345;
-    --designer-color-brand-hover: #185b37;
-    --designer-color-brand-selected: #dbe9df;
-    --designer-color-border: #d9d9d9;
+    --designer-color-brand: #107c41;
+    --designer-color-brand-hover: #0b6a37;
+    --designer-color-brand-selected: #e5f2eb;
+    --designer-color-border: #d1d1d1;
     --designer-color-border-hover: #c0c5c8;
     --designer-color-border-active: #217345;
     --designer-radius-sm: 2px;
@@ -65,12 +29,11 @@
     --home-ribbon-color-caption: #999999;
     --home-ribbon-color-border: #d0d4dc;
     --home-ribbon-color-divider: #e1e4eb;
-    --home-ribbon-font-family: "Noto Sans SC";
-    --home-ribbon-radius: 4px;
-    --home-ribbon-root-height: 135px;
-    --home-ribbon-control-height: 104px;
-    --home-ribbon-group-height: 127px;
-    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --home-ribbon-font-family: inherit;
+    --home-ribbon-radius: 2px;
+    --home-ribbon-root-height: 76px;
+    --home-ribbon-control-height: 58px;
+    --home-ribbon-group-height: 70px;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
   }
