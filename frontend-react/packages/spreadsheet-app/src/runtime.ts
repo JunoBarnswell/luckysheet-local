@@ -40,7 +40,7 @@ import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml'
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
   onNotice?: (message: string) => void;
-  onMutationsApplied?: () => void;
+  onMutationsApplied?: (source?: 'formula' | 'mutation' | 'history') => void;
   onPhaseChange?: (phase: import('./types').AppPhase) => void;
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
@@ -427,7 +427,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       try {
         await engine.recalculateAsync();
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
-        runtime.handlers.onMutationsApplied?.();
+        runtime.handlers.onMutationsApplied?.('formula');
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
       } catch (error) {
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
@@ -481,13 +481,14 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(runtime.commands.onCommand(() => {
     if (runtime.disposed) return;
     runtime.remoteRevision = runtime.model.revision;
-    runtime.handlers.onMutationsApplied?.();
+    runtime.handlers.onMutationsApplied?.('mutation');
     runtime.handlers.onSaveState?.('saved');
   }));
   runtime.detachers.push(runtime.commands.onHistoryReplay(() => {
     if (runtime.disposed) return;
     runtime.remoteRevision = runtime.model.revision;
-    runtime.handlers.onMutationsApplied?.();
+    rehydrateDerivedRuntimeAfterHistoryReplay(runtime);
+    runtime.handlers.onMutationsApplied?.('history');
     runtime.handlers.onSaveState?.('saved');
   }));
 }
@@ -513,6 +514,18 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
   }
   runtime.pivotResults = {};
   void scheduleFormulaRecalculation(runtime);
+}
+
+/** History replaces canonical workbook state without replaying client mutations. */
+function rehydrateDerivedRuntimeAfterHistoryReplay(runtime: SpreadsheetRuntime): void {
+  runtime.resolveVisibility = createKernelWorkbookVisibilityResolver(runtime.model, () => runtime.model.revision);
+  runtime.rowVisibilityResolver = createWorkbookRowVisibilityResolver(runtime.model, runtime.resolveVisibility);
+  runtime.findIndex = new FindIndex(runtime.model, (sheet, row, column) => {
+    const cell = sheet.cells.get(row, column);
+    return cell?.formulaValue ?? cell?.value ?? null;
+  }, false);
+  initializeDataContent(runtime);
+  rehydrateFormulaAfterRestore(runtime, runtime.model.revision);
 }
 
 export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: ExcelDateSystem, canonicalReferenceDate?: CanonicalExcelDateParts): void {
@@ -576,7 +589,7 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
     runtime.dataContentDetachers.push(query.subscribe(() => {
       if (!runtime.disposed) {
         runtime.handlers.onDataSourceContentChanged?.(manifest.id);
-        runtime.handlers.onMutationsApplied?.();
+        runtime.handlers.onMutationsApplied?.('formula');
       }
     }));
     runtime.dataContent.set(manifest.id, query);
@@ -651,7 +664,8 @@ async function publishRemoteRevision(
   runtime.remoteRevision = operation.revision;
   runtime.nextClientSequence = Math.max(runtime.nextClientSequence, operation.clientSequence);
   runtime.collaboration?.setRevision(operation.revision);
-  runtime.handlers.onMutationsApplied?.();
+  if (mutations.length === 0) rehydrateDerivedRuntimeAfterHistoryReplay(runtime);
+  runtime.handlers.onMutationsApplied?.(mutations.length === 0 ? 'history' : 'mutation');
   runtime.handlers.onSaveState?.('saved');
 }
 

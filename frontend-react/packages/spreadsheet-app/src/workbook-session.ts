@@ -1067,10 +1067,11 @@ export class WorkbookSession {
       this.notice = `${failure.code}: ${failure.message} ${failure.recovery}`;
       this.emit();
     };
-    this.runtime.handlers.onMutationsApplied = () => {
+    this.runtime.handlers.onMutationsApplied = (source) => {
       const mutations = this.runtime.drainPivotMutations();
-      this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
-      if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
+      this.refreshPivotsForTrigger(source === 'history' ? { kind: 'explicit-all' } : { kind: 'source-change', mutations });
+      if (source === 'history') this.invalidateAllSheetProjections();
+      else if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
       else this.invalidateFormulaResultProjections();
       this.persistenceMetaDirty = true;
       this.restorePersistedQuerySessions();
