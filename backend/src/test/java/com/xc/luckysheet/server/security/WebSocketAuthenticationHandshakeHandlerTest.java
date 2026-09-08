@@ -17,12 +17,20 @@ import java.util.Base64;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class WebSocketAuthenticationHandshakeHandlerTest {
+    @Test
+    void handshakeAdvertisesStableCollaborationProtocolWithoutEchoingBearerCredential() {
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+
+        assertArrayEquals(new String[]{WebSocketAuthenticationHandshakeHandler.COLLABORATION_PROTOCOL}, handler.getSupportedProtocols());
+    }
+
     @Test
     void bearerSubprotocolIsDecodedAndVerifiedBeforeTheSocketGetsAPrincipal() {
         JwtDecoder decoder = mock(JwtDecoder.class);

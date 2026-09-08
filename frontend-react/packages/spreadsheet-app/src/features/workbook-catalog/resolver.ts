@@ -64,25 +64,6 @@ function assertUnitId(unitId: string): string {
   return normalized;
 }
 
-async function loadRevisionPages(
-  remote: WorkbookCatalogRemoteClient,
-  unitId: string,
-  manifest: Awaited<ReturnType<WorkbookCatalogRemoteClient['getManifest']>>,
-  options: ApiRequestOptions,
-) {
-  const pages: WorkbookResolution['pages'][number][] = [];
-  for (let offset = 0; offset < manifest.pages.length; offset += 4) {
-    pages.push(...await Promise.all(manifest.pages.slice(offset, offset + 4).map((page) => remote.getPage({
-      unitId,
-      revision: manifest.revision,
-      sheetId: page.sheetId,
-      pageRow: page.pageRow,
-      pageColumn: page.pageColumn,
-    }, options))));
-  }
-  return pages;
-}
-
 export class WorkbookResolver {
   private readonly remote?: WorkbookCatalogRemoteClient;
   private readonly remoteAvailable?: () => boolean;
@@ -119,10 +100,6 @@ export class WorkbookResolver {
         remote.getManifest(normalized),
         remote.getAccess(normalized, options),
       ]);
-      // WorksheetCells and feature resolvers are synchronous projections over
-      // the committed revision. Resolve every sparse page before publishing a
-      // usable route so no renderer or command can observe a partial model.
-      const pages = await loadRevisionPages(remote, normalized, manifest, options);
       const isShared = Boolean((await this.shareTokenProvider?.())?.trim());
       return {
         schema: 'WorkbookResolution',
@@ -131,7 +108,6 @@ export class WorkbookResolver {
         mode: 'remote',
         lifecycle: 'active',
         manifest: clone(manifest),
-        pages: clone(pages),
         revision: manifest.revision,
         access,
       };

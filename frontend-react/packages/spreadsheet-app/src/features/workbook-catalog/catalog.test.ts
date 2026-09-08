@@ -46,7 +46,7 @@ describe('cloud-only workbook catalog', () => {
     assert.equal(savedStates[0]?.lastOpenedAt, '2026-08-26T00:01:00.000Z');
   });
 
-  it('loads the complete revision-pinned sparse page set before publishing a resolution', async () => {
+  it('publishes a revision-pinned manifest without loading worksheet pages', async () => {
     const descriptors = [0, 1].map((pageRow) => ({
       sheetId: 'sheet-1', pageRow, pageColumn: 0, revision: manifest.revision,
       checksum: String(pageRow + 1).repeat(64), byteLength: 1, cellCount: 1,
@@ -63,12 +63,12 @@ describe('cloud-only workbook catalog', () => {
       }),
     });
     const resolution = await catalog.resolve(manifest.unitId);
-    assert.deepEqual(requested, [0, 1]);
-    assert.deepEqual(resolution.pages.map((page) => page.pageRow), [0, 1]);
-    assert.ok(resolution.pages.every((page) => page.revision === resolution.revision));
+    assert.deepEqual(requested, []);
+    assert.equal(resolution.manifest.pages.length, 2);
+    assert.equal(resolution.manifest.revision, resolution.revision);
   });
 
-  it('rejects route resolution when any committed page cannot be loaded', async () => {
+  it('does not let an unavailable worksheet page reject route resolution', async () => {
     const descriptor = {
       sheetId: 'sheet-1', pageRow: 0, pageColumn: 0, revision: manifest.revision,
       checksum: '1'.repeat(64), byteLength: 1, cellCount: 1,
@@ -80,10 +80,9 @@ describe('cloud-only workbook catalog', () => {
         getPage: async () => { throw new TypeError('network unavailable'); },
       }),
     });
-    await assert.rejects(
-      () => catalog.resolve(manifest.unitId),
-      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'remote-unavailable',
-    );
+    const resolution = await catalog.resolve(manifest.unitId);
+    assert.equal(resolution.manifest.pages.length, 1);
+    assert.equal(resolution.revision, manifest.revision);
   });
 
   it('fails closed when cloud authority is unavailable', async () => {

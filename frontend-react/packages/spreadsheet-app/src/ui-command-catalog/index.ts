@@ -2017,8 +2017,12 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...dynamicCommand('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
     placements: [{ tab: 'data', group: 'dataTools' }, { tab: 'home', group: 'editing' }],
+    enabled: (context) => Boolean(context.actions.onApplyFilterSelection),
   },
-  dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
+  {
+    ...dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
+    enabled: (context) => Boolean(context.actions.onClearFilter),
+  },
   dynamicCommand('groupRows', 'data', 'outline', RIBBON_TEXT.commands.groupRows, (context) => context.actions.onGroupRows()),
   dynamicCommand('ungroupRows', 'data', 'outline', RIBBON_TEXT.commands.ungroupRows, (context) => context.actions.onUngroupRows()),
   dynamicCommand('groupColumns', 'data', 'outline', RIBBON_TEXT.commands.groupColumns, (context) => context.actions.onGroupColumns()),
@@ -2135,7 +2139,8 @@ export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonComma
 }
 
 export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {
-  if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
+  if (context.disabled) return false;
+  if (definition.enabled) return definition.enabled(context);
   return definition.build(context) !== undefined;
 }
 

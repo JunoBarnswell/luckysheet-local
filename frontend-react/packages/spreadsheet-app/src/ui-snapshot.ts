@@ -187,9 +187,16 @@ function formatDisplayValue(
   column: number,
 ): string {
   if (cell?.formula) {
-    return toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
+    // Imported/committed pages carry the authoritative cached result. Opening
+    // a viewport must not construct a workbook-wide formula runtime merely to
+    // paint one formula cell.
+    return cell.formulaValue !== undefined
+      ? toFormulaDisplay(cell.formulaValue as FormulaValue)
+      : toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
   }
-  const spillValue = formula.getSpillValueAt(sheetId, row, column);
+  const insideSpill = sheet.spillRanges.some((spill) => row >= spill.range.startRow && row <= spill.range.endRow
+    && column >= spill.range.startColumn && column <= spill.range.endColumn);
+  const spillValue = insideSpill ? formula.getSpillValueAt(sheetId, row, column) : undefined;
   if (spillValue !== undefined) return toFormulaDisplay(spillValue);
   if (!cell) return '';
   const resolved = resolveFilterCellValue(cell);
@@ -230,14 +237,18 @@ export function buildCanvasSheetSnapshot(
   dateSystem: FilterDateSystem = '1900',
   pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
   dateContext?: FilterDateContext,
+  options: { deferDataProjection?: boolean } = {},
 ): CanvasSheetSnapshot {
   const cellResolver = createWorkbookCellResolver(dataContent);
   const conditionalRuntime = createConditionalFormatRuntime(sheet, undefined, formula);
   const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
     const cell = cellResolver.resolve(owner, row, column)?.cell;
-    const spillValue = formula.getSpillValueAt(owner.id, row, column);
+    const insideSpill = owner.spillRanges.some((spill) => row >= spill.range.startRow && row <= spill.range.endRow
+      && column >= spill.range.startColumn && column <= spill.range.endColumn);
+    const spillValue = insideSpill ? formula.getSpillValueAt(owner.id, row, column) : undefined;
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, dateSystem);
     if (cell?.formula !== undefined) {
+      if (cell.formulaValue !== undefined) return resolveFilterCellValue(cell, cell.formulaValue, dateSystem);
       const result = formula.getCellResult({ sheetId: owner.id, row, column });
       // A missing calculation result is not permission to read authored
       // formula text/value.  It is an unresolved filter value until the
@@ -249,7 +260,9 @@ export function buildCanvasSheetSnapshot(
   };
   const readFilterCell = (row: number, column: number) => resolveFilterCell(sheet, row, column);
   const filterVisual = createEffectiveFilterVisualResolver((row, column) => conditionalRuntime.resolveCell(row, column));
-  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
+  const filterHidden = options.deferDataProjection
+    ? new Set<number>()
+    : computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
@@ -354,7 +367,7 @@ export function buildCanvasSheetSnapshot(
 
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
-  for (const pivot of sheet.pivots) {
+  for (const pivot of options.deferDataProjection ? [] : sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
     // A snapshot is a projection boundary, never a refresh authority.  A

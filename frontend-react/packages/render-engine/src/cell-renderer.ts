@@ -831,13 +831,19 @@ function layoutNeighbors(options: PaneDrawOptions, address: CellAddress, range: 
   if (cached) return cached;
   const occupied = options.rowOccupancyCache?.get(address.row) ?? buildRowOccupancy(options, address.row);
   options.rowOccupancyCache?.set(address.row, occupied);
+  // Text can only paint inside the current PaneMap-owned pane. Resolving
+  // occupancy outside that pane cannot change the rendered result, but on an
+  // XLSX-width sheet it would turn every visible row into 16,384 canonical
+  // cell reads and allocate equally large neighbor arrays.
+  const firstVisibleColumn = options.visibleRange?.startColumn ?? 0;
+  const lastVisibleColumn = options.visibleRange?.endColumn ?? options.skeleton.columnCount - 1;
   const left: CellLayoutNeighbor[] = [];
-  for (let column = range.startColumn - 1; column >= 0; column -= 1) {
+  for (let column = range.startColumn - 1; column >= firstVisibleColumn; column -= 1) {
     left.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: occupied.has(column) });
     if (left.at(-1)?.occupied) break;
   }
   const right: CellLayoutNeighbor[] = [];
-  for (let column = range.endColumn + 1; column < options.skeleton.columnCount; column += 1) {
+  for (let column = range.endColumn + 1; column <= lastVisibleColumn; column += 1) {
     right.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: occupied.has(column) });
     if (right.at(-1)?.occupied) break;
   }
@@ -848,7 +854,9 @@ function layoutNeighbors(options: PaneDrawOptions, address: CellAddress, range: 
 
 function buildRowOccupancy(options: PaneDrawOptions, row: number): ReadonlySet<number> {
   const occupied = new Set<number>();
-  for (let column = 0; column < options.skeleton.columnCount; column += 1) {
+  const firstVisibleColumn = options.visibleRange?.startColumn ?? 0;
+  const lastVisibleColumn = options.visibleRange?.endColumn ?? options.skeleton.columnCount - 1;
+  for (let column = firstVisibleColumn; column <= lastVisibleColumn; column += 1) {
     if (hasRenderableCellContent(options.cellProvider({ row, column }))) occupied.add(column);
   }
   return occupied;

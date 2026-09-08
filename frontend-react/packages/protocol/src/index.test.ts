@@ -6,6 +6,8 @@ import {
   encodeMessage,
   encodeOperationMessage,
   AuthenticationRequiredError,
+  COLLABORATION_SUBPROTOCOL,
+  CollabSocketClient,
   WorkbookApiClient,
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
@@ -119,6 +121,60 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
   const headers = new Headers(request?.headers);
   assert.equal(headers.get('x-workbook-share-token'), 'guest-token');
   assert.equal(headers.has('authorization'), false);
+});
+
+test('WorkbookApiClient sends only client-owned user-state fields', async () => {
+  let request: RequestInit | undefined;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'token-123',
+    fetchImpl: async (_input, init) => {
+      request = init;
+      return new Response(JSON.stringify({ unitId: 'unit-1', favorite: true, updatedAt: '2026-09-08T00:00:00.000Z' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await api.putWorkbookUserState('unit-1', {
+    favorite: true,
+    lastOpenedAt: '2026-09-08T00:00:00.000Z',
+    unitId: 'unit-1',
+    updatedAt: 'server-owned',
+  } as unknown as Parameters<typeof api.putWorkbookUserState>[1]);
+
+  assert.deepEqual(JSON.parse(String(request?.body)), {
+    favorite: true,
+    lastOpenedAt: '2026-09-08T00:00:00.000Z',
+  });
+});
+
+test('CollabSocketClient negotiates a stable protocol without using the bearer credential as the selected protocol', async () => {
+  let requestedProtocols: string | string[] | undefined;
+  const socket = {
+    readyState: 0,
+    close() {},
+    send() {},
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  } as unknown as WebSocket;
+  const client = new CollabSocketClient('ws://localhost/ws', {
+    authTokenProvider: () => 'token-123',
+    webSocketFactory: (_url, protocols) => {
+      requestedProtocols = protocols;
+      return socket;
+    },
+  });
+
+  client.open();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(Array.isArray(requestedProtocols));
+  assert.equal(requestedProtocols[0], COLLABORATION_SUBPROTOCOL);
+  assert.match(requestedProtocols[1]!, /^bearer\./);
+  client.close();
 });
 
 test('OperationEnvelope accepts an undo intent only with an empty mutation list', () => {

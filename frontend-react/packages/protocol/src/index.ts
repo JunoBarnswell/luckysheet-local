@@ -1593,7 +1593,11 @@ export interface WorkbookUserState {
   lastOpenedAt?: string;
   theme?: 'light' | 'system';
   unitId: string;
+  /** Server-owned optimistic timestamp; never accepted by the PUT contract. */
+  updatedAt?: string;
 }
+
+export type WorkbookUserStatePatch = Omit<WorkbookUserState, 'unitId' | 'updatedAt'>;
 
 export interface UserPreferences {
   defaultSpaceId?: string;
@@ -1890,11 +1894,20 @@ export class WorkbookApiClient {
     return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`);
   }
 
-  async putWorkbookUserState(unitId: string, state: Omit<WorkbookUserState, 'unitId'>): Promise<WorkbookUserState> {
+  async putWorkbookUserState(unitId: string, state: WorkbookUserStatePatch): Promise<WorkbookUserState> {
+    const payload: WorkbookUserStatePatch = {
+      autoSave: state.autoSave,
+      autoSync: state.autoSync,
+      favorite: state.favorite,
+      importCompatibilityLevel: state.importCompatibilityLevel,
+      language: state.language,
+      lastOpenedAt: state.lastOpenedAt,
+      theme: state.theme,
+    };
     return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(state),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -2426,6 +2439,7 @@ type StatusListener = (status: CollabSocketStatus) => void;
 type ProtocolErrorListener = (error: Error) => void;
 
 const BEARER_SUBPROTOCOL_PREFIX = 'bearer.';
+export const COLLABORATION_SUBPROTOCOL = 'react-sheets.v1';
 
 function encodeBase64Url(value: string): string {
   const bytes = new TextEncoder().encode(value);
@@ -2541,7 +2555,7 @@ export class CollabSocketClient {
     }
     const factory = this.options.webSocketFactory ?? ((target: string, protocols: string | string[]) => new WebSocket(target, protocols));
     const socket = token
-      ? factory(this.url, createBearerSubprotocol(token))
+      ? factory(this.url, [COLLABORATION_SUBPROTOCOL, createBearerSubprotocol(token)])
       : factory(withShareToken(this.url, shareToken!), []);
     this.socket = socket;
     this.connecting = false;

@@ -5,8 +5,8 @@
 //! deliberately distinguishable from a page which is not in the directory.
 
 use crate::{
-    AccessRole, Cell, CellAddress, CellReader, FormulaError, KernelError, KernelResult, MAX_COLUMNS, MAX_ROWS,
-    PAGE_COLUMNS, PAGE_ROWS, RangeRef, Scalar, WORKBOOK_MANIFEST_VERSION,
+    AccessRole, Cell, CellAddress, CellReader, FormulaError, KernelError, KernelResult,
+    MAX_COLUMNS, MAX_ROWS, PAGE_COLUMNS, PAGE_ROWS, RangeRef, Scalar, WORKBOOK_MANIFEST_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -717,18 +717,30 @@ impl WorkbookPages {
             start_column: active_column,
             end_column: active_column,
         };
-        let Some(occupied_range) = self.sheet_stats(sheet_id)?.occupied_range else {
+        let active_address = CellAddress {
+            sheet_id: sheet_id.into(),
+            row: active_row,
+            column: active_column,
+        };
+        let Some(active_cell) = self.read_cell(&active_address)? else {
             return Ok(single());
         };
-        let mut occupied = HashSet::new();
-        self.read_range(&occupied_range, &mut |address, cell| {
-            if cell.formula.is_some() || !matches!(cell.value, Scalar::Null) {
-                occupied.insert((address.row, address.column));
-            }
-            Ok(())
-        })?;
-        if !occupied.contains(&(active_row, active_column)) {
+        if active_cell.formula.is_none() && matches!(active_cell.value, Scalar::Null) {
             return Ok(single());
+        }
+        let mut occupied = HashSet::new();
+        for descriptor in self.manifest.pages.iter().filter(|descriptor| {
+            descriptor.sheet_id == sheet_id && self.pages.contains_key(&descriptor.key())
+        }) {
+            let Some(occupied_range) = &descriptor.occupied_range else {
+                continue;
+            };
+            self.read_range(occupied_range, &mut |address, cell| {
+                if cell.formula.is_some() || !matches!(cell.value, Scalar::Null) {
+                    occupied.insert((address.row, address.column));
+                }
+                Ok(())
+            })?;
         }
         let mut start_row = active_row;
         let mut end_row = active_row;
@@ -763,6 +775,33 @@ impl WorkbookPages {
                 end_column += 1;
                 grew = true;
             }
+        }
+        if let Some(descriptor) = self.manifest.pages.iter().find(|descriptor| {
+            if descriptor.sheet_id != sheet_id || self.pages.contains_key(&descriptor.key()) {
+                return false;
+            }
+            descriptor.occupied_range.as_ref().is_some_and(|range| {
+                let overlaps_columns =
+                    range.start_column <= end_column && range.end_column >= start_column;
+                let overlaps_rows = range.start_row <= end_row && range.end_row >= start_row;
+                let touches_above = range.end_row.checked_add(1) == Some(start_row);
+                let touches_below = end_row.checked_add(1) == Some(range.start_row);
+                let touches_left = range.end_column.checked_add(1) == Some(start_column);
+                let touches_right = end_column.checked_add(1) == Some(range.start_column);
+                (overlaps_columns && (touches_above || touches_below))
+                    || (overlaps_rows && (touches_left || touches_right))
+            })
+        }) {
+            let key = descriptor.key();
+            return Err(KernelError::new(
+                "DATA_PAGE_UNAVAILABLE",
+                "Current region may continue into an unloaded page",
+            )
+            .at(format!(
+                "{}:{}:{}",
+                key.sheet_id, key.page_row, key.page_column
+            ))
+            .recover("load-required-page"));
         }
         Ok(RangeRef {
             sheet_id: sheet_id.into(),
@@ -1927,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn current_region_resolves_in_kernel_and_rejects_unloaded_pages() {
+    fn current_region_reads_only_connected_pages_and_rejects_missing_boundary_pages() {
         let mut pages = store();
         let committed = pages
             .apply_writes(
@@ -1975,11 +2014,72 @@ mod tests {
                 end_column: 1,
             }
         );
-        let unloaded = WorkbookPages::open(committed.manifest).unwrap();
+        let mut unloaded = WorkbookPages::open(committed.manifest.clone()).unwrap();
         assert_eq!(
             unloaded.resolve_current_region("s", 0, 0).unwrap_err().code,
             "DATA_PAGE_UNAVAILABLE"
         );
+
+        let first_page = committed
+            .pages
+            .iter()
+            .find(|page| page.descriptor.page_row == 0 && page.descriptor.page_column == 0)
+            .unwrap();
+        unloaded
+            .load_page(
+                &first_page.descriptor,
+                &b64_decode(&first_page.payload_base64).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            unloaded.resolve_current_region("s", 0, 0).unwrap(),
+            RangeRef {
+                sheet_id: "s".into(),
+                start_row: 0,
+                end_row: 1,
+                start_column: 0,
+                end_column: 1,
+            }
+        );
+
+        let mut adjacent = store();
+        let committed = adjacent
+            .apply_writes(
+                "adjacent-region",
+                0,
+                vec![
+                    CellWrite {
+                        address: address(1023, 0),
+                        cell: Some(Cell {
+                            value: Scalar::Text("upper".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                    CellWrite {
+                        address: address(1024, 0),
+                        cell: Some(Cell {
+                            value: Scalar::Text("lower".into()),
+                            ..Cell::default()
+                        }),
+                    },
+                ],
+            )
+            .unwrap();
+        let mut partial = WorkbookPages::open(committed.manifest).unwrap();
+        let upper_page = committed
+            .pages
+            .iter()
+            .find(|page| page.descriptor.page_row == 0)
+            .unwrap();
+        partial
+            .load_page(
+                &upper_page.descriptor,
+                &b64_decode(&upper_page.payload_base64).unwrap(),
+            )
+            .unwrap();
+        let error = partial.resolve_current_region("s", 1023, 0).unwrap_err();
+        assert_eq!(error.code, "DATA_PAGE_UNAVAILABLE");
+        assert_eq!(error.object.as_deref(), Some("s:1:0"));
     }
 
     #[test]

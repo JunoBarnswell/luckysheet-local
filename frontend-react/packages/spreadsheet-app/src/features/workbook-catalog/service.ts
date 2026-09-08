@@ -211,7 +211,7 @@ export class WorkbookCatalogService {
     }
     const remote = this.requireRemote();
     const current = await remote.getWorkbookUserState(resolution.unitId);
-    const { unitId: _unitId, ...state } = current;
+    const { unitId: _unitId, updatedAt: _updatedAt, ...state } = current;
     const openedAt = this.now().toISOString();
     const saved = await remote.putWorkbookUserState(resolution.unitId, { ...state, lastOpenedAt: openedAt });
     return {
@@ -339,7 +339,7 @@ export class WorkbookCatalogService {
   async setFavorite(unitId: string, favorite: boolean): Promise<WorkbookCatalogEntry> {
     const remote = this.requireRemote();
     const current = await remote.getWorkbookUserState(unitId);
-    const { unitId: _unitId, ...state } = current;
+    const { unitId: _unitId, updatedAt: _updatedAt, ...state } = current;
     await remote.putWorkbookUserState(unitId, { ...state, favorite });
     const entry = await this.entryFromManifest(unitId);
     return { ...entry, favorite };

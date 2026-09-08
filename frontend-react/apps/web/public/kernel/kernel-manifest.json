@@ -1,7 +1,7 @@
 {
   "schema": "react-sheets.kernel-build.v1",
   "artifact": "kernel_host.wasm",
-  "bytes": 3444242,
-  "expectedSha256": "00100e6977e9361a370157468ded3909d89b607639d8eba2b533371fab47fec5",
+  "bytes": 3446746,
+  "expectedSha256": "85365b24963acdcfecbd50fc571c32f7ab97905afc1d321a9e264c878270988d",
   "source": "cargo build -p kernel-host --target wasm32-unknown-unknown --release"
 }

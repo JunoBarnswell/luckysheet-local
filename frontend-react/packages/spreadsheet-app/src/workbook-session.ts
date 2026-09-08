@@ -864,6 +864,8 @@ export class WorkbookSession {
     const selection = this.selectionService?.getState();
     if (!selection) return '';
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const range = { sheetId: sheet.id, startRow: selection.activeCell.row, endRow: selection.activeCell.row, startColumn: selection.activeCell.column, endColumn: selection.activeCell.column };
+    if (!this.runtime.model.pageReplica.isRangeResident(range)) return '';
     const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
     if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
     return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
@@ -1292,6 +1294,26 @@ export class WorkbookSession {
     let selectedCellCount = 0;
     let occupiedCellCount = 0;
 
+    const selectionResident = selection.ranges.every((range) => this.runtime.model.pageReplica.isRangeResident({ ...range, sheetId: this.activeSheetId }));
+    if (!selectionResident) {
+      const activeAutoFilter = resolveActiveAutoFilter(sheet);
+      return {
+        sheetId: this.activeSheetId,
+        ranges: selection.ranges.map((range) => structuredClone(range)),
+        activeCell: { ...selection.activeCell },
+        styleAggregate,
+        style: {},
+        mixedStyleKeys: [],
+        unsupportedStyleKeys: [],
+        merge: 'none',
+        canFormat: false,
+        canEdit: false,
+        canStructure: false,
+        hasFilter: Boolean(activeAutoFilter),
+        hasFilterCriteria: Object.values(activeAutoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)),
+      };
+    }
+
     for (const selectedRange of selection.ranges) {
       const range = normalizeRangeRef({ ...selectedRange, sheetId: this.activeSheetId });
       selectedCellCount += (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1);
@@ -1405,7 +1427,7 @@ export class WorkbookSession {
 
   private projectionRevisionForSheet(sheetId: string): string {
     const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
-    return `${this.workbookProjectionEpoch}:${PROJECTION_DOMAINS.map((domain) => revision[domain]).join(':')}`;
+    return `${this.workbookProjectionEpoch}:${this.phase}:${PROJECTION_DOMAINS.map((domain) => revision[domain]).join(':')}`;
   }
 
   private getCanvasProjection(sheet: WorksheetModel): CanvasSheetSnapshot {
@@ -1422,6 +1444,7 @@ export class WorkbookSession {
       this.nativeArtifact?.dateSystem ?? '1900',
       this.runtime.pivotErrors,
       this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
+      { deferDataProjection: this.phase !== 'ready' },
     );
     this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
     return snapshot;
@@ -1505,7 +1528,10 @@ export class WorkbookSession {
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
-    const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeCellRange = { sheetId: activeModelSheet.id, startRow: selection.activeCell.row, endRow: selection.activeCell.row, startColumn: selection.activeCell.column, endColumn: selection.activeCell.column };
+    const activeModelCell = this.runtime.model.pageReplica.isRangeResident(activeCellRange)
+      ? this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column)
+      : undefined;
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
       activeModelSheet.protectionRules,
       activeModelSheet.id,
@@ -2154,6 +2180,8 @@ export class WorkbookSession {
     }
     const range = parseRangeReference(trimmed);
     if (range) {
+      const targetRange = normalizeRangeRef({ ...range, sheetId: this.activeSheetId });
+      if (!this.runtime.model.pageReplica.isRangeResident(targetRange)) await this.ensureVisibleRanges([targetRange]);
       this.selectionService.selectRange(range, 'replace');
       this.syncDraftFromPrimary();
       this.syncTableContextFromSelection();
@@ -2390,20 +2418,28 @@ export class WorkbookSession {
     await this.runtime.persistenceReady;
     if (this.disposed || ranges.length === 0) return;
     const revision = this.runtime.model.revision;
-    await Promise.all(ranges.map(async (range) => {
+    const prefetchedRanges = ranges.map((range) => {
       const sheet = this.runtime.model.getSheet(range.sheetId);
       const normalized = normalizeRangeRef(range);
-      const prefetched: RangeRef = {
+      return {
         sheetId: sheet.id,
         startRow: Math.max(0, normalized.startRow - KERNEL_PAGE_ROWS),
         endRow: Math.min(sheet.rowCount - 1, normalized.endRow + KERNEL_PAGE_ROWS),
         startColumn: Math.max(0, normalized.startColumn - KERNEL_PAGE_COLUMNS),
         endColumn: Math.min(sheet.columnCount - 1, normalized.endColumn + KERNEL_PAGE_COLUMNS),
-      };
-      await this.runtime.model.pageReplica.loadRange(prefetched, this.runtime.api);
-    }));
+      } satisfies RangeRef;
+    });
+    this.runtime.visibleRanges = prefetchedRanges.map((range) => structuredClone(range));
+    const changedSheetIds = new Set(prefetchedRanges
+      .filter((range) => !this.runtime.model.pageReplica.isRangeResident(range))
+      .map((range) => range.sheetId));
+    await Promise.all(prefetchedRanges.map((range) => this.runtime.model.pageReplica.loadRange(range, this.runtime.api)));
     if (this.runtime.model.revision !== revision) {
       throw new Error(`STALE_REVISION: visible pages were prepared for ${revision}, current revision is ${this.runtime.model.revision}`);
+    }
+    if (changedSheetIds.size > 0) {
+      for (const sheetId of changedSheetIds) this.invalidateSheetProjection(sheetId, ['content', 'formulaResults', 'dataRules']);
+      this.refresh();
     }
   }
 
@@ -3411,6 +3447,14 @@ export class WorkbookSession {
       this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
       if (this.cellEditDomain.getSnapshot().session) return;
     }
+    const activeRange: RangeRef = {
+      sheetId: this.activeSheetId,
+      startRow: selection.activeCell.row,
+      endRow: selection.activeCell.row,
+      startColumn: selection.activeCell.column,
+      endColumn: selection.activeCell.column,
+    };
+    if (!this.runtime.model.pageReplica.isRangeResident(activeRange)) await this.ensureVisibleRanges([activeRange]);
     this.selectionService.applyState(selection);
     if (this.formatPainter) {
       const painter = this.formatPainter;
@@ -3594,6 +3638,14 @@ export class WorkbookSession {
         requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount,
       );
     }
+    const targetRange: RangeRef = {
+      sheetId: sheet.id,
+      startRow: Math.max(0, requestedRow),
+      endRow: Math.max(0, requestedRow),
+      startColumn: Math.max(0, requestedColumn),
+      endColumn: Math.max(0, requestedColumn),
+    };
+    if (!this.runtime.model.pageReplica.isRangeResident(targetRange)) await this.ensureVisibleRanges([targetRange]);
     this.selectionService.movePrimary(rowDelta, columnDelta, opts);
     if (!this.cellEditDomain.getSnapshot().session) {
       this.syncDraftFromPrimary();
@@ -5549,6 +5601,13 @@ export class WorkbookSession {
     return { result, signature };
   }
 
+  private async prepareFindIndex(): Promise<void> {
+    if (this.runtime.findIndex.getRevision() > 0) return;
+    await this.runtime.persistenceReady;
+    await Promise.all(this.runtime.model.getSheets().map((sheet) => this.runtime.model.pageReplica.loadRange(sheet.usedRange, this.runtime.api)));
+    this.runtime.findIndex.rebuild();
+  }
+
   private focusFindMatch(match: FindMatch): void {
     if (match.sheetId !== this.activeSheetId) this.selectSheet(match.sheetId);
     this.selectCell(cellAddress(match.row, match.column));
@@ -5557,7 +5616,8 @@ export class WorkbookSession {
     this.emit();
   }
 
-  findNext(params: FindDialogParams): number {
+  async findNext(params: FindDialogParams): Promise<number> {
+    await this.prepareFindIndex();
     const { result } = this.planFindDialog(params);
     const match = findAtCursor(result.matches, this.findCursor, 'next');
     if (!match) { this.notify('No matches found'); return 0; }
@@ -5567,7 +5627,8 @@ export class WorkbookSession {
     return 1;
   }
 
-  findPrevious(params: FindDialogParams): number {
+  async findPrevious(params: FindDialogParams): Promise<number> {
+    await this.prepareFindIndex();
     const { result } = this.planFindDialog(params);
     const match = findAtCursor(result.matches, this.findCursor, 'previous');
     if (!match) { this.notify('No matches found'); return 0; }
@@ -5577,7 +5638,8 @@ export class WorkbookSession {
     return 1;
   }
 
-  findAll(params: FindDialogParams): number {
+  async findAll(params: FindDialogParams): Promise<number> {
+    await this.prepareFindIndex();
     const { result } = this.planFindDialog(params);
     this.notify(`${result.total} match(es) found`);
     return result.total;
@@ -5585,6 +5647,7 @@ export class WorkbookSession {
 
   async replaceOne(params: FindDialogParams): Promise<number> {
     if (!params.replace) throw new Error('Replacement text must not be empty');
+    await this.prepareFindIndex();
     const { result } = this.planFindDialog(params);
     const match = findAtCursor(result.matches, this.findCursor, 'next');
     if (!match) { this.notify('No matches found'); return 0; }
@@ -5600,6 +5663,7 @@ export class WorkbookSession {
 
   async replaceAll(params: FindDialogParams): Promise<number> {
     if (!params.replace) throw new Error('Replacement text must not be empty');
+    await this.prepareFindIndex();
     const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all', inputContext: this.createInputContext('find-replace') };
     const committed = await this.executeCommandAfterMaterialization('find.replace', command);
     this.resetFindCursor();

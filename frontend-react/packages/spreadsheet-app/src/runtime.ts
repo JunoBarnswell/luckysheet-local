@@ -1,4 +1,4 @@
-import { WorkbookModel } from '@react-sheets/core-model';
+import { KERNEL_PAGE_COLUMNS, KERNEL_PAGE_ROWS, WorkbookModel, type RangeRef } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
@@ -112,6 +112,8 @@ export interface SpreadsheetRuntime {
   featureRuntime: SpreadsheetFeatureRuntime;
   /** Sparse content index shared by Find/Replace and selection commands. */
   findIndex: FindIndex;
+  /** Last PaneMap-owned ranges whose pages must stay coherent across revisions. */
+  visibleRanges: RangeRef[];
   /** Runtime lifecycle is explicit so late Worker callbacks cannot
    * publish into a disposed session. */
   disposed: boolean;
@@ -151,12 +153,10 @@ export function createSpreadsheetRuntime(options: {
 } = {}): SpreadsheetRuntime {
   const unitId = options.unitId ?? options.resolution?.unitId ?? resolveUnitId();
   if (options.resolution && options.resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match runtime unitId');
-  // Route resolution already owns an authenticated, revision-pinned manifest.
-  // Open that manifest synchronously so the first React snapshot and every
-  // formula/render projection observe the same workbook identity while page
-  // hydration continues asynchronously.
+  // Route resolution owns only authenticated identity, access and a
+  // revision-pinned page directory. Page bytes enter through loadRange.
   const model = options.resolution
-    ? WorkbookModel.fromManifest(options.resolution.manifest, options.resolution.pages)
+    ? WorkbookModel.fromManifest(options.resolution.manifest)
     : new WorkbookModel(unitId, 'Untitled workbook');
   const dateSystem = options.dateSystem ?? '1900';
   const canonicalReferenceDate = options.canonicalReferenceDate
@@ -173,10 +173,12 @@ export function createSpreadsheetRuntime(options: {
   const resolveVisibility = createKernelWorkbookVisibilityResolver(model, () => model.revision);
   const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, resolveVisibility);
   formula = new FormulaEngine({ unitId: model.unitId, revision: () => model.revision, defaultSheetId: model.primarySheetId });
-  // The session shell exists before the asynchronous cloud open has loaded a
-  // complete committed revision. Build the index only in hydrateRuntime,
-  // after every sparse page in that revision is resident.
-  const findIndex = new FindIndex(model, (sheet, row, column) => formula?.getCellValue({ sheetId: sheet.id, row, column }), false);
+  // Find is prepared at its explicit data-materialization boundary. Opening a
+  // workbook must never scan or fetch the complete page directory.
+  const findIndex = new FindIndex(model, (sheet, row, column) => {
+    const cell = sheet.cells.get(row, column);
+    return cell?.formulaValue ?? cell?.value ?? null;
+  }, false);
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing, featureRuntime);
   activateSpreadsheetFeatures(featureRuntime, { documentType: 'spreadsheet', environment: typeof window === 'undefined' ? 'worker' : 'browser' });
@@ -241,6 +243,7 @@ export function createSpreadsheetRuntime(options: {
     resolution: options.resolution,
     featureRuntime,
     findIndex,
+    visibleRanges: [],
     disposed: false,
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
@@ -466,9 +469,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
       }
       if (FIND_INDEX_MUTATIONS.has(mutation.id)) {
-        if ((mutation.id === 'sheet.add' || mutation.id === 'sheet.restore' || mutation.id === 'sheet.duplicated') && mutation.sheetId) runtime.findIndex.rebuildSheet(mutation.sheetId);
-        else if (mutation.id === 'sheet.remove' && mutation.sheetId) runtime.findIndex.removeSheet(mutation.sheetId);
-        else for (const sheetId of new Set(mutation.affectedRanges.map((range) => range.sheetId))) runtime.findIndex.rebuildSheet(sheetId);
+        if (runtime.findIndex.getRevision() > 0) {
+          if ((mutation.id === 'sheet.add' || mutation.id === 'sheet.restore' || mutation.id === 'sheet.duplicated') && mutation.sheetId) runtime.findIndex.rebuildSheet(mutation.sheetId);
+          else if (mutation.id === 'sheet.remove' && mutation.sheetId) runtime.findIndex.removeSheet(mutation.sheetId);
+          else for (const sheetId of new Set(mutation.affectedRanges.map((range) => range.sheetId))) runtime.findIndex.rebuildSheet(sheetId);
+        }
       }
     }),
   );
@@ -539,8 +544,12 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: WorkbookOp
   runtime.featureRuntime.advance('ready');
   runtime.formula = rebuildFormulaEngine(workbook);
   runtime.dateSystem = runtime.formula.getDateSystem();
-  runtime.canonicalReferenceDate = runtime.formula.getCanonicalReferenceDate();
-  runtime.findIndex = new FindIndex(workbook, (sheet, row, column) => runtime.formula.getCellValue({ sheetId: sheet.id, row, column }));
+  const manifestReferenceDate = runtime.formula.getCanonicalReferenceDate();
+  if (manifestReferenceDate) runtime.canonicalReferenceDate = structuredClone(manifestReferenceDate);
+  runtime.findIndex = new FindIndex(workbook, (sheet, row, column) => {
+    const cell = sheet.cells.get(row, column);
+    return cell?.formulaValue ?? cell?.value ?? null;
+  }, false);
   installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
@@ -549,7 +558,6 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: WorkbookOp
   if (!options.deferCollaborationRevision) runtime.collaboration?.setRevision(response.revision);
   runtime.pivotResults = {};
   initializeDataContent(runtime);
-  void scheduleFormulaRecalculation(runtime, true);
 }
 
 function initializeDataContent(runtime: SpreadsheetRuntime): void {
@@ -586,7 +594,16 @@ async function loadChangedRevisionPages(
   const previous = new Map(runtime.model.manifest().pages.map((page) => [pageIdentity(page), page]));
   const changed = manifest.pages.filter((page) => {
     const old = previous.get(pageIdentity(page));
-    return !old || old.revision !== page.revision || old.checksum !== page.checksum || old.byteLength !== page.byteLength;
+    const descriptorChanged = !old || old.revision !== page.revision || old.checksum !== page.checksum || old.byteLength !== page.byteLength;
+    if (!descriptorChanged) return false;
+    if (old && runtime.model.pageReplica.isPageResident(old.sheetId, old.pageRow, old.pageColumn)) return true;
+    const pageStartRow = page.pageRow * KERNEL_PAGE_ROWS;
+    const pageEndRow = pageStartRow + KERNEL_PAGE_ROWS - 1;
+    const pageStartColumn = page.pageColumn * KERNEL_PAGE_COLUMNS;
+    const pageEndColumn = pageStartColumn + KERNEL_PAGE_COLUMNS - 1;
+    return runtime.visibleRanges.some((range) => range.sheetId === page.sheetId
+      && range.startRow <= pageEndRow && range.endRow >= pageStartRow
+      && range.startColumn <= pageEndColumn && range.endColumn >= pageStartColumn);
   });
   const pages: import('@react-sheets/protocol').KernelPagePayload[] = [];
   for (let offset = 0; offset < changed.length; offset += 4) {
@@ -599,30 +616,6 @@ async function loadChangedRevisionPages(
     }))));
   }
   return pages;
-}
-
-async function openResponseWithRevisionPages(
-  runtime: SpreadsheetRuntime,
-  manifest: WorkbookManifest,
-  resolvedPages: readonly import('@react-sheets/protocol').KernelPagePayload[] = [],
-): Promise<WorkbookOpenResponse> {
-  const resolvedByIdentity = new Map(resolvedPages.map((page) => [pageIdentity(page), page]));
-  const pages: import('@react-sheets/protocol').KernelPagePayload[] = [];
-  for (let offset = 0; offset < manifest.pages.length; offset += 4) {
-    pages.push(...await Promise.all(manifest.pages.slice(offset, offset + 4).map(async (descriptor) => {
-      const resolved = resolvedByIdentity.get(pageIdentity(descriptor));
-      if (resolved && resolved.revision === descriptor.revision
-        && resolved.checksum === descriptor.checksum && resolved.byteLength === descriptor.byteLength) return resolved;
-      return runtime.api.getPage({
-        unitId: manifest.unitId,
-        revision: manifest.revision,
-        sheetId: descriptor.sheetId,
-        pageRow: descriptor.pageRow,
-        pageColumn: descriptor.pageColumn,
-      });
-    })));
-  }
-  return { unitId: manifest.unitId, manifest, pages, revision: manifest.revision };
 }
 
 async function publishRemoteRevision(
@@ -853,11 +846,22 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
 
   try {
     if (resolution && resolution.unitId !== runtime.model.unitId) throw new Error('Workbook resolution unitId does not match runtime model');
-    const manifest = await runtime.api.getManifest(runtime.model.unitId, resolution?.revision);
-    const snapshotResponse: WorkbookOpenResponse = await openResponseWithRevisionPages(runtime, manifest, resolution?.pages);
+    const manifest = resolution?.manifest ?? await runtime.api.getManifest(runtime.model.unitId);
+    if (manifest.revision !== (resolution?.revision ?? manifest.revision)) throw new Error('Workbook resolution revision does not match its manifest');
     const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
     if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
+    runtime.model.applyCommittedManifest(manifest);
+    const seedSheet = runtime.model.getSheet(runtime.model.primarySheetId);
+    await runtime.model.pageReplica.loadRange({
+      sheetId: seedSheet.id,
+      startRow: 0,
+      endRow: 0,
+      startColumn: 0,
+      endColumn: 0,
+    }, runtime.api);
+    if (!isActive()) return;
+    const snapshotResponse: WorkbookOpenResponse = { unitId: manifest.unitId, manifest, pages: [], revision: manifest.revision };
     hydrateRuntime(runtime, snapshotResponse, { deferCollaborationRevision: true });
     runtime.remoteRevision = snapshotResponse.manifest.revision;
     runtime.remoteSyncRequested = true;

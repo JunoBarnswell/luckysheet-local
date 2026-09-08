@@ -467,7 +467,9 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
-  const [pageLoadState, setPageLoadState] = useState<{ status: 'idle' | 'loading' | 'error'; message?: string }>({ status: 'idle' });
+  const [pageLoadState, setPageLoadState] = useState<{ status: 'idle' | 'loading' | 'error'; blocking?: boolean; message?: string }>({ status: 'idle' });
+  const pageLoadGenerationRef = useRef(0);
+  const hasPreparedViewportRef = useRef(false);
   const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
   const visibleRangeLoaderRef = useRef(onEnsureVisibleRanges);
   const visibleRangeSheetIdRef = useRef(sheetId);
@@ -477,15 +479,26 @@ export function SheetCanvas({
   const prepareVisibleRanges = useCallback(async (ranges: readonly CellRange[]) => {
     const loader = visibleRangeLoaderRef.current;
     if (!loader || ranges.length === 0) return;
-    setPageLoadState({ status: 'loading' });
+    const generation = ++pageLoadGenerationRef.current;
+    const blocking = !hasPreparedViewportRef.current;
+    setPageLoadState({ status: 'loading', blocking });
     try {
       await loader(ranges.map((range) => ({ ...range, sheetId: visibleRangeSheetIdRef.current })));
+      if (generation !== pageLoadGenerationRef.current) return;
+      hasPreparedViewportRef.current = true;
       setPageLoadState({ status: 'idle' });
     } catch (error) {
-      setPageLoadState({ status: 'error', message: error instanceof Error ? error.message : 'Worksheet pages could not be loaded' });
+      if (generation !== pageLoadGenerationRef.current) return;
+      setPageLoadState({ status: 'error', blocking: !hasPreparedViewportRef.current, message: error instanceof Error ? error.message : 'Worksheet pages could not be loaded' });
       throw error;
     }
   }, []);
+
+  useEffect(() => {
+    pageLoadGenerationRef.current += 1;
+    hasPreparedViewportRef.current = false;
+    setPageLoadState({ status: 'idle' });
+  }, [sheetId]);
 
   const zoomFactor = zoom / 100;
 
@@ -1088,7 +1101,7 @@ export function SheetCanvas({
                 className="absolute inset-0"
               />
             </Box>
-            {pageLoadState.status !== 'idle' ? (
+            {pageLoadState.status === 'error' || (pageLoadState.status === 'loading' && pageLoadState.blocking) ? (
               <StatePanel
                 kind={pageLoadState.status === 'error' ? 'error' : 'loading'}
                 className={`absolute inset-0 z-40 min-h-0 rounded-none bg-white/90 ${pageLoadState.status === 'loading' ? 'pointer-events-none' : ''}`}
@@ -1097,6 +1110,11 @@ export function SheetCanvas({
                 actionLabel={pageLoadState.status === 'error' ? 'Retry' : undefined}
                 onAction={pageLoadState.status === 'error' ? () => engineRef.current?.requestRender() : undefined}
               />
+            ) : pageLoadState.status === 'loading' ? (
+              <Box aria-live="polite" className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2 rounded-md border border-[#D1D1D1] bg-white/95 px-3 py-2 text-xs text-[#424242] shadow-sm">
+                <Box aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-[#C8E6D4] border-t-[#107C41]" />
+                Loading visible cells
+              </Box>
             ) : null}
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} />

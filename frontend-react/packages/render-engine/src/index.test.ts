@@ -604,6 +604,34 @@ test('incremental cell redraw reads only the exposed strip instead of the visibl
   assert.ok(reads <= 40, `expected at most 40 provider reads for an exposed row, got ${reads}`);
 });
 
+test('text overflow occupancy reads stay inside the PaneMap visible columns on an XLSX-width sheet', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 1, columnCount: 16_384, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 0, startColumn: 8_192, endColumn: 8_200 };
+  const reads: number[] = [];
+  const { context } = recordingContext();
+
+  drawCellLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: ({ column }) => {
+      if (column < range.startColumn || column > range.endColumn) {
+        throw new Error(`provider read escaped visible pane at column ${column}`);
+      }
+      reads.push(column);
+      if (column === range.startColumn) return { value: 'Long text that may overflow', displayValue: 'Long text that may overflow' };
+      if (column === range.startColumn + 3) return { value: 'occupied', displayValue: 'occupied' };
+      return undefined;
+    },
+    theme: DEFAULT_RENDER_THEME,
+  });
+
+  assert.ok(reads.length <= 27, `expected viewport-bounded provider reads, got ${reads.length}`);
+  assert.equal(Math.min(...reads), range.startColumn);
+  assert.equal(Math.max(...reads), range.endColumn);
+});
+
 test('incremental cell redraw includes a merged anchor that begins outside the exposed strip', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 5, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const range = { startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 };

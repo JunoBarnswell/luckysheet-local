@@ -146,6 +146,39 @@
 
 文件预算：1GiB compressed/8GiB expanded/16GiB temporary，XMLnodes/cells/objects/rels独立预算，分配与提交前检查。禁止仅提高上限掩盖物化。
 
+## 视口页懒加载整改设计（2026-09-08）
+
+### 产品状态与根因
+
+当前工作簿路由在发布编辑器之前遍历 `manifest.pages` 下载完整 revision，运行时初始化又重复遍历一次。以 OCR 实际文件为例，4 个约 700KiB 的稀疏页、约 9.4 万个 authored cells 会在首屏前全部跨越 HTTP、Base64、JS 和 WASM 边界；文件越大，首次可交互时间和主线程占用越接近整本工作簿成本。已有 `PaneMap → ensureVisibleRanges → KernelPageReplica.loadRange` 链路因上游全量下载而失效，`FindIndex` 重建和强制公式重算还隐含“全部页已驻留”的旧前提。
+
+页面目录、页面字节和逻辑空白必须保持三种不同状态：manifest 中没有 descriptor 的坐标是 canonical blank；有 descriptor 且已加载才能读取；有 descriptor 但未驻留必须返回 `DATA_PAGE_UNAVAILABLE`。UI、公式、筛选、命令均不得把第三种状态转成空白、空结果或假 saved。
+
+### 统一所有权和状态机
+
+`WorkbookResolver` 只拥有身份、revision 和访问解析，输出 revision-pinned manifest/access，不携带页面 payload。`KernelPageReplica` 是浏览器唯一页面目录、驻留状态、请求去重、并发预算、取消和 stale revision 校验所有者。所有页面字节只能通过 `loadRange()` 进入 `page.load`；路由、runtime、Canvas 和协作不得建立另一条下载链。
+
+打开状态按 `route resolving → manifest opened → seed page loading → ready → viewport page loading` 前进。seed page 仅覆盖首个活动单元格，使 React 的同步 active-cell/Home 投影在发布 ready 前有真实数据；Canvas 按真实 `PaneMap` 加载相交页并预取上下左右各一页。后续滚动保留已有画面，页面加载提示不拦截指针；首屏或当前 revision 读取失败则显示可重试错误。旧 generation 的成功或失败不能覆盖新工作表、新 revision 或更新请求的 UI 状态。
+
+远端 revision 先获取 manifest，再只获取已驻留且 descriptor 变化、或当前可见范围需要的页面。descriptor 未变的驻留页由 replica 保留；其它变化页保持未驻留，等下一次对应范围请求。公式打开时不强制全工作簿重算，继续显示已提交的页内 cached result；明确重算、编辑依赖或审计操作必须在其数据准备边界加载所需页并保持 typed failure。Find 不在打开时建立全工作簿索引，只有明确搜索边界准备完成后才重建。
+
+### 实施 TODO
+
+| TODO | 现状 | 会导致的问题 | 统一优化方案 | 验收 |
+|---|---|---|---|---|
+| L01 路由解析 | resolver 每批 4 页下载完整 revision | 路由耗时随整本文件增长 | 删除 `WorkbookResolution.pages` 和 `loadRevisionPages`，只并行取 manifest/access | resolve 期间 `getPage` 调用为 0 |
+| L02 初始化 | runtime 再次调用 `openResponseWithRevisionPages` | 同一页重复网络、解码和 WASM load | manifest-only open；ready 前只加载活动单元格 seed range | 大文件打开只请求 seed/viewport 页 |
+| L03 页面调度 | 每个 `loadRange` 自己批量 4，请求无法跨范围限流或取消 | 快速滚动可超过预算，旧 revision 浪费网络 | replica 级 4 并发队列、同页去重、revision AbortController、stale guard | 并发≤4；旧请求不能污染新 revision |
+| L04 同步投影 | hydration 建全量 FindIndex 并强制公式重算 | manifest-only open 立即缺页或主线程长任务 | 打开时创建空索引并保留 committed cached formula result；显式功能负责数据准备 | 打开不调用全量 cells iterator/recalculate |
+| L05 远端修订 | revision announcement 下载全部 changed descriptors | 大操作使协作客户端再次全量加载 | 仅补当前驻留/可见的 changed 页，其余按需 | 非可见 changed 页没有 `getPage` |
+| L06 选择与跳转 | 选区先发布，active cell 同步读取可能早于页面请求 | 远跳、PageDown、名称框触发 `DATA_PAGE_UNAVAILABLE` | 异步选择入口先加载目标 range；Canvas 可见点击复用 resident 页 | 跳到第 4 页只新增目标页请求且可编辑 |
+| L07 加载 UI | 每次 prepare 都全屏遮罩，旧 Promise 可覆盖新状态 | 滚动闪烁、交互被遮挡、错误串 revision | generation/ref-count 状态；已有内容加载时显示非阻塞提示，error 可重试 | 快速滚动无 stale overlay，指针持续可用 |
+| L08 回归与度量 | 只测 replica 局部语义，没有 route/runtime/browser 网络证据 | 全量读取可从新入口回归 | resolver/runtime/replica/Canvas 测试并记录真实 OCR 文件 Network、Console、TTI | 无 route-level 全页 waterfall；console 无未处理缺页 |
+
+### 失败与恢复
+
+页面请求的 HTTP、身份、revision、descriptor、checksum、byteLength 或 WASM 接收任一失败，当前请求以 typed error 结束，失败页不进入 resident set。用户重试只重新请求失败或仍缺失的目标页。revision 改变时取消旧队列；无法取消的响应在 `page.load` 前由 revision guard 拒绝。应用层不自动重试、不返回空页、不改变 canonical selection/commit 地址。
+
 ## 验收和交付
 
 一次完整开发批次后集中验证：Rust native/WASM语义差分，frontend typecheck/unit/contracts/boundaries/build，backend Maven与H2/Postgres/MySQL migration/事务矩阵，真实OIDC身份、双客户端、console/network、1024/1366/1920与100/125/150%视觉、百万行dense/sparse/multisheet/高基数、Excel producer XLSX/XLSM导入→编辑→导出→真实Excel重开。失败/越权/缺页/hash/旧协议/stale/cancel/crash/budget必须零部分提交。SUBTOTAL9/109等按visibility原因保留不同语义。

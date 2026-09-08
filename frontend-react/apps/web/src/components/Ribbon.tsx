@@ -533,7 +533,7 @@ export function Ribbon({
   );
 
   const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.filter((definition) => isSurfaceAvailable(definition.id)).map((definition) => {
-    const result = isRibbonCommandEnabled(definition, catalogContext) ? buildRibbonCommand(definition.id, catalogContext) : undefined;
+    const enabled = isRibbonCommandEnabled(definition, catalogContext);
     const groups = [...new Set(definition.placements.map((placement) => translateRibbonText(locale, getRibbonGroupDefinition(placement.group).labelKey)))];
     return {
       id: definition.id,
@@ -542,8 +542,12 @@ export function Ribbon({
       keywords: [definition.id, definition.commandId ?? ''],
       tip: definition.tooltipKey ? translateRibbonText(locale, definition.tooltipKey) : undefined,
       commandId: definition.commandId,
-      enabled: result !== undefined,
-      execute: () => { if (result) executeCatalogResult(result); },
+      enabled,
+      execute: () => {
+        if (!enabled) return;
+        const result = buildRibbonCommand(definition.id, catalogContext);
+        if (result) executeCatalogResult(result);
+      },
     };
   });
 

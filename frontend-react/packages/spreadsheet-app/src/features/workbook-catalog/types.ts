@@ -20,12 +20,12 @@ import type {
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
   WorkbookManifest,
-  KernelPagePayload,
   KernelWorkbookCreateRequest,
   WorkbookLifecycle as ProtocolWorkbookLifecycle,
   WorkbookSourceKind as ProtocolWorkbookSourceKind,
   WorkbookSyncStatus as ProtocolWorkbookSyncStatus,
   WorkbookUserState as ProtocolWorkbookUserState,
+  WorkbookUserStatePatch as ProtocolWorkbookUserStatePatch,
   WorkspaceFolder as ProtocolWorkspaceFolder,
   WorkspaceSpace as ProtocolWorkspaceSpace,
 } from '@react-sheets/protocol';
@@ -122,8 +122,6 @@ export interface WorkbookResolution {
   mode: 'remote';
   lifecycle: 'active';
   manifest: WorkbookManifest;
-  /** Complete revision-pinned sparse page set required by synchronous model projections. */
-  pages: readonly KernelPagePayload[];
   revision: number;
   access: WorkbookAccessResponse | null;
 }
@@ -181,7 +179,7 @@ export type WorkbookCatalogProtocolArtifactMetadata = WorkbookSourceArtifactMeta
 export type WorkbookCatalogProtocolSpace = ProtocolWorkspaceSpace;
 export type WorkbookCatalogProtocolFolder = ProtocolWorkspaceFolder;
 export type WorkbookCatalogProtocolRole = WorkbookAclRole;
-export type WorkbookCatalogProtocolUserStateInput = Omit<ProtocolWorkbookUserState, 'unitId'>;
+export type WorkbookCatalogProtocolUserStateInput = ProtocolWorkbookUserStatePatch;
 
 export interface WorkbookCatalogLocation {
   spaceId?: string;

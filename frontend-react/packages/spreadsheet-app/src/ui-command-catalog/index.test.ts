@@ -297,6 +297,22 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(buildRibbonCommand('pivotTable', context()), undefined);
   });
 
+  it('checks explicit availability without constructing selection-dependent parameters', () => {
+    let builds = 0;
+    const current = context({
+      buildSortDescriptor: () => {
+        builds += 1;
+        throw new Error('Current region must be resolved only after activation');
+      },
+    });
+    const definition = getRibbonCommandDefinition('sortAscending');
+
+    assert.equal(isRibbonCommandEnabled(definition, current), true);
+    assert.equal(builds, 0);
+    assert.throws(() => buildRibbonCommand('sortAscending', current), /Current region must be resolved only after activation/);
+    assert.equal(builds, 1);
+  });
+
   it('routes Forms and Screenshot through canonical executable host actions', () => {
     let forms = 0;
     let screenshots = 0;

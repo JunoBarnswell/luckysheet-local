@@ -143,7 +143,7 @@ export function EditorDialogHost({
       />
       <CreatePivotTableDialog
         open={state.dialogs.active === 'create-pivot'}
-        sourceRegion={session.getCurrentRegion()}
+        sourceRegion={state.dialogs.active === 'create-pivot' ? session.getCurrentRegion() : session.getPrimaryRange()}
         sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
         locale={locale}
