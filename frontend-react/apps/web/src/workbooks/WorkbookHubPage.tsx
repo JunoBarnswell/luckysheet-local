@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Box, Button, Dialog, Heading, Inline, Panel, PanelBody, PanelTitle, Stack, StatePanel, Text } from '@react-sheets/ui-system';
 import type { WorkbookCategoryTab, WorkbookHubPageProps, WorkbookHubSection } from './types';
 import { CreateTemplateGrid } from './CreateTemplateGrid';
-import { StorageInfoBanner } from './StorageInfoBanner';
 import { WorkbookActionBar } from './WorkbookActionBar';
 import { WorkbookCategoryTabs } from './WorkbookCategoryTabs';
 import { WorkbookGrid } from './WorkbookGrid';
@@ -58,7 +57,7 @@ function SectionFallback({ section, hasSelection, onBack, onImport, onExport }: 
       : <StatePanel actionLabel="返回文件列表" description="先在文件列表中选择要导出的工作簿。" kind="empty" onAction={onBack} title="尚未选择工作簿" />;
   }
   if (section === 'options') {
-    return <Panel tone="subtle"><PanelBody><Stack gap="sm"><PanelTitle as="h2" size="sm">文件中心选项</PanelTitle><Text size="sm" tone="muted">默认新建位置、自动同步、离线缓存和导入兼容级别由宿主容器提供并持久化。</Text><Button onClick={onBack} size="sm" variant="outline">返回文件列表</Button></Stack></PanelBody></Panel>;
+    return <Panel tone="subtle"><PanelBody><Stack gap="sm"><PanelTitle as="h2" size="sm">文件中心选项</PanelTitle><Text size="sm" tone="muted">云端位置、自动同步和导入兼容级别由宿主容器提供并持久化。</Text><Button onClick={onBack} size="sm" variant="outline">返回文件列表</Button></Stack></PanelBody></Panel>;
   }
   return <StatePanel actionLabel="返回工作簿中心" description={`${labels[section] ?? section}需要从活动工作簿上下文打开。`} kind="empty" onAction={onBack} title={`请选择一个工作簿后使用${labels[section] ?? section}`} />;
 }
@@ -78,7 +77,6 @@ export function WorkbookHubPage({
   onOpenInNewWindow,
   onImportWorkbook,
   onExportWorkbook,
-  onSyncWorkbook,
   onRenameWorkbook,
   onCopyWorkbook,
   onMoveWorkbook,
@@ -97,7 +95,7 @@ export function WorkbookHubPage({
   const [selectedKeys, setSelectedKeys] = useState<readonly string[]>([]);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [filterOpen, setFilterOpen] = useState(false);
-  const [filters, setFilters] = useState<WorkbookFilterValues>({ favoritesOnly: false, sharedOnly: false, needsSync: false });
+  const [filters, setFilters] = useState<WorkbookFilterValues>({ favoritesOnly: false, sharedOnly: false });
   const [draftFilters, setDraftFilters] = useState<WorkbookFilterValues>(filters);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
@@ -108,7 +106,6 @@ export function WorkbookHubPage({
     return categoryItems(activeSection, tab, items).filter((item) => {
       if (filters.favoritesOnly && !item.favorite) return false;
       if (filters.sharedOnly && item.role === 'owner') return false;
-      if (filters.needsSync && !['syncing', 'conflict', 'error'].includes(item.syncStatus)) return false;
       if (!normalized) return true;
       return [item.name, item.locationLabel, item.ownerName, item.ownerSubject, item.folderPath?.join(' / ')].filter(Boolean).some((value) => value?.toLocaleLowerCase().includes(normalized));
     });
@@ -127,14 +124,12 @@ export function WorkbookHubPage({
     return visibleItems.filter((item) => selected.has(item.unitId));
   }, [selectedKeys, visibleItems]);
   const exportableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed'), [selectedItems]);
-  const syncableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed' && item.storageLocation !== 'remote'), [selectedItems]);
   const movableItems = useMemo(() => selectedItems.filter((item) => item.lifecycle !== 'trashed' && (item.role === 'owner' || item.role === 'editor')), [selectedItems]);
   const showTemplates = activeSection === 'start' || activeSection === 'new';
   const showCatalog = !infoSections.has(activeSection);
   const handleTabChange = (next: WorkbookCategoryTab) => { setTab(next); onSelectTab?.(next); };
   const openCreate = () => onCreateTemplate('blank');
   const exportSelected = () => { exportableItems.forEach((item) => onExportWorkbook(item.unitId)); };
-  const syncSelected = () => { syncableItems.forEach((item) => onSyncWorkbook(item.unitId)); };
   const navigate = (section: WorkbookHubSection) => { setMobileNavigationOpen(false); onNavigate(section); };
   const openFilters = () => { setDraftFilters(filters); setFilterOpen(true); };
   const applyFilters = () => { setFilters(draftFilters); setFilterOpen(false); };
@@ -142,7 +137,6 @@ export function WorkbookHubPage({
   const rowMenuProps = {
     onExport: onExportWorkbook,
     onOpenInNewWindow,
-    onSync: onSyncWorkbook,
     onRename: onRenameWorkbook,
     onCopy: onCopyWorkbook,
     onMove: onMoveWorkbook,
@@ -177,10 +171,9 @@ export function WorkbookHubPage({
             <Stack gap="lg">
               <SectionTitle section={activeSection} />
               {showTemplates ? <CreateTemplateGrid onMoreTemplates={() => onCreateTemplate('template')} onSelect={onCreateTemplate} /> : null}
-              {activeSection === 'start' ? <StorageInfoBanner onLearnMore={() => navigate('info')} /> : null}
               {showCatalog ? (
                 <Stack gap="md">
-                  <WorkbookActionBar canExport={exportableItems.length > 0} canMove={movableItems.length > 0} canSync={syncableItems.length > 0} onCreate={openCreate} onExportSelected={exportSelected} onImport={onImportWorkbook} onMoveSelected={() => movableItems[0] && onMoveWorkbook(movableItems[0].unitId)} onSyncSelected={syncSelected} selectedCount={selectedItems.length} />
+                  <WorkbookActionBar canExport={exportableItems.length > 0} canMove={movableItems.length > 0} onCreate={openCreate} onExportSelected={exportSelected} onImport={onImportWorkbook} onMoveSelected={() => movableItems[0] && onMoveWorkbook(movableItems[0].unitId)} selectedCount={selectedItems.length} />
                   <Inline gap="lg" className="items-end justify-between">
                     <WorkbookCategoryTabs activeTab={activeSection === 'shared' ? 'shared' : tab} onChange={handleTabChange} />
                     <Box className="hidden min-w-0 flex-1 justify-end min-[860px]:flex"><WorkbookSearch onChange={setQuery} onFilter={openFilters} onToggleView={() => setViewMode((current) => current === 'list' ? 'grid' : 'list')} value={query} viewMode={viewMode} /></Box>

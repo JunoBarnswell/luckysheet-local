@@ -75,7 +75,7 @@ public class QueryExecutionService {
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
-    private final HttpClient http;
+    private final AtomicReference<HttpClient> http = new AtomicReference<>();
     private final KernelHostClient kernel;
     private final KernelPersistenceService persistence;
     private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
@@ -106,7 +106,6 @@ public class QueryExecutionService {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-        this.http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
     }
 
     /** Compatibility constructor for connector-only unit tests. Native
@@ -481,7 +480,7 @@ public class QueryExecutionService {
             } else {
                 builder.GET();
             }
-            CompletableFuture<HttpResponse<InputStream>> pending = http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            CompletableFuture<HttpResponse<InputStream>> pending = httpClient().sendAsync(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
             control.bind(pending);
             HttpResponse<InputStream> response;
             try {
@@ -1209,6 +1208,15 @@ public class QueryExecutionService {
 
         private ExecutionControl control() { return control; }
         private Future<QueryTable> future() { return future; }
+    }
+
+    /** REST transport is initialized only when a configured REST source runs. */
+    private HttpClient httpClient() {
+        HttpClient existing = http.get();
+        if (existing != null) return existing;
+        HttpClient created = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
+        if (http.compareAndSet(null, created)) return created;
+        return http.get();
     }
 
     private static final class ActiveAnalytics {

@@ -2,7 +2,6 @@ package com.xc.luckysheet.server.persistence;
 
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSource;
-import com.xc.luckysheet.server.contract.WorkbookStorageLocation;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -52,10 +51,6 @@ public class WorkbookEntity {
     private String folderId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "storage_location", nullable = false, length = 16)
-    private WorkbookStorageLocation storageLocation;
-
-    @Enumerated(EnumType.STRING)
     @Column(name = "source", nullable = false, length = 32)
     private WorkbookSource source;
 
@@ -71,7 +66,7 @@ public class WorkbookEntity {
 
     public WorkbookEntity(String unitId, String name, long revision,
                           Instant createdAt, Instant updatedAt, String ownerSubject, String spaceId, String folderId,
-                          WorkbookStorageLocation storageLocation, WorkbookSource source, WorkbookLifecycle lifecycle,
+                          WorkbookSource source, WorkbookLifecycle lifecycle,
                           Instant deletedAt) {
         this.unitId = unitId;
         this.name = name;
@@ -81,7 +76,6 @@ public class WorkbookEntity {
         this.ownerSubject = ownerSubject == null ? "" : ownerSubject;
         this.spaceId = spaceId;
         this.folderId = folderId;
-        this.storageLocation = storageLocation == null ? WorkbookStorageLocation.REMOTE : storageLocation;
         this.source = source == null ? WorkbookSource.NATIVE : source;
         this.lifecycle = lifecycle == null ? WorkbookLifecycle.ACTIVE : lifecycle;
         this.deletedAt = deletedAt;
@@ -110,7 +104,6 @@ public class WorkbookEntity {
     public String getOwnerSubject() { return ownerSubject; }
     public String getSpaceId() { return spaceId; }
     public String getFolderId() { return folderId; }
-    public WorkbookStorageLocation getStorageLocation() { return storageLocation; }
     public WorkbookSource getSource() { return source; }
     public WorkbookLifecycle getLifecycle() { return lifecycle; }
     public Instant getDeletedAt() { return deletedAt; }

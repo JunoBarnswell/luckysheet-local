@@ -43,7 +43,7 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
     return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={!canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;
-  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "local"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
+  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "unresolved"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
 }
 
 /** Route-level orchestration. Visual responsibilities live in editor/* hosts. */
@@ -118,7 +118,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     ];
     return (
       <>
-      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
         {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>

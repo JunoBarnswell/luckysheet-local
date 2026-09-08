@@ -14,6 +14,8 @@ export interface KernelPageTransport { getPage(params: { unitId: string; revisio
 export class KernelPageReplica {
   private manifestValue: KernelReplicaManifest | null = null;
   private readonly requests = new Map<string, Promise<void>>();
+  private readonly residentPages = new Set<string>();
+  private readonly pageDirectory = new Map<string, KernelReplicaPageDescriptor>();
   constructor(readonly unitId: string) {}
   get manifest(): KernelReplicaManifest {
     if (!this.manifestValue) throw new KernelInvocationError({ code: 'WORKBOOK_NOT_OPEN', message: 'The committed workbook manifest has not been loaded.', object: this.unitId, recovery: 'open-cloud-workbook' });
@@ -25,6 +27,10 @@ export class KernelPageReplica {
     kernelInvoke('open', { manifest, pages });
     this.manifestValue = structuredClone(manifest);
     this.requests.clear();
+    this.residentPages.clear();
+    this.pageDirectory.clear();
+    for (const page of manifest.pages) this.pageDirectory.set(this.pageKey(page.sheetId, page.pageRow, page.pageColumn), page);
+    for (const page of pages) this.residentPages.add(this.pageKey(page.sheetId, page.pageRow, page.pageColumn));
   }
   readCell(address: KernelReplicaCellAddress): CellData | undefined {
     return kernelInvoke<{ revision: number; cell: CellData | null }>('cell.get', { unitId: this.unitId, revision: this.revision, address }).cell ?? undefined;
@@ -37,21 +43,38 @@ export class KernelPageReplica {
   }
   async loadRange(range: RangeRef, transport: KernelPageTransport): Promise<void> {
     const manifest = this.manifest;
-    const pages = manifest.pages.filter(page => page.sheetId === range.sheetId && page.pageRow >= Math.floor(range.startRow / KERNEL_PAGE_ROWS) && page.pageRow <= Math.floor(range.endRow / KERNEL_PAGE_ROWS) && page.pageColumn >= Math.floor(range.startColumn / KERNEL_PAGE_COLUMNS) && page.pageColumn <= Math.floor(range.endColumn / KERNEL_PAGE_COLUMNS));
+    const pages: KernelReplicaPageDescriptor[] = [];
+    const firstPageRow = Math.floor(Math.max(0, range.startRow) / KERNEL_PAGE_ROWS);
+    const lastPageRow = Math.floor(Math.max(0, range.endRow) / KERNEL_PAGE_ROWS);
+    const firstPageColumn = Math.floor(Math.max(0, range.startColumn) / KERNEL_PAGE_COLUMNS);
+    const lastPageColumn = Math.floor(Math.max(0, range.endColumn) / KERNEL_PAGE_COLUMNS);
+    for (let pageRow = firstPageRow; pageRow <= lastPageRow; pageRow += 1) {
+      for (let pageColumn = firstPageColumn; pageColumn <= lastPageColumn; pageColumn += 1) {
+        const key = this.pageKey(range.sheetId, pageRow, pageColumn);
+        const page = this.pageDirectory.get(key);
+        if (page && !this.residentPages.has(key)) pages.push(page);
+      }
+    }
     for (let offset = 0; offset < pages.length; offset += 4) await Promise.all(pages.slice(offset, offset + 4).map(page => this.loadPage(page, manifest, transport)));
   }
   private loadPage(page: KernelReplicaPageDescriptor, manifest: KernelReplicaManifest, transport: KernelPageTransport): Promise<void> {
-    const key = `${manifest.revision}:${page.sheetId}:${page.pageRow}:${page.pageColumn}`;
-    const existing = this.requests.get(key);
+    const pageKey = this.pageKey(page.sheetId, page.pageRow, page.pageColumn);
+    if (this.residentPages.has(pageKey)) return Promise.resolve();
+    const requestKey = `${manifest.revision}:${pageKey}`;
+    const existing = this.requests.get(requestKey);
     if (existing) return existing;
     const request = (async () => {
       const payload = await transport.getPage({ unitId: this.unitId, revision: manifest.revision, sheetId: page.sheetId, pageRow: page.pageRow, pageColumn: page.pageColumn });
-      if (this.manifest.revision !== manifest.revision) throw new KernelInvocationError({ code: 'STALE_REVISION', message: 'Workbook changed while a page was loading.', object: key, recovery: 'reload-visible-pages' });
+      if (this.manifest.revision !== manifest.revision) throw new KernelInvocationError({ code: 'STALE_REVISION', message: 'Workbook changed while a page was loading.', object: requestKey, recovery: 'reload-visible-pages' });
       kernelInvoke('page.load', { unitId: this.unitId, revision: manifest.revision, page: payload });
+      this.residentPages.add(pageKey);
     })();
-    this.requests.set(key, request);
-    void request.finally(() => { if (this.requests.get(key) === request) this.requests.delete(key); }).catch(() => undefined);
+    this.requests.set(requestKey, request);
+    void request.finally(() => { if (this.requests.get(requestKey) === request) this.requests.delete(requestKey); }).catch(() => undefined);
     return request;
+  }
+  private pageKey(sheetId: string, pageRow: number, pageColumn: number): string {
+    return `${sheetId}:${pageRow}:${pageColumn}`;
   }
 }
 

@@ -37,7 +37,7 @@
 7. B06尚未实现：`QueryExecutionService` Java全量算子/结果materialization仍存在，等待 `/root/analytics_integration/columnar_query` 外部connector批次ABI。B07 proof目前 `{columns,rows}`；需要随B06变为结果页manifest。不能仅提高限额或把入口改unsupported就宣称完成。
 8. Explicit offline DB importer尚未实现，V12存量cutover会Blocked。Rust v10 artifact转换不等于checkpoint/operation历史证明。详见native-kernel-cutover.md。
 9. GeneratedWorkbookContract.java仍是旧生成文件（v10常量+mutation capability map）；已无semantic consumers，仅CreateWorkbookRequest用MAX_WORKBOOK_NAME_LENGTH。root须随contracts生成器整体退役该旧生成规则；不要重建Java authority。
-10. Catalog UserState 中旧autoSave/autoSync/offlineCache/defaultCreateLocation字段仍存在，云唯一持久化前端若已删须统一公开DTO/DB用户偏好语义。不是已迁移宣称。
+10. Catalog UserState 与 actor-global preferences 已完成云端语义收敛：保留 favorite/last-opened、cloud autoSave/autoSync、import compatibility、language、theme 及空间/文件夹偏好；`defaultCreateLocation`、`offlineCache` 与 workbook `storageLocation` 已由 V13 migration 删除，sync status 不再接受 `pending`/`offline`。
 
 ## 验证顺序
 

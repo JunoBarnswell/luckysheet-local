@@ -34,8 +34,13 @@ test('unavailable manifest pages throw until proven bytes are loaded', async () 
   assert.throws(() => replica.readCell({ sheetId: 'sheet-1', row: 0, column: 0 }), { code: 'DATA_PAGE_UNAVAILABLE' });
   const cells = new WorksheetCells(replica, 'sheet-1');
   assert.equal(cells.count(), 1, 'directory statistics never require loading cell bytes');
-  await replica.loadRange({ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, { getPage: async () => committed.pages[0]! });
+  let requests = 0;
+  const transport = { getPage: async () => { requests += 1; return committed.pages[0]!; } };
+  const range = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  await Promise.all([replica.loadRange(range, transport), replica.loadRange(range, transport)]);
   assert.equal(cells.get(0, 0)?.value, 42);
+  await replica.loadRange(range, transport);
+  assert.equal(requests, 1, 'concurrent and subsequent reads share one resident page');
   kernelInvoke('close', { unitId });
 });
 

@@ -64,6 +64,8 @@ import {
   defaultChartSubtype,
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
+  KERNEL_PAGE_COLUMNS,
+  KERNEL_PAGE_ROWS,
   protectionResolver,
   resolveFilterCellValue,
   SHEET_COLUMN_GROWTH_CHUNK,
@@ -2379,6 +2381,33 @@ export class WorkbookSession {
 
   getSelectedSheet(): CanvasSheetSnapshot {
     return this.getUiSnapshot().selectedSheet;
+  }
+
+  /**
+   * Resolves Canvas PaneMap ranges to revision-pinned Rust pages before the
+   * renderer reads them. One page of look-ahead in each axis keeps ordinary
+   * wheel and keyboard navigation local while KernelPageReplica owns request
+   * deduplication and resident-page identity.
+   */
+  async ensureVisibleRanges(ranges: readonly RangeRef[]): Promise<void> {
+    await this.runtime.persistenceReady;
+    if (this.disposed || ranges.length === 0) return;
+    const revision = this.runtime.model.revision;
+    await Promise.all(ranges.map(async (range) => {
+      const sheet = this.runtime.model.getSheet(range.sheetId);
+      const normalized = normalizeRangeRef(range);
+      const prefetched: RangeRef = {
+        sheetId: sheet.id,
+        startRow: Math.max(0, normalized.startRow - KERNEL_PAGE_ROWS),
+        endRow: Math.min(sheet.rowCount - 1, normalized.endRow + KERNEL_PAGE_ROWS),
+        startColumn: Math.max(0, normalized.startColumn - KERNEL_PAGE_COLUMNS),
+        endColumn: Math.min(sheet.columnCount - 1, normalized.endColumn + KERNEL_PAGE_COLUMNS),
+      };
+      await this.runtime.model.pageReplica.loadRange(prefetched, this.runtime.api);
+    }));
+    if (this.runtime.model.revision !== revision) {
+      throw new Error(`STALE_REVISION: visible pages were prepared for ${revision}, current revision is ${this.runtime.model.revision}`);
+    }
   }
 
   getZoom(): number {
@@ -4726,7 +4755,7 @@ export class WorkbookSession {
       // request.  Recalculating the old layout here serialized two full worker
       // tasks for every first edit after opening an imported PivotTable.  A
       // retained result is used when available; otherwise the canonical
-      // definition footprint is sufficient for the integrity proof.
+      // definition footprint is sufficient for the replay integrity proof.
       const previousResult = this.runtime.pivotResults[pivotId] ?? getLastValidPivotResult(this.runtime.model, pivotId);
       const previousCalculationProof = buildPivotCalculationProof(this.runtime.model, current, previousResult);
       const calculated = await this.calculatePivotTask(candidate);

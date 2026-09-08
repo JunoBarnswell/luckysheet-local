@@ -6,7 +6,7 @@ export interface MutationInfo<P = unknown> {
   sheetId: string;
   params: P;
   affectedRanges: RangeRef[];
-  /** Explicit semantic override used by inverses whose storage mutation id is shared. */
+  /** Explicit authorization metadata for mutations whose storage id alone is insufficient. */
   permission?: {
     capability: string;
     protectionAction: ProtectionAction | 'none';
@@ -419,7 +419,7 @@ export interface HistoryEntry {
   /**
    * The immutable committed operation that the next undo/redo request targets.
    * Every replay is itself a committed operation, so this target advances after
-   * each successful replay without reconstructing client-side inverse data.
+   * each successful replay without reconstructing client-side mutation payloads.
    */
   replayTargetOperationId: string;
   replayTargetBaseRevision: number;

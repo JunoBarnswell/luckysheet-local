@@ -26,7 +26,7 @@ function remote(overrides: Partial<WorkbookCatalogRemoteClient> = {}): WorkbookC
     getAccess: async () => ({ unitId: manifest.unitId, role: 'owner' }),
     getWorkbookUserState: async () => ({ unitId: manifest.unitId, favorite: false }),
     putWorkbookUserState: async (_unitId, state) => ({ unitId: manifest.unitId, ...state }),
-    listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: manifest.revision, updatedAt: '2026-01-01T00:00:00.000Z', role: 'owner', storageLocation: 'remote', syncStatus: 'synced' }], nextCursor: null }),
+    listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: manifest.revision, updatedAt: '2026-01-01T00:00:00.000Z', role: 'owner', syncStatus: 'synced' }], nextCursor: null }),
     ...overrides,
   } as WorkbookCatalogRemoteClient;
 }
@@ -56,7 +56,7 @@ describe('cloud-only workbook catalog', () => {
 
   it('rejects obsolete pending/offline catalog states from the server', async () => {
     const catalog = new WorkbookCatalogService({
-      remote: remote({ listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: 7, updatedAt: '', syncStatus: 'pending' }], nextCursor: null }) }),
+      remote: remote({ listWorkbookPage: async () => ({ items: [{ unitId: manifest.unitId, name: manifest.name, revision: 7, updatedAt: '', syncStatus: 'pending' }], nextCursor: null }) as never }),
     });
     await assert.rejects(() => catalog.list(), (error: unknown) => error instanceof WorkbookCatalogError && error.code === 'conflict');
   });
@@ -65,7 +65,7 @@ describe('cloud-only workbook catalog', () => {
 describe('catalog projection and browser caches', () => {
   it('orders actionable cloud failures ahead of saved workbooks', () => {
     assert.ok(WORKBOOK_SYNC_STATE_PRIORITY.error < WORKBOOK_SYNC_STATE_PRIORITY.synced);
-    const base = { revision: 1, storage: 'remote' as const, role: 'owner' as const, lifecycle: 'active' as const, source: 'native' as const, locationPath: [], favorite: false };
+    const base = { revision: 1, role: 'owner' as const, lifecycle: 'active' as const, source: 'native' as const, locationPath: [], favorite: false };
     const entries = [
       { ...base, unitId: 'saved', name: 'Saved', updatedAt: '2026-01-01', syncState: 'synced' as const },
       { ...base, unitId: 'error', name: 'Error', updatedAt: '2026-01-02', syncState: 'error' as const },

@@ -1179,7 +1179,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   const input = requireRecord(value, 'Workbook summary');
   validateExactKeys(input, [
     'unitId', 'name', 'revision', 'updatedAt', 'role', 'ownerSubject', 'spaceId', 'spaceName', 'folderId',
-    'locationPath', 'storageLocation', 'syncStatus', 'lifecycle', 'source', 'sourceFileName', 'deletedAt',
+    'locationPath', 'syncStatus', 'lifecycle', 'source', 'sourceFileName', 'deletedAt',
     'lastOpenedAt', 'favorite',
   ], 'Workbook summary');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) throw new Error('Workbook summary identity is invalid');
@@ -1187,8 +1187,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Workbook summary revision is invalid');
   validateIsoTimestamp(input.updatedAt, 'Workbook summary updatedAt');
   if (input.role !== undefined && !['owner', 'editor', 'commenter', 'viewer'].includes(String(input.role))) throw new Error('Workbook summary role is invalid');
-  if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
-  if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
+  if (input.syncStatus !== undefined && !['synced', 'syncing', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
   if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
   if (input.source !== undefined && !['native', 'document-import'].includes(String(input.source))) throw new Error('Workbook summary source is invalid');
   if (input.locationPath !== undefined && (!Array.isArray(input.locationPath) || input.locationPath.some((entry) => typeof entry !== 'string'))) throw new Error('Workbook summary locationPath is invalid');
@@ -1210,7 +1209,6 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
     ...(input.spaceName == null ? {} : { spaceName: input.spaceName as string }),
     ...(input.folderId == null ? {} : { folderId: input.folderId as string }),
     ...(input.locationPath === undefined ? {} : { locationPath: input.locationPath as string[] }),
-    ...(input.storageLocation === undefined ? {} : { storageLocation: input.storageLocation as WorkbookStorageLocation }),
     ...(input.syncStatus === undefined ? {} : { syncStatus: input.syncStatus as WorkbookSyncStatus }),
     ...(input.lifecycle === undefined ? {} : { lifecycle: input.lifecycle as WorkbookLifecycle }),
     ...(input.source === undefined ? {} : { source: input.source as WorkbookSourceKind }),
@@ -1247,8 +1245,8 @@ function validateRevisionRecord(value: unknown): RevisionRecord {
 
 export function validateUserPreferences(value: unknown): UserPreferences {
   const input = requireRecord(value, 'User preferences');
-  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme', 'updatedAt'], 'User preferences');
-  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'importCompatibility', 'language', 'theme', 'updatedAt'], 'User preferences');
+  for (const key of ['autoSave', 'autoSync'] as const) {
     if (typeof input[key] !== 'boolean') throw new Error(`User preferences ${key} is invalid`);
   }
   if (!['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences importCompatibility is invalid');
@@ -1259,7 +1257,6 @@ export function validateUserPreferences(value: unknown): UserPreferences {
   if (input.updatedAt !== undefined && input.updatedAt !== null) validateIsoTimestamp(input.updatedAt, 'User preferences updatedAt');
   const autoSave = input.autoSave as boolean;
   const autoSync = input.autoSync as boolean;
-  const offlineCache = input.offlineCache as boolean;
   const defaultSpaceId = input.defaultSpaceId as string | null | undefined;
   const defaultFolderId = input.defaultFolderId as string | null | undefined;
   const language = input.language as string | null | undefined;
@@ -1269,7 +1266,6 @@ export function validateUserPreferences(value: unknown): UserPreferences {
     ...(defaultFolderId == null ? {} : { defaultFolderId }),
     autoSave,
     autoSync,
-    offlineCache,
     importCompatibility: input.importCompatibility as UserPreferences['importCompatibility'],
     ...(language == null ? {} : { language }),
     theme: input.theme as UserPreferences['theme'],
@@ -1279,12 +1275,12 @@ export function validateUserPreferences(value: unknown): UserPreferences {
 
 export function validateUserPreferencesPatch(value: unknown): UserPreferencesPatch {
   const input = requireRecord(value, 'User preferences patch');
-  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme'], 'User preferences patch');
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'importCompatibility', 'language', 'theme'], 'User preferences patch');
   if (Object.keys(input).length === 0) throw new Error('User preferences patch cannot be empty');
   for (const key of ['defaultSpaceId', 'defaultFolderId', 'language'] as const) {
     if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`User preferences patch ${key} is invalid`);
   }
-  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+  for (const key of ['autoSave', 'autoSync'] as const) {
     if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`User preferences patch ${key} is invalid`);
   }
   if (input.importCompatibility !== undefined && !['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences patch importCompatibility is invalid');
@@ -1526,7 +1522,6 @@ export interface WorkbookSummary {
   spaceName?: string;
   folderId?: string;
   locationPath?: string[];
-  storageLocation?: WorkbookStorageLocation;
   syncStatus?: WorkbookSyncStatus;
   lifecycle?: WorkbookLifecycle;
   source?: WorkbookSourceKind;
@@ -1537,8 +1532,7 @@ export interface WorkbookSummary {
 }
 
 export type WorkbookSourceKind = 'native' | 'document-import';
-export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
-export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookSyncStatus = 'synced' | 'syncing' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
 export type WorkbookCatalogView = 'all' | 'owned' | 'recent' | 'shared' | 'trash';
 
@@ -1595,12 +1589,10 @@ export interface WorkbookCopyRequest {
 export interface WorkbookUserState {
   autoSave?: boolean;
   autoSync?: boolean;
-  defaultCreateLocation?: 'local' | 'remote';
   favorite?: boolean;
   importCompatibilityLevel?: 'standard' | 'strict';
   language?: string;
   lastOpenedAt?: string;
-  offlineCache?: boolean;
   theme?: 'light' | 'system';
   unitId: string;
 }
@@ -1610,7 +1602,6 @@ export interface UserPreferences {
   defaultFolderId?: string;
   autoSave: boolean;
   autoSync: boolean;
-  offlineCache: boolean;
   importCompatibility: 'A' | 'B' | 'C';
   language?: string;
   theme: 'light' | 'dark' | 'system';

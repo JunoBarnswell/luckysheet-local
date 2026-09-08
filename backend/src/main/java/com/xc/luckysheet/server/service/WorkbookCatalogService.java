@@ -306,7 +306,7 @@ public class WorkbookCatalogService {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
         return userStates.findByIdUnitIdAndIdSubject(unitId, actor)
                 .map(this::userState)
-                .orElseGet(() -> new WorkbookUserState(unitId, false, null, true, true, "remote", "standard", null, true, "system", null));
+                .orElseGet(() -> new WorkbookUserState(unitId, false, null, true, true, "standard", null, "system", null));
     }
 
     @Transactional
@@ -316,8 +316,7 @@ public class WorkbookCatalogService {
         WorkbookUserStateEntity state = userStates.findByIdUnitIdAndIdSubject(unitId, actor)
                 .orElseGet(() -> new WorkbookUserStateEntity(unitId, actor, false, null, now));
         state.update(request.favorite(), request.lastOpenedAt(), request.autoSave(), request.autoSync(),
-                request.defaultCreateLocation(), request.importCompatibilityLevel(), request.language(),
-                request.offlineCache(), request.theme(), now);
+                request.importCompatibilityLevel(), request.language(), request.theme(), now);
         userStates.save(state);
         return userState(state);
     }
@@ -414,7 +413,7 @@ public class WorkbookCatalogService {
         workspace.requireFolder(space.getSpaceId(), normalizedFolder, actor, WorkbookAclRole.EDITOR);
         Instant now = Instant.now();
         WorkbookEntity entity = new WorkbookEntity(unitId, manifest.path("name").asText(), 0, now, now, actor, space.getSpaceId(), normalizedFolder,
-                com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE, source, WorkbookLifecycle.ACTIVE, null);
+                source, WorkbookLifecycle.ACTIVE, null);
         workbooks.save(entity);
         acl.save(new WorkbookAclEntity(unitId, actor, WorkbookAclRole.OWNER, now, now));
         return entity;
@@ -499,7 +498,7 @@ public class WorkbookCatalogService {
         List<String> path = locationPath(space, folder, folderMap);
         return new WorkbookSummary(row.getUnitId(), row.getName(), row.getRevision(), row.getUpdatedAt(), role,
                 blankToNull(row.getOwnerSubject()), row.getSpaceId(), row.getFolderId(), path,
-                space == null ? null : space.getName(), sourceFileName, row.getStorageLocation(),
+                space == null ? null : space.getName(), sourceFileName,
                 WorkbookSyncStatus.SYNCED, row.getLifecycle(), row.getSource(), state != null && state.isFavorite(),
                 state == null ? null : state.getLastOpenedAt(), row.getDeletedAt());
     }
@@ -525,8 +524,7 @@ public class WorkbookCatalogService {
 
     private WorkbookUserState userState(WorkbookUserStateEntity state) {
         return new WorkbookUserState(state.getId().getUnitId(), state.isFavorite(), state.getLastOpenedAt(), state.isAutoSave(),
-                state.isAutoSync(), state.getDefaultCreateLocation(), state.getImportCompatibilityLevel(), state.getLanguage(),
-                state.isOfflineCache(), state.getTheme(), state.getUpdatedAt());
+                state.isAutoSync(), state.getImportCompatibilityLevel(), state.getLanguage(), state.getTheme(), state.getUpdatedAt());
     }
 
     private WorkbookArtifactResponse artifactResponse(WorkbookSourceArtifactEntity artifact) {

@@ -309,7 +309,8 @@ export type WorksheetPane =
       state: 'split';
     };
 
-export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
+export function normalizeWorksheetPane(pane: WorksheetPane | null | undefined): WorksheetPane {
+  if (!pane) return { kind: 'none' };
   if (pane.kind === 'none') return { kind: 'none' };
   const activePane = pane.activePane ?? (pane.xSplit > 0 && pane.ySplit > 0 ? 'bottomRight' : pane.xSplit > 0 ? 'topRight' : pane.ySplit > 0 ? 'bottomLeft' : 'topLeft');
   return pane.kind === 'frozen'
@@ -1140,7 +1141,7 @@ export interface SheetSnapshot {
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
-  /** Lifecycle inverse payload; owned workbook documents travel with the sheet. */
+  /** Sheet lifecycle payload; owned workbook documents travel with the sheet. */
   lifecycleDefinedNames?: DefinedNameModel[];
   lifecyclePrintDocument?: PrintDocumentSnapshot;
 }

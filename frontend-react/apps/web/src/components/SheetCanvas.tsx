@@ -15,6 +15,7 @@ import {
   CanvasRenderEngine,
   SheetSkeleton,
   type CellRenderData,
+  type CellRange,
   type ChromeState,
   type FloatingDrawable,
   type FloatingHit,
@@ -107,6 +108,7 @@ export interface SheetCanvasProps {
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
+  onEnsureVisibleRanges?: (ranges: readonly RangeRef[]) => Promise<void>;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onSelectAllDrawings?: () => void;
@@ -400,6 +402,7 @@ export function SheetCanvas({
   onSelectionChange,
   onMovePrimary,
   onEnsureSheetExtent,
+  onEnsureVisibleRanges,
   onJumpEdge,
   onSelectAll,
   onSelectAllDrawings,
@@ -464,7 +467,25 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
+  const [pageLoadState, setPageLoadState] = useState<{ status: 'idle' | 'loading' | 'error'; message?: string }>({ status: 'idle' });
   const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+  const visibleRangeLoaderRef = useRef(onEnsureVisibleRanges);
+  const visibleRangeSheetIdRef = useRef(sheetId);
+  visibleRangeLoaderRef.current = onEnsureVisibleRanges;
+  visibleRangeSheetIdRef.current = sheetId;
+
+  const prepareVisibleRanges = useCallback(async (ranges: readonly CellRange[]) => {
+    const loader = visibleRangeLoaderRef.current;
+    if (!loader || ranges.length === 0) return;
+    setPageLoadState({ status: 'loading' });
+    try {
+      await loader(ranges.map((range) => ({ ...range, sheetId: visibleRangeSheetIdRef.current })));
+      setPageLoadState({ status: 'idle' });
+    } catch (error) {
+      setPageLoadState({ status: 'error', message: error instanceof Error ? error.message : 'Worksheet pages could not be loaded' });
+      throw error;
+    }
+  }, []);
 
   const zoomFactor = zoom / 100;
 
@@ -747,6 +768,12 @@ export function SheetCanvas({
     zoom,
     textBoxPlacementActive: Boolean(textBoxPlacementActive),
   });
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setSheetId(sheetId);
+  }, [sheetId]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -1040,7 +1067,16 @@ export function SheetCanvas({
           >
             <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
               <CanvasRenderSurface
-                options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
+                options={{
+                  sheetId,
+                  skeleton,
+                  cellProvider,
+                  prepareVisibleRanges,
+                  resolveAssetUrl,
+                  assetUrlCache: assetUrlCacheRef.current,
+                  assetUrlPending: assetUrlPendingRef.current,
+                  assetUrlErrors: assetUrlErrorsRef.current,
+                }}
                 onReady={(engine) => {
                   engineRef.current = engine;
                   setEngineReady(true);
@@ -1052,6 +1088,16 @@ export function SheetCanvas({
                 className="absolute inset-0"
               />
             </Box>
+            {pageLoadState.status !== 'idle' ? (
+              <StatePanel
+                kind={pageLoadState.status === 'error' ? 'error' : 'loading'}
+                className="absolute inset-0 z-40 min-h-0 rounded-none bg-white/90"
+                title={pageLoadState.status === 'error' ? 'Worksheet page unavailable' : 'Loading worksheet pages'}
+                description={pageLoadState.message}
+                actionLabel={pageLoadState.status === 'error' ? 'Retry' : undefined}
+                onAction={pageLoadState.status === 'error' ? () => engineRef.current?.requestRender() : undefined}
+              />
+            ) : null}
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} />
             ) : null}

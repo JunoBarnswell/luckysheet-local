@@ -8,7 +8,6 @@ public record UserPreferences(
         String defaultFolderId,
         boolean autoSave,
         boolean autoSync,
-        boolean offlineCache,
         String importCompatibility,
         String language,
         String theme,

@@ -46,7 +46,6 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     name: entry.name,
     updatedAt: entry.updatedAt,
     locationLabel,
-    storageLocation: entry.storage,
     syncStatus: entry.syncState,
     lifecycle: entry.lifecycle,
     role: entry.role,
@@ -313,13 +312,6 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     });
   }, [catalog, execute]);
 
-  const syncWorkbook = useCallback((unitId: string) => {
-    void execute(async () => {
-      if (!await requireCloudSignIn()) return;
-      await catalog.syncToServer(unitId);
-    });
-  }, [catalog, execute, requireCloudSignIn]);
-
   const navigateSection = useCallback((section: WorkbookHubSection) => {
     if (section === 'new') {
       requestTemplate('blank');
@@ -369,7 +361,6 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         onShowHelp={() => setActiveDialog('help')}
         onShowSettings={() => setActiveDialog('options')}
         onShareWorkbook={(unitId) => { setTargetId(unitId); setActiveDialog('share'); }}
-        onSyncWorkbook={syncWorkbook}
         onTrashWorkbook={(unitId) => { setTargetId(unitId); setActiveDialog('trash'); }}
         userName={authSnapshot.displayName ?? undefined}
       />
@@ -442,11 +433,10 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         <Stack gap="lg">
           <Stack gap="xs">
             <Text size="sm" weight="semibold">默认位置与云端会话</Text>
-            <Text size="sm">当前默认新建位置：云端空间。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的全局偏好。</Text>
+            <Text size="sm">当前工作簿保存到云端空间。自动保存、自动同步和导入兼容级别保存到当前用户的全局偏好。</Text>
             <Select aria-label="原生文档导入兼容级别" disabled={!preferences || authSnapshot.phase !== 'authenticated'} value={preferences?.importCompatibility ?? 'B'} options={[{ value: 'A', label: '严格：无法安全保留则拒绝' }, { value: 'B', label: '平衡：编辑已支持部分并保留原文档' }, { value: 'C', label: '转换：仅允许明确的目标格式投影' }]} onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ importCompatibility: event.target.value as 'A' | 'B' | 'C' })); })} />
             <CheckToggle checked={preferences?.autoSave ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动保存" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSave: event.target.checked })); })} />
             <CheckToggle checked={preferences?.autoSync ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="自动同步" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ autoSync: event.target.checked })); })} />
-            <CheckToggle checked={preferences?.offlineCache ?? true} disabled={!preferences || authSnapshot.phase !== 'authenticated'} label="离线缓存" onChange={(event) => void executeSettings(async () => { setPreferences(await catalog.putUserPreferences({ offlineCache: event.target.checked })); })} />
             <Button disabled={authSnapshot.phase !== 'authenticated'} onClick={() => void auth.signOut()} size="sm" variant="outline">退出云端会话</Button>
           </Stack>
           <Stack gap="xs" className="border-t border-slate-100 pt-4">

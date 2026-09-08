@@ -10,6 +10,7 @@ import {
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
   validateUserPreferences,
+  validateUserPreferencesPatch,
   validatePivotDefinition,
   validateWorkbookSnapshot,
 } from './index';
@@ -196,12 +197,31 @@ test('WorkbookApiClient validates cursor pages and forwards cursor, limit, and a
 test('User preferences response validation rejects lossy or malformed preference values', () => {
   assert.deepEqual(validateUserPreferences({
     defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
-    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+    importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
   }), {
     defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
-    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+    importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
   });
-  assert.throws(() => validateUserPreferences({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'strict', theme: 'system' }), /importCompatibility/);
+  assert.throws(() => validateUserPreferences({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'C', theme: 'system' }), /unsupported field/);
+  assert.throws(() => validateUserPreferencesPatch({ offlineCache: true }), /unsupported field/);
+});
+
+test('Workbook catalog validation rejects local storage and obsolete offline states', async () => {
+  const staleFields = [
+    { storageLocation: 'remote' },
+    { syncStatus: 'pending' },
+    { syncStatus: 'offline' },
+  ];
+  for (const staleField of staleFields) {
+    const api = new WorkbookApiClient({
+      authTokenProvider: () => 'server-token',
+      fetchImpl: async () => new Response(JSON.stringify({
+        items: [{ unitId: 'unit-stale', name: 'Stale', revision: 1, updatedAt: '2026-08-24T00:00:00Z', role: 'owner', ...staleField }],
+        nextCursor: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    });
+    await assert.rejects(() => api.listWorkbookPage(), /unsupported field|syncStatus is invalid/);
+  }
 });
 
 test('history restore request is target-revision-only and client API posts no snapshot', async () => {

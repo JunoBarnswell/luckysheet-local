@@ -29,6 +29,14 @@ class NativeKernelCutoverMigrationTest {
             assertFalse(columnExists(connection, "WORKBOOKS", "SNAPSHOT_JSON"));
             assertFalse(tableExists(connection, "SNAPSHOT_CHECKPOINT"));
             assertTrue(tableExists(connection, "WORKBOOK_V10_MIGRATION_ARCHIVE"));
+            assertFalse(columnExists(connection, "WORKBOOKS", "STORAGE_LOCATION"));
+            assertFalse(columnExists(connection, "WORKBOOK_USER_STATE", "DEFAULT_CREATE_LOCATION"));
+            assertFalse(columnExists(connection, "WORKBOOK_USER_STATE", "OFFLINE_CACHE"));
+            assertFalse(columnExists(connection, "USER_PREFERENCE", "OFFLINE_CACHE"));
+            assertTrue(columnExists(connection, "WORKBOOK_USER_STATE", "AUTO_SAVE"));
+            assertTrue(columnExists(connection, "WORKBOOK_USER_STATE", "AUTO_SYNC"));
+            assertTrue(columnExists(connection, "USER_PREFERENCE", "AUTO_SAVE"));
+            assertTrue(columnExists(connection, "USER_PREFERENCE", "AUTO_SYNC"));
         }
     }
 

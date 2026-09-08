@@ -31,10 +31,9 @@ import type {
 
 export type WorkbookRole = WorkbookAclRole;
 export type WorkbookCatalogView = 'all' | 'recent' | 'owned' | 'shared' | 'trash';
-export type WorkbookStorageLocation = 'remote';
 export type WorkbookLifecycle = ProtocolWorkbookLifecycle;
 export type WorkbookSource = ProtocolWorkbookSourceKind;
-export type WorkbookSyncState = Exclude<ProtocolWorkbookSyncStatus, 'pending' | 'offline'>;
+export type WorkbookSyncState = ProtocolWorkbookSyncStatus;
 
 export interface WorkbookCatalogQuery {
   view?: WorkbookCatalogView;
@@ -57,7 +56,6 @@ export interface WorkbookCatalogEntry {
   name: string;
   revision: number;
   updatedAt: string;
-  storage: WorkbookStorageLocation;
   syncState: WorkbookSyncState;
   role: WorkbookRole;
   lifecycle: WorkbookLifecycle;

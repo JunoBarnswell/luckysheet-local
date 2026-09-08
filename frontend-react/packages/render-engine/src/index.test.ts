@@ -91,6 +91,7 @@ test('fractional device-pixel scroll redraws the affected pane', () => {
   assert.equal(fractional.hasDelta, true);
 
   const plan = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollY: 8.5 }),
     previousViewport: viewport(),
@@ -108,6 +109,7 @@ test('fractional device-pixel scroll redraws the affected pane', () => {
 test('device-pixel-aligned scroll still redraws instead of reusing canvas pixels', () => {
   const highDpiViewport = viewport({ devicePixelRatio: 1.25 });
   const aligned = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     previousViewport: highDpiViewport,
     viewport: { ...highDpiViewport, scrollY: 0.8 },
@@ -119,12 +121,14 @@ test('device-pixel-aligned scroll still redraws instead of reusing canvas pixels
 });
 
 test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', () => {
-  const initial = calculateRenderPlan({ skeleton, viewport: viewport() });
+  const initial = calculateRenderPlan({
+    sheetId: 'sheet-1', skeleton, viewport: viewport() });
   assert.equal(initial.fullRedraw, true);
   assert.equal(initial.reason, 'initial');
   assert.deepEqual(initial.layers.map((layer) => layer.mode), ['full', 'full', 'full', 'full', 'full']);
 
   const dirty = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport(),
     previousViewport: viewport(),
@@ -141,6 +145,7 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
   });
 
   const scroll = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollX: 10 }),
     previousViewport: viewport(),
@@ -153,6 +158,7 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
 
 test('RenderPlan redraws scrollable panes while preserving header offset', () => {
   const scroll = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollX: 10 }),
     previousViewport: viewport(),
@@ -165,7 +171,8 @@ test('RenderPlan redraws scrollable panes while preserving header offset', () =>
 
 test('RenderPlan carries the canonical header origin to chrome consumers', () => {
   const headerOffset = { x: 47, y: 24 };
-  const plan = calculateRenderPlan({ skeleton, viewport: viewport(), headerOffset });
+  const plan = calculateRenderPlan({
+    sheetId: 'sheet-1', skeleton, viewport: viewport(), headerOffset });
   assert.deepEqual(plan.headerOffset, headerOffset);
   assert.equal(plan.paneMap.panes[0]?.screenRect.x, headerOffset.x);
   assert.equal(plan.paneMap.panes[0]?.screenRect.y, headerOffset.y);
@@ -173,6 +180,7 @@ test('RenderPlan carries the canonical header origin to chrome consumers', () =>
 
 test('RenderPlan chromeDirty only redraws chrome layer', () => {
   const chromeOnly = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport(),
     previousViewport: viewport(),
@@ -183,7 +191,8 @@ test('RenderPlan chromeDirty only redraws chrome layer', () => {
 });
 
 test('CanvasRenderEngine invalidateChrome only marks chrome layer', () => {
-  const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
+  const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1', skeleton, viewport: viewport() });
   engine.render();
   engine.setChrome(createEmptyChromeState());
   const chromeOnly = engine.render();
@@ -195,6 +204,7 @@ test('CanvasRenderEngine invalidateChrome only marks chrome layer', () => {
 
 test('RenderPlan redraws grid layers without canvas self-copy', () => {
   const scroll = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollX: 10 }),
     previousViewport: viewport(),
@@ -207,6 +217,7 @@ test('RenderPlan redraws grid layers without canvas self-copy', () => {
 
 test('RenderPlan chromeDirty only repaints chrome layer', () => {
   const chromeOnly = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport(),
     previousViewport: viewport(),
@@ -219,7 +230,8 @@ test('RenderPlan chromeDirty only repaints chrome layer', () => {
 });
 
 test('CanvasRenderEngine keeps rendering state independent from DOM mounting', () => {
-  const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
+  const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1', skeleton, viewport: viewport() });
   const initial = engine.render();
   assert.equal(initial.fullRedraw, true);
   engine.scrollTo(10, 0);
@@ -234,7 +246,8 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
 });
 
 test('CanvasRenderEngine clears and redraws the visible pane on every scroll', () => {
-  const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
+  const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1', skeleton, viewport: viewport() });
   const initial = engine.render();
   assert.equal(initial.fullRedraw, true);
   engine.scrollTo(0, 40);
@@ -250,6 +263,7 @@ test('CanvasRenderEngine clears and redraws the visible pane on every scroll', (
 
 test('RenderPlan keeps frozen panes disjoint while scrolling only their movable axes', () => {
   const frozen = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollX: 10, scrollY: 8 }),
     previousViewport: viewport(),
@@ -267,6 +281,7 @@ test('RenderPlan keeps frozen panes disjoint while scrolling only their movable 
 
 test('RenderPlan redraws a scrollbar jump inside the current pane only', () => {
   const jumped = calculateRenderPlan({
+    sheetId: 'sheet-1',
     skeleton,
     viewport: viewport({ scrollY: 400 }),
     previousViewport: viewport(),
@@ -350,7 +365,8 @@ test('scroll planning stays inside one frame for 100k and 1m logical rows', () =
     for (let index = 1; index <= 120; index += 1) {
       const next = { ...previous, scrollY: (largeSkeleton.totalHeight - previous.height) * (index / 121) };
       const started = performance.now();
-      const plan = calculateRenderPlan({ skeleton: largeSkeleton, viewport: next, previousViewport: previous, headerOffset: defaultHeaderOffset() });
+      const plan = calculateRenderPlan({
+    sheetId: 'sheet-1', skeleton: largeSkeleton, viewport: next, previousViewport: previous, headerOffset: defaultHeaderOffset() });
       samples.push(performance.now() - started);
       assert.ok(plan.visibleRange && plan.visibleRange.endRow < rowCount);
       assert.ok(plan.layers.some((layer) => layer.layerId === 'grid' && layer.mode === 'dirty'));
@@ -371,12 +387,14 @@ test('hidden rows collapse layout geometry without losing model row identity', (
 
 test('chrome renders hidden row and column double-line indicators at the canonical collapsed boundary', () => {
   const hiddenSkeleton = new SheetSkeleton({ rowCount: 6, columnCount: 6, defaultRowHeight: 20, defaultColumnWidth: 50, hiddenRows: new Set([1, 2]), hiddenColumns: new Set([1, 2]) });
-  const plan = calculateRenderPlan({ skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }), headerOffset: defaultHeaderOffset() });
+  const plan = calculateRenderPlan({
+    sheetId: 'sheet-1', skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }), headerOffset: defaultHeaderOffset() });
   const { context, lineCalls } = recordingContext();
   drawChromeLayer({ context, skeleton: hiddenSkeleton, plan, chrome: createEmptyChromeState(), theme: DEFAULT_RENDER_THEME });
   assert.ok(lineCalls.some(({ from, to }) => Math.abs(from[0] - 87) < 0.01 && Math.abs(to[0] - 87) < 0.01));
   assert.ok(lineCalls.some(({ from, to }) => Math.abs(from[1] - 38) < 0.01 && Math.abs(to[1] - 38) < 0.01));
-  const engine = new CanvasRenderEngine({ skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }) });
+  const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1', skeleton: hiddenSkeleton, viewport: viewport({ width: 220, height: 120 }) });
   assert.deepEqual(engine.headerHitAtLocal({ x: 89, y: 10 })?.hiddenIndices, [1, 2]);
   assert.deepEqual(engine.headerHitAtLocal({ x: 10, y: 40 })?.hiddenIndices, [1, 2]);
 });
@@ -635,6 +653,7 @@ test('merged blank cells suppress only their internal grid boundaries', () => {
 test('pane translation preserves model coordinates for C9', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1',
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
   });
@@ -647,6 +666,7 @@ test('pane translation preserves model coordinates for C9', () => {
 test('contentToScreen selects the cell pane for frozen rows and columns', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1',
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
   });
@@ -662,6 +682,7 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
 test('pivot-control child hits are returned before the generic floating move hit', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1',
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
   });
@@ -685,7 +706,8 @@ test('pivot-control child hits are returned before the generic floating move hit
 
 test('saved frozen top-left cell seeds initial scroll without blocking earlier rows', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 200, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
-  const engine = new CanvasRenderEngine({ skeleton: renderSkeleton, viewport: { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 } });
+  const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1', skeleton: renderSkeleton, viewport: { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 } });
   engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 100, startColumn: 1, state: 'frozen' });
   assert.equal(engine.viewport.getSnapshot().scrollY, renderSkeleton.getRowTop(100));
   engine.scrollTo(0, 0);
@@ -740,6 +762,7 @@ test('selection header projection highlights ordinary rectangles and explicit sk
 test('content range screen geometry splits overlays across frozen panes', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
+    sheetId: 'sheet-1',
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 30, scrollY: 20, devicePixelRatio: 1 },
   });

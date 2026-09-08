@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import type { IconName, TemplatePreviewKind } from '@react-sheets/ui-system';
 
 export type WorkbookRole = 'owner' | 'editor' | 'commenter' | 'viewer';
-export type WorkbookStorageLocation = 'remote';
 export type WorkbookSyncStatus = 'synced' | 'syncing' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
 export type WorkbookSourceKind = 'native' | 'document-import';
@@ -12,7 +11,6 @@ export interface WorkbookCatalogItem {
   name: string;
   updatedAt: string;
   locationLabel: string;
-  storageLocation: WorkbookStorageLocation;
   syncStatus: WorkbookSyncStatus;
   lifecycle: WorkbookLifecycle;
   role: WorkbookRole;
@@ -59,7 +57,6 @@ export interface WorkbookHubController {
   onOpenInNewWindow: (unitId: string) => void;
   onImportWorkbook: () => void;
   onExportWorkbook: (unitId: string) => void;
-  onSyncWorkbook: (unitId: string) => void;
   onRenameWorkbook: (unitId: string) => void;
   onCopyWorkbook: (unitId: string) => void;
   onMoveWorkbook: (unitId: string) => void;

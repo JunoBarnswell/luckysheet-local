@@ -6,7 +6,6 @@ export interface WorkbookRowMenuProps {
   onOpen: (unitId: string) => void;
   onOpenInNewWindow: (unitId: string) => void;
   onExport: (unitId: string) => void;
-  onSync: (unitId: string) => void;
   onRename: (unitId: string) => void;
   onCopy: (unitId: string) => void;
   onMove: (unitId: string) => void;
@@ -19,14 +18,13 @@ export interface WorkbookRowMenuProps {
 
 const canEdit = (role: WorkbookRole) => role === 'owner' || role === 'editor';
 
-export function WorkbookRowMenu({ item, onOpen, onOpenInNewWindow, onExport, onSync, onRename, onCopy, onMove, onTrash, onRestore, onPurge, onFavorite, onShare }: WorkbookRowMenuProps) {
+export function WorkbookRowMenu({ item, onOpen, onOpenInNewWindow, onExport, onRename, onCopy, onMove, onTrash, onRestore, onPurge, onFavorite, onShare }: WorkbookRowMenuProps) {
   const isTrashed = item.lifecycle === 'trashed';
   const canManage = item.role === 'owner';
   const canRename = canEdit(item.role) && !isTrashed;
   const canMove = canEdit(item.role) && !isTrashed;
   const canTrash = canManage && !isTrashed;
   const canRestore = canManage && isTrashed;
-  const canSync = item.storageLocation !== 'remote' && !isTrashed;
 
   return (
     <DropdownMenu
@@ -37,9 +35,8 @@ export function WorkbookRowMenu({ item, onOpen, onOpenInNewWindow, onExport, onS
         <Stack gap="none" className="min-w-[190px]">
           <Text className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">文件操作</Text>
           {!isTrashed ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="folder-open" onClick={() => { onOpen(item.unitId); close(); }} size="sm" variant="ghost">打开</Button> : null}
-          {!isTrashed && item.storageLocation === 'remote' ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="external-link" onClick={() => { onOpenInNewWindow(item.unitId); close(); }} size="sm" variant="ghost">在新窗口打开</Button> : null}
+          {!isTrashed ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="external-link" onClick={() => { onOpenInNewWindow(item.unitId); close(); }} size="sm" variant="ghost">在新窗口打开</Button> : null}
           {!isTrashed ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="download" onClick={() => { onExport(item.unitId); close(); }} size="sm" variant="ghost">导出副本</Button> : null}
-          {canSync ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="cloud-check" onClick={() => { onSync(item.unitId); close(); }} size="sm" variant="ghost">同步到服务端</Button> : null}
           <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="star" onClick={() => { onFavorite(item.unitId, !item.favorite); close(); }} size="sm" variant="ghost">{item.favorite ? '取消星标' : '添加星标'}</Button>
           {!isTrashed ? <Stack gap="none" className="my-1 border-t border-slate-100 pt-1">
             {canRename ? <Button className="w-full justify-start rounded-md px-2.5 text-xs" icon="pencil" onClick={() => { onRename(item.unitId); close(); }} size="sm" variant="ghost">重命名</Button> : null}

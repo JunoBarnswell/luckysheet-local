@@ -44,6 +44,8 @@ export interface CanvasRenderEngineOptions {
   assetUrlCache?: Map<string, string>;
   assetUrlPending?: Set<string>;
   assetUrlErrors?: Map<string, string>;
+  prepareVisibleRanges?: (ranges: readonly CellRange[]) => Promise<void>;
+  onVisibleRangePreparationError?: (error: unknown) => void;
 }
 
 function cellMapKey(row: number, column: number): string {
@@ -85,7 +87,7 @@ export class CanvasRenderEngine {
   private disposed = false;
 
   private paneLayout: PaneLayout | null = null;
-  private readonly sheetId?: string;
+  private sheetId?: string;
   private readonly headerOrigin: Point = defaultHeaderOffset();
   private chrome: ChromeState = createEmptyChromeState();
   private floatables: readonly FloatingDrawable[] = [];
@@ -94,6 +96,10 @@ export class CanvasRenderEngine {
   private readonly assetUrlCache: Map<string, string>;
   private readonly assetUrlPending: Set<string>;
   private readonly assetUrlErrors: Map<string, string>;
+  private readonly prepareVisibleRanges?: (ranges: readonly CellRange[]) => Promise<void>;
+  private readonly onVisibleRangePreparationError?: (error: unknown) => void;
+  private renderRequestVersion = 0;
+  private preparationPending = false;
   private readonly layoutNeighborCache = new Map<string, { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] }>();
 
   constructor(options: CanvasRenderEngineOptions = {}) {
@@ -107,6 +113,8 @@ export class CanvasRenderEngine {
     this.assetUrlCache = options.assetUrlCache ?? new Map<string, string>();
     this.assetUrlPending = options.assetUrlPending ?? new Set<string>();
     this.assetUrlErrors = options.assetUrlErrors ?? new Map<string, string>();
+    this.prepareVisibleRanges = options.prepareVisibleRanges;
+    this.onVisibleRangePreparationError = options.onVisibleRangePreparationError;
     this.cellProvider = options.cellProvider
       ?? (options.cells ? createMapProvider(options.cells) : () => undefined);
     this.viewport.clampTo(this.skeletonModel.contentSize);
@@ -142,7 +150,7 @@ export class CanvasRenderEngine {
     this.scene.resize({ width, height }, devicePixelRatio);
     this.previousViewport = null;
     this.forceFullRedraw = true;
-    this.render();
+    this.requestRender();
   }
 
   unmount(): void {
@@ -437,6 +445,15 @@ export class CanvasRenderEngine {
     });
   }
 
+  setSheetId(sheetId: string): void {
+    this.assertActive();
+    if (this.sheetId === sheetId) return;
+    this.sheetId = sheetId;
+    this.previousViewport = null;
+    this.forceFullRedraw = true;
+    this.requestRender();
+  }
+
   private contentCellRect(cell: CellAddress): Rect | null {
     if (!this.sheetId) throw new Error('Geometry requires a canonical sheetId');
     const screen = cellRectFromKernel(this.sheetId, this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin, cell);
@@ -693,20 +710,47 @@ export class CanvasRenderEngine {
 
   requestRender(): void {
     this.assertActive();
-    if (!this.scene.mounted || this.frameHandle !== null) return;
+    this.renderRequestVersion += 1;
+    this.schedulePreparedRender();
+  }
+
+  private schedulePreparedRender(): void {
+    if (!this.scene.mounted || this.frameHandle !== null || this.preparationPending) return;
     if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
       this.frameUsesAnimationFrame = true;
       this.frameHandle = window.requestAnimationFrame(() => {
         this.frameHandle = null;
-        this.render();
+        void this.renderPreparedViewport();
       });
       return;
     }
     this.frameUsesAnimationFrame = false;
     this.frameHandle = setTimeout(() => {
       this.frameHandle = null;
-      this.render();
+      void this.renderPreparedViewport();
     }, 0) as unknown as number;
+  }
+
+  private async renderPreparedViewport(): Promise<void> {
+    if (this.disposed || !this.scene.mounted || this.preparationPending) return;
+    this.preparationPending = true;
+    let preparedVersion = -1;
+    try {
+      do {
+        preparedVersion = this.renderRequestVersion;
+        if (this.prepareVisibleRanges) {
+          const paneMap = computePaneMap(this.sheetId ?? '', this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin);
+          const ranges = paneMap.panes.flatMap((pane) => pane.visibleRange ? [pane.visibleRange] : []);
+          await this.prepareVisibleRanges(ranges);
+        }
+      } while (!this.disposed && this.scene.mounted && preparedVersion !== this.renderRequestVersion);
+      if (!this.disposed && this.scene.mounted) this.render();
+    } catch (error) {
+      this.onVisibleRangePreparationError?.(error);
+    } finally {
+      this.preparationPending = false;
+      if (!this.disposed && this.scene.mounted && preparedVersion !== this.renderRequestVersion) this.schedulePreparedRender();
+    }
   }
 
   getCanvas(layerId: string): HTMLCanvasElement | null {

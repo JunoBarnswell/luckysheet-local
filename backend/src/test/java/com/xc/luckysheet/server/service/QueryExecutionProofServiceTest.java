@@ -23,7 +23,7 @@ class QueryExecutionProofServiceTest {
 
     private WorkbookQueryExecutionEntity execution(long workbookRevision) {
         Instant now = Instant.now();
-        when(workbooks.findForUpdate("unit")).thenReturn(Optional.of(new WorkbookEntity("unit", "Workbook", workbookRevision, now, now, "actor", null, null, com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE, com.xc.luckysheet.server.contract.WorkbookSource.NATIVE, com.xc.luckysheet.server.contract.WorkbookLifecycle.ACTIVE, null)));
+        when(workbooks.findForUpdate("unit")).thenReturn(Optional.of(new WorkbookEntity("unit", "Workbook", workbookRevision, now, now, "actor", null, null, com.xc.luckysheet.server.contract.WorkbookSource.NATIVE, com.xc.luckysheet.server.contract.WorkbookLifecycle.ACTIVE, null)));
         WorkbookQueryExecutionEntity execution = new WorkbookQueryExecutionEntity("token", "unit", "query", "actor", 4, now, now.plusSeconds(60));
         when(executions.findForUpdate("unit", "query")).thenReturn(Optional.of(execution));
         return execution;
