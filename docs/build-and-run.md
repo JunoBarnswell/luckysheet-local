@@ -2,6 +2,8 @@
 
 浏览器版由 `frontend-react` 生成 `dist/web`，Java 21 Spring Boot 服务托管前端静态资源、API 和 WebSocket。构建不会改写 `frontend-react` 或 `backend/src/main/resources`；前端产物只会暂存到 `backend/target/generated-web`，由 Maven 复制到 JAR 的 `static/`。
 
+本分支为唯一实施基准，不使用 Rust、Cargo、WASM 共享内核或 native host。构建入口先执行 `node scripts/check-runtime-stack.mjs`，拒绝重新引入已移除的源码、产物或宿主依赖；该检查也接入前端边界门禁和 GitHub Actions。构建工具自身的成功/拒绝测试为 `node --test scripts/check-runtime-stack.test.mjs`，不属于前端单元测试。
+
 ## 开发
 
 先准备 Node 24、JDK 21 和 Maven 3.9。JDK 21 通过 `JAVA_HOME` 或 `-JavaHome` 选择；脚本会拒绝 Java 17、Node 20 或其他主版本。
@@ -49,6 +51,8 @@ mvn spring-boot:run
 安装程序默认监听 `127.0.0.1:8082`。局域网访问、HTTPS、认证和 `WEB_ALLOWED_ORIGINS` 应由部署配置明确开启，不由安装器猜测。
 
 ## 备份和离线恢复
+
+数据库必须与本分支的 Java 迁移链匹配。发现未来版本或校验不匹配时，服务以 `DATABASE_MIGRATION_INCOMPATIBLE` 中止启动，不执行自动降级或通用 repair。曾运行 Rust kernel v11 切换的部署，必须先恢复切换前的完整数据库备份和对应程序；不能将其 V10/V11/V12 与本分支 V10 拼接，也不能删除迁移记录绕过校验。
 
 H2 文件复制必须在服务停止后进行。备份脚本写入带 `manifest.json` 的 ZIP，清单包含每个文件的长度和 SHA-256：
 

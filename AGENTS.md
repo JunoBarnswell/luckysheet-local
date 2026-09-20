@@ -11,6 +11,7 @@
 
 ## Architecture and product constraints
 
+- The runtime stack is React/TypeScript + Java 21 + H2. Do not introduce Rust, Cargo, a native kernel host, WASM kernel artifacts, or a kernel-client bridge. This branch owns the canonical implementation; changing the runtime stack requires a new explicit user decision.
 - Implement the spreadsheet runtime as one canonical semantic chain across model, render, interaction, command, persistence, OOXML, and backend layers.
 - Do not add compatibility bridges, aliases, shims, double-write paths, parallel read models, or UI-only repair logic.
 - Destructive refactors are allowed when they remove obsolete abstractions and converge ownership; update all consumers and contracts in the same change.

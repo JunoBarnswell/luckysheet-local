@@ -1,0 +1,44 @@
+name: Java and browser verification
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+          cache: npm
+          cache-dependency-path: frontend-react/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Verify runtime ownership and build-tool rejection paths
+        run: |
+          node scripts/check-runtime-stack.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/check-runtime-stack.test.mjs
+      - name: Build browser assets and Java service with backend tests
+        run: ./scripts/build.ps1 -JavaHome $env:JAVA_HOME -MavenCommand mvn.cmd -LogRoot "$env:RUNNER_TEMP/react-sheets-build"
+      - name: Verify frontend boundaries and generated contracts
+        working-directory: frontend-react
+        run: npm run check:boundaries --silent
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-logs
+          path: |
+            ${{ runner.temp }}/react-sheets-build/*.log
+            backend/target/surefire-reports/*.xml
+          if-no-files-found: error

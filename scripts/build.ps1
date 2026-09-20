@@ -120,6 +120,7 @@ if (-not $nodeMatch.Success -or [int]$nodeMatch.Groups['major'].Value -ne 24) {
     throw "Node 24 is required. Observed: $nodeVersion"
 }
 Write-Host "Node: $nodeVersion"
+Invoke-LoggedCommand -Name 'runtime-stack' -FilePath $nodeCommand -Arguments @((Join-Path $PSScriptRoot 'check-runtime-stack.mjs')) -WorkingDirectory $repositoryRoot
 Write-Host "npm:  $(Get-VersionOutput -FilePath $npmCommand -Arguments @('--version'))"
 
 $selectedJavaHome = Select-JavaHome -RequestedHome $JavaHome
@@ -151,6 +152,11 @@ if (-not $SkipBackend) {
     Invoke-LoggedCommand -Name 'backend-clean' -FilePath $mavenPath -Arguments @('--batch-mode', '--no-transfer-progress', 'clean') -WorkingDirectory $backendRoot
 
     if (Test-Path -LiteralPath $generatedWeb) {
+        $resolvedGeneratedWeb = [IO.Path]::GetFullPath($generatedWeb)
+        $expectedGeneratedWeb = [IO.Path]::GetFullPath((Join-Path $backendRoot 'target\generated-web'))
+        if ($resolvedGeneratedWeb -ne $expectedGeneratedWeb -or -not $resolvedGeneratedWeb.StartsWith([IO.Path]::GetFullPath($repositoryRoot) + [IO.Path]::DirectorySeparatorChar)) {
+            throw "Generated web directory is outside the expected workspace build output."
+        }
         Remove-Item -LiteralPath $generatedWeb -Recurse -Force
     }
     New-Item -ItemType Directory -Path $generatedWeb -Force | Out-Null

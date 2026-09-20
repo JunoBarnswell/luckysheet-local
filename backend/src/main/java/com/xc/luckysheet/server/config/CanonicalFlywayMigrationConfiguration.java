@@ -31,12 +31,15 @@ public class CanonicalFlywayMigrationConfiguration {
                 continue;
             }
             if (state == MigrationState.MISSING_SUCCESS || state == MigrationState.MISSING_FAILED
-                    || state == MigrationState.FAILED || state == MigrationState.FUTURE_FAILED) {
-                throw new IllegalStateException("Flyway migration history is not canonical: " + describe(migration));
+                    || state == MigrationState.FAILED || state == MigrationState.FUTURE_FAILED
+                    || state == MigrationState.FUTURE_SUCCESS) {
+                throw new IllegalStateException("DATABASE_MIGRATION_INCOMPATIBLE: " + describe(migration)
+                        + "; startup stopped before repair or migration. Restore the matching application and pre-upgrade database backup.");
             }
             if (state.isApplied() && state.isResolved()
                     && (!migration.isChecksumMatching() || !migration.isDescriptionMatching())) {
-                throw new IllegalStateException("Flyway migration history does not match the resolved migration: " + describe(migration));
+                throw new IllegalStateException("DATABASE_MIGRATION_INCOMPATIBLE: resolved migration differs: " + describe(migration)
+                        + "; do not repair or downgrade this database. Restore the matching application and pre-upgrade database backup.");
             }
         }
         if (retiredMigrationRecorded) {
