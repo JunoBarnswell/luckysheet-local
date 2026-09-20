@@ -41,10 +41,10 @@ interface NodeRenderContext {
 
 const RIBBON_GROUP_WIDTHS: Partial<Record<RibbonGroupId, number>> = {
   pageSetup: 420, scaleToFit: 100, sheetOptions: 300,
-  calculation: 250, functionLibrary: 220, formulaAudit: 430, definedNames: 200,
+  calculation: 250, functionLibrary: 220, formulaAudit: 280, definedNames: 200,
   tables: 248, illustrations: 324, controls: 68, charts: 360,
   sparklines: 188, filters: 140, links: 68, insertComments: 80, text: 320, symbols: 140,
-  sortFilter: 280, dataTools: 340, findTransform: 340, outline: 440, whatIf: 180,
+  sortFilter: 280, dataTools: 340, findTransform: 300, outline: 440, whatIf: 180,
 };
 
 /** Reserve every group entry before expanding the highest-priority groups. */
@@ -96,7 +96,7 @@ function iconFor(node: { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) {
 }
 
 function commandOptions(node: Extract<RibbonLayoutNode, { kind: 'command' }>, context: NodeRenderContext): HomeRibbonCommandOptions {
-  const compactClass = context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0';
+  const compactClass = context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-6 !min-h-0';
   return {
     iconOverride: node.icon ? iconFor(node as { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) : undefined,
     iconOnly: false,
@@ -148,7 +148,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'split':
       return (
         <Inline key={node.id} gap="none" className={context.inMenu ? 'w-full flex-nowrap' : 'flex-nowrap'}>
-          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0' })}
+          {renderCommand(node.primary, { iconOverride: iconFor({ icon: node.primaryIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'min-w-0 flex-1 justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-6 !min-h-0' })}
           <DropdownMenu
             align="left"
             trigger={<Button aria-label="More options" data-ribbon-layout-node={`${node.id}.menu`} icon="chevron-down" iconOnly size="sm" variant="ghost" className="!h-7 !w-5 rounded-none px-0" />}
@@ -164,7 +164,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
         <DropdownMenu
           key={node.id}
           align="left"
-          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'w-full justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-7 !min-h-0' })}
+          trigger={renderCommand(node.trigger, { iconOverride: iconFor({ icon: node.triggerIcon }), ribbonLayoutNodeId: node.id, className: context.inMenu ? 'w-full justify-start rounded-none' : context.tab === 'data' ? '!h-6 !min-h-0 gap-1 px-1 text-[11px]' : '!h-6 !min-h-0' })}
         >
           <Stack gap="none" className="min-w-[12rem] p-1">
             {node.items.map((item) => <React.Fragment key={item.commandId}>{renderCommand(item.commandId, { iconOverride: iconFor(item), ribbonLayoutNodeId: `${node.id}.item.${item.commandId}`, className: 'w-full justify-start rounded-none' })}</React.Fragment>)}
@@ -195,7 +195,7 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
         {index > 0 ? <Divider orientation="vertical" className="my-3 h-[72px] border-slate-200" /> : null}
         {collapsed ? (
           <Stack data-ribbon-group={group.id} gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
-            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
+            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] !w-[60px] !min-w-0 flex-col gap-2 !px-1 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
               <Stack gap="sm" className="max-h-[60vh] min-w-[14rem] overflow-y-auto p-3" data-ribbon-overflow={group.id}>
                 <Text size="xs" tone="muted">{groupLabel}</Text>
                 {content}

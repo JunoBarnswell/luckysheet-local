@@ -27,7 +27,7 @@ export function RibbonTabPresenter({ tab, locale, layout, renderCommand }: Ribbo
         return <React.Fragment key={group.id}>
           {groupIndex ? <Divider orientation="vertical" className="my-3 h-[72px] border-slate-200" /> : null}
           {inMenu ? <Stack gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
-            <DropdownMenu align="left" trigger={<Button aria-label={`${label}工具`} title={label} variant="ghost" size="sm" className="h-[76px] w-full flex-col gap-2 text-xs"><Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" /><Text className="max-w-full truncate">{label}</Text><Icon name="chevron-down" size="xs" /></Button>}>
+            <DropdownMenu align="left" trigger={<Button aria-label={`${label}工具`} title={label} variant="ghost" size="sm" className="h-[76px] !w-[60px] !min-w-0 flex-col gap-2 !px-1 text-xs"><Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" /><Text className="max-w-full truncate">{label}</Text><Icon name="chevron-down" size="xs" /></Button>}>
               <Stack gap="xs" className="max-h-[60vh] min-w-[14rem] overflow-y-auto p-3"><Text size="xs" tone="muted">{label}</Text>{commands}</Stack>
             </DropdownMenu>
           </Stack> : <Stack gap="none" className="h-[104px] shrink-0 justify-between px-1.5 py-1" data-ribbon-group={group.id}>

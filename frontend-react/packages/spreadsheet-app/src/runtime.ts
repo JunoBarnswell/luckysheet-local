@@ -412,6 +412,7 @@ const formulaQueueStates = new WeakMap<SpreadsheetRuntime, FormulaQueueState>();
 
 function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').SaveState {
   if (runtime.localOnly) return runtime.remoteSyncRequested ? 'offline' : 'saved';
+  if (runtime.collaboration?.offlineQueue.getState() === 'error') return 'conflict';
   if (!runtime.remoteConnected) return 'offline';
   return runtime.collaboration?.offlineQueue.getPendingCount() ? 'syncing' : 'saved';
 }
@@ -927,6 +928,8 @@ export function startCollaborationSession(
       } catch (error) {
         runtime.ownOperationIds.delete(operation.operationId);
         runtime.collaboration?.reject(operation.operationId, error instanceof Error ? error : new Error(String(error)));
+        runtime.remoteConnected = false;
+        runtime.handlers.onPhaseChange?.('error');
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Change could not be committed');
         throw error;
@@ -1007,6 +1010,7 @@ export function startCollaborationSession(
       void (async () => {
         const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
         if (!active || runtime.disposed) return;
+        runtime.handlers.onAccessRole?.(access.role);
         hydrateRuntime(runtime, snapshot);
         runtime.collaboration?.setRevision(snapshot.revision);
         await loadHistoryAndReplayPending(runtime);
@@ -1014,7 +1018,6 @@ export function startCollaborationSession(
         synchronizing = false;
         for (const message of deferredMessages.splice(0)) applyRemote(message);
         if (synchronizationFailed) return;
-        runtime.handlers.onAccessRole?.(access.role);
         runtime.remoteConnected = true;
         runtime.collaboration?.offlineQueue.setOnline(true);
         runtime.handlers.onMutationsApplied?.();
@@ -1179,6 +1182,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
     if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
+    runtime.handlers.onAccessRole?.(access.role);
     hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
@@ -1187,7 +1191,6 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     await loadHistoryAndReplayPending(runtime);
     if (!isActive()) return;
     runtime.remoteConnected = false;
-    runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
       runtime.handlers.onSaveState?.('saved');
       runtime.handlers.onNotice?.('Workbook restored from server');
