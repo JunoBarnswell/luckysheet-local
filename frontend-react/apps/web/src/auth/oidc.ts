@@ -4,6 +4,9 @@ import type { AuthTokenProvider } from '@react-sheets/protocol';
 export type AuthPhase = 'anonymous' | 'authenticated' | 'error' | 'loading' | 'unconfigured';
 
 export interface AuthSnapshot {
+  mode?: 'local' | 'oidc';
+  admin?: boolean;
+  bootstrapRequired?: boolean;
   accessToken: string | null;
   displayName: string | null;
   error: string | null;
@@ -12,6 +15,9 @@ export interface AuthSnapshot {
 }
 
 export interface AuthSession {
+  getCsrfToken?: () => string | null;
+  authenticate?: (username: string, password: string) => Promise<void>;
+  bootstrap?: (token: string, username: string, password: string, displayName: string) => Promise<void>;
   getAccessToken: AuthTokenProvider;
   getSnapshot: () => AuthSnapshot;
   initialize: () => Promise<void>;
@@ -84,7 +90,7 @@ function toSnapshot(user: User | null, phase: AuthPhase, error: string | null = 
   };
 }
 
-class BrowserOidcSession implements AuthSession {
+export class BrowserOidcSession implements AuthSession {
   private readonly configuration = readConfiguration();
   private readonly listeners = new Set<() => void>();
   private readonly manager: UserManager | null;
@@ -189,11 +195,4 @@ class BrowserOidcSession implements AuthSession {
     this.snapshot = snapshot;
     for (const listener of this.listeners) listener();
   }
-}
-
-let session: AuthSession | null = null;
-
-export function getAuthSession(): AuthSession {
-  session ??= new BrowserOidcSession();
-  return session;
 }

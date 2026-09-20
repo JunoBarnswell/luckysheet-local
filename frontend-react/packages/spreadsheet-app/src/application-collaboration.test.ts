@@ -57,7 +57,7 @@ describe('WorkbookSession collaboration integration', () => {
     registerSpreadsheetFeatures(runtime, new DrawingRuntime());
     const session = new CollaborationSession(runtime);
     session.applyRemote({
-      schema: 'OperationEnvelope',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
       operationId: 'remote-op',
       unitId: 'wb-collab',
       actorId: 'actor-2',
@@ -91,7 +91,7 @@ describe('WorkbookSession collaboration integration', () => {
     const affectedRanges = [1, 2].map((row) => ({ sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: 0 }));
 
     session.applyRemote({
-      schema: 'OperationEnvelope', operationId: 'remote-rows-visibility', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-rows-visibility', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
       clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
       mutations: [{ id: 'rows.visibility', sheetId, params: { sheetId, states: [{ row: 1, hidden: true }, { row: 2, hidden: true }] }, affectedRanges }],
     });
@@ -108,7 +108,7 @@ describe('WorkbookSession collaboration integration', () => {
     const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
 
     session.applyRemote({
-      schema: 'OperationEnvelope', operationId: 'remote-font', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-font', unitId: workbook.unitId, actorId: 'actor-2', origin: 'client',
       clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
       mutations: [{ id: 'style.set', sheetId: sheet.id, params: { sheetId: sheet.id, range, style: { fontFamily: '  aRiAl  ' } }, affectedRanges: [range] }],
     });
@@ -116,7 +116,7 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
 
     assert.throws(() => session.applyRemote({
-      schema: 'OperationEnvelope', operationId: 'remote-empty-font', unitId: workbook.unitId, actorId: 'actor-3', origin: 'client',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-empty-font', unitId: workbook.unitId, actorId: 'actor-3', origin: 'client',
       clientSequence: 2, baseRevision: 1, revision: 2, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
       mutations: [{ id: 'style.set', sheetId: sheet.id, params: { sheetId: sheet.id, range, style: { fontFamily: '   ' } }, affectedRanges: [range] }],
     }), /must not be empty/);
@@ -136,7 +136,7 @@ describe('WorkbookSession collaboration integration', () => {
     });
     const session = new CollaborationSession(runtime);
     session.applyRemote({
-      schema: 'OperationEnvelope', operationId: 'remote-clear', unitId: 'wb-clear-replay', actorId: 'actor-2', origin: 'client',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-clear', unitId: 'wb-clear-replay', actorId: 'actor-2', origin: 'client',
       clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
       mutations: [{
         id: 'range.clear', sheetId: sheet.id,

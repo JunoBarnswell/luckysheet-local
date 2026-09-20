@@ -9,6 +9,7 @@ import java.util.Objects;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record OperationEnvelope(
+        @JsonProperty("clientSessionId") String clientSessionId,
         @JsonProperty("schema") String schema,
         @JsonProperty("operationId") String operationId,
         @JsonProperty("unitId") String unitId,
@@ -22,6 +23,7 @@ public record OperationEnvelope(
 
     @JsonCreator
     public OperationEnvelope {
+        if (clientSessionId == null || clientSessionId.isBlank() || clientSessionId.length() > 200) throw new IllegalArgumentException("clientSessionId is required and must be at most 200 characters");
         if (!SCHEMA.equals(schema)) throw new IllegalArgumentException("schema must be OperationEnvelope");
         if (operationId == null || operationId.isBlank()) throw new IllegalArgumentException("operationId is required");
         if (unitId == null || unitId.isBlank()) throw new IllegalArgumentException("unitId is required");
@@ -33,6 +35,7 @@ public record OperationEnvelope(
     }
 
     public OperationEnvelope(
+            String clientSessionId,
             String schema,
             String operationId,
             String unitId,
@@ -41,6 +44,6 @@ public record OperationEnvelope(
             List<OperationMutation> mutations,
             Instant createdAt
     ) {
-        this(schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt, null);
+        this(clientSessionId, schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt, null);
     }
 }

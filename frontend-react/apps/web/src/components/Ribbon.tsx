@@ -189,6 +189,7 @@ function CatalogButton({
   const definition = getRibbonCommandDefinition(id);
   const enabled = isRibbonCommandEnabled(definition, context);
   const label = labelOverride ?? translateRibbonText(locale, definition.labelKey);
+  const displayLabel = label.replace(/\s*[（(](?:Ctrl|Alt|Shift|⌘)[^）)]*[）)]/g, '');
   const isNarrow = layout === 'narrow';
   const compactIcon = isNarrow && definition.display === 'small';
   const compactTile = isNarrow && textBelow;
@@ -222,7 +223,7 @@ function CatalogButton({
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
     >
-      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{label}{trailingNode}</Inline> : label}
+      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{displayLabel}{trailingNode}</Inline> : displayLabel}
     </Button>
   );
 }

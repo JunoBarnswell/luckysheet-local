@@ -19,7 +19,7 @@ class OperationEnvelopeTest {
 
     @Test
     void requestContractDoesNotAllowClientActorOrRanges() throws Exception {
-        OperationEnvelope operation = new OperationEnvelope(
+        OperationEnvelope operation = new OperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,
                 "op-1",
                 "unit-1",
@@ -41,7 +41,7 @@ class OperationEnvelopeTest {
         Instant clientClock = Instant.parse("2000-01-01T00:00:00Z");
         Instant serverClock = Instant.parse("2026-08-23T00:00:00Z");
         CommittedOperationEnvelope operation = CommittedOperationEnvelope.from(
-                new OperationEnvelope(OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), clientClock),
+                new OperationEnvelope("test-session", OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), clientClock),
                 "subject-1", 1, serverClock, List.of(new CommittedOperationMutation("cell.set", "sheet-1", params, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))))
         );
         String json = mapper.writeValueAsString(operation);

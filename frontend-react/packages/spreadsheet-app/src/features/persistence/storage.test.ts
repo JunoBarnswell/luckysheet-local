@@ -28,7 +28,7 @@ describe('page-session memory persistence', () => {
   it('persists only a monotonic pending-operation journal with checksum validation', () => {
     const store = new OperationJournalStore();
     const operation: OperationEnvelope = {
-      schema: 'OperationEnvelope', operationId: 'offline-op-1', unitId: 'wb-operation-store',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'offline-op-1', unitId: 'wb-operation-store',
       clientSequence: 7, baseRevision: 3, mutations: [], createdAt: '2026-08-23T00:00:00.000Z',
     };
     store.write(operation.unitId, [operation], operation.clientSequence);
@@ -80,7 +80,7 @@ describe('page-session memory persistence', () => {
     const snapshot = new WorkbookModel('wb-operation', 'Operation').snapshot();
     const created = await persistence.checkpoint(snapshot, 1, 0, 'local-only');
     const operation: OperationEnvelope = {
-      schema: 'OperationEnvelope', operationId: 'operation-1', unitId: snapshot.unitId,
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'operation-1', unitId: snapshot.unitId,
       clientSequence: 1, baseRevision: 0, mutations: [], createdAt: new Date().toISOString(),
     };
     const nextRevision = await persistence.commitOperationJournal(snapshot.unitId, [operation], 1, created.storageRevision);

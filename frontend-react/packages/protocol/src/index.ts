@@ -76,6 +76,7 @@ export interface OperationIntent {
 }
 
 export interface OperationEnvelope {
+  clientSessionId: string;
   schema: typeof OPERATION_ENVELOPE_SCHEMA;
   operationId: string;
   unitId: string;
@@ -181,6 +182,7 @@ export function normalizePageLimit(value: number | undefined): number {
 export interface WorkbookApiClientOptions {
   baseUrl?: string;
   authTokenProvider?: AuthTokenProvider;
+  csrfTokenProvider?: () => string | null;
   shareTokenProvider?: ShareTokenProvider;
   fetchImpl?: typeof fetch;
 }
@@ -1243,6 +1245,7 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
 export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   if (!value || typeof value !== 'object') throw new Error('OperationEnvelope must be an object');
   const input = value as Record<string, unknown>;
+  if (!isNonEmptyString(input.clientSessionId) || input.clientSessionId.length > 200) throw new Error('clientSessionId is required');
   if (input.schema !== OPERATION_ENVELOPE_SCHEMA) throw new Error('Unsupported operation schema');
   if (!isNonEmptyString(input.operationId) || !isNonEmptyString(input.unitId)) {
     throw new Error('operationId and unitId are required');
@@ -1312,6 +1315,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     schema: OPERATION_ENVELOPE_SCHEMA,
     operationId: input.operationId,
     unitId: input.unitId,
+    clientSessionId: input.clientSessionId,
     clientSequence: Number(input.clientSequence),
     baseRevision: Number(input.baseRevision),
     mutations,
@@ -1620,22 +1624,25 @@ export class WorkbookApiClient {
   private readonly authTokenProvider?: AuthTokenProvider;
   private readonly shareTokenProvider?: ShareTokenProvider;
   private readonly fetchImpl: typeof fetch;
+  private readonly csrfTokenProvider?: () => string | null;
 
   constructor(options: WorkbookApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? '';
     this.authTokenProvider = options.authTokenProvider;
     this.shareTokenProvider = options.shareTokenProvider;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.csrfTokenProvider = options.csrfTokenProvider;
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const token = (await this.authTokenProvider?.())?.trim();
     const shareToken = token ? undefined : (await this.shareTokenProvider?.())?.trim();
-    if (!token && !shareToken) throw new AuthenticationRequiredError();
     const headers = new Headers(init.headers);
     if (token) headers.set('authorization', `Bearer ${token}`);
-    else headers.set('x-workbook-share-token', shareToken!);
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    else if (shareToken) headers.set('x-workbook-share-token', shareToken);
+    const csrf = this.csrfTokenProvider?.();
+    if (csrf && !['GET', 'HEAD', 'OPTIONS'].includes(init.method ?? 'GET')) headers.set('X-CSRF-TOKEN', csrf);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers, credentials: 'same-origin' });
     if (response.ok) return response;
 
     let payload: Partial<ApiError> | undefined;
@@ -1738,6 +1745,10 @@ export class WorkbookApiClient {
     } while (!options.signal?.aborted);
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     return items;
+  }
+
+  async getWorkbookSummary(unitId: string): Promise<WorkbookSummary> {
+    return (await this.request(`/api/workbooks/${encodeURIComponent(unitId)}`)).json();
   }
 
   async updateWorkbook(unitId: string, patch: WorkbookMetadataPatch): Promise<WorkbookSummary> {
@@ -1889,6 +1900,7 @@ export class WorkbookApiClient {
     const format = response.headers.get('x-native-format') ?? undefined;
     if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
+    if (await sha256(artifact) !== checksum.toLowerCase()) throw new ApiRequestError('原生文件校验失败，请恢复备份', 409, 'CONFLICT');
     return {
       artifact,
       metadata: {
@@ -1910,6 +1922,15 @@ export class WorkbookApiClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(operation),
     });
+  }
+
+  async getOperationResult(unitId: string, operationId: string): Promise<OperationCommitResponse | null> {
+    try {
+      return await this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations/${encodeURIComponent(operationId)}`);
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 404) return null;
+      throw error;
+    }
   }
 
   async checkpointWorkbook(unitId: string): Promise<CheckpointResponse> {
@@ -2123,6 +2144,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     schema: input.schema,
     operationId: input.operationId,
     unitId: input.unitId,
+    clientSessionId: input.clientSessionId,
     clientSequence: input.clientSequence,
     baseRevision: input.baseRevision,
     createdAt: input.createdAt,
@@ -2330,11 +2352,6 @@ export class CollabSocketClient {
       this.failClosed(cause instanceof Error ? cause : new Error('Unable to resolve bearer token'));
       return;
     }
-    if (!token && !shareToken) {
-      this.connecting = false;
-      this.failClosed(new AuthenticationRequiredError());
-      return;
-    }
     if (this.closedByUser) {
       this.connecting = false;
       return;
@@ -2342,7 +2359,7 @@ export class CollabSocketClient {
     const factory = this.options.webSocketFactory ?? ((target: string, protocols: string | string[]) => new WebSocket(target, protocols));
     const socket = token
       ? factory(this.url, createBearerSubprotocol(token))
-      : factory(withShareToken(this.url, shareToken!), []);
+      : factory(shareToken ? withShareToken(this.url, shareToken) : this.url, []);
     this.socket = socket;
     this.connecting = false;
 

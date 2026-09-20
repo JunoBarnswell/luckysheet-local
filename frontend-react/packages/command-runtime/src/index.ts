@@ -746,6 +746,8 @@ export class CommandRuntime {
     this.mutationGuard = guard;
   }
 
+  getMutationGuard(): MutationGuard | undefined { return this.mutationGuard; }
+
   setRevisionProvider(provider: (() => number) | undefined): void {
     this.revisionProvider = provider;
   }

@@ -107,6 +107,16 @@ public class WorkbookController {
                 CursorPageRequest.page(cursor), CursorPageRequest.limit(limit));
     }
 
+    @GetMapping("/{unitId}")
+    public WorkbookSummary summary(@PathVariable String unitId, Authentication authentication) {
+        return catalog.readSummary(unitId, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping("/{unitId}/operations/{operationId}")
+    public WorkbookOperationService.CommitResult operationResult(@PathVariable String unitId, @PathVariable String operationId, Authentication authentication) {
+        return operations.operationResult(unitId, operationId, ActorIdentity.subject(authentication));
+    }
+
     @PatchMapping("/{unitId}")
     public WorkbookSummary update(@PathVariable String unitId, @Valid @RequestBody UpdateWorkbookRequest request, Authentication authentication) {
         return catalog.update(unitId, request, ActorIdentity.subject(authentication));

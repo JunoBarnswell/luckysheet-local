@@ -2,7 +2,6 @@ import React, { type ReactNode } from 'react';
 import {
   Box,
   Button,
-  AssetIcon,
   Divider,
   DropdownMenu,
   Inline,
@@ -84,28 +83,20 @@ const DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, st
 };
 
 const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  clipboard: 'w-[141px]',
-  font: 'w-[347px]',
-  alignment: 'w-[342px]',
-  number: 'w-[201px]',
-  styles: 'w-[251px]',
-  cells: 'w-[191px]',
-  editing: 'w-[310px]',
+  clipboard: 'w-[140px]', font: 'w-[244px]', alignment: 'w-[224px]',
+  number: 'w-[140px]', styles: 'w-[188px]', cells: 'w-[164px]', editing: 'w-[210px]',
 };
 
-const HOME_COMPACT_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  clipboard: 'w-[124px]',
-  font: 'w-[224px]',
-  alignment: 'w-[248px]',
-  number: 'w-[154px]',
-  styles: 'w-[220px]',
-  cells: 'w-[144px]',
-  editing: 'w-[300px]',
-};
+function collapseHomeGroup(groupId: RibbonGroupId, width: number): boolean {
+  return (width < 1440 && (groupId === 'styles' || groupId === 'cells'))
+    || (width < 1100 && groupId === 'editing')
+    || (width < 920 && groupId === 'alignment')
+    || (width < 760 && groupId === 'number');
+}
 
 export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
   if (tab === 'home') {
-    const widths = mode === 'wide' || width >= 1440 ? HOME_RIBBON_GROUP_WIDTH_CLASSES : HOME_COMPACT_GROUP_WIDTH_CLASSES;
+    const widths = HOME_RIBBON_GROUP_WIDTH_CLASSES;
     return widths[groupId] ?? 'min-w-[72px] flex-1';
   }
   const widths = mode === 'wide'
@@ -136,28 +127,29 @@ const HOME_COLUMN_CLASSES: Readonly<Record<string, string>> = {
   'alignment.wrap-merge': 'gap-1 items-start justify-center',
   'number.layout': 'gap-1 items-start justify-center',
   'editing.stack': 'gap-0.5 items-start justify-center',
+  'editing.search-stack': 'gap-1 items-start justify-center',
 };
 
 const HOME_ROW_CLASSES: Readonly<Record<string, string>> = {
-  'clipboard.layout': 'h-[104px] gap-1',
+  'clipboard.layout': 'h-[80px] gap-1',
   'font.controls': 'gap-1',
   'font.actions': 'gap-1',
-  'alignment.layout': 'h-[104px] gap-2',
+  'alignment.layout': 'h-[80px] gap-2',
   'alignment.controls.top': 'gap-1',
   'alignment.controls.bottom': 'gap-1',
   'number.actions': 'gap-1',
-  'styles.actions': 'h-[104px] gap-1',
-  'cells.actions': 'h-[104px] gap-1',
-  'editing.layout': 'h-[104px] w-full gap-3',
+  'styles.actions': 'h-[80px] gap-1',
+  'cells.actions': 'h-[80px] gap-1',
+  'editing.layout': 'h-[80px] w-full gap-1',
 };
 
 function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, props: RibbonLayoutRendererProps): ReactNode {
   const { renderCommand, renderSurface } = props;
   switch (node.kind) {
     case 'column':
-      return <Stack key={node.id} gap="none" className={`min-w-0 items-center justify-center ${context.tab === 'home' ? HOME_COLUMN_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
+      return <Stack key={node.id} gap="none" className={`min-w-0 items-center justify-center ${context.tab === 'home' && !context.inMenu ? HOME_COLUMN_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
     case 'row':
-      return <Inline key={node.id} gap="none" className={`min-w-0 flex-nowrap items-center content-center ${context.tab === 'home' ? HOME_ROW_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Inline>;
+      return <Inline key={node.id} gap="none" className={`min-w-0 flex-nowrap items-center content-center ${context.tab === 'home' && !context.inMenu ? HOME_ROW_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Inline>;
     case 'stack':
       return <Stack key={node.id} gap="none" className="min-w-0 items-center justify-center">{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
     case 'command':
@@ -208,23 +200,33 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const isHome = tab === 'home';
   const groups = spec.groups.map((group, index) => {
     const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
-    const content = group.children.map((node) => renderLayoutNode(node, { inMenu: false, tab }, props));
+    const collapsed = isHome && collapseHomeGroup(group.id, layout.width);
+    const content = group.children.map((node) => renderLayoutNode(node, { inMenu: collapsed, tab }, props));
     return (
       <React.Fragment key={group.id}>
-        {index > 0 ? isHome
-          ? <Box className="relative h-[110px] w-0 shrink-0"><AssetIcon src="/figma/home-ribbon/divider.svg" className="absolute left-[-55px] top-[54px] h-px w-[110px] max-w-none rotate-90" /></Box>
-          : <Divider orientation="vertical" className={RIBBON_DENSITY_CLASSES.groupContent} /> : null}
-        <Stack data-ribbon-group={group.id} gap="none" className={`${RIBBON_DENSITY_CLASSES.groupContent} relative min-w-0 shrink-0 justify-between overflow-hidden ${isHome ? 'pb-0.5' : 'px-1'} ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
-          <Inline gap="none" className={`${RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center content-center`}>{content}</Inline>
-          <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} ${isHome ? 'text-[10px] font-normal text-[var(--home-ribbon-color-caption)]' : 'font-medium text-[#5b555a]'} shrink-0 truncate text-center select-none`}>{groupLabel}</Text>
-        </Stack>
+        {index > 0 ? <Divider orientation="vertical" className={isHome ? 'my-3 h-[72px] border-slate-200' : RIBBON_DENSITY_CLASSES.groupContent} /> : null}
+        {collapsed ? (
+          <Stack data-ribbon-group={group.id} gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
+            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} icon="chevron-down" size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}</Button>}>
+              <Stack gap="sm" className="min-w-[14rem] p-3" data-ribbon-overflow={group.id}>
+                <Text size="xs" tone="muted">{groupLabel}</Text>
+                {content}
+              </Stack>
+            </DropdownMenu>
+          </Stack>
+        ) : (
+          <Stack data-ribbon-group={group.id} gap="none" className={`${isHome ? 'h-[104px] px-1.5' : RIBBON_DENSITY_CLASSES.groupContent + ' px-1'} relative min-w-0 shrink-0 justify-between ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+            <Inline gap="none" className={`${isHome ? 'h-[80px]' : RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center`}>{content}</Inline>
+            <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} shrink-0 truncate text-center text-[10px] font-normal text-slate-500 select-none`}>{groupLabel}</Text>
+          </Stack>
+        )}
       </React.Fragment>
     );
   });
   return (
-    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${isHome ? 'h-[112px]' : RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
       {isHome
-        ? <Inline gap="none" className="h-full min-w-[1783px] flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
+        ? <Inline gap="none" className="h-full min-w-max flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
         : tab === 'insert' ? <Inline gap="none" className="h-full min-w-[1905px] flex-1 bg-[#fffdf9]">{groups}</Inline> : groups}
     </Inline>
   );

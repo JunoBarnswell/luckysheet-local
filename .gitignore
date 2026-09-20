@@ -18,6 +18,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 package-lock.json
+!frontend-react/package-lock.json
 yarn.lock
 dist/
 docs/.vuepress/dist

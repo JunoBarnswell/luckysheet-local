@@ -17,7 +17,7 @@ describe('collaboration helpers', () => {
   it('builds the single client operation contract without server-owned fields', () => {
     const operation = buildOperation('op-1', 'wb-1', 1, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
     assert.deepEqual(operation, {
-      schema: 'OperationEnvelope',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
       operationId: 'op-1',
       unitId: 'wb-1',
       clientSequence: 1,
@@ -129,7 +129,7 @@ describe('collaboration helpers', () => {
     registerSheetCommands(runtime);
     const session = new CollaborationSession(runtime);
     assert.throws(() => session.applyRemote({
-      schema: 'OperationEnvelope',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
       operationId: 'remote-invalid',
       unitId: workbook.unitId,
       actorId: 'peer',
@@ -179,7 +179,7 @@ describe('collaboration helpers', () => {
     // The public rebase call proves the transform itself; the queued rewrite
     // is exercised by applying the same committed operation through the wire.
     session.applyRemote({
-      schema: 'OperationEnvelope',
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
       operationId: 'remote-insert',
       unitId: 'wb-1',
       actorId: 'peer',

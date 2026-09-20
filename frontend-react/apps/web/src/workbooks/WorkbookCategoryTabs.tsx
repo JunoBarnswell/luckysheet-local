@@ -9,7 +9,6 @@ export interface WorkbookCategoryTabsProps {
 const tabs: readonly { id: WorkbookCategoryTab; label: string }[] = [
   { id: 'recent', label: '最近' },
   { id: 'cloud', label: '我的云文档' },
-  { id: 'local', label: '本地文件' },
   { id: 'shared', label: '与我共享' },
 ];
 

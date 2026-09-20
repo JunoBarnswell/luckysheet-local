@@ -12,7 +12,7 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "operation_log", indexes = @Index(name = "operation_log_unit_revision_idx", columnList = "unit_id,revision"),
-        uniqueConstraints = @jakarta.persistence.UniqueConstraint(name = "operation_log_unit_actor_sequence_uk", columnNames = {"unit_id", "actor_subject", "client_sequence"}))
+        uniqueConstraints = @jakarta.persistence.UniqueConstraint(name = "operation_log_unit_actor_session_sequence_uk", columnNames = {"unit_id", "actor_subject", "client_session_id", "client_sequence"}))
 public class OperationEntity {
     @Id
     @Column(name = "operation_id", nullable = false, length = 200)
@@ -30,6 +30,9 @@ public class OperationEntity {
     @Column(name = "client_sequence", nullable = false)
     private long clientSequence;
 
+    @Column(name = "client_session_id", nullable = false, length = 200)
+    private String clientSessionId;
+
     @Column(name = "base_revision", nullable = false)
     private long baseRevision;
 
@@ -43,13 +46,14 @@ public class OperationEntity {
     protected OperationEntity() {
     }
 
-    public OperationEntity(String operationId, String unitId, long revision, String actorSubject, long clientSequence,
+    public OperationEntity(String operationId, String unitId, long revision, String actorSubject, String clientSessionId, long clientSequence,
                            long baseRevision, String envelopeJson, Instant committedAt) {
         this.operationId = operationId;
         this.unitId = unitId;
         this.revision = revision;
         this.actorSubject = actorSubject;
         this.clientSequence = clientSequence;
+        this.clientSessionId = clientSessionId;
         this.baseRevision = baseRevision;
         this.envelopeJson = envelopeJson;
         this.committedAt = committedAt;
@@ -59,6 +63,7 @@ public class OperationEntity {
     public String getUnitId() { return unitId; }
     public long getRevision() { return revision; }
     public String getActorSubject() { return actorSubject; }
+    public String getClientSessionId() { return clientSessionId; }
     public long getClientSequence() { return clientSequence; }
     public long getBaseRevision() { return baseRevision; }
     public String getEnvelopeJson() { return envelopeJson; }

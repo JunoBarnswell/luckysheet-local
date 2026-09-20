@@ -5,6 +5,145 @@ info:
 servers:
   - url: /
 paths:
+  /api/auth/config:
+    get:
+      operationId: getAuthConfig
+      responses:
+        '200':
+          description: Configured authentication mode
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthConfigResponse'
+  /api/auth/session:
+    get:
+      operationId: getAuthSession
+      responses:
+        '200':
+          description: Current browser session and recovery state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+  /api/auth/bootstrap:
+    post:
+      operationId: bootstrapLocalAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+      responses:
+        '200':
+          description: Established administrator session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+  /api/auth/login:
+    post:
+      operationId: loginLocalUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Established user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+  /api/auth/logout:
+    post:
+      operationId: logoutLocalUser
+      responses:
+        '204':
+          description: Session invalidated
+  /api/admin/users:
+    get:
+      operationId: listLocalUsers
+      responses:
+        '200':
+          description: Local users visible to an administrator
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+    post:
+      operationId: createLocalUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '200':
+          description: Created local user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+  /api/admin/users/{id}:
+    patch:
+      operationId: setLocalUserEnabled
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnabledRequest'
+      responses:
+        '200':
+          description: Updated local user state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+  /api/admin/users/{id}/password:
+    post:
+      operationId: resetLocalUserPassword
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordRequest'
+      responses:
+        '200':
+          description: Updated local user credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+  /api/workbooks/{unitId}:
+    get:
+      operationId: getWorkbookSummary
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+      responses:
+        '200':
+          description: Workbook summary for the authenticated actor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkbookSummary'
   /api/workbooks:
     get:
       operationId: listWorkbooks
@@ -51,6 +190,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommitResponse'
+  /api/workbooks/{unitId}/operations/{operationId}:
+    get:
+      operationId: getOperationResult
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - name: operationId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200':
+          description: Previously committed operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResult'
   /api/workbooks/{unitId}/revisions:
     get:
       operationId: listRevisions
@@ -182,6 +337,84 @@ components:
       required: false
       schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
   schemas:
+    AuthConfigResponse:
+      type: object
+      required: [mode]
+      properties:
+        mode: { enum: [local, oidc] }
+    AuthSessionResponse:
+      type: object
+      required: [authenticated, subject, displayName, admin, bootstrapRequired, csrfToken]
+      properties:
+        authenticated: { type: boolean }
+        subject: { type: [string, 'null'] }
+        displayName: { type: [string, 'null'] }
+        admin: { type: boolean }
+        bootstrapRequired: { type: boolean }
+        csrfToken: { type: string }
+    BootstrapRequest:
+      type: object
+      required: [token, username, password, displayName]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 512 }
+        username: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 12, maxLength: 200 }
+        displayName: { type: string, minLength: 1, maxLength: 200 }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 12, maxLength: 200 }
+    CreateUserRequest:
+      type: object
+      required: [username, password, displayName, admin]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 12, maxLength: 200 }
+        displayName: { type: string, minLength: 1, maxLength: 200 }
+        admin: { type: boolean }
+    EnabledRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+    PasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string, minLength: 12, maxLength: 200 }
+    UserResponse:
+      type: object
+      required: [id, username, displayName, enabled, admin]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 200, description: 'Stable local subject formatted as local:<uuid>' }
+        username: { type: string }
+        displayName: { type: string }
+        enabled: { type: boolean }
+        admin: { type: boolean }
+    WorkbookSummary:
+      type: object
+      required: [unitId, name, revision, updatedAt, lifecycle]
+      properties:
+        unitId: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string }
+        revision: { type: integer, minimum: 0 }
+        updatedAt: { type: string, format: date-time }
+        role: { enum: [owner, editor, commenter, viewer] }
+        ownerSubject: { type: [string, 'null'] }
+        spaceId: { type: [string, 'null'] }
+        folderId: { type: [string, 'null'] }
+        locationPath: { type: array, items: { type: string } }
+        spaceName: { type: [string, 'null'] }
+        sourceFileName: { type: [string, 'null'] }
+        storageLocation: { enum: [local, remote, mirrored] }
+        syncStatus: { enum: [synced, syncing, pending, offline, conflict, error] }
+        lifecycle: { enum: [active, trashed] }
+        source: { enum: [native, document-import] }
+        favorite: { type: boolean }
+        lastOpenedAt: { type: [string, 'null'], format: date-time }
+        deletedAt: { type: [string, 'null'], format: date-time }
     ApiError:
       type: object
       required: [code, message]
@@ -209,7 +442,7 @@ components:
       required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 8 }
+        version: { const: 9 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
         dimensionMetrics:
@@ -302,11 +535,12 @@ components:
         checksum: { type: string }
     OperationEnvelope:
       type: object
-      required: [schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt]
+      required: [schema, operationId, unitId, clientSessionId, clientSequence, baseRevision, mutations, createdAt]
       properties:
         schema: { const: OperationEnvelope }
         operationId: { type: string, minLength: 1 }
         unitId: { type: string, minLength: 1 }
+        clientSessionId: { type: string, minLength: 1, maxLength: 200 }
         clientSequence: { type: integer, minimum: 1 }
         baseRevision: { type: integer, minimum: 0 }
         mutations: { type: array, minItems: 1, items: { type: object } }
@@ -315,7 +549,54 @@ components:
       type: object
       required: [operation]
       properties:
-        operation: { type: object }
+        operation: { $ref: '#/components/schemas/CommittedOperationEnvelope' }
+    OperationResult:
+      type: object
+      required: [operation, committed]
+      properties:
+        operation: { $ref: '#/components/schemas/CommittedOperationEnvelope' }
+        committed: { type: boolean }
+    CommittedOperationEnvelope:
+      type: object
+      required: [clientSessionId, schema, operationId, unitId, actorId, origin, clientSequence, baseRevision, revision, mutations, createdAt, committedAt]
+      properties:
+        clientSessionId: { type: string, minLength: 1, maxLength: 200 }
+        schema: { const: OperationEnvelope }
+        operationId: { type: string, minLength: 1 }
+        unitId: { type: string, minLength: 1, maxLength: 200 }
+        actorId: { type: string, minLength: 1, maxLength: 200 }
+        origin: { enum: [client, system] }
+        clientSequence: { type: integer, minimum: 1 }
+        baseRevision: { type: integer, minimum: 0 }
+        revision: { type: integer, minimum: 1 }
+        mutations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CommittedOperationMutation'
+        createdAt: { type: string, format: date-time }
+        committedAt: { type: string, format: date-time }
+        intent: { type: [object, 'null'] }
+    CommittedOperationMutation:
+      type: object
+      required: [id, sheetId, params, affectedRanges]
+      properties:
+        id: { type: string, minLength: 1 }
+        sheetId: { type: string, minLength: 1 }
+        params: { type: object }
+        affectedRanges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RangeRef'
+    RangeRef:
+      type: object
+      required: [sheetId, startRow, endRow, startColumn, endColumn]
+      properties:
+        sheetId: { type: string, minLength: 1 }
+        startRow: { type: integer, minimum: 0 }
+        endRow: { type: integer, minimum: 0 }
+        startColumn: { type: integer, minimum: 0 }
+        endColumn: { type: integer, minimum: 0 }
     WorkbookPage:
       type: object
       required: [items]

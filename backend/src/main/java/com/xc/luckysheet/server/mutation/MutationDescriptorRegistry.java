@@ -163,7 +163,7 @@ public class MutationDescriptorRegistry {
     public boolean requiresExactBase(Collection<OperationMutation> mutations) {
         return mutations.stream()
                 .map(mutation -> require(mutation.id(), false).rebasePolicy())
-                .allMatch(MutationRebasePolicy.EXACT_BASE::equals);
+                .anyMatch(MutationRebasePolicy.EXACT_BASE::equals);
     }
 
     public List<String> ids() {
@@ -293,6 +293,11 @@ public class MutationDescriptorRegistry {
     private static final class CellDescriptor extends BaseDescriptor {
         private CellDescriptor(String id) {
             super(id, WorkbookAclRole.EDITOR);
+        }
+
+        @Override
+        public MutationRebasePolicy rebasePolicy() {
+            return id().equals("cell.set") ? MutationRebasePolicy.DISJOINT_CELLS : MutationRebasePolicy.EXACT_BASE;
         }
 
         @Override

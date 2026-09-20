@@ -144,6 +144,7 @@ export interface WorkbookResolution {
 
 export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'getSnapshot'
+  | 'getWorkbookSummary'
   | 'listWorkbookAcl'
   | 'putWorkbookAcl'
   | 'deleteWorkbookAcl'

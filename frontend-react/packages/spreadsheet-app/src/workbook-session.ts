@@ -223,7 +223,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
+import { exchangeImportDocument, exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -307,6 +307,7 @@ export interface WorkbookSessionOptions {
   unitId?: string;
   api?: WorkbookApiClient;
   workspacePersistence?: WorkspacePersistence;
+  recoverySubject?: string;
   assetStore?: AssetStore;
   /** The route-level resolver owns identity/access reads; the session consumes the result. */
   resolution?: WorkbookResolution;
@@ -825,7 +826,7 @@ export class WorkbookSession {
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
   private persistenceMetaDirty = true;
 
-  constructor({ unitId, api, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, recoverySubject, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
@@ -833,6 +834,7 @@ export class WorkbookSession {
       unitId: sessionUnitId,
       api,
       workspacePersistence,
+      recoverySubject,
       assetStore,
       resolution,
       authTokenProvider,
@@ -843,7 +845,8 @@ export class WorkbookSession {
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
-    this.runtime.commands.setMutationGuard((mutation) => {
+    this.runtime.commands.setMutationGuard((mutation, source) => {
+      if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);
       if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
@@ -1060,7 +1063,14 @@ export class WorkbookSession {
         this.persistenceChecksum = persisted.checksum;
         this.persistenceMetaDirty = false;
       }
-      const artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
+      let artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
+      if (!this.runtime.localOnly) {
+        const summary = await this.runtime.api.getWorkbookSummary(this.runtime.model.unitId);
+        if (summary.source === 'document-import') {
+          const source = await this.runtime.api.getWorkbookSourceArtifact(this.runtime.model.unitId);
+          artifact = (await exchangeImportDocument({ fileName: source.metadata.fileName, buffer: await source.artifact.arrayBuffer(), execution: 'worker' })).artifact;
+        }
+      }
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativeArtifact = artifact;
         if (artifact.dateSystem !== this.runtime.dateSystem) setRuntimeDateContext(this.runtime, artifact.dateSystem);
@@ -1912,6 +1922,7 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    if (!this.runtime.localOnly && !this.runtime.remoteConnected) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
       this.permission,

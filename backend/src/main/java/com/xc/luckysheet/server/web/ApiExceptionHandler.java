@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
     @ExceptionHandler(ServiceException.class)
     public ResponseEntity<ApiErrorResponse> handleDomain(ServiceException error) {
         return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage()));
@@ -34,6 +35,10 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception error) {
+        // Do not log request bodies, SQL values or exception messages containing workbook data.
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            LOG.error("Unhandled request failure: {} at {}", cause.getClass().getName(), java.util.Arrays.toString(cause.getStackTrace()));
+        }
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new ApiErrorResponse("INTERNAL_ERROR", "The request could not be completed"));
     }
 

@@ -63,7 +63,7 @@ test('data-source commands mutate canonical metadata and undo as one transaction
 
 test('operation validation rejects block bytes while accepting metadata', () => {
   const accepted = validateOperationEnvelope({
-    schema: 'OperationEnvelope',
+    schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
     operationId: 'op-1',
     unitId: 'unit-1',
     clientSequence: 1,

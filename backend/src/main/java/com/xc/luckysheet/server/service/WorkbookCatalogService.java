@@ -384,6 +384,12 @@ public class WorkbookCatalogService {
         return copy;
     }
 
+    @Transactional(readOnly = true)
+    public WorkbookSummary readSummary(String unitId, String actor) {
+        requireRole(unitId, actor, WorkbookAclRole.VIEWER);
+        return summaryForActor(workbooks.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId)), actor);
+    }
+
     private WorkbookSummary summaryForActor(WorkbookEntity entity, String actor) {
         Map<String, WorkspaceFolderEntity> folderMap = new HashMap<>();
         if (entity.getSpaceId() != null) folders.findBySpaceIdOrderByName(entity.getSpaceId()).forEach(item -> folderMap.put(item.getFolderId(), item));

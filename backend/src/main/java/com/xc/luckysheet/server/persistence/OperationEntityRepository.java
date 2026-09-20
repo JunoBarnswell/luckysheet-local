@@ -7,7 +7,7 @@ import java.util.Optional;
 import org.springframework.data.domain.Pageable;
 
 public interface OperationEntityRepository extends JpaRepository<OperationEntity, String> {
-    Optional<OperationEntity> findByUnitIdAndActorSubjectAndClientSequence(String unitId, String actorSubject, long clientSequence);
+    Optional<OperationEntity> findByUnitIdAndActorSubjectAndClientSessionIdAndClientSequence(String unitId, String actorSubject, String clientSessionId, long clientSequence);
 
     List<OperationEntity> findByUnitIdOrderByRevisionDesc(String unitId);
 

@@ -1,37 +1,11 @@
-function sameOriginResourceUrls(): string[] {
-  const urls = new Set<string>(['/', '/index.html', '/manifest.webmanifest']);
-  for (const entry of performance.getEntriesByType('resource')) {
-    if (!(entry instanceof PerformanceResourceTiming)) continue;
-    const url = new URL(entry.name, window.location.origin);
-    if (url.origin === window.location.origin && !url.pathname.startsWith('/api/')) {
-      urls.add(url.pathname + url.search);
-    }
-  }
-  return [...urls];
-}
-
-/** Registers the offline application shell. Workbook data is intentionally
- * owned by the canonical local workspace store, never by this cache. */
+/** One-time retirement of the old offline shell; workbook pages now require Java. */
 export function registerOfflineShell(): void {
-  if (import.meta.env.DEV) {
-    if ('serviceWorker' in navigator) {
-      void navigator.serviceWorker.getRegistrations().then(async (registrations) => {
-        const hadController = Boolean(navigator.serviceWorker.controller);
-        const unregistered = await Promise.all(
-          registrations.map((registration) => registration.unregister()),
-        );
-        if (hadController && unregistered.some(Boolean)) window.location.reload();
-      });
+  if (!('serviceWorker' in navigator)) return;
+  void navigator.serviceWorker.getRegistrations().then(async registrations => {
+    for (const registration of registrations) {
+      const script = registration.active?.scriptURL ?? registration.waiting?.scriptURL;
+      if (script && new URL(script).pathname === '/sw.js') await registration.unregister();
     }
-    return;
-  }
-  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
-  window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js', { scope: '/' })
-      .then(async (registration) => {
-        await navigator.serviceWorker.ready;
-        registration.active?.postMessage({ type: 'react-sheets.precache', urls: sameOriginResourceUrls() });
-      })
-      .catch(() => undefined);
-  }, { once: true });
+    if ('caches' in window) await caches.delete('react-sheets-shell');
+  }).catch(error => console.error('Unable to retire previous offline shell', error));
 }

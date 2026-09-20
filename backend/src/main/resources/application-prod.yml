@@ -33,6 +33,7 @@ server:
 
 luckysheet:
   auth:
+    mode: oidc
     issuer: ${AUTH_ISSUER}
     audience: ${AUTH_AUDIENCE}
     jwks-url: ${AUTH_JWKS_URL}

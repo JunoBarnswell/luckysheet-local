@@ -9,7 +9,7 @@ import type {
   WorkbookResolution,
 } from './types';
 
-export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'memory-session-reset' | 'invalid-input';
+export type WorkbookResolutionErrorCode = 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input';
 
 export class WorkbookResolutionError extends Error {
   readonly code: WorkbookResolutionErrorCode;
@@ -29,7 +29,6 @@ export function isWorkbookResolutionError(error: unknown): error is WorkbookReso
     && (candidate.code === 'not-found'
       || candidate.code === 'permission-denied'
       || candidate.code === 'remote-unavailable'
-      || candidate.code === 'memory-session-reset'
       || candidate.code === 'invalid-input');
 }
 
@@ -67,25 +66,6 @@ function assertUnitId(unitId: string): string {
   return normalized;
 }
 
-function localResolution(record: WorkspaceRecord, mode: 'local' | 'offline'): WorkbookResolution {
-  const localRecord = clone(record);
-  return {
-    schema: 'WorkbookResolution',
-    unitId: record.unitId,
-    source: mode === 'local' ? 'local' : 'mirrored',
-    mode,
-    lifecycle: 'active',
-    binding: {
-      location: record.metadata.location,
-      syncMode: record.syncMode,
-    },
-    snapshot: localRecord.snapshot,
-    revision: record.serverRevision,
-    access: null,
-    localRecord,
-  };
-}
-
 export class WorkbookResolver {
   private readonly persistence: WorkspacePersistence;
   private readonly remote?: WorkbookCatalogRemoteClient;
@@ -110,47 +90,11 @@ export class WorkbookResolver {
 
   async resolve(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookResolution> {
     const normalized = assertUnitId(unitId);
-    const localRecord = await this.persistence.store.open(normalized);
-    if (localRecord?.metadata.lifecycle === 'trashed') {
-      throw new WorkbookResolutionError('not-found', `Workbook is in trash: ${normalized}`);
-    }
-
-    if (localRecord && (localRecord.syncMode === 'local-only' || localRecord.metadata.location === 'local')) {
-      return localResolution(localRecord, 'local');
-    }
-
-    if (!this.canUseRemote()) {
-      if (localRecord) return localResolution(localRecord, 'offline');
-      throw new WorkbookResolutionError(
-        'memory-session-reset',
-        `The page memory session no longer contains workbook: ${normalized}`,
-      );
-    }
-
     try {
       const remote = this.requireRemote();
-      const [snapshotResponse, access] = await Promise.all([
-        remote.getSnapshot(normalized, options),
-        remote.getAccess(normalized, options),
-      ]);
-      const isShared = Boolean((await this.shareTokenProvider?.())?.trim());
-      return {
-        schema: 'WorkbookResolution',
-        unitId: normalized,
-        source: localRecord ? 'mirrored' : isShared ? 'shared' : 'remote',
-        mode: 'remote',
-        lifecycle: 'active',
-        binding: { location: 'remote', syncMode: 'remote' },
-        snapshot: clone(snapshotResponse.snapshot),
-        revision: snapshotResponse.revision,
-        access,
-        localRecord: localRecord ? clone(localRecord) : null,
-      };
-    } catch (error) {
-      // A cached mirrored workbook can be opened offline, but an authoritative
-      // 401/403/404 must not be hidden by stale local data.
-      if (localRecord && isRemoteUnavailable(error)) return localResolution(localRecord, 'offline');
-      throw toResolutionError(error, normalized);
-    }
+      const [response, access] = await Promise.all([remote.getSnapshot(normalized, options), remote.getAccess(normalized, options)]);
+      return { schema: 'WorkbookResolution', unitId: normalized, source: (await this.shareTokenProvider?.()) ? 'shared' : 'remote', mode: 'remote',
+        lifecycle: 'active', binding: { location: 'remote', syncMode: 'remote' }, snapshot: response.snapshot, revision: response.revision, access, localRecord: null };
+    } catch (error) { throw toResolutionError(error, normalized); }
   }
 }

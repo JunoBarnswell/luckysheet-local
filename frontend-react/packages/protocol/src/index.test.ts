@@ -22,7 +22,7 @@ test('WebSocket presence messages round-trip without becoming a mutation transpo
 
 test('OperationEnvelope excludes client actor and affected ranges', () => {
   const envelope = {
-    schema: 'OperationEnvelope' as const,
+    schema: 'OperationEnvelope' as const, clientSessionId: 'fixture-session',
     operationId: 'op-1',
     unitId: 'unit-1',
     clientSequence: 1,
@@ -426,7 +426,7 @@ test('Pivot calculated item protocol rejects unknown, ambiguous, and cyclic item
 
 test('Pivot layout-only update accepts a new calculated field without fieldCatalog', () => {
   const envelope = {
-    schema: 'OperationEnvelope' as const,
+    schema: 'OperationEnvelope' as const, clientSessionId: 'fixture-session',
     operationId: 'pivot-calculated-layout-update',
     unitId: 'unit-1',
     clientSequence: 1,

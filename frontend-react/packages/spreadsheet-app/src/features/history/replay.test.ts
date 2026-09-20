@@ -19,7 +19,7 @@ describe('history replay', () => {
       revision: 2,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'OperationEnvelope',
+        schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',
@@ -55,7 +55,7 @@ describe('history replay', () => {
       revision: 1,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'OperationEnvelope',
+        schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',

@@ -2,52 +2,12 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const webOutputDirectory = path.resolve(projectRoot, 'dist/web');
-const offlineShellSource = path.resolve(projectRoot, 'apps/web/public/sw.js');
-
-async function listOutputAssets(directory: string, relative = ''): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const paths: string[] = [];
-  for (const entry of entries) {
-    const nextRelative = path.posix.join(relative, entry.name);
-    const nextPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      paths.push(...await listOutputAssets(nextPath, nextRelative));
-    } else if (/\.(?:css|js|mjs|wasm|woff2?|ttf|otf|svg)$/i.test(entry.name)) {
-      paths.push(`/${nextRelative}`);
-    }
-  }
-  return paths;
-}
-
-function offlineShellManifestPlugin() {
-  return {
-    name: 'offline-shell-manifest',
-    async closeBundle() {
-      const assets = await listOutputAssets(webOutputDirectory);
-      const shellUrls = ['/', '/index.html', '/manifest.webmanifest', ...assets.sort()];
-      const workerPath = path.join(webOutputDirectory, 'sw.js');
-      // Vite keeps an out-of-root output directory between some development
-      // builds. Always render from the tracked shell template instead of a
-      // previously generated manifest, otherwise a second package build has
-      // no placeholder left to replace.
-      const source = await readFile(offlineShellSource, 'utf8');
-      const next = source.replace(
-        /const SHELL_URLS = \[[^;]+\];/,
-        `const SHELL_URLS = ${JSON.stringify(shellUrls)};`,
-      );
-      if (next === source) throw new Error('Offline shell manifest placeholder was not found');
-      await writeFile(workerPath, next, 'utf8');
-    },
-  };
-}
-
 export default defineConfig({
   root: path.resolve(projectRoot, 'apps/web'),
-  plugins: [react(), offlineShellManifestPlugin()],
+  plugins: [react()],
   resolve: {
     alias: [
       { find: 'react/jsx-dev-runtime', replacement: path.resolve(projectRoot, 'node_modules/react/jsx-dev-runtime.js') },

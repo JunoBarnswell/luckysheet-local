@@ -1,6 +1,7 @@
 package com.xc.luckysheet.server.security;
 
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.persistence.LocalUserEntity;
 import com.xc.luckysheet.server.service.GuestShareService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -67,6 +68,24 @@ class WebSocketAuthenticationHandshakeHandlerTest {
         when(request.getPrincipal()).thenReturn(() -> "anonymousUser");
 
         assertThrows(HandshakeFailureException.class, () -> handler.authenticatedPrincipal(request));
+    }
+
+    @Test
+    void sessionCookiePrincipalIsPassedToTheSocketWithItsStableLocalSubject() {
+        JwtDecoder decoder = mock(JwtDecoder.class);
+        GuestShareService shares = mock(GuestShareService.class);
+        LocalUserEntity user = new LocalUserEntity(
+                "user-1", "owner", "hash", "Owner", true, true,
+                Instant.now(), Instant.now()
+        );
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);
+        ServerHttpRequest request = request("/ws", null);
+        when(request.getPrincipal()).thenReturn(LocalUserAuthentication.from(user));
+
+        var principal = handler.authenticatedPrincipal(request);
+
+        assertEquals("local:user-1", principal.getName());
+        assertInstanceOf(LocalUserAuthentication.class, principal);
     }
 
     private ServerHttpRequest request(String path, String protocol) {

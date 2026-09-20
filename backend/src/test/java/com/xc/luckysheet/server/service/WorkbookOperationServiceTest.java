@@ -40,15 +40,17 @@ class WorkbookOperationServiceTest {
         WorkbookOperationService service = new WorkbookOperationService(
                 store, access, new MutationDescriptorRegistry(), mapper, audit, coordination
         );
-        String snapshot = canonicalSnapshot();
+        String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
+        when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
         when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
         )));
         when(store.findOperation("op-1")).thenReturn(Optional.empty());
-        when(store.findOperationBySequence("book-1", "guest:share-1", 1)).thenReturn(Optional.empty());
+        when(store.findOperationBySequence("book-1", "guest:share-1", "test-session", 1)).thenReturn(Optional.empty());
 
-        OperationEnvelope operation = new OperationEnvelope(
+        OperationEnvelope operation = new OperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,
                 "op-1",
                 "book-1",
@@ -77,14 +79,16 @@ class WorkbookOperationServiceTest {
                 new AuditRecorder(store, mapper),
                 new CoordinationProperties(false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45))
         );
-        String snapshot = canonicalSnapshot();
+        String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
+        when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
         when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
                 WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         when(store.findOperation("op-2")).thenReturn(Optional.empty());
-        when(store.findOperationBySequence("book-1", "editor-1", 1)).thenReturn(Optional.empty());
+        when(store.findOperationBySequence("book-1", "editor-1", "test-session", 1)).thenReturn(Optional.empty());
         when(store.listOperations("book-1")).thenReturn(List.of());
-        OperationEnvelope operation = new OperationEnvelope(
+        OperationEnvelope operation = new OperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,
                 "op-2",
                 "book-1",

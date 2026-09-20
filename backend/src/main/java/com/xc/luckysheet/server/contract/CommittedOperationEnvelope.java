@@ -9,6 +9,7 @@ import java.util.List;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CommittedOperationEnvelope(
+        @JsonProperty("clientSessionId") String clientSessionId,
         @JsonProperty("schema") String schema,
         @JsonProperty("operationId") String operationId,
         @JsonProperty("unitId") String unitId,
@@ -24,6 +25,7 @@ public record CommittedOperationEnvelope(
 ) {
     @JsonCreator
     public CommittedOperationEnvelope {
+        if (clientSessionId == null || clientSessionId.isBlank() || clientSessionId.length() > 200) throw new IllegalArgumentException("clientSessionId is required and must be at most 200 characters");
         if (!OperationEnvelope.SCHEMA.equals(schema)) throw new IllegalArgumentException("schema must be OperationEnvelope");
         if (operationId == null || operationId.isBlank() || unitId == null || unitId.isBlank() || actorId == null || actorId.isBlank() || origin == null) throw new IllegalArgumentException("committed operation identity is required");
         if (clientSequence < 1 || baseRevision < 0 || revision < 1) throw new IllegalArgumentException("Invalid committed operation revision");
@@ -33,6 +35,7 @@ public record CommittedOperationEnvelope(
     }
 
     public CommittedOperationEnvelope(
+            String clientSessionId,
             String schema,
             String operationId,
             String unitId,
@@ -45,7 +48,7 @@ public record CommittedOperationEnvelope(
             Instant createdAt,
             Instant committedAt
     ) {
-        this(schema, operationId, unitId, actorId, origin, clientSequence, baseRevision, revision, mutations, createdAt, committedAt, null);
+        this(clientSessionId, schema, operationId, unitId, actorId, origin, clientSequence, baseRevision, revision, mutations, createdAt, committedAt, null);
     }
 
     public static CommittedOperationEnvelope from(
@@ -56,6 +59,7 @@ public record CommittedOperationEnvelope(
             List<CommittedOperationMutation> mutations
     ) {
         return new CommittedOperationEnvelope(
+                operation.clientSessionId(),
                 OperationEnvelope.SCHEMA,
                 operation.operationId(),
                 operation.unitId(),
@@ -81,6 +85,7 @@ public record CommittedOperationEnvelope(
             List<CommittedOperationMutation> mutations
     ) {
         return new CommittedOperationEnvelope(
+                operation.clientSessionId(),
                 OperationEnvelope.SCHEMA,
                 operation.operationId(),
                 operation.unitId(),

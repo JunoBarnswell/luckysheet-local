@@ -68,7 +68,7 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
 }
 
 function destinationFromLocation(locationId: string): { destination: 'local' | 'remote'; folderId?: string; spaceId?: string } {
-  if (locationId === 'local') return { destination: 'local' };
+  if (locationId === 'server') return { destination: 'remote' };
   if (locationId.startsWith('folder:')) {
     const [, spaceId, folderId] = locationId.split(':');
     if (!spaceId || !folderId) throw new Error('工作簿文件夹位置无效');
@@ -149,7 +149,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const [pendingTemplate, setPendingTemplate] = useState<WorkbookTemplateId>('blank');
   const [pendingCreateValue, setPendingCreateValue] = useState<{ name: string; locationId: string }>();
   const [targetId, setTargetId] = useState<string>();
-  const [moveLocationId, setMoveLocationId] = useState('local');
+  const [moveLocationId, setMoveLocationId] = useState('server');
   const loadGeneration = useRef(0);
   const loadAbortController = useRef<AbortController | null>(null);
 
@@ -217,12 +217,12 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
 
   const folderLocationOptions = useMemo(() => folderLocations(folders, spaces), [folders, spaces]);
   const locationOptions = useMemo<readonly LocationOption[]>(() => [
-    { id: 'local', label: '此页面 · 内存文件' },
+    { id: 'server', label: '服务器 · 我的文件' },
     ...spaces.map((space) => ({ id: `space:${space.spaceId}`, label: `${space.kind === 'team' ? '团队空间' : '我的云端'} · ${space.name}` })),
     ...folderLocationOptions.map(({ folder, label }) => ({ id: `folder:${folder.spaceId}:${folder.folderId}`, label })),
   ], [folderLocationOptions, spaces]);
   const defaultLocationId = useMemo(() => {
-    if (authSnapshot.phase !== 'authenticated') return 'local';
+    if (authSnapshot.phase !== 'authenticated') return 'server';
     if (preferences?.defaultFolderId) {
       const folder = folders.find((candidate) => candidate.folderId === preferences.defaultFolderId);
       if (folder) return `folder:${folder.spaceId}:${folder.folderId}`;
@@ -230,7 +230,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     if (preferences?.defaultSpaceId && spaces.some((space) => space.spaceId === preferences.defaultSpaceId)) {
       return `space:${preferences.defaultSpaceId}`;
     }
-    return spaces[0] ? `space:${spaces[0].spaceId}` : 'local';
+    return spaces[0] ? `space:${spaces[0].spaceId}` : 'server';
   }, [authSnapshot.phase, folders, preferences?.defaultFolderId, preferences?.defaultSpaceId, spaces]);
   const items = useMemo(() => entries.map(itemFromEntry), [entries]);
   const target = useMemo(() => targetId ? items.find((item) => item.unitId === targetId) : undefined, [items, targetId]);
@@ -501,7 +501,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       </Dialog>
       <Dialog closeLabel="关闭帮助" onClose={() => setActiveDialog(null)} open={activeDialog === 'help'} title="工作簿存储说明">
         <Stack gap="sm">
-          <Text size="sm">云端工作簿由服务器保存；本地工作簿和离线待同步变更仅保留在当前页面的内存会话中，刷新或关闭页面后会清空。</Text>
+          <Text size="sm">工作簿由服务器持久保存。断线时暂停编辑，尚未确认的操作保留在当前浏览器，重新连接后核对恢复。</Text>
           <Text size="sm">打开 / 导入会创建新工作簿；导出会基于最新快照和原始原生文档生成副本。</Text>
           {authSnapshot.phase !== 'authenticated' ? <Button onClick={() => void auth.signIn('/workbooks')} size="sm" variant="brand">登录以使用云端文件</Button> : null}
         </Stack>

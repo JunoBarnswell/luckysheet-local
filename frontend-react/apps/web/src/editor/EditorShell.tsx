@@ -170,6 +170,7 @@ export function EditorShell({
                 activeCell={state.activeCell}
                 cellEdit={session.cellEdit}
                 phase={state.phase}
+                errorMessage={state.notice}
                 zoom={state.zoom}
                 peers={state.peers}
                 selectedFloatingId={state.selectedFloatingId}

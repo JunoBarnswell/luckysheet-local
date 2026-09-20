@@ -71,6 +71,7 @@ export interface SheetCanvasProps {
   activeCell: string;
   cellEdit: CellEditController;
   phase: AppPhase;
+  errorMessage?: string;
   zoom: number;
   peers: PeerCursor[];
   drawings?: readonly DrawingObject[];
@@ -369,6 +370,7 @@ export function SheetCanvas({
   activeCell,
   cellEdit,
   phase,
+  errorMessage,
   zoom,
   peers,
   drawings = sheet.drawings,
@@ -974,7 +976,7 @@ export function SheetCanvas({
       <Panel className="m-4 flex-1">
         <StatePanel
           kind="error"
-          description="The workbook engine failed to initialize. Retry to recover."
+          description={errorMessage || "工作簿初始化失败，请重试。"}
           actionLabel="Retry"
           onAction={onRetry}
           title="Engine error"

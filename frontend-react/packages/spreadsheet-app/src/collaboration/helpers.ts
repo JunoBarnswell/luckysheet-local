@@ -32,6 +32,7 @@ export function buildOperation(
 ): OperationEnvelope {
   return {
     schema: 'OperationEnvelope',
+    clientSessionId: crypto.randomUUID(),
     operationId,
     unitId,
     clientSequence,

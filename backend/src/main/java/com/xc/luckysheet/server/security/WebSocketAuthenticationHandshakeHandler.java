@@ -7,6 +7,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.socket.WebSocketHandler;
@@ -45,7 +47,14 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
 
     Principal authenticatedPrincipal(ServerHttpRequest request) {
         Principal existing = request.getPrincipal();
-        if (existing instanceof JwtAuthenticationToken || existing instanceof GuestShareAuthentication) return existing;
+        if (isAuthenticatedPrincipal(existing)) return existing;
+
+        // Servlet WebSocket handshakes normally expose the HTTP session
+        // principal through ServerHttpRequest. The security context fallback
+        // keeps cookie-authenticated upgrades working with servlet adapters
+        // that do not copy request.getUserPrincipal().
+        Authentication context = SecurityContextHolder.getContext().getAuthentication();
+        if (isAuthenticatedPrincipal(context)) return context;
 
         String bearer = bearerToken(request.getHeaders());
         if (bearer != null) {
@@ -68,6 +77,12 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
             }
         }
         throw new HandshakeFailureException("Authenticated connection is required");
+    }
+
+    private boolean isAuthenticatedPrincipal(Principal principal) {
+        return principal instanceof JwtAuthenticationToken
+                || principal instanceof GuestShareAuthentication
+                || principal instanceof LocalUserAuthentication;
     }
 
     private String bearerToken(HttpHeaders headers) {

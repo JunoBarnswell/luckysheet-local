@@ -13,6 +13,7 @@ import { CollaborativeUndoStack } from './collaborative-undo';
 import { PresenceStore } from './presence';
 
 export interface CollaborationSessionOptions {
+  clientSessionId?: string;
   /** Sends an operation over the authenticated REST transport. */
   send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
   createOperationId?: () => string;
@@ -38,6 +39,7 @@ export class CollaborationSession {
   private send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
   private readonly createOperationId: () => string;
   private clientSequence = 0;
+  private readonly clientSessionId: string;
   private baseRevision = 0;
   private readonly committedMutations: ReturnType<typeof classifyMutation>[] = [];
   private readonly remoteMutations: ReturnType<typeof classifyMutation>[] = [];
@@ -48,6 +50,7 @@ export class CollaborationSession {
 
   constructor(runtime: CommandRuntime, options: CollaborationSessionOptions = {}) {
     this.runtime = runtime;
+    this.clientSessionId = options.clientSessionId ?? crypto.randomUUID();
     this.send = options.send;
     this.createOperationId = options.createOperationId ?? (() => {
       if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -100,6 +103,7 @@ export class CollaborationSession {
     this.clientSequence += 1;
     const operation: OperationEnvelope = {
       schema: 'OperationEnvelope',
+      clientSessionId: this.clientSessionId,
       operationId,
       unitId,
       clientSequence: this.clientSequence,
@@ -285,6 +289,7 @@ export class CollaborationSession {
       resolveAck = resolve;
       rejectAck = reject;
     });
+    void ack.catch(() => undefined);
     this.ackWaiters.set(operation.operationId, { resolve: resolveAck, reject: rejectAck });
     let result: boolean | number;
     try {
@@ -344,6 +349,7 @@ export class CollaborationSession {
       schema: operation.schema,
       operationId: operation.operationId,
       unitId: operation.unitId,
+      clientSessionId: operation.clientSessionId,
       clientSequence: operation.clientSequence,
       baseRevision: operation.baseRevision,
       mutations: operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
@@ -363,7 +369,15 @@ export class CollaborationSession {
   private assertPendingCanRebase(committed: readonly ReturnType<typeof classifyMutation>[]): void {
     for (const entry of this.offlineQueue.getPending()) {
       const current = this.localClassified.get(entry.operation.operationId) ?? this.classifyEnvelope(entry.operation);
-      for (const mutation of current) rebaseAgainstHistory(mutation, [...committed]);
+      for (const mutation of current) {
+        for (const other of committed) for (const left of mutation.affectedRanges) for (const right of other.affectedRanges) {
+          if (left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
+            && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn) {
+            throw new Error(`COLLABORATION_CONFLICT: ${entry.operation.operationId} 的目标已被其他用户修改，草稿已保留`);
+          }
+        }
+        rebaseAgainstHistory(mutation, [...committed]);
+      }
     }
   }
 

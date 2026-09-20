@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import { WorkbookApiClient } from '@react-sheets/protocol';
 import {
   RemoteAssetStore,
-  LocalAssetStore,
   WorkbookCatalogService,
   WorkspacePersistence,
   WorkspaceStorageError,
@@ -13,12 +12,6 @@ import {
 } from '@react-sheets/spreadsheet-app';
 import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
-
-declare global {
-  interface Window {
-    reactSheetsDesktopConfig?: Readonly<{ collaborationUrl: string }>;
-  }
-}
 
 export interface StorageReadiness {
   state: WorkspacePersistenceState | 'warming' | 'failed';
@@ -32,7 +25,7 @@ export interface ApplicationServices {
   retryStorage: () => Promise<void>;
   storageReadiness: StorageReadiness;
   workbookApi: WorkbookApiClient;
-  createWorkbookSessionOptions: (unitId: string, authTokenProvider: AuthTokenProvider, useLocalAssets?: boolean) => WorkbookSessionOptions;
+  createWorkbookSessionOptions: (unitId: string, authTokenProvider: AuthTokenProvider) => WorkbookSessionOptions;
 }
 
 const ApplicationServicesContext = createContext<ApplicationServices | null>(null);
@@ -46,17 +39,6 @@ function formatStorageError(error: unknown): WorkspaceStorageError {
     recovery: '请重新开始页面内存会话后重试。',
     cause: error,
   });
-}
-
-function resolveDesktopCollaborationUrl(): string | undefined {
-  if (typeof window === 'undefined' || window.location.protocol !== 'app:') return undefined;
-  const candidate = window.reactSheetsDesktopConfig?.collaborationUrl;
-  if (!candidate) throw new Error('Desktop runtime is missing its collaboration endpoint');
-  const parsed = new URL(candidate);
-  if (!['ws:', 'wss:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-    throw new Error('Desktop collaboration endpoint is invalid');
-  }
-  return parsed.toString();
 }
 
 export function ApplicationServicesProvider({ children }: { children: ReactNode }) {
@@ -79,22 +61,22 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     };
     const retryStorage = (): Promise<void> => ensureStorageReady();
     const shareTokenProvider = () => resolveShareToken();
-    const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
+    const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, csrfTokenProvider: auth.getCsrfToken, shareTokenProvider });
     const catalog = new WorkbookCatalogService({
       persistence,
       remote: workbookApi,
       remoteAvailable: () => auth.getSnapshot().phase === 'authenticated' || Boolean(shareTokenProvider()),
       shareTokenProvider,
     });
-    const createWorkbookSessionOptions = (unitId: string, authTokenProvider: AuthTokenProvider, useLocalAssets = false): WorkbookSessionOptions => ({
+    const createWorkbookSessionOptions = (unitId: string, authTokenProvider: AuthTokenProvider): WorkbookSessionOptions => ({
       unitId,
       api: workbookApi,
       workspacePersistence: persistence,
+      recoverySubject: auth.getSnapshot().subject ?? undefined,
       authTokenProvider,
       shareTokenProvider,
-      collaborationUrl: resolveDesktopCollaborationUrl(),
       pivotExecution: 'worker',
-      assetStore: useLocalAssets ? new LocalAssetStore(unitId, persistence.coordinator) : new RemoteAssetStore(unitId, workbookApi),
+      assetStore: new RemoteAssetStore(unitId, workbookApi),
     });
     return { catalog, persistence, ensureStorageReady, retryStorage, workbookApi, createWorkbookSessionOptions };
   }, [auth]);

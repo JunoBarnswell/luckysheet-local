@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
         "DATABASE_PASSWORD=",
         "JPA_DDL_AUTO=validate",
         "FLYWAY_BASELINE_ON_MIGRATE=false",
+        "luckysheet.auth.mode=oidc",
         "AUTH_ISSUER=https://issuer.test",
         "AUTH_AUDIENCE=test",
         "AUTH_JWKS_URL=https://issuer.test/.well-known/jwks.json",

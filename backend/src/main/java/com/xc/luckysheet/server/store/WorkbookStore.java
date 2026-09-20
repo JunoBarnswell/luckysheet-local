@@ -153,12 +153,12 @@ public class WorkbookStore {
         return operations.findById(operationId).map(this::operationRow);
     }
 
-    public Optional<OperationRow> findOperationBySequence(String unitId, String actorSubject, long sequence) {
-        return operations.findByUnitIdAndActorSubjectAndClientSequence(unitId, actorSubject, sequence).map(this::operationRow);
+    public Optional<OperationRow> findOperationBySequence(String unitId, String actorSubject, String clientSessionId, long sequence) {
+        return operations.findByUnitIdAndActorSubjectAndClientSessionIdAndClientSequence(unitId, actorSubject, clientSessionId, sequence).map(this::operationRow);
     }
 
     public void insertOperation(OperationRow operation) {
-        operations.save(new OperationEntity(operation.operationId(), operation.unitId(), operation.revision(), operation.actorSubject(),
+        operations.save(new OperationEntity(operation.operationId(), operation.unitId(), operation.revision(), operation.actorSubject(), operation.clientSessionId(),
                 operation.clientSequence(), operation.baseRevision(), operation.envelopeJson(), operation.committedAt()));
     }
 
@@ -248,7 +248,7 @@ public class WorkbookStore {
     }
 
     private OperationRow operationRow(OperationEntity entity) {
-        return new OperationRow(entity.getOperationId(), entity.getUnitId(), entity.getRevision(), entity.getActorSubject(),
+        return new OperationRow(entity.getOperationId(), entity.getUnitId(), entity.getRevision(), entity.getActorSubject(), entity.getClientSessionId(),
                 entity.getClientSequence(), entity.getBaseRevision(), entity.getEnvelopeJson(), entity.getCommittedAt());
     }
 

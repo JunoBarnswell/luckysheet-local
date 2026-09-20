@@ -1,3 +1,4 @@
+import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
@@ -87,6 +88,7 @@ export interface SpreadsheetRuntime {
   bootstrapDispose: (() => void) | null;
   operationJournal: OperationJournalStore;
   workspacePersistence: WorkspacePersistence;
+  recoveryJournal: RecoveryJournal | null;
   dataBlocks: DataBlockSynchronizer;
   assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
@@ -134,6 +136,7 @@ export function createSpreadsheetRuntime(options: {
   localOnly?: boolean;
   persistence?: WorkspacePersistenceOptions;
   workspacePersistence?: WorkspacePersistence;
+  recoverySubject?: string;
   assetStore?: AssetStore;
   resolution?: WorkbookResolution;
   dateSystem?: ExcelDateSystem;
@@ -205,6 +208,7 @@ export function createSpreadsheetRuntime(options: {
     bootstrapDispose: null,
     operationJournal,
     workspacePersistence,
+    recoveryJournal: options.recoverySubject && typeof window !== 'undefined' ? new RecoveryJournal(window.location.origin, options.recoverySubject, unitId) : null,
     dataBlocks,
     assetStore,
     dataContent: new Map(),
@@ -228,6 +232,7 @@ export function createSpreadsheetRuntime(options: {
   // The same memory transaction also checkpoints the canonical local
   // workbook snapshot, so a closed browser can resume without any service.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
+    clientSessionId: runtime.recoveryJournal?.clientSessionId,
     loadPending: () => {
       const journal = operationJournal.read(runtime.model.unitId);
       return journal
@@ -236,17 +241,7 @@ export function createSpreadsheetRuntime(options: {
     },
     persistPending: (operations, nextClientSequence) => {
       operationJournal.write(runtime.model.unitId, operations, nextClientSequence);
-      void enqueuePersistenceWrite(runtime, async () => {
-        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
-        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
-          runtime.model.unitId,
-          operations,
-          nextClientSequence,
-          current?.storageRevision,
-        );
-        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
-        runtime.handlers.onWorkspacePersisted?.();
-      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
+      if (runtime.recoveryJournal) void runtime.recoveryJournal.persist(operations).catch((error: Error) => publishPersistenceFailure(runtime, error));
     },
   });
   runtime.checkpointWorkspace = (advanceLocalRevision = true, artifact) => checkpointWorkspace(runtime, advanceLocalRevision, artifact);
@@ -527,6 +522,13 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
 function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true, artifact?: NativeDocumentArtifact): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
   if (advanceLocalRevision) runtime.localRevision += 1;
+  if (!runtime.localOnly) {
+    return (async () => {
+      await runtime.recoveryJournal?.flushed();
+      if (artifact) await runtime.api.putWorkbookSourceArtifact(runtime.model.unitId, new Blob([artifact.sourceBytes]), artifact.fileName);
+      runtime.handlers.onWorkspacePersisted?.();
+    })();
+  }
   const snapshot = runtime.model.snapshot();
   const localRevision = runtime.localRevision;
   const serverRevision = runtime.remoteRevision;
@@ -701,7 +703,7 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
   const existingPending = runtime.collaboration?.getPendingOperations() ?? [];
   const buffered = runtime.pendingLocalOperations.splice(0);
   const byId = new Map<string, import('@react-sheets/protocol').OperationEnvelope>();
-  for (const operation of record?.pending.operations ?? []) byId.set(operation.operationId, operation);
+  for (const operation of runtime.operationJournal.read(runtime.model.unitId)?.operations ?? record?.pending.operations ?? []) byId.set(operation.operationId, operation);
   for (const operation of existingPending) byId.set(operation.operationId, operation);
   const pending = [...byId.values()].sort((left, right) => left.clientSequence - right.clientSequence);
   const nextClientSequence = Math.max(
@@ -710,23 +712,14 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
   );
   runtime.operationJournal.write(runtime.model.unitId, pending, nextClientSequence);
   runtime.collaboration = new CollaborationSession(runtime.commands, {
+    clientSessionId: runtime.recoveryJournal?.clientSessionId,
     loadPending: () => {
       const journal = runtime.operationJournal.read(runtime.model.unitId);
       return journal ? { operations: journal.operations, nextClientSequence: journal.nextClientSequence } : null;
     },
     persistPending: (operations, sequence) => {
       runtime.operationJournal.write(runtime.model.unitId, operations, sequence);
-      void enqueuePersistenceWrite(runtime, async () => {
-        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
-        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
-          runtime.model.unitId,
-          operations,
-          sequence,
-          current?.storageRevision,
-        );
-        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
-        runtime.handlers.onWorkspacePersisted?.();
-      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
+      if (runtime.recoveryJournal) void runtime.recoveryJournal.persist(operations).catch((error: Error) => publishPersistenceFailure(runtime, error));
     },
   });
   runtime.collaboration.setRevision(runtime.remoteRevision);
@@ -812,7 +805,9 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
     const address = { sheetId: sheet.id, row, column };
     return runtime.formula?.getCellResult(address)?.value;
   });
+  const mutationGuard = runtime.commands.getMutationGuard();
   runtime.commands = new CommandRuntime(workbook);
+  runtime.commands.setMutationGuard(mutationGuard);
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
@@ -883,13 +878,17 @@ export function replayPendingOperations(
 }
 
 async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise<void> {
-  try {
-    const revisions = await runtime.api.listRevisions(runtime.model.unitId);
-    runtime.collaboration?.loadCommittedHistory(revisions.map((record) => record.payload));
-    runtime.handlers.onRemoteRevisions?.(revisions);
-  } catch {
-    runtime.handlers.onRemoteRevisions?.([]);
+  const pending = runtime.collaboration?.getPendingOperations() ?? [];
+  for (const operation of pending) {
+    const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
+    if (result) runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+    else if (operation.baseRevision !== runtime.remoteRevision) {
+      throw new Error(`RECOVERY_REVISION_CONFLICT: ${operation.operationId}，恢复草稿保留，请核对服务器版本后处理`);
+    }
   }
+  const revisions = await runtime.api.listRevisions(runtime.model.unitId);
+  runtime.collaboration?.loadCommittedHistory(revisions.map(record => record.payload));
+  runtime.handlers.onRemoteRevisions?.(revisions);
   replayPendingOperations(runtime);
 }
 
@@ -914,12 +913,15 @@ export function startCollaborationSession(
       if (runtime.disposed) throw new Error('Workbook runtime has been disposed');
       runtime.ownOperationIds.add(operation.operationId);
       try {
-        const committed = await runtime.api.commitOperation(runtime.model.unitId, operation);
+        await runtime.recoveryJournal?.flushed();
+        const existing = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
+        const committed = existing ?? await runtime.api.commitOperation(runtime.model.unitId, operation);
+        await runtime.api.checkpointWorkbook(runtime.model.unitId);
         const revision = committed.operation.revision;
         runtime.remoteRevision = Math.max(runtime.remoteRevision, revision);
         runtime.collaboration?.acknowledge(operation.operationId, revision);
         await runtime.checkpointWorkspace(false);
-        runtime.handlers.onSaveState?.('saved');
+        runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
         return revision;
       } catch (error) {
         runtime.ownOperationIds.delete(operation.operationId);
@@ -943,12 +945,24 @@ export function startCollaborationSession(
     runtime.collab = client;
     runtime.broadcastPresence = (state) => !runtime.disposed && client.send({ type: 'presence.updated', unitId: runtime.model.unitId, state });
 
+    let synchronizing = false;
+    let synchronizationFailed = false;
+    const deferredMessages: OperationMessage[] = [];
     const applyRemote = (message: OperationMessage) => {
+      if (synchronizing) { deferredMessages.push(message); return; }
       if (runtime.disposed) return;
       if (message.type === 'revision.created') {
-        if (message.payload.unitId !== runtime.model.unitId) return;
+        if (message.payload.unitId !== runtime.model.unitId || message.revision <= runtime.remoteRevision) return;
         if (runtime.ownOperationIds.has(message.payload.operationId)) return;
-        runtime.collaboration?.applyRemote(message.payload);
+        try { runtime.collaboration?.applyRemote(message.payload); }
+        catch (error) {
+          synchronizationFailed = true;
+          runtime.remoteConnected = false;
+          runtime.collaboration?.offlineQueue.setOnline(false);
+          runtime.handlers.onSaveState?.('conflict');
+          runtime.handlers.onNotice?.(error instanceof Error ? error.message : '远端变更与本地草稿冲突');
+          return;
+        }
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
         runtime.collaboration?.setRevision(runtime.remoteRevision);
         void checkpointWorkspace(runtime, false);
@@ -978,17 +992,38 @@ export function startCollaborationSession(
     const detachMessage = client.onMessage(applyRemote);
     const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
       if (runtime.disposed) return;
+      runtime.remoteConnected = false;
+      runtime.collaboration?.offlineQueue.setOnline(false);
       runtime.handlers.onCollabStatus?.(status);
-      runtime.remoteConnected = status !== 'closed';
-      runtime.collaboration?.offlineQueue.setOnline(status === 'open');
-      if (status === 'closed') runtime.collaboration?.transportClosed();
-      if (status === 'closed') runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
-      else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
-      if (status === 'open') {
-        void runtime.collaboration?.offlineQueue.flushAll().then(({ failed }) => {
-          if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
-        });
-      }
+      if (status === 'closed') {
+        runtime.collaboration?.transportClosed();
+        runtime.handlers.onSaveState?.('offline');
+      } else runtime.handlers.onSaveState?.('syncing');
+      if (status !== 'open') return;
+      synchronizing = true;
+      synchronizationFailed = false;
+      client.send({ type: 'cursor.updated', unitId: runtime.model.unitId, state: { sheetId: runtime.model.primarySheetId, row: 0, column: 0 } });
+      void (async () => {
+        const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
+        if (!active || runtime.disposed) return;
+        hydrateRuntime(runtime, snapshot);
+        runtime.collaboration?.setRevision(snapshot.revision);
+        await loadHistoryAndReplayPending(runtime);
+        if (!active || runtime.disposed) return;
+        synchronizing = false;
+        for (const message of deferredMessages.splice(0)) applyRemote(message);
+        if (synchronizationFailed) return;
+        runtime.handlers.onAccessRole?.(access.role);
+        runtime.remoteConnected = true;
+        runtime.collaboration?.offlineQueue.setOnline(true);
+        runtime.handlers.onMutationsApplied?.();
+        runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
+      })().catch((error: Error) => {
+        synchronizing = false;
+        runtime.remoteConnected = false;
+        runtime.handlers.onSaveState?.('conflict');
+        runtime.handlers.onNotice?.(error.message);
+      });
     });
     client.open();
 
@@ -1043,6 +1078,7 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
 export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed) return;
   runtime.disposed = true;
+  runtime.recoveryJournal?.release();
   runtime.collabDispose?.();
   runtime.bootstrapDispose?.();
   detachCoreListeners(runtime);
@@ -1057,6 +1093,10 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
   const resolution = runtime.resolution;
+  if (runtime.recoveryJournal) {
+    const pending = await runtime.recoveryJournal.load();
+    runtime.operationJournal.write(runtime.model.unitId, pending, Math.max(0, ...pending.map(operation => operation.clientSequence)));
+  }
   const localPendingBeforeLoad = runtime.collaboration?.getPendingOperations() ?? [];
   let localRecord: WorkspaceRecord | null = null;
   let resolvedRemote: SnapshotResponse | null = null;
@@ -1145,20 +1185,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
     if (!isActive()) return;
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
-      runtime.model.snapshot(),
-      runtime.localRevision,
-      runtime.remoteRevision,
-      'remote',
-      undefined,
-      resolution ? {
-        location: resolution.binding.location,
-        lifecycle: resolution.lifecycle,
-        source: localRecord?.metadata.source ?? 'native',
-        role: resolution.access?.role ?? localRecord?.metadata.role ?? 'viewer',
-      } : undefined,
-    );
-    runtime.remoteConnected = true;
+    runtime.remoteConnected = false;
     runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
       runtime.handlers.onSaveState?.('saved');
@@ -1183,21 +1210,11 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       return;
     }
 
-    runtime.localOnly = true;
     runtime.remoteConnected = false;
-    runtime.remoteSyncRequested = true;
     runtime.handlers.onAccessRole?.(null);
-    try {
-      await checkpointStartupLocally(runtime);
-    } catch (persistenceError) {
-      publishPersistenceFailure(runtime, persistenceError);
-      return;
-    }
-    if (isActive()) {
-      runtime.handlers.onSaveState?.('offline');
-      runtime.handlers.onNotice?.('Server unavailable; using the current memory workspace');
-      runtime.handlers.onPhaseChange?.('ready');
-    }
+    runtime.handlers.onSaveState?.('error');
+    runtime.handlers.onPhaseChange?.('error');
+    throw error;
   }
 }
 

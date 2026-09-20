@@ -11,6 +11,7 @@ import { getInitialSessionPhase, isWorkbookResolutionError, useWorkbookSession, 
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
+import { AdminUsersPage } from './auth/AdminUsersPage';
 
 function WorkbookRouteGate({ unitId }: { unitId: string }) {
   const auth = useAuthSession();
@@ -33,17 +34,10 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
     return () => { active = false; controller.abort(); };
   }, [authSnapshot.phase, catalog, shareToken, unitId]);
 
-  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在确认本地缓存或云端访问权限。" /></Box>;
+  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在读取服务器版本并确认访问权限。" /></Box>;
   if (localState === "denied") {
     const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !shareToken;
-    const memorySessionReset = isWorkbookResolutionError(resolutionError) && resolutionError.code === "memory-session-reset";
-    const title = memorySessionReset ? "内存会话已重置" : canSignIn ? "需要云端登录" : "无法打开工作簿";
-    const description = memorySessionReset
-      ? "本地工作簿只存在于当前页面的内存会话中；刷新或关闭页面后无法恢复。请返回工作簿中心重新创建或导入。"
-      : canSignIn
-        ? "当前页面内存会话中没有这个本地工作簿；请登录后打开云端文件。"
-        : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "该工作簿不在当前页面内存会话中，且云端服务未配置。" : "工作簿解析失败。");
-    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={memorySessionReset || !canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn && !memorySessionReset ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
+    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={canSignIn ? "登录" : "返回文件中心"} kind="error" title="无法打开工作簿" description={resolutionError?.message ?? "工作簿服务不可用，请检查服务或访问权限。"} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;
   return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "local"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
@@ -55,7 +49,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const auth = useAuthSession();
   const { catalog, createWorkbookSessionOptions } = useApplicationServices();
   const { session, snapshot: state } = useWorkbookSession({
-    ...createWorkbookSessionOptions(unitId, auth.getAccessToken, resolution.mode !== "remote"),
+    ...createWorkbookSessionOptions(unitId, auth.getAccessToken),
     initialPhase: getInitialSessionPhase(),
     resolution,
     onReady: () => catalog.markOpened(resolution),
@@ -180,10 +174,11 @@ export default function App() {
   const auth = useAuthSnapshot();
   useEffect(() => { if (typeof window !== "undefined" && window.location.pathname === "/") navigate("/workbooks", { replace: true }); }, []);
   if (route.kind === "auth-callback" || route.kind === "auth-silent-renew" || auth.phase === "loading") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在验证登录状态" description="正在建立云端工作簿会话。" /></Box>;
-  if (route.kind === "hub") return <WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
+  if (route.kind === 'admin-users') return auth.admin ? <AdminUsersPage /> : <main role="alert" className="p-8">需要管理员权限。</main>;
+  if (route.kind === "hub") return <><Box className="flex justify-end gap-4 border-b px-6 py-2 text-sm">{auth.displayName}{auth.admin && <Button onClick={() => navigate('/admin/users')}>用户管理</Button>}</Box><WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
     const query = options?.initialCell ? `?initialCell=${encodeURIComponent(options.initialCell)}` : "";
     navigate(`/workbooks/${encodeURIComponent(unitId)}${query}`);
-  }} />;
+  }} /></>;
   if (route.kind === "not-found") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="页面不存在" description={`未找到 ${route.pathname}`} onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   if (route.kind !== "workbook") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="路由状态无效" description="无法解析当前工作簿路由。" onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   return <WorkbookRouteGate unitId={route.unitId} />;

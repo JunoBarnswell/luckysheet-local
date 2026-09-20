@@ -37,7 +37,7 @@ class WebSocketSessionRegistryTest {
         doThrow(ServiceException.forbidden("Workbook access denied"))
                 .when(access).require("book-1", "editor-1", WorkbookAclRole.VIEWER);
         registry.join("book-1", session);
-        CommittedOperationEnvelope operation = new CommittedOperationEnvelope(
+        CommittedOperationEnvelope operation = new CommittedOperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,
                 "operation-1",
                 "book-1",
