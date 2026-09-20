@@ -66,7 +66,14 @@ class WorkbookCatalogServiceTest {
 
         assertEquals(checksum, response.checksum());
         assertEquals(content.length, response.byteLength());
-        verify(artifacts).save(any(WorkbookSourceArtifactEntity.class));
+        var stored = org.mockito.ArgumentCaptor.forClass(WorkbookSourceArtifactEntity.class);
+        verify(artifacts).save(stored.capture());
+        when(artifacts.findById("book-1")).thenReturn(Optional.of(stored.getValue()));
+        org.junit.jupiter.api.Assertions.assertArrayEquals(content, service.getArtifact("book-1", "editor").getContent());
+        stored.getValue().getContent()[0] ^= 1;
+        ServiceException corrupted = org.junit.jupiter.api.Assertions.assertThrows(ServiceException.class,
+                () -> service.getArtifact("book-1", "editor"));
+        assertEquals("STORAGE_CORRUPT", corrupted.code());
     }
 
     @Test

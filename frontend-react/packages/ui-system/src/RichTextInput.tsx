@@ -16,6 +16,7 @@ export interface RichTextInputRun {
 }
 
 export interface RichTextInputProps {
+  active: boolean;
   ariaLabel: string;
   caret: { start: number; end: number };
   className?: string;
@@ -81,11 +82,15 @@ function runStyle(run: RichTextInputRun): CSSProperties {
   };
 }
 
-export function RichTextInput({ ariaLabel, caret, className, runs, style, onCaretChange, onCompositionStart, onCompositionUpdate, onCompositionEnd, onInput, onKeyDown }: RichTextInputProps): ReactElement {
+export function RichTextInput({ active, ariaLabel, caret, className, runs, style, onCaretChange, onCompositionStart, onCompositionUpdate, onCompositionEnd, onInput, onKeyDown }: RichTextInputProps): ReactElement {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const focusedRef = useRef(false);
 
   useLayoutEffect(() => {
+    if (!active) {
+      focusedRef.current = false;
+      return;
+    }
     const root = rootRef.current;
     if (!root) return;
     if (!focusedRef.current) {
@@ -93,9 +98,10 @@ export function RichTextInput({ ariaLabel, caret, className, runs, style, onCare
       focusedRef.current = true;
     }
     applyCaret(root, caret);
-  }, [caret.start, caret.end, runs]);
+  }, [active, caret.start, caret.end, runs]);
 
   const publishCaret = () => {
+    if (!active) return;
     const root = rootRef.current;
     if (!root) return;
     const selection = selectionOffsets(root);

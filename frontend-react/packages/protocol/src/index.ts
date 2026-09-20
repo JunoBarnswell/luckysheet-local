@@ -1892,8 +1892,8 @@ export class WorkbookApiClient {
   async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
     const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`);
     const disposition = response.headers.get('content-disposition') ?? '';
-    const fileNameMatch = /filename="?([^";]+)"?/i.exec(disposition);
-    const fileName = fileNameMatch?.[1];
+    const fileNameMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    const fileName = fileNameMatch?.[1] ? decodeURIComponent(fileNameMatch[1]) : undefined;
     const checksum = response.headers.get('x-content-sha256');
     const byteLength = Number(response.headers.get('content-length') ?? 0);
     const codecRevision = Number(response.headers.get('x-native-codec-revision') ?? 1);

@@ -233,8 +233,6 @@ export class CollaborationSession {
   loadCommittedHistory(operations: readonly CommittedOperationEnvelope[]): void {
     const ordered = [...operations].sort((left, right) => left.revision - right.revision);
     for (const operation of ordered) this.assertCommittedOperation(operation);
-    const incoming = ordered.flatMap((operation) => operation.mutations.map((mutation) => committedMutationToClassified(mutation)));
-    this.assertPendingCanRebase(incoming);
     for (const operation of ordered) {
       if (operation.unitId !== this.runtime.workbook.unitId || this.committedOperationIds.has(operation.operationId)) continue;
       if (this.offlineQueue.getPending().some((entry) => entry.operation.operationId === operation.operationId)) {
@@ -249,7 +247,9 @@ export class CollaborationSession {
       }
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
     }
-    this.rebaseQueuedOperations(this.baseRevision);
+    // Hydration already contains these revisions. Replaying their transforms
+    // would move pending addresses a second time and create false conflicts.
+    this.rebasedRemoteCount = this.remoteMutations.length;
   }
 
   /** Return pending intent for runtime hydration without exposing queue state. */

@@ -288,7 +288,11 @@ public class WorkbookCatalogService {
 
     public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor) {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
-        return artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native document artifact not found"));
+        WorkbookSourceArtifactEntity artifact = artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native document artifact not found"));
+        if (artifact.getContent().length != artifact.getByteLength() || !checksum(artifact.getContent()).equals(artifact.getChecksum())) {
+            throw new ServiceException("STORAGE_CORRUPT", 409, "Native document checksum mismatch: " + unitId + ". Restore a verified backup.");
+        }
+        return artifact;
     }
 
     @Transactional

@@ -856,13 +856,10 @@ export function replayPendingOperations(
   for (const operation of pending) {
     const items = operation.mutations.map((mutation) => {
       const metadata = runtime.commands.registry.getMutationMetadata(mutation.id);
-      let affectedRanges: MutationInfo['affectedRanges'] = [];
-      try {
-        const resolved = metadata?.affectedRanges?.resolve(mutation.params as never);
-        if (Array.isArray(resolved)) affectedRanges = [...resolved];
-      } catch {
-        affectedRanges = [];
-      }
+      if (!metadata) throw new Error(`RECOVERY_MUTATION_UNSUPPORTED: ${mutation.id}`);
+      const resolved = metadata.affectedRanges?.resolve(mutation.params as never);
+      if (!Array.isArray(resolved)) throw new Error(`RECOVERY_RANGE_INVALID: ${mutation.id}`);
+      const affectedRanges: MutationInfo['affectedRanges'] = [...resolved];
       return {
         id: mutation.id,
         unitId: operation.unitId,
@@ -881,7 +878,11 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
   const pending = runtime.collaboration?.getPendingOperations() ?? [];
   for (const operation of pending) {
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
-    if (result) runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+    if (result) {
+      await runtime.api.checkpointWorkbook(runtime.model.unitId);
+      runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+      await runtime.recoveryJournal?.flushed();
+    }
     else if (operation.baseRevision !== runtime.remoteRevision) {
       throw new Error(`RECOVERY_REVISION_CONFLICT: ${operation.operationId}，恢复草稿保留，请核对服务器版本后处理`);
     }

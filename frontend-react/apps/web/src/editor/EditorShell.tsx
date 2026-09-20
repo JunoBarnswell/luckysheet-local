@@ -148,6 +148,7 @@ export function EditorShell({
             onZoomChange={session.setZoom.bind(session)}
             phase={state.phase}
             saveState={state.saveState}
+            notice={state.notice}
             sheetCount={state.sheets.length}
             zoom={state.zoom}
             collabStatus={state.collabStatus}

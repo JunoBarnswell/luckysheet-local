@@ -10,6 +10,7 @@ export interface StatusBarProps {
   onZoomChange: (zoom: number) => void;
   phase: AppPhase;
   saveState: SaveState;
+  notice?: string;
   sheetCount: number;
   zoom: number;
   collabStatus?: 'connecting' | 'open' | 'closed';
@@ -27,6 +28,7 @@ export function StatusBar({
   onZoomChange,
   phase,
   saveState,
+  notice,
   sheetCount,
   zoom,
   collabStatus = 'closed',
@@ -52,7 +54,7 @@ export function StatusBar({
     <Box aria-label="Workbook status bar" className="relative flex h-[22px] items-center justify-between px-2">
       <Inline gap="sm">
         <Text size="xs" tone="inverse" className="text-[11px] leading-none">{statusText}</Text>
-        <Text role="status" aria-live="polite" size="xs" tone="inverse" className="border-l border-white/30 pl-3 text-[11px] leading-none">{persistenceText}</Text>
+        <Text title={notice} role="status" aria-live="polite" size="xs" tone="inverse" className="border-l border-white/30 pl-3 text-[11px] leading-none">{persistenceText}</Text>
         <Text size="xs" tone="inverse" className="text-[10px] opacity-75">{activeCell} · r{collabRevision}</Text>
         {fixedDecimalPlaces !== null ? <Text size="xs" tone="inverse" className="text-[10px] leading-none">Fixed Decimal: {fixedDecimalPlaces}</Text> : null}
       </Inline>

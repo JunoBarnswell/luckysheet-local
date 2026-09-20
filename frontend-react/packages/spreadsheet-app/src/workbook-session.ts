@@ -1090,7 +1090,11 @@ export class WorkbookSession {
         );
       }
     }).catch((error: unknown) => {
-      if (!this.disposed && generation === this.lifecycleGeneration) this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
+      if (!this.disposed && generation === this.lifecycleGeneration) {
+        this.phase = 'error';
+        this.saveState = 'error';
+        this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
+      }
     });
   }
 

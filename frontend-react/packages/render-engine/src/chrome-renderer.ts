@@ -390,56 +390,62 @@ function drawDrawingMarquee(options: ChromeDrawOptions): void {
 function drawHeaderStrips(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome, theme } = options;
   const viewport = plan.viewport;
-  const origin = defaultHeaderOffset();
+  const panes = plan.paneMap.panes;
+  if (panes.length === 0) return;
+  const origin = { x: Math.min(...panes.map(pane => pane.screenRect.x)), y: Math.min(...panes.map(pane => pane.screenRect.y)) };
 
-  // 背景
   context.fillStyle = theme.headerBackground;
-  context.fillRect(origin.x, origin.y, viewport.width - origin.x, COL_HEADER_HEIGHT);
+  context.fillRect(origin.x, 0, viewport.width - origin.x, origin.y);
   context.fillRect(0, origin.y, origin.x, viewport.height - origin.y);
-  context.fillRect(0, 0, origin.x, origin.y);
-
   context.strokeStyle = theme.headerBorder;
   context.lineWidth = 1;
-  context.strokeRect(0.5, 0.5, viewport.width - 1, viewport.height - 1);
-
   context.font = HEADER_FONT;
-  context.fillStyle = theme.headerText;
   context.textBaseline = "middle";
 
-  // 列头
-  for (const pane of plan.panes) {
+  // Only panes bordering the header own its projection. Frozen panes never
+  // paint a second copy of another pane's header or cover the first data row.
+  for (const pane of panes) {
     if (pane.visibleRange == null) continue;
     const t = paneTransform(pane);
-    for (let column = pane.visibleRange.startColumn; column <= pane.visibleRange.endColumn; column++) {
-      if (skeleton.isColumnHidden(column)) continue;
-      const left = skeleton.getColumnLeft(column) + t.dx;
-      const width = skeleton.getColumnWidth(column);
-      const isSelected = isColumnSelected(chrome, column);
-      if (isSelected) {
-        context.fillStyle = theme.headerSelectionBackground;
-        context.fillRect(left, origin.y, width, COL_HEADER_HEIGHT);
-        context.fillStyle = theme.headerSelectionText;
+    if (pane.screenRect.y === origin.y) {
+      context.save();
+      context.beginPath();
+      context.rect(pane.screenRect.x, 0, pane.screenRect.width, origin.y);
+      context.clip();
+      for (let column = pane.visibleRange.startColumn; column <= pane.visibleRange.endColumn; column++) {
+        if (skeleton.isColumnHidden(column)) continue;
+        const left = skeleton.getColumnLeft(column) + t.dx;
+        const width = skeleton.getColumnWidth(column);
+        const selected = isColumnSelected(chrome, column);
+        context.fillStyle = selected ? theme.headerSelectionBackground : theme.headerBackground;
+        context.fillRect(left, 0, width, origin.y);
+        context.strokeStyle = theme.headerBorder;
+        context.strokeRect(left + 0.5, 0.5, width, origin.y - 1);
+        context.fillStyle = selected ? theme.headerSelectionText : theme.headerText;
+        context.textAlign = "center";
+        context.fillText(columnLabelOf(column), left + width / 2, origin.y / 2 + 1);
       }
-      context.strokeStyle = theme.headerBorder;
-      context.strokeRect(left + 0.5, origin.y + 0.5, width, COL_HEADER_HEIGHT - 1);
-      context.textAlign = "center";
-      context.fillText(columnLabelOf(column), left + width / 2, origin.y + COL_HEADER_HEIGHT / 2 + 1);
+      context.restore();
     }
-    // 行头
-    for (let row = pane.visibleRange.startRow; row <= pane.visibleRange.endRow; row++) {
-      if (skeleton.isRowHidden(row)) continue;
-      const top = skeleton.getRowTop(row) + t.dy;
-      const height = skeleton.getRowHeight(row);
-      const isSelected = isRowSelected(chrome, row);
-      if (isSelected) {
-        context.fillStyle = theme.headerSelectionBackground;
+    if (pane.screenRect.x === origin.x) {
+      context.save();
+      context.beginPath();
+      context.rect(0, pane.screenRect.y, origin.x, pane.screenRect.height);
+      context.clip();
+      for (let row = pane.visibleRange.startRow; row <= pane.visibleRange.endRow; row++) {
+        if (skeleton.isRowHidden(row)) continue;
+        const top = skeleton.getRowTop(row) + t.dy;
+        const height = skeleton.getRowHeight(row);
+        const selected = isRowSelected(chrome, row);
+        context.fillStyle = selected ? theme.headerSelectionBackground : theme.headerBackground;
         context.fillRect(0, top, origin.x, height);
-        context.fillStyle = theme.headerSelectionText;
+        context.strokeStyle = theme.headerBorder;
+        context.strokeRect(0.5, top + 0.5, origin.x - 1, height);
+        context.fillStyle = selected ? theme.headerSelectionText : theme.headerText;
+        context.textAlign = "right";
+        context.fillText(String(row + 1), origin.x - 6, top + height / 2 + 1);
       }
-      context.strokeStyle = theme.headerBorder;
-      context.strokeRect(0.5, top + 0.5, origin.x - 1, height);
-      context.textAlign = "right";
-      context.fillText(String(row + 1), origin.x - 6, top + height / 2 + 1);
+      context.restore();
     }
   }
 
@@ -463,12 +469,12 @@ function drawHiddenDimensionIndicators(context: CanvasRenderingContext2D, skelet
     while (previous >= 0 && skeleton.isColumnHidden(previous)) previous -= 1;
     const anchor = next < skeleton.columnCount ? next : previous;
     if (anchor < 0) continue;
-    const pane = plan.panes.find((candidate) => candidate.visibleRange && anchor >= candidate.visibleRange.startColumn && anchor <= candidate.visibleRange.endColumn);
+    const pane = plan.panes.find((candidate) => candidate.screenRect.y === origin.y && candidate.visibleRange && anchor >= candidate.visibleRange.startColumn && anchor <= candidate.visibleRange.endColumn);
     if (!pane) continue;
     const x = skeleton.getColumnLeft(anchor) + pane.screenRect.x - pane.contentOrigin.x;
      context.beginPath();
-     context.moveTo(x - 2, origin.y + 4); context.lineTo(x - 2, origin.y + COL_HEADER_HEIGHT - 4);
-     context.moveTo(x + 2, origin.y + 4); context.lineTo(x + 2, origin.y + COL_HEADER_HEIGHT - 4);
+     context.moveTo(x - 2, 4); context.lineTo(x - 2, origin.y - 4);
+     context.moveTo(x + 2, 4); context.lineTo(x + 2, origin.y - 4);
     context.stroke();
   }
   for (const row of hiddenRuns(skeleton.hiddenRows)) {
@@ -478,7 +484,7 @@ function drawHiddenDimensionIndicators(context: CanvasRenderingContext2D, skelet
     while (previous >= 0 && skeleton.isRowHidden(previous)) previous -= 1;
     const anchor = next < skeleton.rowCount ? next : previous;
     if (anchor < 0) continue;
-    const pane = plan.panes.find((candidate) => candidate.visibleRange && anchor >= candidate.visibleRange.startRow && anchor <= candidate.visibleRange.endRow);
+    const pane = plan.panes.find((candidate) => candidate.screenRect.x === origin.x && candidate.visibleRange && anchor >= candidate.visibleRange.startRow && anchor <= candidate.visibleRange.endRow);
     if (!pane) continue;
     const y = skeleton.getRowTop(anchor) + pane.screenRect.y - pane.contentOrigin.y;
      context.beginPath();

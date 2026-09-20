@@ -2,6 +2,8 @@ import React, { type ReactNode } from 'react';
 import {
   Box,
   Button,
+  Icon,
+  type IconName,
   Divider,
   DropdownMenu,
   Inline,
@@ -85,6 +87,10 @@ const DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, st
 const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
   clipboard: 'w-[140px]', font: 'w-[244px]', alignment: 'w-[224px]',
   number: 'w-[140px]', styles: 'w-[188px]', cells: 'w-[164px]', editing: 'w-[210px]',
+};
+
+const HOME_GROUP_ICONS: Partial<Record<RibbonGroupId, IconName>> = {
+  styles: 'file-spreadsheet', cells: 'grid', editing: 'search', alignment: 'align-left', number: 'calculator',
 };
 
 function collapseHomeGroup(groupId: RibbonGroupId, width: number): boolean {
@@ -207,7 +213,7 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
         {index > 0 ? <Divider orientation="vertical" className={isHome ? 'my-3 h-[72px] border-slate-200' : RIBBON_DENSITY_CLASSES.groupContent} /> : null}
         {collapsed ? (
           <Stack data-ribbon-group={group.id} gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
-            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} icon="chevron-down" size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}</Button>}>
+            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={HOME_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
               <Stack gap="sm" className="min-w-[14rem] p-3" data-ribbon-overflow={group.id}>
                 <Text size="xs" tone="muted">{groupLabel}</Text>
                 {content}

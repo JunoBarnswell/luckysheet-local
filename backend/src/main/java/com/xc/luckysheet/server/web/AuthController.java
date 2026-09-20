@@ -121,6 +121,14 @@ public class AuthController {
 
     private void saveAuthentication(LocalUserAuthentication authentication,
                                     HttpServletRequest request, HttpServletResponse response) {
+        HttpSession previousSession = request.getSession(false);
+        Authentication previousAuthentication = SecurityContextHolder.getContext().getAuthentication();
+        if (previousSession != null) {
+            if (previousAuthentication instanceof LocalUserAuthentication previousUser) {
+                sessions.unregisterHttpSession(previousUser.getName(), previousSession);
+            }
+            request.changeSessionId();
+        }
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authentication);
         SecurityContextHolder.setContext(context);

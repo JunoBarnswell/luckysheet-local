@@ -175,7 +175,8 @@ public class WorkbookController {
                 .header("X-Content-SHA256", artifact.getChecksum())
                 .header("X-Native-Codec-Revision", Integer.toString(artifact.getCodecRevision()))
                 .header("X-Native-Format", artifact.getFormat())
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + artifact.getFileName().replace("\"", "") + "\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''"
+                        + java.net.URLEncoder.encode(artifact.getFileName(), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20"))
                 .body(artifact.getContent());
     }
 

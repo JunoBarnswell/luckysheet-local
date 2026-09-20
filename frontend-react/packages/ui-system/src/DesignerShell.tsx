@@ -1,13 +1,8 @@
 import type { ReactNode } from 'react';
 import { Box } from './layout';
 import type { DesignerShellProps } from './shell-types';
-import { RIBBON_DENSITY_CLASSES } from './shell-types';
 
-/**
- * Excel Designer shell geometry is a product contract, not a responsive guess:
- * ribbon 167px, formula bar 48px, workbook 843px, status bar 22px at 1920x1080.
- * Sheet tabs live inside the workbook region like the reference Designer.
- */
+/** The ribbon owns its height; the shell flows the formula bar and grid below it. */
 export function DesignerShell({ children, floatingOverlay, formulaBar, formulaBarVisible = true, ribbon, ribbonVisible = true, isBusy, sheetTabs, statusBar, workspacePhase }: DesignerShellProps): ReactNode {
   return (
     <Box
@@ -19,7 +14,7 @@ export function DesignerShell({ children, floatingOverlay, formulaBar, formulaBa
       data-workspace-phase={workspacePhase}
       role="application"
     >
-      <Box as="section" className={`${ribbonVisible ? RIBBON_DENSITY_CLASSES.shell : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-ribbon" aria-hidden={!ribbonVisible}>
+      <Box as="section" className={`${ribbonVisible ? '' : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-ribbon" aria-hidden={!ribbonVisible}>
         {ribbon}
       </Box>
       <Box as="section" className={`${formulaBarVisible ? 'h-[48px]' : 'hidden'} shrink-0 overflow-hidden border-b border-[#e7e7e7] bg-white`} data-testid="designer-formula-bar" aria-hidden={!formulaBarVisible}>
