@@ -3,7 +3,7 @@ export const WORKBOOK_CONTRACT_API_VERSION = "2026-08-24" as const;
 export const WORKBOOK_SNAPSHOT_SCHEMA = "WorkbookSnapshot" as const;
 export const WORKBOOK_SNAPSHOT_VERSION = 9 as const;
 export const MAX_WORKBOOK_NAME_LENGTH = 255 as const;
-export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR"] as const;
+export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE"] as const;
 export type ContractErrorCode = typeof CONTRACT_ERROR_CODES[number];
 export type MutationDurability = 'transient' | 'local' | 'remote';
 export type PermissionCapability = 'navigate' | 'edit-cell' | 'format' | 'structure' | 'drawing' | 'protect' | 'share' | 'comment' | 'restore' | 'query' | 'script';
@@ -30,6 +30,7 @@ export interface MutationCapability {
   collaborationKind?: 'cell-value' | 'cell-style' | 'clear' | 'insert-rows' | 'delete-rows' | 'insert-columns' | 'delete-columns' | 'move-range' | 'sort' | 'merge' | 'table-resize' | 'drawing' | 'comment' | 'pivot-config' | 'unknown';
 }
 export const MUTATION_CAPABILITIES = {
+  "cell.set": { durability: "remote", remote: true, schema: "CellSet", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "workbook.editing.options.set": { durability: "remote", remote: true, schema: "WorkbookEditingOptions", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "sheet.extent.grow": { durability: "remote", remote: true, schema: "SheetExtentGrow", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
   "sheet.extent.restore": { durability: "local", remote: false, schema: "SheetExtentRestore", minRole: "viewer", rebasePolicy: "none", javaReducer: false, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },

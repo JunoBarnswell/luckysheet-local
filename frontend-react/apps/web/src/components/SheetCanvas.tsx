@@ -7,6 +7,7 @@ import {
   Stack,
   StatePanel,
   Button,
+  Inline,
   ScrollBar,
   Textarea,
 } from "@react-sheets/ui-system";
@@ -72,6 +73,8 @@ export interface SheetCanvasProps {
   cellEdit: CellEditController;
   phase: AppPhase;
   errorMessage?: string;
+  onExportRecovery?: () => void;
+  onDiscardRecovery?: () => void;
   zoom: number;
   peers: PeerCursor[];
   drawings?: readonly DrawingObject[];
@@ -371,6 +374,8 @@ export function SheetCanvas({
   cellEdit,
   phase,
   errorMessage,
+  onExportRecovery,
+  onDiscardRecovery,
   zoom,
   peers,
   drawings = sheet.drawings,
@@ -981,6 +986,10 @@ export function SheetCanvas({
           onAction={onRetry}
           title="Engine error"
         />
+        {errorMessage?.startsWith('RECOVERY_') ? <Inline className="justify-center pb-5" gap="sm">
+          <Button onClick={onExportRecovery} size="sm">导出待确认操作</Button>
+          <Button onClick={onDiscardRecovery} size="sm" variant="danger">舍弃草稿并重新加载</Button>
+        </Inline> : null}
       </Panel>
     );
   }

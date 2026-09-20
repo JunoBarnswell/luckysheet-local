@@ -171,6 +171,8 @@ export function EditorShell({
                 cellEdit={session.cellEdit}
                 phase={state.phase}
                 errorMessage={state.notice}
+                onExportRecovery={session.exportRecoveryDraft.bind(session)}
+                onDiscardRecovery={session.discardRecoveryDraft.bind(session)}
                 zoom={state.zoom}
                 peers={state.peers}
                 selectedFloatingId={state.selectedFloatingId}

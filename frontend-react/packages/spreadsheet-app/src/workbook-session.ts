@@ -2486,10 +2486,51 @@ export class WorkbookSession {
     }
   }
 
-  retry(): void {
-    this.phase = 'ready';
-    this.notify('Workspace ready');
+  async retry(): Promise<void> {
+    this.phase = 'loading';
     this.emit();
+    try {
+      if (!this.runtime.localOnly) {
+        const [snapshot, access] = await Promise.all([
+          this.runtime.api.getSnapshot(this.runtime.model.unitId),
+          this.runtime.api.getAccess(this.runtime.model.unitId),
+        ]);
+        if (this.runtime.resolution?.mode === 'remote') {
+          this.runtime.resolution = { ...this.runtime.resolution, snapshot: snapshot.snapshot, revision: snapshot.revision, access };
+        }
+      }
+      this.dispose();
+      this.start();
+    } catch (error) {
+      this.phase = 'error';
+      this.notify(error instanceof Error ? error.message : '重新连接失败');
+    }
+  }
+
+  exportRecoveryDraft(): void {
+    const operations = this.runtime.collaboration?.getPendingOperations()
+      ?? this.runtime.operationJournal.read(this.runtime.model.unitId)?.operations ?? [];
+    const blob = new Blob([JSON.stringify({ schema: 'WorkbookRecoveryDraft', version: 1,
+      unitId: this.runtime.model.unitId, serverRevision: this.runtime.remoteRevision, operations }, null, 2)], { type: 'application/json' });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = `${this.runtime.model.unitId}-recovery.json`;
+    link.click();
+    URL.revokeObjectURL(href);
+  }
+
+  async discardRecoveryDraft(): Promise<void> {
+    if (!window.confirm('这会舍弃当前工作簿尚未确认的操作。请先导出恢复日志并核对服务器版本。确定继续？')) return;
+    try {
+      this.runtime.collaboration?.clearPending();
+      this.runtime.operationJournal.write(this.runtime.model.unitId, [], 0);
+      await this.runtime.recoveryJournal?.persist([]);
+      await this.retry();
+    } catch (error) {
+      this.phase = 'error';
+      this.notify(error instanceof Error ? error.message : '恢复日志清理失败，尚未重新加载');
+    }
   }
 
   setRibbonTab(tab: RibbonTabId): void {

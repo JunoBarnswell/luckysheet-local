@@ -15,9 +15,12 @@
     "WORKBOOK_TRASHED",
     "TIMEOUT",
     "SERVICE_UNAVAILABLE",
-    "INTERNAL_ERROR"
+    "INTERNAL_ERROR",
+    "STORAGE_CORRUPT",
+    "UNSUPPORTED_FEATURE"
   ],
   "mutations": {
+    "cell.set": { "durability": "remote", "remote": true, "schema": "CellSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
     "workbook.editing.options.set": { "durability": "remote", "remote": true, "schema": "WorkbookEditingOptions", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "sheet.extent.grow": { "durability": "remote", "remote": true, "schema": "SheetExtentGrow", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "sheet.extent.restore": { "durability": "local", "remote": false, "schema": "SheetExtentRestore", "minRole": "viewer", "rebasePolicy": "none", "javaReducer": false },

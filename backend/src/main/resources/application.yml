@@ -1,6 +1,8 @@
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   shutdown: graceful
+  tomcat:
+    max-http-form-post-size: 150MB
   servlet:
     session:
       timeout: 8h

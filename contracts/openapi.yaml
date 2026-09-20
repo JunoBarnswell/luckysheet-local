@@ -421,7 +421,7 @@ components:
       properties:
         code:
           type: string
-          enum: [UNAUTHENTICATED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, WORKBOOK_TRASHED, TIMEOUT, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [UNAUTHENTICATED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, WORKBOOK_TRASHED, TIMEOUT, SERVICE_UNAVAILABLE, INTERNAL_ERROR, STORAGE_CORRUPT, UNSUPPORTED_FEATURE]
         message: { type: string }
         details: { type: object, additionalProperties: true }
     AssetMetadata:

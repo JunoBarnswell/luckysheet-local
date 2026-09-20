@@ -13,6 +13,17 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class ApiExceptionHandler {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleUploadLimit(Exception error) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(new ApiErrorResponse("VALIDATION_ERROR",
+                "Import exceeds the configured upload limit. Original file is unchanged; no workbook was created."));
+    }
+
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingResource(Exception error) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiErrorResponse("NOT_FOUND", "Resource not found"));
+    }
     @ExceptionHandler(ServiceException.class)
     public ResponseEntity<ApiErrorResponse> handleDomain(ServiceException error) {
         return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage()));
