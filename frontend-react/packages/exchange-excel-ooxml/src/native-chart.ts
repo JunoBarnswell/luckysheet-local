@@ -1,4 +1,5 @@
 import { strFromU8, strToU8 } from 'fflate';
+import { resolveWorksheetChartRanges } from '@react-sheets/core-model';
 import type {
   ChartDrawingPayload,
   ChartAxisModel,
@@ -120,9 +121,18 @@ function buildWorksheetChartXml(payload: ChartDrawingPayload, drawingId: string,
   if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${drawingId} cannot be rewritten`);
   const sourceRange = sourceRangeFor(payload, snapshot);
   if (!sourceRange) throw new Error(`INVALID_CHART_SOURCE: Chart ${drawingId} has no worksheet-backed range`);
-  const sheetNameForId = (sheetId: string): string => snapshot.sheets.find((candidate) => candidate.id === sheetId)?.name ?? sheet.name;
-  const declarations = payload.series?.length ? payload.series : deriveSeriesDeclarations(payload, sourceRange);
-  const categoryRange = payload.categoryRange ?? (sourceRange.endRow > sourceRange.startRow ? { ...sourceRange, startRow: sourceRange.startRow + 1, startColumn: sourceRange.startColumn, endColumn: sourceRange.startColumn } : sourceRange);
+  const sheets = new Map(snapshot.sheets.map(candidate => [candidate.id, candidate]));
+  const sourceSheet = (sheetId: string): SheetSnapshot => {
+    const found = sheets.get(sheetId);
+    if (!found) throw new Error(`INVALID_CHART_SOURCE: Chart ${drawingId} references missing sheet ${sheetId}`);
+    return found;
+  };
+  const sheetNameForId = (sheetId: string): string => sourceSheet(sheetId).name;
+  const bindings = payload.source.kind === 'worksheet-ranges'
+    ? resolveWorksheetChartRanges(payload, range => sourceSheet(range.sheetId).cells[String(range.startRow)]?.[String(range.startColumn)]?.value ?? null)
+    : undefined;
+  const declarations = bindings?.series ?? (payload.series?.length ? payload.series : deriveSeriesDeclarations(payload, sourceRange));
+  const categoryRange = bindings?.categoryRange ?? payload.categoryRange ?? (sourceRange.endRow > sourceRange.startRow ? { ...sourceRange, startRow: sourceRange.startRow + 1, startColumn: sourceRange.startColumn, endColumn: sourceRange.startColumn } : sourceRange);
   const seriesXml = declarations.map((series, index) => buildSeriesXml(payload, series, index, categoryRange, sheetNameForId)).join('');
   return buildChartSpace(payload, drawingId, sheet, seriesXml, snapshot, undefined);
 }
@@ -145,7 +155,7 @@ function deriveSeriesDeclarations(payload: ChartDrawingPayload, source: RangeRef
 function buildSeriesXml(payload: ChartDrawingPayload, series: ChartSeriesModel, index: number, categoryRange: RangeRef, sheetNameForId: (sheetId: string) => string): string {
   const type = series.chartType ?? (payload.chartType === 'combo' ? 'column' : payload.chartType);
   const valueRange = series.yRange ?? series.range;
-  const category = rangeRefXml(categoryRange, sheetNameForId);
+  const category = rangeRefXml(series.categoryRange ?? categoryRange, sheetNameForId);
   const name = series.name || `Series ${index + 1}`;
   const common = `<c:ser><c:idx val="${index}"/><c:order val="${index}"/><c:tx><c:v>${encodeXml(name)}</c:v></c:tx>`;
   const style = series.color ? `<c:spPr><a:solidFill><a:srgbClr val="${encodeXml(series.color.replace(/^#/, ''))}"/></a:solidFill></c:spPr>` : '';
@@ -533,7 +543,7 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
       const reference = child(child(node, parentName), referenceName);
       return textContent(reference?.children.find((candidate) => localName(candidate.name) === 'f')).trim();
     };
-    const yFormula = referenceFormula('val', 'numRef');
+    const yFormula = referenceFormula('val', 'numRef') || referenceFormula('yVal', 'numRef');
     const xFormula = referenceFormula('xVal', 'numRef');
     const catFormula = referenceFormula('cat', 'strRef') || referenceFormula('cat', 'numRef');
     const sizeFormula = referenceFormula('bubbleSize', 'numRef');
@@ -547,8 +557,11 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
     const xRange = parseNativeFormula(xFormula, sheetIdByName);
     const categoryRange = parseNativeFormula(catFormula, sheetIdByName);
     const sizeRange = parseNativeFormula(sizeFormula, sheetIdByName);
-    const textParent = child(node, 'tx') ?? node;
-    const name = textContent(descendants(textParent, 't')[0]).trim() || `Series ${series.length + 1}`;
+    const textParent = child(node, 'tx');
+    const nameReference = parseNativeFormula(referenceFormula('tx', 'strRef'), sheetIdByName);
+    const headerValue = nameReference ? snapshot.sheets.find(candidate => candidate.id === nameReference.sheetId)?.cells[String(nameReference.startRow)]?.[String(nameReference.startColumn)]?.value : undefined;
+    const literalName = textContent(child(textParent, 'v')).trim() || textContent(descendants(textParent, 'v')[0]).trim() || textContent(descendants(textParent, 't')[0]).trim();
+    const name = headerValue == null || headerValue === '' ? literalName || `Series ${series.length + 1}` : String(headerValue);
     series.push({ id: `series:${series.length + 1}`, name, range, ...(xRange ? { xRange } : {}), ...(xRange ? { yRange: range } : {}), ...(sizeRange ? { sizeRange } : {}), ...(chartType === 'combo' || seriesType === 'scatter' || seriesType === 'bubble' ? { chartType: seriesType } : {}), ...(seriesType === 'stock' && stockHigh && stockLow && stockClose ? { stockRoles: { ...(stockOpen ? { open: stockOpen } : {}), high: stockHigh, low: stockLow, close: stockClose, ...(stockVolume ? { volume: stockVolume } : {}) } } : {}) });
     if (categoryRange && series.length === 1) (series as Array<ChartSeriesModel & { categoryRange?: RangeRef }>)[0]!.categoryRange = categoryRange;
     }

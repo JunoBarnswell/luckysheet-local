@@ -1029,6 +1029,7 @@ export interface ChartMapOptions {
 export interface ChartSeriesModel {
   id?: string;
   name: string;
+  /** Exact data vector (one row or column), excluding any header; includes its first point. */
   range: RangeRef;
   xRange?: RangeRef;
   yRange?: RangeRef;

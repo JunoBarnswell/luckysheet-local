@@ -1,5 +1,7 @@
 import {
   createPivotMemberKey,
+  resolveWorksheetChartRanges,
+  validateChartVector,
   formatPivotMember,
   pivotMemberKey,
   type ChartDrawingPayload,
@@ -223,28 +225,17 @@ function scalarValue(sheet: StructuredChartSheet, row: number, column: number): 
   return sheet.getCell(row, column)?.value ?? null;
 }
 
-function readRange(
-  sheet: StructuredChartSheet,
-  range: RangeRef,
-  hiddenData: ChartPayload['elements']['hiddenData'],
-): PivotScalar[][] {
-  const rows: PivotScalar[][] = [];
+function scalarVector(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData']): PivotScalar[] {
+  validateChartVector(range);
+  const values: PivotScalar[] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
     if (hiddenData === 'hideRows' && containsHidden(sheet.hiddenRows, row)) continue;
-    const values: PivotScalar[] = [];
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
       if (hiddenData === 'hideColumns' && containsHidden(sheet.hiddenColumns, column)) continue;
       values.push(scalarValue(sheet, row, column));
     }
-    rows.push(values);
   }
-  return rows;
-}
-
-function scalarColumn(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData'], headerRow?: number): PivotScalar[] {
-  const rows = readRange(sheet, range, hiddenData);
-  const values = rows.map((row) => row[0] ?? null);
-  return headerRow === range.startRow && values.length > 0 ? values.slice(1) : values;
+  return values;
 }
 
 function seriesName(sheet: StructuredChartSheet, range: RangeRef, fallback: string): string {
@@ -258,20 +249,19 @@ function sheetFor(getSheet: (sheetId: string) => StructuredChartSheet | undefine
   return sheet;
 }
 
-function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined, sourceRange?: RangeRef): ResolvedChartSeries {
+function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined): ResolvedChartSeries {
   const valueRange = declared.yRange ?? declared.range;
   const sheet = sheetFor(getSheet, valueRange);
-  const headerRow = sourceRange?.startRow;
-  const normalizedValues = normalizeEmptyValues(scalarColumn(sheet, valueRange, payload.elements.hiddenData, headerRow), payload.elements.emptyCells);
+  const normalizedValues = normalizeEmptyValues(scalarVector(sheet, valueRange, payload.elements.hiddenData), payload.elements.emptyCells);
   const values = normalizedValues.values;
-  const xValues = declared.xRange ? scalarColumn(sheetFor(getSheet, declared.xRange), declared.xRange, payload.elements.hiddenData, headerRow) : undefined;
-  const sizeValues = declared.sizeRange ? scalarColumn(sheetFor(getSheet, declared.sizeRange), declared.sizeRange, payload.elements.hiddenData, headerRow) : undefined;
+  const xValues = declared.xRange ? scalarVector(sheetFor(getSheet, declared.xRange), declared.xRange, payload.elements.hiddenData) : undefined;
+  const sizeValues = declared.sizeRange ? scalarVector(sheetFor(getSheet, declared.sizeRange), declared.sizeRange, payload.elements.hiddenData) : undefined;
   const stockValues = declared.stockRoles ? {
-    ...(declared.stockRoles.open ? { open: scalarColumn(sheetFor(getSheet, declared.stockRoles.open), declared.stockRoles.open, payload.elements.hiddenData, headerRow) } : {}),
-    high: scalarColumn(sheetFor(getSheet, declared.stockRoles.high), declared.stockRoles.high, payload.elements.hiddenData, headerRow),
-    low: scalarColumn(sheetFor(getSheet, declared.stockRoles.low), declared.stockRoles.low, payload.elements.hiddenData, headerRow),
-    close: scalarColumn(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData, headerRow),
-    ...(declared.stockRoles.volume ? { volume: scalarColumn(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData, headerRow) } : {}),
+    ...(declared.stockRoles.open ? { open: scalarVector(sheetFor(getSheet, declared.stockRoles.open), declared.stockRoles.open, payload.elements.hiddenData) } : {}),
+    high: scalarVector(sheetFor(getSheet, declared.stockRoles.high), declared.stockRoles.high, payload.elements.hiddenData),
+    low: scalarVector(sheetFor(getSheet, declared.stockRoles.low), declared.stockRoles.low, payload.elements.hiddenData),
+    close: scalarVector(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData),
+    ...(declared.stockRoles.volume ? { volume: scalarVector(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData) } : {}),
   } : undefined;
   return {
     id: declared.id ?? `series:${declared.name}:${valueRange.sheetId}:${valueRange.startRow}:${valueRange.startColumn}`,
@@ -288,65 +278,23 @@ function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries
     smooth: declared.smooth,
     trendlines: declared.trendlines,
     errorBars: declared.errorBars,
-    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData, headerRow) } : {}),
-    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData, headerRow) } : {}),
+    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarVector(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData) } : {}),
+    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarVector(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData) } : {}),
     stockRoles: declared.stockRoles,
     ...(stockValues ? { stockValues } : {}),
   };
 }
 
 function rangeSourceData(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
-  if (payload.source.kind !== 'worksheet-ranges') throw new Error(`Chart source mismatch: expected worksheet-ranges, received ${payload.source.kind}`);
-  const sourceRange = payload.source.ranges[0];
-  if (!sourceRange) return { categories: [], series: [] };
-  const sheet = sheetFor(getSheet, sourceRange);
-  const matrix = readRange(sheet, sourceRange, payload.elements.hiddenData);
-  const categoryRange = payload.categoryRange;
-  const categories = categoryRange
-    ? scalarColumn(sheetFor(getSheet, categoryRange), categoryRange, payload.elements.hiddenData, categoryRange.startRow === sourceRange.startRow ? sourceRange.startRow : undefined)
-    : payload.dataOrientation === 'rows'
-      ? (matrix[0]?.slice(1) ?? [])
-      : matrix.slice(1).map((row) => row[0] ?? null);
-  const declared = payload.series ?? [];
-  if (declared.length > 0) return { categories, series: declared.map((entry) => chartSeriesFromDeclaration(payload, entry, getSheet, sourceRange)) };
-  const series: ResolvedChartSeries[] = [];
-  const width = sourceRange.endColumn - sourceRange.startColumn + 1;
-  if (payload.dataOrientation === 'rows') {
-    for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
-      const row = matrix[rowIndex] ?? [];
-      const normalized = normalizeEmptyValues(row.slice(1), payload.elements.emptyCells);
-      series.push({ id: `series:${sourceRange.sheetId}:${sourceRange.startRow + rowIndex}`, name: String(row[0] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-    }
-    return { categories, series };
-  }
-  const appendMatrixSeries = (range: RangeRef, rangeMatrix: PivotScalar[][]): void => {
-    const rangeWidth = range.endColumn - range.startColumn + 1;
-    if (rangeWidth <= 1) {
-      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
-      series.push({ id: `series:${range.sheetId}:${range.startColumn}`, name: seriesName(sheetFor(getSheet, range), range, `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-      return;
-    }
-    for (let columnIndex = 1; columnIndex < rangeWidth; columnIndex += 1) {
-      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
-      series.push({ id: `series:${range.sheetId}:${range.startColumn + columnIndex}`, name: String(rangeMatrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-    }
-  };
-  if (width <= 1) {
-    const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
-    series.push({ id: 'series:1', name: seriesName(sheet, sourceRange, 'Series 1'), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-  } else {
-    for (let columnIndex = 1; columnIndex < width; columnIndex += 1) {
-      const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
-      series.push({
-        id: `series:${sourceRange.sheetId}:${sourceRange.startColumn + columnIndex}`,
-        name: String(matrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`),
-        values: normalized.values,
-        missing: normalized.missing,
-        axis: 'primary',
-      });
-    }
-  }
-  for (const range of payload.source.ranges.slice(1)) appendMatrixSeries(range, readRange(sheetFor(getSheet, range), range, payload.elements.hiddenData));
+  const binding = resolveWorksheetChartRanges(payload, range => scalarValue(sheetFor(getSheet, range), range.startRow, range.startColumn));
+  const categories = scalarVector(sheetFor(getSheet, binding.categoryRange), binding.categoryRange, payload.elements.hiddenData);
+  const series = binding.series.filter(entry => {
+    if (payload.elements.hiddenData === 'show') return true;
+    const range = entry.yRange ?? entry.range;
+    const sheet = sheetFor(getSheet, range);
+    return !(payload.elements.hiddenData === 'hideColumns' && range.startColumn === range.endColumn && containsHidden(sheet.hiddenColumns, range.startColumn))
+      && !(payload.elements.hiddenData === 'hideRows' && range.startRow === range.endRow && containsHidden(sheet.hiddenRows, range.startRow));
+  }).map(entry => chartSeriesFromDeclaration(payload, entry, getSheet));
   return { categories, series };
 }
 

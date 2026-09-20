@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -306,6 +306,7 @@ function isChartPayload(value: unknown): value is ChartPayload {
 }
 
 function validateChartSemantics(payload: ChartPayload): void {
+  if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${payload.chartId} has no editable canonical owner`);
   if (payload.chartType === 'combo') {
     if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
@@ -324,7 +325,6 @@ function validateChartSemantics(payload: ChartPayload): void {
     if (seriesType === 'bubble' && !series.sizeRange) throw new Error('INVALID_CHART_SOURCE: Bubble charts require an independent Size range binding');
     if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
   }
-  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow === series.range.endRow)) throw new Error('INVALID_CHART_SOURCE: Row-oriented chart series must contain at least one data column');
 }
 
 function validateChartPair(sheet: WorksheetModel, drawing: DrawingObject, payload: ChartPayload): void {

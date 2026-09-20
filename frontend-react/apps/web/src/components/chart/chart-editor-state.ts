@@ -1,4 +1,4 @@
-import type { ChartDrawingPayload, ChartSeriesModel, RangeRef } from '@react-sheets/core-model';
+import { resolveWorksheetChartRanges, type ChartDrawingPayload, type ChartSeriesModel, type RangeRef } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
 
 export interface ChartSeriesDraft {
@@ -74,5 +74,6 @@ export function chartPayloadFromDraft(draft: ChartEditorDraft, sheetId: string):
     if (axis.minimum !== undefined && axis.maximum !== undefined && axis.minimum >= axis.maximum) throw new Error('坐标轴最小值必须小于最大值');
     if (axis.scale === 'logarithmic' && axis.minimum !== undefined && axis.minimum <= 0) throw new Error('对数坐标轴的最小值必须大于 0');
   }
+  if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   return payload;
 }
