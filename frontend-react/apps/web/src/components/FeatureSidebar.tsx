@@ -434,6 +434,14 @@ export function FeatureSidebar({
     );
   }
 
+  if (activePanel === 'chart' && phase === 'ready') {
+    return <Box as="aside" aria-label="Feature sidebar" className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ChartPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads}
+        selectedDrawingIds={selectedDrawingIds} selectedChartElement={selectedChartElement}
+        defaultRange={selectionText} onInsertChart={onInsertChart} onCommand={onCommand} onClose={onClosePanel} />
+    </Box>;
+  }
+
   return (
     <Box
       as="aside"
@@ -507,18 +515,6 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'slicer' ? (
           <SlicerEditorPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads} selectedDrawingIds={selectedDrawingIds} onCommand={onCommand} />
-        ) : null}
-        {phase === 'ready' && activePanel === 'chart' ? (
-          <ChartPanel
-            sheetId={sheetId}
-            drawings={drawings}
-            drawingPayloads={drawingPayloads}
-            selectedDrawingIds={selectedDrawingIds}
-            selectedChartElement={selectedChartElement}
-            defaultRange={selectionText}
-            onInsertChart={onInsertChart}
-            onCommand={onCommand}
-          />
         ) : null}
         {phase === 'ready' && activePanel === 'barcode' ? (
           <BarcodePanel

@@ -15,6 +15,8 @@ export class RecoveryJournal {
   private readonly prefix: string;
   private readonly database: Promise<IDBDatabase>;
   private tail: Promise<void> = Promise.resolve();
+  private pending: readonly OperationEnvelope[] = [];
+  private readonly confirmed = new Map<string, { operation: OperationEnvelope; revision: number }>();
   constructor(origin: string, subject: string, unitId: string) {
     if (!subject || !unitId) throw new Error('RECOVERY_IDENTITY_REQUIRED');
     this.prefix = JSON.stringify([origin, subject, unitId]).slice(0, -1) + ',';
@@ -78,6 +80,7 @@ export class RecoveryJournal {
           ids.add(operation.operationId);
         }
         await this.write(db, operations, claimed.filter(record => record.key !== this.key).map(record => record.key));
+        this.pending = operations;
         return operations;
       } finally { for (const release of releases) release(); }
     });
@@ -96,12 +99,27 @@ export class RecoveryJournal {
     });
   }
   persist(operations: readonly OperationEnvelope[]): Promise<void> {
-    const captured = structuredClone(operations);
+    this.pending = structuredClone(operations);
+    // Acknowledgement releases the send queue, not the recovery log. Keep the
+    // original request until a successful checkpoint covers its commit version.
+    const retained = new Map([...this.confirmed].map(([id, entry]) => [id, entry.operation]));
+    for (const operation of this.pending) retained.set(operation.operationId, operation);
+    const captured = [...retained.values()].sort((a, b) => a.clientSessionId.localeCompare(b.clientSessionId) || a.clientSequence - b.clientSequence);
     this.tail = this.tail.then(async () => {
       await this.ownPage();
       await navigator.locks.request(`recovery-catalog:${this.prefix}`, async () => this.write(await this.database, captured));
     });
     return this.tail;
+  }
+  confirm(operation: OperationEnvelope, revision: number): Promise<void> {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('RECOVERY_REVISION_INVALID');
+    this.confirmed.set(operation.operationId, { operation: structuredClone(operation), revision });
+    return this.persist(this.pending);
+  }
+  coverCheckpoint(revision: number): Promise<void> {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('CHECKPOINT_REVISION_INVALID');
+    for (const [id, entry] of this.confirmed) if (entry.revision <= revision) this.confirmed.delete(id);
+    return this.persist(this.pending);
   }
   release(): void {
     const unlock = () => { this.unlock?.(); this.unlock = null; this.ownership = null; };

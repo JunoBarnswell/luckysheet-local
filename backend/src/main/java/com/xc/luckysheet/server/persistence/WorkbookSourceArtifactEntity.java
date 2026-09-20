@@ -29,6 +29,10 @@ public class WorkbookSourceArtifactEntity {
     @Column(name = "byte_length", nullable = false)
     private long byteLength;
 
+    // Null means a pre-migration artifact whose workbook revision cannot be proven.
+    @Column(name = "source_revision")
+    private Long sourceRevision;
+
     @JdbcTypeCode(SqlTypes.LONGVARBINARY)
     @Column(name = "content", nullable = false)
     private byte[] content;
@@ -63,6 +67,11 @@ public class WorkbookSourceArtifactEntity {
     public String getMimeType() { return mimeType; }
     public String getChecksum() { return checksum; }
     public long getByteLength() { return byteLength; }
+    public Long getSourceRevision() { return sourceRevision; }
+    public void bindRevision(long revision) {
+        if (revision < 0) throw new IllegalArgumentException("sourceRevision must be non-negative");
+        this.sourceRevision = revision;
+    }
     public byte[] getContent() { return content; }
     public String getNativeMetadataJson() { return nativeMetadataJson; }
     public String getFormat() {

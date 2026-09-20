@@ -102,7 +102,7 @@ export async function exchangeExportDocument(
   snapshot: WorkbookSnapshot,
   params: NativeDocumentExportParams = {},
 ): Promise<NativeDocumentExchangeResult> {
-  const fileName = params.fileName ?? params.artifact?.fileName ?? `${snapshot.name || 'workbook'}.ssjson`;
+  const fileName = params.fileName ?? params.artifact?.fileName ?? `${snapshot.name || 'workbook'}.xlsx`;
   const assetRefs = collectAssetRefs(snapshot);
   const assetBytes: Record<string, Uint8Array> = {};
   if (assetRefs.length) {
@@ -134,7 +134,7 @@ export function exchangeSaveDocument(
   artifact: NativeDocumentArtifact | undefined,
   params: Omit<NativeDocumentExportParams, 'artifact' | 'fileName'> & { fileName?: string } = {},
 ): Promise<NativeDocumentExchangeResult> {
-  const fileName = params.fileName ?? artifact?.fileName ?? `${snapshot.name || 'workbook'}.ssjson`;
+  const fileName = params.fileName ?? artifact?.fileName ?? `${snapshot.name || 'workbook'}.xlsx`;
   if (artifact && fileName !== artifact.fileName) return Promise.reject(new Error('NATIVE_DOCUMENT_SAVE_TARGET_MISMATCH: Save must keep the original native file name; use Save As for a new target.'));
   return exchangeExportDocument(snapshot, { ...params, fileName, artifact, mode: 'save' });
 }

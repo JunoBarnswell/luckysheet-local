@@ -142,8 +142,8 @@ function defaultAxis(id: string, position: ChartAxisModel['position'], axisType:
 
 function axisBounds(model: ChartAxisModel, values: readonly number[], percent = false): ChartAxisLayout {
   const finite = values.filter(Number.isFinite);
-  const dataMinimum = finite.length ? Math.min(...finite) : 0;
-  const dataMaximum = finite.length ? Math.max(...finite) : 1;
+  const dataMinimum = finite.length ? finite.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
+  const dataMaximum = finite.length ? finite.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 1;
   let minimum = model.minimum ?? (percent ? 0 : Math.min(0, dataMinimum));
   let maximum = model.maximum ?? (percent ? 100 : dataMaximum);
   if (model.minimum === undefined && !percent && minimum === maximum) minimum -= 1;
@@ -198,14 +198,12 @@ function sizeValueAt(series: ResolvedChartSeries, index: number): number | null 
   return value === undefined ? null : value;
 }
 
-function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefined, value: number, values: readonly number[], index: number, plusValues?: readonly PivotScalar[], minusValues?: readonly PivotScalar[]): { plus: number; minus: number } {
+function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefined, value: number, statistics: { count: number; deviation: number }, index: number, plusValues?: readonly PivotScalar[], minusValues?: readonly PivotScalar[]): { plus: number; minus: number } {
   if (!model) return { plus: 0, minus: 0 };
   if (model.type === 'custom') return { plus: Math.abs(chartNumericValue(plusValues?.[index]) ?? model.plusValue ?? 0), minus: Math.abs(chartNumericValue(minusValues?.[index]) ?? model.minusValue ?? 0) };
   if (model.type === 'fixed') return { plus: Math.abs(model.value ?? 0), minus: Math.abs(model.value ?? 0) };
   if (model.type === 'percentage') { const amount = Math.abs(value) * Math.abs(model.value ?? 0) / 100; return { plus: amount, minus: amount }; }
-  const mean = values.length ? values.reduce((sum, current) => sum + current, 0) / values.length : 0;
-  const deviation = values.length > 1 ? Math.sqrt(values.reduce((sum, current) => sum + (current - mean) ** 2, 0) / (values.length - 1)) : 0;
-  const amount = model.type === 'standard-error' ? deviation / Math.sqrt(Math.max(1, values.length)) : deviation * Math.abs(model.value ?? 1);
+  const amount = model.type === 'standard-error' ? statistics.deviation / Math.sqrt(Math.max(1, statistics.count)) : statistics.deviation * Math.abs(model.value ?? 1);
   return { plus: amount, minus: amount };
 }
 
@@ -226,8 +224,8 @@ function linearRegression(points: Array<{ x: number; y: number }>): { slope: num
 
 function buildTrendline(model: ChartTrendlineModel, source: ChartLayoutPoint[], axis: ChartAxisLayout, plot: ChartLayout['plot']): ChartLayoutTrendline {
   const points = source.filter((point) => point.visible && point.value !== null).map((point) => ({ x: point.x, yValue: point.value! }));
-  const xMin = points.length ? Math.min(...points.map((point) => point.x)) : plot.left;
-  const xMax = points.length ? Math.max(...points.map((point) => point.x)) : plot.left + plot.width;
+  const xMin = points.length ? points.reduce((value, point) => Math.min(value, point.x), Infinity) : plot.left;
+  const xMax = points.length ? points.reduce((value, point) => Math.max(value, point.x), -Infinity) : plot.left + plot.width;
   const raw = points.map((point, index) => ({ x: index, y: point.yValue }));
   const regression = linearRegression(raw);
   const output: Array<{ x: number; y: number }> = [];
@@ -273,8 +271,8 @@ function standardDeviation(values: readonly number[]): number {
 
 function histogram(values: readonly number[], options: ChartHistogramOptions | undefined): ChartHistogramBinLayout[] {
   if (!values.length) return [];
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
+  const minimum = values.reduce((value, next) => Math.min(value, next), Infinity);
+  const maximum = values.reduce((value, next) => Math.max(value, next), -Infinity);
   const span = Math.max(Number.EPSILON, maximum - minimum);
   const deviation = standardDeviation(values);
   const scottWidth = deviation > 0 ? 3.5 * deviation / values.length ** (1 / 3) : span / Math.max(1, Math.ceil(Math.sqrt(values.length)));
@@ -333,6 +331,9 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
     const points: ChartLayoutPoint[] = [];
     const bars: ChartLayoutBar[] = [];
     const subtype = series.subtype ?? model?.subtype ?? payload.subtype;
+    const errorModel = model?.errorBars ?? series.errorBars;
+    const errorValues = errorModel && ['standard-error', 'standard-deviation'].includes(errorModel.type) ? numberValues(series.values) : [];
+    const errorStatistics = { count: errorValues.length, deviation: standardDeviation(errorValues) };
     for (let index = 0; index < Math.max(categoryCount, series.values.length); index += 1) {
       const value = valueAt(series, index);
       const xValue = isScatter ? xValueAt(series, index) : null;
@@ -341,7 +342,7 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
       const visible = hasValue && (series.missing?.[index] !== true);
       const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (index + 0.5) / categoryCount;
       const yRatio = value === null ? 0 : scale(value, axis);
-      const error = errorAmount(model?.errorBars ?? series.errorBars, value ?? 0, numberValues(series.values), index, series.errorPlusValues, series.errorMinusValues);
+      const error = errorAmount(errorModel, value ?? 0, errorStatistics, index, series.errorPlusValues, series.errorMinusValues);
       const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(series.sizeValues ? { sizeValue: sizeValueAt(series, index) } : {}), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
       points.push(point);
       if (chartType === 'column' || chartType === 'bar') {
@@ -481,15 +482,15 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   }
   if (kind === 'surface') {
     const all = data.series.flatMap((series) => numberValues(series.values));
-    const min = Math.min(...all, 0);
-    const max = Math.max(...all, 1);
+    const min = all.reduce((value, next) => Math.min(value, next), 0);
+    const max = all.reduce((value, next) => Math.max(value, next), 1);
     const span = Math.max(Number.EPSILON, max - min);
     layout.surfaceCells = data.series.flatMap((series, row) => series.values.map(chartNumericValue).map((value, column) => ({ row, column, value: value ?? 0, color: `rgb(${Math.round(37 + 202 * ((value ?? min) - min) / span)},${Math.round(99 + 100 * (1 - ((value ?? min) - min) / span))},${Math.round(235 - 167 * ((value ?? min) - min) / span)})` })));
     return layout;
   }
   if (kind === 'radar') {
     const count = Math.max(3, data.categories.length, ...data.series.map((series) => series.values.length));
-    layout.radar = { count, maximum: Math.max(1, ...values.map(Math.abs)), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
+    layout.radar = { count, maximum: values.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
     return layout;
   }
   if (kind === 'map') {

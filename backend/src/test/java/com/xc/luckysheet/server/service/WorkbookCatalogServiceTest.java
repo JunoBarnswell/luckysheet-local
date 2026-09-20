@@ -50,7 +50,7 @@ class WorkbookCatalogServiceTest {
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         WorkbookOperationService operations = mock(WorkbookOperationService.class);
         when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookAclRole.EDITOR));
-        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
+        when(workbooks.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
                 Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
                 WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));
         when(artifacts.findById("book-1")).thenReturn(Optional.empty());
@@ -62,10 +62,15 @@ class WorkbookCatalogServiceTest {
 
         byte[] content = "xlsx-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(content));
-        var response = service.putArtifact("book-1", "report.xlsx", null, checksum, content, "editor");
+        ServiceException stale = org.junit.jupiter.api.Assertions.assertThrows(ServiceException.class,
+                () -> service.putArtifact("book-1", "report.xlsx", null, checksum, content, 1, "editor"));
+        assertEquals("ARTIFACT_REVISION_CONFLICT", stale.code());
+        verify(artifacts, org.mockito.Mockito.never()).save(any());
+        var response = service.putArtifact("book-1", "report.xlsx", null, checksum, content, 0, "editor");
 
         assertEquals(checksum, response.checksum());
         assertEquals(content.length, response.byteLength());
+        assertEquals(0L, response.sourceRevision());
         var stored = org.mockito.ArgumentCaptor.forClass(WorkbookSourceArtifactEntity.class);
         verify(artifacts).save(stored.capture());
         when(artifacts.findById("book-1")).thenReturn(Optional.of(stored.getValue()));

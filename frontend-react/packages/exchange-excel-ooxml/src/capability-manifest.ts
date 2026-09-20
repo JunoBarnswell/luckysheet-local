@@ -57,8 +57,8 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   xmlss: capability('xmlss', 'full', 'full', 'full', 'full', 'full', 'SpreadsheetML 2003 is parsed and written directly without OOXML conversion.'),
   text: capability('text', 'full', 'full', 'full', 'full', 'full', 'Text dialect encoding, BOM, delimiter, quote and row terminators are owned by the text codec.'),
   ods: capability('ods', 'full', 'full', 'full', 'full', 'full', 'ODF package parts are parsed and written directly; unknown parts remain in the package graph.'),
-  sjs: capability('sjs', 'full', 'full', 'full', 'full', 'full', 'SpreadJS SJS JSON parts are parsed and written directly.'),
-  ssjson: capability('ssjson', 'full', 'full', 'full', 'full', 'full', 'SpreadJS SSJSON is validated as its own JSON document.'),
+  sjs: capability('sjs', 'full', 'partial', 'partial', 'partial', 'partial', 'Value-only single-sheet JSON projection. Object, formula, format and layout export is rejected; choose XLSX explicitly.'),
+  ssjson: capability('ssjson', 'full', 'partial', 'partial', 'partial', 'partial', 'Value-only single-sheet JSON projection. Object, formula, format and layout export is rejected; choose XLSX explicitly.'),
   sharedStrings: capability('sharedStrings', 'full', 'full', 'partial', 'partial', 'full', 'Shared string tables are read natively and retained; edited cells use direct native string records without rewriting untouched entries.'),
   xlsb: capability('xlsb', 'full', 'partial', 'partial', 'partial', 'full', 'BIFF12 cell records and package parts are read and rewritten natively; formula expressions and unsupported row structures remain preserved-only.'),
   biff: capability('biff', 'full', 'partial', 'partial', 'partial', 'full', 'BIFF/CFB workbook records and basic cell records are read and rewritten natively; formula expressions and unsupported record structures remain preserved-only.'),
@@ -94,13 +94,22 @@ const WORKSHEET_NODES = new Map<string, string>([
   ['conditionalFormatting', 'conditional-format'], ['dataValidations', 'validation'], ['autoFilter', 'filters'],
   ['sheetProtection', 'protection'], ['printOptions', 'print-setup'], ['pageMargins', 'print-setup'],
   ['pageSetup', 'print-setup'], ['headerFooter', 'print-setup'], ['rowBreaks', 'print-setup'], ['colBreaks', 'print-setup'],
-  ['tableParts', 'tables'], ['drawing', 'images'], ['legacyDrawing', 'images'], ['pivotTableParts', 'pivot'],
+  ['tableParts', 'tables'], ['pivotTableParts', 'pivot'],
 ]);
 
-const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'sheetCalcPr', 'phoneticPr', 'extLst']);
+const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'sheetCalcPr', 'phoneticPr', 'extLst', 'drawing', 'legacyDrawing']);
 
 export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
   const detections: CompatibilityFeatureDetection[] = [];
+  // Drawing containers also hold charts and comments. Only an image relationship
+  // establishes image ownership, including media at non-standard package paths.
+  for (const [part, relationships] of Object.entries(pkg.relationships)) {
+    for (const relationship of relationships) {
+      if (relationship.type.replace(/\/+$/, '').endsWith('/image')) {
+        detections.push({ feature: 'images', location: `${part}#${relationship.id}` });
+      }
+    }
+  }
   for (const part of new Set(Object.values(pkg.sheetPartById))) {
     const bytes = files[part];
     if (!bytes) continue;

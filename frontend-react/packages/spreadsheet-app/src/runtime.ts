@@ -1,9 +1,11 @@
 import { RecoveryJournal } from './features/persistence/recovery-journal';
+import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
+  assertOperationResultMatches,
   WorkbookApiClient,
   type AuthTokenProvider,
   type ShareTokenProvider,
@@ -101,6 +103,7 @@ export interface SpreadsheetRuntime {
   persistenceReady: Promise<void>;
   pendingLocalOperations: Array<{ operationId: string; mutations: MutationInfo[] }>;
   checkpointWorkspace: (advanceLocalRevision?: boolean, artifact?: NativeDocumentArtifact) => Promise<void>;
+  flushCheckpoint: () => Promise<void>;
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -221,6 +224,7 @@ export function createSpreadsheetRuntime(options: {
     persistenceReady: Promise.resolve(),
     pendingLocalOperations: [],
     checkpointWorkspace: () => Promise.resolve(),
+    flushCheckpoint: () => Promise.resolve(),
     connectors,
     authTokenProvider: options.authTokenProvider,
     shareTokenProvider: options.shareTokenProvider,
@@ -228,9 +232,8 @@ export function createSpreadsheetRuntime(options: {
     disposed: false,
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
-  // The offline journal records operation intent and its client sequence.
-  // The same memory transaction also checkpoints the canonical local
-  // workbook snapshot, so a closed browser can resume without any service.
+  // Recovery intent is written before HTTP submission. Java owns durable
+  // workbook state; reconnection reconciles each original operation ID.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     clientSessionId: runtime.recoveryJournal?.clientSessionId,
     loadPending: () => {
@@ -245,6 +248,7 @@ export function createSpreadsheetRuntime(options: {
     },
   });
   runtime.checkpointWorkspace = (advanceLocalRevision = true, artifact) => checkpointWorkspace(runtime, advanceLocalRevision, artifact);
+  runtime.flushCheckpoint = () => serverCheckpoint(runtime).flush();
   installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;
@@ -511,6 +515,22 @@ function assertNoSpillChildWrite(
 }
 
 const checkpointChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+const serverCheckpoints = new WeakMap<SpreadsheetRuntime, CheckpointCoordinator>();
+function serverCheckpoint(runtime: SpreadsheetRuntime): CheckpointCoordinator {
+  let coordinator = serverCheckpoints.get(runtime);
+  if (!coordinator) {
+    coordinator = new CheckpointCoordinator(
+      () => runtime.api.checkpointWorkbook(runtime.model.unitId),
+      async revision => { await runtime.recoveryJournal?.coverCheckpoint(revision); },
+      error => {
+        runtime.handlers.onSaveState?.('error');
+        runtime.handlers.onNotice?.(`CHECKPOINT_FAILED: ${error.message}；已提交的数据仍在服务器，恢复日志已保留。请使用保存重试。`);
+      },
+    );
+    serverCheckpoints.set(runtime, coordinator);
+  }
+  return coordinator;
+}
 const persistenceWriteChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
 
 function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
@@ -526,7 +546,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   if (!runtime.localOnly) {
     return (async () => {
       await runtime.recoveryJournal?.flushed();
-      if (artifact) await runtime.api.putWorkbookSourceArtifact(runtime.model.unitId, new Blob([artifact.sourceBytes]), artifact.fileName);
+      if (artifact) throw new Error('ARTIFACT_SAVE_OWNER_REQUIRED: 原生文件必须通过版本校验的保存命令提交');
       runtime.handlers.onWorkspacePersisted?.();
     })();
   }
@@ -706,7 +726,7 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
   const byId = new Map<string, import('@react-sheets/protocol').OperationEnvelope>();
   for (const operation of runtime.operationJournal.read(runtime.model.unitId)?.operations ?? record?.pending.operations ?? []) byId.set(operation.operationId, operation);
   for (const operation of existingPending) byId.set(operation.operationId, operation);
-  const pending = [...byId.values()].sort((left, right) => left.clientSequence - right.clientSequence);
+  const pending = [...byId.values()];
   const nextClientSequence = Math.max(
     record?.pending.nextClientSequence ?? 0,
     ...pending.map((operation) => operation.clientSequence),
@@ -880,13 +900,20 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
   for (const operation of pending) {
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
     if (result) {
-      await runtime.api.checkpointWorkbook(runtime.model.unitId);
+      assertOperationResultMatches(operation, result.operation);
+      await runtime.recoveryJournal?.confirm(operation, result.operation.revision);
       runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
       await runtime.recoveryJournal?.flushed();
+      serverCheckpoint(runtime).request(result.operation.revision);
     }
     else if (operation.baseRevision !== runtime.remoteRevision) {
       throw new Error(`RECOVERY_REVISION_CONFLICT: ${operation.operationId}，恢复草稿保留，请核对服务器版本后处理`);
     }
+  }
+  await runtime.flushCheckpoint();
+  const unresolvedSessions = new Set(runtime.collaboration?.getPendingOperations().map(operation => operation.clientSessionId));
+  if (unresolvedSessions.size > 1) {
+    throw new Error('RECOVERY_SESSION_CONFLICT: 多个已关闭页面存在未确认修改；草稿已保留，请分别核对恢复分支，不能自动混合提交');
   }
   const revisions = await runtime.api.listRevisions(runtime.model.unitId);
   runtime.collaboration?.loadCommittedHistory(revisions.map(record => record.payload));
@@ -916,14 +943,17 @@ export function startCollaborationSession(
       runtime.ownOperationIds.add(operation.operationId);
       try {
         await runtime.recoveryJournal?.flushed();
-        const existing = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
+        const existing = runtime.collaboration?.offlineQueue.requiresResultLookup(operation.operationId)
+          ? await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId) : null;
         const committed = existing ?? await runtime.api.commitOperation(runtime.model.unitId, operation);
-        await runtime.api.checkpointWorkbook(runtime.model.unitId);
+        assertOperationResultMatches(operation, committed.operation);
         const revision = committed.operation.revision;
+        await runtime.recoveryJournal?.confirm(operation, revision);
         runtime.remoteRevision = Math.max(runtime.remoteRevision, revision);
         runtime.collaboration?.acknowledge(operation.operationId, revision);
         await runtime.checkpointWorkspace(false);
-        runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
+        serverCheckpoint(runtime).request(revision);
+        runtime.handlers.onSaveState?.(serverCheckpoint(runtime).hasFailure ? 'error' : runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
         return revision;
       } catch (error) {
         runtime.ownOperationIds.delete(operation.operationId);
@@ -1082,6 +1112,8 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
 export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed) return;
   runtime.disposed = true;
+  serverCheckpoints.get(runtime)?.dispose();
+  serverCheckpoints.delete(runtime);
   runtime.recoveryJournal?.release();
   runtime.collabDispose?.();
   runtime.bootstrapDispose?.();

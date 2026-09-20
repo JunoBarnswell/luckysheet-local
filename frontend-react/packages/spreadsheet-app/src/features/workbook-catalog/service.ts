@@ -213,7 +213,7 @@ export class WorkbookCatalogService {
     const resolved = await this.resolve(unitId);
     const summary = await api.getWorkbookSummary(unitId);
     let artifact: NativeDocumentArtifact | undefined;
-    if (summary.source === 'document-import') {
+    if (summary.sourceFileName) {
       const source = await api.getWorkbookSourceArtifact(unitId);
       artifact = (await exchangeImportDocument({ fileName: source.metadata.fileName, buffer: await source.artifact.arrayBuffer(), execution: 'worker' })).artifact;
     }
@@ -226,7 +226,7 @@ export class WorkbookCatalogService {
   async syncToServer(unitId: string): Promise<WorkbookCatalogSyncResult> {
     const api = this.requireRemote();
     const checkpoint = await api.checkpointWorkbook(unitId);
-    return { entry: remoteEntry(await api.getWorkbookSummary(unitId)), committedOperationCount: 0, revision: checkpoint.snapshot.revision };
+    return { entry: remoteEntry(await api.getWorkbookSummary(unitId)), committedOperationCount: 0, revision: checkpoint.revision };
   }
 
   async rename(unitId: string, name: string): Promise<WorkbookCatalogEntry> {

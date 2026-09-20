@@ -57,6 +57,8 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsBusy, setSaveAsBusy] = useState(false);
+  const [saveAsError, setSaveAsError] = useState<string | null>(null);
+  useEffect(() => { if (saveAsOpen) setSaveAsError(null); }, [saveAsOpen]);
   const initialSelectionApplied = useRef(false);
   const isBusy = state.phase !== "ready" || state.pendingCommandCount > 0;
 
@@ -75,7 +77,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
 
   const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
-  const saveWorkbook = () => { void session.saveWorkbook("Ribbon save"); };
+  const saveWorkbook = () => { void session.saveWorkbook("Manual save").catch(cause => session.notify(cause instanceof Error ? cause.message : "保存失败")); };
   const exportDocument = async () => {
     try {
       await session.saveWorkbook("Export workbook");
@@ -91,22 +93,23 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const importDocument = () => navigate("/workbooks?dialog=import");
   const saveAsDocument = async (fileName: string) => {
     setSaveAsBusy(true);
+    setSaveAsError(null);
     try {
-      await session.saveWorkbook("Save before Save As");
+      await session.flushPendingChanges();
       const exported = await catalog.exportWorkbook(state.unitId, { fileName });
       const href = URL.createObjectURL(new Blob([exported.buffer], { type: mimeTypeForFileName(exported.fileName) }));
       const link = document.createElement("a"); link.href = href; link.download = exported.fileName; link.click(); URL.revokeObjectURL(href);
       setSaveAsOpen(false);
-    } catch (cause) { session.notify(cause instanceof Error ? cause.message : "另存为失败"); }
+    } catch (cause) { const message = cause instanceof Error ? cause.message : "另存为失败"; setSaveAsError(message); session.notify(message); }
     finally { setSaveAsBusy(false); }
   };
 
   if (state.backstage.open) {
     const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
-    const closeWorkbook = async () => { await session.saveWorkbook("Close workbook"); onOpenHub(); };
+    const closeWorkbook = async () => { try { await session.saveWorkbook("Close workbook"); onOpenHub(); } catch (cause) { session.notify(cause instanceof Error ? cause.message : "保存失败，工作簿保持打开"); } };
     const actions = [
       { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },
-      { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: () => { void session.saveWorkbook("Backstage save"); } },
+      { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: saveWorkbook },
       { id: "save-as", label: "另存为", description: "选择目标协议导出副本", icon: "save" as const, disabled: isBusy, onSelect: () => setSaveAsOpen(true) },
       { id: "import", label: "打开 / 导入", description: "按原生协议打开为新的工作簿", icon: "upload" as const, disabled: isBusy, onSelect: importDocument },
       { id: "export", label: "导出", description: "下载当前工作簿的原生文档副本", icon: "download" as const, disabled: isBusy, onSelect: () => { void exportDocument(); } },
@@ -116,6 +119,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     return (
       <>
       <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+        {state.saveState === 'error' || state.saveState === 'conflict' ? <Text role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-red-800">{state.notice}</Text> : null}
         {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>
@@ -150,7 +154,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           </Stack>
         )}
       </WorkbookBackstageShell>
-      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.ssjson`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
+      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.xlsx`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} error={saveAsError} />
       </>
     );
   }

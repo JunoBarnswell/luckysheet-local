@@ -11,6 +11,8 @@ public interface OperationEntityRepository extends JpaRepository<OperationEntity
 
     List<OperationEntity> findByUnitIdOrderByRevisionDesc(String unitId);
 
+    List<OperationEntity> findByUnitIdAndRevisionGreaterThanAndRevisionLessThanEqualOrderByRevisionAsc(String unitId, long afterRevision, long throughRevision);
+
     List<OperationEntity> findByUnitIdAndRevisionLessThanOrderByRevisionDesc(String unitId, long revision, Pageable pageable);
 
     void deleteByUnitId(String unitId);

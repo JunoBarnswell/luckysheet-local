@@ -8,6 +8,7 @@ public record WorkbookArtifactResponse(
         String mimeType,
         String checksum,
         long byteLength,
+        Long sourceRevision,
         Instant createdAt,
         Instant updatedAt
 ) {

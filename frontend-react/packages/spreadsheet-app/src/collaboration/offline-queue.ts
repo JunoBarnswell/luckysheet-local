@@ -41,6 +41,8 @@ export class OfflineQueue {
   private readonly persist?: OfflineQueueOptions['persist'];
   private flushPromise: Promise<{ flushed: number; failed: number }> | null = null;
   private readonly terminalStatuses = new Map<string, QueuedOperationStatus>();
+  private readonly immutableRequests = new Set<string>();
+  private readonly resultLookups = new Set<string>();
 
   constructor(options: OfflineQueueOptions = {}) {
     this.maxRetries = Math.max(1, options.maxRetries ?? 5);
@@ -53,6 +55,8 @@ export class OfflineQueue {
       const operation = validateOperation(candidate);
       if (seen.has(operation.operationId)) continue;
       seen.add(operation.operationId);
+      this.immutableRequests.add(operation.operationId);
+      this.resultLookups.add(operation.operationId);
       // A process may have terminated after sending but before receiving ACK.
       // Resubmission of the same operationId is server-side idempotent.
       this.queue.push({
@@ -62,12 +66,22 @@ export class OfflineQueue {
         status: 'pending',
       });
     }
-    this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
+    const sequences = new Map<string, number>();
+    for (const { operation } of this.queue) {
+      if (operation.clientSequence <= (sequences.get(operation.clientSessionId) ?? 0)) throw new Error('RECOVERY_SEQUENCE_INVALID: 恢复日志会话内顺序无效');
+      sequences.set(operation.clientSessionId, operation.clientSequence);
+    }
   }
 
   getState(): OfflineQueueState {
     return this.state;
   }
+
+  canRewrite(operationId: string): boolean {
+    return !this.immutableRequests.has(operationId);
+  }
+
+  requiresResultLookup(operationId: string): boolean { return this.resultLookups.has(operationId); }
 
   getPendingCount(): number {
     return this.queue.length;
@@ -92,7 +106,6 @@ export class OfflineQueue {
       retryCount: 0,
       status: 'pending',
     });
-    this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
     this.persistQueue();
   }
 
@@ -139,6 +152,7 @@ export class OfflineQueue {
     operation = validateOperation(operation);
     const item = this.queue.find((entry) => entry.operation.operationId === operationId);
     if (!item) return false;
+    if (!this.canRewrite(operationId)) throw new Error('OPERATION_REQUEST_IMMUTABLE: 已发送或恢复的操作必须先核对服务器结果');
     item.operation = structuredClone(operation);
     item.status = 'pending';
     item.rejection = undefined;
@@ -153,6 +167,11 @@ export class OfflineQueue {
     const rewritten: QueuedOperation[] = [];
     for (const operation of operations) {
       const previous = byId.get(operation.operationId);
+      if (previous && !this.canRewrite(operation.operationId)) {
+        if (JSON.stringify(previous.operation) !== JSON.stringify(operation)) throw new Error('OPERATION_REQUEST_IMMUTABLE: 不得改写待确认请求');
+        rewritten.push(previous);
+        continue;
+      }
       rewritten.push({
         operation: structuredClone(operation),
         enqueuedAt: previous?.enqueuedAt ?? this.now(),
@@ -163,7 +182,6 @@ export class OfflineQueue {
     }
     this.queue.length = 0;
     this.queue.push(...rewritten);
-    this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
     this.persistQueue();
   }
 
@@ -191,6 +209,7 @@ export class OfflineQueue {
         break;
       }
       item.status = 'sent';
+      this.immutableRequests.add(item.operation.operationId);
       try {
         await this.flush(item.operation);
         // The callback is defined to resolve only after ACK. Guard the
@@ -204,6 +223,7 @@ export class OfflineQueue {
         this.persistQueue();
         flushed += 1;
       } catch (cause) {
+        this.resultLookups.add(item.operation.operationId);
         if ((item as QueuedOperation).status === 'rejected') {
           failed += 1;
           this.state = 'error';

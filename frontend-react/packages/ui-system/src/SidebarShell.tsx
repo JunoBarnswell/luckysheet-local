@@ -65,7 +65,7 @@ export function SidebarShell({
     <Box
       as="aside"
       aria-label={title ?? 'Context sidebar'}
-      className="relative flex shrink-0 flex-col border-l border-slate-200 bg-slate-50/70"
+      className="relative flex h-full min-h-0 shrink-0 flex-col self-stretch border-l border-slate-200 bg-slate-50/70"
       data-sidebar-shell
       data-testid="sidebar-shell"
       style={{ width: localWidth }}

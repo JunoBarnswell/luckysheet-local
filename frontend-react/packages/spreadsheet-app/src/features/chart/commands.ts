@@ -24,6 +24,7 @@ export interface ChartUpdateParams {
   sheetId: string;
   chartId: string;
   payload: Partial<ChartPayload>;
+  expectedPayload?: ChartPayload;
 }
 
 export interface ChartSetTypeParams {
@@ -419,7 +420,12 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
     commandIds.push(id);
   }
 
-  runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId })) });
+  runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    if (input.expectedPayload && JSON.stringify(payload) !== JSON.stringify(input.expectedPayload)) {
+      throw new Error('CHART_EDIT_CONFLICT: 图表已被其他操作修改，请保留草稿并核对当前图表');
+    }
+    return { ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId };
+  }) });
   commandIds.push('chart.update');
   runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     if (!isChartSubtypeForType(input.chartType, input.subtype)) throw new Error(`Chart subtype ${input.subtype} does not belong to ${input.chartType}`);

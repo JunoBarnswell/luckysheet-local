@@ -1,10 +1,55 @@
 openapi: 3.1.0
 info:
   title: React Sheets Workbook API
-  version: 2026-08-24
+  version: 2026-09-21
 servers:
   - url: /
 paths:
+  /api/workbooks/{unitId}/checkpoints:
+    post:
+      operationId: checkpointWorkbook
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+      responses:
+        '200':
+          description: Verified durable checkpoint coverage; no workbook payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckpointResponse' }
+  /api/workbooks/{unitId}/native-document-artifact:
+    put:
+      operationId: putWorkbookSourceArtifact
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - { name: X-Workbook-Revision, in: header, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: X-Content-SHA256, in: header, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{64}$' } }
+        - { name: X-File-Name, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Artifact atomically bound to the supplied workbook revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkbookArtifactResponse' }
+        '409':
+          description: ARTIFACT_REVISION_CONFLICT; the previous artifact remains intact
+    get:
+      operationId: getWorkbookSourceArtifact
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+      responses:
+        '200':
+          description: Verified source bytes; unbound revision denotes an existing artifact of unproven export revision
+          headers:
+            X-Workbook-Revision: { schema: { type: string }, description: 'Non-negative revision or unbound' }
+            X-Content-SHA256: { schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
   /api/auth/config:
     get:
       operationId: getAuthConfig
@@ -337,6 +382,26 @@ components:
       required: false
       schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
   schemas:
+    CheckpointResponse:
+      type: object
+      required: [unitId, revision, checksum, created]
+      properties:
+        unitId: { type: string }
+        revision: { type: integer, minimum: 0 }
+        checksum: { type: string }
+        created: { type: boolean }
+    WorkbookArtifactResponse:
+      type: object
+      required: [unitId, fileName, mimeType, checksum, byteLength, sourceRevision, createdAt, updatedAt]
+      properties:
+        unitId: { type: string }
+        fileName: { type: string }
+        mimeType: { type: string }
+        checksum: { type: string }
+        byteLength: { type: integer, minimum: 0 }
+        sourceRevision: { type: [integer, 'null'], minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     AuthConfigResponse:
       type: object
       required: [mode]

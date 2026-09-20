@@ -5,12 +5,12 @@ import java.util.Map;
 import java.util.Set;
 
 public final class GeneratedWorkbookContract {
-    public static final String API_VERSION = "2026-08-24";
+    public static final String API_VERSION = "2026-09-21";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
     public static final int SNAPSHOT_VERSION = 9;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
-    public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE");
+    public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),

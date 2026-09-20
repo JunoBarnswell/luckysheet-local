@@ -1066,7 +1066,7 @@ export class WorkbookSession {
       let artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
       if (!this.runtime.localOnly) {
         const summary = await this.runtime.api.getWorkbookSummary(this.runtime.model.unitId);
-        if (summary.source === 'document-import') {
+        if (summary.sourceFileName) {
           const source = await this.runtime.api.getWorkbookSourceArtifact(this.runtime.model.unitId);
           artifact = (await exchangeImportDocument({ fileName: source.metadata.fileName, buffer: await source.artifact.arrayBuffer(), execution: 'worker' })).artifact;
         }
@@ -2387,42 +2387,46 @@ export class WorkbookSession {
     return this.nativeArtifact?.fileName;
   }
 
+  /** Commit edits before exporting without rewriting the original native format. */
+  async flushPendingChanges(): Promise<void> {
+    if (!this.canExecute('document.export')) throw new Error('You do not have permission to export the document');
+    if (this.runtime.localOnly || !this.runtime.remoteSyncRequested) return;
+    if (!this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接中断，草稿已保留；恢复连接后才能保存或导出');
+    const result = await this.runtime.collaboration?.offlineQueue.flushAll();
+    if (result && (result.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
+      throw new Error('Pending changes could not be committed before exporting');
+    }
+  }
+
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
     this.saveState = 'saving';
     this.emit();
     try {
       void reason;
-      if (!this.canExecute('document.export')) throw new Error('You do not have permission to save the native document');
+      const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
+      await this.flushPendingChanges();
+      const expectedRevision = this.runtime.remoteRevision;
       const nativeExport = await this.exportNativeDocumentForSave();
       if (!nativeExport.buffer || !nativeExport.fileName) throw new Error('Native document export did not produce a file');
-      this.nativeArtifact = nativeExport.artifact;
-      const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
-      if (remoteWorkbook && !this.runtime.remoteConnected) {
-        await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
-        this.saveState = 'offline';
-        this.syncPersistenceMeta();
-        this.notify('Local checkpoint saved; waiting to sync with the server');
-        return;
-      }
       if (remoteWorkbook) {
-        const flushed = await this.runtime.collaboration?.offlineQueue.flushAll();
-        if (flushed && (flushed.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
-          throw new Error('Pending changes could not be committed before checkpointing');
+        if (this.runtime.remoteRevision !== expectedRevision || this.runtime.collaboration?.offlineQueue.getPendingCount()) {
+          throw new Error('ARTIFACT_REVISION_CONFLICT: 导出期间工作簿发生变化，请重新保存');
         }
-        const checkpoint = await this.runtime.api.checkpointWorkbook(this.runtime.model.unitId);
-        this.runtime.remoteRevision = checkpoint.snapshot.revision;
         await this.runtime.api.putWorkbookSourceArtifact(
           this.runtime.model.unitId,
           new Blob([nativeExport.buffer], { type: nativeDocumentMimeType(nativeExport.fileName) }),
           nativeExport.fileName,
+          expectedRevision,
         );
       }
-      await this.runtime.checkpointWorkspace(true, nativeExport.artifact);
-      this.saveState = 'saved';
+      this.nativeArtifact = nativeExport.artifact;
+      if (remoteWorkbook) await this.runtime.flushCheckpoint();
+      await this.runtime.checkpointWorkspace(true, remoteWorkbook ? undefined : nativeExport.artifact);
+      this.saveState = this.runtime.collaboration?.offlineQueue.getPendingCount() ? 'saving' : 'saved';
       this.syncPersistenceMeta();
-      this.notify(remoteWorkbook ? 'Workbook saved to server' : 'Local workbook checkpoint saved');
+      this.notify(remoteWorkbook ? `原生文件已保存到服务端版本 ${expectedRevision}` : 'Local workbook checkpoint saved');
     } catch (error) {
-      this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'error';
+      this.saveState = error instanceof Error && /conflict/i.test(error.message) ? 'conflict' : 'error';
       this.notify(error instanceof Error ? error.message : 'Save failed');
       this.emit();
       throw error instanceof Error ? error : new Error('Save failed');
@@ -2431,7 +2435,7 @@ export class WorkbookSession {
 
   private exportNativeDocumentForSave(): Promise<Awaited<ReturnType<typeof exchangeExportDocument>>> {
     return exchangeSaveDocument(this.runtime.model.snapshot(), this.nativeArtifact, {
-      fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+      fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
       execution: this.nativeDocumentExecution,
       revision: this.version,
       assetStore: this.runtime.assetStore,
@@ -6386,7 +6390,7 @@ export class WorkbookSession {
           assetStore: this.runtime.assetStore,
         })
         : await exchangeExportDocument(this.runtime.model.snapshot(), {
-          fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.ssjson`,
+          fileName: this.nativeArtifact?.fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
           artifact: this.nativeArtifact,
           execution: this.nativeDocumentExecution,
           revision: this.version,

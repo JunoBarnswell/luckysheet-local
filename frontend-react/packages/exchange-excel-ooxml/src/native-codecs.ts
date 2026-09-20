@@ -522,6 +522,29 @@ function parseNativeJson(bytes: Uint8Array): unknown {
   }
 }
 
+function assertSpreadJsonValueOnlySnapshot(snapshot: WorkbookSnapshot): void {
+  const reject = (location: string, feature: string): never => { throw new NativeDocumentError({
+    code: 'UNSUPPORTED_FEATURE', location,
+    message: `${location}: 当前 SSJSON/SJS 编码器不能保留${feature}，导出已停止`,
+    recovery: '请显式另存为 XLSX；原有文件与服务端工作簿不会被覆盖。',
+  }); };
+  if (snapshot.sheets.length !== 1) reject(snapshot.unitId, '多个工作表');
+  if (snapshot.definedNameModels?.length || snapshot.printDocuments?.length || snapshot.queryDefinitions?.length
+      || snapshot.cellStyleTemplates?.length || snapshot.dataModel.sources.length || snapshot.dataModel.tables.length
+      || snapshot.dataModel.relationships.length || snapshot.dataModel.views.length) reject(snapshot.unitId, '工作簿对象');
+  for (const sheet of snapshot.sheets) {
+    if (sheet.kind !== 'worksheet' || sheet.drawings.length || sheet.pivots.length || sheet.sparklines.length
+        || sheet.dataRegions?.length || sheet.sheetTables?.length) reject(sheet.name, '图表、透视表或结构化对象');
+    if (sheet.merges.length || sheet.pane.kind !== 'none' || sheet.hidden || sheet.hiddenRows?.length || sheet.hiddenColumns?.length
+        || sheet.autoFilter || sheet.protectionRules?.length || sheet.conditionalFormats?.length || sheet.dataValidations?.length
+        || sheet.hyperlinks?.length || Object.keys(sheet.rowHeightsPx ?? {}).length || Object.keys(sheet.columnWidthsPx ?? {}).length
+        || Object.keys(sheet.review.threadsById).length || Object.keys(sheet.review.notesById).length) reject(sheet.name, '格式、布局、筛选、批注或保护');
+    for (const [row, cells] of Object.entries(sheet.cells)) for (const [column, cell] of Object.entries(cells)) {
+      if (Object.entries(cell).some(([key, value]) => key !== 'value' && value !== undefined)) reject(`${sheet.name}!R${Number(row) + 1}C${Number(column) + 1}`, '公式或单元格格式');
+    }
+  }
+}
+
 function serializeSpreadJson(snapshot: WorkbookSnapshot, unknownFields: Record<string, unknown>, sjs = false): Uint8Array {
   const root = { ...structuredClone(unknownFields), schema: sjs ? undefined : 'SSJSON', version: 1, name: snapshot.name, sheets: snapshot.sheets.map((sheet) => ({ name: sheet.name, data: rowsFromSnapshot({ ...snapshot, sheets: [sheet] }) })) };
   if (root.schema === undefined) delete (root as { schema?: string }).schema;
@@ -532,14 +555,14 @@ export const ssjsonCodec: NativeDocumentCodec<NativeDocumentImportTransaction, N
   family: 'ssjson',
   canRead: (fileName, buffer) => /\.ssjson$/i.test(fileName) || (/\.json$/i.test(fileName) && strFromU8(new Uint8Array(buffer).slice(0, 512)).includes('"sheets"')),
   import: async (request) => { const bytes = new Uint8Array(request.buffer); assertInputBudget(bytes, limitsFor(request.options), 'SSJSON document'); const parsed = jsonRows(parseNativeJson(bytes)); assertCellBudget(parsed.rows, limitsFor(request.options), 'SSJSON document'); const snapshot = workbookFromRows(request.fileName.replace(/\.[^.]+$/, ''), parsed.rows, parsed.sheetName); return importedResult(request.fileName, bytes, { family: 'ssjson', variant: 'ssjson' }, snapshot, { kind: 'ssjson', document: { unknownFields: parsed.unknownFields } }, TEXT_FEATURES, request.options.compatibilityTarget); },
-  export: async (request) => { const untouched = untouchedExport(request); if (untouched) return untouched; const rows = rowsFromSnapshot(request.snapshot); assertCellBudget(rows, limitsFor(request.options), 'SSJSON document'); const bytes = serializeSpreadJson(request.snapshot, request.artifact?.nativeGraph.kind === 'ssjson' ? request.artifact.nativeGraph.document.unknownFields : {}); return exportedResult(request.fileName.replace(/\.[^.]+$/i, '.ssjson'), bytes, { family: 'ssjson', variant: 'ssjson' }, request.snapshot, { kind: 'ssjson', document: { unknownFields: {} } }, TEXT_FEATURES, request.options.compatibilityTarget); },
+  export: async (request) => { assertSpreadJsonValueOnlySnapshot(request.snapshot); const untouched = untouchedExport(request); if (untouched) return untouched; const rows = rowsFromSnapshot(request.snapshot); assertCellBudget(rows, limitsFor(request.options), 'SSJSON document'); const bytes = serializeSpreadJson(request.snapshot, request.artifact?.nativeGraph.kind === 'ssjson' ? request.artifact.nativeGraph.document.unknownFields : {}); return exportedResult(request.fileName.replace(/\.[^.]+$/i, '.ssjson'), bytes, { family: 'ssjson', variant: 'ssjson' }, request.snapshot, { kind: 'ssjson', document: { unknownFields: {} } }, TEXT_FEATURES, request.options.compatibilityTarget); },
 };
 
 export const sjsCodec: NativeDocumentCodec<NativeDocumentImportTransaction, NativeDocumentExportTransaction> = {
   family: 'sjs',
   canRead: (fileName, buffer) => /\.sjs$/i.test(fileName) || Object.keys(detectZipParts(buffer) ?? {}).some((name) => name.toLowerCase().endsWith('.json')),
   import: async (request) => { const bytes = new Uint8Array(request.buffer); const limits = limitsFor(request.options); const parts = unzipNativePackage(bytes, limits, 'SJS document'); const workbookPart = Object.keys(parts).find((name) => /workbook.*\.json$/i.test(name)) ?? Object.keys(parts).find((name) => name.endsWith('.json')); if (!workbookPart) invalidNativeDocument('NATIVE_SJS_INVALID: workbook JSON part is missing'); const parsed = jsonRows(parseNativeJson(parts[workbookPart]!)); assertCellBudget(parsed.rows, limits, 'SJS document'); const snapshot = workbookFromRows(request.fileName.replace(/\.[^.]+$/, ''), parsed.rows, parsed.sheetName); return importedResult(request.fileName, bytes, { family: 'sjs', variant: 'sjs' }, snapshot, { kind: 'sjs', package: { parts: Object.fromEntries(Object.entries(parts).map(([name, data]) => [name, data.slice()])), workbookPart, unknownParts: Object.fromEntries(Object.entries(parts).filter(([name]) => name !== workbookPart).map(([name, data]) => [name, data.slice()])) , unknownFields: parsed.unknownFields } }, TEXT_FEATURES, request.options.compatibilityTarget); },
-  export: async (request) => { const untouched = untouchedExport(request); if (untouched) return untouched; const existing = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.parts : {}; const parts: Record<string, Uint8Array> = Object.fromEntries(Object.entries(existing).map(([name, bytes]) => [name, bytes.slice()])); const workbookPart = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.workbookPart : 'workbook.json'; const unknownFields = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.unknownFields : {}; parts[workbookPart] = serializeSpreadJson(request.snapshot, unknownFields, true) as Uint8Array; const bytes = zipSync(parts, { level: 6 }); const rows = rowsFromSnapshot(request.snapshot); assertCellBudget(rows, limitsFor(request.options), 'SJS document'); return exportedResult(request.fileName.replace(/\.[^.]+$/i, '.sjs'), bytes, { family: 'sjs', variant: 'sjs' }, request.snapshot, { kind: 'sjs', package: { parts, workbookPart, unknownParts: Object.fromEntries(Object.entries(parts).filter(([name]) => name !== workbookPart)), unknownFields } }, TEXT_FEATURES, request.options.compatibilityTarget); },
+  export: async (request) => { assertSpreadJsonValueOnlySnapshot(request.snapshot); const untouched = untouchedExport(request); if (untouched) return untouched; const existing = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.parts : {}; const parts: Record<string, Uint8Array> = Object.fromEntries(Object.entries(existing).map(([name, bytes]) => [name, bytes.slice()])); const workbookPart = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.workbookPart : 'workbook.json'; const unknownFields = request.artifact?.nativeGraph.kind === 'sjs' ? request.artifact.nativeGraph.package.unknownFields : {}; parts[workbookPart] = serializeSpreadJson(request.snapshot, unknownFields, true) as Uint8Array; const bytes = zipSync(parts, { level: 6 }); const rows = rowsFromSnapshot(request.snapshot); assertCellBudget(rows, limitsFor(request.options), 'SJS document'); return exportedResult(request.fileName.replace(/\.[^.]+$/i, '.sjs'), bytes, { family: 'sjs', variant: 'sjs' }, request.snapshot, { kind: 'sjs', package: { parts, workbookPart, unknownParts: Object.fromEntries(Object.entries(parts).filter(([name]) => name !== workbookPart)), unknownFields } }, TEXT_FEATURES, request.options.compatibilityTarget); },
 };
 
 function parseDbf(bytes: Uint8Array, limits: NativeDocumentResourceLimits): { rows: string[][]; graph: NativeGraph } {

@@ -162,6 +162,76 @@ class WorkbookIntegrityAndConflictTest {
                 new AuditRecorder(store, mapper), coordination);
     }
 
+    @Test
+    void identicalRetryReturnsOriginalCommitButChangedContentIsRejected() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        OperationEnvelope original = cellOperation("stable-id", "session-a", 1, 0, 0, 0, 42);
+        stubWorkbook(store, canonicalSnapshot(), 0, 1, List.of(committedRow(original, 1, 0, 0)));
+        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(store.findOperation("stable-id")).thenReturn(Optional.of(committedRow(original, 1, 0, 0)));
+        WorkbookOperationService service = service(store, access, new MutationDescriptorRegistry());
+
+        var retry = service.commit(UNIT_ID, original, ACTOR);
+        assertEquals(false, retry.committed());
+        assertEquals(1, retry.operation().revision());
+        ServiceException changed = assertThrows(ServiceException.class, () -> service.commit(UNIT_ID,
+                cellOperation("stable-id", "session-a", 1, 0, 0, 0, 99), ACTOR));
+        assertEquals("OPERATION_ID_REUSED", changed.code());
+        ServiceException changedSession = assertThrows(ServiceException.class, () -> service.commit(UNIT_ID,
+                cellOperation("stable-id", "session-b", 1, 0, 0, 0, 42), ACTOR));
+        assertEquals("OPERATION_ID_REUSED", changedSession.code());
+        verify(store, never()).insertOperation(any());
+    }
+
+    @Test
+    void checkpointReturnsOnlyCoverageMetadataAndDoesNotRewriteAnExistingCheckpoint() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        String snapshot = canonicalSnapshot();
+        stubWorkbook(store, snapshot, 0, 0, List.of());
+        var checkpoint = service(store, access, new MutationDescriptorRegistry()).checkpoint(UNIT_ID, ACTOR);
+        assertEquals(UNIT_ID, checkpoint.unitId());
+        assertEquals(0, checkpoint.revision());
+        assertEquals(checksum(snapshot), checkpoint.checksum());
+        assertEquals(false, checkpoint.created());
+        assertEquals(false, mapper.valueToTree(checkpoint).has("snapshot"));
+        verify(store, never()).insertCheckpoint(anyString(), anyLong(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void oneCheckpointCoversTheWholeCommittedBatch() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        var first = cellOperation("batch-1", "session-a", 1, 0, 0, 0, 10);
+        var second = cellOperation("batch-2", "session-a", 2, 1, 0, 1, 20);
+        stubWorkbook(store, canonicalSnapshot(), 0, 2, List.of(committedRow(first, 1, 0, 0), committedRow(second, 2, 0, 1)));
+
+        var checkpoint = service(store, access, new MutationDescriptorRegistry()).checkpoint(UNIT_ID, ACTOR);
+
+        assertTrue(checkpoint.created());
+        assertEquals(2, checkpoint.revision());
+        verify(store).listOperationsBetween(UNIT_ID, 0, 2);
+        var snapshot = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(store).insertCheckpoint(eq(UNIT_ID), eq(2L), snapshot.capture(), eq(checkpoint.checksum()), any());
+        assertEquals(10, mapper.readTree(snapshot.getValue()).at("/sheets/0/cells/0/0/value").asInt());
+        assertEquals(20, mapper.readTree(snapshot.getValue()).at("/sheets/0/cells/0/1/value").asInt());
+        assertEquals(checksum(snapshot.getValue()), checkpoint.checksum());
+    }
+
+    @Test
+    void checkpointRefusesCorruptBaseWithoutWritingCoverage() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        String snapshot = canonicalSnapshot();
+        stubWorkbook(store, snapshot, 0, 1, List.of(committedRow(cellOperation("batch-1", "session-a", 1, 0, 0, 0, 10), 1, 0, 0)));
+        when(store.findCheckpoint(UNIT_ID, 0)).thenReturn(Optional.of(new CheckpointRow(UNIT_ID, 0, snapshot, "invalid", CREATED_AT)));
+
+        assertThrows(ServiceException.class, () -> service(store, access, new MutationDescriptorRegistry()).checkpoint(UNIT_ID, ACTOR));
+        verify(store, never()).insertCheckpoint(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(store, never()).updateWorkbook(anyString(), anyLong(), anyString(), anyLong(), any());
+    }
+
     private void stubWorkbook(WorkbookStore store, String snapshot, long snapshotRevision, long revision,
                               List<OperationRow> operations) throws Exception {
         WorkbookRow row = workbook(snapshot, snapshotRevision, revision);
@@ -170,7 +240,12 @@ class WorkbookIntegrityAndConflictTest {
                 UNIT_ID, snapshotRevision, snapshot, checksum(snapshot), CREATED_AT)));
         when(store.findOperation(anyString())).thenReturn(Optional.empty());
         when(store.findOperationBySequence(anyString(), anyString(), anyString(), anyLong())).thenReturn(Optional.empty());
-        when(store.listOperations(UNIT_ID)).thenReturn(operations);
+        when(store.listOperationsBetween(eq(UNIT_ID), anyLong(), anyLong())).thenAnswer(invocation -> {
+            long after = invocation.getArgument(1);
+            long through = invocation.getArgument(2);
+            return operations.stream().filter(operation -> operation.revision() > after && operation.revision() <= through)
+                    .sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList();
+        });
     }
 
     private WorkbookRow workbook(String snapshot, long snapshotRevision, long revision) {

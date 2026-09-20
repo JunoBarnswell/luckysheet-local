@@ -271,9 +271,14 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookArtifactResponse putArtifact(String unitId, String fileName, String mimeType, String checksum,
-                                                byte[] content, String actor) {
-        requireActive(unitId);
+                                                byte[] content, long expectedRevision, String actor) {
         requireRole(unitId, actor, WorkbookAclRole.EDITOR);
+        WorkbookEntity workbook = lockActiveOrTrashed(unitId);
+        if (workbook.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
+        if (expectedRevision < 0 || workbook.getRevision() != expectedRevision) {
+            throw new ServiceException("ARTIFACT_REVISION_CONFLICT", 409,
+                    "Workbook " + unitId + " changed during export; keep the draft and export the current revision");
+        }
         validateArtifact(fileName, checksum, content);
         String actual = checksum(content);
         if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("Native document artifact checksum mismatch");
@@ -282,6 +287,7 @@ public class WorkbookCatalogService {
                 new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
                         content.length, content.clone(), nativeArtifactMetadata(fileName), now, now));
         entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), nativeArtifactMetadata(fileName), now);
+        entity.bindRevision(expectedRevision);
         artifacts.save(entity);
         return artifactResponse(entity);
     }
@@ -338,6 +344,7 @@ public class WorkbookCatalogService {
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
                 safeFileName(file.getOriginalFilename() == null ? resolvedName + ".ssjson" : file.getOriginalFilename()),
                 safeMimeType(file.getContentType()), digest, content.length, content, writeJson(artifactMetadata), now, now);
+        artifact.bindRevision(entity.getRevision());
         artifacts.save(artifact);
         return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
                 summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));
@@ -442,7 +449,7 @@ public class WorkbookCatalogService {
 
     private WorkbookArtifactResponse artifactResponse(WorkbookSourceArtifactEntity artifact) {
         return new WorkbookArtifactResponse(artifact.getUnitId(), artifact.getFileName(), artifact.getMimeType(), artifact.getChecksum(),
-                artifact.getByteLength(), artifact.getCreatedAt(), artifact.getUpdatedAt());
+                artifact.getByteLength(), artifact.getSourceRevision(), artifact.getCreatedAt(), artifact.getUpdatedAt());
     }
 
     private WorkbookEntity requireActiveOrTrashed(String unitId) {

@@ -142,9 +142,25 @@ export interface OperationCommitResponse {
   operation: CommittedOperationEnvelope;
 }
 
+type OperationJsonValue = null | string | number | boolean | OperationJsonValue[] | { [key: string]: OperationJsonValue };
+
+/** Compare request-owned content when reconciling a possibly committed recovery entry. */
+export function assertOperationResultMatches(request: OperationEnvelope, committed: CommittedOperationEnvelope): void {
+  const identity = (operation: OperationEnvelope): string => JSON.stringify({
+    schema: operation.schema, unitId: operation.unitId, operationId: operation.operationId,
+    clientSessionId: operation.clientSessionId, clientSequence: operation.clientSequence,
+    baseRevision: operation.baseRevision, intent: operation.intent,
+    mutations: operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params })),
+  }, (_key, value: OperationJsonValue) => value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value);
+  if (identity(request) !== identity(committed)) throw new Error(`OPERATION_ID_REUSED: ${request.operationId} 的服务端内容与恢复请求不同，草稿已保留`);
+}
+
 export interface CheckpointResponse {
   created: boolean;
-  snapshot: SnapshotResponse;
+  unitId: string;
+  revision: number;
+  checksum: string;
 }
 
 /**
@@ -1566,6 +1582,7 @@ export interface SpaceMember {
 }
 
 export interface WorkbookSourceArtifactMetadata {
+  sourceRevision: number | null;
   byteLength: number;
   checksum: string;
   createdAt?: string;
@@ -1876,7 +1893,8 @@ export class WorkbookApiClient {
     return response;
   }
 
-  async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
+  async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string, expectedRevision: number): Promise<WorkbookSourceArtifactMetadata> {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error('ARTIFACT_REVISION_REQUIRED');
     const checksum = await sha256(artifact);
     return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-document-artifact`, {
       method: 'PUT',
@@ -1884,6 +1902,7 @@ export class WorkbookApiClient {
         'content-type': 'application/octet-stream',
         'x-content-sha256': checksum,
         'x-file-name': encodeURIComponent(fileName),
+        'x-workbook-revision': String(expectedRevision),
       },
       body: artifact,
     });
@@ -1898,12 +1917,18 @@ export class WorkbookApiClient {
     const byteLength = Number(response.headers.get('content-length') ?? 0);
     const codecRevision = Number(response.headers.get('x-native-codec-revision') ?? 1);
     const format = response.headers.get('x-native-format') ?? undefined;
+    const sourceRevisionHeader = response.headers.get('x-workbook-revision');
+    const sourceRevision = sourceRevisionHeader === 'unbound' ? null : Number(sourceRevisionHeader);
+    if (sourceRevisionHeader === null || (sourceRevision !== null && (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0))) {
+      throw new ApiRequestError('Native document response omitted its revision binding', response.status, 'INTERNAL_ERROR');
+    }
     if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
     if (await sha256(artifact) !== checksum.toLowerCase()) throw new ApiRequestError('原生文件校验失败，请恢复备份', 409, 'CONFLICT');
     return {
       artifact,
       metadata: {
+        sourceRevision,
         byteLength: byteLength || artifact.size,
         checksum,
         fileName,

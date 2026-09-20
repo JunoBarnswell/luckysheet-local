@@ -106,7 +106,19 @@ public class WorkbookOperationService {
             if (!existing.actorSubject().equals(actor) || !existing.unitId().equals(routeUnitId)) {
                 throw ServiceException.forbidden("Operation belongs to another subject");
             }
-            return new CommitResult(readCommitted(existing), false);
+            CommittedOperationEnvelope committed = readCommitted(existing);
+            List<OperationMutation> originalMutations = committed.mutations().stream()
+                    .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
+            // Server-owned timestamps/ranges are deliberately excluded from request identity.
+            if (!committed.clientSessionId().equals(operation.clientSessionId())
+                    || committed.clientSequence() != operation.clientSequence()
+                    || committed.baseRevision() != operation.baseRevision()
+                    || !originalMutations.equals(operation.mutations())
+                    || !java.util.Objects.equals(committed.intent(), operation.intent())) {
+                throw new ServiceException("OPERATION_ID_REUSED", 409,
+                        "Operation " + operation.operationId() + " was already committed with different content; retain the draft and create a new operation");
+            }
+            return new CommitResult(committed, false);
         }
         OperationRow sequenceExisting = store.findOperationBySequence(routeUnitId, actor, operation.clientSessionId(), operation.clientSequence()).orElse(null);
         if (sequenceExisting != null && !sequenceExisting.operationId().equals(operation.operationId())) {
@@ -130,8 +142,7 @@ public class WorkbookOperationService {
         }
 
         if (operation.baseRevision() < row.revision()) {
-            for (OperationRow intervening : store.listOperations(routeUnitId)) {
-                if (intervening.revision() <= operation.baseRevision()) continue;
+            for (OperationRow intervening : store.listOperationsBetween(routeUnitId, operation.baseRevision(), row.revision())) {
                 var interveningMutations = readCommitted(intervening).mutations();
                 if (registry.requiresExactBase(interveningMutations.stream()
                         .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList())) {
@@ -216,14 +227,14 @@ public class WorkbookOperationService {
         if (row.snapshotRevision() == row.revision()) {
             JsonNode snapshot = currentSnapshot(row);
             String canonicalJson = writeJson(snapshot);
-            return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(canonicalJson)), false);
+            return new CheckpointResponse(unitId, row.revision(), checksum(canonicalJson), false);
         }
         JsonNode snapshot = currentSnapshot(row);
         String json = writeJson(snapshot);
         Instant now = Instant.now();
         store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
         store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
-        return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(json)), true);
+        return new CheckpointResponse(unitId, row.revision(), checksum(json), true);
     }
 
     @Transactional
@@ -317,9 +328,7 @@ public class WorkbookOperationService {
         }
         JsonNode snapshot = WorkbookSnapshotValidator.requireCanonical(readJson(row.snapshotJson()), row.unitId());
         if (row.snapshotRevision() == row.revision()) return snapshot;
-        for (OperationRow operation : store.listOperations(row.unitId()).stream()
-                .filter(entry -> entry.revision() > row.snapshotRevision() && entry.revision() <= row.revision())
-                .sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList()) {
+        for (OperationRow operation : store.listOperationsBetween(row.unitId(), row.snapshotRevision(), row.revision())) {
             CommittedOperationEnvelope committed = readCommitted(operation);
             List<OperationMutation> mutations = committed.mutations().stream()
                     .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
@@ -335,9 +344,7 @@ public class WorkbookOperationService {
         verifyCheckpoint(checkpoint);
         JsonNode snapshot = WorkbookSnapshotValidator.requireCanonical(readJson(checkpoint.snapshotJson()), current.unitId());
         if (checkpoint.revision() == targetRevision) return snapshot;
-        for (OperationRow operation : store.listOperations(current.unitId()).stream()
-                .filter(entry -> entry.revision() > checkpoint.revision() && entry.revision() <= targetRevision)
-                .sorted(java.util.Comparator.comparingLong(OperationRow::revision)).toList()) {
+        for (OperationRow operation : store.listOperationsBetween(current.unitId(), checkpoint.revision(), targetRevision)) {
             CommittedOperationEnvelope committed = readCommitted(operation);
             if (committed.mutations().stream().anyMatch(mutation -> "workbook.restore".equals(mutation.id()))) {
                 throw ServiceException.conflict("Restore checkpoint is missing for revision " + operation.revision());
@@ -360,8 +367,9 @@ public class WorkbookOperationService {
 
     private boolean shouldCheckpoint(WorkbookRow row, OperationEnvelope operation, String envelopeJson) {
         if (row.snapshotRevision() == row.revision()) return false;
-        long operationCount = store.listOperations(row.unitId()).stream().filter(entry -> entry.revision() > row.snapshotRevision()).count();
-        long bytes = store.listOperations(row.unitId()).stream().filter(entry -> entry.revision() > row.snapshotRevision()).mapToLong(entry -> entry.envelopeJson().getBytes(StandardCharsets.UTF_8).length).sum();
+        List<OperationRow> sinceCheckpoint = store.listOperationsBetween(row.unitId(), row.snapshotRevision(), row.revision());
+        long operationCount = sinceCheckpoint.size();
+        long bytes = sinceCheckpoint.stream().mapToLong(entry -> entry.envelopeJson().getBytes(StandardCharsets.UTF_8).length).sum();
         return operationCount + 1 >= CHECKPOINT_OPERATION_LIMIT || bytes + envelopeJson.getBytes(StandardCharsets.UTF_8).length >= CHECKPOINT_BYTES_LIMIT;
     }
 

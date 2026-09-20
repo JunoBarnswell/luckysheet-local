@@ -7,6 +7,7 @@ export interface SaveAsDocumentDialogProps {
   onClose: () => void;
   onSubmit: (fileName: string) => void;
   submitting?: boolean;
+  error?: string | null;
 }
 
 const formats = [
@@ -22,10 +23,10 @@ const formats = [
 ] as const;
 
 function extensionOf(fileName: string): string {
-  return fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? 'ssjson';
+  return fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? 'xlsx';
 }
 
-export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.ssjson', onClose, onSubmit, submitting = false }: SaveAsDocumentDialogProps) {
+export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.xlsx', onClose, onSubmit, submitting = false, error }: SaveAsDocumentDialogProps) {
   const [fileName, setFileName] = useState(currentFileName);
   const [format, setFormat] = useState(extensionOf(currentFileName));
 
@@ -58,6 +59,7 @@ export function SaveAsDocumentDialog({ open, currentFileName = 'workbook.ssjson'
       testId="save-as-document-dialog"
     >
       <Stack gap="md">
+        {error ? <Text role="alert" size="sm" className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800">{error}</Text> : null}
         <Stack gap="xs"><Text as="label" htmlFor="save-as-document-name" size="sm" weight="medium">目标文件名</Text><TextInput id="save-as-document-name" onChange={(event) => setFileName(event.currentTarget.value)} value={fileName} /></Stack>
         <Stack gap="xs"><Text as="label" htmlFor="save-as-document-format" size="sm" weight="medium">目标协议</Text><Select id="save-as-document-format" onChange={(event) => chooseFormat(event.currentTarget.value)} options={formats.map((entry) => ({ value: entry.value, label: entry.label }))} value={format} /></Stack>
         <Text size="xs" tone="muted">跨协议转换会在导出结果中报告可编辑、保留、投影和阻断的特性。</Text>

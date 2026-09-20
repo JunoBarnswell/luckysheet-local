@@ -160,10 +160,11 @@ public class WorkbookController {
             @RequestHeader(value = "X-File-Name", required = false) String fileName,
             @RequestHeader(value = "Content-Type", required = false) String mimeType,
             @RequestHeader("X-Content-SHA256") String checksum,
+            @RequestHeader("X-Workbook-Revision") long expectedRevision,
             @RequestBody byte[] content,
             Authentication authentication
     ) {
-        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, ActorIdentity.subject(authentication));
+        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, expectedRevision, ActorIdentity.subject(authentication));
     }
 
     @GetMapping(value = "/{unitId}/native-document-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
@@ -175,6 +176,7 @@ public class WorkbookController {
                 .header("X-Content-SHA256", artifact.getChecksum())
                 .header("X-Native-Codec-Revision", Integer.toString(artifact.getCodecRevision()))
                 .header("X-Native-Format", artifact.getFormat())
+                .header("X-Workbook-Revision", artifact.getSourceRevision() == null ? "unbound" : artifact.getSourceRevision().toString())
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''"
                         + java.net.URLEncoder.encode(artifact.getFileName(), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20"))
                 .body(artifact.getContent());

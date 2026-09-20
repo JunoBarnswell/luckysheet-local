@@ -387,6 +387,10 @@ export class CollaborationSession {
     const rewritten: OperationEnvelope[] = [];
     for (let index = 0; index < queued.length; index += 1) {
       const queuedOperation = queued[index]!.operation;
+      if (!this.offlineQueue.canRewrite(queuedOperation.operationId)) {
+        rewritten.push(queuedOperation);
+        continue;
+      }
       const current = this.localClassified.get(queuedOperation.operationId) ?? this.classifyEnvelope(queuedOperation);
       const newRemoteHistory = this.remoteMutations.slice(this.rebasedRemoteCount);
       const rebased = current.map((mutation) => this.rebasePending(

@@ -153,6 +153,11 @@ public class WorkbookStore {
         return operations.findById(operationId).map(this::operationRow);
     }
 
+    public List<OperationRow> listOperationsBetween(String unitId, long afterRevision, long throughRevision) {
+        return operations.findByUnitIdAndRevisionGreaterThanAndRevisionLessThanEqualOrderByRevisionAsc(unitId, afterRevision, throughRevision)
+                .stream().map(this::operationRow).toList();
+    }
+
     public Optional<OperationRow> findOperationBySequence(String unitId, String actorSubject, String clientSessionId, long sequence) {
         return operations.findByUnitIdAndActorSubjectAndClientSessionIdAndClientSequence(unitId, actorSubject, clientSessionId, sequence).map(this::operationRow);
     }
