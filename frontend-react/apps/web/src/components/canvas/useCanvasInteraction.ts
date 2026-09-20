@@ -1032,8 +1032,21 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     event.preventDefault();
     // Excel's Shift+wheel is the horizontal outline/worksheet scroll gesture;
     // keep the axis decision at the input boundary before PaneMap consumes it.
-    engine.scrollBy(event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX, event.shiftKey ? 0 : event.deltaY);
-  }, [engineRef]);
+    const deltaX = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+    const deltaY = event.shiftKey ? 0 : event.deltaY;
+    engine.scrollBy(deltaX, deltaY);
+    // A sheet shorter than the viewport cannot emit a changed scroll offset.
+    // Explicit forward intent must still be able to grow its canonical extent.
+    const axes = resolveAutoScrollExtentGrowth({
+      right: deltaX > 0,
+      bottom: deltaY > 0,
+      viewport: engine.viewport.getSnapshot(),
+      content: engine.skeleton.contentSize,
+      defaultRowHeight: sheet.defaultRowHeightPx,
+      defaultColumnWidth: sheet.defaultColumnWidthPx,
+    });
+    if (axes.rows || axes.columns) onRequestExtentGrowth(axes);
+  }, [engineRef, onRequestExtentGrowth, sheet.defaultColumnWidthPx, sheet.defaultRowHeightPx]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (phase !== "ready") return;

@@ -266,6 +266,7 @@ export function EditorShell({
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
+                canGrowSheetExtent={state.phase === 'ready' && state.collabStatus === 'open' && session.canExecute('sheet.extent.grow')}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
                 onSelectAllDrawings={session.selectAllDrawings.bind(session)}

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from './cn';
 
@@ -10,7 +10,11 @@ export interface DropdownMenuProps {
   disabled?: boolean;
 }
 
+const MenuOwnersContext = createContext('');
+
 export function DropdownMenu({ trigger, children, align = 'left', className, disabled = false }: DropdownMenuProps) {
+  const menuId = useId();
+  const owners = `${useContext(MenuOwnersContext)} ${menuId}`.trim();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -19,11 +23,17 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
   const updatePosition = () => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
+    const menu = menuRef.current?.getBoundingClientRect();
+    const width = menu?.width ?? 0;
+    const height = menu?.height ?? 0;
+    const availableHeight = window.innerHeight - 16;
     setCoords({
-      x: align === 'right' ? rect.right : rect.left,
-      y: rect.bottom + 4,
+      x: Math.max(8, Math.min(align === 'right' ? rect.right - width : rect.left, window.innerWidth - width - 8)),
+      y: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - Math.min(height, availableHeight) - 8)),
     });
   };
+
+  useLayoutEffect(() => { if (open) updatePosition(); }, [open, align]);
 
   const toggle = () => {
     if (disabled) return;
@@ -38,6 +48,8 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
   useEffect(() => {
     if (!open) return;
     const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('[data-menu-owners]')?.getAttribute('data-menu-owners')?.split(' ').includes(menuId)) return;
       if (
         triggerRef.current &&
         !triggerRef.current.contains(e.target as Node) &&
@@ -62,6 +74,7 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
   }, [open]);
 
   return (
+    <MenuOwnersContext.Provider value={owners}>
     <div className="relative inline-flex" ref={triggerRef}>
       <div onClick={toggle} aria-disabled={disabled || undefined} className={disabled ? 'cursor-not-allowed' : 'cursor-pointer'}>
         {trigger}
@@ -70,12 +83,12 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
         ? createPortal(
             <div
               ref={menuRef}
+              data-menu-owners={owners}
               className={cn(
                 'fixed z-50 rounded-lg border border-slate-200 bg-white p-1 shadow-xl animate-in fade-in zoom-in-95 duration-100',
-                align === 'right' && '-translate-x-full',
                 className,
               )}
-              style={{ left: coords.x, top: coords.y }}
+              style={{ left: coords.x, top: coords.y, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }}
             >
               {typeof children === 'function' ? children({ close: () => setOpen(false) }) : children}
             </div>,
@@ -83,5 +96,6 @@ export function DropdownMenu({ trigger, children, align = 'left', className, dis
           )
         : null}
     </div>
+    </MenuOwnersContext.Provider>
   );
 }

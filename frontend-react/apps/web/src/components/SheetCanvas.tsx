@@ -60,7 +60,7 @@ import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
-import { planSheetExtentGrowth } from './canvas/sheet-extent-growth';
+import { planSheetExtentGrowth, resolveAutoScrollExtentGrowth } from './canvas/sheet-extent-growth';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
 
@@ -100,6 +100,7 @@ export interface SheetCanvasProps {
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
+  canGrowSheetExtent: boolean;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onSelectAllDrawings?: () => void;
@@ -395,6 +396,7 @@ export function SheetCanvas({
   onSelectionChange,
   onMovePrimary,
   onEnsureSheetExtent,
+  canGrowSheetExtent,
   onJumpEdge,
   onSelectAll,
   onSelectAllDrawings,
@@ -475,21 +477,47 @@ export function SheetCanvas({
   }, [sheet.columnCount, sheet.rowCount, sheetId]);
 
   const requestExtentGrowth = useCallback((axes: { rows?: boolean; columns?: boolean }) => {
+    if (!canGrowSheetExtent) return;
     const next = planSheetExtentGrowth(
       { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount },
       requestedExtentRef.current,
       axes,
     );
     if (!next) return;
+    const previous = requestedExtentRef.current;
     requestedExtentRef.current = next;
-    onEnsureSheetExtent(next.rowCount, next.columnCount);
-  }, [onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
+    try {
+      onEnsureSheetExtent(next.rowCount, next.columnCount);
+    } catch (error) {
+      requestedExtentRef.current = previous;
+      throw error;
+    }
+  }, [canGrowSheetExtent, onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engineReady) return;
+    let previous = engine.viewport.getSnapshot();
+    return engine.onViewportChanged(() => {
+      const viewport = engine.viewport.getSnapshot();
+      const axes = resolveAutoScrollExtentGrowth({
+        right: viewport.scrollX > previous.scrollX,
+        bottom: viewport.scrollY > previous.scrollY,
+        viewport,
+        content: engine.skeleton.contentSize,
+        defaultRowHeight: sheet.defaultRowHeightPx,
+        defaultColumnWidth: sheet.defaultColumnWidthPx,
+      });
+      previous = viewport;
+      if (axes.rows || axes.columns) requestExtentGrowth(axes);
+    });
+  }, [engineReady, requestExtentGrowth, sheet.defaultColumnWidthPx, sheet.defaultRowHeightPx]);
 
   const skeleton = useMemo(
     () =>
       new SheetSkeleton({
-        rowCount: Math.max(sheet.rowCount, 200),
-        columnCount: Math.max(sheet.columnCount, 26),
+        rowCount: sheet.rowCount,
+        columnCount: sheet.columnCount,
         defaultRowHeight: sheet.defaultRowHeightPx,
         defaultColumnWidth: sheet.defaultColumnWidthPx,
         rowHeights: new Map(Object.entries(sheet.rowHeightsPx).map(([key, value]) => [Number(key), value])),

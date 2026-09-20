@@ -39,58 +39,41 @@ interface NodeRenderContext {
   tab: RibbonLayoutSpec['tab'];
 }
 
-/**
- * The Designer keeps a stable footprint for each ribbon group so dense
- * groups wrap inside their own area instead of pushing neighboring groups
- * into the viewport or clipping their controls vertically.
- */
-const WIDE_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  clipboard: 'w-[124px]',
-  font: 'w-[224px]',
-  alignment: 'w-[248px]',
-  number: 'w-[154px]',
-  styles: 'w-[260px]',
-  cells: 'w-[144px]',
-  editing: 'w-[196px]',
-  pageSetup: 'w-[300px]',
-  scaleToFit: 'w-[112px]',
-  sheetOptions: 'w-[220px]',
-  calculation: 'w-[190px]',
-  functionLibrary: 'w-[220px]',
-  formulaAudit: 'w-[276px]',
-  definedNames: 'w-[128px]',
-  tables: 'w-[265px]',
-  illustrations: 'w-[308px]',
-  controls: 'w-[68px]',
-  charts: 'w-[369px]',
-  sparklines: 'w-[181px]',
-  filters: 'w-[132px]',
-  links: 'w-[68px]',
-  insertComments: 'w-[83px]',
-  text: 'w-[260px]',
-  symbols: 'w-[171px]',
-  sortFilter: 'w-[220px]',
-  dataTools: 'w-[292px]',
-  findTransform: 'w-[292px]',
-  outline: 'w-[400px]',
-  whatIf: 'w-[160px]',
+const RIBBON_GROUP_WIDTHS: Partial<Record<RibbonGroupId, number>> = {
+  pageSetup: 420, scaleToFit: 100, sheetOptions: 300,
+  calculation: 250, functionLibrary: 220, formulaAudit: 430, definedNames: 200,
+  tables: 248, illustrations: 324, controls: 68, charts: 360,
+  sparklines: 188, filters: 140, links: 68, insertComments: 80, text: 320, symbols: 140,
+  sortFilter: 280, dataTools: 340, findTransform: 340, outline: 440, whatIf: 180,
 };
 
-const COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  ...WIDE_RIBBON_GROUP_WIDTH_CLASSES,
-};
+/** Reserve every group entry before expanding the highest-priority groups. */
+export function collapsedRibbonGroups(groups: readonly { id: RibbonGroupId; width: number }[], width: number, preferred: readonly RibbonGroupId[] = []): Set<RibbonGroupId> {
+  const collapsed = new Set(groups.map(group => group.id));
+  let remaining = width - groups.length * 69 - 12;
+  const ordered = [...groups].sort((left, right) => {
+    const priority = (id: RibbonGroupId) => preferred.includes(id) ? preferred.indexOf(id) : preferred.length + groups.findIndex(group => group.id === id);
+    return priority(left.id) - priority(right.id);
+  });
+  for (const group of ordered) {
+    const extra = Math.max(0, group.width - 68);
+    if (extra <= remaining) { collapsed.delete(group.id); remaining -= extra; }
+  }
+  return collapsed;
+}
 
-const DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  ...WIDE_RIBBON_GROUP_WIDTH_CLASSES,
-};
+export function ribbonGroupWidth(groupId: RibbonGroupId): number {
+  return RIBBON_GROUP_WIDTHS[groupId] ?? 220;
+}
 
 const HOME_RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
   clipboard: 'w-[140px]', font: 'w-[244px]', alignment: 'w-[224px]',
   number: 'w-[140px]', styles: 'w-[188px]', cells: 'w-[164px]', editing: 'w-[210px]',
 };
 
-const HOME_GROUP_ICONS: Partial<Record<RibbonGroupId, IconName>> = {
+export const RIBBON_GROUP_ICONS: Partial<Record<RibbonGroupId, IconName>> = {
   styles: 'file-spreadsheet', cells: 'grid', editing: 'search', alignment: 'align-left', number: 'calculator',
+  tables: 'table', illustrations: 'picture', controls: 'checkbox', charts: 'chart', sparklines: 'sparkline', filters: 'filter', links: 'link', insertComments: 'comment', text: 'file-spreadsheet', symbols: 'calculator',
 };
 
 function collapseHomeGroup(groupId: RibbonGroupId, width: number): boolean {
@@ -100,15 +83,12 @@ function collapseHomeGroup(groupId: RibbonGroupId, width: number): boolean {
     || (width < 760 && groupId === 'number');
 }
 
-export function ribbonGroupWidthClass(groupId: RibbonGroupId, mode: RibbonLayoutState['mode'] = 'wide', width = 0, tab?: RibbonLayoutSpec['tab']): string {
+export function ribbonGroupWidthClass(groupId: RibbonGroupId, _mode: RibbonLayoutState['mode'] = 'wide', _width = 0, tab?: RibbonLayoutSpec['tab']): string {
   if (tab === 'home') {
     const widths = HOME_RIBBON_GROUP_WIDTH_CLASSES;
     return widths[groupId] ?? 'min-w-[72px] flex-1';
   }
-  const widths = mode === 'wide'
-    ? WIDE_RIBBON_GROUP_WIDTH_CLASSES
-    : width >= 1440 ? DENSE_COMPACT_RIBBON_GROUP_WIDTH_CLASSES : COMPACT_RIBBON_GROUP_WIDTH_CLASSES;
-  return widths[groupId] ?? (mode === 'wide' ? 'w-[112px]' : 'min-w-[72px] flex-1');
+  return 'shrink-0';
 }
 
 function iconFor(node: { icon: keyof typeof DESIGNER_ICON_TO_RIBBON_ICON }) {
@@ -155,6 +135,7 @@ function renderLayoutNode(node: RibbonLayoutNode, context: NodeRenderContext, pr
     case 'column':
       return <Stack key={node.id} gap="none" className={`min-w-0 items-center justify-center ${context.tab === 'home' && !context.inMenu ? HOME_COLUMN_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
     case 'row':
+      if (context.inMenu) return <Stack key={node.id} gap="xs" className="w-full items-stretch">{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
       return <Inline key={node.id} gap="none" className={`min-w-0 flex-nowrap items-center content-center ${context.tab === 'home' && !context.inMenu ? HOME_ROW_CLASSES[node.id] ?? '' : ''}`}>{node.children.map((child) => renderLayoutNode(child, context, props))}</Inline>;
     case 'stack':
       return <Stack key={node.id} gap="none" className="min-w-0 items-center justify-center">{node.children.map((child) => renderLayoutNode(child, context, props))}</Stack>;
@@ -204,25 +185,26 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
   const { tab, locale, layout } = props;
   const spec = RIBBON_LAYOUT_SPECS[tab];
   const isHome = tab === 'home';
+  const collapsedGroups = collapsedRibbonGroups(spec.groups.map(group => ({ id: group.id, width: ribbonGroupWidth(group.id) })), layout.width, tab === 'insert' ? ['tables', 'charts', 'illustrations'] : []);
   const groups = spec.groups.map((group, index) => {
     const groupLabel = translateRibbonText(locale, `groups.${group.id}`);
-    const collapsed = isHome && collapseHomeGroup(group.id, layout.width);
+    const collapsed = isHome ? collapseHomeGroup(group.id, layout.width) : collapsedGroups.has(group.id);
     const content = group.children.map((node) => renderLayoutNode(node, { inMenu: collapsed, tab }, props));
     return (
       <React.Fragment key={group.id}>
-        {index > 0 ? <Divider orientation="vertical" className={isHome ? 'my-3 h-[72px] border-slate-200' : RIBBON_DENSITY_CLASSES.groupContent} /> : null}
+        {index > 0 ? <Divider orientation="vertical" className="my-3 h-[72px] border-slate-200" /> : null}
         {collapsed ? (
           <Stack data-ribbon-group={group.id} gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
-            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={HOME_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
-              <Stack gap="sm" className="min-w-[14rem] p-3" data-ribbon-overflow={group.id}>
+            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] w-full flex-col gap-2 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
+              <Stack gap="sm" className="max-h-[60vh] min-w-[14rem] overflow-y-auto p-3" data-ribbon-overflow={group.id}>
                 <Text size="xs" tone="muted">{groupLabel}</Text>
                 {content}
               </Stack>
             </DropdownMenu>
           </Stack>
         ) : (
-          <Stack data-ribbon-group={group.id} gap="none" className={`${isHome ? 'h-[104px] px-1.5' : RIBBON_DENSITY_CLASSES.groupContent + ' px-1'} relative min-w-0 shrink-0 justify-between ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
-            <Inline gap="none" className={`${isHome ? 'h-[80px]' : RIBBON_DENSITY_CLASSES.groupControls} min-h-0 flex-nowrap items-center justify-center`}>{content}</Inline>
+          <Stack data-ribbon-group={group.id} gap="none" style={isHome ? undefined : { width: ribbonGroupWidth(group.id) }} className={`h-[104px] px-1.5 relative min-w-0 shrink-0 justify-between ${ribbonGroupWidthClass(group.id, layout.mode, layout.width, tab)}`}>
+            <Inline gap="none" className={`h-[80px] min-h-0 flex-nowrap items-center justify-center`}>{content}</Inline>
             <Text size="xs" tone="subtle" className={`${RIBBON_DENSITY_CLASSES.groupCaption} shrink-0 truncate text-center text-[10px] font-normal text-slate-500 select-none`}>{groupLabel}</Text>
           </Stack>
         )}
@@ -230,10 +212,8 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
     );
   });
   return (
-    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`${isHome ? 'h-[112px]' : RIBBON_DENSITY_CLASSES.commandArea} w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
-      {isHome
-        ? <Inline gap="none" className="h-full min-w-max flex-1 bg-[var(--home-ribbon-color-surface)] py-1 font-[var(--home-ribbon-font-family)]">{groups}</Inline>
-        : tab === 'insert' ? <Inline gap="none" className="h-full min-w-[1905px] flex-1 bg-[#fffdf9]">{groups}</Inline> : groups}
+    <Inline aria-label={`${tab} ribbon commands`} gap="none" tabIndex={0} className={`h-[112px] w-full min-w-0 flex-nowrap items-start overflow-x-auto overflow-y-hidden [scrollbar-width:thin]`} data-testid={tab === 'home' ? 'home-ribbon-groups' : tab === 'insert' ? 'insert-ribbon-groups' : `ribbon-layout-${tab}`} data-ribbon-layout={tab} data-ribbon-breakpoint={layout.mode}>
+      <Inline gap="none" className="h-full min-w-max flex-1 bg-white py-1">{groups}</Inline>
     </Inline>
   );
 }

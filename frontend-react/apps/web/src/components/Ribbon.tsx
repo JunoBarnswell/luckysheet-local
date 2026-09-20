@@ -218,12 +218,12 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[104px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[13px] leading-4 !whitespace-normal break-words [&>svg]:!h-8 [&>svg]:!w-8 [&>svg]:!shrink-0' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none !px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[80px] !min-h-0 w-[58px] min-w-[58px] max-w-[58px] flex-col !gap-1 overflow-hidden rounded-none !px-1 text-center text-[11px] leading-[15px] !whitespace-normal break-words [&>svg]:!h-6 [&>svg]:!w-6 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
     >
-      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{displayLabel}{trailingNode}</Inline> : displayLabel}
+      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{displayLabel}{trailingNode}</Inline> : textBelow ? <Text className="block max-w-full whitespace-normal text-center !text-[11px] !leading-[15px]">{displayLabel}</Text> : <Text className="min-w-0 truncate !text-xs text-inherit">{displayLabel}</Text>}
     </Button>
   );
 }

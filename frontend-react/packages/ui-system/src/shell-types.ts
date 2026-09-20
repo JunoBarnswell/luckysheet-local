@@ -20,21 +20,21 @@ export const DESIGNER_GEOMETRY = {
  * width changes only the scroll position, never the command density.
  */
 export const RIBBON_DENSITY = {
-  shellHeight: 167,
+  shellHeight: 144,
   tabStripHeight: 32,
-  commandAreaHeight: 135,
-  groupContentHeight: 127,
-  largeCommandHeight: 104,
+  commandAreaHeight: 112,
+  groupContentHeight: 104,
+  largeCommandHeight: 80,
   groupCaptionHeight: 18,
 } as const;
 
 export const RIBBON_DENSITY_CLASSES = {
-  shell: 'h-[167px]',
+  shell: 'h-[144px]',
   tabStrip: 'h-[32px]',
-  commandArea: 'h-[135px]',
-  groupContent: 'h-[127px]',
-  groupControls: 'h-[104px]',
-  largeCommand: '!h-[104px]',
+  commandArea: 'h-[112px]',
+  groupContent: 'h-[104px]',
+  groupControls: 'h-[80px]',
+  largeCommand: '!h-[80px]',
   groupCaption: 'h-[18px] leading-[18px]',
 } as const;
 
