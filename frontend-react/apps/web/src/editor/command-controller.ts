@@ -291,9 +291,6 @@ export function useEditorCommandController({
     if (!activePivot) return;
     session.createPivotChart(activePivot.id, pivotText(locale, 'pivotChart'));
   };
-  const removePivotTimeline = () => {
-    for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);
-  };
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: () => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" }),
     onPivotSelect: setActivePivotId,
@@ -358,7 +355,7 @@ export function useEditorCommandController({
         } });
     },
     onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) void session.updatePivotConfiguration(activePivot.id, { refreshPolicy: structuredClone(refreshPolicy) }); },
-    onTimelineRemove: removePivotTimeline,
+    onTimelineClear: (timelineId) => session.setPivotTimelinePeriod(timelineId),
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
     onTimelineLevelChange: (timelineId, level) => session.setPivotTimelineLevel(timelineId, level),

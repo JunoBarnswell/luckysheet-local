@@ -131,7 +131,7 @@ export interface PivotPanelCallbacks {
   onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
-  onTimelineRemove: () => void;
+  onTimelineClear?: (timelineId: string) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
   onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
   onTimelineWindowChange?: (timelineId: string, scrollPosition: string) => void;
