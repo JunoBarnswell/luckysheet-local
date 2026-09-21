@@ -5,6 +5,7 @@ import { CHART_MUTATION_IDS, registerChartCommands } from './commands';
 export * from './commands';
 export * from './data';
 export * from './layout';
+export * from './map-resource';
 export * from './recommendation';
 
 export function registerChartFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {

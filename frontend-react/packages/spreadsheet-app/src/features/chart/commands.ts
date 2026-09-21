@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -250,6 +250,32 @@ function isStockRoles(value: unknown): boolean {
   return (value.open === undefined || isRange(value.open)) && (value.volume === undefined || isRange(value.volume));
 }
 
+function isMapResource(value: unknown): value is ChartMapResource {
+  if (!isRecord(value) || value.schema !== 'ChartMapResource' || (value.source !== 'geojson' && value.source !== 'builtin')
+    || typeof value.resourceId !== 'string' || !value.resourceId.trim() || typeof value.checksum !== 'string' || !/^[0-9a-f]{64}$/i.test(value.checksum)) return false;
+  if (!Array.isArray(value.features) || value.features.length === 0) return false;
+  const ids = new Set<string>();
+  return value.features.every((feature) => {
+    if (!isRecord(feature) || typeof feature.id !== 'string' || !feature.id.trim() || typeof feature.label !== 'string' || !feature.label.trim()
+      || ids.has(feature.id) || !Array.isArray(feature.polygons) || feature.polygons.length === 0) return false;
+    ids.add(feature.id);
+    return feature.polygons.every((polygon) => Array.isArray(polygon) && polygon.length >= 4 && polygon.every((point) => Array.isArray(point)
+      && point.length === 2 && typeof point[0] === 'number' && typeof point[1] === 'number'
+      && Number.isFinite(point[0]) && Number.isFinite(point[1]) && point[0] >= -180 && point[0] <= 180 && point[1] >= -90 && point[1] <= 90)
+      && polygon[0]?.[0] === polygon[polygon.length - 1]?.[0]
+      && polygon[0]?.[1] === polygon[polygon.length - 1]?.[1]);
+  });
+}
+
+function isMapOptions(value: unknown): boolean {
+  return isRecord(value)
+    && ['country-region', 'state-province', 'county', 'postal-code'].includes(String(value.geography))
+    && ['automatic', 'only-data', 'world', 'continent', 'country', 'state'].includes(String(value.mapArea))
+    && ['none', 'best-fit', 'show-all'].includes(String(value.labelLevel))
+    && ['sequential', 'diverging', 'category'].includes(String(value.colorScale))
+    && (value.resource === undefined || isMapResource(value.resource));
+}
+
 function isNativeIdentity(value: unknown): boolean {
   return isRecord(value)
     && typeof value.family === 'string'
@@ -300,7 +326,7 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && (payload.histogramOptions === undefined || isRecord(payload.histogramOptions))
     && (payload.boxWhiskerOptions === undefined || isRecord(payload.boxWhiskerOptions))
     && (payload.waterfallOptions === undefined || isRecord(payload.waterfallOptions))
-    && (payload.mapOptions === undefined || isRecord(payload.mapOptions))
+    && (payload.mapOptions === undefined || isMapOptions(payload.mapOptions))
     && (payload.dataOrientation === undefined || payload.dataOrientation === 'rows' || payload.dataOrientation === 'columns')
     && (payload.chartType !== 'combo' || (Array.isArray(series) && series.every((entry) => entry.chartType !== undefined)));
 }

@@ -3,6 +3,7 @@ import type {
   ChartBoxWhiskerOptions,
   ChartDrawingPayload,
   ChartHistogramOptions,
+  ChartMapResource,
   ChartMapOptions,
   ChartSeriesModel,
   ChartSubtype,
@@ -106,6 +107,14 @@ export interface ChartWaterfallBarLayout {
   color: string;
 }
 
+export interface ChartMapFeatureLayout {
+  id: string;
+  label: string;
+  value: number | null;
+  color: string;
+  polygons: Array<Array<{ x: number; y: number }>>;
+}
+
 export interface ChartLayout {
   status: ChartDataStatus;
   width: number;
@@ -127,7 +136,8 @@ export interface ChartLayout {
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
   surfaceCells?: Array<{ row: number; column: number; value: number; color: string }>;
   radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; color: string }> };
-  map?: ChartMapOptions & { resolved: false; reason: string };
+  map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
+  mapFeatures?: ChartMapFeatureLayout[];
 }
 
 const DEFAULT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
@@ -432,6 +442,64 @@ function stockLayouts(data: ResolvedChartData): ChartLayout['stockPoints'] {
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
 }
 
+function mapColor(scaleName: ChartMapOptions['colorScale'], value: number | null, minimum: number, maximum: number, index: number): string {
+  if (value === null) return '#e2e8f0';
+  if (scaleName === 'category') return DEFAULT_COLORS[index % DEFAULT_COLORS.length]!;
+  const ratio = maximum === minimum ? 0.5 : Math.max(0, Math.min(1, (value - minimum) / (maximum - minimum)));
+  const from = scaleName === 'diverging' ? (ratio < 0.5 ? [37, 99, 235] : [255, 255, 255]) : [219, 234, 254];
+  const to = scaleName === 'diverging' ? (ratio < 0.5 ? [255, 255, 255] : [220, 38, 38]) : [29, 78, 216];
+  const local = scaleName === 'diverging' ? (ratio < 0.5 ? ratio * 2 : (ratio - 0.5) * 2) : ratio;
+  const channels = from.map((channel, channelIndex) => Math.round(channel + (to[channelIndex]! - channel) * local));
+  return `rgb(${channels[0]},${channels[1]},${channels[2]})`;
+}
+
+function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): { resource: ChartMapResource; features: ChartMapFeatureLayout[] } | ChartDataStatus {
+  const options: ChartMapOptions = payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' };
+  const resource = options.resource;
+  if (!resource || resource.features.length === 0) return statusError('unsupported', 'UNSUPPORTED_FEATURE', 'UNSUPPORTED_FEATURE: map requires a validated offline GeoJSON resource');
+  let minimumLongitude = Number.POSITIVE_INFINITY;
+  let maximumLongitude = Number.NEGATIVE_INFINITY;
+  let minimumLatitude = Number.POSITIVE_INFINITY;
+  let maximumLatitude = Number.NEGATIVE_INFINITY;
+  for (const feature of resource.features) {
+    for (const polygon of feature.polygons) {
+      for (const [longitude, latitude] of polygon) {
+        minimumLongitude = Math.min(minimumLongitude, longitude);
+        maximumLongitude = Math.max(maximumLongitude, longitude);
+        minimumLatitude = Math.min(minimumLatitude, latitude);
+        maximumLatitude = Math.max(maximumLatitude, latitude);
+      }
+    }
+  }
+  if (!Number.isFinite(minimumLongitude) || !Number.isFinite(maximumLongitude) || !Number.isFinite(minimumLatitude) || !Number.isFinite(maximumLatitude)) {
+    return statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: map resource has no drawable coordinates');
+  }
+  const longitudeSpan = Math.max(Number.EPSILON, maximumLongitude - minimumLongitude);
+  const latitudeSpan = Math.max(Number.EPSILON, maximumLatitude - minimumLatitude);
+  const firstSeries = data.series[0];
+  const categoryKeys = data.categories.map((category) => String(category ?? '').trim().toLowerCase());
+  const values = resource.features.map((feature) => {
+    const key = feature.id.trim().toLowerCase();
+    const label = feature.label.trim().toLowerCase();
+    const index = categoryKeys.findIndex((candidate) => candidate === key || candidate === label);
+    return index < 0 ? null : chartNumericValue(firstSeries?.values[index]);
+  });
+  const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  const minimum = finite.length ? Math.min(...finite) : 0;
+  const maximum = finite.length ? Math.max(...finite) : 1;
+  const features = resource.features.map((feature, index) => ({
+    id: feature.id,
+    label: feature.label,
+    value: values[index] ?? null,
+    color: mapColor(options.colorScale, values[index] ?? null, minimum, maximum, index),
+    polygons: feature.polygons.map((polygon) => polygon.map(([longitude, latitude]) => ({
+      x: plot.left + ((longitude - minimumLongitude) / longitudeSpan) * plot.width,
+      y: plot.top + ((maximumLatitude - latitude) / latitudeSpan) * plot.height,
+    }))),
+  }));
+  return { resource, features };
+}
+
 /** Build the only geometry contract consumed by Canvas and preview renderers. */
 export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number): ChartLayout {
   const kind = chartKind(payload);
@@ -448,6 +516,17 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   layout.valueAxis = valueAxis;
   layout.secondaryValueAxis = secondaryAxis;
   layout.series = createSeriesLayouts(payload, data, layout.plot, categoryAxis, valueAxis, secondaryAxis);
+  if (kind === 'map') {
+    const map = mapLayouts(payload, data, layout.plot);
+    if ('kind' in map) {
+      layout.status = map;
+      layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: false, reason: map.message ?? 'Map resource is unavailable' };
+    } else {
+      layout.mapFeatures = map.features;
+      layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: true, featureCount: map.features.length };
+    }
+    return layout;
+  }
   if (kind === 'pie') {
     layout.pieSlices = pieSlices(payload, data, layout.plot);
     return layout;
@@ -491,11 +570,6 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   if (kind === 'radar') {
     const count = Math.max(3, data.categories.length, ...data.series.map((series) => series.values.length));
     layout.radar = { count, maximum: values.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
-    return layout;
-  }
-  if (kind === 'map') {
-    layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: false, reason: 'UNSUPPORTED_FEATURE: geographic entity resolution has no authoritative geometry source' };
-    layout.status = statusError('unsupported', 'UNSUPPORTED_FEATURE', layout.map.reason);
     return layout;
   }
   if (payload.chartType === 'scatter' || payload.chartType === 'bubble') {

@@ -76,8 +76,10 @@ export {
   type ChartHistogramBinLayout,
   type ChartBoxLayout,
   type ChartWaterfallBarLayout,
+  type ChartMapFeatureLayout,
 } from './features/chart/layout';
 export { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
+export { parseGeoJsonMapResource } from './features/chart/map-resource';
 export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 export { resolveSparklineData } from './features/sparkline/helpers';
 export * from './features/data-source';

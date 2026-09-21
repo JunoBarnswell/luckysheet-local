@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Button, CheckToggle, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, FileButton, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
-import type { ChartElementSelection } from '@react-sheets/spreadsheet-app';
+import { parseGeoJsonMapResource, type ChartElementSelection } from '@react-sheets/spreadsheet-app';
 import { chartLabels, chartSubtypeLabels, chartTypes } from '../chart/chart-labels';
 import { chartEditorDraft, chartPayloadFromDraft, chartSeriesDraft, parseChartRange, type ChartEditorDraft } from '../chart/chart-editor-state';
 import { ChartSeriesEditor } from '../chart/ChartSeriesEditor';
@@ -129,6 +129,16 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
         <Group title="图表与数据" open>
           <Field label="图表标题"><TextInput aria-label="图表标题" value={payload.elements.title ?? ''} placeholder="输入标题" onChange={event => updateElements({ title: event.target.value })} /></Field>
           <TypeFields value={payload} onChange={(chartType, subtype) => edit(value => ({ ...value, value: { ...value.value, chartType, subtype, stacked: chartStackingForSubtype(subtype) }, series: value.series.map(entry => ({ ...entry, value: { ...entry.value, chartType: chartType === 'combo' ? (entry.value.chartType && ['column', 'bar', 'line', 'area'].includes(entry.value.chartType) ? entry.value.chartType : 'column') : chartType, subtype: chartType === 'combo' ? undefined : subtype } })) }))} />
+          {payload.chartType === 'map' ? <Group title="离线地图资源" open>
+            <Text size="xs" tone="muted">地图只读取工作簿内已校验的 GeoJSON，不访问外部地图服务。</Text>
+            {payload.mapOptions?.resource ? <Inline className="items-center justify-between rounded-md bg-slate-100 px-2 py-1.5" gap="xs"><Text size="xs">{payload.mapOptions.resource.resourceId} · {payload.mapOptions.resource.features.length} 个区域</Text><Button size="xs" variant="ghost" onClick={() => updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource: undefined } })}>移除</Button></Inline> : <Text size="xs" tone="muted">尚未导入 GeoJSON。没有资源时地图会明确显示不可用。</Text>}
+            <FileButton accept=".geojson,application/geo+json,.json" icon="chart" size="sm" variant="secondary" onFile={(file) => {
+              void file.text().then((text) => parseGeoJsonMapResource(text, file.name)).then((resource) => {
+                updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource } });
+                setMessage(null);
+              }).catch((error) => setMessage(error instanceof Error ? error.message : 'GeoJSON 地图资源无效'));
+            }}>导入 GeoJSON</FileButton>
+          </Group> : null}
           {payload.source.kind === 'worksheet-ranges' || payload.source.kind === 'report-range' ? <Field label="数据区域（多个区域用分号分隔）"><TextInput aria-label="图表数据区域" value={draft.sourceRanges} onChange={event => edit(value => ({ ...value, sourceRanges: event.target.value }))} /></Field> : <Text size="xs" tone="muted">数据绑定：{payload.source.kind === 'pivot' ? '透视结果' : 'Table'}，请在对应数据源中调整范围。</Text>}
           <Field label="分类标签范围"><TextInput aria-label="分类标签范围" placeholder="自动，或 A2:A20" value={draft.categoryRange} onChange={event => edit(value => ({ ...value, categoryRange: event.target.value }))} /></Field>
           <Button size="sm" variant="secondary" disabled={payload.source.kind === 'pivot'} onClick={() => updatePayload({ dataOrientation: payload.dataOrientation === 'rows' ? 'columns' : 'rows' })}>切换行／列（当前按{payload.dataOrientation === 'rows' ? '行' : '列'}）</Button>

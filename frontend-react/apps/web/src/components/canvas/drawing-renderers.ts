@@ -1118,6 +1118,26 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
     }
     return;
   }
+  if (layout.kind === 'map') {
+    for (const feature of layout.mapFeatures ?? []) {
+      context.fillStyle = feature.color;
+      context.strokeStyle = '#64748b';
+      context.lineWidth = 0.75;
+      for (const polygon of feature.polygons) {
+        if (polygon.length < 3) continue;
+        context.beginPath();
+        polygon.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
+        context.closePath();
+        context.fill('evenodd');
+        context.stroke();
+      }
+      if (payload.mapOptions?.labelLevel === 'show-all' || (payload.mapOptions?.labelLevel === 'best-fit' && feature.polygons.length === 1)) {
+        const first = feature.polygons[0]?.[0];
+        if (first) drawChartText(context, feature.label, first.x + 3, first.y + 10, { color: '#334155', size: 8 });
+      }
+    }
+    return;
+  }
   if (layout.kind === 'treemap') {
     const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => ({ value: Math.max(0, point.value ?? 0), label: String(point.category), color: series.color })));
     const total = values.reduce((sum, entry) => sum + entry.value, 0) || 1;

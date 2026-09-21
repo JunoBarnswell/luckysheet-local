@@ -1019,11 +1019,35 @@ export interface ChartWaterfallOptions {
   connectorLines?: boolean;
 }
 
+export type ChartMapCoordinate = readonly [number, number];
+export type ChartMapRing = readonly ChartMapCoordinate[];
+
+/** A normalized offline GeoJSON feature owned by the chart payload. */
+export interface ChartMapFeature {
+  id: string;
+  label: string;
+  polygons: readonly ChartMapRing[];
+}
+
+/**
+ * GeoJSON is normalized before it enters the workbook model. Keeping the
+ * resource checksum with the normalized features makes map rendering
+ * deterministic and prevents a missing external provider from being hidden.
+ */
+export interface ChartMapResource {
+  schema: 'ChartMapResource';
+  resourceId: string;
+  source: 'geojson' | 'builtin';
+  checksum: string;
+  features: readonly ChartMapFeature[];
+}
+
 export interface ChartMapOptions {
   geography: 'country-region' | 'state-province' | 'county' | 'postal-code';
   mapArea: 'automatic' | 'only-data' | 'world' | 'continent' | 'country' | 'state';
   labelLevel: 'none' | 'best-fit' | 'show-all';
   colorScale: 'sequential' | 'diverging' | 'category';
+  resource?: ChartMapResource;
 }
 
 export interface ChartSeriesModel {
