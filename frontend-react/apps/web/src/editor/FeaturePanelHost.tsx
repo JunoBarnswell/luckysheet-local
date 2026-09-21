@@ -44,7 +44,11 @@ export function FeaturePanelHost({
   title,
 }: FeaturePanelHostProps): ReactNode {
   const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
-  const analysisChartIds = state.projectionSheets.flatMap((sheet) => sheet.drawings.filter((drawing) => drawing.kind === 'chart').map((drawing) => drawing.payloadId));
+  const analysisChartIds = [...new Set(state.projectionSheets.flatMap((sheet) => sheet.drawings.flatMap((drawing) => {
+    if (drawing.kind !== 'chart') return [];
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    return payload?.kind === 'chart' ? [payload.chartId] : [];
+  })))];
   return (
     <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot' && state.panels.active !== 'chart' && state.panels.active !== 'analysis'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
