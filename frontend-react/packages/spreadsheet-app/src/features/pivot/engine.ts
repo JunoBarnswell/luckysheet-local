@@ -2395,15 +2395,18 @@ interface PivotControlMatcher {
 function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTaskControl[]): PivotControlMatcher {
   const matches = new Map<string, Uint8Array>();
   const unrestricted = new Set<string>();
-  for (const control of controls) {
+  const orderedControls: Array<{ control: PivotTaskControl; acceptedCount: number; order: number }> = [];
+  for (const [order, control] of controls.entries()) {
     const mask = new Uint8Array(rows.length);
     let hasRestriction = false;
+    let acceptedCount = 0;
     const payload = control.payload;
     if (payload.kind === 'slicer') {
       const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
       rows.forEach((row, rowIndex) => {
         const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
         mask[rowIndex] = accepted ? 1 : 0;
+        if (accepted) acceptedCount += 1;
         if (!accepted) hasRestriction = true;
       });
     } else {
@@ -2411,13 +2414,16 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
       rows.forEach((row, rowIndex) => {
         const accepted = matchesTimeline(row, payload, control.fieldId, bounds);
         mask[rowIndex] = accepted ? 1 : 0;
+        if (accepted) acceptedCount += 1;
         if (!accepted) hasRestriction = true;
       });
     }
     matches.set(control.drawingId, mask);
     if (!hasRestriction) unrestricted.add(control.drawingId);
+    orderedControls.push({ control, acceptedCount, order });
   }
-  return { rows, controls, matches, unrestricted };
+  orderedControls.sort((left, right) => left.acceptedCount - right.acceptedCount || left.order - right.order);
+  return { rows, controls: orderedControls.map((entry) => entry.control), matches, unrestricted };
 }
 
 function rowsMatchingControls(matcher: PivotControlMatcher, excludedDrawingId?: string): SourceRow[] {
