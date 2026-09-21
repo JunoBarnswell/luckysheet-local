@@ -60,6 +60,16 @@ async function waitForPivot(app: WorkbookSession, pivotId: string): Promise<void
   throw new Error(`Pivot task did not settle: ${pivotId}`);
 }
 
+async function waitForPivotResult(app: WorkbookSession, pivotId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (app['runtime'].pivotResults[pivotId]) return;
+    const error = app['runtime'].pivotErrors[pivotId];
+    if (error) throw new Error(`${error.code}: ${error.message}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Pivot result did not become available: ${pivotId}`);
+}
+
 class DeferredCalculatePort implements PivotTaskPort {
   private readonly inner = new InlinePivotTaskPort();
   private deferred: {
@@ -401,6 +411,49 @@ describe('WorkbookSession PivotTable integration', () => {
     const result = app['runtime'].pivotResults[pivot.id];
     const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
+  });
+
+  it('creates a DataSource Pivot timeline from Query date fields', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('pivot-date-block-source', 'Pivot date blocks', [
+      { PostedAt: '2026-08-25T00:00:00', Amount: 10 },
+      { PostedAt: '2026-08-25T12:00:00', Amount: 20 },
+      { PostedAt: '2026-08-25T23:59:59', Amount: 30 },
+      { PostedAt: '2026-08-26T00:00:00', Amount: 40 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const created = await app.createPivotTable({
+      source: { kind: 'worksheet-range', range: structuredClone(region.range) },
+      destination: { kind: 'new-sheet' },
+    });
+    assert.equal(created.status, 'created', app.getUiSnapshot().notice);
+    if (created.status !== 'created') return;
+
+    const pivot = app['runtime'].model.getSheets()
+      .flatMap((entry) => entry.pivots)
+      .find((entry) => entry.id === created.pivotId)!;
+    const date = pivot.fieldCatalog.fields.find((field) => field.name === 'PostedAt');
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount');
+    assert.ok(date);
+    assert.ok(amount);
+    if (!date || !amount) return;
+    assert.equal(date.dataType, 'date');
+    const layout = structuredClone(pivot.layout);
+    layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const updated = await app.updatePivotLayout(pivot.id, layout);
+    assert.equal(updated.status, 'updated');
+    await waitForPivotResult(app, pivot.id);
+    assert.equal(app['runtime'].pivotResults[pivot.id]?.grandTotal?.values[0], 100);
+
+    app.createPivotTimelineControl(pivot.id, date.fieldId);
+    const timeline = app.listPivotControls(pivot.id).find((control) => control.payload.kind === 'timeline');
+    assert.ok(timeline);
+    if (!timeline) return;
+    app.setPivotTimelinePeriod(timeline.drawing.id, '2026-08-25', '2026-08-25');
+    await waitForPivot(app, pivot.id);
+
+    assert.equal(app['runtime'].pivotResults[pivot.id]?.grandTotal?.values[0], 60);
   });
 
   it('recomputes the Pivot projection when pivot.update enters through the public dispatch path', async () => {

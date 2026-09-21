@@ -35,6 +35,16 @@ describe('PivotSourceIndex', () => {
     }), /incompatible with number/);
   });
 
+  it('accepts canonical numeric date serials and ISO date strings', () => {
+    const index = createPivotSourceIndex({
+      columns: [{ field: { fieldId: 'posted-at', name: 'Posted At', ordinal: 0, dataType: 'date' }, values: [46259, '2026-08-26'] }],
+      rowPaths: [[{ sheetId: 'sheet-1', row: 1 }], [{ sheetId: 'sheet-1', row: 2 }]],
+    });
+
+    assert.equal(index.fields[0]!.dataType, 'date');
+    assert.deepEqual(pivotSourceColumnValues(index, 0), [46259, '2026-08-26']);
+  });
+
   it('keeps attachment-scale buffers below thirty-five percent of the former row-object estimate', () => {
     const rowCount = 4_058;
     const columnCount = 23;

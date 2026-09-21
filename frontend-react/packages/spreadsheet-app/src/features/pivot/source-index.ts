@@ -6,6 +6,7 @@ import type {
 import {
   createPivotMemberKey,
   isPivotError,
+  pivotTimelineInstant,
   pivotMemberKey,
 } from '@react-sheets/core-model';
 
@@ -226,7 +227,9 @@ function validateDeclaredType(fieldId: string, dataType: PivotFieldDataType, val
     if (value == null || value === '' || isPivotError(value)) return false;
     if (dataType === 'number') return typeof value !== 'number' || !Number.isFinite(value);
     if (dataType === 'boolean') return typeof value !== 'boolean';
-    if (dataType === 'text' || dataType === 'date') return typeof value !== 'string';
+    if (dataType === 'text') return typeof value !== 'string';
+    if (dataType === 'date') return !((typeof value === 'number' && Number.isFinite(value))
+      || (typeof value === 'string' && pivotTimelineInstant(value) !== undefined));
     if (dataType === 'error') return !isPivotError(value);
     return false;
   });
