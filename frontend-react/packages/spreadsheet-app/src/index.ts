@@ -207,12 +207,14 @@ export {
 } from './features/formula-audit';
 export {
   buildQueryResultSnapshot,
+  buildQueryPreview,
   summarizeQueryResult,
   executeQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
   prepareQueryLoadPayload,
   type QueryResultSnapshot,
+  type QueryPreview,
   type QuerySessionEntry,
   type QueryLoadCommandPayload,
 } from './features/query';

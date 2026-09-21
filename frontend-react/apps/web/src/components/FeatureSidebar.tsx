@@ -41,7 +41,7 @@ import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
-import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
+import type { QueryDefinition, QueryPreview } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
@@ -168,6 +168,7 @@ export interface FeatureSidebarProps {
   lastQueryResult?: { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string } | null;
   canQuery: boolean;
   onLoadQuery: (query: QueryDefinition) => Promise<void>;
+  onPreviewQuery: (query: QueryDefinition) => Promise<QueryPreview>;
   onRefreshQuery: (queryId: string) => Promise<void>;
   onTestQueryConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
   lastWhatIfMessage?: string | null;
@@ -394,6 +395,7 @@ export function FeatureSidebar({
   lastQueryResult = null,
   canQuery,
   onLoadQuery,
+  onPreviewQuery,
   onRefreshQuery,
   onTestQueryConnection,
   lastWhatIfMessage = null,
@@ -682,6 +684,7 @@ export function FeatureSidebar({
             lastResult={lastQueryResult}
             canQuery={canQuery}
             onLoadQuery={onLoadQuery}
+            onPreviewQuery={onPreviewQuery}
             onRefreshQuery={onRefreshQuery}
             onTestConnection={onTestQueryConnection}
           />

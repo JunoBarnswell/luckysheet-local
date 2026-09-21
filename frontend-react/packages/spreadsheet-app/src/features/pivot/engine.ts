@@ -99,12 +99,20 @@ interface SourceRow {
 
 type SourceField = PivotSourceFieldInput;
 
+// A registered source index is immutable for the lifetime of its revision.
+// Reusing its row wrappers avoids allocating one object per source row for
+// every filter or sort interaction while preserving the source-index contract.
+const sourceTableCache = new WeakMap<PivotSourceIndex, SourceTable>();
+
 function openSourceTable(index: PivotSourceIndex): SourceTable {
   assertPivotSourceIndex(index);
+  const cached = sourceTableCache.get(index);
+  if (cached) return cached;
   const fields = index.fields.map((field) => ({ ...field }));
   const fieldOrdinals = new Map(fields.map((field, ordinal) => [field.fieldId, ordinal] as const));
   const table = { index, fields, fieldOrdinals, rows: [] as SourceRow[] };
   table.rows = Array.from({ length: index.rowCount }, (_, row) => ({ source: table, row }));
+  sourceTableCache.set(index, table);
   return table;
 }
 
@@ -1841,22 +1849,26 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
     map.set(key, group);
   }
   const placement = placements[placements.length - 1];
-  const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
+  const fieldTypes = placements.map((entry) => fieldCatalog.fields.find((field) => field.fieldId === entry.fieldId)?.dataType);
+  const dataType = fieldTypes[fieldTypes.length - 1];
   const valueSort = placement?.sort?.by === 'value' ? placement.sort : undefined;
+  const valueSortField = valueSort ? values.find((value) => value.valueId === valueSort.valueId) : undefined;
+  if (valueSort && !valueSortField) throw new Error(`Pivot value sort placement is not in Values: ${valueSort.valueId}`);
   const compareLabels = (left: AxisGroup, right: AxisGroup): number => {
     for (let index = 0; index < left.values.length; index += 1) {
-      const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
+      const fieldType = fieldTypes[index] ?? dataType;
       const order = compare(left.values[index] ?? null, right.values[index] ?? null, fieldType, collator);
       if (order) return order;
     }
     return 0;
   };
+  const valueSortValues = valueSortField
+    ? new Map([...map.values()].map((group) => [group, pivotNumericValue(resultValue(group.rows, valueSortField, valueSortField.summarizeBy, calculatedFields, aggregates)) ?? 0] as const))
+    : undefined;
   const result = [...map.values()].sort((left, right) => {
-    if (valueSort) {
-      const valueField = values.find((value) => value.valueId === valueSort.valueId);
-      if (!valueField) throw new Error(`Pivot value sort placement is not in Values: ${valueSort.valueId}`);
-      const leftValue = pivotNumericValue(resultValue(left.rows, valueField, valueField.summarizeBy, calculatedFields, aggregates)) ?? 0;
-      const rightValue = pivotNumericValue(resultValue(right.rows, valueField, valueField.summarizeBy, calculatedFields, aggregates)) ?? 0;
+    if (valueSort && valueSortValues) {
+      const leftValue = valueSortValues.get(left) ?? 0;
+      const rightValue = valueSortValues.get(right) ?? 0;
       const valueOrder = leftValue - rightValue;
       if (valueOrder) return valueSort.direction === 'descending' ? -valueOrder : valueOrder;
       const labelOrder = compareLabels(left, right);
@@ -1928,11 +1940,21 @@ function assertPivotTaskFootprint(
   }
 }
 
-function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'manual' }>, group?: PivotGroup): boolean {
+function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'manual' }>, group?: PivotGroup, memberSet?: ReadonlySet<string>): boolean {
   if (filter.mode === 'all') return true;
   const key = group ? groupedMemberKey(value, group) : createPivotMemberKey(value);
-  const included = (filter.memberKeys ?? []).some((candidate) => pivotMemberKeyEquals(candidate, key));
+  const included = memberSet
+    ? memberSet.has(pivotMemberKey(key))
+    : (filter.memberKeys ?? []).some((candidate) => pivotMemberKeyEquals(candidate, key));
   return filter.mode === 'include' ? included : !included;
+}
+
+function buildManualFilterIndex(filters: readonly PivotFilter[]): ReadonlyMap<PivotFilter, ReadonlySet<string>> {
+  const index = new Map<PivotFilter, ReadonlySet<string>>();
+  for (const filter of filters) {
+    if (filter.kind === 'manual') index.set(filter, new Set(filter.memberKeys.map((member) => pivotMemberKey(member))));
+  }
+  return index;
 }
 
 function dynamicDateBounds(kind: NonNullable<Extract<PivotFilter, { kind: 'condition'; family: 'date' }>['dynamic']>, now = Date.now()): [number, number] {
@@ -2035,7 +2057,7 @@ function groupedDateFilterMatches(value: PivotScalar, filter: Extract<PivotFilte
 
 type PivotSourceFilter = Exclude<PivotFilter, { kind: 'condition'; family: 'value' }>;
 
-function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator, definition?: PivotDefinition): boolean {
+function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator, definition?: PivotDefinition, manualFilterIndex?: ReadonlyMap<PivotFilter, ReadonlySet<string>>): boolean {
   if (filter.kind === 'condition' && filter.family === 'value') throw new Error('Pivot value filters must be evaluated against aggregated Pivot items');
   const sourceFilter = filter as PivotSourceFilter;
   const fieldId = sourceFilter.fieldId;
@@ -2043,7 +2065,7 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
   const placement = definition ? groupedPlacementForFilter(definition, sourceFilter) : undefined;
   const value = placement?.group ? grouped(rawValue, placement.group) : rawValue;
   if (sourceFilter.kind === 'top-items') return true;
-  if (sourceFilter.kind === 'manual') return manualFilterMatches(rawValue, sourceFilter, placement?.group);
+  if (sourceFilter.kind === 'manual') return manualFilterMatches(rawValue, sourceFilter, placement?.group, manualFilterIndex?.get(sourceFilter));
   if (sourceFilter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, sourceFilter, placement.group, collator) : dateFilterMatches(value, sourceFilter);
   if (sourceFilter.family === 'label') return labelFilterMatches(value, sourceFilter, collator);
   throw new Error('Unsupported Pivot source filter family');
@@ -2190,10 +2212,13 @@ function topItems(
   return result;
 }
 
-function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string): boolean {
+function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string, memberSet?: ReadonlySet<string>): boolean {
   const { filter } = slicer;
   if (filter.mode === 'all') return true;
-  const included = filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(sourceRowValue(row, fieldId))));
+  const key = pivotMemberKey(createPivotMemberKey(sourceRowValue(row, fieldId)));
+  const included = memberSet
+    ? memberSet.has(key)
+    : filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(sourceRowValue(row, fieldId))));
   return filter.mode === 'include' ? included : !included;
 }
 
@@ -2227,8 +2252,9 @@ function matchesControls(rows: SourceRow[], controls: readonly PivotTaskControl[
   const activeControls = controls.filter((entry) => entry.drawingId !== excludedSlicerDrawingId);
   const slicers = activeControls.filter((entry): entry is PivotTaskControl & { payload: PivotSlicerDrawingPayload } => entry.payload.kind === 'slicer');
   const timelines = activeControls.filter((entry): entry is PivotTaskControl & { payload: PivotTimelineDrawingPayload } => entry.payload.kind === 'timeline');
+  const slicerMemberSets = new Map<string, ReadonlySet<string>>(slicers.map((entry) => [entry.drawingId, new Set(entry.payload.filter.memberKeys.map((member) => pivotMemberKey(member)))]));
   const timelineBounds = timelines.map((entry) => normalizePivotTimelinePeriod(entry.payload.period));
-  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload, entry.fieldId))
+  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload, entry.fieldId, slicerMemberSets.get(entry.drawingId)))
     && timelines.every((entry, index) => matchesTimeline(row, entry.payload, entry.fieldId, timelineBounds[index]!)));
 }
 
@@ -2249,14 +2275,17 @@ function slicerItemProjection(
     const identity = pivotMemberKey(key);
     if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
   }
+  const sourceFilters = definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value'));
+  const manualFilterIndex = buildManualFilterIndex(sourceFilters);
   const filteredRows = matchesControls(rows, controls, drawingId)
-    .filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
+    .filter((row) => sourceFilters.every((filter) => matchesFilter(row, filter, collator, definition, manualFilterIndex)));
   const valueFilteredRows = applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator, aggregates);
   const availableRows = topItems(valueFilteredRows, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
   const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, payload.fieldId)))));
+  const selectedMembers = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
   for (const item of members.values()) {
     item.hasData = available.has(pivotMemberKey(item.key));
-    const included = payload.filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, item.key));
+    const included = selectedMembers.has(pivotMemberKey(item.key));
     item.selected = payload.filter.mode === 'all' || (payload.filter.mode === 'include' ? included : !included);
   }
   const sorted = [...members.values()].sort((left, right) => collator.compare(left.label, right.label));
@@ -2607,7 +2636,9 @@ function computePivotResultFromTable(
   const unknown = references.find((field) => field && !known.has(field));
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
   let filtered = matchesControls(rows, controls);
-  filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
+  const sourceFilters = definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value'));
+  const manualFilterIndex = buildManualFilterIndex(sourceFilters);
+  filtered = filtered.filter((row) => sourceFilters.every((filter) => matchesFilter(row, filter, collator, definition, manualFilterIndex)));
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator, aggregates);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
   const columns = definition.layout.columns.length

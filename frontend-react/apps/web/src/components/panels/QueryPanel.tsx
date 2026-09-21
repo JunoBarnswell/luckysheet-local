@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import type { QueryDefinition, QueryStep } from '@react-sheets/spreadsheet-app';
-import { Box, Button, CheckToggle, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput, Textarea } from '@react-sheets/ui-system';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { QueryDefinition, QueryPreview, QueryStep } from '@react-sheets/spreadsheet-app';
+import { Box, Button, CheckToggle, DataTable, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput, Textarea, type DataTableColumn } from '@react-sheets/ui-system';
 
 export interface QueryPanelSnapshot {
   queryId: string;
@@ -16,6 +16,7 @@ export interface QueryPanelProps {
   lastResult: QueryPanelSnapshot | null;
   canQuery: boolean;
   onLoadQuery: (query: QueryDefinition) => Promise<void>;
+  onPreviewQuery: (query: QueryDefinition) => Promise<QueryPreview>;
   onRefreshQuery: (queryId: string) => Promise<void>;
   onTestConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
   onClose?: () => void;
@@ -44,6 +45,7 @@ export function QueryPanel({
   loadedQueries,
   onClose,
   onLoadQuery,
+  onPreviewQuery,
   onRefreshQuery,
   onTestConnection,
 }: QueryPanelProps) {
@@ -59,6 +61,7 @@ export function QueryPanel({
   const [recipeSteps, setRecipeSteps] = useState<QueryStep[]>([]);
   const [recipeError, setRecipeError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [preview, setPreview] = useState<QueryPreview | null>(null);
   const [busy, setBusy] = useState(false);
 
   const queryDefinition = useMemo<QueryDefinition>(() => {
@@ -80,6 +83,26 @@ export function QueryPanel({
       steps,
     };
   }, [connectorId, filterRegion, jsonData, recipeSteps]);
+
+  useEffect(() => {
+    setPreview(null);
+    setStatus(null);
+  }, [queryDefinition]);
+
+  const previewColumns = useMemo<readonly DataTableColumn<{ id: string; values: string[] }>[]>(() => (
+    preview?.columns.map((column, index) => ({
+      key: `preview-column-${index}`,
+      header: column,
+      render: (row) => row.values[index] ?? '',
+    })) ?? []
+  ), [preview]);
+
+  const previewRows = useMemo(() => (
+    preview?.sampleRows.map((row, index) => ({
+      id: String(index),
+      values: row.map((value) => value === null ? '(empty)' : String(value)),
+    })) ?? []
+  ), [preview]);
 
   const addRecipeStep = () => {
     const columns = parseColumnList(recipeColumns || recipeColumn);
@@ -141,6 +164,21 @@ export function QueryPanel({
       setStatus('Query loaded into the active sheet');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Query load failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runPreview = async () => {
+    setBusy(true);
+    setStatus(null);
+    setPreview(null);
+    try {
+      const result = await onPreviewQuery(queryDefinition);
+      setPreview(result);
+      setStatus(`Preview ready: ${result.rowCount} rows × ${result.columns.length} columns. Nothing was written.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Query preview failed');
     } finally {
       setBusy(false);
     }
@@ -253,9 +291,33 @@ export function QueryPanel({
             </Box>
           ) : null}
 
+          {preview ? (
+            <Panel className="border border-blue-100 bg-blue-50/40 shadow-none">
+              <PanelHeader className="border-b border-blue-100 px-3 py-2">
+                <Stack gap="none">
+                  <PanelTitle size="sm">Read-only preview</PanelTitle>
+                  <Text size="xs" tone="muted">{preview.rowCount} rows × {preview.columns.length} columns · showing up to {preview.sampleRows.length} rows</Text>
+                </Stack>
+              </PanelHeader>
+              <PanelBody className="p-0">
+                <DataTable
+                  className="max-h-64 overflow-auto"
+                  columns={previewColumns}
+                  empty={<Text size="xs" tone="muted">No rows returned.</Text>}
+                  rowKey={(row) => row.id}
+                  rows={previewRows}
+                  testId="query-preview"
+                />
+              </PanelBody>
+            </Panel>
+          ) : null}
+
           <Stack gap="sm">
             <Button variant="outline" size="sm" disabled={!canQuery || busy} onClick={() => { void runTest(); }}>
               Test connection
+            </Button>
+            <Button variant="outline" size="sm" disabled={!canQuery || busy} onClick={() => { void runPreview(); }}>
+              Preview changes
             </Button>
             <Button variant="primary" size="sm" icon="table" disabled={!canQuery || busy} onClick={() => { void runLoad(); }}>
               Load into sheet

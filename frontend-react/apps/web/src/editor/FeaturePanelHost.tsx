@@ -156,6 +156,7 @@ export function FeaturePanelHost({
           lastQueryResult={state.lastQueryResult}
           canQuery={state.permissions.query}
           onLoadQuery={session.loadQuery.bind(session)}
+          onPreviewQuery={session.previewQuery.bind(session)}
           onRefreshQuery={session.refreshQuery.bind(session)}
           onTestQueryConnection={session.testQueryConnection.bind(session)}
           lastWhatIfMessage={state.lastWhatIfResult && "message" in state.lastWhatIfResult

@@ -238,6 +238,7 @@ import {
 import { browserPrintHook, PdfExportService, type PrintLayout } from './features/print';
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
+  buildQueryPreview,
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
   executeQueryDefinition,
@@ -245,6 +246,7 @@ import {
   resolveLoadTarget,
   summarizeQueryResult,
   type QueryResultSnapshot,
+  type QueryPreview,
   type QuerySessionEntry,
 } from './features/query';
 import type {
@@ -6272,6 +6274,22 @@ export class WorkbookSession {
       this.refresh();
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query load failed');
+      this.emit();
+      throw error;
+    }
+  }
+
+  async previewQuery(query: QueryDefinition): Promise<QueryPreview> {
+    if (!this.canExecute('query.load')) {
+      const error = new Error('You do not have permission to preview queries');
+      this.notify(error.message);
+      throw error;
+    }
+    try {
+      const result = await this.executeQuery(query);
+      return buildQueryPreview(query, result);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Query preview failed');
       this.emit();
       throw error;
     }

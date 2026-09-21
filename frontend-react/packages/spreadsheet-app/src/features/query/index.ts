@@ -15,6 +15,8 @@ export interface QueryResult {
   rowCount: number;
 }
 
+export type { QueryPreview } from './runtime';
+
 /** Canonical persistence-safe workbook state. */
 export type QueryDefinitionPersistence = QueryDefinitionSnapshot;
 

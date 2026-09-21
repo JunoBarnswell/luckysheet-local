@@ -35,6 +35,15 @@ export interface QueryResultSnapshot {
   persistedDefinition?: QueryDefinitionPersistence;
 }
 
+/** Read-only result projection used before a query is loaded into a worksheet. */
+export interface QueryPreview {
+  queryId: string;
+  queryName: string;
+  columns: string[];
+  rowCount: number;
+  sampleRows: TableScalar[][];
+}
+
 export interface QuerySessionEntry {
   definition: QueryDefinition;
   lastResult?: QueryResultSnapshot;
@@ -130,6 +139,17 @@ export function buildQueryResultSnapshot(query: QueryDefinition, result: QueryRe
     target,
     sourceRevision: query.sourceRevision ?? 0,
     persistedDefinition: serializeQueryDefinition(query),
+  };
+}
+
+export function buildQueryPreview(query: QueryDefinition, result: QueryResult, sampleSize = 5): QueryPreview {
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) throw new Error('Query preview sample size must be a non-negative integer');
+  return {
+    queryId: query.id,
+    queryName: query.name,
+    columns: [...result.columns],
+    rowCount: result.rowCount,
+    sampleRows: result.rows.slice(0, sampleSize).map((row) => [...row]),
   };
 }
 
