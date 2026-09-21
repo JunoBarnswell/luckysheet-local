@@ -312,6 +312,63 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 10);
   });
 
+  it('refreshes a PivotTable when a timeline period changes through the public API', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.range.set', {
+      sheetId,
+      startRow: 0,
+      startColumn: 0,
+      values: [
+        [{ value: 'Date' }, { value: 'Amount' }],
+        [{ value: '2026-08-25T00:00:00' }, { value: 10 }],
+        [{ value: '2026-08-25T12:00:00' }, { value: 20 }],
+        [{ value: '2026-08-25T23:59:59' }, { value: 30 }],
+        [{ value: '2026-08-26T00:00:00' }, { value: 40 }],
+      ],
+    });
+    const range = { sheetId, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 };
+    const fields = app.getPivotFieldCatalog(range);
+    const date = fields.find((field) => field.name === 'Date')!;
+    const amount = fields.find((field) => field.name === 'Amount')!;
+    const pivot: PivotModel = {
+      schema: 'PivotDefinition',
+      id: 'pivot-timeline-api',
+      source: { kind: 'worksheet-range', range },
+      target: { sheetId, anchor: { row: 7, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      layout: {
+        rows: [],
+        columns: [],
+        filters: [],
+        allowMultipleFiltersPerField: true,
+        collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
+        values: [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }],
+        subtotalLocation: 'bottom',
+        showRowGrandTotals: true,
+        showColumnGrandTotals: true,
+        reportLayout: 'compact',
+        calculatedFields: [],
+        calculatedItems: [],
+        expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+      },
+    };
+    await app.addPivot(pivot);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 100);
+
+    app.createPivotTimelineControl(pivot.id, date.fieldId);
+    const timeline = app.listPivotControls(pivot.id).find((control) => control.payload.kind === 'timeline');
+    assert.ok(timeline);
+    if (!timeline) return;
+    app.setPivotTimelinePeriod(timeline.drawing.id, '2026-08-25', '2026-08-25');
+    await waitForPivot(app, pivot.id);
+
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 60);
+    const updatedTimeline = app.listPivotControls(pivot.id).find((control) => control.drawing.id === timeline.drawing.id);
+    assert.deepEqual(updatedTimeline?.payload.kind === 'timeline' ? updatedTimeline.payload.period : undefined, { start: '2026-08-25', end: '2026-08-25' });
+  });
+
   it('keeps an explicit block-backed worksheet source on the DataSource Pivot path', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('pivot-block-source', 'Pivot block source', [
