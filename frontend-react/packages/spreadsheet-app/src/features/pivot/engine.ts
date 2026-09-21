@@ -88,6 +88,8 @@ interface SourceTable {
   fields: PivotSourceFieldInput[];
   fieldOrdinals: ReadonlyMap<string, number>;
   rows: SourceRow[];
+  /** Bounded, lazy indexes for low-cardinality manual filters. */
+  memberIndexes: Map<number, ReadonlyMap<string, readonly number[]> | null>;
 }
 
 interface SourceRow {
@@ -103,6 +105,8 @@ type SourceField = PivotSourceFieldInput;
 // Reusing its row wrappers avoids allocating one object per source row for
 // every filter or sort interaction while preserving the source-index contract.
 const sourceTableCache = new WeakMap<PivotSourceIndex, SourceTable>();
+const MAX_SOURCE_MEMBER_INDEX_FIELDS = 4;
+const MAX_SOURCE_MEMBER_INDEX_MEMBERS = 20_000;
 
 function openSourceTable(index: PivotSourceIndex): SourceTable {
   assertPivotSourceIndex(index);
@@ -110,10 +114,31 @@ function openSourceTable(index: PivotSourceIndex): SourceTable {
   if (cached) return cached;
   const fields = index.fields.map((field) => ({ ...field }));
   const fieldOrdinals = new Map(fields.map((field, ordinal) => [field.fieldId, ordinal] as const));
-  const table = { index, fields, fieldOrdinals, rows: [] as SourceRow[] };
+  const table = { index, fields, fieldOrdinals, rows: [] as SourceRow[], memberIndexes: new Map<number, ReadonlyMap<string, readonly number[]> | null>() };
   table.rows = Array.from({ length: index.rowCount }, (_, row) => ({ source: table, row }));
   sourceTableCache.set(index, table);
   return table;
+}
+
+function sourceMemberIndex(table: SourceTable, ordinal: number): ReadonlyMap<string, readonly number[]> | undefined {
+  if (table.memberIndexes.has(ordinal)) return table.memberIndexes.get(ordinal) ?? undefined;
+  if (table.memberIndexes.size >= MAX_SOURCE_MEMBER_INDEX_FIELDS) return undefined;
+  const index = new Map<string, number[]>();
+  for (let row = 0; row < table.index.rowCount; row += 1) {
+    const key = pivotMemberKey(createPivotMemberKey(pivotSourceValueAt(table.index, ordinal, row)));
+    const bucket = index.get(key);
+    if (bucket) {
+      bucket.push(row);
+      continue;
+    }
+    if (index.size >= MAX_SOURCE_MEMBER_INDEX_MEMBERS) {
+      table.memberIndexes.set(ordinal, null);
+      return undefined;
+    }
+    index.set(key, [row]);
+  }
+  table.memberIndexes.set(ordinal, index);
+  return index;
 }
 
 function sourceRowValue(row: SourceRow, fieldId: string): PivotScalar {
@@ -2102,7 +2127,37 @@ function matchesSourceFilter(row: SourceRow, matcher: PivotSourceFilterMatcher, 
 
 function applySourceFilters(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[], collator: Intl.Collator): SourceRow[] {
   if (matchers.length === 0) return rows;
-  return rows.filter((row) => matchers.every((matcher) => matchesSourceFilter(row, matcher, collator)));
+  const indexedRows = indexedManualFilterRows(rows, matchers);
+  const candidates = indexedRows ?? rows;
+  return candidates.filter((row) => matchers.every((matcher) => matchesSourceFilter(row, matcher, collator)));
+}
+
+/**
+ * Use the smallest low-cardinality manual include filter as the candidate set.
+ * The index is only valid for the immutable base table; calculated-item rows
+ * and already projected subsets continue through the regular predicate path.
+ */
+function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[]): SourceRow[] | undefined {
+  const table = rows[0]?.source;
+  if (!table || rows.length !== table.rows.length || rows.some((row) => row.source !== table || row.overrides !== undefined)) return undefined;
+  let best: SourceRow[] | undefined;
+  for (const matcher of matchers) {
+    const { filter, placement, memberSet } = matcher;
+    if (filter.kind !== 'manual' || filter.mode !== 'include' || placement?.group || !memberSet) continue;
+    const ordinal = table.fieldOrdinals.get(filter.fieldId);
+    if (ordinal === undefined) continue;
+    const index = sourceMemberIndex(table, ordinal);
+    if (!index) continue;
+    const rowNumbers: number[] = [];
+    for (const member of memberSet) {
+      const matches = index.get(member);
+      if (matches) rowNumbers.push(...matches);
+    }
+    rowNumbers.sort((left, right) => left - right);
+    const candidates = rowNumbers.map((row) => table.rows[row]!);
+    if (!best || candidates.length < best.length) best = candidates;
+  }
+  return best;
 }
 
 function matchesValueFilter(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'value' }>, collator: Intl.Collator): boolean {
