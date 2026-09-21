@@ -325,7 +325,8 @@ export async function encodeQueryLoadBlock(
   if (rows.length < 1 || rows.length > metadata.blockRowCount || startRow + rows.length > metadata.rowCount) throw new Error('Query block row coverage is invalid');
   if (rows.some((row) => row.length !== metadata.columns.length)) throw new Error('Query block row width does not match columns');
   const fields = queryFields(sourceId, metadata);
-  const payload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
+  const normalizedRows = normalizeQueryRowsForDataSource(rows, fields);
+  const payload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows: normalizedRows });
   const id = `${sourceId}:r${revision}:b${startRow}`;
   return {
     ref: {

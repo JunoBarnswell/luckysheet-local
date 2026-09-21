@@ -145,6 +145,11 @@ describe('query runtime', () => {
     const decoded = await decodeColumnarBlock(prepared.blocks[0]!.payload, { expectedFields: prepared.payload.source.fields });
     assert.deepEqual(decoded.rows, [[46259, 10], [46260, 20]]);
 
+    const serverBlock = await encodeQueryLoadBlock('query:q-date-blocks', 0, {
+      columns: ['PostedAt'], columnTypes: ['date'], rowCount: 1, blockRowCount: 2,
+    }, 0, [['2026-08-25']]);
+    assert.deepEqual((await decodeColumnarBlock(serverBlock.payload)).rows, [[46259]]);
+
     const invalidDate = await prepareQueryLoadPayload(model, createInlineJsonQuery('q-invalid-date', 'Invalid date', [{ PostedAt: '2026-02-30' }]), { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, {
       columns: ['PostedAt'], rows: [['2026-02-30']], rowCount: 1,
     });
