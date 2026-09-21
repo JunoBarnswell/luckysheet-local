@@ -31,6 +31,25 @@ describe('WorkbookSession query integration', () => {
     assert.equal(app.getUiSnapshot().lastQueryResult?.rowCount, 1);
   });
 
+  it('rehydrates a persisted query result projection for refresh after reopen', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('rehydrate-query', 'Rehydrate', [
+      { Region: 'East', Units: 12 },
+      { Region: 'West', Units: 8 },
+    ]));
+
+    app['querySessions'].clear();
+    app['lastQueryResult'] = null;
+    app['restorePersistedQuerySessions']();
+
+    const snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.loadedQueries.length, 1);
+    assert.equal(snapshot.loadedQueries[0]?.queryId, 'rehydrate-query');
+    assert.equal(snapshot.loadedQueries[0]?.rowCount, 2);
+    assert.deepEqual(snapshot.loadedQueries[0]?.columns, ['Region', 'Units']);
+    assert.deepEqual(snapshot.loadedQueries[0]?.target.kind, 'range');
+  });
+
   it('sorts a block-backed query through AutoFilter without materializing cells', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('filter-sort-query', 'Filter sort', [

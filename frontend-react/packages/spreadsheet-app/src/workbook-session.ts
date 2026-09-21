@@ -255,6 +255,7 @@ import {
   querySourceId,
   prepareQueryLoadPayload,
   resolveLoadTarget,
+  serializeQueryDefinition,
   summarizeQueryResult,
   type QueryResultSnapshot,
   type QueryPreview,
@@ -1221,7 +1222,28 @@ export class WorkbookSession {
     for (const definition of persisted) {
       if (!this.querySessions.has(definition.id)) {
         try {
-          this.querySessions.set(definition.id, { definition: deserializeQueryDefinition(definition) });
+          const source = this.runtime.model.dataModel.sources.get(querySourceId(definition.id));
+          const sessionDefinition = deserializeQueryDefinition(definition);
+          const target = sessionDefinition.lastTarget;
+          const lastResult = source && target
+            ? {
+                queryId: sessionDefinition.id,
+                queryName: sessionDefinition.name,
+                columns: source.fields.map((field) => field.name),
+                rowCount: source.rowCount,
+                // The persisted contract has no load timestamp.  This value
+                // is deliberately epoch-stable; it must not imply a fresh
+                // server execution during workbook open.
+                loadedAt: new Date(0).toISOString(),
+                target: structuredClone(target),
+                sourceRevision: source.revision,
+                persistedDefinition: serializeQueryDefinition({ ...sessionDefinition, sourceRevision: source.revision }),
+              } satisfies QueryResultSnapshot
+            : undefined;
+          this.querySessions.set(definition.id, {
+            definition: sessionDefinition,
+            ...(lastResult ? { lastResult } : {}),
+          });
         } catch (error) {
           // Keep the canonical persisted definition in the workbook so the
           // user can repair it; do not expose a falsely loaded query result.
