@@ -282,6 +282,36 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
   });
 
+  it('refreshes only linked PivotTables across different target sheets', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-linked-primary';
+    await app.addPivot(pivot);
+
+    app.runCommand('sheet.add', { id: 'pivot-linked-secondary-sheet', name: 'Linked secondary' });
+    const secondary = structuredClone(pivot);
+    secondary.id = 'pivot-linked-secondary';
+    secondary.target = { sheetId: 'pivot-linked-secondary-sheet', anchor: { row: 0, column: 0 } };
+    await app.addPivot(secondary);
+
+    app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
+    const slicer = app.listPivotControls(pivot.id).find((control) => control.payload.kind === 'slicer');
+    assert.ok(slicer);
+    if (!slicer) return;
+    const connection = app.listCompatiblePivotControlConnections(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId, 'slicer')
+      .find((candidate) => candidate.pivotId === secondary.id);
+    assert.ok(connection);
+    if (!connection) return;
+    app.setPivotControlConnections(slicer.drawing.id, [connection]);
+
+    app.setPivotSlicerFilter(slicer.drawing.id, 'include', [createPivotMemberKey('East')]);
+    await Promise.all([waitForPivot(app, pivot.id), waitForPivot(app, secondary.id)]);
+
+    assert.equal(app['runtime'].pivotResults[pivot.id]?.grandTotal?.values[0], 10);
+    assert.equal(app['runtime'].pivotResults[secondary.id]?.grandTotal?.values[0], 10);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 10);
+  });
+
   it('keeps an explicit block-backed worksheet source on the DataSource Pivot path', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('pivot-block-source', 'Pivot block source', [
