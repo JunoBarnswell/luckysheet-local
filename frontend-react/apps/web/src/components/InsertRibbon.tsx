@@ -6,7 +6,7 @@ import type { Locale } from '../i18n';
 import { insertText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
 import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
-import { INSERT_CHART_FAMILIES, INSERT_CONNECTOR_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS, type InsertChartFamilyDefinition, type InsertChartFamilyVariant } from './insert-ribbon-catalog';
+import { INSERT_CHART_FAMILIES, INSERT_CONNECTOR_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS, type InsertChartFamilyVariant } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -36,9 +36,6 @@ function variantButton({ id, icon, label, onSelect, surfaceId, disabled }: { id:
   return <Button key={id} aria-label={label} data-ribbon-surface={surfaceId} data-ribbon-variant={id} title={label} icon={iconNode ? undefined : icon} iconNode={iconNode} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={onSelect}>{label}</Button>;
 }
 
-/** Compact icon-only button used inside the chart-type icon grid. */
-const CHART_ICON_BTN = '!h-8 !min-h-0 !w-7 rounded-none !px-0 [&>svg]:!h-5 [&>svg]:!w-5 [&>img]:!h-5 [&>img]:!w-5';
-
 const chartVariantLabel = (locale: Locale, variant: InsertChartFamilyVariant): string => {
   const labels: Partial<Record<ChartDrawingPayload['subtype'], readonly [string, string]>> = {
     clustered: ['簇状', 'Clustered'], stacked: ['堆积', 'Stacked'], 'percent-stacked': ['百分比堆积', '100% Stacked'], 'three-dimensional': ['三维', '3D'], 'three-dimensional-stacked': ['三维堆积', '3D Stacked'], 'three-dimensional-percent-stacked': ['三维百分比堆积', '3D 100% Stacked'], cone: ['圆锥', 'Cone'], 'cone-stacked': ['堆积圆锥', 'Stacked Cone'], 'cone-percent-stacked': ['百分比堆积圆锥', '100% Stacked Cone'], cylinder: ['圆柱', 'Cylinder'], 'cylinder-stacked': ['堆积圆柱', 'Stacked Cylinder'], 'cylinder-percent-stacked': ['百分比堆积圆柱', '100% Stacked Cylinder'], pyramid: ['棱锥', 'Pyramid'], 'pyramid-stacked': ['堆积棱锥', 'Stacked Pyramid'], 'pyramid-percent-stacked': ['百分比堆积棱锥', '100% Stacked Pyramid'],
@@ -50,67 +47,8 @@ const chartVariantLabel = (locale: Locale, variant: InsertChartFamilyVariant): s
   return label ? label[locale === 'zh-CN' ? 0 : 1] : variant.subtype;
 };
 
-const chartGallerySections = (family: InsertChartFamilyDefinition): readonly { title: [string, string]; variants: readonly InsertChartFamilyVariant[] }[] => {
-  const threeD = (v: InsertChartFamilyVariant) => v.subtype.startsWith('three-dimensional') || ['cone', 'cone-stacked', 'cone-percent-stacked', 'cylinder', 'cylinder-stacked', 'cylinder-percent-stacked', 'pyramid', 'pyramid-stacked', 'pyramid-percent-stacked'].includes(v.subtype);
-  if (family.id === 'chart-family.column-bar') return [
-    { title: ['二维柱形图', '2-D Column'], variants: family.variants.filter((v) => v.chartType === 'column' && !threeD(v)) },
-    { title: ['三维柱形图', '3-D Column'], variants: family.variants.filter((v) => v.chartType === 'column' && threeD(v)) },
-    { title: ['二维条形图', '2-D Bar'], variants: family.variants.filter((v) => v.chartType === 'bar' && !threeD(v)) },
-    { title: ['三维条形图', '3-D Bar'], variants: family.variants.filter((v) => v.chartType === 'bar' && threeD(v)) },
-  ];
-  if (family.id === 'chart-family.line-area') return [
-    { title: ['二维折线图', '2-D Line'], variants: family.variants.filter((v) => v.chartType === 'line' && !threeD(v)) },
-    { title: ['三维折线图', '3-D Line'], variants: family.variants.filter((v) => v.chartType === 'line' && threeD(v)) },
-    { title: ['二维面积图', '2-D Area'], variants: family.variants.filter((v) => v.chartType === 'area' && !threeD(v)) },
-    { title: ['三维面积图', '3-D Area'], variants: family.variants.filter((v) => v.chartType === 'area' && threeD(v)) },
-  ];
-  return [{ title: [insertText('zh-CN', family.labelKey), insertText('en-US', family.labelKey)], variants: family.variants }];
-};
-
-function chartFamilyMenu(locale: Locale, family: InsertChartFamilyDefinition, disabled: boolean, surfaceId: string, onInsertChart: InsertRibbonProps['onInsertChart']): React.ReactNode {
-  return <Stack gap="none" className="w-[284px] max-w-[284px] overflow-hidden rounded-md border border-slate-300 bg-white p-0 shadow-lg">
-    {chartGallerySections(family).map((section, index) => section.variants.length > 0 ? <Stack key={`${family.id}.${index}`} gap="none" className={`${index > 0 ? 'border-t border-slate-200' : ''} px-3 pb-3 pt-3`}>
-      <Text size="sm" weight="semibold" className="mb-1 text-slate-800">{section.title[locale === 'zh-CN' ? 0 : 1]}</Text>
-      <Inline gap="none" className="flex-wrap items-start">
-        {section.variants.map((variant) => { const icon = variant.chartType === 'line' ? 'chart-line' : variant.chartType === 'area' ? 'chart-area' : variant.chartType === 'pie' || variant.chartType === 'doughnut' ? 'chart-pie' : variant.chartType === 'scatter' || variant.chartType === 'bubble' ? 'chart-scatter' : family.icon; const node = fluentIcon(icon, 'lg'); return <Button key={variant.id} aria-label={chartVariantLabel(locale, variant)} data-ribbon-surface={surfaceId} data-ribbon-variant={variant.id} title={chartVariantLabel(locale, variant)} disabled={disabled} icon={node ? undefined : icon} iconNode={node} size="sm" variant="ghost" className="!h-[68px] !w-[58px] !min-w-[58px] flex-col gap-0.5 rounded-none !px-0 text-[10px] leading-3 [&>img]:!h-9 [&>img]:!w-9 [&>svg]:!h-9 [&>svg]:!w-9" onClick={() => onInsertChart(variant.chartType, variant.subtype)}><Text size="xs" className="max-w-[56px] truncate">{chartVariantLabel(locale, variant)}</Text></Button>; })}
-      </Inline>
-    </Stack> : null)}
-    <Button aria-label={locale === 'zh-CN' ? '更多图表' : 'More Charts'} iconNode={fluentIcon('chart', 'md')} iconOnly={false} disabled={disabled} size="sm" variant="ghost" className="!h-8 !w-full justify-start rounded-none border-t border-slate-200 px-3 text-xs">{locale === 'zh-CN' ? '更多图表(M)...' : 'More Charts...'}</Button>
-  </Stack>;
-}
-
 export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertSparkline, onInsertShape, onInsertConnector }: InsertRibbonProps) {
   const isNarrow = layout.mode === 'narrow';
-
-  /**
-   * SpreadJS parity: for chartBuilder in wide mode, render a 2-row × 4-column grid
-   * of individual chart-type icon buttons directly in the ribbon (no dropdown).
-   * Each button inserts that chart type immediately on click.
-   */
-  const renderChartIconGrid = (surfaceId: string): React.ReactNode => {
-    const row1 = INSERT_CHART_FAMILIES.slice(0, 5);
-    const row2 = INSERT_CHART_FAMILIES.slice(5);
-    const familyControl = (family: typeof INSERT_CHART_FAMILIES[number]) => {
-      const primary = family.variants[0]!;
-      const familyLabel = insertText(locale, family.labelKey);
-      return <Inline key={family.id} gap="none" className="items-stretch">
-        <Button aria-label={familyLabel} data-ribbon-surface={surfaceId} data-ribbon-variant={family.id} title={familyLabel} icon={fluentIcon(family.icon, 'md') ? undefined : family.icon} iconNode={fluentIcon(family.icon, 'md')} iconOnly disabled={disabled} size="sm" variant="ghost" className={CHART_ICON_BTN} onClick={() => onInsertChart(primary.chartType, primary.subtype)} />
-        <DropdownMenu align="left" trigger={<Button aria-label={`${familyLabel} options`} data-ribbon-keytip={family.id === INSERT_CHART_FAMILIES[0]?.id ? keyTipFor('chartBuilder') : undefined} icon="chevron-down" iconOnly disabled={disabled} size="sm" variant="ghost" className="!h-8 !min-h-0 !w-4 rounded-none !px-0 [&>svg]:!h-3 [&>svg]:!w-3" />}>
-          {chartFamilyMenu(locale, family, disabled, surfaceId, onInsertChart)}
-        </DropdownMenu>
-      </Inline>;
-    };
-    return (
-      <Stack key={surfaceId} gap="none" data-ribbon-surface={surfaceId} className="!w-[220px] !min-w-[220px] shrink-0 items-center justify-center">
-        <Inline gap="none" className="flex-nowrap">
-          {row1.map(familyControl)}
-        </Inline>
-        <Inline gap="none" className="flex-nowrap">
-          {row2.map(familyControl)}
-        </Inline>
-      </Stack>
-    );
-  };
 
   const renderSplitGallery = (surface: RibbonSurfaceDefinition, title: string, icon: React.ComponentProps<typeof Button>['icon'], variants: React.ReactNode[], onSelect: () => void): React.ReactNode => (
     <Inline key={surface.id} gap="none" className="items-stretch">
@@ -138,15 +76,10 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
   const renderSurface = (surface: RibbonSurfaceDefinition, mode: RibbonLayoutState['mode'] | 'menu'): React.ReactNode => {
     if (!surface.commandId) return null;
 
-    // SpreadJS parity: chartBuilder in wide mode → 2×4 icon grid instead of dropdown tile.
-    if (surface.commandId === 'chartBuilder' && mode === 'wide' && !isNarrow) {
-      return renderChartIconGrid(surface.id);
-    }
-
     const variants = galleryItems(surface.commandId, surface.id);
     if (variants.length > 0) {
       const title = insertText(locale, surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : 'shape');
-      if (mode === 'menu') return <DropdownMenu key={surface.id} align="left" trigger={<Button className="w-full justify-start" icon={surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : 'shape-square'}>{title}</Button>}><Stack gap="none" className="max-h-[55vh] min-w-[14rem] overflow-y-auto p-1">{surface.commandId === 'chartBuilder' ? renderChartIconGrid(surface.id) : variants}</Stack></DropdownMenu>;
+      if (mode === 'menu') return <DropdownMenu key={surface.id} align="left" trigger={<Button className="w-full justify-start" icon={surface.commandId === 'chartBuilder' ? 'chart' : surface.commandId === 'sparkline' ? 'sparkline' : 'shape-square'}>{title}</Button>}><Stack gap="none" className="max-h-[55vh] min-w-[14rem] overflow-y-auto p-1">{variants}</Stack></DropdownMenu>;
       if (surface.commandId === 'sparkline') {
         if (mode === 'wide' && !isNarrow) return <Inline key={surface.id} gap="none" className="h-[80px] w-[181px] min-w-[181px] items-stretch justify-center">{INSERT_SPARKLINE_VARIANTS.map((variant) => <RibbonLarge key={variant.id} disabled={disabled} icon={fluentIcon(variant.icon, 'lg') ? undefined : variant.icon} iconNode={fluentIcon(variant.icon, 'lg')} surfaceId={variant.id} title={insertText(locale, variant.labelKey)} className="!w-[58px] !min-w-[58px] !max-w-[58px]" onClick={() => onInsertSparkline(variant.value)}>{insertText(locale, variant.labelKey)}</RibbonLarge>)}</Inline>;
         const first = INSERT_SPARKLINE_VARIANTS[0];

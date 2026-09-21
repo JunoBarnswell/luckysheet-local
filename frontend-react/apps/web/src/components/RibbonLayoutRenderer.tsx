@@ -42,7 +42,7 @@ interface NodeRenderContext {
 const RIBBON_GROUP_WIDTHS: Partial<Record<RibbonGroupId, number>> = {
   pageSetup: 420, scaleToFit: 100, sheetOptions: 300,
   calculation: 250, functionLibrary: 220, formulaAudit: 280, definedNames: 200,
-  tables: 248, illustrations: 324, controls: 68, charts: 360,
+  tables: 248, illustrations: 324, controls: 68, charts: 216,
   sparklines: 188, filters: 140, links: 68, insertComments: 80, text: 320, symbols: 140,
   sortFilter: 280, dataTools: 340, findTransform: 300, outline: 440, whatIf: 180,
 };
@@ -77,10 +77,10 @@ export const RIBBON_GROUP_ICONS: Partial<Record<RibbonGroupId, IconName>> = {
 };
 
 function collapseHomeGroup(groupId: RibbonGroupId, width: number): boolean {
-  return (width < 1440 && (groupId === 'styles' || groupId === 'cells'))
-    || (width < 1100 && groupId === 'editing')
-    || (width < 920 && groupId === 'alignment')
-    || (width < 760 && groupId === 'number');
+  return (width < 1500 && (groupId === 'styles' || groupId === 'cells'))
+    || (width < 1320 && groupId === 'editing')
+    || (width < 1120 && groupId === 'alignment')
+    || (width < 980 && groupId === 'number');
 }
 
 export function ribbonGroupWidthClass(groupId: RibbonGroupId, _mode: RibbonLayoutState['mode'] = 'wide', _width = 0, tab?: RibbonLayoutSpec['tab']): string {
@@ -195,7 +195,7 @@ export function RibbonLayoutRenderer(props: RibbonLayoutRendererProps): React.Re
         {index > 0 ? <Divider orientation="vertical" className="my-3 h-[72px] border-slate-200" /> : null}
         {collapsed ? (
           <Stack data-ribbon-group={group.id} gap="none" className="h-[104px] w-[68px] shrink-0 justify-center px-1">
-            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] !w-[60px] !min-w-0 flex-col gap-2 !px-1 text-xs">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
+            <DropdownMenu align="left" trigger={<Button aria-label={`${groupLabel}工具`} title={`${groupLabel}工具`} iconNode={<Icon name={RIBBON_GROUP_ICONS[group.id] ?? 'grid'} size="lg" />} size="sm" variant="ghost" className="h-[76px] !w-[60px] !min-w-0 flex-col gap-1.5 rounded-md border border-slate-200 bg-slate-50/80 !px-1 text-[10px] text-slate-700 hover:border-emerald-300 hover:bg-emerald-50">{groupLabel}<Icon name="chevron-down" size="xs" /></Button>}>
               <Stack gap="sm" className="max-h-[60vh] min-w-[14rem] overflow-y-auto p-3" data-ribbon-overflow={group.id}>
                 <Text size="xs" tone="muted">{groupLabel}</Text>
                 {content}
