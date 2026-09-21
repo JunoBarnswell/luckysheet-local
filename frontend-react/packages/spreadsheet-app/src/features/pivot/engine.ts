@@ -122,6 +122,21 @@ function sourceRowValue(row: SourceRow, fieldId: string): PivotScalar {
   return ordinal === undefined ? null : pivotSourceValueAt(row.source.index, ordinal, row.row);
 }
 
+/**
+ * Build a collision-free compound member key without allocating an array and
+ * serialising it for every source row. The length prefix keeps text members
+ * containing the separator unambiguous while avoiding JSON array overhead in
+ * the hot grouping/filtering paths.
+ */
+function pivotGroupKey(values: readonly PivotScalar[]): string {
+  let key = '';
+  for (const value of values) {
+    const member = pivotMemberKey(createPivotMemberKey(value));
+    key += `${member.length}:${member}`;
+  }
+  return key;
+}
+
 function sourceRowPaths(row: SourceRow): readonly PivotSourceRowPath[] {
   return row.pathsOverride ?? pivotSourceRowPaths(row.source.index, row.row);
 }
@@ -1842,7 +1857,7 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   const map = new Map<string, AxisGroup>();
   for (const row of rows) {
     const values = placements.map((placement) => grouped(sourceRowValue(row, placement.fieldId), placement.group));
-    const key = JSON.stringify(values.map(createPivotMemberKey));
+    const key = pivotGroupKey(values);
     const group = map.get(key) ?? { values, rows: [], rowSet: new Set<SourceRow>() };
     group.rows.push(row);
     group.rowSet.add(row);
@@ -2057,18 +2072,37 @@ function groupedDateFilterMatches(value: PivotScalar, filter: Extract<PivotFilte
 
 type PivotSourceFilter = Exclude<PivotFilter, { kind: 'condition'; family: 'value' }>;
 
-function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator, definition?: PivotDefinition, manualFilterIndex?: ReadonlyMap<PivotFilter, ReadonlySet<string>>): boolean {
-  if (filter.kind === 'condition' && filter.family === 'value') throw new Error('Pivot value filters must be evaluated against aggregated Pivot items');
-  const sourceFilter = filter as PivotSourceFilter;
-  const fieldId = sourceFilter.fieldId;
-  const rawValue = sourceRowValue(row, fieldId);
-  const placement = definition ? groupedPlacementForFilter(definition, sourceFilter) : undefined;
+interface PivotSourceFilterMatcher {
+  filter: PivotSourceFilter;
+  placement?: PivotFieldPlacement;
+  memberSet?: ReadonlySet<string>;
+}
+
+function buildSourceFilterMatchers(definition: PivotDefinition): PivotSourceFilterMatcher[] {
+  const filters = definition.layout.filters.filter((filter): filter is PivotSourceFilter => filter.kind !== 'top-items'
+    && !(filter.kind === 'condition' && filter.family === 'value'));
+  const manualFilterIndex = buildManualFilterIndex(filters);
+  return filters.map((filter) => ({
+    filter,
+    placement: groupedPlacementForFilter(definition, filter),
+    memberSet: filter.kind === 'manual' ? manualFilterIndex.get(filter) : undefined,
+  }));
+}
+
+function matchesSourceFilter(row: SourceRow, matcher: PivotSourceFilterMatcher, collator: Intl.Collator): boolean {
+  const { filter, placement } = matcher;
+  const rawValue = sourceRowValue(row, filter.fieldId);
   const value = placement?.group ? grouped(rawValue, placement.group) : rawValue;
-  if (sourceFilter.kind === 'top-items') return true;
-  if (sourceFilter.kind === 'manual') return manualFilterMatches(rawValue, sourceFilter, placement?.group, manualFilterIndex?.get(sourceFilter));
-  if (sourceFilter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, sourceFilter, placement.group, collator) : dateFilterMatches(value, sourceFilter);
-  if (sourceFilter.family === 'label') return labelFilterMatches(value, sourceFilter, collator);
+  if (filter.kind === 'top-items') return true;
+  if (filter.kind === 'manual') return manualFilterMatches(rawValue, filter, placement?.group, matcher.memberSet);
+  if (filter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, filter, placement.group, collator) : dateFilterMatches(value, filter);
+  if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
   throw new Error('Unsupported Pivot source filter family');
+}
+
+function applySourceFilters(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[], collator: Intl.Collator): SourceRow[] {
+  if (matchers.length === 0) return rows;
+  return rows.filter((row) => matchers.every((matcher) => matchesSourceFilter(row, matcher, collator)));
 }
 
 function matchesValueFilter(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'value' }>, collator: Intl.Collator): boolean {
@@ -2134,7 +2168,7 @@ function applyValueFilters(
     for (const row of source) {
       const keyValues = contextPlacements?.map((placement) => grouped(sourceRowValue(row, placement.fieldId), placement.group))
         ?? [grouped(sourceRowValue(row, filter.fieldId), targetPlacement?.group)];
-      const key = JSON.stringify(keyValues.map(createPivotMemberKey));
+      const key = pivotGroupKey(keyValues);
       const bucket = buckets.get(key) ?? [];
       bucket.push(row);
       buckets.set(key, bucket);
@@ -2248,14 +2282,43 @@ function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, 
     && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
-function matchesControls(rows: SourceRow[], controls: readonly PivotTaskControl[], excludedSlicerDrawingId?: string): SourceRow[] {
-  const activeControls = controls.filter((entry) => entry.drawingId !== excludedSlicerDrawingId);
-  const slicers = activeControls.filter((entry): entry is PivotTaskControl & { payload: PivotSlicerDrawingPayload } => entry.payload.kind === 'slicer');
-  const timelines = activeControls.filter((entry): entry is PivotTaskControl & { payload: PivotTimelineDrawingPayload } => entry.payload.kind === 'timeline');
-  const slicerMemberSets = new Map<string, ReadonlySet<string>>(slicers.map((entry) => [entry.drawingId, new Set(entry.payload.filter.memberKeys.map((member) => pivotMemberKey(member)))]));
-  const timelineBounds = timelines.map((entry) => normalizePivotTimelinePeriod(entry.payload.period));
-  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload, entry.fieldId, slicerMemberSets.get(entry.drawingId)))
-    && timelines.every((entry, index) => matchesTimeline(row, entry.payload, entry.fieldId, timelineBounds[index]!)));
+interface PivotControlMatcher {
+  rows: SourceRow[];
+  controls: readonly PivotTaskControl[];
+  matches: ReadonlyMap<string, Uint8Array>;
+}
+
+/**
+ * Evaluate each slicer/timeline once per source row. Slicer item projections
+ * ask for the same control state repeatedly (once per slicer); retaining the
+ * byte masks makes those projections a cheap mask intersection instead of a
+ * full value decode and predicate pass for every control.
+ */
+function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTaskControl[]): PivotControlMatcher {
+  const matches = new Map<string, Uint8Array>();
+  for (const control of controls) {
+    const mask = new Uint8Array(rows.length);
+    const payload = control.payload;
+    if (payload.kind === 'slicer') {
+      const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
+      rows.forEach((row, rowIndex) => {
+        mask[rowIndex] = matchesSlicer(row, payload, control.fieldId, memberSet) ? 1 : 0;
+      });
+    } else {
+      const bounds = normalizePivotTimelinePeriod(payload.period);
+      rows.forEach((row, rowIndex) => {
+        mask[rowIndex] = matchesTimeline(row, payload, control.fieldId, bounds) ? 1 : 0;
+      });
+    }
+    matches.set(control.drawingId, mask);
+  }
+  return { rows, controls, matches };
+}
+
+function rowsMatchingControls(matcher: PivotControlMatcher, excludedDrawingId?: string): SourceRow[] {
+  if (matcher.controls.length === 0 || matcher.controls.every((control) => control.drawingId === excludedDrawingId)) return matcher.rows;
+  return matcher.rows.filter((_, rowIndex) => matcher.controls.every((control) => control.drawingId === excludedDrawingId
+    || matcher.matches.get(control.drawingId)?.[rowIndex] === 1));
 }
 
 function slicerItemProjection(
@@ -2265,7 +2328,8 @@ function slicerItemProjection(
   payload: PivotSlicerDrawingPayload,
   collator: Intl.Collator,
   calculatedFields: CalculatedFieldEvaluator,
-  controls: readonly PivotTaskControl[],
+  controlMatcher: PivotControlMatcher,
+  sourceFilterMatchers: readonly PivotSourceFilterMatcher[],
   aggregates: PivotAggregatePlanner,
 ): PivotSlicerItemProjection[] {
   const fieldValues = rows.map((row) => sourceRowValue(row, payload.fieldId));
@@ -2275,10 +2339,7 @@ function slicerItemProjection(
     const identity = pivotMemberKey(key);
     if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
   }
-  const sourceFilters = definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value'));
-  const manualFilterIndex = buildManualFilterIndex(sourceFilters);
-  const filteredRows = matchesControls(rows, controls, drawingId)
-    .filter((row) => sourceFilters.every((filter) => matchesFilter(row, filter, collator, definition, manualFilterIndex)));
+  const filteredRows = applySourceFilters(rowsMatchingControls(controlMatcher, drawingId), sourceFilterMatchers, collator);
   const valueFilteredRows = applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator, aggregates);
   const availableRows = topItems(valueFilteredRows, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
   const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, payload.fieldId)))));
@@ -2319,13 +2380,14 @@ function resultValue(rows: ReadonlyArray<SourceRow>, value: PivotResultValueFiel
 }
 
 function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner): PivotResultCell[] {
+  // When a row node spans more source rows than a column group, the previous
+  // implementation rebuilt this Set once per column. Keep one membership set
+  // for the whole matrix cell pass; it is immutable for this node.
+  const nodeRowSet = columns.some((column) => rows.length > column.rows.length) ? new Set(rows) : undefined;
   return columns.map((column, columnIndex) => {
     const columnRows = rows.length <= column.rows.length
       ? rows.filter((candidate) => column.rowSet.has(candidate))
-      : (() => {
-          const nodeRows = new Set(rows);
-          return column.rows.filter((candidate) => nodeRows.has(candidate));
-        })();
+      : column.rows.filter((candidate) => nodeRowSet?.has(candidate) ?? false);
     return {
       id: `${nodePath.join('/') || 'root'}|column:${columnIndex}`,
       nodePath,
@@ -2635,10 +2697,9 @@ function computePivotResultFromTable(
   const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
   const unknown = references.find((field) => field && !known.has(field));
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
-  let filtered = matchesControls(rows, controls);
-  const sourceFilters = definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value'));
-  const manualFilterIndex = buildManualFilterIndex(sourceFilters);
-  filtered = filtered.filter((row) => sourceFilters.every((filter) => matchesFilter(row, filter, collator, definition, manualFilterIndex)));
+  const controlMatcher = buildPivotControlMatcher(rows, controls);
+  const sourceFilterMatchers = buildSourceFilterMatchers(definition);
+  let filtered = applySourceFilters(rowsMatchingControls(controlMatcher), sourceFilterMatchers, collator);
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator, aggregates);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
   const columns = definition.layout.columns.length
@@ -2666,7 +2727,7 @@ function computePivotResultFromTable(
   const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
   for (const control of controls) {
     if (control.payload.kind !== 'slicer') continue;
-    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controls, aggregates);
+    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields, definition.layout);
