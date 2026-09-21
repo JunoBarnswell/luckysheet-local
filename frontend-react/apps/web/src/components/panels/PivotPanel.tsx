@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
-import { type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotValueField } from '@react-sheets/core-model';
+import { type PivotControlConnection, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { buildPivotGroupedFilterMembers } from '@react-sheets/spreadsheet-app';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
@@ -76,6 +76,35 @@ function filterStates(layout: PivotLayout): Record<string, PivotManualFilterStat
 }
 function placementMap(layout: PivotLayout): ReadonlyMap<string, PivotFieldPlacement> {
   return new Map([...layout.rows, ...layout.columns].map((placement) => [placement.fieldId, placement]));
+}
+
+function PivotReportConnections({
+  compatibleConnections = [],
+  connections = [],
+  disabled,
+  locale,
+  onChange,
+}: {
+  compatibleConnections?: readonly PivotControlConnection[];
+  connections?: readonly PivotControlConnection[];
+  disabled: boolean;
+  locale: Locale;
+  onChange?: (connections: readonly PivotControlConnection[]) => void;
+}) {
+  const selected = new Set(connections.map((connection) => connection.pivotId));
+  const toggle = (connection: PivotControlConnection, checked: boolean) => {
+    if (!onChange) return;
+    const next = checked
+      ? [...connections, connection]
+      : connections.filter((candidate) => candidate.pivotId !== connection.pivotId);
+    onChange(next);
+  };
+  return <Box className="rounded border border-slate-200 bg-white p-2">
+    <Text size="xs" weight="semibold" className="mb-1">{pivotText(locale, 'reportConnections')}</Text>
+    {compatibleConnections.length === 0
+      ? <Text size="xs" tone="subtle">{pivotText(locale, 'noCompatiblePivots')}</Text>
+      : <Stack gap="none">{compatibleConnections.map((connection) => <CheckToggle key={connection.pivotId} disabled={disabled} checked={selected.has(connection.pivotId)} label={connection.pivotId} onChange={(event) => toggle(connection, event.target.checked)} />)}</Stack>}
+  </Box>;
 }
 
 const fieldPaneLayoutLabels: Record<PivotFieldPaneLayout, PivotMessageKey> = {
@@ -249,7 +278,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">
-        {slicerControls.length > 0 || timelineControls.length > 0 ? <DropdownMenu align="left" trigger={<Button aria-label={pivotText(locale, 'pivotControls')} size="sm" variant="ghost">{pivotText(locale, 'pivotControls')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); const placement = placements.get(control.fieldId); const memberOptions = field && placement?.group ? buildPivotGroupedFilterMembers(field.values ?? [], placement.group) : undefined; return field ? <PivotSlicer key={control.id} locale={locale} field={field} memberOptions={memberOptions} itemProjection={control.items} settings={control.settings} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /> : null; })}{timelineControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return <PivotTimeline key={control.id} locale={locale} fieldLabel={field?.name ?? control.fieldId} values={field?.values} level={control.level} bounds={control.bounds} scrollPosition={control.scrollPosition} showHeader={control.showHeader} showSelectionLabel={control.showSelectionLabel} showTimeLevel={control.showTimeLevel} showHorizontalScrollbar={control.showHorizontalScrollbar} caption={control.caption} styleName={control.styleName} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineClear?.(control.id)} onLevelChange={(level) => callbacks?.onTimelineLevelChange?.(control.id, level)} onWindowChange={(scrollPosition) => callbacks?.onTimelineWindowChange?.(control.id, scrollPosition)} onDisplayChange={(display) => callbacks?.onTimelineDisplayChange?.(control.id, display)} onCaptionChange={(caption) => callbacks?.onTimelineCaptionChange?.(control.id, caption)} onStyleChange={(styleName) => callbacks?.onTimelineStyleChange?.(control.id, styleName)} />; })}</Stack></DropdownMenu> : null}
+        {slicerControls.length > 0 || timelineControls.length > 0 ? <DropdownMenu align="left" trigger={<Button aria-label={pivotText(locale, 'pivotControls')} size="sm" variant="ghost">{pivotText(locale, 'pivotControls')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); const placement = placements.get(control.fieldId); const memberOptions = field && placement?.group ? buildPivotGroupedFilterMembers(field.values ?? [], placement.group) : undefined; return field ? <Stack key={control.id} gap="xs"><PivotSlicer locale={locale} field={field} memberOptions={memberOptions} itemProjection={control.items} settings={control.settings} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /><PivotReportConnections compatibleConnections={control.compatibleConnections} connections={control.connections} disabled={disabled} locale={locale} onChange={(next) => callbacks?.onControlConnectionsChange?.(control.id, next)} /></Stack> : null; })}{timelineControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return <Stack key={control.id} gap="xs"><PivotTimeline fieldLabel={field?.name ?? control.fieldId} locale={locale} values={field?.values} level={control.level} bounds={control.bounds} scrollPosition={control.scrollPosition} showHeader={control.showHeader} showSelectionLabel={control.showSelectionLabel} showTimeLevel={control.showTimeLevel} showHorizontalScrollbar={control.showHorizontalScrollbar} caption={control.caption} styleName={control.styleName} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineClear?.(control.id)} onLevelChange={(level) => callbacks?.onTimelineLevelChange?.(control.id, level)} onWindowChange={(scrollPosition) => callbacks?.onTimelineWindowChange?.(control.id, scrollPosition)} onDisplayChange={(display) => callbacks?.onTimelineDisplayChange?.(control.id, display)} onCaptionChange={(caption) => callbacks?.onTimelineCaptionChange?.(control.id, caption)} onStyleChange={(styleName) => callbacks?.onTimelineStyleChange?.(control.id, styleName)} /><PivotReportConnections compatibleConnections={control.compatibleConnections} connections={control.connections} disabled={disabled} locale={locale} onChange={(next) => callbacks?.onControlConnectionsChange?.(control.id, next)} /></Stack>; })}</Stack></DropdownMenu> : null}
         <Select aria-label={pivotText(locale, 'subtotalLocation')} sizeVariant="sm" value={layout.subtotalLocation} disabled={disabled} onChange={(event) => { const next = event.target.value as PivotLayout['subtotalLocation']; if (callbacks?.onSubtotalLocationChange) callbacks.onSubtotalLocationChange(next); else applyLayout({ ...cloneLayout(layout), subtotalLocation: next }); }}><option value="top">{pivotText(locale, 'subtotalTop')}</option><option value="bottom">{pivotText(locale, 'subtotalBottom')}</option><option value="off">{pivotText(locale, 'subtotalOff')}</option></Select>
         <DropdownMenu align="right" trigger={<Button aria-label={pivotText(locale, 'advancedFields')} icon="plus" iconOnly size="sm" variant="ghost" className="ml-auto" />}><Box className="w-[22rem] p-3"><PivotCalculatedEditor locale={locale} fields={fields} calculatedFields={layout.calculatedFields ?? []} calculatedItems={layout.calculatedItems ?? []} disabled={disabled} onFieldsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedFields: next })} onItemsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedItems: next })} /></Box></DropdownMenu>
         {slots?.statusSummary ? <Text size="xs" tone="subtle">{slots.statusSummary}</Text> : null}

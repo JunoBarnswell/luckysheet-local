@@ -186,10 +186,10 @@ export function useEditorCommandController({
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
   const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connections: record.payload.connections }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connections: record.payload.connections, compatibleConnections: session.listCompatiblePivotControlConnections(record.payload.pivotId, record.payload.fieldId, 'slicer') }]
     : []);
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections, compatibleConnections: session.listCompatiblePivotControlConnections(record.payload.pivotId, record.payload.fieldId, 'timeline') }]
     : []);
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
@@ -355,6 +355,7 @@ export function useEditorCommandController({
         } });
     },
     onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) void session.updatePivotConfiguration(activePivot.id, { refreshPolicy: structuredClone(refreshPolicy) }); },
+    onControlConnectionsChange: (drawingId, connections) => session.setPivotControlConnections(drawingId, connections),
     onTimelineClear: (timelineId) => session.setPivotTimelinePeriod(timelineId),
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),

@@ -82,6 +82,7 @@ export interface PivotSlicerControl {
   settings: PivotSlicerSettings;
   items: readonly PivotSlicerItemProjection[];
   connections?: readonly PivotControlConnection[];
+  compatibleConnections?: readonly PivotControlConnection[];
 }
 
 export interface PivotTimelineControl {
@@ -102,6 +103,7 @@ export interface PivotTimelineControl {
   caption?: string;
   styleName?: string;
   connections?: readonly PivotControlConnection[];
+  compatibleConnections?: readonly PivotControlConnection[];
 }
 
 export interface PivotPanelState {
@@ -131,6 +133,7 @@ export interface PivotPanelCallbacks {
   onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
+  onControlConnectionsChange?: (drawingId: string, connections: readonly PivotControlConnection[]) => void;
   onTimelineClear?: (timelineId: string) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
   onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
