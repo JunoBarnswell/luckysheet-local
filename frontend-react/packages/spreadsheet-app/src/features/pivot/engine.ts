@@ -1920,24 +1920,26 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   return result;
 }
 
-function countPivotResultNodes(
-  rows: SourceRow[],
-  placements: PivotFieldPlacement[],
-  depth: number,
-  fieldCatalog: PivotFieldCatalog,
-  collator: Intl.Collator,
-  values: readonly PivotResultValueField[],
-  calculatedFields: CalculatedFieldEvaluator,
-  aggregates: PivotAggregatePlanner,
-  limit: number,
-): number {
+function axisGroupRows(rows: SourceRow[], placement: PivotFieldPlacement): SourceRow[][] {
+  const groups = new Map<string, SourceRow[]>();
+  for (const row of rows) {
+    const value = grouped(sourceRowValue(row, placement.fieldId), placement.group);
+    const key = pivotGroupKey([value]);
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function countPivotResultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, limit: number): number {
   if (placements.length === 0) return 1;
   if (depth >= placements.length) return 0;
-  const groups = axisGroups(rows, [placements[depth]!], fieldCatalog, collator, values, calculatedFields, aggregates);
+  const groups = axisGroupRows(rows, placements[depth]!);
   let count = groups.length;
   if (count > limit) return count;
   for (const group of groups) {
-    count += countPivotResultNodes(group.rows, placements, depth + 1, fieldCatalog, collator, values, calculatedFields, aggregates, limit - count);
+    count += countPivotResultNodes(group, placements, depth + 1, limit - count);
     if (count > limit) return count;
   }
   return count;
@@ -1948,9 +1950,6 @@ function assertPivotTaskFootprint(
   filtered: SourceRow[],
   columns: readonly AxisGroup[],
   values: readonly PivotResultValueField[],
-  collator: Intl.Collator,
-  calculatedFields: CalculatedFieldEvaluator,
-  aggregates: PivotAggregatePlanner,
   targetBounds: { rowCount: number; columnCount: number },
 ): void {
   const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
@@ -1965,7 +1964,7 @@ function assertPivotTaskFootprint(
     : 0;
   const fixedRows = 1 + reportFilterRows + (displayOptions.showFieldHeaders ? 1 : 0) + (definition.layout.showColumnGrandTotals ? 1 : 0);
   const nodeLimit = Math.max(0, availableRows - fixedRows);
-  const nodeCount = countPivotResultNodes(filtered, definition.layout.rows, 0, definition.fieldCatalog, collator, values, calculatedFields, aggregates, nodeLimit);
+  const nodeCount = countPivotResultNodes(filtered, definition.layout.rows, 0, nodeLimit);
   if (nodeCount > nodeLimit) throw new Error('Pivot target range exceeds the destination worksheet boundary');
   const resultCellCount = nodeCount * Math.max(columns.length, 1)
     + (definition.layout.showRowGrandTotals ? nodeCount : 0)
@@ -2760,7 +2759,7 @@ function computePivotResultFromTable(
   const columns = definition.layout.columns.length
     ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields, aggregates)
     : [{ values: [], rows: filtered, rowSet: new Set(filtered) }];
-  assertPivotTaskFootprint(definition, filtered, columns, resultFields, collator, calculatedFields, aggregates, targetBounds);
+  assertPivotTaskFootprint(definition, filtered, columns, resultFields, targetBounds);
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
