@@ -30,7 +30,11 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             "schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
     private static final Set<String> UPDATE_KEYS = Set.of(
-            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
+            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata",
+            "calculationProof", "previousCalculationProof"
+    );
+    private static final Set<String> CALCULATION_PROOF_KEYS = Set.of(
+            "schema", "pivotId", "sourceRevision", "layoutRevision", "filterRevision", "occupiedRange"
     );
     private static final Set<String> SOURCE_KEYS = Set.of("kind", "range", "ranges", "relationships", "tableId", "name", "sheetId", "dataSourceId");
     private static final Set<String> TARGET_KEYS = Set.of("sheetId", "anchor");
@@ -48,9 +52,12 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> NATIVE_KEYS = Set.of(
             "cacheId", "cacheDefinitionPart", "cacheRecordsPart", "pivotTablePart", "fieldBindings", "preservedFeatures"
     );
-    private static final Set<String> PRESENTATION_KEYS = Set.of("styleName", "styleOptions");
+    private static final Set<String> PRESENTATION_KEYS = Set.of("styleName", "styleOptions", "displayOptions");
     private static final Set<String> STYLE_OPTIONS_KEYS = Set.of(
             "showRowHeaders", "showColumnHeaders", "showRowStripes", "showColumnStripes", "showLastColumn"
+    );
+    private static final Set<String> DISPLAY_OPTIONS_KEYS = Set.of(
+            "fillEmptyCells", "emptyCellText", "showErrorValues", "errorCellText", "showFieldHeaders", "autoFitColumnsOnUpdate"
     );
     private static final Set<String> AGGREGATORS = Set.of(
             "sum", "count", "count-numbers", "average", "min", "max", "product", "stdev", "stdevp", "var", "varp", "distinct-count"
@@ -112,6 +119,8 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 ObjectNode current = currentPivot(root, mutation.sheetId(), pivotId(params));
                 ObjectNode next = updatedPivot(current, params);
                 validatePivot(root, mutation.sheetId(), next);
+                validateCalculationProof(root, current, params.get("previousCalculationProof"), "Pivot update previous calculation proof");
+                validateCalculationProof(root, next, params.get("calculationProof"), "Pivot update calculation proof");
                 yield pivotRanges(root, next);
             }
             case "pivot.refresh" -> {
@@ -196,6 +205,8 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode next = updatedPivot(current, params);
         canonicalizeFilterScopes(next);
         validatePivot(root, sheetId, next);
+        validateCalculationProof(root, current, params.get("previousCalculationProof"), "Pivot update previous calculation proof");
+        validateCalculationProof(root, next, params.get("calculationProof"), "Pivot update calculation proof");
         pivots.set(SnapshotMutationSupport.indexById(pivots, pivotId(params)), next);
     }
 
@@ -213,6 +224,35 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             if (value != null) next.set(property, value.deepCopy());
         }
         return next;
+    }
+
+    /**
+     * Calculation proofs are request preconditions, not persisted pivot state.
+     * Validate their identity and occupied target range on both sides of the
+     * update so a stale client cannot commit a layout against another pivot.
+     */
+    private void validateCalculationProof(ObjectNode root, ObjectNode pivot, JsonNode rawProof, String label) {
+        if (rawProof == null || !rawProof.isObject()) throw ServiceException.validation(label + " is required");
+        ObjectNode proof = (ObjectNode) rawProof;
+        SnapshotMutationSupport.validateKnownKeys(proof, CALCULATION_PROOF_KEYS, label);
+        if (!"PivotCalculationProof".equals(SnapshotMutationSupport.text(proof, "schema"))) {
+            throw ServiceException.validation(label + " schema is invalid");
+        }
+        if (!SnapshotMutationSupport.text(pivot, "id").equals(SnapshotMutationSupport.text(proof, "pivotId"))) {
+            throw ServiceException.validation(label + " pivotId does not match the pivot");
+        }
+        SnapshotMutationSupport.text(proof, "sourceRevision");
+        SnapshotMutationSupport.text(proof, "layoutRevision");
+        SnapshotMutationSupport.text(proof, "filterRevision");
+        RangeRef occupied = SnapshotMutationSupport.range(root, proof.get("occupiedRange"));
+        ObjectNode target = SnapshotMutationSupport.requiredObject(pivot, "target");
+        ObjectNode anchor = SnapshotMutationSupport.requiredObject(target, "anchor");
+        String targetSheetId = SnapshotMutationSupport.text(target, "sheetId");
+        int targetRow = anchor.path("row").asInt();
+        int targetColumn = anchor.path("column").asInt();
+        if (!targetSheetId.equals(occupied.sheetId()) || targetRow != occupied.startRow() || targetColumn != occupied.startColumn()) {
+            throw ServiceException.validation(label + " occupied range does not match the pivot target");
+        }
     }
 
     private ObjectNode currentPivot(ObjectNode root, String sheetId, String id) {
@@ -1136,6 +1176,19 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         SnapshotMutationSupport.validateKnownKeys(options, STYLE_OPTIONS_KEYS, "Pivot presentation styleOptions");
         for (String key : STYLE_OPTIONS_KEYS) if (!options.path(key).isBoolean()) {
             throw ServiceException.validation("Pivot presentation style option " + key + " must be a boolean");
+        }
+        if (!presentation.has("displayOptions")) return;
+        ObjectNode displayOptions = requiredObject(presentation, "displayOptions", "Pivot presentation displayOptions");
+        SnapshotMutationSupport.validateKnownKeys(displayOptions, DISPLAY_OPTIONS_KEYS, "Pivot presentation displayOptions");
+        for (String key : List.of("fillEmptyCells", "showErrorValues", "showFieldHeaders", "autoFitColumnsOnUpdate")) {
+            if (!displayOptions.path(key).isBoolean()) {
+                throw ServiceException.validation("Pivot presentation display option " + key + " must be a boolean");
+            }
+        }
+        for (String key : List.of("emptyCellText", "errorCellText")) {
+            if (!displayOptions.path(key).isTextual()) {
+                throw ServiceException.validation("Pivot presentation display option " + key + " must be a string");
+            }
         }
     }
 

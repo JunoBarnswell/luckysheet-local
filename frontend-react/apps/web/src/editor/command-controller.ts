@@ -175,7 +175,13 @@ export function useEditorCommandController({
 
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
-  const pivotFields: PivotFieldDefinition[] = pivotTree?.fields.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
+  // The result tree is asynchronous. While a refresh is in flight, keep the
+  // field list owned by the active PivotTable instead of deriving it from the
+  // current worksheet region (which is the PivotTable output sheet and can
+  // legitimately contain a single fallback column).
+  const pivotFields: PivotFieldDefinition[] = activePivot
+    ? (pivotTree?.fields.fields ?? activePivot.fieldCatalog.fields)
+    : session.getPivotFieldCatalog(pivotSourceRange);
   const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];

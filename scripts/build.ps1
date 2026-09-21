@@ -42,16 +42,20 @@ function Invoke-LoggedCommand {
 
     $safeName = ($Name -replace '[^A-Za-z0-9_.-]', '-')
     $logPath = Join-Path $LogRoot ($safeName + '.log')
+    $stdoutPath = Join-Path $LogRoot ($safeName + '.stdout.tmp')
+    $stderrPath = Join-Path $LogRoot ($safeName + '.stderr.tmp')
     Write-Host "==> $Name"
     Write-Host "    log: $logPath"
 
-    Push-Location $WorkingDirectory
     try {
-        & $FilePath @Arguments *> $logPath
-        $exitCode = $LASTEXITCODE
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = $process.ExitCode
+        Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue | Set-Content -LiteralPath $logPath
+        Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Add-Content -LiteralPath $logPath
     }
     finally {
-        Pop-Location
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
 
     if ($exitCode -ne 0) {
@@ -69,11 +73,25 @@ function Get-VersionOutput {
         [Parameter(Mandatory)][string[]]$Arguments
     )
 
-    $output = & $FilePath @Arguments 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    # The Java launcher writes version information to stderr even on success.
+    # Keep the process exit-code gate, but capture that expected stream in a
+    # file so strict PowerShell error handling cannot promote it to failure.
+    $stdoutPath = [IO.Path]::GetTempFileName()
+    $stderrPath = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = $process.ExitCode
+        $output = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) {
         throw "Unable to query '$FilePath'."
     }
-    return $output.Trim()
+    return ($output + $stderr).Trim()
 }
 
 function Select-JavaHome {

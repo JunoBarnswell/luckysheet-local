@@ -987,8 +987,21 @@ export class WorkbookSession {
       this.emit();
     };
     this.runtime.handlers.onMutationsApplied = () => {
+      // Remote bootstrap rehydrates the model and clears derived Pivot
+      // results.  A refresh started just before the WebSocket snapshot is
+      // applied belongs to the discarded model; cancel it and schedule a new
+      // calculation from the authoritative snapshot instead of leaving the
+      // worksheet in a permanent loading state.
+      const hasPivots = this.runtime.model.getSheets().some((sheet) => sheet.pivots.length > 0);
+      const needsPivotRehydrate = hasPivots && Object.keys(this.runtime.pivotResults).length === 0;
+      if (needsPivotRehydrate) {
+        for (const taskId of this.activePivotTasks.values()) this.pivotTaskPort.cancel(taskId);
+        this.activePivotTasks.clear();
+        this.registeredPivotSources.clear();
+      }
       const mutations = this.runtime.drainPivotMutations();
       this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
+      if (needsPivotRehydrate) this.refreshPivotsForTrigger({ kind: 'open' });
       if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
       else this.invalidateFormulaResultProjections();
       this.persistenceMetaDirty = true;
@@ -1870,24 +1883,35 @@ export class WorkbookSession {
       const pivot = (resolvedParams as CreatePivotTableParams & { pivot?: PivotModel }).pivot;
       if (pivot) {
         const preparedResult = this.pendingPivotCommitResults.get(pivot.id);
-        if (preparedResult) {
+        if (preparedResult && pivotResultMatchesRevision(this.runtime.model, pivot, preparedResult, this.runtime.formula)) {
           this.pendingPivotCommitResults.delete(pivot.id);
           this.runtime.pivotResults[pivot.id] = preparedResult;
           delete this.runtime.pivotErrors[pivot.id];
+          this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
         } else if (!pivotResultMatchesRevision(this.runtime.model, pivot, this.runtime.pivotResults[pivot.id], this.runtime.formula)) {
+          if (preparedResult) this.pendingPivotCommitResults.delete(pivot.id);
           this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: pivot.id });
         }
       }
     } else if (commandId === 'pivot.update') {
       const updateParams = resolvedParams as { pivotId?: string };
       if (updateParams.pivotId) {
+        const updatedPivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === updateParams.pivotId);
         const preparedResult = this.pendingPivotCommitResults.get(updateParams.pivotId);
-        if (preparedResult) {
+        const preparedResultMatches = Boolean(updatedPivot && preparedResult
+          && pivotResultMatchesRevision(this.runtime.model, updatedPivot, preparedResult, this.runtime.formula));
+        if (preparedResultMatches && preparedResult && updatedPivot) {
           this.pendingPivotCommitResults.delete(updateParams.pivotId);
           this.runtime.pivotResults[updateParams.pivotId] = preparedResult;
           delete this.runtime.pivotErrors[updateParams.pivotId];
+          this.invalidateSheetProjection(updatedPivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
         } else {
-          const updatedPivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === updateParams.pivotId);
+          // A calculated result is only reusable when its proof still matches
+          // the post-mutation model.  A stale result must not enter the
+          // derived cache: the projection would reject it and the chart would
+          // report that the PivotTable is unavailable.  Recompute from the
+          // committed model instead.
+          if (preparedResult) this.pendingPivotCommitResults.delete(updateParams.pivotId);
           if (updatedPivot && !pivotResultMatchesRevision(this.runtime.model, updatedPivot, this.runtime.pivotResults[updateParams.pivotId], this.runtime.formula)) {
             this.refreshPivotsForTrigger({ kind: 'layout-change', pivotId: updateParams.pivotId });
           }
@@ -4205,7 +4229,7 @@ export class WorkbookSession {
         hiddenData: 'show',
       },
     };
-    this.commitInsertDrawing({ commandId: 'pivot.chart.create', sheetId: sheet.id, drawing, payload }, () => {
+    this.commitInsertDrawing({ commandId: 'pivot.chart.create', sheetId: sheet.id, drawing, payload, extraParams: { pivotId } }, () => {
       this.activeSheetId = sheet.id;
       this.setActivePivotContext(pivotId, sheet.id);
       this.setDrawingSelection([drawing.id]);
@@ -4872,18 +4896,27 @@ export class WorkbookSession {
     const activeIds = new Set(pivots.map((pivot) => pivot.id));
     for (const pivotId of Object.keys(this.runtime.pivotResults)) if (!activeIds.has(pivotId)) delete this.runtime.pivotResults[pivotId];
     for (const pivotId of Object.keys(this.runtime.pivotErrors)) if (!activeIds.has(pivotId)) delete this.runtime.pivotErrors[pivotId];
-    const refreshIds = pivotIdsToRefresh(this.runtime.model, pivots, trigger);
+    const refreshIds = new Set(pivotIdsToRefresh(this.runtime.model, pivots, trigger));
+    if (trigger.kind === 'open') {
+      for (const pivot of pivots) {
+        if (!pivotResultMatchesRevision(this.runtime.model, pivot, this.runtime.pivotResults[pivot.id], this.runtime.formula)) {
+          refreshIds.add(pivot.id);
+        }
+      }
+    }
     for (const pivotId of refreshIds) {
       const prepared = this.pendingPivotCommitResults.get(pivotId);
-      if (prepared) {
+      const pivot = pivots.find((entry) => entry.id === pivotId);
+      if (prepared && pivot && pivotResultMatchesRevision(this.runtime.model, pivot, prepared, this.runtime.formula)) {
         this.pendingPivotCommitResults.delete(pivotId);
         this.runtime.pivotResults[pivotId] = prepared;
         delete this.runtime.pivotErrors[pivotId];
+        this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
       } else this.recomputePivotResult(pivotId);
     }
-    if (refreshIds.length > 0) {
+    if (refreshIds.size > 0) {
       for (const pivot of pivots) {
-        if (refreshIds.includes(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
+        if (refreshIds.has(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
       }
     }
   }

@@ -15,6 +15,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -630,6 +631,20 @@ class MutationDescriptorRegistryTest {
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
 
+        ObjectNode pivotWithDisplayOptions = (ObjectNode) pivot.params().deepCopy();
+        ((ObjectNode) pivotWithDisplayOptions).set("presentation", mapper.readTree("""
+                {"styleOptions":{"showRowHeaders":true,"showColumnHeaders":true,"showRowStripes":false,"showColumnStripes":false,"showLastColumn":false},"displayOptions":{"fillEmptyCells":false,"emptyCellText":"","showErrorValues":true,"errorCellText":"","showFieldHeaders":true,"autoFitColumnsOnUpdate":true}}
+                """));
+        JsonNode persistedPresentation = registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", pivotWithDisplayOptions), WorkbookAclRole.EDITOR)
+                .descriptor().apply(snapshot, new OperationMutation("pivot.add", "sheet-1", pivotWithDisplayOptions));
+        assertTrue(persistedPresentation.path("sheets").get(0).path("pivots").get(0).path("presentation").path("displayOptions").path("autoFitColumnsOnUpdate").asBoolean());
+
+        ObjectNode invalidDisplayOptions = pivotWithDisplayOptions.deepCopy();
+        ((ObjectNode) invalidDisplayOptions.path("presentation").path("displayOptions")).put("autoFitColumnsOnUpdate", "yes");
+        ServiceException invalidDisplayOption = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", invalidDisplayOptions), WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", invalidDisplayOption.code());
+
         ObjectNode difference = (ObjectNode) pivot.params().deepCopy();
         ObjectNode differenceValue = (ObjectNode) difference.path("layout").path("values").get(0);
         differenceValue.set("showAs", mapper.createObjectNode()
@@ -736,7 +751,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         OperationMutation update = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[{"fieldId":"calculated:margin"}],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:calculated:margin","fieldId":"calculated:margin","summarizeBy":"sum"}],"calculatedFields":[{"fieldId":"calculated:margin","name":"Margin","formula":"=amount*1.15"}],"calculatedItems":[{"fieldId":"calculated-item:amount:premium","targetFieldId":"sheet:sheet-1:column:1:range:0","name":"Premium","formula":"=amount*3"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
+                {"sheetId":"sheet-1","pivotId":"pivot-1","calculationProof":{"schema":"PivotCalculationProof","pivotId":"pivot-1","sourceRevision":"source-next","layoutRevision":"layout-next","filterRevision":"filter-next","occupiedRange":{"sheetId":"sheet-1","startRow":4,"endRow":8,"startColumn":3,"endColumn":5}},"previousCalculationProof":{"schema":"PivotCalculationProof","pivotId":"pivot-1","sourceRevision":"source-current","layoutRevision":"layout-current","filterRevision":"filter-current","occupiedRange":{"sheetId":"sheet-1","startRow":4,"endRow":4,"startColumn":3,"endColumn":3}},"layout":{"rows":[{"fieldId":"calculated:margin"}],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:calculated:margin","fieldId":"calculated:margin","summarizeBy":"sum"}],"calculatedFields":[{"fieldId":"calculated:margin","name":"Margin","formula":"=amount*1.15"}],"calculatedItems":[{"fieldId":"calculated-item:amount:premium","targetFieldId":"sheet:sheet-1:column:1:range:0","name":"Premium","formula":"=amount*3"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
                 """));
 
         JsonNode next = registry.applyPublicMutations(snapshot, List.of(update));
@@ -745,6 +760,14 @@ class MutationDescriptorRegistryTest {
         assertEquals("calculated-item:amount:premium", pivot.path("layout").path("calculatedItems").get(0).path("fieldId").asText());
         assertEquals(2, pivot.path("fieldCatalog").path("fields").size());
         assertEquals(false, pivot.path("fieldCatalog").path("fields").toString().contains("calculated:margin"));
+
+        ObjectNode invalidParams = (ObjectNode) update.params().deepCopy();
+        ((ObjectNode) invalidParams.path("calculationProof").path("occupiedRange")).put("startRow", 5);
+        JsonNode beforeInvalidProof = snapshot.deepCopy();
+        ServiceException invalidProof = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(new OperationMutation("pivot.update", "sheet-1", invalidParams))));
+        assertEquals("VALIDATION_ERROR", invalidProof.code());
+        assertEquals(beforeInvalidProof, snapshot);
     }
 
     @Test
