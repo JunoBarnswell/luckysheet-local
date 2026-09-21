@@ -1,0 +1,112 @@
+- application "Spreadsheet Designer" [ref=e351]:
+  - generic [ref=e353]:
+    - generic [ref=e354]:
+      - button "Open workbook menu" [ref=e357] [cursor=pointer]: 文件
+      - tablist "Workbook ribbon tabs" [ref=e358]:
+        - tab "开始" [selected] [ref=e359] [cursor=pointer]
+        - tab "插入" [ref=e360] [cursor=pointer]
+        - tab "页面布局" [ref=e361] [cursor=pointer]
+        - tab "公式" [ref=e362] [cursor=pointer]
+        - tab "数据" [ref=e363] [cursor=pointer]
+        - tab "视图" [ref=e364] [cursor=pointer]
+        - tab "审阅" [ref=e365] [cursor=pointer]
+        - tab "设置" [ref=e366] [cursor=pointer]
+      - generic [ref=e367]: 引擎已连接
+    - generic "home ribbon commands" [ref=e373]:
+      - generic [ref=e374]:
+        - generic [ref=e375]:
+          - generic [ref=e377]:
+            - generic [ref=e378]:
+              - button "粘贴 (Ctrl+V)" [active] [ref=e379] [cursor=pointer]:
+                - generic [ref=e381]: 粘贴
+              - button "选择性粘贴" [ref=e384] [cursor=pointer]
+            - generic [ref=e385]:
+              - button "剪切 (Ctrl+X)" [ref=e386] [cursor=pointer]:
+                - generic [ref=e388]: 剪切
+              - button "复制 (Ctrl+C)" [ref=e389] [cursor=pointer]:
+                - generic [ref=e391]: 复制
+              - button "格式刷" [ref=e392] [cursor=pointer]
+          - generic [ref=e394]: 剪贴板
+        - separator [ref=e395]
+        - generic [ref=e396]:
+          - generic [ref=e398]:
+            - generic [ref=e399]:
+              - combobox "字体" [ref=e402]: Microsoft YaHei
+              - textbox "字号" [ref=e404]: "11"
+              - button "增大字号" [ref=e405] [cursor=pointer]: A↑
+              - button "减小字号" [ref=e406] [cursor=pointer]: A↓
+            - generic [ref=e407]:
+              - button "加粗 (Ctrl+B)" [ref=e408] [cursor=pointer]
+              - button "斜体 (Ctrl+I)" [ref=e410] [cursor=pointer]
+              - button "下划线 (Ctrl+U)" [ref=e412] [cursor=pointer]
+              - button "边框" [ref=e416] [cursor=pointer]
+              - button "文字颜色" [ref=e420] [cursor=pointer]
+              - button "填充背景" [ref=e424] [cursor=pointer]
+              - button "拼音指南" [ref=e426] [cursor=pointer]
+              - button "字体设置" [ref=e429] [cursor=pointer]
+          - generic [ref=e433]: 字体
+        - separator [ref=e434]
+        - button "对齐工具" [ref=e438] [cursor=pointer]: 对齐
+        - separator [ref=e442]
+        - generic [ref=e443]:
+          - generic [ref=e445]:
+            - combobox "数字" [ref=e448]:
+              - option "常规" [selected]
+              - option "货币 ($)"
+              - option "会计专用 ($)"
+              - option "百分比 (%)"
+              - option "千位分隔 (#,##0)"
+              - option "数值 (0.00)"
+              - option "短日期"
+              - option "长日期"
+              - option "时间 (hh:mm)"
+              - option "分数"
+              - option "科学记数法"
+              - option "文本 (@)"
+              - option "更多数字格式…"
+            - generic [ref=e449]:
+              - button "百分比格式" [ref=e450] [cursor=pointer]:
+                - generic [ref=e451]: "%"
+              - button "千位分隔格式" [ref=e452] [cursor=pointer]:
+                - generic [ref=e453]: ","
+              - button "增加小数位" [disabled] [ref=e454]
+              - button "减少小数位" [disabled] [ref=e456]
+              - button "数字格式设置" [ref=e458] [cursor=pointer]
+          - generic [ref=e462]: 数字
+        - separator [ref=e463]
+        - button "样式工具" [ref=e467] [cursor=pointer]: 样式
+        - separator [ref=e475]
+        - button "单元格工具" [ref=e479] [cursor=pointer]: 单元格
+        - separator [ref=e485]
+        - button "编辑工具" [ref=e489] [cursor=pointer]: 编辑
+  - form "Formula bar" [ref=e497]:
+    - textbox "选中单元格" [ref=e499]: H11
+    - button "打开名称管理器" [ref=e500] [cursor=pointer]
+    - button "取消公式编辑" [ref=e505] [cursor=pointer]
+    - button "应用公式" [ref=e508] [cursor=pointer]
+    - button "插入函数向导" [ref=e511] [cursor=pointer]: fx
+    - textbox "公式输入" [ref=e515]:
+      - /placeholder: ""
+  - generic [ref=e516]:
+    - grid "Spreadsheet canvas" [ref=e523]:
+      - scrollbar "horizontal scrollbar" [ref=e526]
+      - scrollbar "vertical scrollbar" [ref=e528]
+    - navigation "Worksheets" [ref=e530]:
+      - navigation "工作表" [ref=e531]:
+        - generic [ref=e532]:
+          - button "向左滚动工作表" [ref=e533] [cursor=pointer]
+          - button "向右滚动工作表" [ref=e536] [cursor=pointer]
+          - button "添加工作表" [ref=e539] [cursor=pointer]
+          - tab "Sheet1" [selected] [ref=e546] [cursor=pointer]
+          - button "更多工作表操作" [ref=e550] [cursor=pointer]
+  - contentinfo [ref=e558]:
+    - generic "Workbook status bar" [ref=e559]:
+      - generic [ref=e560]:
+        - generic [ref=e561]: 就绪
+        - status "Workbook restored from server" [ref=e562]: 已保存
+        - generic [ref=e563]: H11 · r0
+      - button "Open keyboard shortcuts" [ref=e564] [cursor=pointer]: 快捷键
+      - generic [ref=e565]:
+        - button "Zoom out" [ref=e566] [cursor=pointer]: −
+        - button "Zoom in" [ref=e569] [cursor=pointer]: +
+        - generic [ref=e570]: 100%

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -e
+cd /c/Users/kuo13/Projects/luckysheet-local/output/playwright/pivot-perf
+/c/Users/kuo13/.codex/skills/playwright/scripts/playwright_cli.sh --session pivot-perf run-code "async (page) => { page.setDefaultTimeout(240000); const box = page.getByRole('textbox', { name: '选中单元格' }); await box.fill('A1'); await box.press('Enter'); const start = Date.now(); await page.getByRole('button', { name: '粘贴 (Ctrl+V)' }).click(); await page.waitForFunction(() => Number(document.querySelector('[data-testid=sheet-canvas]')?.getAttribute('aria-rowcount') || '0') >= 50000, { timeout: 240000 }); const end = Date.now(); return { elapsedMs: end - start, rowCount: await page.locator('[data-testid=sheet-canvas]').getAttribute('aria-rowcount'), colCount: await page.locator('[data-testid=sheet-canvas]').getAttribute('aria-colcount'), status: await page.getByRole('status').allTextContents() }; }"

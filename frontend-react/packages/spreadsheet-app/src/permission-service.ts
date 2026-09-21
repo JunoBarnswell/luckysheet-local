@@ -1,4 +1,12 @@
-import { protectionResolver, type ProtectionAction, type ProtectionRule, type RangeRef, type WorkbookModel } from '@react-sheets/core-model';
+import {
+  MAX_SHEET_COLUMN_COUNT,
+  MAX_SHEET_ROW_COUNT,
+  protectionResolver,
+  type ProtectionAction,
+  type ProtectionRule,
+  type RangeRef,
+  type WorkbookModel,
+} from '@react-sheets/core-model';
 import { mutationPermission, type PermissionPolicy } from '@react-sheets/protocol';
 import {
   buildPermissionCapabilities,
@@ -203,8 +211,13 @@ export class PermissionService {
         rules,
         ranges,
         action,
-        rowCount: sheet.rowCount,
-        columnCount: sheet.columnCount,
+        // Worksheet extent is sparse and grows on demand. Protection must
+        // validate a pending write against the canonical Excel bounds so a
+        // legitimate paste/insert can grow the sheet before the mutation is
+        // applied; using the current allocated extent rejects valid writes at
+        // the edge of the visible grid.
+        rowCount: MAX_SHEET_ROW_COUNT,
+        columnCount: MAX_SHEET_COLUMN_COUNT,
         readCellStyle: (row, column) => sheet.cells.get(row, column)?.style,
         countUnlockedCells: (range) => {
           let count = 0;

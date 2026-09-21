@@ -2127,8 +2127,29 @@ function matchesSourceFilter(row: SourceRow, matcher: PivotSourceFilterMatcher, 
 function applySourceFilters(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[], collator: Intl.Collator): SourceRow[] {
   if (matchers.length === 0) return rows;
   const indexedRows = indexedManualFilterRows(rows, matchers);
-  const candidates = indexedRows ?? rows;
-  return candidates.filter((row) => matchers.every((matcher) => matchesSourceFilter(row, matcher, collator)));
+  const candidates = indexedRows?.rows ?? rows;
+  const satisfiedMatcher = indexedRows?.satisfiedMatcher;
+  const result: SourceRow[] = [];
+  for (const row of candidates) {
+    let accepted = true;
+    for (const matcher of matchers) {
+      // The indexed candidate set is constructed from this exact manual
+      // include matcher, so evaluating it again only decodes and keys the
+      // same source value a second time for every candidate row.
+      if (matcher === satisfiedMatcher) continue;
+      if (!matchesSourceFilter(row, matcher, collator)) {
+        accepted = false;
+        break;
+      }
+    }
+    if (accepted) result.push(row);
+  }
+  return result;
+}
+
+interface IndexedManualFilterResult {
+  rows: SourceRow[];
+  satisfiedMatcher: PivotSourceFilterMatcher;
 }
 
 /**
@@ -2136,10 +2157,14 @@ function applySourceFilters(rows: SourceRow[], matchers: readonly PivotSourceFil
  * The index is only valid for the immutable base table; calculated-item rows
  * and already projected subsets continue through the regular predicate path.
  */
-function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[]): SourceRow[] | undefined {
+function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[]): IndexedManualFilterResult | undefined {
   const table = rows[0]?.source;
-  if (!table || rows.length !== table.rows.length || rows.some((row) => row.source !== table || row.overrides !== undefined)) return undefined;
-  let best: SourceRow[] | undefined;
+  // The source-table path preserves the immutable row-array identity. A
+  // filtered/control/calculated-item subset is a new array and must use the
+  // general predicate path. Avoid scanning every row just to rediscover that
+  // identity on each large-table filter interaction.
+  if (!table || rows !== table.rows) return undefined;
+  let best: IndexedManualFilterResult | undefined;
   for (const matcher of matchers) {
     const { filter, placement, memberSet } = matcher;
     if (filter.kind !== 'manual' || filter.mode !== 'include' || placement?.group || !memberSet) continue;
@@ -2154,7 +2179,7 @@ function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSour
     }
     rowNumbers.sort((left, right) => left - right);
     const candidates = rowNumbers.map((row) => table.rows[row]!);
-    if (!best || candidates.length < best.length) best = candidates;
+    if (!best || candidates.length < best.rows.length) best = { rows: candidates, satisfiedMatcher: matcher };
   }
   return best;
 }
@@ -2379,6 +2404,46 @@ function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, 
     && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
+interface IndexedSlicerMask {
+  mask: Uint8Array;
+  acceptedCount: number;
+  hasRestriction: boolean;
+}
+
+/**
+ * Build a slicer mask from the same immutable member postings used by manual
+ * filters. Include/exclude controls otherwise decode and key every source row
+ * on every layout/filter change, even when only a few members are selected.
+ */
+function indexedSlicerMask(rows: SourceRow[], fieldId: string, slicer: PivotSlicerDrawingPayload): IndexedSlicerMask | undefined {
+  if (slicer.filter.mode === 'all') {
+    const mask = new Uint8Array(rows.length);
+    mask.fill(1);
+    return { mask, acceptedCount: rows.length, hasRestriction: false };
+  }
+  const table = rows[0]?.source;
+  if (!table || rows !== table.rows) return undefined;
+  const ordinal = table.fieldOrdinals.get(fieldId);
+  if (ordinal === undefined) return undefined;
+  const index = sourceMemberIndex(table, ordinal);
+  if (!index) return undefined;
+  const memberSet = new Set(slicer.filter.memberKeys.map((member) => pivotMemberKey(member)));
+  const mask = new Uint8Array(rows.length);
+  if (slicer.filter.mode === 'include') {
+    for (const member of memberSet) {
+      for (const row of index.get(member) ?? []) mask[row] = 1;
+    }
+  } else {
+    mask.fill(1);
+    for (const member of memberSet) {
+      for (const row of index.get(member) ?? []) mask[row] = 0;
+    }
+  }
+  let acceptedCount = 0;
+  for (const accepted of mask) acceptedCount += accepted;
+  return { mask, acceptedCount, hasRestriction: acceptedCount !== rows.length };
+}
+
 interface PivotControlMatcher {
   rows: SourceRow[];
   controls: readonly PivotTaskControl[];
@@ -2402,13 +2467,20 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
     let acceptedCount = 0;
     const payload = control.payload;
     if (payload.kind === 'slicer') {
-      const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
-      rows.forEach((row, rowIndex) => {
-        const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
-        mask[rowIndex] = accepted ? 1 : 0;
-        if (accepted) acceptedCount += 1;
-        if (!accepted) hasRestriction = true;
-      });
+      const indexed = indexedSlicerMask(rows, control.fieldId, payload);
+      if (indexed) {
+        mask.set(indexed.mask);
+        acceptedCount = indexed.acceptedCount;
+        hasRestriction = indexed.hasRestriction;
+      } else {
+        const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
+        rows.forEach((row, rowIndex) => {
+          const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
+          mask[rowIndex] = accepted ? 1 : 0;
+          if (accepted) acceptedCount += 1;
+          if (!accepted) hasRestriction = true;
+        });
+      }
     } else {
       const bounds = normalizePivotTimelinePeriod(payload.period);
       rows.forEach((row, rowIndex) => {

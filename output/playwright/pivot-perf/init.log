@@ -1,0 +1,26 @@
+### Ran Playwright code
+```js
+await page.getByRole('textbox', { name: '初始化凭据' }).fill('OdTGOWbUtklYFt8aBKPLi9QzmrB4OPy35kz0q30Fxss');
+```
+### Ran Playwright code
+```js
+await page.getByRole('textbox', { name: '用户名' }).fill('perfadmin');
+```
+### Ran Playwright code
+```js
+await page.getByRole('textbox', { name: '显示名称' }).fill('Pivot Performance Admin');
+```
+### Ran Playwright code
+```js
+await page.getByRole('textbox', { name: '密码' }).fill('PerfPass-2026-Strong!');
+```
+### Ran Playwright code
+```js
+await page.getByRole('button', { name: '创建管理员' }).click();
+```
+### Page
+- Page URL: http://127.0.0.1:8083/workbooks
+- Page Title: React Sheets
+- Console: 1 errors, 0 warnings
+### Snapshot
+- [Snapshot](.playwright-cli\page-2026-09-21T10-15-18-309Z.yml)
