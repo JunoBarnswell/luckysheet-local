@@ -1,5 +1,6 @@
 import {
   DEFAULT_DATA_BLOCK_ROW_COUNT,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
   normalizeDataSourceManifest,
   type DataBlockRef,
   type DataBlockAvailability,
@@ -230,6 +231,46 @@ export class DataSourceContentQuery {
       state: rows.state,
       value: rows.value.map((row) => row[field.ordinal] ?? null),
     };
+  }
+
+  /**
+   * Load one field's member domain on demand.  The manifest deliberately does
+   * not materialize distinct values for large sources; callers should invoke
+   * this only when a value picker is opened.
+   */
+  async getDistinctFieldValues(
+    fieldRef: DataSourceFieldRef,
+    maxValues = PIVOT_MEMBER_DISPLAY_LIMIT,
+  ): Promise<DataSourceContentResult<TableScalar[]>> {
+    const field = this.resolveField(fieldRef);
+    if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
+    if (!Number.isSafeInteger(maxValues) || maxValues <= 0) return this.errorResult('Data source distinct-value limit must be a positive safe integer');
+
+    const values: TableScalar[] = [];
+    const seen = new Set<string>();
+    let lastState = state(this.source.id, null, 'ready');
+    for (const ref of this.source.blocks) {
+      let block: LoadedBlock;
+      try {
+        block = await this.loadBlock(ref);
+      } catch (error) {
+        const current = this.loadStates.get(ref.id)
+          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
+        return { state: { ...current } };
+      }
+      lastState = state(this.source.id, ref.id, 'ready');
+      for (const row of block.rows) {
+        const value = row[field.ordinal] ?? null;
+        const key = value === null ? 'null' : `${typeof value}:${JSON.stringify(value)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        values.push(value);
+        if (values.length > maxValues) {
+          return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
+        }
+      }
+    }
+    return { state: lastState, value: values };
   }
 
   async getRows(

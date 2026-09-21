@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { PivotModel } from '@react-sheets/core-model';
 import { WorkbookSession } from './workbook-session';
+import { createInlineJsonQuery } from './features/query';
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -209,6 +210,40 @@ describe('WorkbookSession PivotTable integration', () => {
     await waitForPivot(app, pivot.id);
     assert.equal(app.listPivotControls(pivot.id).length, 1);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
+  });
+
+  it('keeps an explicit block-backed worksheet source on the DataSource Pivot path', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('pivot-block-source', 'Pivot block source', [
+      { ID: 'A', Amount: 1 },
+      { ID: 'B', Amount: 2 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    const region = sheet.dataRegions[0]!;
+
+    const created = await app.createPivotTable({
+      source: { kind: 'worksheet-range', range: structuredClone(region.range) },
+      destination: { kind: 'new-sheet' },
+    });
+    assert.equal(created.status, 'created', app.getUiSnapshot().notice);
+    if (created.status !== 'created') return;
+
+    const pivot = app['runtime'].model.getSheets()
+      .flatMap((entry) => entry.pivots)
+      .find((entry) => entry.id === created.pivotId)!;
+    assert.deepEqual(pivot.source, { kind: 'data-source', dataSourceId: region.sourceId });
+    assert.deepEqual(pivot.fieldCatalog.fields.map((field) => field.fieldId), [
+      `${region.sourceId}:field:0`,
+      `${region.sourceId}:field:1`,
+    ]);
+
+    app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
+    app.refreshPivot(pivot.id);
+    await waitForPivot(app, pivot.id);
+    const result = app['runtime'].pivotResults[pivot.id];
+    const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
+    assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
   });
 
   it('recomputes the Pivot projection when pivot.update enters through the public dispatch path', async () => {

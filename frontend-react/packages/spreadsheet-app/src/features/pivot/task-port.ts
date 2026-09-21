@@ -1,4 +1,4 @@
-import { pivotSourceIndexTransferables } from './source-index';
+import { pivotSourceIndexTransferables, type PivotSourceIndex } from './source-index';
 import { PivotTaskEvaluator } from './task-worker-entry';
 import {
   assertPivotTaskResult,
@@ -55,8 +55,15 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
       }, this.timeoutMs);
       this.pending.set(request.taskId, { request, resolve, timeout });
       try {
-        const transfer = request.kind === 'source-register' ? pivotSourceIndexTransferables(request.source) : [];
-        this.worker.postMessage(request, transfer);
+        // Transfer an owned copy. The source index is retained by the
+        // session for revision checks and may be reused by a refresh; sending
+        // the canonical typed arrays would detach those buffers on the main
+        // thread and make the next registration fail during cloning.
+        const transportRequest = request.kind === 'source-register'
+          ? { ...request, source: clonePivotSourceIndex(request.source) }
+          : request;
+        const transfer = transportRequest.kind === 'source-register' ? pivotSourceIndexTransferables(transportRequest.source) : [];
+        this.worker.postMessage(transportRequest, transfer);
       } catch (error) {
         this.pending.delete(request.taskId);
         clearTimeout(timeout);
@@ -115,6 +122,36 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
     }
     this.pending.clear();
   }
+}
+
+function clonePivotSourceIndex(source: PivotSourceIndex): PivotSourceIndex {
+  return {
+    ...source,
+    fields: source.fields.map((field) => ({ ...field })),
+    columns: source.columns.map((column) => {
+      if (column.kind === 'dictionary') {
+        return {
+          kind: 'dictionary',
+          dictionary: column.dictionary.map((value) => structuredClone(value)),
+          codes: new Uint32Array(column.codes),
+        };
+      }
+      if (column.kind === 'number') {
+        return {
+          kind: 'number',
+          values: new Float64Array(column.values),
+          validity: new Uint8Array(column.validity),
+        };
+      }
+      return {
+        kind: 'boolean',
+        values: new Uint8Array(column.values),
+        validity: new Uint8Array(column.validity),
+      };
+    }),
+    rowPathPool: source.rowPathPool.map((path) => structuredClone(path)),
+    rowPathOffsets: new Uint32Array(source.rowPathOffsets),
+  };
 }
 
 /** Test/non-browser host for the exact worker evaluator; production never selects it as a fallback. */

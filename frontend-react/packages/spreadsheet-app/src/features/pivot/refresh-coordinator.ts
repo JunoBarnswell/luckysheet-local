@@ -3,12 +3,12 @@ import type { PivotModel, RangeRef, WorkbookModel } from '@react-sheets/core-mod
 import { getPivotSourceRanges } from './engine';
 
 export type PivotRefreshTrigger =
-  | { kind: 'open' }
+  | { kind: 'open'; sheetId?: string }
   | { kind: 'explicit'; pivotId: string }
   | { kind: 'explicit-all' }
   | { kind: 'layout-change'; pivotId: string }
-  | { kind: 'source-change'; mutations: readonly MutationInfo[] }
-  | { kind: 'source-content-change'; sourceId: string };
+  | { kind: 'source-change'; mutations: readonly MutationInfo[]; sheetId?: string }
+  | { kind: 'source-content-change'; sourceId: string; sheetId?: string };
 
 function intersects(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
@@ -36,6 +36,7 @@ export function pivotIdsToRefresh(
   pivots: readonly PivotModel[],
   trigger: PivotRefreshTrigger,
 ): string[] {
+  const targetSheetMatches = (pivot: PivotModel, sheetId?: string): boolean => !sheetId || pivot.target.sheetId === sheetId;
   switch (trigger.kind) {
     case 'explicit':
       return pivots.some((pivot) => pivot.id === trigger.pivotId) ? [trigger.pivotId] : [];
@@ -44,14 +45,19 @@ export function pivotIdsToRefresh(
     case 'layout-change':
       return pivots.some((pivot) => pivot.id === trigger.pivotId) ? [trigger.pivotId] : [];
     case 'open':
-      return pivots.filter((pivot) => pivot.refreshPolicy.mode === 'on-open').map((pivot) => pivot.id);
+      return pivots
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
+        .filter((pivot) => pivot.refreshPolicy.mode === 'on-open')
+        .map((pivot) => pivot.id);
     case 'source-change':
       return pivots
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-change')
         .filter((pivot) => trigger.mutations.some((mutation) => dependsOnMutation(workbook, pivot, mutation)))
         .map((pivot) => pivot.id);
     case 'source-content-change':
       return pivots
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-change')
         .filter((pivot) => pivot.source.kind === 'data-source' && pivot.source.dataSourceId === trigger.sourceId)
         .map((pivot) => pivot.id);

@@ -221,6 +221,27 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(result.slicerItems?.[categorySlicer.drawing.id]?.map((item) => [item.value, item.selected, item.hasData]), [['Gadget', false, true], ['Widget', true, true]]);
   });
 
+  it('bounds high-cardinality Slicer projections without changing the source member domain', () => {
+    const workbook = new WorkbookModel('pivot-slicer-display-limit', 'Pivot Slicer Display Limit');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Member' });
+    for (let row = 1; row <= PIVOT_MEMBER_DISPLAY_LIMIT + 1; row += 1) sheet.cells.set(row, 0, { value: `Member ${String(row)}` });
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-slicer-display-limit', { sheetId: sheet.id, startRow: 0, endRow: PIVOT_MEMBER_DISPLAY_LIMIT + 1, startColumn: 0, endColumn: 0 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const member = catalog.fields[0]!;
+    const slicer = buildPivotSlicerDrawing({ drawingId: 'display-limit-slicer', payloadId: 'display-limit-slicer-payload', sheetId: sheet.id, pivotId: pivot.id, fieldId: member.fieldId, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1 });
+    sheet.drawings.push(slicer.drawing);
+    sheet.drawingPayloads.set(slicer.drawing.payloadId, slicer.payload);
+
+    const result = computePivotResult(workbook, pivot);
+    const items = result.slicerItems?.[slicer.drawing.id] ?? [];
+    assert.equal(member.values?.length, PIVOT_MEMBER_DISPLAY_LIMIT + 1);
+    assert.equal(items.length, PIVOT_MEMBER_DISPLAY_LIMIT);
+    assert.equal(new Set(items.map((item) => item.key.type + ':' + String(item.value))).size, items.length);
+  });
+
   it('reads worksheet-range Pivot values through the FormulaEngine spill authority', () => {
     const workbook = new WorkbookModel('pivot-spill', 'Pivot Spill');
     const sheet = workbook.getSheet('sheet-1');

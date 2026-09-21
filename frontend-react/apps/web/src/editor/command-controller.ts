@@ -180,7 +180,7 @@ export function useEditorCommandController({
   // current worksheet region (which is the PivotTable output sheet and can
   // legitimately contain a single fallback column).
   const pivotFields: PivotFieldDefinition[] = activePivot
-    ? (pivotTree?.fields.fields ?? activePivot.fieldCatalog.fields)
+    ? session.getPivotFieldCatalogForPivot(activePivot.id, pivotTree?.fields.fields ?? activePivot.fieldCatalog.fields)
     : session.getPivotFieldCatalog(pivotSourceRange);
   const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
@@ -294,6 +294,9 @@ export function useEditorCommandController({
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: () => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" }),
     onPivotSelect: setActivePivotId,
+    onLoadFieldValues: activePivot?.source.kind === 'data-source'
+      ? (fieldId) => session.loadPivotFieldValues(activePivot.id, fieldId)
+      : undefined,
     onFieldAreaChange: (fieldId, area, index) => {
       if (!activePivot) return;
       const next = area === "values" ? cloneLayout(activePivot.layout) : removePivotField(activePivot.layout, fieldId);

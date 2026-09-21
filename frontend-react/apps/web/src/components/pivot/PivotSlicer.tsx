@@ -1,5 +1,5 @@
-import { Box, Button, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { useMemo, useState } from 'react';
+import { Box, Button, Stack, Text, TextInput, VirtualList } from '@react-sheets/ui-system';
+import { useMemo, useState, type ReactElement } from 'react';
 import { createPivotMemberKey, formatPivotMember, PIVOT_MEMBER_DISPLAY_LIMIT, pivotMemberKey, type PivotFieldDefinition, type PivotMemberKey, type PivotScalar, type PivotSlicerItemProjection, type PivotSlicerSettings } from '@react-sheets/core-model';
 import type { PivotFilterMode } from './pivot-contract';
 import type { Locale } from '../../i18n';
@@ -55,7 +55,20 @@ export function PivotSlicer({ disabled = false, field, itemProjection, locale, m
   const selected = (member: PivotMemberKey): boolean => pivotManualMemberSelected(filterState, member);
   const allSelected = mode === 'all' || (allMembers.length > 0 && allMembers.every((member) => selected(member)));
   const setAll = (next: boolean) => onChange(next ? { mode: 'all', memberKeys: [] } : { mode: 'include', memberKeys: [] });
-  const columns = settings?.columnCount ?? 1;
+  const columns = Math.min(4, Math.max(1, settings?.columnCount ?? 1));
+  const visibleRows = useMemo(() => {
+    const rows: PivotSlicerItem[][] = [];
+    for (let index = 0; index < visibleItems.length; index += columns) rows.push(visibleItems.slice(index, index + columns));
+    return rows;
+  }, [columns, visibleItems]);
+  const renderMember = (item: PivotSlicerItem): ReactElement => {
+    const isSelected = selected(item.key);
+    return <Button key={pivotMemberKey(item.key)} disabled={disabled} aria-pressed={isSelected} size="xs" variant={isSelected ? 'soft' : 'ghost'} className={`justify-start ${item.hasData === false && settings?.showNoDataStyle !== false ? 'opacity-50' : ''}`} onClick={() => {
+      if (settings?.multiSelect === false) { onChange({ mode: 'include', memberKeys: [item.key] }); return; }
+      const next = applyPivotManualMemberDelta(filterState, [item.key], !isSelected);
+      onChange({ mode: next.mode, memberKeys: [...next.memberKeys] });
+    }}>{item.label}</Button>;
+  };
   return (
     <Stack gap="xs" className="rounded-lg border border-blue-100 bg-blue-50/30 p-2">
       {settings?.showHeader !== false ? <Text size="xs" weight="semibold">{settings?.caption || pivotText(locale, 'slicerTitle')} · {field.name}</Text> : null}
@@ -63,18 +76,14 @@ export function PivotSlicer({ disabled = false, field, itemProjection, locale, m
         {pivotText(locale, allSelected ? 'clearFilter' : 'selectAll')}
       </Button>
       <TextInput aria-label={`${pivotText(locale, 'searchItems')} ${field.name}`} placeholder={pivotText(locale, 'searchItems')} value={search} onChange={(event) => setSearch(event.target.value)} />
-      <Stack gap="xs" className="max-h-40 overflow-auto">
-        <Box className={`grid ${gridClasses[Math.min(4, Math.max(1, columns))] ?? 'grid-cols-1'} gap-1`}>
-        {visibleItems.map((item) => {
-          const isSelected = selected(item.key);
-          return <Button key={pivotMemberKey(item.key)} disabled={disabled} aria-pressed={isSelected} size="xs" variant={isSelected ? 'soft' : 'ghost'} className={`justify-start ${item.hasData === false && settings?.showNoDataStyle !== false ? 'opacity-50' : ''}`} onClick={() => {
-            if (settings?.multiSelect === false) { onChange({ mode: 'include', memberKeys: [item.key] }); return; }
-            const next = applyPivotManualMemberDelta(filterState, [item.key], !isSelected);
-            onChange({ mode: next.mode, memberKeys: [...next.memberKeys] });
-          }}>{item.label}</Button>;
-        })}
-        </Box>
-      </Stack>
+      <VirtualList
+        className="max-h-40 overflow-auto"
+        height={160}
+        itemHeight={32}
+        items={visibleRows}
+        itemKey={(row, index) => `${index}:${row.map((item) => pivotMemberKey(item.key)).join('|')}`}
+        renderItem={(row) => <Box className={`grid ${gridClasses[columns] ?? 'grid-cols-1'} gap-1`}>{row.map(renderMember)}</Box>}
+      />
     </Stack>
   );
 }

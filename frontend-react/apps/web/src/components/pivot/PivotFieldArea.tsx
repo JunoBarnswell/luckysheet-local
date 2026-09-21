@@ -44,6 +44,7 @@ export interface PivotFieldAreaProps {
   placements?: ReadonlyMap<string, PivotFieldPlacement>;
   filterStates?: Readonly<Record<string, PivotManualFilterState>>;
   onFilter?: (fieldId: string, filter: PivotManualFilterState) => void;
+  onLoadFieldValues?: (fieldId: string) => Promise<void>;
   onSort?: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroup?: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotal?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
@@ -200,9 +201,12 @@ function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldP
   );
 }
 
-export function PivotFieldArea({ area, baseFields = [], className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
+export function PivotFieldArea({ area, baseFields = [], className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onLoadFieldValues, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
   const [dragActive, setDragActive] = useState(false);
+  const [loadingFieldId, setLoadingFieldId] = useState<string | null>(null);
+  const [loadedFieldIds, setLoadedFieldIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [fieldValueErrors, setFieldValueErrors] = useState<Record<string, string>>({});
   const items: AreaItem[] = fieldIds.map((placementId, index) => {
     const value = area === 'values' ? valueFields.find((entry) => entry.valueId === placementId) : undefined;
     const fieldId = value?.fieldId ?? placementId;
@@ -216,6 +220,22 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
       groupedMembers: placements?.get(fieldId)?.group ? buildPivotGroupedFilterMembers(field?.values ?? [], placements.get(fieldId)!.group!) : undefined,
     };
   });
+  const requestFieldValues = (fieldId: string): void => {
+    if (!onLoadFieldValues || loadingFieldId === fieldId || loadedFieldIds.has(fieldId)) return;
+    setLoadingFieldId(fieldId);
+    setFieldValueErrors((current) => {
+      if (!(fieldId in current)) return current;
+      const next = { ...current };
+      delete next[fieldId];
+      return next;
+    });
+    void onLoadFieldValues(fieldId)
+      .then(() => setLoadedFieldIds((current) => new Set(current).add(fieldId)))
+      .catch((error: unknown) => {
+        setFieldValueErrors((current) => ({ ...current, [fieldId]: error instanceof Error ? error.message : String(error) }));
+      })
+      .finally(() => setLoadingFieldId((current) => current === fieldId ? null : current));
+  };
   return (
     <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-[#bdbdbd] bg-white ${dragActive ? 'border-accent bg-blue-50/40' : ''} ${className ?? ''}`}>
       <Inline gap="xs" className="h-8 shrink-0 border-b border-[#dedede] bg-[#fafafa] px-2">
@@ -240,12 +260,14 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
           >
             <Icon name="menu" size="xs" className="text-slate-300" />
             <Text size="xs" weight="medium" className="min-w-0 flex-1 truncate">{field.name}</Text>
-            {area !== 'values' && onFilter && field.values?.length ? (
+            {area !== 'values' && onFilter && (field.values?.length || onLoadFieldValues) ? (
               <DropdownMenu
                 align="right"
-                trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} />}
+                trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} onClick={() => { if (!field.values?.length && !loadedFieldIds.has(field.fieldId)) requestFieldValues(field.fieldId); }} />}
               >
-                <FilterOptions locale={locale} field={field} disabled={disabled} state={filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }} onFilter={onFilter} />
+                {field.values?.length || loadedFieldIds.has(field.fieldId)
+                  ? <FilterOptions locale={locale} field={field} disabled={disabled} state={filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }} onFilter={onFilter} />
+                  : <Box className="min-w-52 p-2"><Text size="xs" tone={fieldValueErrors[field.fieldId] ? 'danger' : 'subtle'}>{fieldValueErrors[field.fieldId] ?? (loadingFieldId === field.fieldId ? pivotText(locale, 'loading') : pivotText(locale, 'error'))}</Text></Box>}
               </DropdownMenu>
             ) : null}
             <DropdownMenu

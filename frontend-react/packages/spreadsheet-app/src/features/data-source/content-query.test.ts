@@ -109,6 +109,39 @@ test('content query reads blocks, publishes loading/ready, and applies block-loc
   unsubscribe();
 });
 
+test('distinct field values stay unloaded until requested and fail closed at the member limit', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'members-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'members-2', 2, [['A', 30], [null, 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  let reads = 0;
+  const reader: DataBlockReader = {
+    get: async (ref) => {
+      reads += 1;
+      return store.get(ref);
+    },
+  };
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+
+  assert.equal(reads, 0);
+  const members = await query.getDistinctFieldValues('code');
+  assert.deepEqual(members.value, ['A', 'B', null]);
+  assert.equal(members.state.availability, 'ready');
+  assert.equal(reads, 2);
+
+  const limited = await query.getDistinctFieldValues('code', 2);
+  assert.equal(limited.value, undefined);
+  assert.equal(limited.state.availability, 'error');
+  assert.match(limited.state.error ?? '', /exceeds the 2 distinct-value limit/i);
+
+  const invalidLimit = await query.getDistinctFieldValues('amount', 0);
+  assert.equal(invalidLimit.value, undefined);
+  assert.equal(invalidLimit.state.availability, 'error');
+  assert.match(invalidLimit.state.error ?? '', /positive safe integer/i);
+});
+
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());

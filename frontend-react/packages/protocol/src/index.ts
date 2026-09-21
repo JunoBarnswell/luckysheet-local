@@ -1505,6 +1505,32 @@ export interface ServerQueryResponse {
   durationMs: number;
 }
 
+export type ServerQueryColumnType = 'text' | 'number' | 'boolean' | 'date' | 'mixed';
+
+/** Metadata for an explicit server-query block session. */
+export interface ServerQueryBlockExecutionResponse {
+  queryId: string;
+  executionId: string;
+  connectorId: string;
+  sourceRef: string;
+  sourceRevision: number;
+  columns: string[];
+  columnTypes: ServerQueryColumnType[];
+  rowCount: number;
+  blockRowCount: number;
+  executedAt: string;
+  durationMs: number;
+}
+
+/** One bounded page from an explicit server-query block session. */
+export interface ServerQueryBlockResponse {
+  queryId: string;
+  executionId: string;
+  offset: number;
+  rows: TableScalar[][];
+  hasMore: boolean;
+}
+
 export type GuestShareRole = 'viewer' | 'commenter' | 'editor';
 
 export interface GuestShareRequest {
@@ -2065,6 +2091,28 @@ export class WorkbookApiClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     });
+  }
+
+  async startServerQueryBlocks(unitId: string, request: ServerQueryRequest): Promise<ServerQueryBlockExecutionResponse> {
+    return this.json<ServerQueryBlockExecutionResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/queries/execute-blocks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async getServerQueryBlock(unitId: string, queryId: string, executionId: string, offset: number): Promise<ServerQueryBlockResponse> {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Query block offset must be a non-negative integer');
+    return this.json<ServerQueryBlockResponse>(
+      `/api/workbooks/${encodeURIComponent(unitId)}/queries/${encodeURIComponent(queryId)}/blocks/${encodeURIComponent(executionId)}?offset=${offset}`,
+    );
+  }
+
+  async finishServerQueryBlocks(unitId: string, queryId: string, executionId: string): Promise<void> {
+    await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/queries/${encodeURIComponent(queryId)}/blocks/${encodeURIComponent(executionId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   async cancelServerQuery(unitId: string, queryId: string): Promise<void> {

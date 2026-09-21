@@ -85,6 +85,27 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.localOnly, true);
   });
 
+  it('keeps REST data blocks readable after remote hydration before WebSocket open', async () => {
+    const snapshot = new WorkbookModel('remote-blocks-before-socket', 'Remote blocks').snapshot();
+    const runtime = createSpreadsheetRuntime({
+      unitId: snapshot.unitId,
+      authTokenProvider: () => 'verified-host-token',
+    });
+    runtime.api = {
+      getSnapshot: async () => ({ unitId: snapshot.unitId, snapshot, revision: 4 }),
+      getAccess: async () => ({ unitId: snapshot.unitId, role: 'editor' }),
+      listRevisions: async () => [],
+    } as unknown as typeof runtime.api;
+
+    const dispose = startPersistenceSession(runtime);
+    await runtime.persistenceReady;
+    dispose();
+
+    assert.equal(runtime.localOnly, false);
+    assert.equal(runtime.remoteDataAvailable, true);
+    assert.equal(runtime.remoteConnected, false);
+  });
+
   it('starts a usable local workbook when the connected backend returns a server error', async () => {
     const runtime = createSpreadsheetRuntime({
       authTokenProvider: () => 'verified-host-token',

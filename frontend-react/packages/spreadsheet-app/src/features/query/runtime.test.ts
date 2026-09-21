@@ -6,8 +6,10 @@ import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
   buildQueryResultSnapshot,
+  buildQueryLoadPayloadFromBlocks,
   buildQueryLoadPlan,
   createInlineJsonQuery,
+  encodeQueryLoadBlock,
   executeQueryDefinition,
   prepareQueryLoadPayload,
   resolveLoadTarget,
@@ -124,6 +126,19 @@ describe('query runtime', () => {
     assert.equal('result' in prepared.payload, false);
     assert.equal(prepared.blocks.length, 1);
     assert.equal(prepared.payload.source.blocks.length, 1);
+  });
+
+  it('assembles a streamed query result only from contiguous DataSource blocks', async () => {
+    const model = new WorkbookModel('wb-query-stream', 'Query');
+    const query = createInlineJsonQuery('q-stream', 'Streamed', []);
+    const metadata = { columns: ['Name', 'Amount'], columnTypes: ['text', 'number'] as const, rowCount: 3, blockRowCount: 2 };
+    const first = await encodeQueryLoadBlock('query:q-stream', 0, metadata, 0, [['a', 1], ['b', 2]]);
+    const second = await encodeQueryLoadBlock('query:q-stream', 0, metadata, 2, [['c', 3]]);
+    const payload = buildQueryLoadPayloadFromBlocks(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, metadata, [first.ref, second.ref]);
+    assert.equal(payload.source.rowCount, 3);
+    assert.deepEqual(payload.source.blocks.map((block) => [block.startRow, block.rowCount]), [[0, 2], [2, 1]]);
+    assert.equal(payload.binding.kind, 'sheet-region');
+    assert.throws(() => buildQueryLoadPayloadFromBlocks(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, metadata, [second.ref]), /coverage is invalid/i);
   });
 
   it('builds query result snapshots', () => {

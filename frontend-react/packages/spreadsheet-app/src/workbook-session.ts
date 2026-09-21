@@ -34,6 +34,7 @@ import type {
   PivotFieldDefinition,
   PivotLayout,
   PivotMemberKey,
+  PivotScalar,
   PivotModel,
   PivotControlConnection,
   PivotSourceRowPath,
@@ -72,7 +73,14 @@ import {
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
-import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
+import type {
+  AuthTokenProvider,
+  GuestShareRole,
+  RevisionRecord,
+  ServerQueryColumnType,
+  ServerQueryRequest,
+  ShareTokenProvider,
+} from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
@@ -116,7 +124,7 @@ import {
   type FormatPainterStylePattern,
   isCellEntryError,
 } from '@react-sheets/sheet-features';
-import { isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
+import { compareWorkbookValues, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
   CellEditDomain,
   CellEditError,
@@ -198,7 +206,9 @@ import {
 import {
   prepareDataRegionMaterialization,
   createWorkbookCellResolver,
+  computeColumnarBlockChecksum,
   encodeSheetDataRegion,
+  encodeColumnarBlock,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -239,15 +249,19 @@ import { browserPrintHook, PdfExportService, type PrintLayout } from './features
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
   buildQueryPreview,
+  buildQueryLoadPayloadFromBlocks,
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
+  encodeQueryLoadBlock,
   executeQueryDefinition,
+  querySourceId,
   prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
   type QueryResultSnapshot,
   type QueryPreview,
   type QuerySessionEntry,
+  type QueryBlockLoadMetadata,
 } from './features/query';
 import type {
   GoalSeekParams,
@@ -267,6 +281,20 @@ function nativeDocumentMimeType(fileName: string): string {
           : extension === 'sjs' ? 'application/zip'
             : extension === 'ssjson' ? 'application/json'
               : 'application/octet-stream';
+}
+
+const SERVER_QUERY_CONNECTORS = new Set(['sqlite', 'jdbc', 'rest']);
+
+function isServerQueryConnector(connectorId: string): boolean {
+  return SERVER_QUERY_CONNECTORS.has(connectorId.toLowerCase());
+}
+
+function sameWorkbookRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow === right.startRow
+    && left.endRow === right.endRow
+    && left.startColumn === right.startColumn
+    && left.endColumn === right.endColumn;
 }
 import {
   HistoryPreviewSession,
@@ -784,10 +812,14 @@ export class WorkbookSession {
   private readonly pivotTaskGeneration = new Map<string, number>();
   private readonly pivotTaskPort: PivotTaskPort;
   private readonly registeredPivotSources = new Map<string, string>();
+  /** Member domains are loaded per data-source field, never as part of pivot open. */
+  private readonly pivotFieldValueCache = new Map<string, { sourceId: string; revision: number; values: PivotScalar[] }>();
+  private readonly pivotFieldValueLoads = new Map<string, Promise<void>>();
   private readonly activePivotTasks = new Map<string, string>();
   private readonly pendingPivotCommitResults = new Map<string, import('@react-sheets/core-model').PivotResultTree>();
   private pivotCreateAbort: AbortController | null = null;
   private pivotOpenRefreshStarted = false;
+  private pendingActiveSheetDerivedState: string | null = null;
   private readonly insertCoordinator = new InsertCoordinator(nextId);
   private readonly assetUrls = new Map<string, string>();
 
@@ -996,16 +1028,18 @@ export class WorkbookSession {
       // applied belongs to the discarded model; cancel it and schedule a new
       // calculation from the authoritative snapshot instead of leaving the
       // worksheet in a permanent loading state.
-      const hasPivots = this.runtime.model.getSheets().some((sheet) => sheet.pivots.length > 0);
-      const needsPivotRehydrate = hasPivots && Object.keys(this.runtime.pivotResults).length === 0;
+      const needsPivotRehydrate = this.runtime.pivotRehydrationPending;
       if (needsPivotRehydrate) {
         for (const taskId of this.activePivotTasks.values()) this.pivotTaskPort.cancel(taskId);
         this.activePivotTasks.clear();
         this.registeredPivotSources.clear();
+        this.pivotFieldValueCache.clear();
+        this.pivotFieldValueLoads.clear();
+        this.runtime.pivotRehydrationPending = false;
       }
       const mutations = this.runtime.drainPivotMutations();
-      this.refreshPivotsForTrigger({ kind: 'source-change', mutations });
-      if (needsPivotRehydrate) this.refreshPivotsForTrigger({ kind: 'open' });
+      this.refreshPivotsForTrigger({ kind: 'source-change', mutations, sheetId: this.activeSheetId });
+      if (needsPivotRehydrate) this.refreshPivotsForTrigger({ kind: 'open', sheetId: this.activeSheetId });
       if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
       else this.invalidateFormulaResultProjections();
       this.persistenceMetaDirty = true;
@@ -1017,7 +1051,7 @@ export class WorkbookSession {
       this.refresh();
     };
     this.runtime.handlers.onDataSourceContentChanged = (sourceId) => {
-      this.refreshPivotsForTrigger({ kind: 'source-content-change', sourceId });
+      this.refreshPivotsForTrigger({ kind: 'source-content-change', sourceId, sheetId: this.activeSheetId });
       this.invalidateDataSourceProjection(sourceId);
       this.refresh();
     };
@@ -1028,6 +1062,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onActiveSheetChange = (sheetId) => {
       this.activeSheetId = sheetId;
+      this.ensureActiveSheetDerivedState(sheetId);
       this.reconcileDrawingSessionState();
       this.emit();
     };
@@ -1071,6 +1106,9 @@ export class WorkbookSession {
     this.disposed = false;
     this.started = true;
     const generation = ++this.lifecycleGeneration;
+    const pendingActiveSheet = this.pendingActiveSheetDerivedState;
+    this.pendingActiveSheetDerivedState = null;
+    this.ensureActiveSheetDerivedState(pendingActiveSheet ?? this.activeSheetId);
     this.persistenceDispose = startPersistenceSession(this.runtime);
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
@@ -1097,7 +1135,7 @@ export class WorkbookSession {
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
       if (!this.disposed && generation === this.lifecycleGeneration && !this.pivotOpenRefreshStarted) {
         this.pivotOpenRefreshStarted = true;
-        this.refreshPivotsForTrigger({ kind: 'open' });
+        this.refreshPivotsForTrigger({ kind: 'open', sheetId: this.activeSheetId });
       }
       if (!this.disposed && generation === this.lifecycleGeneration) {
         this.collabDispose = startCollaborationSession(this.runtime, () =>
@@ -1120,6 +1158,7 @@ export class WorkbookSession {
     this.formatPainter = null;
     this.disposed = true;
     this.started = false;
+    this.pendingActiveSheetDerivedState = null;
     this.lifecycleGeneration += 1;
     this.collabDispose?.();
     this.persistenceDispose?.();
@@ -1130,6 +1169,8 @@ export class WorkbookSession {
     this.pivotTaskPort.dispose();
     this.activePivotTasks.clear();
     this.registeredPivotSources.clear();
+    this.pivotFieldValueCache.clear();
+    this.pivotFieldValueLoads.clear();
     this.pendingPivotCommitResults.clear();
     this.pivotCreateAbort?.abort();
     this.pivotCreateAbort = null;
@@ -1528,7 +1569,10 @@ export class WorkbookSession {
       printPageCount: this.printSnapshot?.pageCount ?? 0,
       printArea: this.printSnapshot?.printArea ?? null,
       lastQueryResult: this.lastQueryResult,
-      queryConnectors: this.runtime.connectors.list().map((connector) => connector.id),
+      queryConnectors: [
+        ...this.runtime.connectors.list().map((connector) => connector.id),
+        ...(this.runtime.localOnly ? [] : [...SERVER_QUERY_CONNECTORS]),
+      ],
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
@@ -1551,6 +1595,15 @@ export class WorkbookSession {
     try {
       const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
+      if (regions.length > 0 && descriptor.commandId === 'sheet.autoFilter.sort') {
+        return this.dispatchDataRegionAutoFilterSort(resolved, regions);
+      }
+      if (regions.length > 0 && this.isDataRegionSortCommand(descriptor.commandId)) {
+        return this.dispatchDataRegionSort(descriptor.commandId, resolved, regions);
+      }
+      if (regions.length > 0 && this.isDataRegionFilterCommand(descriptor.commandId)) {
+        return this.dispatchDataRegionFilter(descriptor.commandId, resolved, regions);
+      }
       if (regions.length > 0) {
         return this.dispatchAfterMaterialization(descriptor.commandId, resolved, regions);
       }
@@ -1584,6 +1637,270 @@ export class WorkbookSession {
   private rejectDispatch(error: CommandDispatchError): Promise<DispatchOutcome> {
     this.notify(error.message);
     return Promise.resolve({ status: 'rejected', error });
+  }
+
+  private isDataRegionSortCommand(commandId: string): boolean {
+    return commandId === 'data.sort.quick'
+      || commandId === 'data.sort.rows'
+      || commandId === 'data.sort.reapply'
+      || commandId === 'sheet.sort.multi'
+      || commandId === 'sheet.autoFilter.sort';
+  }
+
+  private isDataRegionFilterCommand(commandId: string): boolean {
+    return commandId === 'sheet.autoFilter.toggle'
+      || commandId === 'sheet.autoFilter.set'
+      || commandId === 'sheet.autoFilter.remove'
+      || commandId === 'sheet.autoFilter.clearCriteria'
+      || commandId === 'sheet.autoFilter.reapply'
+      || commandId === 'sheetTable.autoFilter.set';
+  }
+
+  /**
+   * Filtering changes only filter metadata, but the projection and filter
+   * domain still resolve values through the canonical block query. Load all
+   * referenced blocks before the metadata command so no CellMatrix fallback
+   * can make a large data region appear empty or partially filtered.
+   */
+  private async dispatchDataRegionFilter(
+    commandId: string,
+    params: unknown,
+    regions: readonly SheetDataRegion[],
+  ): Promise<DispatchOutcome> {
+    this.pendingCommandCount += 1;
+    this.emit();
+    try {
+      const loadedSources = new Set<string>();
+      for (const region of regions) {
+        if (loadedSources.has(region.sourceId)) continue;
+        loadedSources.add(region.sourceId);
+        const manifest = this.runtime.model.getDataSource(region.sourceId);
+        const query = this.runtime.dataContent.get(manifest.id);
+        if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot filter block-backed data`);
+        const loaded = await query.getRows(0, manifest.rowCount);
+        if (!loaded.value || loaded.state.availability !== 'ready') {
+          throw new Error(loaded.state.error ?? `Data source ${manifest.id} could not be fully loaded for filtering`);
+        }
+      }
+      const result = this.runCommand(commandId, params);
+      return { status: 'committed', result };
+    } catch (error) {
+      return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source filter was rejected'));
+    } finally {
+      this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
+      this.emit();
+    }
+  }
+
+  /**
+   * Block-backed ranges have no canonical worksheet cells to materialize. A
+   * sort therefore rewrites the source blocks and commits one metadata-only
+   * dataSource.update mutation. The block bytes stay outside the operation
+   * envelope, so the cell mutation limit is never bypassed.
+   */
+  private async dispatchDataRegionSort(
+    commandId: string,
+    params: unknown,
+    regions: readonly SheetDataRegion[],
+  ): Promise<DispatchOutcome> {
+    this.pendingCommandCount += 1;
+    this.emit();
+    try {
+      if (regions.length !== 1) throw new Error('Sorting overlapping data regions in one command is not supported');
+      const result = await this.sortDataRegionBlocks(commandId, params, regions[0]!);
+      return { status: 'committed', result };
+    } catch (error) {
+      return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source sort was rejected'));
+    } finally {
+      this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
+      this.emit();
+    }
+  }
+
+  /**
+   * AutoFilter sort is a compound domain command: it rewrites the row order
+   * and records the filter sort state. For a block-backed region the row
+   * rewrite must stay on the block path, while the filter metadata remains a
+   * normal canonical mutation.
+   */
+  private async dispatchDataRegionAutoFilterSort(
+    params: unknown,
+    regions: readonly SheetDataRegion[],
+  ): Promise<DispatchOutcome> {
+    this.pendingCommandCount += 1;
+    this.emit();
+    try {
+      if (regions.length !== 1) throw new Error('Sorting overlapping data regions in one AutoFilter command is not supported');
+      const input = params && typeof params === 'object' && !Array.isArray(params)
+        ? params as Record<string, unknown>
+        : {};
+      if (!Number.isSafeInteger(input.column) || typeof input.ascending !== 'boolean') {
+        throw new Error('Block-backed AutoFilter sort parameters are invalid');
+      }
+      const region = regions[0]!;
+      const sheet = this.runtime.model.getSheet(region.range.sheetId);
+      const column = Number(input.column);
+      const ascending = input.ascending;
+      const filter = resolveActiveAutoFilter(sheet, column);
+      const owner = resolveFilterOwner(sheet, column);
+      if (!filter || !owner) throw new Error('No active AutoFilter in the current worksheet');
+      if (column < filter.range.startColumn || column > filter.range.endColumn) {
+        throw new Error('Filter sort column is outside the filter range');
+      }
+      const table = owner.kind === 'table'
+        ? sheet.sheetTables.find((entry) => entry.id === owner.tableId)
+        : undefined;
+      const sortRange = table?.hasTotalRow
+        ? { ...filter.range, endRow: filter.range.endRow - 1 }
+        : filter.range;
+      if (!sameWorkbookRange(sortRange, region.range)) {
+        throw new Error(`Block-backed AutoFilter sort requires the complete data region ${region.id}`);
+      }
+
+      const sortResult = await this.sortDataRegionBlocks('data.sort.rows', {
+        ...input,
+        range: sortRange,
+        criteria: [{ column, ascending }],
+        hasHeader: region.headerRow === region.range.startRow,
+      }, region);
+      const sortState = {
+        ref: structuredClone(filter.range),
+        conditions: [{
+          ref: { ...structuredClone(sortRange), startColumn: column, endColumn: column },
+          descending: !ascending,
+        }],
+      };
+      const next = { ...filter, sortState };
+      const filterResult = owner.kind === 'table'
+        ? this.runCommand('sheetTable.autoFilter.set', {
+          sheetId: region.range.sheetId,
+          tableId: owner.tableId,
+          autoFilter: next,
+          dataRegionContext: input.dataRegionContext,
+        })
+        : this.runCommand('sheet.autoFilter.set', {
+          sheetId: region.range.sheetId,
+          autoFilter: next,
+          dataRegionContext: input.dataRegionContext,
+        });
+      return {
+        status: 'committed',
+        result: {
+          ...filterResult,
+          mutationCount: sortResult.mutationCount + filterResult.mutationCount,
+          affectedRanges: [...sortResult.affectedRanges, ...filterResult.affectedRanges],
+        },
+      };
+    } catch (error) {
+      return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source AutoFilter sort was rejected'));
+    } finally {
+      this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
+      this.emit();
+    }
+  }
+
+  private async sortDataRegionBlocks(commandId: string, params: unknown, region: SheetDataRegion): Promise<CommandResult> {
+    const input = params && typeof params === 'object' && !Array.isArray(params)
+      ? params as Record<string, unknown>
+      : {};
+    const range = input.range && typeof input.range === 'object'
+      ? normalizeRangeRef({ ...(input.range as RangeRef), sheetId: region.range.sheetId })
+      : structuredClone(region.range);
+    if (!sameWorkbookRange(range, region.range)) {
+      throw new Error(`Sort range must cover the complete data region ${region.id}`);
+    }
+
+    let criteria: Array<{ column: number; ascending: boolean }>;
+    if (commandId === 'data.sort.quick') {
+      if (!Number.isSafeInteger(input.sortColumn)
+        || (input.ascending !== undefined && typeof input.ascending !== 'boolean')) {
+        throw new Error('Block-backed quick sort parameters are invalid');
+      }
+      criteria = [{ column: Number(input.sortColumn), ascending: input.ascending ?? true }];
+    } else {
+      criteria = Array.isArray(input.criteria)
+        ? input.criteria.map((entry) => {
+          if (!entry || typeof entry !== 'object') throw new Error('Block-backed sort criteria are invalid');
+          const item = entry as { column?: unknown; ascending?: unknown };
+          if (!Number.isSafeInteger(item.column) || typeof item.ascending !== 'boolean') throw new Error('Block-backed sort criteria are invalid');
+          return { column: Number(item.column), ascending: item.ascending };
+        })
+        : [];
+    }
+    if (criteria.length === 0) {
+      return { operationId: `data-source-sort-noop-${Date.now()}`, mutationCount: 0, affectedRanges: [] };
+    }
+    const hasHeader = input.hasHeader !== false;
+    if (!hasHeader || region.headerRow !== region.range.startRow) {
+      throw new Error(`Block-backed sort requires a header row at the start of data region ${region.id}`);
+    }
+
+    const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
+    const query = this.runtime.dataContent.get(manifest.id);
+    if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot sort block-backed data`);
+    const loaded = await query.getRows(0, manifest.rowCount);
+    if (!loaded.value || loaded.state.availability !== 'ready') {
+      throw new Error(loaded.state.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
+    }
+    const rows = loaded.value;
+    const width = manifest.fields.length;
+    for (const criterion of criteria) {
+      const offset = criterion.column - region.range.startColumn;
+      if (!Number.isSafeInteger(criterion.column) || offset < 0 || offset >= width) {
+        throw new Error('Block-backed sort criterion is outside the data region');
+      }
+    }
+
+    const sorted = rows.map((row, index) => ({ row, index }));
+    sorted.sort((left, right) => {
+      for (const criterion of criteria) {
+        const column = criterion.column - region.range.startColumn;
+        const comparison = compareWorkbookValues(left.row[column] ?? null, right.row[column] ?? null);
+        if (comparison !== 0) return criterion.ascending ? comparison : -comparison;
+      }
+      return left.index - right.index;
+    });
+    if (sorted.every((entry, index) => entry.index === index)) {
+      return { operationId: `data-source-sort-noop-${Date.now()}`, mutationCount: 0, affectedRanges: [] };
+    }
+
+    const nextRevision = manifest.revision + 1;
+    const sortedRows = sorted.map((entry) => entry.row);
+    const uploadedBlocks: DataBlockRef[] = [];
+    try {
+      const nextBlocks: DataBlockRef[] = [];
+      for (const block of manifest.blocks) {
+        const blockRows = sortedRows.slice(block.startRow, block.startRow + block.rowCount);
+        const payload = await encodeColumnarBlock({
+          fields: manifest.fields.map((field) => ({ ...field })),
+          rows: blockRows,
+        });
+        const blockId = `sort-${nextRevision}-${block.startRow}`;
+        const ref: DataBlockRef = {
+          id: blockId,
+          dataSourceId: manifest.id,
+          startRow: block.startRow,
+          rowCount: block.rowCount,
+          storageKey: `data-block:${manifest.id}:${blockId}`,
+          checksum: await computeColumnarBlockChecksum(payload),
+          byteLength: payload.byteLength,
+          encoding: 'columnar-v1',
+          revision: nextRevision,
+        };
+        await this.runtime.dataBlocks.put(ref, payload);
+        nextBlocks.push(ref);
+        uploadedBlocks.push(ref);
+      }
+      const nextSource: DataSourceManifest = {
+        ...manifest,
+        blocks: nextBlocks,
+        revision: nextRevision,
+      };
+      return this.runCommand('dataSource.update', { sheetId: region.range.sheetId, source: nextSource });
+    } catch (error) {
+      await Promise.all(uploadedBlocks.map((ref) => this.runtime.dataBlocks.remove(ref).catch(() => undefined)));
+      throw error;
+    }
   }
 
   /**
@@ -1714,6 +2031,7 @@ export class WorkbookSession {
       || commandId === 'sheet.merge.unmerge'
       || commandId === 'sheet.autoFilter.toggle'
       || commandId === 'sheet.autoFilter.set'
+      || commandId === 'sheet.autoFilter.remove'
       || commandId === 'sheet.autoFilter.sort'
       || commandId === 'sheet.autoFilter.clearCriteria'
       || commandId === 'sheet.autoFilter.reapply'
@@ -3822,6 +4140,7 @@ export class WorkbookSession {
       ? this.groupedSheetIds.values().next().value ?? sheetId
       : sheetId;
     this.activeSheetId = nextActiveSheetId;
+    this.ensureActiveSheetDerivedState(nextActiveSheetId);
     sheet = this.runtime.model.getSheet(nextActiveSheetId);
     this.selectionService.resetForSheet(nextActiveSheetId);
     this.selectedChartElement = null;
@@ -4455,7 +4774,6 @@ export class WorkbookSession {
       });
       if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
       const descriptor = preparePivotTaskDescriptor(this.runtime.model, pivot, this.runtime.formula);
-      descriptor.revisions.sourceRevision = `${loaded.state.sourceId}:${loaded.sourceRevision}`;
       if (this.registeredPivotSources.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
         const taskId = `${pivot.id}:source:${generation}`;
         const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source));
@@ -4566,10 +4884,12 @@ export class WorkbookSession {
     try {
       const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
         && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
-      const source = params.source
-        ?? (blockRegion
-          ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
-          : { kind: 'worksheet-range' as const, range: { ...sourceRegion } });
+      const source = params.source?.kind === 'worksheet-range' && blockRegion
+        ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
+        : params.source
+          ?? (blockRegion
+            ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
+            : { kind: 'worksheet-range' as const, range: { ...sourceRegion } });
       const pivotDraft: PivotModel = {
         schema: 'PivotDefinition',
         id: pivotId,
@@ -4599,7 +4919,9 @@ export class WorkbookSession {
         && getPivotRevisionKey(this.runtime.model, entry, this.runtime.formula).sourceRevision === sourceRevision);
       const fieldCatalog = revisionPeer
         ? structuredClone(revisionPeer.fieldCatalog)
-        : (await preparePivotTaskInputAsync(this.runtime.model, pivotDraft, this.runtime.formula, { signal: createAbort.signal })).definition.fieldCatalog;
+        : pivotDraft.source.kind === 'data-source'
+          ? buildPivotFieldCatalog(this.runtime.model, pivotDraft)
+          : (await preparePivotTaskInputAsync(this.runtime.model, pivotDraft, this.runtime.formula, { signal: createAbort.signal })).definition.fieldCatalog;
       const pivot: PivotModel = { ...pivotDraft, fieldCatalog };
       pendingPivot = pivot;
       const generation = (this.pivotTaskGeneration.get(pivot.id) ?? 0) + 1;
@@ -4877,6 +5199,11 @@ export class WorkbookSession {
     this.refresh();
   }
   private recomputePivotResult(pivotId: string): void {
+    // A source block load publishes several loading/ready notifications while
+    // one calculation is reading the same source. Keep the calculation
+    // single-flight; its completion revision check below will schedule a new
+    // generation only when a real canonical change raced with it.
+    if (this.activePivotTasks.has(pivotId)) return;
     const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
     if (!pivot || !owner) {
@@ -4894,6 +5221,13 @@ export class WorkbookSession {
       return;
     }
     void this.calculatePivotTask(structuredClone(pivot)).then(({ result }) => {
+      const currentOwner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
+      const currentPivot = currentOwner?.pivots.find((entry) => entry.id === pivotId);
+      if (!currentPivot) return;
+      if (!pivotResultMatchesRevision(this.runtime.model, currentPivot, result, this.runtime.formula)) {
+        this.recomputePivotResult(pivotId);
+        return;
+      }
       this.runtime.pivotResults[pivotId] = result;
       delete this.runtime.pivotErrors[pivotId];
       this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
@@ -4916,6 +5250,7 @@ export class WorkbookSession {
     const refreshIds = new Set(pivotIdsToRefresh(this.runtime.model, pivots, trigger));
     if (trigger.kind === 'open') {
       for (const pivot of pivots) {
+        if (trigger.sheetId && pivot.target.sheetId !== trigger.sheetId) continue;
         if (!pivotResultMatchesRevision(this.runtime.model, pivot, this.runtime.pivotResults[pivot.id], this.runtime.formula)) {
           refreshIds.add(pivot.id);
         }
@@ -4936,6 +5271,34 @@ export class WorkbookSession {
         if (refreshIds.has(pivot.id)) this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
       }
     }
+  }
+
+  /**
+   * Pivot source blocks are an expensive derived dependency. Keep them cold
+   * until the sheet that owns the PivotTable is actually shown.
+   */
+  private ensureActiveSheetDerivedState(sheetId: string): void {
+    if (this.disposed) return;
+    if (!this.started) {
+      this.pendingActiveSheetDerivedState = sheetId;
+      return;
+    }
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const refresh = (): void => {
+      if (this.disposed || lifecycleGeneration !== this.lifecycleGeneration || this.activeSheetId !== sheetId) return;
+      this.refreshPivotsForTrigger({ kind: 'open', sheetId });
+    };
+
+    refresh();
+    // The ready phase can be published before the persistence bootstrap has
+    // drained its final rehydrate notification.  That notification may cancel
+    // a task started by an immediate sheet click, so replay the active-sheet
+    // request after bootstrap settles.  The active-sheet and lifecycle guards
+    // keep this retry scoped and prevent work for a sheet the user has left.
+    void this.runtime.persistenceReady.then(() => {
+      if (this.disposed || lifecycleGeneration !== this.lifecycleGeneration || this.activeSheetId !== sheetId) return;
+      setTimeout(refresh, 0);
+    });
   }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {
@@ -5340,7 +5703,12 @@ export class WorkbookSession {
       this.notify('No active filter is available for this column');
       return;
     }
-    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext: this.getDataRegionContext() } });
+    const dataRegionContext = {
+      ...this.getDataRegionContext(),
+      range: structuredClone(filter.range),
+      currentRegion: structuredClone(filter.range),
+    };
+    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext } });
   }
 
   applyFilterSelection(): void {
@@ -5974,6 +6342,63 @@ export class WorkbookSession {
     return buildPivotFieldCatalog(this.runtime.model, pivot).fields;
   }
 
+  /**
+   * Returns the active pivot's field catalog without materializing data-source
+   * members. Cached members are merged only after a picker explicitly asks for
+   * that field's domain.
+   */
+  getPivotFieldCatalogForPivot(pivotId: string, fallback: readonly PivotFieldDefinition[] = []): PivotFieldDefinition[] {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot) return fallback.map((field) => structuredClone(field));
+    const fields = pivot.source.kind === 'data-source'
+      ? buildPivotFieldCatalog(this.runtime.model, pivot).fields
+      : (fallback.length > 0 ? fallback.map((field) => structuredClone(field)) : structuredClone(pivot.fieldCatalog.fields));
+    const sourceId = pivot.source.kind === 'data-source' ? pivot.source.dataSourceId : undefined;
+    const revision = sourceId === undefined ? undefined : this.runtime.dataContent.get(sourceId)?.manifest.revision;
+    return fields.map((field) => {
+      const cached = sourceId !== undefined && revision !== undefined
+        ? this.pivotFieldValueCache.get(`${sourceId}:${field.fieldId}`)
+        : undefined;
+      if (cached !== undefined && cached.revision === revision) return { ...field, values: structuredClone(cached.values) };
+      return field;
+    });
+  }
+
+  /** Loads one data-source field's distinct members on demand for its picker. */
+  async loadPivotFieldValues(pivotId: string, fieldId: string): Promise<void> {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    if (pivot.source.kind !== 'data-source') throw new Error('Pivot field values are only lazy-loaded for data-source pivots');
+    const sourceId = pivot.source.dataSourceId;
+    const query = this.runtime.dataContent.get(sourceId);
+    if (!query) throw new Error(`Data source ${sourceId} is unavailable`);
+    const field = query.getField(fieldId);
+    if (!field) throw new Error(`Unknown data source field: ${fieldId}`);
+    const revision = query.manifest.revision;
+    const cacheKey = `${sourceId}:${fieldId}`;
+    const cached = this.pivotFieldValueCache.get(cacheKey);
+    if (cached && cached.sourceId === sourceId && cached.revision === revision) return;
+    const loadKey = `${cacheKey}:${String(revision)}`;
+    const existing = this.pivotFieldValueLoads.get(loadKey);
+    if (existing) return existing;
+    const loading = (async (): Promise<void> => {
+      const result = await query.getDistinctFieldValues(fieldId);
+      if (result.value === undefined) throw new Error(result.state.error ?? `Data source field ${field.name} values are unavailable`);
+      this.pivotFieldValueCache.set(cacheKey, {
+        sourceId,
+        revision,
+        values: structuredClone(result.value),
+      });
+      this.refresh();
+    })();
+    this.pivotFieldValueLoads.set(loadKey, loading);
+    try {
+      await loading;
+    } finally {
+      if (this.pivotFieldValueLoads.get(loadKey) === loading) this.pivotFieldValueLoads.delete(loadKey);
+    }
+  }
+
   readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
     const table = this.runtime.model.dataModel.tables.get(tableId);
     if (table?.sourceId) {
@@ -6255,17 +6680,29 @@ export class WorkbookSession {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await this.executeQuery(query);
       const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
-      const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
-      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      let result: import('./features/query').QueryResult;
+      let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
+      let blockRefs: DataBlockRef[];
+      if (isServerQueryConnector(query.connectorId)) {
+        const loaded = await this.loadServerQueryBlocks(persistedQuery, resolvedTarget);
+        result = loaded.result;
+        payload = loaded.payload;
+        blockRefs = loaded.blockRefs;
+      } else {
+        result = await this.executeQuery(query);
+        const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
+        payload = prepared.payload;
+        blockRefs = prepared.blocks.map((block) => block.ref);
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      }
       try {
-        this.runCommand('query.load', prepared.payload);
+        this.runCommand('query.load', payload);
       } catch (error) {
-        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
         throw error;
       }
-      persistedQuery.sourceRevision = prepared.payload.source.revision;
+      persistedQuery.sourceRevision = payload.source.revision;
       const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
       this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
       this.lastQueryResult = snapshot;
@@ -6286,11 +6723,29 @@ export class WorkbookSession {
       throw error;
     }
     try {
+      if (isServerQueryConnector(query.connectorId)) return await this.previewServerQuery(query);
       const result = await this.executeQuery(query);
       return buildQueryPreview(query, result);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query preview failed');
       this.emit();
+      throw error;
+    }
+  }
+
+  private async previewServerQuery(query: QueryDefinition): Promise<QueryPreview> {
+    const request = this.buildServerQueryRequest(query);
+    const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
+    let finishAttempted = false;
+    try {
+      const rows = session.rowCount === 0
+        ? []
+        : (await this.runtime.api.getServerQueryBlock(this.runtime.model.unitId, query.id, session.executionId, 0)).rows;
+      finishAttempted = true;
+      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
+      return buildQueryPreview(query, { columns: session.columns, rows: rows.slice(0, 5), rowCount: session.rowCount });
+    } catch (error) {
+      if (!finishAttempted) await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
       throw error;
     }
   }
@@ -6312,17 +6767,29 @@ export class WorkbookSession {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await this.executeQuery(session.definition);
       session.definition.lastTarget = structuredClone(target);
-      const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
-      await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      let result: import('./features/query').QueryResult;
+      let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
+      let blockRefs: DataBlockRef[];
+      if (isServerQueryConnector(session.definition.connectorId)) {
+        const loaded = await this.loadServerQueryBlocks(session.definition, target);
+        result = loaded.result;
+        payload = loaded.payload;
+        blockRefs = loaded.blockRefs;
+      } else {
+        result = await this.executeQuery(session.definition);
+        const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
+        payload = prepared.payload;
+        blockRefs = prepared.blocks.map((block) => block.ref);
+        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
+      }
       try {
-        this.runCommand('query.refresh', prepared.payload);
+        this.runCommand('query.refresh', payload);
       } catch (error) {
-        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.remove(block.ref)));
+        await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
         throw error;
       }
-      session.definition.sourceRevision = prepared.payload.source.revision;
+      session.definition.sourceRevision = payload.source.revision;
       const snapshot = buildQueryResultSnapshot(session.definition, result, target);
       session.lastResult = snapshot;
       this.lastQueryResult = snapshot;
@@ -6339,17 +6806,29 @@ export class WorkbookSession {
     connectorId: string,
     config: Record<string, unknown>,
   ): Promise<{ ok: boolean; message?: string }> {
+    if (isServerQueryConnector(connectorId)) {
+      if (this.runtime.localOnly) return { ok: false, message: `Connector ${connectorId} requires the Java backend` };
+      const sourceRef = typeof config.sourceRef === 'string' ? config.sourceRef.trim() : '';
+      const statement = typeof config.statement === 'string' ? config.statement : typeof config.query === 'string' ? config.query : '';
+      if (!sourceRef || !statement) return { ok: false, message: `Connector ${connectorId} requires sourceRef and statement` };
+      const request: ServerQueryRequest = {
+        queryId: `connection-test-${connectorId}`,
+        name: 'Connection test',
+        connectorId: connectorId as ServerQueryRequest['connectorId'],
+        sourceRef,
+        statement,
+        steps: [],
+      };
+      const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
+      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, request.queryId, session.executionId);
+      return { ok: true, message: `${session.rowCount} record(s) ready` };
+    }
     const connector = this.runtime.connectors.get(connectorId);
     return connector.testConnection(config);
   }
 
-  private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
-    if (query.connectorId !== 'sqlite' && query.connectorId !== 'jdbc' && query.connectorId !== 'rest') {
-      return executeQueryDefinition(this.runtime.connectors, query);
-    }
-    if (this.runtime.localOnly) {
-      throw new Error(`Connector ${query.connectorId} requires the Java backend`);
-    }
+  private buildServerQueryRequest(query: QueryDefinition): ServerQueryRequest {
+    if (this.runtime.localOnly) throw new Error(`Connector ${query.connectorId} requires the Java backend`);
     const config = query.connectorConfig;
     const sourceRef = typeof config.sourceRef === 'string' ? config.sourceRef.trim() : '';
     const statement = typeof config.statement === 'string'
@@ -6357,16 +6836,14 @@ export class WorkbookSession {
       : typeof config.query === 'string'
         ? config.query
         : '';
-    if (!sourceRef || !statement) {
-      throw new Error(`Connector ${query.connectorId} requires server sourceRef and statement`);
-    }
+    if (!sourceRef || !statement) throw new Error(`Connector ${query.connectorId} requires server sourceRef and statement`);
     const method = typeof config.method === 'string' && (config.method === 'GET' || config.method === 'POST')
       ? config.method
       : undefined;
-    const request: ServerQueryRequest = {
+    return {
       queryId: query.id,
       name: query.name,
-      connectorId: query.connectorId,
+      connectorId: query.connectorId as ServerQueryRequest['connectorId'],
       sourceRef,
       statement,
       ...(method === undefined ? {} : { method }),
@@ -6380,6 +6857,67 @@ export class WorkbookSession {
         enabled: step.enabled,
       })),
     };
+  }
+
+  private async loadServerQueryBlocks(query: QueryDefinition, target: LoadTarget): Promise<{
+    result: import('./features/query').QueryResult;
+    payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
+    blockRefs: DataBlockRef[];
+  }> {
+    const request = this.buildServerQueryRequest(query);
+    const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
+    if (session.queryId !== query.id || session.connectorId !== query.connectorId || session.rowCount < 0 || session.columnTypes.length !== session.columns.length) {
+      throw new Error('Java backend returned invalid query block metadata');
+    }
+    const metadata: QueryBlockLoadMetadata = {
+      columns: session.columns,
+      columnTypes: session.columnTypes as ServerQueryColumnType[],
+      rowCount: session.rowCount,
+      blockRowCount: session.blockRowCount,
+    };
+    const sourceId = querySourceId(query.id);
+    const revision = (this.runtime.model.dataModel.sources.get(sourceId)?.revision ?? -1) + 1;
+    const blockRefs: DataBlockRef[] = [];
+    let offset = 0;
+    let finishAttempted = false;
+    try {
+      while (offset < metadata.rowCount) {
+        const block = await this.runtime.api.getServerQueryBlock(this.runtime.model.unitId, query.id, session.executionId, offset);
+        if (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== offset) throw new Error('Java backend returned an out-of-order query block');
+        if (block.rows.length === 0 || block.rows.length > metadata.blockRowCount || offset + block.rows.length > metadata.rowCount) throw new Error('Java backend returned an invalid query block size');
+        const encoded = await encodeQueryLoadBlock(sourceId, revision, metadata, offset, block.rows);
+        await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
+        blockRefs.push(encoded.ref);
+        offset += block.rows.length;
+        if (!block.hasMore) {
+          if (offset !== metadata.rowCount) throw new Error('Java backend ended the query block session before the declared row count');
+          break;
+        }
+      }
+      if (offset !== metadata.rowCount) throw new Error('Java backend did not return the declared query row count');
+      finishAttempted = true;
+      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
+      const payload = buildQueryLoadPayloadFromBlocks(this.runtime.model, query, target, metadata, blockRefs);
+      if (payload.source.revision !== revision) throw new Error('Workbook data source changed while the query was loading');
+      return {
+        result: { columns: [...metadata.columns], rows: [], rowCount: metadata.rowCount },
+        payload,
+        blockRefs,
+      };
+    } catch (error) {
+      if (!finishAttempted) {
+        await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
+      }
+      await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
+      throw error;
+    }
+  }
+
+  private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
+    if (!isServerQueryConnector(query.connectorId)) {
+      return executeQueryDefinition(this.runtime.connectors, query);
+    }
+    const request = this.buildServerQueryRequest(query);
     const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
     if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
     return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
@@ -6392,7 +6930,10 @@ export class WorkbookSession {
   } {
     return {
       lastResult: this.lastQueryResult,
-      connectors: this.runtime.connectors.list().map((connector) => connector.id),
+      connectors: [
+        ...this.runtime.connectors.list().map((connector) => connector.id),
+        ...(this.runtime.localOnly ? [] : [...SERVER_QUERY_CONNECTORS]),
+      ],
       loadedQueries: [...this.querySessions.values()]
         .map((session) => session.lastResult)
         .filter((result): result is QueryResultSnapshot => Boolean(result)),
