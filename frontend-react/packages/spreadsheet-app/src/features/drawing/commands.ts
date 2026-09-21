@@ -134,6 +134,8 @@ export interface DrawingAddParams {
 export interface DrawingRemoveParams {
   sheetId: string;
   drawingId: string;
+  /** Semantic links retained on the mutation so derived Pivot state can refresh after removal. */
+  pivotControlPivotIds?: string[];
 }
 
 export interface DrawingPayloadUpdateParams {
@@ -987,11 +989,18 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const payload = sheet.drawingPayloads.get(drawing.payloadId);
       if (!payload) throw new Error(`Missing drawing payload: ${drawing.payloadId}`);
       const affectedRanges = sheetRange(params.sheetId);
+      const pivotControlPivotIds = payload.kind === 'slicer' || payload.kind === 'timeline'
+        ? [...new Set([payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)])]
+        : undefined;
+      const mutationParams: DrawingRemoveParams = {
+        ...params,
+        ...(pivotControlPivotIds && pivotControlPivotIds.length > 0 ? { pivotControlPivotIds } : {}),
+      };
       context.applyMutation({
         id: 'drawing.remove',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: mutationParams,
         affectedRanges,
         inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) }, affectedRanges }],
         apply: () => removeDrawing(context.workbook.getSheet(params.sheetId), params.drawingId),

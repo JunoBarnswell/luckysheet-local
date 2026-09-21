@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { PivotModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, type PivotModel } from '@react-sheets/core-model';
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
+import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -57,6 +58,53 @@ async function waitForPivot(app: WorkbookSession, pivotId: string): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error(`Pivot task did not settle: ${pivotId}`);
+}
+
+class DeferredCalculatePort implements PivotTaskPort {
+  private readonly inner = new InlinePivotTaskPort();
+  private deferred: {
+    request: Parameters<PivotTaskPort['submit']>[0];
+    resolve: (result: Awaited<ReturnType<PivotTaskPort['submit']>>) => void;
+  } | null = null;
+  delayNextCalculate = false;
+
+  submit(request: Parameters<PivotTaskPort['submit']>[0]): ReturnType<PivotTaskPort['submit']> {
+    if (request.kind !== 'calculate' || !this.delayNextCalculate) return this.inner.submit(request);
+    this.delayNextCalculate = false;
+    return new Promise((resolve) => {
+      this.deferred = { request, resolve };
+    });
+  }
+
+  async waitForDeferred(): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (this.deferred) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error('Pivot calculate task was not deferred');
+  }
+
+  releaseDeferred(): void {
+    const deferred = this.deferred;
+    if (!deferred) throw new Error('No deferred Pivot calculate task exists');
+    this.deferred = null;
+    void this.inner.submit(deferred.request).then(deferred.resolve);
+  }
+
+  cancel(taskId: string): void {
+    if (this.deferred?.request.taskId === taskId) {
+      const { request, resolve } = this.deferred;
+      this.deferred = null;
+      resolve({ protocol: 'react-sheets/pivot-task', version: 1, taskId, generation: request.generation, status: 'cancelled' });
+      return;
+    }
+    this.inner.cancel(taskId);
+  }
+
+  dispose(): void {
+    this.deferred = null;
+    this.inner.dispose();
+  }
 }
 
 describe('WorkbookSession PivotTable integration', () => {
@@ -212,6 +260,28 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
   });
 
+  it('recomputes linked PivotTables when a Slicer filter changes', async () => {
+    const app = new WorkbookSession();
+    const { pivot } = seed(app);
+    pivot.id = 'pivot-slicer-filter';
+    await app.addPivot(pivot);
+    app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
+    const slicer = app.listPivotControls(pivot.id).find((control) => control.payload.kind === 'slicer');
+    assert.ok(slicer);
+    if (!slicer) return;
+
+    app.setPivotSlicerFilter(slicer.drawing.id, 'include', [createPivotMemberKey('East')]);
+    await waitForPivot(app, pivot.id);
+
+    const snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 10);
+
+    app.removePivotControl(slicer.drawing.id);
+    await waitForPivot(app, pivot.id);
+    assert.equal(app.listPivotControls(pivot.id).length, 0);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+  });
+
   it('keeps an explicit block-backed worksheet source on the DataSource Pivot path', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('pivot-block-source', 'Pivot block source', [
@@ -282,6 +352,28 @@ describe('WorkbookSession PivotTable integration', () => {
     app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 200 } });
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[onOpen.id]?.grandTotal?.values[0], 120);
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[onOpen.id]?.refresh.status, 'stale');
+  });
+
+  it('discards an obsolete worker result and recalculates from the committed source revision', async () => {
+    const taskPort = new DeferredCalculatePort();
+    const app = new WorkbookSession({ pivotTaskPort: taskPort });
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-obsolete-worker-result';
+    pivot.refreshPolicy = { mode: 'manual', preserveFormatting: true, refreshOnLoad: false };
+    await app.addPivot(pivot);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 100 } });
+    taskPort.delayNextCalculate = true;
+    app.refreshPivot(pivot.id);
+    await taskPort.waitForDeferred();
+
+    app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 200 } });
+    taskPort.releaseDeferred();
+    await waitForPivot(app, pivot.id);
+
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 300);
+    assert.notEqual(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'stale');
   });
 
   it('refreshes only intersecting on-change sources and supports refresh all explicitly', async () => {

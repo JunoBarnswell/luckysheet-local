@@ -8,7 +8,13 @@ export type PivotRefreshTrigger =
   | { kind: 'explicit-all' }
   | { kind: 'layout-change'; pivotId: string }
   | { kind: 'source-change'; mutations: readonly MutationInfo[]; sheetId?: string }
-  | { kind: 'source-content-change'; sourceId: string; sheetId?: string };
+  | { kind: 'source-content-change'; sourceId: string; sheetId?: string }
+  | {
+    kind: 'control-change';
+    drawings: readonly { sheetId: string; drawingId: string }[];
+    /** Links captured on a remove mutation, after the canonical drawing is gone. */
+    pivotIds?: readonly string[];
+  };
 
 function intersects(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
@@ -28,6 +34,18 @@ function dependsOnMutation(workbook: WorkbookModel, pivot: PivotModel, mutation:
     // projection/command validation will expose the source error instead.
     return false;
   }
+}
+
+function linkedPivotIdsForDrawing(
+  workbook: WorkbookModel,
+  reference: { sheetId: string; drawingId: string },
+): string[] {
+  const sheet = workbook.getSheets().find((candidate) => candidate.id === reference.sheetId);
+  const drawing = sheet?.drawings.find((candidate) => candidate.id === reference.drawingId);
+  if (!sheet || !drawing || (drawing.kind !== 'slicer' && drawing.kind !== 'timeline')) return [];
+  const payload = sheet.drawingPayloads.get(drawing.payloadId);
+  if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return [];
+  return [...new Set([payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)])];
 }
 
 /** Pure policy gate shared by local, remote, and replay-triggered refreshes. */
@@ -61,5 +79,12 @@ export function pivotIdsToRefresh(
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-change')
         .filter((pivot) => pivot.source.kind === 'data-source' && pivot.source.dataSourceId === trigger.sourceId)
         .map((pivot) => pivot.id);
+    case 'control-change': {
+      const linkedPivotIds = new Set(trigger.pivotIds ?? []);
+      for (const drawing of trigger.drawings) {
+        for (const pivotId of linkedPivotIdsForDrawing(workbook, drawing)) linkedPivotIds.add(pivotId);
+      }
+      return pivots.filter((pivot) => linkedPivotIds.has(pivot.id)).map((pivot) => pivot.id);
+    }
   }
 }

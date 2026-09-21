@@ -54,6 +54,7 @@ import type {
   WorkbookTableModel,
   WorkbookSnapshot,
   WorkbookEditingOptions,
+  WorkbookModel,
   WorksheetModel,
   CellHyperlink,
   HyperlinkTarget,
@@ -530,6 +531,30 @@ function sameRange(left: RangeRef, right: RangeRef): boolean {
     && left.endRow === right.endRow
     && left.startColumn === right.startColumn
     && left.endColumn === right.endColumn;
+}
+
+function pivotControlDrawingReferenceForMutation(
+  workbook: WorkbookModel,
+  mutation: MutationInfo,
+): { sheetId: string; drawingId: string } | undefined {
+  if (mutation.id === 'drawing.add') {
+    const params = mutation.params as { drawing?: { id?: unknown } };
+    return typeof params.drawing?.id === 'string'
+      ? { sheetId: mutation.sheetId, drawingId: params.drawing.id }
+      : undefined;
+  }
+  if (mutation.id !== 'drawing.payload.update') return undefined;
+  const payloadId = (mutation.params as { payloadId?: unknown }).payloadId;
+  if (typeof payloadId !== 'string') return undefined;
+  const sheet = workbook.getSheets().find((candidate) => candidate.id === mutation.sheetId);
+  const drawing = sheet?.drawings.find((candidate) => candidate.payloadId === payloadId);
+  return drawing ? { sheetId: mutation.sheetId, drawingId: drawing.id } : undefined;
+}
+
+function pivotControlPivotIdsForRemoval(mutation: MutationInfo): string[] {
+  if (mutation.id !== 'drawing.remove') return [];
+  const value = (mutation.params as { pivotControlPivotIds?: unknown }).pivotControlPivotIds;
+  return Array.isArray(value) ? value.filter((pivotId): pivotId is string => typeof pivotId === 'string') : [];
 }
 
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
@@ -1037,6 +1062,27 @@ export class WorkbookSession {
         this.runtime.pivotRehydrationPending = false;
       }
       const mutations = this.runtime.drainPivotMutations();
+      const controlDrawings: { sheetId: string; drawingId: string }[] = [];
+      const controlDrawingKeys = new Set<string>();
+      const removedControlPivotIds = new Set<string>();
+      for (const mutation of mutations) {
+        const drawing = pivotControlDrawingReferenceForMutation(this.runtime.model, mutation);
+        if (drawing) {
+          const key = `${drawing.sheetId}:${drawing.drawingId}`;
+          if (!controlDrawingKeys.has(key)) {
+            controlDrawingKeys.add(key);
+            controlDrawings.push(drawing);
+          }
+        }
+        for (const pivotId of pivotControlPivotIdsForRemoval(mutation)) removedControlPivotIds.add(pivotId);
+      }
+      if (controlDrawings.length > 0 || removedControlPivotIds.size > 0) {
+        this.refreshPivotsForTrigger({
+          kind: 'control-change',
+          drawings: controlDrawings,
+          ...(removedControlPivotIds.size > 0 ? { pivotIds: [...removedControlPivotIds] } : {}),
+        });
+      }
       this.refreshPivotsForTrigger({ kind: 'source-change', mutations, sheetId: this.activeSheetId });
       if (needsPivotRehydrate) this.refreshPivotsForTrigger({ kind: 'open', sheetId: this.activeSheetId });
       if (mutations.length > 0) this.invalidateProjectionMutations(mutations);
