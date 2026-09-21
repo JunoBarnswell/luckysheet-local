@@ -212,6 +212,25 @@ export class DataSourceContentQuery {
     }
   }
 
+  /**
+   * Ensure every source block is available without constructing a copied
+   * range result. Metadata-only commands such as filtering need the canonical
+   * block projection to be readable, but do not need a second full row matrix.
+   */
+  async ensureAllBlocksLoaded(): Promise<DataSourceContentLoadState> {
+    let lastState = state(this.source.id, null, 'ready');
+    for (const ref of this.source.blocks) {
+      try {
+        await this.loadBlock(ref);
+      } catch (error) {
+        return this.loadStates.get(ref.id)
+          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
+      }
+      lastState = state(this.source.id, ref.id, 'ready');
+    }
+    return lastState;
+  }
+
   async getRowValues(rowIndex: number): Promise<DataSourceContentResult<TableScalar[]>> {
     const result = await this.getRows(rowIndex, 1);
     if (result.value === undefined) return { state: result.state };

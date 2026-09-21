@@ -1677,9 +1677,9 @@ export class WorkbookSession {
         const manifest = this.runtime.model.getDataSource(region.sourceId);
         const query = this.runtime.dataContent.get(manifest.id);
         if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot filter block-backed data`);
-        const loaded = await query.getRows(0, manifest.rowCount);
-        if (!loaded.value || loaded.state.availability !== 'ready') {
-          throw new Error(loaded.state.error ?? `Data source ${manifest.id} could not be fully loaded for filtering`);
+        const loaded = await query.ensureAllBlocksLoaded();
+        if (loaded.availability !== 'ready') {
+          throw new Error(loaded.error ?? `Data source ${manifest.id} could not be fully loaded for filtering`);
         }
       }
       const result = this.runCommand(commandId, params);

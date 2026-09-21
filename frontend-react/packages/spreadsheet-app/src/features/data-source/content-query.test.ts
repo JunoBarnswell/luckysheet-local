@@ -142,6 +142,29 @@ test('distinct field values stay unloaded until requested and fail closed at the
   assert.match(invalidLimit.state.error ?? '', /positive safe integer/i);
 });
 
+test('ensures every block is readable without returning a copied full-range matrix', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'ensure-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'ensure-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  let reads = 0;
+  const reader: DataBlockReader = {
+    get: async (ref) => {
+      reads += 1;
+      return store.get(ref);
+    },
+  };
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+
+  const loaded = await query.ensureAllBlocksLoaded();
+  assert.equal(loaded.availability, 'ready');
+  assert.equal(reads, 2);
+  assert.deepEqual((await query.getCellValue(3, 'code')).value, 'D');
+  assert.equal(reads, 2);
+});
+
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
