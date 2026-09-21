@@ -2383,6 +2383,7 @@ interface PivotControlMatcher {
   rows: SourceRow[];
   controls: readonly PivotTaskControl[];
   matches: ReadonlyMap<string, Uint8Array>;
+  unrestricted: ReadonlySet<string>;
 }
 
 /**
@@ -2393,23 +2394,30 @@ interface PivotControlMatcher {
  */
 function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTaskControl[]): PivotControlMatcher {
   const matches = new Map<string, Uint8Array>();
+  const unrestricted = new Set<string>();
   for (const control of controls) {
     const mask = new Uint8Array(rows.length);
+    let hasRestriction = false;
     const payload = control.payload;
     if (payload.kind === 'slicer') {
       const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
       rows.forEach((row, rowIndex) => {
-        mask[rowIndex] = matchesSlicer(row, payload, control.fieldId, memberSet) ? 1 : 0;
+        const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
+        mask[rowIndex] = accepted ? 1 : 0;
+        if (!accepted) hasRestriction = true;
       });
     } else {
       const bounds = normalizePivotTimelinePeriod(payload.period);
       rows.forEach((row, rowIndex) => {
-        mask[rowIndex] = matchesTimeline(row, payload, control.fieldId, bounds) ? 1 : 0;
+        const accepted = matchesTimeline(row, payload, control.fieldId, bounds);
+        mask[rowIndex] = accepted ? 1 : 0;
+        if (!accepted) hasRestriction = true;
       });
     }
     matches.set(control.drawingId, mask);
+    if (!hasRestriction) unrestricted.add(control.drawingId);
   }
-  return { rows, controls, matches };
+  return { rows, controls, matches, unrestricted };
 }
 
 function rowsMatchingControls(matcher: PivotControlMatcher, excludedDrawingId?: string): SourceRow[] {
@@ -2428,6 +2436,7 @@ function slicerItemProjection(
   controlMatcher: PivotControlMatcher,
   sourceFilterMatchers: readonly PivotSourceFilterMatcher[],
   aggregates: PivotAggregatePlanner,
+  precomputedAvailableRows?: SourceRow[],
 ): PivotSlicerItemProjection[] {
   const fieldValues = rows.map((row) => sourceRowValue(row, payload.fieldId));
   const members = new Map<string, PivotSlicerItemProjection>();
@@ -2436,9 +2445,16 @@ function slicerItemProjection(
     const identity = pivotMemberKey(key);
     if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
   }
-  const filteredRows = applySourceFilters(rowsMatchingControls(controlMatcher, drawingId), sourceFilterMatchers, collator);
-  const valueFilteredRows = applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator, aggregates);
-  const availableRows = topItems(valueFilteredRows, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
+  const filteredRows = precomputedAvailableRows
+    ?? applySourceFilters(rowsMatchingControls(controlMatcher, drawingId), sourceFilterMatchers, collator);
+  const availableRows = precomputedAvailableRows ?? topItems(
+    applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator, aggregates),
+    definition.layout.filters,
+    definition.layout.values,
+    calculatedFields,
+    definition,
+    aggregates,
+  );
   const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, payload.fieldId)))));
   const selectedMembers = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
   for (const item of members.values()) {
@@ -2824,7 +2840,8 @@ function computePivotResultFromTable(
   const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
   for (const control of controls) {
     if (control.payload.kind !== 'slicer') continue;
-    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates);
+    const availableRows = controlMatcher.unrestricted.has(control.drawingId) ? filtered : undefined;
+    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields, definition.layout);
