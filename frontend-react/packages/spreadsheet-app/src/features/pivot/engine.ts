@@ -2238,6 +2238,54 @@ function applyValueFilters(
   return result;
 }
 
+interface PivotRankedBucket {
+  key: string;
+  bucket: SourceRow[];
+  aggregate: number;
+}
+
+/**
+ * Compare two top/bottom members using the same ordering as the full sort.
+ * A negative result means `left` must appear before `right` in the result.
+ */
+function compareTopBottomBuckets(left: PivotRankedBucket, right: PivotRankedBucket, direction: 'top' | 'bottom'): number {
+  const valueOrder = direction === 'top'
+    ? right.aggregate - left.aggregate
+    : left.aggregate - right.aggregate;
+  return valueOrder || left.key.localeCompare(right.key);
+}
+
+/**
+ * Select the best N members without sorting the entire high-cardinality
+ * domain. The heap root is the worst retained member, so each non-selected
+ * member costs O(1) comparison and each replacement costs O(log N).
+ */
+function selectTopBottomItems(entries: PivotRankedBucket[], threshold: number, direction: 'top' | 'bottom'): PivotRankedBucket[] {
+  if (threshold >= entries.length) return entries.sort((left, right) => compareTopBottomBuckets(left, right, direction));
+  const heap = entries.slice(0, threshold);
+  const siftDown = (start: number): void => {
+    let index = start;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let worst = index;
+      if (left < heap.length && compareTopBottomBuckets(heap[left]!, heap[worst]!, direction) > 0) worst = left;
+      if (right < heap.length && compareTopBottomBuckets(heap[right]!, heap[worst]!, direction) > 0) worst = right;
+      if (worst === index) return;
+      [heap[index], heap[worst]] = [heap[worst]!, heap[index]!];
+      index = worst;
+    }
+  };
+  for (let index = Math.floor(heap.length / 2) - 1; index >= 0; index -= 1) siftDown(index);
+  for (let index = threshold; index < entries.length; index += 1) {
+    const candidate = entries[index]!;
+    if (compareTopBottomBuckets(candidate, heap[0]!, direction) >= 0) continue;
+    heap[0] = candidate;
+    siftDown(0);
+  }
+  return heap.sort((left, right) => compareTopBottomBuckets(left, right, direction));
+}
+
 function topItems(
   rows: SourceRow[],
   filters: PivotFilter[],
@@ -2265,21 +2313,16 @@ function topItems(
       bucket.push(row);
       buckets.set(key, bucket);
     }
-    const ranked = [...buckets.entries()].map(([key, bucket]) => ({
+    const ranked: PivotRankedBucket[] = [...buckets.entries()].map(([key, bucket]) => ({
       key,
       bucket,
-      aggregate: pivotNumericValue(resultValue(bucket, { ...valueField, sourceFieldId: valueField.fieldId }, valueField.summarizeBy, calculatedFields, aggregates)),
+      aggregate: pivotNumericValue(resultValue(bucket, { ...valueField, sourceFieldId: valueField.fieldId }, valueField.summarizeBy, calculatedFields, aggregates)) ?? 0,
     }));
-    ranked.sort((left, right) => {
-      const leftValue = left.aggregate ?? 0;
-      const rightValue = right.aggregate ?? 0;
-      const valueOrder = filter.direction === 'top' ? rightValue - leftValue : leftValue - rightValue;
-      return valueOrder || left.key.localeCompare(right.key);
-    });
     let selected: typeof ranked;
     if (filter.mode === 'items') {
-      selected = ranked.slice(0, filter.threshold);
+      selected = selectTopBottomItems(ranked, filter.threshold, filter.direction);
     } else {
+      ranked.sort((left, right) => compareTopBottomBuckets(left, right, filter.direction));
       // Excel's Percent and Sum modes select the ranked prefix whose
       // aggregate reaches the requested target; they do not compare every
       // member independently with the threshold.  This is also what keeps a
@@ -2291,7 +2334,7 @@ function topItems(
       selected = [];
       for (const entry of ranked) {
         selected.push(entry);
-        accumulated += entry.aggregate ?? 0;
+        accumulated += entry.aggregate;
         if (accumulated >= target) break;
       }
     }
