@@ -41,6 +41,12 @@ test('rejects hidden native host invocation even without a Cargo workspace', t =
   assert.ok(inspectRuntimeStack(root).some(error => error.includes('Host.java')));
 });
 
+test('rejects a browser WASM MIME path even without a generated artifact', t => {
+  const { root, put } = fixture(t);
+  put('scripts/dev-server.js', "const contentType = 'application/wasm';");
+  assert.ok(inspectRuntimeStack(root).some(error => error.includes('scripts/dev-server.js')));
+});
+
 test('does not allow deleting the canonical owners or changing toolchain to pass', t => {
   const { root, put } = fixture(t);
   rmSync(join(root, 'frontend-react/packages/core-model/src/domain.ts'));

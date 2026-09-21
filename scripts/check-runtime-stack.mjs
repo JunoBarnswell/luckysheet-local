@@ -12,7 +12,7 @@ const forbiddenEntries = [
 const ignoredDirectories = new Set(['.git', 'node_modules', 'target', 'dist', '.tools', '.gitnexus']);
 const executableRoots = ['backend/src/main', 'frontend-react/apps', 'frontend-react/packages', 'scripts', 'installer', 'contracts', '.github/workflows'];
 const sourceExtensions = /\.(?:[cm]?js|tsx?|java|json|ya?ml|ps1|xml|toml|nsi|nsh|cmd|bat|sh|properties)$/i;
-const retiredRuntime = /@react-sheets\/kernel-client|workbook-kernel-host|kernel_host\.wasm|wasm32-unknown-unknown|\bKernelHost(?:Gateway|Properties|Configuration)\b|\bKernelPersistenceService\b|\b(?:cargo|rustc|rustup)\s+(?:build|test|run|install|--version)/;
+const retiredRuntime = /@react-sheets\/kernel-client|workbook-kernel-host|kernel_host\.wasm|wasm32-unknown-unknown|application\/wasm|\.wasm\b|\bKernelHost(?:Gateway|Properties|Configuration)\b|\bKernelPersistenceService\b|\b(?:cargo|rustc|rustup)\s+(?:build|test|run|install|--version)/;
 
 /** Build-tool policy, not a runtime compatibility path. */
 export function inspectRuntimeStack(root) {
