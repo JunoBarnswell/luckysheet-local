@@ -10,7 +10,7 @@ import type {
   WorkbookModel,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
-import { DEFAULT_DATA_BLOCK_ROW_COUNT } from '@react-sheets/core-model';
+import { DEFAULT_DATA_BLOCK_ROW_COUNT, PIVOT_DAY_MS, pivotTimelineInstant } from '@react-sheets/core-model';
 import {
   COLUMNAR_BLOCK_ENCODING,
   computeColumnarBlockChecksum,
@@ -209,8 +209,29 @@ function sourceRangeForPivot(pivot: import('@react-sheets/core-model').PivotMode
 function inferDataSourceFieldType(values: readonly TableScalar[]): DataSourceFieldType {
   if (values.every((value) => value === null || typeof value === 'number')) return 'number';
   if (values.every((value) => value === null || typeof value === 'boolean')) return 'boolean';
+  const present = values.filter((value) => value !== null && value !== '');
+  const dateLike = present.length > 0 && present.every((value) => typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value)
+    && pivotTimelineInstant(value) !== undefined);
+  if (dateLike) return 'date';
   if (values.every((value) => value === null || typeof value === 'string')) return 'text';
   return 'mixed';
+}
+
+function normalizeQueryRowsForDataSource(
+  rows: readonly (readonly TableScalar[])[],
+  fields: readonly DataSourceField[],
+): TableScalar[][] {
+  const excelEpoch = Date.UTC(1899, 11, 30);
+  return rows.map((row, rowIndex) => row.map((value, ordinal) => {
+    if (fields[ordinal]?.type !== 'date') return value;
+    if (value === null || value === '') return null;
+    if (typeof value === 'number') return value;
+    if (typeof value !== 'string') throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} cannot be encoded`);
+    const instant = pivotTimelineInstant(value);
+    if (instant === undefined) throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} is invalid`);
+    return (instant - excelEpoch) / PIVOT_DAY_MS;
+  }));
 }
 
 export function querySourceId(queryId: string): string {
@@ -396,9 +417,10 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
   const previousSource = workbook.dataModel.sources.get(sourceId);
   const revision = (previousSource?.revision ?? -1) + 1;
   const fields = result.columns.map((name, ordinal) => ({ id: `${sourceId}:field:${ordinal}`, name, ordinal, type: inferDataSourceFieldType(result.rows.map((row) => row[ordinal] ?? null)) }));
+  const normalizedRows = normalizeQueryRowsForDataSource(result.rows, fields);
   const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
-  for (let startRow = 0; startRow < result.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
-    const rows = result.rows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT).map((row) => [...row]);
+  for (let startRow = 0; startRow < normalizedRows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
+    const rows = normalizedRows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
     const blockPayload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
     const blockId = `${sourceId}:r${revision}:b${startRow}`;
     blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
