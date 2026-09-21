@@ -124,18 +124,35 @@ function sourceMemberIndex(table: SourceTable, ordinal: number): ReadonlyMap<str
   if (table.memberIndexes.has(ordinal)) return table.memberIndexes.get(ordinal) ?? undefined;
   if (table.memberIndexes.size >= MAX_SOURCE_MEMBER_INDEX_FIELDS) return undefined;
   const index = new Map<string, number[]>();
-  for (let row = 0; row < table.index.rowCount; row += 1) {
-    const key = pivotMemberKey(createPivotMemberKey(pivotSourceValueAt(table.index, ordinal, row)));
+  const addRow = (key: string, row: number): boolean => {
     const bucket = index.get(key);
     if (bucket) {
       bucket.push(row);
-      continue;
+      return true;
     }
     if (index.size >= MAX_SOURCE_MEMBER_INDEX_MEMBERS) {
       table.memberIndexes.set(ordinal, null);
-      return undefined;
+      return false;
     }
     index.set(key, [row]);
+    return true;
+  };
+  const column = table.index.columns[ordinal];
+  if (column?.kind === 'dictionary') {
+    // Dictionary columns already carry the canonical member identity per
+    // row. Reusing those keys avoids decoding and re-keying every value while
+    // building a large-table filter index.
+    const blankKey = pivotMemberKey(createPivotMemberKey(null));
+    const dictionaryKeys = column.dictionary.map((value) => pivotMemberKey(createPivotMemberKey(value)));
+    for (let row = 0; row < table.index.rowCount; row += 1) {
+      const code = column.codes[row] ?? 0;
+      const key = code === 0 ? blankKey : dictionaryKeys[code - 1] ?? blankKey;
+      if (!addRow(key, row)) return undefined;
+    }
+  } else {
+    for (let row = 0; row < table.index.rowCount; row += 1) {
+      if (!addRow(pivotMemberKey(createPivotMemberKey(pivotSourceValueAt(table.index, ordinal, row))), row)) return undefined;
+    }
   }
   table.memberIndexes.set(ordinal, index);
   return index;
@@ -2444,6 +2461,19 @@ function indexedSlicerMask(rows: SourceRow[], fieldId: string, slicer: PivotSlic
   return { mask, acceptedCount, hasRestriction: acceptedCount !== rows.length };
 }
 
+function indexedSlicerMembers(rows: SourceRow[], fieldId: string): PivotScalar[] | undefined {
+  const table = rows[0]?.source;
+  if (!table || rows !== table.rows) return undefined;
+  const ordinal = table.fieldOrdinals.get(fieldId);
+  if (ordinal === undefined) return undefined;
+  const index = sourceMemberIndex(table, ordinal);
+  if (!index) return undefined;
+  return [...index.values()].flatMap((memberRows) => {
+    const row = memberRows[0];
+    return row === undefined ? [] : [pivotSourceValueAt(table.index, ordinal, row)];
+  });
+}
+
 interface PivotControlMatcher {
   rows: SourceRow[];
   controls: readonly PivotTaskControl[];
@@ -2516,7 +2546,8 @@ function slicerItemProjection(
   aggregates: PivotAggregatePlanner,
   precomputedAvailableRows?: SourceRow[],
 ): PivotSlicerItemProjection[] {
-  const fieldValues = rows.map((row) => sourceRowValue(row, payload.fieldId));
+  const fieldValues = indexedSlicerMembers(rows, payload.fieldId)
+    ?? rows.map((row) => sourceRowValue(row, payload.fieldId));
   const members = new Map<string, PivotSlicerItemProjection>();
   for (const value of fieldValues) {
     const key = createPivotMemberKey(value);
@@ -2605,7 +2636,7 @@ function resultGrandTotalCell(rows: SourceRow[], values: PivotResultValueField[]
   };
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner, prefix: string[] = []): PivotResultNode[] {
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner, prefix: string[] = [], precomputedRootGroups?: AxisGroup[]): PivotResultNode[] {
   // A Pivot with no Row fields still owns one data row: the root aggregation
   // crossing every Column path and Values placement. Grand Total is a
   // separate axis total and must not stand in for this matrix row.
@@ -2627,11 +2658,14 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     }];
   }
   const placement = placements[depth]!;
-  return axisGroups(rows, [placement], fieldCatalog, collator, values, calculatedFields, aggregates).map((group) => {
+  const groups = depth === 0 && precomputedRootGroups
+    ? precomputedRootGroups
+    : axisGroups(rows, [placement], fieldCatalog, collator, values, calculatedFields, aggregates);
+  return groups.map((group) => {
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, calculatedFields, aggregates, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, calculatedFields, aggregates, path, precomputedRootGroups);
     const leaf = children.length === 0;
     const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
@@ -2897,6 +2931,12 @@ function computePivotResultFromTable(
     ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields, aggregates)
     : [{ values: [], rows: filtered, rowSet: new Set(filtered) }];
   assertPivotTaskFootprint(definition, filtered, columns, resultFields, targetBounds);
+  // The root row axis is consumed once for sorting/grouping and again while
+  // materializing the result tree. Reuse the immutable groups so a large
+  // value-sorted Pivot does not rebuild and resort the full source domain.
+  const rootRowGroups = definition.layout.rows.length
+    ? axisGroups(filtered, [definition.layout.rows[0]!], definition.fieldCatalog, collator, resultFields, calculatedFields, aggregates)
+    : undefined;
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
@@ -2910,7 +2950,7 @@ function computePivotResultFromTable(
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
     valueFields: resultFields,
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator, calculatedFields, aggregates),
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator, calculatedFields, aggregates, [], rootRowGroups),
     columnGrandTotals: resultCells(filtered, columns, resultFields, [`${definition.id}|grand-total`], 'grand-total', undefined, calculatedFields, aggregates),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => sourceRowPaths(row)),
