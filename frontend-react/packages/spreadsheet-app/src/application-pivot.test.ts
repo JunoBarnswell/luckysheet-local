@@ -413,6 +413,30 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
   });
 
+  it('loads DataSource Pivot field members only when a picker requests them', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('pivot-lazy-members', 'Pivot lazy members', [
+      { Region: 'East', Amount: 10 },
+      { Region: 'West', Amount: 20 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const created = await app.createPivotTable({
+      source: { kind: 'worksheet-range', range: structuredClone(region.range) },
+      destination: { kind: 'new-sheet' },
+    });
+    assert.equal(created.status, 'created', app.getUiSnapshot().notice);
+    if (created.status !== 'created') return;
+
+    const pivot = app['runtime'].model.getSheets().flatMap((entry) => entry.pivots).find((entry) => entry.id === created.pivotId)!;
+    const regionField = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, []);
+
+    await app.loadPivotFieldValues(pivot.id, regionField.fieldId);
+
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, ['East', 'West']);
+  });
+
   it('creates a DataSource Pivot timeline from Query date fields', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('pivot-date-block-source', 'Pivot date blocks', [

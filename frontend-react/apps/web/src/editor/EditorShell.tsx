@@ -289,6 +289,13 @@ export function EditorShell({
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}
                 onPivotExpansionToggle={(pivotId, nodeId) => { void session.togglePivotExpansion(pivotId, nodeId); }}
+                onLoadPivotFieldValues={async (pivotId, fieldId) => {
+                  const pivot = state.selectedSheet.pivots.find((candidate) => candidate.id === pivotId);
+                  if (pivot?.source.kind !== 'data-source') return undefined;
+                  await session.loadPivotFieldValues(pivotId, fieldId);
+                  return session.getPivotFieldCatalogForPivot(pivotId).find((field) => field.fieldId === fieldId)?.values;
+                }}
+                onPivotFilterLoadError={(error) => session.notify(error instanceof Error ? error.message : '字段值加载失败')}
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
