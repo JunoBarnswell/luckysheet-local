@@ -162,26 +162,35 @@ function buildSeriesXml(payload: ChartDrawingPayload, series: ChartSeriesModel, 
   if (type === 'scatter' || type === 'bubble') {
     if (!series.xRange || !series.yRange || (type === 'bubble' && !series.sizeRange)) throw new Error(`INVALID_CHART_SOURCE: ${type} series ${name} requires X/Y${type === 'bubble' ? '/Size' : ''} range bindings`);
     const size = series.sizeRange ? `<c:bubbleSize>${numRefXml(series.sizeRange, sheetNameForId)}</c:bubbleSize>` : '';
-    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}<c:xVal>${numRefXml(series.xRange, sheetNameForId)}</c:xVal><c:yVal>${numRefXml(series.yRange, sheetNameForId)}</c:yVal>${size}</c:ser>`;
+    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype, sheetNameForId)}<c:xVal>${numRefXml(series.xRange, sheetNameForId)}</c:xVal><c:yVal>${numRefXml(series.yRange, sheetNameForId)}</c:yVal>${size}</c:ser>`;
   }
   if (type === 'stock') {
     const roles = series.stockRoles;
     if (!roles) throw new Error(`INVALID_CHART_SOURCE: Stock series ${name} requires explicit role bindings`);
-    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}${stockRoleXml(roles, sheetNameForId)}</c:ser>`;
+    return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype, sheetNameForId)}${stockRoleXml(roles, sheetNameForId)}</c:ser>`;
   }
-  return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype)}<c:cat>${category}</c:cat><c:val>${numOrStringRefXml(valueRange, sheetNameForId, false)}</c:val></c:ser>`;
+  return `${common}${style}${seriesXmlExtras(series, series.subtype ?? payload.subtype, sheetNameForId)}<c:cat>${category}</c:cat><c:val>${numOrStringRefXml(valueRange, sheetNameForId, false)}</c:val></c:ser>`;
 }
 
 function stockRoleXml(roles: NonNullable<ChartSeriesModel['stockRoles']>, sheetNameForId: (sheetId: string) => string): string {
   return `${roles.open ? `<c:open>${numRefXml(roles.open, sheetNameForId)}</c:open>` : ''}<c:high>${numRefXml(roles.high, sheetNameForId)}</c:high><c:low>${numRefXml(roles.low, sheetNameForId)}</c:low><c:close>${numRefXml(roles.close, sheetNameForId)}</c:close>${roles.volume ? `<c:vol>${numRefXml(roles.volume, sheetNameForId)}</c:vol>` : ''}`;
 }
 
-function seriesXmlExtras(series: ChartSeriesModel, subtype: ChartDrawingPayload['subtype']): string {
+function seriesXmlExtras(series: ChartSeriesModel, subtype: ChartDrawingPayload['subtype'], sheetNameForId: (sheetId: string) => string): string {
   const marker = series.marker?.enabled || subtype.includes('markers') ? `<c:marker><c:symbol val="${series.marker?.shape ?? 'circle'}"/><c:size val="${Math.max(2, Math.min(72, Math.round(series.marker?.size ?? 6)))}"/></c:marker>` : '';
   const smooth = series.smooth || subtype.includes('smooth') ? '<c:smooth val="1"/>' : '';
   const trendlines = (series.trendlines ?? []).map((trendline) => `<c:trendline>${trendline.name ? `<c:name>${encodeXml(trendline.name)}</c:name>` : ''}<c:trendlineType val="${trendline.type === 'moving-average' ? 'movingAvg' : trendline.type === 'logarithmic' ? 'log' : trendline.type === 'polynomial' ? 'poly' : trendline.type === 'power' ? 'power' : trendline.type}"/>${trendline.order === undefined ? '' : `<c:order val="${trendline.order}"/>`}${trendline.period === undefined ? '' : `<c:period val="${trendline.period}"/>`}${trendline.forwardForecast === undefined ? '' : `<c:forward val="${trendline.forwardForecast}"/>`}${trendline.backwardForecast === undefined ? '' : `<c:backward val="${trendline.backwardForecast}"/>`}${trendline.intercept === undefined ? '' : `<c:intercept val="${trendline.intercept}"/>`}${trendline.displayEquation ? '<c:dispEq val="1"/>' : ''}${trendline.displayRSquared ? '<c:dispRSqr val="1"/>' : ''}</c:trendline>`).join('');
-  const error = series.errorBars ? `<c:errBars><c:errDir val="${series.errorBars.direction === 'horizontal' ? 'x' : 'y'}"/><c:errBarType val="${series.errorBars.direction === 'both' ? 'both' : 'bothDir'}"/><c:errValType val="${series.errorBars.type === 'standard-deviation' ? 'stdDev' : series.errorBars.type === 'standard-error' ? 'stdErr' : series.errorBars.type === 'fixed' ? 'fixedVal' : series.errorBars.type === 'percentage' ? 'percentage' : 'cust'}"/>${series.errorBars.endStyle === 'no-cap' ? '<c:noEndCap val="1"/>' : ''}${series.errorBars.value === undefined ? '' : `<c:val val="${series.errorBars.value}"/>`}</c:errBars>` : '';
+  const error = series.errorBars ? errorBarsXml(series.errorBars, sheetNameForId) : '';
   return `${marker}${smooth}${trendlines}${error}`;
+}
+
+function errorBarsXml(errorBars: NonNullable<ChartSeriesModel['errorBars']>, sheetNameForId: (sheetId: string) => string): string {
+  if (errorBars.type === 'custom' && (!errorBars.plusRange || !errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
+  const valueType = errorBars.type === 'standard-deviation' ? 'stdDev' : errorBars.type === 'standard-error' ? 'stdErr' : errorBars.type === 'fixed' ? 'fixedVal' : errorBars.type === 'percentage' ? 'percentage' : 'cust';
+  const directions = errorBars.direction === 'both' ? ['y', 'x'] as const : [errorBars.direction === 'horizontal' ? 'x' : 'y'] as const;
+  const custom = errorBars.type === 'custom' ? `<c:plus>${numRefXml(errorBars.plusRange!, sheetNameForId)}</c:plus><c:minus>${numRefXml(errorBars.minusRange!, sheetNameForId)}</c:minus>` : '';
+  const value = errorBars.value === undefined ? '' : `<c:val val="${errorBars.value}"/>`;
+  return directions.map((direction) => `<c:errBars><c:errDir val="${direction}"/><c:errBarType val="both"/><c:errValType val="${valueType}"/>${errorBars.endStyle === 'no-cap' ? '<c:noEndCap val="1"/>' : ''}${value}${custom}</c:errBars>`).join('');
 }
 
 function buildPivotChartXml(payload: ChartDrawingPayload, drawingId: string, sheet: SheetSnapshot, graph: NativePivotGraph, displayCellsBySheetPart: NativePivotChartSyncInput['displayCellsBySheetPart'], snapshot: WorkbookSnapshot): string {
@@ -552,6 +561,8 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
     const stockLow = parseNativeFormula(referenceFormula('low', 'numRef'), sheetIdByName);
     const stockClose = parseNativeFormula(referenceFormula('close', 'numRef'), sheetIdByName);
     const stockVolume = parseNativeFormula(referenceFormula('vol', 'numRef'), sheetIdByName);
+    const parsedErrorBars = parseNativeErrorBars(node, sheetIdByName);
+    if (!parsedErrorBars.supported) return undefined;
     const range = parseNativeFormula(yFormula || xFormula || referenceFormula('high', 'numRef') || referenceFormula('close', 'numRef'), sheetIdByName);
     if (!range) continue;
     const xRange = parseNativeFormula(xFormula, sheetIdByName);
@@ -562,7 +573,7 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
     const headerValue = nameReference ? snapshot.sheets.find(candidate => candidate.id === nameReference.sheetId)?.cells[String(nameReference.startRow)]?.[String(nameReference.startColumn)]?.value : undefined;
     const literalName = textContent(child(textParent, 'v')).trim() || textContent(descendants(textParent, 'v')[0]).trim() || textContent(descendants(textParent, 't')[0]).trim();
     const name = headerValue == null || headerValue === '' ? literalName || `Series ${series.length + 1}` : String(headerValue);
-    series.push({ id: `series:${series.length + 1}`, name, range, ...(xRange ? { xRange } : {}), ...(xRange ? { yRange: range } : {}), ...(sizeRange ? { sizeRange } : {}), ...(chartType === 'combo' || seriesType === 'scatter' || seriesType === 'bubble' ? { chartType: seriesType } : {}), ...(seriesType === 'stock' && stockHigh && stockLow && stockClose ? { stockRoles: { ...(stockOpen ? { open: stockOpen } : {}), high: stockHigh, low: stockLow, close: stockClose, ...(stockVolume ? { volume: stockVolume } : {}) } } : {}) });
+    series.push({ id: `series:${series.length + 1}`, name, range, ...(xRange ? { xRange } : {}), ...(xRange ? { yRange: range } : {}), ...(sizeRange ? { sizeRange } : {}), ...(parsedErrorBars.model ? { errorBars: parsedErrorBars.model } : {}), ...(chartType === 'combo' || seriesType === 'scatter' || seriesType === 'bubble' ? { chartType: seriesType } : {}), ...(seriesType === 'stock' && stockHigh && stockLow && stockClose ? { stockRoles: { ...(stockOpen ? { open: stockOpen } : {}), high: stockHigh, low: stockLow, close: stockClose, ...(stockVolume ? { volume: stockVolume } : {}) } } : {}) });
     if (categoryRange && series.length === 1) (series as Array<ChartSeriesModel & { categoryRange?: RangeRef }>)[0]!.categoryRange = categoryRange;
     }
   }
@@ -581,6 +592,43 @@ function nativeSeriesType(name: string): Exclude<ChartDrawingPayload['chartType'
   if (name === 'lineChart' || name === 'line3DChart') return 'line';
   if (name === 'areaChart' || name === 'area3DChart') return 'area';
   return undefined;
+}
+
+function parseNativeErrorBars(node: XmlNode, sheetIdByName: ReadonlyMap<string, string>): { supported: boolean; model?: NonNullable<ChartSeriesModel['errorBars']> } {
+  const entries = children(node, 'errBars');
+  if (!entries.length) return { supported: true };
+  const parsed: Array<{ direction: 'vertical' | 'horizontal'; model: Omit<NonNullable<ChartSeriesModel['errorBars']>, 'direction'> }> = [];
+  for (const entry of entries) {
+    const direction = child(entry, 'errDir')?.attrs.val;
+    const end = child(entry, 'errBarType')?.attrs.val;
+    const valueType = child(entry, 'errValType')?.attrs.val;
+    if ((direction !== 'x' && direction !== 'y') || (end !== 'both' && end !== 'bothDir')) return { supported: false };
+    const type = valueType === 'fixedVal' ? 'fixed' : valueType === 'percentage' ? 'percentage' : valueType === 'stdDev' ? 'standard-deviation' : valueType === 'stdErr' ? 'standard-error' : valueType === 'cust' ? 'custom' : undefined;
+    if (!type) return { supported: false };
+    const noEndCap = child(entry, 'noEndCap')?.attrs.val;
+    if (noEndCap !== undefined && noEndCap !== '0' && noEndCap !== '1' && noEndCap !== 'false' && noEndCap !== 'true') return { supported: false };
+    const rawValue = child(entry, 'val')?.attrs.val;
+    const value = rawValue === undefined ? undefined : Number(rawValue);
+    if (value !== undefined && !Number.isFinite(value)) return { supported: false };
+    const plusRange = parseNativeFormula(textContent(child(child(child(entry, 'plus'), 'numRef'), 'f')).trim(), sheetIdByName);
+    const minusRange = parseNativeFormula(textContent(child(child(child(entry, 'minus'), 'numRef'), 'f')).trim(), sheetIdByName);
+    if (type === 'custom' && (!plusRange || !minusRange)) return { supported: false };
+    if (type !== 'custom' && (child(entry, 'plus') || child(entry, 'minus'))) return { supported: false };
+    parsed.push({
+      direction: direction === 'x' ? 'horizontal' : 'vertical',
+      model: {
+        type,
+        ...(value === undefined ? {} : { value }),
+        ...(type === 'custom' ? { plusRange: plusRange!, minusRange: minusRange! } : {}),
+        ...(noEndCap === '1' || noEndCap === 'true' ? { endStyle: 'no-cap' as const } : { endStyle: 'cap' as const }),
+      },
+    });
+  }
+  if (parsed.length > 2 || new Set(parsed.map((entry) => entry.direction)).size !== parsed.length) return { supported: false };
+  const [first] = parsed;
+  if (!first) return { supported: false };
+  if (parsed.some((entry) => JSON.stringify(entry.model) !== JSON.stringify(first.model))) return { supported: false };
+  return { supported: true, model: { ...first.model, direction: parsed.length === 2 ? 'both' : first.direction } };
 }
 
 function parseNativeFormula(value: string, sheetIdByName: ReadonlyMap<string, string>): RangeRef | undefined {

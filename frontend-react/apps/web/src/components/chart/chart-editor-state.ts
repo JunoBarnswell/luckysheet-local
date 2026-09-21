@@ -7,6 +7,8 @@ export interface ChartSeriesDraft {
   xRange: string;
   yRange: string;
   sizeRange: string;
+  errorPlusRange: string;
+  errorMinusRange: string;
 }
 
 export interface ChartEditorDraft {
@@ -28,7 +30,15 @@ export function formatChartRange(range: RangeRef | undefined): string {
 }
 
 export function chartSeriesDraft(value: ChartSeriesModel): ChartSeriesDraft {
-  return { value: structuredClone(value), range: formatChartRange(value.range), xRange: formatChartRange(value.xRange), yRange: formatChartRange(value.yRange), sizeRange: formatChartRange(value.sizeRange) };
+  return {
+    value: structuredClone(value),
+    range: formatChartRange(value.range),
+    xRange: formatChartRange(value.xRange),
+    yRange: formatChartRange(value.yRange),
+    sizeRange: formatChartRange(value.sizeRange),
+    errorPlusRange: formatChartRange(value.errorBars?.plusRange),
+    errorMinusRange: formatChartRange(value.errorBars?.minusRange),
+  };
 }
 
 export function chartEditorDraft(payload: ChartDrawingPayload): ChartEditorDraft {
@@ -65,6 +75,16 @@ export function chartPayloadFromDraft(draft: ChartEditorDraft, sheetId: string):
     for (const key of ['xRange', 'yRange', 'sizeRange'] as const) {
       if (entry[key].trim()) series[key] = parseChartRange(entry[key], series[key]?.sheetId ?? series.range.sheetId, `系列 ${index + 1} ${key}`);
       else delete series[key];
+    }
+    if (series.errorBars?.type === 'custom') {
+      series.errorBars = {
+        ...series.errorBars,
+        plusRange: parseChartRange(entry.errorPlusRange, series.errorBars.plusRange?.sheetId ?? series.range.sheetId, `系列 ${index + 1} 自定义正误差范围`),
+        minusRange: parseChartRange(entry.errorMinusRange, series.errorBars.minusRange?.sheetId ?? series.range.sheetId, `系列 ${index + 1} 自定义负误差范围`),
+      };
+    } else if (series.errorBars) {
+      delete series.errorBars.plusRange;
+      delete series.errorBars.minusRange;
     }
     return series;
   });

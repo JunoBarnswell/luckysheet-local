@@ -14,6 +14,22 @@ export interface ChartSeriesEditorProps {
 
 export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChange, onAdd, canAdd }: ChartSeriesEditorProps) {
   const update = (index: number, change: (entry: ChartSeriesDraft) => ChartSeriesDraft) => onChange(series.map((entry, position) => position === index ? change(entry) : entry));
+  const updateErrorType = (index: number, type: NonNullable<ChartSeriesDraft['value']['errorBars']>['type'] | 'none') => update(index, item => {
+    if (type === 'none') return { ...item, value: { ...item.value, errorBars: undefined }, errorPlusRange: '', errorMinusRange: '' };
+    const current = item.value.errorBars;
+    return {
+      ...item,
+      value: {
+        ...item.value,
+        errorBars: {
+          type,
+          direction: current?.direction ?? 'vertical',
+          endStyle: current?.endStyle ?? 'cap',
+          ...(type === 'fixed' || type === 'percentage' ? { value: current?.value ?? 1 } : {}),
+        },
+      },
+    };
+  });
   const move = (index: number, offset: number) => {
     const next = [...series];
     const [entry] = next.splice(index, 1);
@@ -40,10 +56,15 @@ export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChang
         </Inline>
         {chartType === 'scatter' || chartType === 'bubble' ? <Stack gap="xs">{(['xRange', 'yRange', ...(chartType === 'bubble' ? ['sizeRange' as const] : [])] as const).map(key => <TextInput key={key} aria-label={`系列 ${index + 1} ${key}`} value={entry[key]} placeholder={key === 'xRange' ? 'X 值范围' : key === 'yRange' ? 'Y 值范围' : '气泡大小范围'} onChange={event => update(index, item => ({ ...item, [key]: event.target.value }))} />)}</Stack> : null}
         <CheckToggle label="显示数据标记" checked={entry.value.marker?.enabled === true} onChange={event => update(index, item => ({ ...item, value: { ...item.value, marker: { ...item.value.marker, enabled: event.currentTarget.checked } } }))} />
-        <Inline gap="xs"><Button size="xs" variant="secondary" onClick={() => update(index, item => ({ ...item, value: { ...item.value, trendlines: [...(item.value.trendlines ?? []), { id: crypto.randomUUID(), type: 'linear', displayEquation: true, displayRSquared: true }] } }))}>添加线性趋势线</Button>
-          <Button size="xs" variant="secondary" onClick={() => update(index, item => ({ ...item, value: { ...item.value, errorBars: { type: 'standard-error', direction: 'vertical', endStyle: 'cap' } } }))}>标准误差线</Button></Inline>
+        <Inline gap="xs"><Button size="xs" variant="secondary" onClick={() => update(index, item => ({ ...item, value: { ...item.value, trendlines: [...(item.value.trendlines ?? []), { id: crypto.randomUUID(), type: 'linear', displayEquation: true, displayRSquared: true }] } }))}>添加线性趋势线</Button></Inline>
         {entry.value.trendlines?.length ? <Button size="xs" variant="ghost" onClick={() => update(index, item => ({ ...item, value: { ...item.value, trendlines: [] } }))}>清除趋势线（{entry.value.trendlines.length}）</Button> : null}
-        {entry.value.errorBars ? <Button size="xs" variant="ghost" onClick={() => update(index, item => ({ ...item, value: { ...item.value, errorBars: undefined } }))}>清除误差线</Button> : null}
+        <Box className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-2"><Text size="xs" weight="medium">误差线</Text>
+          <Inline gap="xs"><Select aria-label={`系列 ${index + 1} 误差线类型`} value={entry.value.errorBars?.type ?? 'none'} onChange={event => updateErrorType(index, event.target.value as NonNullable<ChartSeriesDraft['value']['errorBars']>['type'] | 'none')}><option value="none">无</option><option value="fixed">固定值</option><option value="percentage">百分比</option><option value="standard-deviation">标准偏差</option><option value="standard-error">标准误差</option><option value="custom">自定义</option></Select>
+            {entry.value.errorBars ? <Select aria-label={`系列 ${index + 1} 误差线方向`} value={entry.value.errorBars.direction ?? 'vertical'} onChange={event => update(index, item => ({ ...item, value: { ...item.value, errorBars: item.value.errorBars ? { ...item.value.errorBars, direction: event.target.value as 'vertical' | 'horizontal' | 'both' } : undefined } }))}><option value="vertical">垂直</option><option value="horizontal">水平</option><option value="both">双向</option></Select> : null}</Inline>
+          {entry.value.errorBars?.type === 'fixed' || entry.value.errorBars?.type === 'percentage' ? <TextInput aria-label={`系列 ${index + 1} 误差线值`} type="number" min="0" value={entry.value.errorBars.value ?? ''} placeholder={entry.value.errorBars.type === 'percentage' ? '百分比' : '数值'} onChange={event => update(index, item => ({ ...item, value: { ...item.value, errorBars: item.value.errorBars ? { ...item.value.errorBars, value: event.target.value === '' ? undefined : Number(event.target.value) } : undefined } }))} /> : null}
+          {entry.value.errorBars?.type === 'custom' ? <Stack gap="xs"><TextInput aria-label={`系列 ${index + 1} 自定义正误差范围`} value={entry.errorPlusRange} placeholder="正误差范围，例如 D2:D20" onChange={event => update(index, item => ({ ...item, errorPlusRange: event.target.value }))} /><TextInput aria-label={`系列 ${index + 1} 自定义负误差范围`} value={entry.errorMinusRange} placeholder="负误差范围，例如 E2:E20" onChange={event => update(index, item => ({ ...item, errorMinusRange: event.target.value }))} /></Stack> : null}
+          {entry.value.errorBars ? <CheckToggle label="显示端帽" checked={entry.value.errorBars.endStyle !== 'no-cap'} onChange={event => update(index, item => ({ ...item, value: { ...item.value, errorBars: item.value.errorBars ? { ...item.value.errorBars, endStyle: event.currentTarget.checked ? 'cap' : 'no-cap' } : undefined } }))} /> : null}
+        </Box>
       </Stack>
     </Box>)}
     <Button size="sm" variant="secondary" icon="plus" disabled={!canAdd} onClick={onAdd}>添加数据系列</Button>
