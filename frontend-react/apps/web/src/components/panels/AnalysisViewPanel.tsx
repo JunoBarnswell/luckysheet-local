@@ -126,6 +126,8 @@ function validateDraft(view: AnalysisViewDefinition, table: WorkbookTableModel |
     }
     for (const chart of view.charts) {
       if (chartIds.length > 0 && !chartIds.includes(chart.chartId)) errors.push('图表“' + chart.chartId + '”已不存在，请移除该绑定。');
+      if (chart.fieldMap.category === undefined) errors.push('图表“' + chart.chartId + '”必须映射类别字段。');
+      if (chart.fieldMap.value === undefined) errors.push('图表“' + chart.chartId + '”必须映射值字段。');
       for (const fieldId of Object.values(chart.fieldMap)) {
         if (fieldId !== undefined && !fieldIds.has(fieldId)) errors.push('图表“' + chart.chartId + '”引用了不存在的字段。');
         else if (fieldId !== undefined && !selectedIds.has(fieldId)) errors.push('图表“' + chart.chartId + '”引用了未选择的字段，请先重新选择该字段。');
@@ -174,6 +176,7 @@ function AnalysisPreview({ projection }: { projection: AnalysisViewProjection })
 
 export function AnalysisViewPanel({ views, tables, sourceSheets = [], chartIds = [], onSetView, onRemoveView, onClose }: AnalysisViewPanelProps) {
   const [name, setName] = useState('分析视图');
+  const [sourceTableId, setSourceTableId] = useState<string>();
   const [activeViewId, setActiveViewId] = useState<string>();
   const [draft, setDraft] = useState<AnalysisViewDefinition>();
   const [filterInputText, setFilterInputText] = useState<Record<string, string>>({});
@@ -185,12 +188,17 @@ export function AnalysisViewPanel({ views, tables, sourceSheets = [], chartIds =
 
   const activeView = useMemo(() => views.find((view) => view.id === activeViewId), [activeViewId, views]);
   const activeTable = tableForView(draft ?? activeView, tables);
-  const source = tables[0];
+  const source = tables.find((table) => table.id === sourceTableId) ?? tables[0];
   const sourceSheet = activeTable?.sourceRange ? sourceSheets.find((sheet) => sheet.id === activeTable.sourceRange?.sheetId) : undefined;
   const projection = useMemo(
     () => draft ? buildAnalysisViewProjection(draft, activeTable, sourceSheet) : undefined,
     [activeTable, draft, sourceSheet],
   );
+
+  useEffect(() => {
+    if (sourceTableId && tables.some((table) => table.id === sourceTableId)) return;
+    setSourceTableId(tables[0]?.id);
+  }, [sourceTableId, tables]);
 
   useEffect(() => {
     if (views.length === 0) {
@@ -417,7 +425,8 @@ export function AnalysisViewPanel({ views, tables, sourceSheets = [], chartIds =
             <PanelBody>
               <Stack gap="sm">
                 <TextInput aria-label="分析视图名称" value={name} onChange={(event) => setName(event.target.value)} />
-                <Text size="xs" tone="muted">从第一个工作簿表创建字段映射；保存后通过协作 mutation 共享。</Text>
+                <Select aria-label="分析源数据表" sizeVariant="sm" value={source?.id ?? ''} disabled={tables.length === 0} onChange={(event) => setSourceTableId(event.currentTarget.value)} options={tables.map((table) => ({ value: table.id, label: `${table.name} · ${table.id}` }))} />
+                <Text size="xs" tone="muted">选择一个工作簿表创建字段映射；保存后通过协作 mutation 共享。</Text>
                 <Button size="sm" variant="primary" disabled={!source} onClick={createView}>创建并共享</Button>
               </Stack>
             </PanelBody>

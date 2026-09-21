@@ -70,6 +70,8 @@ function isAnalysisView(value: unknown): value is AnalysisViewDefinition {
   }
   for (const chart of value.charts) {
     if (!isRecord(chart) || typeof chart.chartId !== 'string' || chart.chartId.trim().length === 0 || !isRecord(chart.fieldMap)) return false;
+    if (typeof chart.fieldMap.category !== 'string' || chart.fieldMap.category.trim().length === 0
+      || typeof chart.fieldMap.value !== 'string' || chart.fieldMap.value.trim().length === 0) return false;
     for (const fieldId of Object.values(chart.fieldMap)) if (typeof fieldId !== 'string' || fieldId.trim().length === 0) return false;
   }
   return true;

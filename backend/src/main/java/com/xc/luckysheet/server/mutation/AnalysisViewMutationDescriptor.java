@@ -210,6 +210,9 @@ final class AnalysisViewMutationDescriptor extends CanonicalJsonMutationDescript
             if (!ids.add(chartId)) throw ServiceException.validation("Analysis chart binding is duplicated: " + chartId);
             ObjectNode map = SnapshotMutationSupport.requiredObject(chart, "fieldMap");
             SnapshotMutationSupport.validateKnownKeys(map, FIELD_MAP_KEYS, "Analysis chart field map");
+            if (!map.has("category") || !map.has("value")) {
+                throw ServiceException.validation("Analysis chart field map requires category and value fields");
+            }
             map.fieldNames().forEachRemaining(key -> {
                 String fieldId = SnapshotMutationSupport.text(map, key);
                 if (!fieldIds.contains(fieldId)) throw ServiceException.validation("Analysis chart field is not present in the table: " + fieldId);

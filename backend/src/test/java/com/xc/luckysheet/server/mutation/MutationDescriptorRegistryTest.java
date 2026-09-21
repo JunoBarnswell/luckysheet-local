@@ -343,6 +343,21 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void analysisViewRejectsIncompleteChartFieldMapWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
+                """);
+        var invalid = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Broken chart","tableId":"table-1","fields":[{"fieldId":"region","caption":"Region"},{"fieldId":"amount","caption":"Amount"}],
+                  "filters":[],"charts":[{"chartId":"chart-1","fieldMap":{"category":"region"}}],"layout":{"columns":1,"rowHeightPx":200,"gapPx":8},"revision":0}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+        assertEquals(0, snapshot.path("dataModel").path("views").size());
+    }
+
+    @Test
     void analysisViewExpectedRevisionRejectsStaleDashboardEdit() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

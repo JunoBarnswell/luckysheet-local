@@ -77,6 +77,7 @@
 | 离线地图 GeoJSON 本轮闭环 | 在同一 `localhost:8083` 隔离服务中创建“离线地图验收”工作簿，录入 `Region/Value` 三行数据，从插入图表图库选择“填充地图”，通过图表面板导入 `%TEMP%\\react-sheets-map-test.geojson`。解析器生成 `geojson-75fde905d1430b14`，校验并保存 3 个区域；Canvas 真实绘制 North、South、East 三个多边形并按数值着色。应用后服务端版本为 r10，刷新重开仍能显示地图和数据，控制台 error/warn 为 0；未访问外部地图服务。该证据覆盖自定义 GeoJSON 的成功链路，不代表固定 geoBoundaries 版本、县区/邮编映射或 20 类图表同批验收已完成。 |
 | 共享分析视图 mutation | Java `MutationDescriptorRegistryTest` 验证分析视图新增、删除、未知表字段拒绝和过期 `expectedRevision` 冲突且快照不变；真实内置浏览器在隔离 H2 工作簿中创建 `Category/Amount` 数据表，Insert → 分析视图创建并共享后显示实时数据预览（总行数 4、筛选后 4），添加 `Category = North` 后预览变为筛选后 2，保存后服务端版本升为 v1。刷新并重新打开侧栏仍恢复 v1、筛选条件和“筛选后 2”，控制台 error/warn 为 0。该证据覆盖表源投影、共享筛选、持久化重开，不宣称五人协作、跨图刷选、切片器/时间线和完整仪表盘已完成。 |
 | 共享分析视图图表绑定与点选 | 真实同源浏览器在隔离 H2 工作簿创建 `Category/Amount` 表和柱形图，分析视图显示实际 `chart-hs3vaq` 绑定及 4 个数据点；保存 `Category = North` 后图表画面只剩 North 聚合柱，预览显示 2 个点。清除筛选后点选 South 柱，分析视图 revision 从 v2 更新到 v3、筛选值变为 South、预览为 1 个点，控制台 error/warn 为 0。此证据同时确认面板使用 `payload.chartId` 绑定，不把 drawing payload ID 当作图表身份。 |
+| 分析源选择与图表字段映射拒绝 | 真实同源浏览器重启服务并重新登录后，Insert → 分析视图面板显示 `分析源数据表` 选择器，已有视图仍恢复为 v3；South 筛选预览保持 1 个数据点，控制台 error/warn 为 0。新增视图可在工作簿表之间选择源表；UI、协议和 Java mutation 同时要求每个图表绑定提供 `category` 与 `value` 字段映射，`MutationDescriptorRegistryTest` 的不完整映射拒绝测试通过且快照不变。 |
 
 本轮浏览器成功路径控制台未见 warning/error。故障注入产生预期网络失败；开发服务重启使内存认证会话失效，旧 WebSocket 握手有认证拒绝日志。所有网络拦截均已撤销。
 
