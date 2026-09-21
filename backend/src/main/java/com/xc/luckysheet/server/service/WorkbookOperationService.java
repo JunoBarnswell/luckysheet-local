@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class WorkbookOperationService {
@@ -51,6 +52,13 @@ public class WorkbookOperationService {
     private final ObjectMapper mapper;
     private final AuditRecorder auditRecorder;
     private final CoordinationProperties coordination;
+    /**
+     * H2 runs the browser service as one JVM.  Keep commit, checkpoint and
+     * restore writes for one workbook in one local critical section so a
+     * checkpoint cannot race the operation replay entity update.  The
+     * database lock remains authoritative for future instances.
+     */
+    private final ConcurrentHashMap<String, Object> workbookLocks = new ConcurrentHashMap<>();
 
     public WorkbookOperationService(
             WorkbookStore store,
@@ -86,12 +94,14 @@ public class WorkbookOperationService {
 
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor) {
-        try {
-            if (operation == null) throw ServiceException.validation("Operation is required");
-            return commitInternal(routeUnitId, operation, actor);
-        } catch (ServiceException error) {
-            auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
-            throw error;
+        synchronized (workbookLock(routeUnitId)) {
+            try {
+                if (operation == null) throw ServiceException.validation("Operation is required");
+                return commitInternal(routeUnitId, operation, actor);
+            } catch (ServiceException error) {
+                auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
+                throw error;
+            }
         }
     }
 
@@ -221,53 +231,62 @@ public class WorkbookOperationService {
 
     @Transactional
     public CheckpointResponse checkpoint(String unitId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
-        WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
-        if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
-        if (row.snapshotRevision() == row.revision()) {
+        synchronized (workbookLock(unitId)) {
+            access.require(unitId, actor, WorkbookAclRole.EDITOR);
+            WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+            if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
+            if (row.snapshotRevision() == row.revision()) {
+                JsonNode snapshot = currentSnapshot(row);
+                String canonicalJson = writeJson(snapshot);
+                return new CheckpointResponse(unitId, row.revision(), checksum(canonicalJson), false);
+            }
             JsonNode snapshot = currentSnapshot(row);
-            String canonicalJson = writeJson(snapshot);
-            return new CheckpointResponse(unitId, row.revision(), checksum(canonicalJson), false);
+            String json = writeJson(snapshot);
+            Instant now = Instant.now();
+            store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
+            store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
+            return new CheckpointResponse(unitId, row.revision(), checksum(json), true);
         }
-        JsonNode snapshot = currentSnapshot(row);
-        String json = writeJson(snapshot);
-        Instant now = Instant.now();
-        store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
-        store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
-        return new CheckpointResponse(unitId, row.revision(), checksum(json), true);
     }
 
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.OWNER);
-        WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
-        if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
-        JsonNode target = snapshotAtRevision(row, request.targetRevision());
-        WorkbookSnapshotValidator.requireCanonical(target, unitId);
-        registry.require("workbook.restore", true);
-        long revision = row.revision() + 1;
-        Instant now = Instant.now();
-        String operationId = UUID.randomUUID().toString();
-        ObjectNode params = mapper.createObjectNode()
-                .put("serverGenerated", true)
-                .put("targetRevision", request.targetRevision())
-                .put("reason", request.reason());
-        params.set("snapshot", target.deepCopy());
-        List<CommittedOperationMutation> mutations = fullWorkbookRestoreMutation(target, params);
-        List<OperationMutation> sourceMutations = mutations.stream()
-                .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
-        OperationEnvelope source = new OperationEnvelope("system", OperationEnvelope.SCHEMA, operationId, unitId, revision, row.revision(),
-                sourceMutations, now);
-        CommittedOperationEnvelope committed = CommittedOperationEnvelope.system(source, actor, revision, now, mutations);
-        String json = writeJson(target);
-        String envelopeJson = writeJson(committed);
-        // System restores must not share an authenticated browser's client-sequence namespace.
-        store.insertOperation(new OperationRow(operationId, unitId, revision, SYSTEM_RESTORE_ACTOR, "system", revision, row.revision(), envelopeJson, now));
-        enqueueRevisionEvent(unitId, operationId, revision, envelopeJson, now);
-        store.updateWorkbook(unitId, revision, json, revision, now);
-        store.insertCheckpoint(unitId, revision, json, checksum(json), now);
-        audit(operationId, unitId, actor, "SNAPSHOT_RESTORE", "ACCEPTED", request.reason(), mapper.createObjectNode().put("targetRevision", request.targetRevision()));
-        return new RestoreResult(committed, response(unitId, target, revision, checksum(json)));
+        synchronized (workbookLock(unitId)) {
+            access.require(unitId, actor, WorkbookAclRole.OWNER);
+            WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+            if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
+            JsonNode target = snapshotAtRevision(row, request.targetRevision());
+            WorkbookSnapshotValidator.requireCanonical(target, unitId);
+            registry.require("workbook.restore", true);
+            long revision = row.revision() + 1;
+            Instant now = Instant.now();
+            String operationId = UUID.randomUUID().toString();
+            ObjectNode params = mapper.createObjectNode()
+                    .put("serverGenerated", true)
+                    .put("targetRevision", request.targetRevision())
+                    .put("reason", request.reason());
+            params.set("snapshot", target.deepCopy());
+            List<CommittedOperationMutation> mutations = fullWorkbookRestoreMutation(target, params);
+            List<OperationMutation> sourceMutations = mutations.stream()
+                    .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
+            OperationEnvelope source = new OperationEnvelope("system", OperationEnvelope.SCHEMA, operationId, unitId, revision, row.revision(),
+                    sourceMutations, now);
+            CommittedOperationEnvelope committed = CommittedOperationEnvelope.system(source, actor, revision, now, mutations);
+            String json = writeJson(target);
+            String envelopeJson = writeJson(committed);
+            // System restores must not share an authenticated browser's client-sequence namespace.
+            store.insertOperation(new OperationRow(operationId, unitId, revision, SYSTEM_RESTORE_ACTOR, "system", revision, row.revision(), envelopeJson, now));
+            enqueueRevisionEvent(unitId, operationId, revision, envelopeJson, now);
+            store.updateWorkbook(unitId, revision, json, revision, now);
+            store.insertCheckpoint(unitId, revision, json, checksum(json), now);
+            audit(operationId, unitId, actor, "SNAPSHOT_RESTORE", "ACCEPTED", request.reason(), mapper.createObjectNode().put("targetRevision", request.targetRevision()));
+            return new RestoreResult(committed, response(unitId, target, revision, checksum(json)));
+        }
+    }
+
+    private Object workbookLock(String unitId) {
+        if (unitId == null || unitId.isBlank()) return this;
+        return workbookLocks.computeIfAbsent(unitId, ignored -> new Object());
     }
 
     public List<AclEntry> acl(String unitId, String actor) {

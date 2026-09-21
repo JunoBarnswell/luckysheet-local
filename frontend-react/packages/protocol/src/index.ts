@@ -957,6 +957,51 @@ export function validateDataSourceMutationParams(
   }
 }
 
+/** Validate the shared dashboard state before it enters a recovery journal. */
+export function validateAnalysisViewMutationParams(value: unknown): void {
+  const params = requireRecord(value, 'Analysis view mutation');
+  validateExactKeys(params, ['view', 'viewId'], 'Analysis view mutation');
+  if (params.view === null) {
+    if (!isNonEmptyString(params.viewId)) throw new Error('Analysis view removal requires viewId');
+    return;
+  }
+  const view = requireRecord(params.view, 'Analysis view');
+  validateExactKeys(view, ['kind', 'id', 'name', 'tableId', 'fields', 'groupBy', 'sort', 'filters', 'charts', 'layout', 'revision'], 'Analysis view');
+  if (view.kind !== 'analysis' || !isNonEmptyString(view.id) || !isNonEmptyString(view.name) || !isNonEmptyString(view.tableId)
+    || !Array.isArray(view.fields) || !Array.isArray(view.filters) || !Array.isArray(view.charts)
+    || !Number.isSafeInteger(view.revision) || Number(view.revision) < 0) throw new Error('Analysis view identity or shape is invalid');
+  const fieldIds = new Set<string>();
+  for (const rawField of view.fields) {
+    const field = requireRecord(rawField, 'Analysis view field');
+    validateExactKeys(field, ['fieldId', 'caption', 'formula', 'widthPx'], 'Analysis view field');
+    if (!isNonEmptyString(field.fieldId) || !isNonEmptyString(field.caption) || fieldIds.has(field.fieldId)) throw new Error('Analysis view field identity is invalid');
+    fieldIds.add(field.fieldId);
+  }
+  for (const rawFilter of view.filters) {
+    const filter = requireRecord(rawFilter, 'Analysis filter');
+    validateExactKeys(filter, ['id', 'fieldId', 'operator', 'values'], 'Analysis filter');
+    if (!isNonEmptyString(filter.id) || !isNonEmptyString(filter.fieldId) || !['equals', 'not-equals', 'contains', 'in', 'between'].includes(String(filter.operator))
+      || !fieldIds.has(String(filter.fieldId))
+      || !Array.isArray(filter.values) || filter.values.length === 0 || filter.values.length > 10_000
+      || !filter.values.every((entry) => entry === null || typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')) {
+      throw new Error('Analysis filter shape is invalid');
+    }
+  }
+  for (const rawChart of view.charts) {
+    const chart = requireRecord(rawChart, 'Analysis chart binding');
+    validateExactKeys(chart, ['chartId', 'fieldMap'], 'Analysis chart binding');
+    if (!isNonEmptyString(chart.chartId)) throw new Error('Analysis chart binding chartId is required');
+    const fieldMap = requireRecord(chart.fieldMap, 'Analysis chart field map');
+    validateExactKeys(fieldMap, ['category', 'series', 'value', 'color', 'size', 'tooltip'], 'Analysis chart field map');
+    if (Object.values(fieldMap).some((fieldId) => fieldId !== undefined && (!isNonEmptyString(fieldId) || !fieldIds.has(fieldId)))) throw new Error('Analysis chart field map is invalid');
+  }
+  const layout = requireRecord(view.layout, 'Analysis view layout');
+  validateExactKeys(layout, ['columns', 'rowHeightPx', 'gapPx'], 'Analysis view layout');
+  if (!Number.isSafeInteger(layout.columns) || Number(layout.columns) < 1 || Number(layout.columns) > 12
+    || typeof layout.rowHeightPx !== 'number' || !Number.isFinite(layout.rowHeightPx) || layout.rowHeightPx < 1
+    || typeof layout.gapPx !== 'number' || !Number.isFinite(layout.gapPx) || layout.gapPx < 0) throw new Error('Analysis view layout is invalid');
+}
+
 function validatePivotMutationParams(id: string, value: unknown): void {
   if (id === 'pivot.add') {
     validatePivotDefinition(value);
@@ -1319,6 +1364,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     if (isDataSourceMutationId(mutation.id)) {
       validateDataSourceMutationParams(mutation.id, mutation.params);
     }
+    if (mutation.id === 'analysis.view.replace') validateAnalysisViewMutationParams(mutation.params);
     validatePivotMutationParams(mutation.id, mutation.params);
     return {
       id: mutation.id,

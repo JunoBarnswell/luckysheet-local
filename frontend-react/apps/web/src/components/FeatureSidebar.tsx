@@ -35,6 +35,7 @@ import type {
   ReportSheetDefinition,
   SheetTableModel,
   RangeRef,
+  AnalysisViewDefinition,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -67,6 +68,7 @@ import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
 import { TableDesignPanel } from './panels/TableDesignPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { QuickAnalysisPanel } from './panels/QuickAnalysisPanel';
+import { AnalysisViewPanel } from './panels/AnalysisViewPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
   FormulaAuditPanel,
@@ -105,6 +107,9 @@ export interface FeatureSidebarProps {
   pivotTimelineControls?: readonly PivotTimelineControl[];
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
+  analysisViews: readonly AnalysisViewDefinition[];
+  onSetAnalysisView: (view: AnalysisViewDefinition) => void;
+  onRemoveAnalysisView: (viewId: string) => void;
   formulaAudit?: FormulaAuditPanelProps['projection'];
   formulaAuditState?: FormulaAuditPanelProps['state'];
   formulaAuditError?: string;
@@ -183,6 +188,7 @@ export interface FeatureSidebarProps {
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
+  { id: 'analysis', label: 'Analysis', icon: 'chart' },
   { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'slicer', label: 'Slicer', icon: 'sliders' },
@@ -325,6 +331,9 @@ export function FeatureSidebar({
   pivotTimelineControls,
   pivotPanelState,
   pivotCallbacks,
+  analysisViews,
+  onSetAnalysisView,
+  onRemoveAnalysisView,
   formulaAudit,
   formulaAuditState,
   formulaAuditError,
@@ -432,6 +441,10 @@ export function FeatureSidebar({
         <PivotPanel locale={locale} pivot={pivot} pivotList={pivotList} activePivotId={activePivotId} fieldCatalog={pivotFieldCatalog} slicerControls={pivotSlicerControls} timelineControls={pivotTimelineControls} state={pivotPanelState} callbacks={pivotCallbacks} onClose={onClosePanel} />
       </Box>
     );
+  }
+
+  if (activePanel === 'analysis' && phase === 'ready') {
+    return <AnalysisViewPanel views={analysisViews} tables={tables} onSetView={onSetAnalysisView} onRemoveView={onRemoveAnalysisView} onClose={onClosePanel} />;
   }
 
   if (activePanel === 'chart' && phase === 'ready') {

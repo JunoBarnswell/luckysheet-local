@@ -544,7 +544,7 @@ export {
 import { canonicalizePivotDefinition, type PivotModel } from './pivot';
 export * from './pivot';
 export { resolveWorksheetChartRanges, validateChartVector } from './chart-range-bindings';
-import type { GanttSheetDefinition, ReportSheetDefinition, TableSheetDefinition, WorkbookDataModel, WorkbookTableModel } from './data-model';
+import type { AnalysisViewDefinition, GanttSheetDefinition, ReportSheetDefinition, TableSheetDefinition, WorkbookDataModel, WorkbookTableModel } from './data-model';
 import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
 export * from './data-model';
 export * from './data-source';
@@ -1538,6 +1538,31 @@ export class WorkbookModel {
       relationships: [...this.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
       views: [...this.dataModel.views.values()].map((view) => structuredClone(view)),
     };
+  }
+
+  setAnalysisView(view: AnalysisViewDefinition): void {
+    if (view.kind !== 'analysis') throw new Error('Analysis view kind is required');
+    if (!view.id.trim() || !view.name.trim()) throw new Error('Analysis view id and name are required');
+    if (!this.dataModel.tables.has(view.tableId)) throw new Error(`Analysis view table not found: ${view.tableId}`);
+    this.dataModel.views.set(view.id, structuredClone(view));
+  }
+
+  removeAnalysisView(viewId: string): AnalysisViewDefinition {
+    const current = this.dataModel.views.get(viewId);
+    if (!current || current.kind !== 'analysis') throw new Error(`Analysis view not found: ${viewId}`);
+    this.dataModel.views.delete(viewId);
+    return structuredClone(current) as AnalysisViewDefinition;
+  }
+
+  getAnalysisView(viewId: string): AnalysisViewDefinition | undefined {
+    const current = this.dataModel.views.get(viewId);
+    return current?.kind === 'analysis' ? structuredClone(current) as AnalysisViewDefinition : undefined;
+  }
+
+  listAnalysisViews(): AnalysisViewDefinition[] {
+    return [...this.dataModel.views.values()]
+      .filter((view): view is AnalysisViewDefinition => view.kind === 'analysis')
+      .map((view) => structuredClone(view));
   }
 
   getPrintDocument(sheetId: SheetId): PrintDocumentSnapshot | undefined {

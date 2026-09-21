@@ -344,7 +344,7 @@ describe('Ribbon UI command catalog', () => {
       ['tables.pivot', 'tables.recommended-pivot', 'tables.worksheet-table', 'tables.forms'],
       ['illustrations.picture', 'illustrations.shape', 'illustrations.icons', 'illustrations.models3d', 'illustrations.smartart', 'illustrations.screenshot'],
       ['controls.checkbox'],
-      ['charts.recommended', 'charts.gallery', 'charts.pivot'],
+      ['charts.recommended', 'charts.gallery', 'charts.pivot', 'charts.analysis-view'],
       ['sparklines.gallery'],
       ['filters.slicer', 'filters.timeline'],
       ['links.hyperlink'],

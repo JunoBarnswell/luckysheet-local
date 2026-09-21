@@ -217,6 +217,7 @@ export type RibbonCommandId =
   | 'textbox'
   | 'pivotTable'
   | 'chartBuilder'
+  | 'analysisView'
   | 'sparkline'
   | 'pictureFormatPanel'
   | 'sparklineDesign'
@@ -933,6 +934,7 @@ export const RIBBON_TEXT = {
     chartFormatPanel: 'commands.chartFormatPanel',
     chartSelectData: 'commands.chartSelectData',
     chartBuilder: 'commands.chartBuilder',
+    analysisView: 'commands.analysisView',
     sparkline: 'commands.sparkline',
     pictureFormatPanel: 'commands.pictureFormatPanel',
     shapeFormatPanel: 'commands.shapeFormatPanel',
@@ -1331,6 +1333,7 @@ export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('insert', 'charts.recommended', 'charts', 10, 'large', 'recommendedCharts'),
   ribbonSurface('insert', 'charts.gallery', 'charts', 20, 'gallery', 'chartBuilder'),
   ribbonSurface('insert', 'charts.pivot', 'charts', 30, 'large', 'pivotChart'),
+  ribbonSurface('insert', 'charts.analysis-view', 'charts', 40, 'large', 'analysisView'),
   ribbonSurface('insert', 'sparklines.gallery', 'sparklines', 10, 'gallery', 'sparkline'),
   ribbonSurface('insert', 'filters.slicer', 'filters', 10, 'large', 'pivotSlicer'),
   ribbonSurface('insert', 'filters.timeline', 'filters', 20, 'large', 'pivotTimeline'),
@@ -1456,7 +1459,7 @@ export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], Ribbo
       groupSpec('tables', 10, rowNode('tables.layout', homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.recommended-pivot'), homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.forms'))),
       groupSpec('illustrations', 20, rowNode('illustrations.layout', homeSurfaceNode('illustrations.picture'), homeSurfaceNode('illustrations.shape'), homeSurfaceNode('illustrations.icons'), homeSurfaceNode('illustrations.models3d'), homeSurfaceNode('illustrations.smartart'), homeSurfaceNode('illustrations.screenshot'))),
       groupSpec('controls', 30, rowNode('controls.layout', homeSurfaceNode('controls.checkbox'))),
-      groupSpec('charts', 40, rowNode('charts.layout', homeSurfaceNode('charts.recommended'), homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.pivot'))),
+      groupSpec('charts', 40, rowNode('charts.layout', homeSurfaceNode('charts.recommended'), homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.pivot'), homeSurfaceNode('charts.analysis-view'))),
       groupSpec('sparklines', 50, rowNode('sparklines.layout', homeSurfaceNode('sparklines.gallery'))),
       groupSpec('filters', 60, rowNode('filters.layout', homeSurfaceNode('filters.slicer'), homeSurfaceNode('filters.timeline'))),
       groupSpec('links', 70, rowNode('links.layout', homeSurfaceNode('links.hyperlink'))),
@@ -1998,6 +2001,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   dynamicCommand('shapeSendToBack', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeSendToBack, (context) => shapeZOrderDescriptor(context, 'back'), 'undo'),
   dynamicCommand('shapeCopy', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeCopy, shapeCopyDescriptor, 'copy'),
   intent('chartBuilder', 'insert', 'charts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
+  intent('analysisView', 'insert', 'charts', RIBBON_TEXT.commands.analysisView, () => ({ type: 'panel.open', panel: 'analysis' }), 'chart'),
   intent('sparkline', 'insert', 'sparklines', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
   intent('shapesLines', 'insert', 'illustrations', RIBBON_TEXT.commands.shapesLines, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
 

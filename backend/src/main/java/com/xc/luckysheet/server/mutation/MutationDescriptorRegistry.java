@@ -53,7 +53,7 @@ public class MutationDescriptorRegistry {
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "style.preset.set", "cf.reorder", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore",
+            "style.set", "style.preset.set", "cf.reorder", "table.add", "table.remove", "view.set", "analysis.view.replace", "workbook.renamed", "workbook.restore",
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
@@ -115,6 +115,7 @@ public class MutationDescriptorRegistry {
         for (String id : WorkbookStateMutationDescriptor.IDS) register(new WorkbookStateMutationDescriptor(id));
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
         for (String id : DataSourceMutationDescriptor.IDS) register(new DataSourceMutationDescriptor(id));
+        register(new AnalysisViewMutationDescriptor());
         for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
         for (String id : WorkbookStructureMutationDescriptor.IDS) register(new WorkbookStructureMutationDescriptor(id));
         registerUnavailableKnownMutations();

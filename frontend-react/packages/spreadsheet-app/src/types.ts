@@ -29,6 +29,7 @@ export type RibbonTabId =
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
+  | 'analysis'
   | 'barcode'
   | 'pivot'
   | 'slicer'

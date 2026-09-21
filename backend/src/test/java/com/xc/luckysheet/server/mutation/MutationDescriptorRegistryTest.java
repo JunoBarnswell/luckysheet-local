@@ -299,8 +299,47 @@ class MutationDescriptorRegistryTest {
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "rows.visibility",
                 "fill.applied", "fill.restored",
-                "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
+                "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove", "analysis.view.replace"
         ), Set.copyOf(registry.acceptedIds()));
+    }
+
+    @Test
+    void analysisViewReplacePersistsSharedDashboardStateAndRemovesItAtomically() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
+                """);
+        var view = mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Sales dashboard","tableId":"table-1",
+                  "fields":[{"fieldId":"region","caption":"Region"},{"fieldId":"amount","caption":"Amount"}],
+                  "filters":[{"id":"filter-region","fieldId":"region","operator":"in","values":["East"]}],
+                  "charts":[{"chartId":"chart-1","fieldMap":{"category":"region","value":"amount"}}],
+                  "layout":{"columns":2,"rowHeightPx":240,"gapPx":12},"revision":1}}
+                """);
+        var add = new OperationMutation("analysis.view.replace", "sheet-1", view);
+        var added = registry.applyPublicMutations(snapshot, List.of(add));
+        assertEquals("analysis-1", added.path("dataModel").path("views").get(0).path("id").asText());
+        assertEquals("in", added.path("dataModel").path("views").get(0).path("filters").get(0).path("operator").asText());
+
+        var remove = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("{\"view\":null,\"viewId\":\"analysis-1\"}"));
+        var removed = registry.applyPublicMutations(added, List.of(remove));
+        assertEquals(0, removed.path("dataModel").path("views").size());
+    }
+
+    @Test
+    void analysisViewRejectsUnknownTableFieldWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
+                """);
+        var invalid = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Broken","tableId":"table-1","fields":[{"fieldId":"missing","caption":"Missing"}],
+                  "filters":[],"charts":[],"layout":{"columns":1,"rowHeightPx":200,"gapPx":8},"revision":0}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+        assertEquals(0, snapshot.path("dataModel").path("views").size());
     }
 
     @Test

@@ -12,6 +12,7 @@ import type { ChartDrawingPayload } from './domain';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
 import type { ReviewStoreSnapshot } from './review-store';
+import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
 /**
@@ -279,6 +280,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     || !Array.isArray(snapshot.dataModel.relationships) || !Array.isArray(snapshot.dataModel.views)) {
     throw new Error('Workbook snapshot dataModel is invalid');
   }
+  validateAnalysisViews(snapshot.dataModel.views, snapshot.dataModel.tables);
   if (!isWorkbookEditingOptions(snapshot.editingOptions)) throw new Error('Workbook snapshot editingOptions are invalid');
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
@@ -433,6 +435,31 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function validateAnalysisViews(views: import('./data-model').DataViewDefinition[], tables: import('./data-model').WorkbookTableModel[]): void {
+  const tableIds = new Set(tables.map((table) => table.id));
+  const viewIds = new Set<string>();
+  for (const view of views) {
+    if (!view || !view.id.trim() || !view.name.trim() || !view.tableId.trim() || viewIds.has(view.id)) throw new Error('Data view identity is invalid');
+    viewIds.add(view.id);
+    if (view.kind !== 'analysis') continue;
+    if (!isAnalysisViewDefinition(view as AnalysisViewDefinition) || !tableIds.has(view.tableId)) throw new Error(`Analysis view references an invalid table: ${view.id}`);
+    const analysis = view as AnalysisViewDefinition;
+    const table = tables.find((candidate) => candidate.id === view.tableId);
+    if (!table) throw new Error(`Analysis view table is missing: ${view.tableId}`);
+    const fieldIds = new Set(table.fields.map((field) => field.id));
+    const selected = new Set<string>();
+    for (const field of view.fields) {
+      if (!field.fieldId.trim() || !field.caption.trim() || !fieldIds.has(field.fieldId) || !selected.add(field.fieldId)) throw new Error(`Analysis view field is invalid: ${view.id}`);
+    }
+    for (const filter of analysis.filters) {
+      if (!filter.id.trim() || !filter.fieldId.trim() || !fieldIds.has(filter.fieldId) || filter.values.length === 0) throw new Error(`Analysis view filter is invalid: ${view.id}`);
+    }
+    for (const chart of analysis.charts) {
+      if (!chart.chartId.trim() || Object.values(chart.fieldMap).some((fieldId) => fieldId !== undefined && !fieldIds.has(fieldId))) throw new Error(`Analysis view chart binding is invalid: ${view.id}`);
+    }
+  }
 }
 
 function validateReviewSnapshot(review: ReviewStoreSnapshot, sheetId: string): void {

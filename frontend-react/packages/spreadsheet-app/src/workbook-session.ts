@@ -57,6 +57,7 @@ import type {
   CellHyperlink,
   HyperlinkTarget,
   AssetRef,
+  AnalysisViewDefinition,
 } from '@react-sheets/core-model';
 import {
   createDefaultTextBoxTextFrame,
@@ -447,6 +448,7 @@ export interface UiSnapshot extends DesignerState {
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
   tables: readonly WorkbookTableModel[];
+  analysisViews: readonly AnalysisViewDefinition[];
   relationships: readonly import('@react-sheets/core-model').DataRelationship[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
@@ -1500,6 +1502,7 @@ export class WorkbookSession {
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
       tables: [...this.runtime.model.dataModel.tables.values()].map((table) => structuredClone(table)),
+      analysisViews: this.runtime.model.listAnalysisViews(),
       relationships: [...this.runtime.model.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
       dataSources: [...this.runtime.model.dataModel.sources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
@@ -4300,6 +4303,18 @@ export class WorkbookSession {
   updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(chartType)): void {
     this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType, subtype });
     this.refresh();
+  }
+
+  listAnalysisViews(): AnalysisViewDefinition[] {
+    return this.runtime.model.listAnalysisViews();
+  }
+
+  setAnalysisView(view: AnalysisViewDefinition): void {
+    this.runCommand('analysis.view.set', { view: structuredClone(view) });
+  }
+
+  removeAnalysisView(viewId: string): void {
+    this.runCommand('analysis.view.remove', { viewId });
   }
   updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartDrawingPayload['series'], categoryRange?: RangeRef): void {
     this.runCommand('chart.setSeries', {

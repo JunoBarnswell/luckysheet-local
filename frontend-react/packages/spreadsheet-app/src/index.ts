@@ -83,6 +83,7 @@ export { parseGeoJsonMapResource } from './features/chart/map-resource';
 export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 export { resolveSparklineData } from './features/sparkline/helpers';
 export * from './features/data-source';
+export * from './features/analysis';
 export { registerEditingFeatures, buildSelectionSnapshot, planRangeDrag, isRangeBorderPoint, rangeDragMode, type SetSelectionParams, type RangeDragMode, type RangeDragPlan } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export * from './cell-edit';

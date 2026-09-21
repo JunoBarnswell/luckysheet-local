@@ -11,6 +11,7 @@ import { registerReviewFeature } from './features/review/commands';
 import { registerSparklineFeature } from './features/sparkline';
 import { registerInsertCommands } from './features/insert';
 import { registerFindReplaceFeature } from './features/find-replace/commands';
+import { registerAnalysisFeature } from './features/analysis';
 import { buildExcelParityReport, createExcelFeatureRegistry, type ExcelParityReport } from './excel-parity';
 
 export interface SpreadsheetFeatureManifest {
@@ -53,6 +54,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
   const sparklineManifest = registerSparklineFeature(runtime);
   const reviewManifest = registerReviewFeature(runtime);
   const findReplaceManifest = registerFindReplaceFeature(runtime);
+  const analysisManifest = registerAnalysisFeature(runtime);
   const insertCommandIds = registerInsertCommands(runtime);
   const platformCommandIds = registerPlatformFeatures(runtime);
   parityReport = buildExcelParityReport(createExcelFeatureRegistry().features);
@@ -68,6 +70,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
     sparklineManifest,
     reviewManifest,
     findReplaceManifest,
+    analysisManifest,
     { id: 'insert', version: '1.0.0', commandIds: insertCommandIds, permissions: ['sheet.structure.write', 'sheet.format.write'] },
     {
       id: 'platform',

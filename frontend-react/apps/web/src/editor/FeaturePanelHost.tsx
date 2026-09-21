@@ -45,7 +45,7 @@ export function FeaturePanelHost({
 }: FeaturePanelHostProps): ReactNode {
   const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
   return (
-    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot' && state.panels.active !== 'chart'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
+    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot' && state.panels.active !== 'chart' && state.panels.active !== 'analysis'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
         <FeatureSidebar
           activeCell={state.activeCell}
@@ -83,6 +83,9 @@ export function FeaturePanelHost({
           pivotTimelineControls={commands.pivotTimelineControls}
           pivotPanelState={commands.pivotPanelState}
           pivotCallbacks={commands.pivotCallbacks}
+          analysisViews={state.analysisViews}
+          onSetAnalysisView={session.setAnalysisView.bind(session)}
+          onRemoveAnalysisView={session.removeAnalysisView.bind(session)}
           formulaAudit={state.formulaAudit}
           formulaAuditState={state.phase === "loading" ? "loading" : state.phase === "error" ? "error" : "ready"}
           formulaAuditError={state.phase === "error" ? "Formula audit is unavailable while the workbook is in an error state." : undefined}
