@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -24,10 +24,13 @@ import type {
   WorkbookTableField,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
+import { buildAnalysisViewProjection, type AnalysisCellValue, type AnalysisViewProjection } from '@react-sheets/spreadsheet-app';
+import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 
 export interface AnalysisViewPanelProps {
   views: readonly AnalysisViewDefinition[];
   tables: readonly WorkbookTableModel[];
+  sourceSheets?: readonly CanvasSheetSnapshot[];
   chartIds?: readonly string[];
   onSetView: (view: AnalysisViewDefinition) => void;
   onRemoveView: (viewId: string) => void;
@@ -135,26 +138,67 @@ function validateDraft(view: AnalysisViewDefinition, table: WorkbookTableModel |
   return errors;
 }
 
+function sameView(left: AnalysisViewDefinition | undefined, right: AnalysisViewDefinition | undefined): boolean {
+  return left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <Text size="xs" weight="medium" className="mb-1 text-slate-700">{children}</Text>;
 }
 
-export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onRemoveView, onClose }: AnalysisViewPanelProps) {
+function previewValue(value: AnalysisCellValue): string {
+  return typeof value === 'object' && value !== null && value.kind === 'error' ? value.code : value === null ? '(空)' : String(value);
+}
+
+function AnalysisPreview({ projection }: { projection: AnalysisViewProjection }) {
+  if (projection.status === 'unavailable') {
+    return <Text size="xs" tone="muted">{projection.message}</Text>;
+  }
+  return <Stack gap="sm">
+    <Inline gap="md" className="text-xs text-slate-600">
+      <Text size="xs">总行数 {projection.totalRows}</Text>
+      <Text size="xs">筛选后 {projection.filteredRows}</Text>
+      <Text size="xs">错误行 {projection.errorRows}</Text>
+    </Inline>
+    {projection.charts.length > 0 ? <Stack gap="xs">
+      {projection.charts.map((chart) => <Box key={chart.chartId} className="rounded border border-slate-200 bg-slate-50 p-2">
+        <Inline gap="sm" className="items-center justify-between"><Text size="xs" weight="semibold">{chart.chartId}</Text><Text size="xs" tone="muted">{chart.points.length} 个数据点</Text></Inline>
+        <Inline gap="xs" className="mt-1 flex-wrap">
+          {chart.points.slice(0, 4).map((point, index) => <Text key={`${chart.chartId}-${index}`} size="xs" className="rounded bg-white px-1.5 py-0.5 text-slate-600">{previewValue(point.category)}：{point.value === null ? '(空)' : String(point.value)}</Text>)}
+          {chart.points.length > 4 ? <Text size="xs" tone="muted">…</Text> : null}
+        </Inline>
+      </Box>)}
+    </Stack> : <Text size="xs" tone="muted">尚未绑定图表；筛选结果将在绑定后由图表读取。</Text>}
+  </Stack>;
+}
+
+export function AnalysisViewPanel({ views, tables, sourceSheets = [], chartIds = [], onSetView, onRemoveView, onClose }: AnalysisViewPanelProps) {
   const [name, setName] = useState('分析视图');
   const [activeViewId, setActiveViewId] = useState<string>();
   const [draft, setDraft] = useState<AnalysisViewDefinition>();
   const [filterInputText, setFilterInputText] = useState<Record<string, string>>({});
   const [filterErrors, setFilterErrors] = useState<Record<string, string>>({});
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [draftConflict, setDraftConflict] = useState(false);
+  const draftRef = useRef<AnalysisViewDefinition | undefined>(undefined);
+  const syncedViewRef = useRef<AnalysisViewDefinition | undefined>(undefined);
 
   const activeView = useMemo(() => views.find((view) => view.id === activeViewId), [activeViewId, views]);
   const activeTable = tableForView(draft ?? activeView, tables);
   const source = tables[0];
+  const sourceSheet = activeTable?.sourceRange ? sourceSheets.find((sheet) => sheet.id === activeTable.sourceRange?.sheetId) : undefined;
+  const projection = useMemo(
+    () => draft ? buildAnalysisViewProjection(draft, activeTable, sourceSheet) : undefined,
+    [activeTable, draft, sourceSheet],
+  );
 
   useEffect(() => {
     if (views.length === 0) {
       setActiveViewId(undefined);
       setDraft(undefined);
+      draftRef.current = undefined;
+      syncedViewRef.current = undefined;
+      setDraftConflict(false);
       return;
     }
     setActiveViewId((current) => current && views.some((view) => view.id === current) ? current : views[0]!.id);
@@ -163,13 +207,40 @@ export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onR
   useEffect(() => {
     if (!activeView) {
       setDraft(undefined);
+      draftRef.current = undefined;
+      syncedViewRef.current = undefined;
       return;
     }
-    setDraft((current) => current && current.id === activeView.id && current.revision === activeView.revision ? current : structuredClone(activeView));
+    const currentDraft = draftRef.current;
+    const syncedView = syncedViewRef.current;
+    const remoteChangedWhileEditing = currentDraft !== undefined
+      && syncedView !== undefined
+      && currentDraft.id === activeView.id
+      && syncedView.id === activeView.id
+      && syncedView.revision !== activeView.revision
+      && !sameView(currentDraft, syncedView);
+    syncedViewRef.current = structuredClone(activeView);
+    if (remoteChangedWhileEditing) {
+      // Preserve the local draft and surface a visible conflict. The next
+      // command carries the stale expectedRevision and is rejected by the
+      // canonical command/reducer chain until the user reloads or resolves it.
+      setDraftConflict(true);
+      setValidationErrors(['该分析视图已被其他会话更新，当前草稿已保留；请先载入最新版本后再保存。']);
+      setDraft(currentDraft);
+    } else {
+      const next = structuredClone(activeView);
+      draftRef.current = next;
+      setDraft(next);
+      setDraftConflict(false);
+      setValidationErrors([]);
+    }
     setFilterInputText({});
     setFilterErrors({});
-    setValidationErrors([]);
   }, [activeView?.id, activeView?.revision]);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   const updateDraft = (updater: DraftUpdater) => {
     setDraft((current) => current ? updater(structuredClone(current)) : current);
@@ -191,16 +262,24 @@ export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onR
     };
     onSetView(view);
     setActiveViewId(view.id);
+    draftRef.current = structuredClone(view);
+    syncedViewRef.current = structuredClone(view);
     setDraft(view);
+    setDraftConflict(false);
+    setValidationErrors([]);
     setName('分析视图');
   };
 
   const selectView = (view: AnalysisViewDefinition) => {
     setActiveViewId(view.id);
-    setDraft(structuredClone(view));
+    const next = structuredClone(view);
+    draftRef.current = next;
+    syncedViewRef.current = structuredClone(view);
+    setDraft(next);
     setFilterInputText({});
     setFilterErrors({});
     setValidationErrors([]);
+    setDraftConflict(false);
   };
 
   const applyDraft = () => {
@@ -213,8 +292,16 @@ export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onR
     const next = structuredClone(draft);
     next.name = next.name.trim();
     next.revision += 1;
-    onSetView(next);
+    try {
+      onSetView(next);
+    } catch (error) {
+      setValidationErrors([error instanceof Error ? error.message : String(error)]);
+      return;
+    }
+    draftRef.current = next;
+    syncedViewRef.current = structuredClone(next);
     setDraft(next);
+    setDraftConflict(false);
     setValidationErrors([]);
   };
 
@@ -358,7 +445,7 @@ export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onR
 
           {draft ? (
             <Panel className="border border-blue-200 bg-blue-50/20 shadow-none">
-              <PanelHeader><Inline gap="sm" className="items-center justify-between"><PanelTitle as="h3" size="sm">编辑分析视图</PanelTitle><Text size="xs" tone="muted">草稿 v{draft.revision}</Text></Inline></PanelHeader>
+              <PanelHeader><Inline gap="sm" className="items-center justify-between"><PanelTitle as="h3" size="sm">编辑分析视图</PanelTitle><Text size="xs" tone={draftConflict ? "danger" : "muted"}>{draftConflict ? '存在版本冲突' : `草稿 v${draft.revision}`}</Text></Inline></PanelHeader>
               <PanelBody>
                 <Stack gap="md">
                   <Box><FieldLabel>视图名称</FieldLabel><TextInput aria-label="当前分析视图名称" value={draft.name} onChange={(event) => updateDraft((current) => ({ ...current, name: event.target.value }))} /></Box>
@@ -427,8 +514,13 @@ export function AnalysisViewPanel({ views, tables, chartIds = [], onSetView, onR
                     <Text size="xs" tone="muted" className="mt-1">列数 / 行高 / 间距会随分析视图保存，并由仪表盘渲染器统一解释。</Text>
                   </Box>
 
+                  <Box className="rounded border border-slate-200 bg-white p-2">
+                    <Inline gap="sm" className="items-center justify-between"><FieldLabel>实时数据预览</FieldLabel><Text size="xs" tone="muted">同一表源</Text></Inline>
+                    {projection ? <AnalysisPreview projection={projection} /> : <Text size="xs" tone="muted">选择分析视图后显示预览。</Text>}
+                  </Box>
+
                   {validationErrors.length > 0 ? <Box className="rounded border border-rose-200 bg-rose-50 px-3 py-2"><Stack gap="xs">{validationErrors.map((error) => <Text key={error} size="xs" tone="danger">{error}</Text>)}</Stack></Box> : null}
-                  <Inline gap="sm"><Button size="sm" variant="primary" onClick={applyDraft}>保存分析视图</Button><Button size="sm" variant="ghost" onClick={() => { if (activeView) selectView(activeView); }}>取消草稿</Button></Inline>
+                  <Inline gap="sm"><Button size="sm" variant="primary" disabled={draftConflict} onClick={applyDraft}>保存分析视图</Button><Button size="sm" variant="ghost" onClick={() => { if (activeView) selectView(activeView); }}>{draftConflict ? '载入最新版本' : '取消草稿'}</Button></Inline>
                 </Stack>
               </PanelBody>
             </Panel>

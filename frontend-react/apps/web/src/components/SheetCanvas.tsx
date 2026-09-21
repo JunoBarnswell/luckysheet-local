@@ -83,6 +83,7 @@ export interface SheetCanvasProps {
   pivotResults?: Record<string, PivotResultTree>;
   sparklines?: SparklineModel[];
   tables?: readonly WorkbookTableModel[];
+  analysisViews?: readonly import('@react-sheets/core-model').AnalysisViewDefinition[];
   selectedFloatingId: string | null;
   textBoxPlacementActive?: boolean;
   textBoxEdit?: { sheetId: string; drawingId: string; draftText: string } | null;
@@ -385,6 +386,7 @@ export function SheetCanvas({
   pivotResults = {},
   sparklines = [],
   tables = [],
+  analysisViews = [],
   selectedFloatingId,
   showFormulas = false,
   onPivotContextHit,
@@ -641,7 +643,8 @@ export function SheetCanvas({
     skeleton,
     sparklines,
     tables,
-  }), [allSheets, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
+    analysisViews,
+  }), [allSheets, analysisViews, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
 
   // ---------- 引擎生命周期与 chrome 同步 ----------
 

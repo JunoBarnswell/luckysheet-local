@@ -443,6 +443,7 @@ export type {
   DefinedNameModel,
   DefinedNameScope,
   ProtectionScope,
+  FormulaError,
   FormulaErrorCode,
   FormulaValue,
   StructuralOpKind,

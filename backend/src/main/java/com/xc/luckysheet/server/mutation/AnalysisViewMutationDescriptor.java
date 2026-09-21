@@ -67,11 +67,12 @@ final class AnalysisViewMutationDescriptor extends CanonicalJsonMutationDescript
     }
 
     private void validate(ObjectNode root, OperationMutation mutation, ObjectNode params) {
-        SnapshotMutationSupport.validateKnownKeys(params, Set.of("view", "viewId"), "analysis.view.replace");
+        SnapshotMutationSupport.validateKnownKeys(params, Set.of("view", "viewId", "expectedRevision"), "analysis.view.replace");
         JsonNode rawView = params.get("view");
         if (rawView == null) throw ServiceException.validation("analysis.view.replace requires view");
         if (rawView.isNull()) {
-            SnapshotMutationSupport.text(params, "viewId");
+            String viewId = SnapshotMutationSupport.text(params, "viewId");
+            validateExpectedRevision(root, params, viewId);
             return;
         }
         if (!rawView.isObject()) throw ServiceException.validation("Analysis view must be an object or null");
@@ -110,7 +111,41 @@ final class AnalysisViewMutationDescriptor extends CanonicalJsonMutationDescript
         validateLayout(view.get("layout"));
         JsonNode revision = view.get("revision");
         if (revision == null || !revision.isIntegralNumber() || revision.asLong() < 0) throw ServiceException.validation("Analysis view revision is invalid");
+        validateExpectedRevision(root, SnapshotMutationSupport.params(mutation), viewId);
         if (mutation.sheetId().isBlank()) throw ServiceException.validation("Analysis view mutation sheetId is required");
+    }
+
+    /**
+     * A dashboard revision is scoped to the view rather than the workbook. The
+     * workbook operation revision still protects the envelope, while this
+     * check prevents an edit based on an older view from overwriting a newer
+     * view when unrelated workbook operations have advanced the envelope.
+     *
+     * The field is absent only on envelopes written before this contract was
+     * introduced. Those records are replayed at the explicit migration
+     * boundary; every newly authored mutation carries the field, including a
+     * null expectation for creation.
+     */
+    private void validateExpectedRevision(ObjectNode root, ObjectNode params, String viewId) {
+        if (!params.has("expectedRevision")) return;
+        JsonNode expected = params.get("expectedRevision");
+        ArrayNode views = SnapshotMutationSupport.dataModelArray(root, "views");
+        int index = SnapshotMutationSupport.indexById(views, viewId);
+        if (expected == null || expected.isNull()) {
+            if (index >= 0) throw ServiceException.conflict("Analysis view " + viewId + " already exists at a newer revision");
+            return;
+        }
+        if (!expected.isIntegralNumber() || expected.asLong() < 0) {
+            throw ServiceException.validation("Analysis view expectedRevision is invalid");
+        }
+        if (index < 0) throw ServiceException.conflict("Analysis view " + viewId + " no longer exists");
+        JsonNode current = views.get(index);
+        if (!"analysis".equals(current.path("kind").asText())) throw ServiceException.conflict("A table view owns this id: " + viewId);
+        JsonNode currentRevision = current.get("revision");
+        if (currentRevision == null || !currentRevision.isIntegralNumber() || currentRevision.asLong() != expected.asLong()) {
+            long actual = currentRevision != null && currentRevision.isIntegralNumber() ? currentRevision.asLong() : -1L;
+            throw ServiceException.conflict("Analysis view " + viewId + " is at revision " + actual + ", expected " + expected.asLong());
+        }
     }
 
     private Set<String> tableFieldIds(ObjectNode table) {

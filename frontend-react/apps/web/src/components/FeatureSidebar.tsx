@@ -108,6 +108,7 @@ export interface FeatureSidebarProps {
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
   analysisViews: readonly AnalysisViewDefinition[];
+  analysisSourceSheets?: readonly CanvasSheetSnapshot[];
   analysisChartIds?: readonly string[];
   onSetAnalysisView: (view: AnalysisViewDefinition) => void;
   onRemoveAnalysisView: (viewId: string) => void;
@@ -333,6 +334,7 @@ export function FeatureSidebar({
   pivotPanelState,
   pivotCallbacks,
   analysisViews,
+  analysisSourceSheets = [],
   analysisChartIds = [],
   onSetAnalysisView,
   onRemoveAnalysisView,
@@ -446,7 +448,7 @@ export function FeatureSidebar({
   }
 
   if (activePanel === 'analysis' && phase === 'ready') {
-    return <AnalysisViewPanel views={analysisViews} tables={tables} chartIds={analysisChartIds} onSetView={onSetAnalysisView} onRemoveView={onRemoveAnalysisView} onClose={onClosePanel} />;
+    return <AnalysisViewPanel views={analysisViews} tables={tables} sourceSheets={analysisSourceSheets} chartIds={analysisChartIds} onSetView={onSetAnalysisView} onRemoveView={onRemoveAnalysisView} onClose={onClosePanel} />;
   }
 
   if (activePanel === 'chart' && phase === 'ready') {

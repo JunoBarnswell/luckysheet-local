@@ -89,6 +89,8 @@ export interface CanvasCellSnapshot {
   style?: CellStyle;
   /** Typed model value used by render semantics; `value` remains the display projection. */
   rawValue?: CellData['value'];
+  /** Typed formula result, including a canonical error value when calculation failed. */
+  formulaValue?: import('@react-sheets/core-model').FormulaValue;
   richText?: import('@react-sheets/core-model').RichTextRun[];
   editor?: CellEditorConfig;
   presentation?: CellPresentation;
@@ -277,6 +279,16 @@ export function buildCanvasSheetSnapshot(
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
     const resolved = resolveModelCell(row, column);
     const modelCell = resolved.cell;
+    const evaluatedFormulaValue = modelCell?.formula
+      ? formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column })?.value
+      : undefined;
+    const formulaValue = evaluatedFormulaValue === null
+      || typeof evaluatedFormulaValue === 'string'
+      || typeof evaluatedFormulaValue === 'number'
+      || typeof evaluatedFormulaValue === 'boolean'
+      || isFormulaError(evaluatedFormulaValue)
+      ? evaluatedFormulaValue
+      : modelCell?.formulaValue;
     const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
     const overlay = conditionalRuntime.resolveCell(row, column);
@@ -298,6 +310,7 @@ export function buildCanvasSheetSnapshot(
       formula: modelCell?.formula,
       style,
       rawValue: modelCell?.value ?? null,
+      ...(formulaValue === undefined ? {} : { formulaValue }),
       richText: modelCell?.richText ? structuredClone(modelCell.richText) : undefined,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,

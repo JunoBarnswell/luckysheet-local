@@ -960,7 +960,11 @@ export function validateDataSourceMutationParams(
 /** Validate the shared dashboard state before it enters a recovery journal. */
 export function validateAnalysisViewMutationParams(value: unknown): void {
   const params = requireRecord(value, 'Analysis view mutation');
-  validateExactKeys(params, ['view', 'viewId'], 'Analysis view mutation');
+  validateExactKeys(params, ['view', 'viewId', 'expectedRevision'], 'Analysis view mutation');
+  if (params.expectedRevision !== undefined && params.expectedRevision !== null
+    && (!Number.isSafeInteger(params.expectedRevision) || Number(params.expectedRevision) < 0)) {
+    throw new Error('Analysis view expectedRevision is invalid');
+  }
   if (params.view === null) {
     if (!isNonEmptyString(params.viewId)) throw new Error('Analysis view removal requires viewId');
     return;

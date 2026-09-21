@@ -7,6 +7,7 @@ import {
 } from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
+  AnalysisViewDefinition,
   ChartMarkerModel,
   CameraDrawingPayload,
   ScreenshotDrawingPayload,
@@ -36,7 +37,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
 import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
@@ -67,11 +68,62 @@ function getChartSeries(
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
   tables: readonly WorkbookTableModel[],
+  analysisViews: readonly AnalysisViewDefinition[],
 ): ResolvedChartData {
+  const analysisBinding = analysisViews
+    .flatMap((view) => view.charts.map((binding) => ({ view, binding })))
+    .find((entry) => entry.binding.chartId === payload.chartId);
+  if (analysisBinding) {
+    const table = tables.find((entry) => entry.id === analysisBinding.view.tableId);
+    const sourceSheet = table?.sourceRange ? getSheet(table.sourceRange.sheetId) : undefined;
+    const projection = buildAnalysisViewProjection(analysisBinding.view, table, sourceSheet);
+    const chart = projection.charts.find((entry) => entry.chartId === payload.chartId);
+    if (projection.status !== 'ready' || !chart) {
+      return {
+        categories: [],
+        series: [],
+        source: 'table',
+        binding: { source: 'table', orientation: 'columns', categories: [], series: [], hierarchyLevels: [], nonContiguous: false },
+        status: { kind: 'invalid', code: 'INVALID_CHART_SOURCE', message: projection.message ?? `Analysis chart binding is unavailable: ${payload.chartId}` },
+      };
+    }
+    const categories = [...new Set(chart.points.map((point) => analysisValueKey(point.category)))].map((key) => chart.points.find((point) => analysisValueKey(point.category) === key)?.category ?? null);
+    const seriesKeys = chart.seriesFieldId
+      ? [...new Set(chart.points.map((point) => analysisValueKey(point.series ?? null)))]
+      : ['__single__'];
+    const series = seriesKeys.map((seriesKey, seriesIndex) => {
+      const points = chart.points.filter((point) => !chart.seriesFieldId || analysisValueKey(point.series ?? null) === seriesKey);
+      const values = categories.map((category) => {
+        const matching = points.filter((point) => analysisValueKey(point.category) === analysisValueKey(category));
+        const numeric = matching.map((point) => point.value).filter((value): value is number => value !== null && Number.isFinite(value));
+        return numeric.length > 0 ? numeric.reduce((sum, value) => sum + value, 0) : null;
+      });
+      return {
+        id: `${payload.chartId}:analysis:${seriesIndex}`,
+        name: chart.seriesFieldId ? String(points[0]?.series ?? `Series ${seriesIndex + 1}`) : 'Value',
+        values,
+        missing: values.map((value) => value === null),
+        axis: 'primary' as const,
+      };
+    });
+    return {
+      categories,
+      series,
+      source: 'table',
+      binding: { source: 'table', orientation: 'columns', categories, series, hierarchyLevels: [], nonContiguous: false },
+      status: { kind: 'ready' },
+    };
+  }
   const pivotSources = { ...pivotResults };
   for (const source of sheets) for (const [pivotId, result] of Object.entries(source.pivotResults)) pivotSources[pivotId] ??= result;
   const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
   return data;
+}
+
+function analysisValueKey(value: import('@react-sheets/spreadsheet-app').AnalysisCellValue): string {
+  if (value === null) return 'null';
+  if (typeof value === 'object') return `error:${value.code}`;
+  return `${typeof value}:${String(value)}`;
 }
 
 function drawCanonicalShapeOnCanvas(options: {
@@ -1528,6 +1580,7 @@ export interface CanvasFloatingRendererInput {
   imageCache: Map<string, HTMLImageElement>;
   requestRender: () => void;
   tables: readonly WorkbookTableModel[];
+  analysisViews?: readonly AnalysisViewDefinition[];
   resolveAssetUrl?: (asset: AssetRef) => Promise<string>;
   assetUrlCache?: Map<string, string>;
   assetUrlPending?: Set<string>;
@@ -1536,7 +1589,7 @@ export interface CanvasFloatingRendererInput {
 
 /** Build the render-engine floating scene without coupling it to SheetCanvas state. */
 export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput): FloatingDrawable[] {
-  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
+  const { allSheets, analysisViews = [], drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
   const drawables: FloatingDrawable[] = [];
   const sheets = allSheets.length > 0 ? allSheets : [sheet];
   const getSheet = (sheetId: string): CanvasSheetSnapshot | undefined =>
@@ -1547,7 +1600,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables);
+      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
       const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
       if (layout.status.kind !== 'ready') {
         drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });

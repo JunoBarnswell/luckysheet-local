@@ -7,6 +7,15 @@ export type {
   AnalysisViewReplaceParams,
   AnalysisViewSetParams,
 } from './commands';
+export {
+  buildAnalysisViewProjection,
+  type AnalysisCellValue,
+  type AnalysisChartPoint,
+  type AnalysisChartProjection,
+  type AnalysisErrorValue,
+  type AnalysisProjectedRow,
+  type AnalysisViewProjection,
+} from './projection';
 
 export function registerAnalysisFeature(runtime: CommandRuntime) {
   return {

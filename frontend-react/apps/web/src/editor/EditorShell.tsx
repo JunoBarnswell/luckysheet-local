@@ -7,7 +7,7 @@ import { type Locale } from "../i18n";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
-import { selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
 import type { SelectionState } from "@react-sheets/spreadsheet-app";
 import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
@@ -77,6 +77,28 @@ export function EditorShell({
   };
 
   const handleSelectionChange = (selection: SelectionState) => controller.applySelection(selection);
+
+  const applyAnalysisChartFilter = (chartId: string, pointIndex: number): boolean => {
+    const viewBinding = state.analysisViews
+      .flatMap((view) => view.charts.map((binding) => ({ view, binding })))
+      .find((entry) => entry.binding.chartId === chartId);
+    const categoryFieldId = viewBinding?.binding.fieldMap.category;
+    if (!viewBinding || !categoryFieldId) return false;
+    const table = state.tables.find((entry) => entry.id === viewBinding.view.tableId);
+    const sourceSheet = table?.sourceRange ? state.projectionSheets.find((entry) => entry.id === table.sourceRange?.sheetId) : undefined;
+    const projection = buildAnalysisViewProjection(viewBinding.view, table, sourceSheet);
+    const chart = projection.charts.find((entry) => entry.chartId === chartId);
+    const point = chart?.points[pointIndex];
+    if (projection.status !== 'ready' || !point || (typeof point.category === 'object' && point.category !== null)) return false;
+    const next = structuredClone(viewBinding.view);
+    next.filters = [
+      ...next.filters.filter((filter) => filter.fieldId !== categoryFieldId),
+      { id: `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: 'equals', values: [point.category] },
+    ];
+    next.revision += 1;
+    session.setAnalysisView(next);
+    return true;
+  };
 
   return (
     <>
@@ -262,6 +284,7 @@ export function EditorShell({
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
                 tables={state.tables}
+                analysisViews={state.analysisViews}
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
@@ -299,6 +322,9 @@ export function EditorShell({
                   const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                   if (!drawing || payload?.kind !== 'chart' || !data || typeof data !== 'object' || !('kind' in data)) return;
                   const kind = String((data as { kind: string }).kind);
+                  if (kind === 'point' && 'pointIndex' in data && typeof (data as { pointIndex: unknown }).pointIndex === 'number') {
+                    applyAnalysisChartFilter(payload.chartId, Number((data as { pointIndex: number }).pointIndex));
+                  }
                   if ((kind === 'point' || kind === 'series' || kind === 'data-label') && 'seriesId' in data) {
                     session.selectChartElement({ kind: kind as 'point' | 'series' | 'data-label', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), ...('pointIndex' in data ? { pointIndex: Number((data as { pointIndex: number }).pointIndex) } : {}) });
                   } else if (['chart-area', 'plot-area', 'title', 'legend', 'axis', 'axis-title', 'gridline', 'data-table', 'trendline', 'error-bar'].includes(kind)) {

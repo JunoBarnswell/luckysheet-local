@@ -85,6 +85,7 @@ export function FeaturePanelHost({
           pivotPanelState={commands.pivotPanelState}
           pivotCallbacks={commands.pivotCallbacks}
           analysisViews={state.analysisViews}
+          analysisSourceSheets={state.projectionSheets}
           analysisChartIds={analysisChartIds}
           onSetAnalysisView={session.setAnalysisView.bind(session)}
           onRemoveAnalysisView={session.removeAnalysisView.bind(session)}

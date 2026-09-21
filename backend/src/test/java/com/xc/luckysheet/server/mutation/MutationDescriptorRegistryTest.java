@@ -343,6 +343,30 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void analysisViewExpectedRevisionRejectsStaleDashboardEdit() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
+                """);
+        var create = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Dashboard","tableId":"table-1","fields":[{"fieldId":"region","caption":"Region"}],"filters":[],"charts":[],"layout":{"columns":1,"rowHeightPx":200,"gapPx":8},"revision":0},"expectedRevision":null}
+                """));
+        var current = registry.applyPublicMutations(snapshot, List.of(create));
+        var update = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Dashboard v2","tableId":"table-1","fields":[{"fieldId":"region","caption":"Region"}],"filters":[],"charts":[],"layout":{"columns":1,"rowHeightPx":200,"gapPx":8},"revision":1},"expectedRevision":0}
+                """));
+        current = registry.applyPublicMutations(current, List.of(update));
+        var stale = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
+                {"view":{"kind":"analysis","id":"analysis-1","name":"Stale","tableId":"table-1","fields":[{"fieldId":"region","caption":"Region"}],"filters":[],"charts":[],"layout":{"columns":1,"rowHeightPx":200,"gapPx":8},"revision":1},"expectedRevision":0}
+                """));
+        var before = current.deepCopy();
+        ServiceException conflict = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(before, List.of(stale)));
+        assertEquals("CONFLICT", conflict.code());
+        assertEquals(before, current);
+    }
+
+    @Test
     void tableSheetUpdateUsesTheBoundTableAndWholeSheetRange() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

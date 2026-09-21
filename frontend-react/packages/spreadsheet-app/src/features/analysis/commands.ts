@@ -9,6 +9,13 @@ import type { CommandContext, CommandRuntime } from '@react-sheets/command-runti
 export interface AnalysisViewReplaceParams {
   view: AnalysisViewDefinition | null;
   viewId?: string;
+  /**
+   * Revision of the view that the caller edited.  `null` is an explicit
+   * create expectation (the view must not exist).  The field is optional only
+   * so already persisted envelopes from before per-view conflict checking can
+   * be replayed at the migration boundary; every new command supplies it.
+   */
+  expectedRevision?: number | null;
 }
 
 export interface AnalysisViewSetParams {
@@ -70,8 +77,28 @@ function isAnalysisView(value: unknown): value is AnalysisViewDefinition {
 
 function isAnalysisViewReplace(value: unknown): value is AnalysisViewReplaceParams {
   if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'view')) return false;
+  if (value.expectedRevision !== undefined
+    && value.expectedRevision !== null
+    && (!Number.isSafeInteger(value.expectedRevision) || Number(value.expectedRevision) < 0)) return false;
   if (value.view === null) return typeof value.viewId === 'string' && value.viewId.trim().length > 0;
   return isAnalysisView(value.view);
+}
+
+function validateExpectedRevision(context: CommandContext, params: AnalysisViewReplaceParams): void {
+  if (!Object.prototype.hasOwnProperty.call(params, 'expectedRevision')) return;
+  const viewId = params.view?.id ?? params.viewId;
+  if (!viewId) throw new Error('Analysis view revision check requires a view id');
+  const current = context.workbook.getAnalysisView(viewId);
+  const expected = params.expectedRevision;
+  if (expected === null) {
+    if (current) throw new Error(`ANALYSIS_VIEW_REVISION_CONFLICT: analysis view ${viewId} already exists at revision ${current.revision}`);
+    return;
+  }
+  if (expected === undefined) return;
+  if (!current) throw new Error(`ANALYSIS_VIEW_REVISION_CONFLICT: analysis view ${viewId} no longer exists`);
+  if (current.revision !== expected) {
+    throw new Error(`ANALYSIS_VIEW_REVISION_CONFLICT: analysis view ${viewId} is at revision ${current.revision}, expected ${expected}`);
+  }
 }
 
 function validateAnalysisView(context: CommandContext, value: AnalysisViewDefinition): AnalysisViewDefinition {
@@ -104,6 +131,7 @@ export function registerAnalysisCommands(runtime: CommandRuntime): string[] {
     id: 'analysis.view.replace',
     handler: (item, context) => {
       if (!isAnalysisViewReplace(item.params)) throw new Error('analysis.view.replace requires a canonical view or viewId');
+      validateExpectedRevision(context, item.params);
       if (item.params.view) applyAnalysisView(context, { view: validateAnalysisView(context, item.params.view) });
       else applyAnalysisView(context, item.params);
     },
@@ -124,13 +152,15 @@ export function registerAnalysisCommands(runtime: CommandRuntime): string[] {
         id: 'analysis.view.replace',
         unitId: context.workbook.unitId,
         sheetId: context.workbook.primarySheetId,
-        params: { view },
+        params: { view, expectedRevision: previous?.revision ?? null },
         affectedRanges: [],
         inverse: [{
           id: 'analysis.view.replace',
           unitId: context.workbook.unitId,
           sheetId: context.workbook.primarySheetId,
-          params: previous ? { view: previous } : { view: null, viewId: view.id },
+          params: previous
+            ? { view: previous, expectedRevision: view.revision }
+            : { view: null, viewId: view.id, expectedRevision: view.revision },
           affectedRanges: [],
         }],
         apply: () => applyAnalysisView(context, { view }),
@@ -148,9 +178,9 @@ export function registerAnalysisCommands(runtime: CommandRuntime): string[] {
         id: 'analysis.view.replace',
         unitId: context.workbook.unitId,
         sheetId: context.workbook.primarySheetId,
-        params: { view: null, viewId: params.viewId },
+        params: { view: null, viewId: params.viewId, expectedRevision: previous.revision },
         affectedRanges: [],
-        inverse: [{ id: 'analysis.view.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { view: previous }, affectedRanges: [] }],
+        inverse: [{ id: 'analysis.view.replace', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { view: previous, expectedRevision: null }, affectedRanges: [] }],
         apply: () => applyAnalysisView(context, { view: null, viewId: params.viewId }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
