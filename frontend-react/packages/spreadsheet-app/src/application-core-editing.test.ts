@@ -395,6 +395,26 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app['sheetProjectionCache'].size, 2);
   });
 
+  it('evicts stale worksheet projections while retaining the active sheet and visible dependencies', () => {
+    const app = new WorkbookSession();
+    const firstSheetId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'sheet-lru-2', name: 'Second' });
+    app.runCommand('sheet.add', { id: 'sheet-lru-3', name: 'Third' });
+    app.runCommand('sheet.add', { id: 'sheet-lru-4', name: 'Fourth' });
+
+    app.selectSheet('sheet-lru-2');
+    app.getUiSnapshot();
+    app.selectSheet('sheet-lru-3');
+    app.getUiSnapshot();
+    app.selectSheet('sheet-lru-4');
+    const snapshot = app.getUiSnapshot();
+
+    assert.deepEqual(snapshot.projectionSheets.map((sheet) => sheet.id), ['sheet-lru-4']);
+    assert.equal(app['sheetProjectionCache'].has('sheet-lru-4'), true);
+    assert.equal(app['sheetProjectionCache'].size <= 2, true);
+    assert.equal(app['sheetProjectionCache'].has(firstSheetId), false);
+  });
+
   it('edits the active canvas cell instead of the top-left of a dragged range', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

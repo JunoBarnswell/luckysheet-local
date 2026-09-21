@@ -375,6 +375,8 @@ interface SheetProjectionRevision {
 const PROJECTION_DOMAINS: readonly SheetProjectionDomain[] = [
   'content', 'dimensions', 'formulaResults', 'dataRules', 'drawings', 'review', 'structure',
 ];
+/** Keep the active projection and one recent sheet; cross-sheet dependencies are exempt. */
+const MAX_SHEET_PROJECTION_CACHE = 2;
 
 function createSheetProjectionRevision(): SheetProjectionRevision {
   return { content: 0, dimensions: 0, formulaResults: 0, dataRules: 0, drawings: 0, review: 0, structure: 0 };
@@ -884,6 +886,7 @@ export class WorkbookSession {
   private workbookProjectionEpoch = 0;
   private readonly sheetProjectionRevisions = new Map<string, SheetProjectionRevision>();
   private readonly sheetProjectionCache = new Map<string, { revision: string; snapshot: CanvasSheetSnapshot }>();
+  private readonly sheetProjectionAccessOrder: string[] = [];
   private persistenceMetaDirty = true;
 
   constructor({ unitId, api, recoverySubject, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
@@ -1441,6 +1444,7 @@ export class WorkbookSession {
     this.workbookProjectionEpoch += 1;
     this.sheetProjectionRevisions.clear();
     this.sheetProjectionCache.clear();
+    this.sheetProjectionAccessOrder.length = 0;
   }
 
   private projectionRevisionForSheet(sheetId: string): string {
@@ -1451,7 +1455,10 @@ export class WorkbookSession {
   private getCanvasProjection(sheet: WorksheetModel): CanvasSheetSnapshot {
     const cached = this.sheetProjectionCache.get(sheet.id);
     const revision = this.projectionRevisionForSheet(sheet.id);
-    if (cached?.revision === revision) return cached.snapshot;
+    if (cached?.revision === revision) {
+      this.touchSheetProjection(sheet.id);
+      return cached.snapshot;
+    }
     const snapshot = buildCanvasSheetSnapshot(
       this.runtime.model,
       sheet,
@@ -1464,7 +1471,35 @@ export class WorkbookSession {
       this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
     );
     this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
+    this.touchSheetProjection(sheet.id);
     return snapshot;
+  }
+
+  private touchSheetProjection(sheetId: string): void {
+    const index = this.sheetProjectionAccessOrder.indexOf(sheetId);
+    if (index >= 0) this.sheetProjectionAccessOrder.splice(index, 1);
+    this.sheetProjectionAccessOrder.push(sheetId);
+  }
+
+  private pruneSheetProjectionCache(requiredProjectionIds: ReadonlySet<string>): void {
+    const liveSheetIds = new Set(this.runtime.model.getSheets().map((sheet) => sheet.id));
+    for (const sheetId of this.sheetProjectionCache.keys()) {
+      if (!liveSheetIds.has(sheetId)) this.sheetProjectionCache.delete(sheetId);
+    }
+    for (let index = this.sheetProjectionAccessOrder.length - 1; index >= 0; index -= 1) {
+      if (!this.sheetProjectionCache.has(this.sheetProjectionAccessOrder[index]!)) this.sheetProjectionAccessOrder.splice(index, 1);
+    }
+    const keep = new Set(requiredProjectionIds);
+    for (let index = this.sheetProjectionAccessOrder.length - 1; index >= 0 && keep.size < MAX_SHEET_PROJECTION_CACHE; index -= 1) {
+      keep.add(this.sheetProjectionAccessOrder[index]!);
+    }
+    for (const sheetId of this.sheetProjectionCache.keys()) {
+      if (keep.has(sheetId)) continue;
+      this.sheetProjectionCache.delete(sheetId);
+    }
+    for (let index = this.sheetProjectionAccessOrder.length - 1; index >= 0; index -= 1) {
+      if (!this.sheetProjectionCache.has(this.sheetProjectionAccessOrder[index]!)) this.sheetProjectionAccessOrder.splice(index, 1);
+    }
   }
 
   /**
@@ -1533,6 +1568,7 @@ export class WorkbookSession {
       .filter((sheet) => requiredProjectionIds.has(sheet.id))
       .map((sheet) => this.getCanvasProjection(sheet));
     const selectedSheet = projectionSheets.find((sheet) => sheet.id === this.activeSheetId) ?? this.getCanvasProjection(activeModelSheet);
+    this.pruneSheetProjectionCache(requiredProjectionIds);
     const sheets: SheetTabSnapshot[] = modelSheets.map((sheet) => ({
       id: sheet.id,
       name: sheet.name,

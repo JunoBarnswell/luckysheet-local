@@ -387,8 +387,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   syncWorkbookSheetTables(engine, workbook);
   let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
-      if (cell.formula === undefined || cell.formulaMetadata?.preservedOnly) return;
+    sheet.cells.forEachFormula((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       formulaCount += 1;
       engine.setFormula(address, cell.formula);

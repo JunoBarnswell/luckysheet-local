@@ -323,6 +323,28 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.deepEqual(restoredEditor?.kind === 'combo-box' ? restoredEditor.items : undefined, [{ value: 'Open' }, { value: 'Closed' }]);
 });
 
+test('defers sparse worksheet cell hydration until the sheet is read', () => {
+  const source = new WorkbookModel('lazy-sheet-hydration', 'Lazy sheets');
+  const second = source.addSheet('sheet-2', 'Second');
+  source.getSheet('sheet-1').cells.set(2, 3, { value: 'first' });
+  second.cells.set(100, 4, { value: 'second' });
+
+  const restored = WorkbookModel.fromSnapshot(source.snapshot());
+  const first = restored.getSheet('sheet-1');
+  const deferred = restored.getSheet('sheet-2');
+
+  assert.equal(first.cells.isHydrated, false);
+  assert.equal(deferred.cells.isHydrated, false);
+  assert.deepEqual(deferred.cells.occupiedRange(deferred.id), {
+    sheetId: 'sheet-2', startRow: 100, endRow: 100, startColumn: 4, endColumn: 4,
+  });
+  assert.equal(deferred.cells.count(), 1);
+  assert.equal(deferred.cells.revision, 1);
+  assert.equal(deferred.cells.isHydrated, false);
+  assert.equal(deferred.cells.get(100, 4)?.value, 'second');
+  assert.equal(deferred.cells.isHydrated, true);
+});
+
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {
   const workbook = new WorkbookModel('unit-persisted-features', 'Persisted Features');
   const sheetId = workbook.primarySheetId;
