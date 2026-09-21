@@ -33,6 +33,10 @@ function parseColumnList(value: string): string[] {
   return [...new Set(value.split(',').map((entry) => entry.trim()).filter(Boolean))];
 }
 
+function recipeStepId(kind: RecipeKind): string {
+  return `${kind}-${globalThis.crypto.randomUUID()}`;
+}
+
 export function QueryPanel({
   canQuery,
   connectors,
@@ -84,18 +88,18 @@ export function QueryPanel({
     try {
       if (recipeKind === 'trim-text') {
         if (columns.length === 0) throw new Error('Enter one or more columns, separated by commas');
-        step = { id: `trim-${Date.now().toString(36)}`, kind: 'trim-text', name: `Trim ${columns.join(', ')}`, config: { columns }, enabled: true };
+        step = { id: recipeStepId('trim-text'), kind: 'trim-text', name: `Trim ${columns.join(', ')}`, config: { columns }, enabled: true };
       } else if (recipeKind === 'split-column') {
         const outputs = parseColumnList(recipeOutputs);
         if (!column || !recipeValue) throw new Error('Split requires a source column and delimiter');
         if (outputs.length < 2) throw new Error('Split requires at least two output column names');
-        step = { id: `split-${Date.now().toString(36)}`, kind: 'split-column', name: `Split ${column}`, config: { column, delimiter: recipeValue, outputColumns: outputs }, enabled: true };
+        step = { id: recipeStepId('split-column'), kind: 'split-column', name: `Split ${column}`, config: { column, delimiter: recipeValue, outputColumns: outputs }, enabled: true };
       } else if (recipeKind === 'remove-duplicates') {
         if (columns.length === 0) throw new Error('Enter the duplicate key columns, separated by commas');
-        step = { id: `dedupe-${Date.now().toString(36)}`, kind: 'remove-duplicates', name: `Remove duplicates by ${columns.join(', ')}`, config: { columns }, enabled: true };
+        step = { id: recipeStepId('remove-duplicates'), kind: 'remove-duplicates', name: `Remove duplicates by ${columns.join(', ')}`, config: { columns }, enabled: true };
       } else {
         if (!column) throw new Error('Sort requires a column');
-        step = { id: `sort-${Date.now().toString(36)}`, kind: 'sort', name: `Sort ${column}`, config: { column, ascending: recipeAscending }, enabled: true };
+        step = { id: recipeStepId('sort'), kind: 'sort', name: `Sort ${column}`, config: { column, ascending: recipeAscending }, enabled: true };
       }
       setRecipeSteps((current) => [...current, step]);
       setRecipeError(null);
