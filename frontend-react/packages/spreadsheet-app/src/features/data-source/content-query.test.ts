@@ -165,6 +165,44 @@ test('ensures every block is readable without returning a copied full-range matr
   assert.equal(reads, 2);
 });
 
+test('returns cached block row views without copying the decoded row arrays', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'view-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'view-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), store);
+
+  const firstView = await query.getAllBlockRows();
+  const secondView = await query.getAllBlockRows();
+  assert.equal(firstView.state.availability, 'ready');
+  assert.equal(firstView.value?.length, 2);
+  assert.strictEqual(firstView.value?.[0]?.rows, secondView.value?.[0]?.rows);
+  assert.deepEqual(firstView.value?.[1]?.rows[1], ['D', 40]);
+  const copied = await query.getRows(0, 1);
+  assert.notStrictEqual(copied.value?.[0], firstView.value?.[0]?.rows[0]);
+});
+
+test('maps logical rows through a virtual sort order without changing block storage', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'order-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'order-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  const query = new DataSourceContentQuery({
+    ...manifest(sourceId, 4, [first.ref, second.ref]),
+    rowOrder: [3, 0, 2, 1],
+  }, store);
+
+  assert.deepEqual((await query.getRows(0, 4)).value, [['D', 40], ['A', 10], ['C', 30], ['B', 20]]);
+  assert.equal((await query.getCellValue(0, 'code')).value, 'D');
+  assert.equal((await query.getCellValue(3, 'amount')).value, 20);
+  assert.equal((await query.getLoadState(first.ref.id))?.availability, 'ready');
+  assert.equal((await query.getLoadState(second.ref.id))?.availability, 'ready');
+});
+
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());

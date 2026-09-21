@@ -144,7 +144,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private ObjectNode validateSource(ObjectNode root, String mutationSheetId, ObjectNode source) {
         SnapshotMutationSupport.validateKnownKeys(source, Set.of(
                 "schema", "version", "id", "name", "kind", "sourceSheetId", "sourceRange",
-                "rowCount", "fields", "blockRowCount", "blocks", "revision"
+                "rowCount", "fields", "blockRowCount", "blocks", "rowOrder", "revision"
         ), "Data source manifest");
         if (!"DataSourceManifest".equals(source.path("schema").asText()) || source.path("version").asInt(-1) != 1) {
             throw ServiceException.validation("Data source manifest schema is invalid");
@@ -181,8 +181,27 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         }
 
         validateFields(source);
+        validateRowOrder(source, rowCount);
         validateBlocks(source, sourceId, rowCount);
         return source;
+    }
+
+    private void validateRowOrder(ObjectNode source, long rowCount) {
+        JsonNode raw = source.get("rowOrder");
+        if (raw == null) return;
+        if (!raw.isArray() || raw.size() != rowCount) {
+            throw ServiceException.validation("Data source rowOrder must cover every source row");
+        }
+        Set<Long> physicalRows = new HashSet<>();
+        for (JsonNode value : raw) {
+            if (!value.isIntegralNumber() || !value.canConvertToLong()) {
+                throw ServiceException.validation("Data source rowOrder must be a permutation of source rows");
+            }
+            long physicalRow = value.longValue();
+            if (physicalRow < 0 || physicalRow >= rowCount || !physicalRows.add(physicalRow)) {
+                throw ServiceException.validation("Data source rowOrder must be a permutation of source rows");
+            }
+        }
     }
 
     private void validateFields(ObjectNode source) {

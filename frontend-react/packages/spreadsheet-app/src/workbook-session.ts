@@ -206,9 +206,7 @@ import {
 import {
   prepareDataRegionMaterialization,
   createWorkbookCellResolver,
-  computeColumnarBlockChecksum,
   encodeSheetDataRegion,
-  encodeColumnarBlock,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -1694,9 +1692,9 @@ export class WorkbookSession {
 
   /**
    * Block-backed ranges have no canonical worksheet cells to materialize. A
-   * sort therefore rewrites the source blocks and commits one metadata-only
-   * dataSource.update mutation. The block bytes stay outside the operation
-   * envelope, so the cell mutation limit is never bypassed.
+   * sort therefore commits a logical row-order index and reuses the immutable
+   * source blocks. The operation remains metadata-only and repeated sorts do
+   * not create another copy of the source bytes.
    */
   private async dispatchDataRegionSort(
     commandId: string,
@@ -1838,11 +1836,15 @@ export class WorkbookSession {
     const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
     const query = this.runtime.dataContent.get(manifest.id);
     if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot sort block-backed data`);
-    const loaded = await query.getRows(0, manifest.rowCount);
+    const loaded = await query.getAllBlockRows();
     if (!loaded.value || loaded.state.availability !== 'ready') {
       throw new Error(loaded.state.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
     }
-    const rows = loaded.value;
+    const physicalRows = loaded.value.flatMap((block) => block.rows);
+    const currentOrder = manifest.rowOrder ?? physicalRows.map((_row, index) => index);
+    if (currentOrder.length !== physicalRows.length) {
+      throw new Error(`Data source ${manifest.id} rowOrder does not match rowCount`);
+    }
     const width = manifest.fields.length;
     for (const criterion of criteria) {
       const offset = criterion.column - region.range.startColumn;
@@ -1851,7 +1853,11 @@ export class WorkbookSession {
       }
     }
 
-    const sorted = rows.map((row, index) => ({ row, index }));
+    const sorted = currentOrder.map((physicalIndex, logicalIndex) => {
+      const row = physicalRows[physicalIndex];
+      if (row === undefined) throw new Error(`Data source ${manifest.id} rowOrder references a missing row`);
+      return { row, physicalIndex, index: logicalIndex };
+    });
     sorted.sort((left, right) => {
       for (const criterion of criteria) {
         const column = criterion.column - region.range.startColumn;
@@ -1865,42 +1871,13 @@ export class WorkbookSession {
     }
 
     const nextRevision = manifest.revision + 1;
-    const sortedRows = sorted.map((entry) => entry.row);
-    const uploadedBlocks: DataBlockRef[] = [];
-    try {
-      const nextBlocks: DataBlockRef[] = [];
-      for (const block of manifest.blocks) {
-        const blockRows = sortedRows.slice(block.startRow, block.startRow + block.rowCount);
-        const payload = await encodeColumnarBlock({
-          fields: manifest.fields.map((field) => ({ ...field })),
-          rows: blockRows,
-        });
-        const blockId = `sort-${nextRevision}-${block.startRow}`;
-        const ref: DataBlockRef = {
-          id: blockId,
-          dataSourceId: manifest.id,
-          startRow: block.startRow,
-          rowCount: block.rowCount,
-          storageKey: `data-block:${manifest.id}:${blockId}`,
-          checksum: await computeColumnarBlockChecksum(payload),
-          byteLength: payload.byteLength,
-          encoding: 'columnar-v1',
-          revision: nextRevision,
-        };
-        await this.runtime.dataBlocks.put(ref, payload);
-        nextBlocks.push(ref);
-        uploadedBlocks.push(ref);
-      }
-      const nextSource: DataSourceManifest = {
-        ...manifest,
-        blocks: nextBlocks,
-        revision: nextRevision,
-      };
-      return this.runCommand('dataSource.update', { sheetId: region.range.sheetId, source: nextSource });
-    } catch (error) {
-      await Promise.all(uploadedBlocks.map((ref) => this.runtime.dataBlocks.remove(ref).catch(() => undefined)));
-      throw error;
-    }
+    const nextSource: DataSourceManifest = {
+      ...manifest,
+      blocks: manifest.blocks.map((block) => ({ ...block, revision: nextRevision })),
+      rowOrder: sorted.map((entry) => entry.physicalIndex),
+      revision: nextRevision,
+    };
+    return this.runCommand('dataSource.update', { sheetId: region.range.sheetId, source: nextSource });
   }
 
   /**

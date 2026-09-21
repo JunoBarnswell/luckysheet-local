@@ -42,6 +42,12 @@ export interface DataSourceContentResult<T> {
   value?: T;
 }
 
+/** Read-only views over decoded blocks. Row arrays are shared with the cache. */
+export interface DataSourceLoadedBlockView {
+  readonly ref: DataBlockRef;
+  readonly rows: readonly (readonly TableScalar[])[];
+}
+
 export type DataSourceContentStateListener = (state: DataSourceContentLoadState) => void;
 
 interface LoadedBlock {
@@ -146,6 +152,7 @@ export class DataSourceContentQuery {
       ...this.source,
       fields: this.source.fields.map(cloneField),
       blocks: this.source.blocks.map((block) => ({ ...block })),
+      ...(this.source.rowOrder === undefined ? {} : { rowOrder: [...this.source.rowOrder] }),
     };
   }
 
@@ -186,11 +193,12 @@ export class DataSourceContentQuery {
     const field = this.resolveField(fieldRef);
     if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
     if (!isSafeRowIndex(rowIndex) || rowIndex >= this.source.rowCount) return this.errorResult(`Data source row is outside range: ${String(rowIndex)}`);
-    const ref = this.findBlock(rowIndex);
+    const physicalRow = this.physicalRow(rowIndex);
+    const ref = this.findBlock(physicalRow);
     if (ref === undefined) return this.missingResult(`No data block covers source row ${String(rowIndex)}`);
     const loaded = this.loadedBlocks.get(ref.id);
     if (loaded !== undefined) {
-      const row = loaded.rows[rowIndex - ref.startRow];
+      const row = loaded.rows[physicalRow - ref.startRow];
       if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(rowIndex)}`);
       return { state: state(this.source.id, ref.id, 'ready'), value: row[field.ordinal] ?? null };
     }
@@ -204,7 +212,7 @@ export class DataSourceContentQuery {
     if (error || rowCount === 0) return;
     const scheduled = new Set<string>();
     for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row);
+      const ref = this.findBlock(this.physicalRow(row));
       if (ref && !scheduled.has(ref.id)) {
         scheduled.add(ref.id);
         if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
@@ -229,6 +237,25 @@ export class DataSourceContentQuery {
       lastState = state(this.source.id, ref.id, 'ready');
     }
     return lastState;
+  }
+
+  /**
+   * Return decoded block views without rebuilding a copied full-range matrix.
+   * Mutation paths that only inspect or reorder rows can use this view while
+   * the public getRows copy contract remains unchanged.
+   */
+  async getAllBlockRows(): Promise<DataSourceContentResult<readonly DataSourceLoadedBlockView[]>> {
+    const loaded = await this.ensureAllBlocksLoaded();
+    if (loaded.availability !== 'ready') return { state: loaded };
+    const blocks: DataSourceLoadedBlockView[] = [];
+    for (const ref of this.source.blocks) {
+      const block = this.loadedBlocks.get(ref.id);
+      if (block === undefined) {
+        return this.errorResult(`Data block ${ref.id} was not available after loading`);
+      }
+      blocks.push(block);
+    }
+    return { state: loaded, value: blocks };
   }
 
   async getRowValues(rowIndex: number): Promise<DataSourceContentResult<TableScalar[]>> {
@@ -308,7 +335,7 @@ export class DataSourceContentQuery {
     const refs: DataBlockRef[] = [];
     const seen = new Set<string>();
     for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row);
+      const ref = this.findBlock(this.physicalRow(row));
       if (ref === undefined) {
         return this.missingResult(`No data block covers source row ${String(row)}`);
       }
@@ -337,9 +364,10 @@ export class DataSourceContentQuery {
 
     const rows: TableScalar[][] = [];
     for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(row)!;
+      const physicalRow = this.physicalRow(row);
+      const ref = this.findBlock(physicalRow)!;
       const block = loaded.get(ref.id)!;
-      const localRow = row - ref.startRow;
+      const localRow = physicalRow - ref.startRow;
       const values = block.rows[localRow];
       if (values === undefined) {
         return this.errorResult(`Data block ${ref.id} does not contain source row ${String(row)}`);
@@ -366,6 +394,10 @@ export class DataSourceContentQuery {
     if (!Number.isSafeInteger(rowCount) || rowCount < 0) return 'Data source rowCount must be a non-negative safe integer';
     if (startRow + rowCount > this.source.rowCount) return 'Data source query range exceeds rowCount';
     return undefined;
+  }
+
+  private physicalRow(logicalRow: number): number {
+    return this.source.rowOrder?.[logicalRow] ?? logicalRow;
   }
 
   private findBlock(rowIndex: number): DataBlockRef | undefined {

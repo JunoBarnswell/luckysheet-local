@@ -858,7 +858,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
   const source = value as Record<string, unknown>;
-  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'revision'], 'Data source manifest');
+  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'rowOrder', 'revision'], 'Data source manifest');
   if (source.schema !== 'DataSourceManifest' || source.version !== 1 || !isNonEmptyString(source.id) || !isNonEmptyString(source.name)) {
     throw new Error('Invalid data source manifest identity');
   }
@@ -879,6 +879,18 @@ export function validateDataSourceManifest(value: unknown): asserts value is Dat
   if ((source.kind === 'worksheet-range' || source.kind === 'sheet-table')
     && (!isNonEmptyString(source.sourceSheetId) || source.sourceRange === undefined)) {
     throw new Error(`Invalid ${String(source.kind)} data source metadata: ${String(source.id)}`);
+  }
+  if (source.rowOrder !== undefined) {
+    if (!Array.isArray(source.rowOrder) || source.rowOrder.length !== Number(source.rowCount)) {
+      throw new Error(`Invalid data source rowOrder: ${String(source.id)}`);
+    }
+    const physicalRows = new Set<number>();
+    for (const physicalRow of source.rowOrder) {
+      if (!Number.isSafeInteger(physicalRow) || Number(physicalRow) < 0 || Number(physicalRow) >= Number(source.rowCount) || physicalRows.has(Number(physicalRow))) {
+        throw new Error(`Invalid data source rowOrder: ${String(source.id)}`);
+      }
+      physicalRows.add(Number(physicalRow));
+    }
   }
   const fieldIds = new Set<string>();
   for (const [index, rawField] of source.fields.entries()) {
