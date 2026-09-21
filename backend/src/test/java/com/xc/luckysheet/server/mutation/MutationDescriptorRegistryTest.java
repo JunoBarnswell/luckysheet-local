@@ -31,11 +31,23 @@ class MutationDescriptorRegistryTest {
     @Test
     void cellSetUsesServerResolvedRangeAndChangesSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}");
+        var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
         var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 3, "{\"value\":42}", "accepted")));
         assertEquals(2, registry.resolveRanges(snapshot, mutation).get(0).startRow());
         var next = registry.applyPublicMutations(snapshot, List.of(mutation));
         assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+    }
+
+    @Test
+    void cellSetExtendsTheCanonicalWorksheetExtent() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(1_000, 26, "{\"value\":42}", "accepted")));
+
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+
+        assertEquals(1_001, next.path("sheets").get(0).path("rowCount").asInt());
+        assertEquals(27, next.path("sheets").get(0).path("columnCount").asInt());
     }
 
     @Test

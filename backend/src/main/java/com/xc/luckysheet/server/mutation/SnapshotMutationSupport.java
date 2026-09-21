@@ -122,7 +122,21 @@ final class SnapshotMutationSupport {
     }
 
     static void putCell(ObjectNode sheet, CellCoordinate coordinate, JsonNode value) {
+        ensureCellExtent(sheet, coordinate);
         cellRow(cells(sheet), coordinate.row(), true).set(Integer.toString(coordinate.column()), value.deepCopy());
+    }
+
+    /**
+     * A sparse write owns its addressable extent.  Cell mutation descriptors
+     * are the sole server replay path for direct entry, fill, paste and
+     * generated values, so this keeps the persisted snapshot geometry in
+     * lockstep with its cells without a parallel resize mutation.
+     */
+    private static void ensureCellExtent(ObjectNode sheet, CellCoordinate coordinate) {
+        int rowCount = canonicalDimension(sheet, "rowCount");
+        int columnCount = canonicalDimension(sheet, "columnCount");
+        if (coordinate.row() >= rowCount) sheet.put("rowCount", coordinate.row() + 1);
+        if (coordinate.column() >= columnCount) sheet.put("columnCount", coordinate.column() + 1);
     }
 
     static void removeCell(ObjectNode sheet, CellCoordinate coordinate) {

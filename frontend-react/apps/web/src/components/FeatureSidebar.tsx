@@ -438,7 +438,10 @@ export function FeatureSidebar({
     return <Box as="aside" aria-label="Feature sidebar" className="flex h-full min-h-0 flex-col overflow-hidden">
       <ChartPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads}
         selectedDrawingIds={selectedDrawingIds} selectedChartElement={selectedChartElement}
-        defaultRange={selectionText} onInsertChart={onInsertChart} onCommand={onCommand} onClose={onClosePanel} />
+        defaultRange={selectionText} readCellValue={(sourceSheetId, row, column) => {
+          if (sourceSheetId !== sheet.id) throw new Error('UNSUPPORTED_FEATURE: 当前图表数据源不在活动工作表');
+          return sheet.getCell(row, column)?.rawValue ?? null;
+        }} onInsertChart={onInsertChart} onCommand={onCommand} onClose={onClosePanel} />
     </Box>;
   }
 

@@ -962,6 +962,8 @@ export class CellMatrix {
   private cellCount = 0;
   private revisionCounter = 0;
 
+  constructor(private readonly onWrite?: (row: Row, column: Column) => void) {}
+
   /** Monotonic content revision used by derived caches; it is not persisted. */
   get revision(): number {
     return this.revisionCounter;
@@ -972,6 +974,7 @@ export class CellMatrix {
   }
 
   set(row: Row, column: Column, cell: CellData): void {
+    this.onWrite?.(row, column);
     let rowMap = this.rows.get(row);
     if (!rowMap) {
       rowMap = new Map<Column, CellData>();
@@ -1162,7 +1165,7 @@ export class WorksheetModel {
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
-  readonly cells = new CellMatrix();
+  readonly cells: CellMatrix;
   /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
   private readonly dataRegionStore: SheetDataRegion[] = [];
   private readonly dataRegionBounds = new DataRegionBoundsIndex();
@@ -1254,6 +1257,7 @@ export class WorksheetModel {
     columnCount: number = DEFAULT_SHEET_COLUMN_COUNT,
   ) {
     this.extent = new SheetExtent(rowCount, columnCount);
+    this.cells = new CellMatrix((row, column) => this.extent.ensureCell(row, column));
     this.review = new ReviewStore(id);
   }
 

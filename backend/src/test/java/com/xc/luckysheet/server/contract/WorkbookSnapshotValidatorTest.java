@@ -50,6 +50,17 @@ class WorkbookSnapshotValidatorTest {
         assertEquals("VALIDATION_ERROR", error.code());
     }
 
+    @Test
+    void rejectsCellsOutsideTheDeclaredWorksheetExtent() {
+        ObjectNode snapshot = snapshot();
+        ((ObjectNode) snapshot.path("sheets").get(0)).withObject("cells").withObject("10").putObject("0").put("value", "outside");
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
     private ObjectNode snapshot() {
         ObjectNode snapshot = mapper.createObjectNode();
         snapshot.put("schema", GeneratedWorkbookContract.SNAPSHOT_SCHEMA).put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION)

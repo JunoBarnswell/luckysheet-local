@@ -284,9 +284,74 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   applyReactSheetsMetadata(snapshot, files[REACT_SHEETS_METADATA_PART], loaded.packageGraph);
   attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
   loaded.packageGraph.nativeChartGraph = projectNativeCharts(snapshot, loaded.packageGraph.nativeChartGraph, files, relationships, loaded.packageGraph.sheetPartById, loaded.packageGraph.nativePivotGraph);
+  expandImportedReferenceExtents(snapshot);
   assertCanonicalWorkbookSnapshot(snapshot);
   applyPrintDefinedNames(snapshot);
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
+}
+
+/**
+ * XLSX only records the populated grid in `<dimension>`, while drawings can
+ * legally reference an otherwise empty cell range.  The canonical snapshot
+ * owns one addressable worksheet extent, so import expands that extent before
+ * validation rather than leaving a valid chart reference outside the grid.
+ */
+function expandImportedReferenceExtents(snapshot: WorkbookSnapshot): void {
+  const sheets = new Map(snapshot.sheets.map((sheet) => [sheet.id, sheet]));
+  const extend = (range: RangeRef | undefined, label: string): void => {
+    if (!range) return;
+    const target = sheets.get(range.sheetId);
+    const valid = Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.endRow)
+      && Number.isSafeInteger(range.startColumn) && Number.isSafeInteger(range.endColumn)
+      && range.startRow >= 0 && range.startColumn >= 0
+      && range.endRow >= range.startRow && range.endColumn >= range.startColumn
+      && range.endRow <= OOXML_MAX_ROW_INDEX && range.endColumn <= OOXML_MAX_COLUMN_INDEX;
+    if (!target || !valid) throw new Error(`Imported ${label} range is invalid`);
+    target.rowCount = Math.max(target.rowCount, range.endRow + 1);
+    target.columnCount = Math.max(target.columnCount, range.endColumn + 1);
+  };
+
+  for (const sheet of snapshot.sheets) {
+    for (const [rowKey, row] of Object.entries(sheet.cells)) {
+      const rowIndex = Number(rowKey);
+      if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex > OOXML_MAX_ROW_INDEX) {
+        throw new Error(`Imported worksheet ${sheet.name} has an invalid cell row`);
+      }
+      for (const columnKey of Object.keys(row)) {
+        const columnIndex = Number(columnKey);
+        if (!Number.isSafeInteger(columnIndex) || columnIndex < 0 || columnIndex > OOXML_MAX_COLUMN_INDEX) {
+          throw new Error(`Imported worksheet ${sheet.name} has an invalid cell column`);
+        }
+        sheet.rowCount = Math.max(sheet.rowCount, rowIndex + 1);
+        sheet.columnCount = Math.max(sheet.columnCount, columnIndex + 1);
+      }
+    }
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'chart') {
+        if (payload.source.kind === 'worksheet-ranges') payload.source.ranges.forEach((range) => extend(range, `chart ${payload.chartId} source`));
+        else if (payload.source.kind === 'report-range') extend(payload.source.range, `chart ${payload.chartId} source`);
+        extend(payload.categoryRange, `chart ${payload.chartId} category`);
+        for (const series of payload.series ?? []) {
+          extend(series.range, `chart ${payload.chartId} series`);
+          extend(series.xRange, `chart ${payload.chartId} x binding`);
+          extend(series.yRange, `chart ${payload.chartId} y binding`);
+          extend(series.sizeRange, `chart ${payload.chartId} size binding`);
+          extend(series.categoryRange, `chart ${payload.chartId} category binding`);
+          extend(series.errorBars?.plusRange, `chart ${payload.chartId} positive error binding`);
+          extend(series.errorBars?.minusRange, `chart ${payload.chartId} negative error binding`);
+          extend(series.stockRoles?.open, `chart ${payload.chartId} open binding`);
+          extend(series.stockRoles?.high, `chart ${payload.chartId} high binding`);
+          extend(series.stockRoles?.low, `chart ${payload.chartId} low binding`);
+          extend(series.stockRoles?.close, `chart ${payload.chartId} close binding`);
+          extend(series.stockRoles?.volume, `chart ${payload.chartId} volume binding`);
+          extend(series.dataLabels?.valuesFromCells, `chart ${payload.chartId} data-label binding`);
+        }
+      } else if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+        extend(payload.sourceRange, `${payload.kind} source`);
+      }
+    }
+  }
+  for (const table of snapshot.dataModel.tables) extend(table.sourceRange, `table ${table.id} source`);
 }
 
 function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): Extract<NativeDocumentFormat, { family: 'ooxml' }> {

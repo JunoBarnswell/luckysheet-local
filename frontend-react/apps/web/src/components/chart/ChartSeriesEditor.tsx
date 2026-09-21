@@ -9,10 +9,11 @@ export interface ChartSeriesEditorProps {
   selectedSeriesId?: string;
   onChange: (series: ChartSeriesDraft[]) => void;
   onAdd: () => void;
+  onMaterialize?: () => void;
   canAdd: boolean;
 }
 
-export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChange, onAdd, canAdd }: ChartSeriesEditorProps) {
+export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChange, onAdd, onMaterialize, canAdd }: ChartSeriesEditorProps) {
   const update = (index: number, change: (entry: ChartSeriesDraft) => ChartSeriesDraft) => onChange(series.map((entry, position) => position === index ? change(entry) : entry));
   const updateErrorType = (index: number, type: NonNullable<ChartSeriesDraft['value']['errorBars']>['type'] | 'none') => update(index, item => {
     if (type === 'none') return { ...item, value: { ...item.value, errorBars: undefined }, errorPlusRange: '', errorMinusRange: '' };
@@ -37,7 +38,7 @@ export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChang
     onChange(next);
   };
   return <Stack gap="sm">
-    {!series.length ? <Text size="xs" tone="muted">系列由数据区域或透视结果自动生成。</Text> : null}
+    {!series.length ? <Stack gap="xs"><Text size="xs" tone="muted">系列由数据区域或透视结果自动生成。</Text>{onMaterialize ? <Button size="sm" variant="secondary" icon="plus" onClick={onMaterialize}>生成可编辑系列</Button> : null}</Stack> : null}
     {series.map((entry, index) => <Box key={entry.value.id ?? index} className={`rounded-lg border p-3 ${entry.value.id === selectedSeriesId ? 'border-emerald-500 bg-emerald-50/50' : 'border-slate-200 bg-white'}`}>
       <Stack gap="sm">
         <Inline className="justify-between"><Text size="xs" weight="semibold">系列 {index + 1}</Text><Inline gap="xs">
@@ -67,6 +68,6 @@ export function ChartSeriesEditor({ series, chartType, selectedSeriesId, onChang
         </Box>
       </Stack>
     </Box>)}
-    <Button size="sm" variant="secondary" icon="plus" disabled={!canAdd} onClick={onAdd}>添加数据系列</Button>
+    {series.length ? <Button size="sm" variant="secondary" icon="plus" disabled={!canAdd} onClick={onAdd}>添加数据系列</Button> : null}
   </Stack>;
 }

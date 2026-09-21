@@ -103,6 +103,7 @@ public final class WorkbookSnapshotValidator {
                 JsonNode presentation = cell.getValue().get("presentation");
                 if (presentation != null && "image".equals(presentation.path("kind").asText())) validateAssetRef(presentation.get("asset"), "Cell image");
             }));
+            validateCellBounds(sheet);
             JsonNode pane = sheet.path("pane");
             if (!"none".equals(pane.path("kind").asText())) {
                 String state = pane.path("state").asText();
@@ -177,6 +178,33 @@ public final class WorkbookSnapshotValidator {
             }
         }
         return snapshot;
+    }
+
+    private static void validateCellBounds(JsonNode sheet) {
+        int rowCount = sheet.path("rowCount").intValue();
+        int columnCount = sheet.path("columnCount").intValue();
+        sheet.path("cells").fields().forEachRemaining(row -> {
+            int rowIndex;
+            try {
+                rowIndex = Integer.parseInt(row.getKey());
+            } catch (NumberFormatException error) {
+                throw ServiceException.validation("Workbook snapshot cell row is invalid");
+            }
+            if (rowIndex < 0 || rowIndex >= rowCount || !row.getValue().isObject()) {
+                throw ServiceException.validation("Workbook snapshot cell is outside worksheet bounds");
+            }
+            row.getValue().fields().forEachRemaining(cell -> {
+                int columnIndex;
+                try {
+                    columnIndex = Integer.parseInt(cell.getKey());
+                } catch (NumberFormatException error) {
+                    throw ServiceException.validation("Workbook snapshot cell column is invalid");
+                }
+                if (columnIndex < 0 || columnIndex >= columnCount || !cell.getValue().isObject()) {
+                    throw ServiceException.validation("Workbook snapshot cell is outside worksheet bounds");
+                }
+            });
+        });
     }
 
     private static JsonNode findPivotField(JsonNode pivot, String fieldId) {

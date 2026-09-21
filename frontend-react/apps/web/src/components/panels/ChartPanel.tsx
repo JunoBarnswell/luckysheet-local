@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Button, CheckToggle, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type RangeRef } from '@react-sheets/core-model';
+import { CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { ChartElementSelection } from '@react-sheets/spreadsheet-app';
 import { chartLabels, chartSubtypeLabels, chartTypes } from '../chart/chart-labels';
@@ -14,6 +14,7 @@ export interface ChartPanelProps {
   selectedDrawingIds?: readonly string[];
   selectedChartElement?: ChartElementSelection | null;
   defaultRange?: string;
+  readCellValue: (sourceSheetId: string, row: number, column: number) => FormulaValue;
   onInsertChart: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], sourceRange: RangeRef, title: string, stacked: NonNullable<ChartDrawingPayload['stacked']>) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
@@ -52,7 +53,7 @@ const elementLabels: Record<ChartElementSelection['kind'], string> = {
   gridline: '网格线', 'data-table': '数据表', trendline: '趋势线', 'error-bar': '误差线', series: '数据系列', point: '数据点', 'data-label': '数据标签',
 };
 
-export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], selectedChartElement = null, defaultRange, onInsertChart, onCommand, onClose }: ChartPanelProps) {
+export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], selectedChartElement = null, defaultRange, readCellValue, onInsertChart, onCommand, onClose }: ChartPanelProps) {
   const entries = drawings.flatMap(drawing => {
     const payload = drawingPayloads.get(drawing.payloadId);
     return drawing.kind === 'chart' && payload?.kind === 'chart' ? [{ drawing, payload }] : [];
@@ -133,10 +134,21 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
           <Button size="sm" variant="secondary" disabled={payload.source.kind === 'pivot'} onClick={() => updatePayload({ dataOrientation: payload.dataOrientation === 'rows' ? 'columns' : 'rows' })}>切换行／列（当前按{payload.dataOrientation === 'rows' ? '行' : '列'}）</Button>
         </Group>
         <Group title={'数据系列（' + (draft.series.length || '自动') + '）'} open={Boolean(selectedSeriesId)}>
-          <ChartSeriesEditor chartType={payload.chartType} series={draft.series} selectedSeriesId={selectedSeriesId} onChange={series => edit(value => ({ ...value, series }))} canAdd={payload.source.kind === 'worksheet-ranges'} onAdd={() => {
+          <ChartSeriesEditor chartType={payload.chartType} series={draft.series} selectedSeriesId={selectedSeriesId} onChange={series => edit(value => ({ ...value, series }))} canAdd={payload.source.kind === 'worksheet-ranges'} onMaterialize={payload.source.kind === 'worksheet-ranges' && !draft.series.length ? () => {
             try {
-              const range = parseChartRange(draft.sourceRanges.split(';')[0] ?? '', sheetId, '数据区域');
-              const series = chartSeriesDraft({ id: crypto.randomUUID(), name: '系列 ' + (draft.series.length + 1), range, chartType: payload.chartType === 'combo' ? 'column' : payload.chartType });
+              const candidate = chartPayloadFromDraft(draft, sheetId);
+              if (candidate.source.kind !== 'worksheet-ranges') throw new Error('INVALID_CHART_SOURCE: 当前图表没有工作表数据区域');
+              if (candidate.source.ranges.some(range => range.sheetId !== sheetId)) throw new Error('UNSUPPORTED_FEATURE: 请在图表数据源所在工作表中生成可编辑系列');
+              const bindings = resolveWorksheetChartRanges(candidate, range => readCellValue(range.sheetId, range.startRow, range.startColumn));
+              const series = bindings.series.map(entry => chartSeriesDraft({ ...entry, ...(candidate.chartType === 'combo' ? { chartType: 'column' as const } : {}) }));
+              edit(value => ({ ...value, series }));
+            } catch (error) { setMessage(error instanceof Error ? error.message : '无法生成可编辑系列'); }
+          } : undefined} onAdd={() => {
+            try {
+              const existing = draft.series[draft.series.length - 1];
+              if (!existing) throw new Error('请先生成可编辑系列');
+              const range = parseChartRange(existing.range, existing.value.range.sheetId, `系列 ${draft.series.length + 1} 范围`);
+              const series = chartSeriesDraft({ id: crypto.randomUUID(), name: '系列 ' + (draft.series.length + 1), range, ...(payload.chartType === 'combo' ? { chartType: 'column' } : {}) });
               edit(value => ({ ...value, series: [...value.series, series] }));
             } catch (error) { setMessage(error instanceof Error ? error.message : '数据范围无效'); }
           }} />

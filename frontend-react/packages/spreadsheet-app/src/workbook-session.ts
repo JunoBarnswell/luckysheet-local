@@ -2040,6 +2040,11 @@ export class WorkbookSession {
     }
     const range = parseRangeReference(trimmed);
     if (range) {
+      if (range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
+        this.notify(`Reference exceeds worksheet limits: ${trimmed}`);
+        return false;
+      }
+      this.ensureSheetExtent(range.endRow + 1, range.endColumn + 1);
       this.selectionService.selectRange(range, 'replace');
       this.syncDraftFromPrimary();
       this.syncTableContextFromSelection();
