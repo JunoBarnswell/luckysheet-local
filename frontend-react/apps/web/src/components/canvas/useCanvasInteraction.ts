@@ -493,7 +493,12 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (floatingHit.control) {
         const action = floatingHit.control.data;
         if (floatingHit.control.action === 'chart.select-element') {
-          onChartElementAction?.(floatingHit.id, action);
+          const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+          if (additive && action && typeof action === 'object') {
+            onChartElementAction?.(floatingHit.id, { ...(action as Record<string, unknown>), additive: true });
+          } else {
+            onChartElementAction?.(floatingHit.id, action);
+          }
         } else if (action && typeof action === 'object' && 'kind' in action) {
           onPivotControlAction?.(floatingHit.id, action as PivotControlAction);
         }

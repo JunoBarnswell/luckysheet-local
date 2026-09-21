@@ -78,7 +78,7 @@ export function EditorShell({
 
   const handleSelectionChange = (selection: SelectionState) => controller.applySelection(selection);
 
-  const applyAnalysisChartFilter = (chartId: string, pointIndex: number): boolean => {
+  const applyAnalysisChartFilter = (chartId: string, pointIndex: number, additive = false): boolean => {
     const viewBinding = state.analysisViews
       .flatMap((view) => view.charts.map((binding) => ({ view, binding })))
       .find((entry) => entry.binding.chartId === chartId);
@@ -91,10 +91,22 @@ export function EditorShell({
     const point = chart?.points[pointIndex];
     if (projection.status !== 'ready' || !point || (typeof point.category === 'object' && point.category !== null)) return false;
     const next = structuredClone(viewBinding.view);
-    next.filters = [
-      ...next.filters.filter((filter) => filter.fieldId !== categoryFieldId),
-      { id: `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: 'equals', values: [point.category] },
-    ];
+    const existing = next.filters.find((filter) => filter.fieldId === categoryFieldId);
+    if (!additive) {
+      next.filters = [
+        ...next.filters.filter((filter) => filter.fieldId !== categoryFieldId),
+        { id: `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: 'equals', values: [point.category] },
+      ];
+    } else {
+      const values = existing && (existing.operator === 'equals' || existing.operator === 'in') ? [...existing.values] : [];
+      const index = values.findIndex((value) => value === point.category);
+      if (index >= 0) values.splice(index, 1);
+      else values.push(point.category);
+      next.filters = next.filters.filter((filter) => filter.fieldId !== categoryFieldId);
+      if (values.length > 0) {
+        next.filters.push({ id: existing?.id ?? `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: values.length === 1 ? 'equals' : 'in', values });
+      }
+    }
     next.revision += 1;
     session.setAnalysisView(next);
     return true;
@@ -323,7 +335,7 @@ export function EditorShell({
                   if (!drawing || payload?.kind !== 'chart' || !data || typeof data !== 'object' || !('kind' in data)) return;
                   const kind = String((data as { kind: string }).kind);
                   if (kind === 'point' && 'pointIndex' in data && typeof (data as { pointIndex: unknown }).pointIndex === 'number') {
-                    applyAnalysisChartFilter(payload.chartId, Number((data as { pointIndex: number }).pointIndex));
+                    applyAnalysisChartFilter(payload.chartId, Number((data as { pointIndex: number }).pointIndex), 'additive' in data && data.additive === true);
                   }
                   if ((kind === 'point' || kind === 'series' || kind === 'data-label') && 'seriesId' in data) {
                     session.selectChartElement({ kind: kind as 'point' | 'series' | 'data-label', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), ...('pointIndex' in data ? { pointIndex: Number((data as { pointIndex: number }).pointIndex) } : {}) });
