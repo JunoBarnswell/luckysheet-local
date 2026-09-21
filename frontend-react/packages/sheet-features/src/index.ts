@@ -1332,7 +1332,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<AddTableParams>({
     id: 'table.add',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = [];
+      const affectedRanges = workbookTableRanges(params);
       context.applyMutation({
         id: 'table.add',
         unitId: context.workbook.unitId,
@@ -1349,7 +1349,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'table.remove',
     execute: (params, context) => {
       const previous = structuredClone(context.workbook.getTable(params.tableId));
-      const affectedRanges: RangeRef[] = [];
+      const affectedRanges = tableRemoveRanges({ range: previous.sourceRange });
       context.applyMutation({
         id: 'table.remove',
         unitId: context.workbook.unitId,

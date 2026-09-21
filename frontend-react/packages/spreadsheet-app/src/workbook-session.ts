@@ -6853,6 +6853,17 @@ export class WorkbookSession {
     this.refresh();
   }
 
+  createDataTable(): void {
+    const table = this.buildSelectionWorkbookTable('table');
+    if (!table.sourceRange || table.fields.length === 0 || table.rowCount < 1) {
+      this.notify('请选择包含标题行和至少一行数据的区域');
+      return;
+    }
+    this.runCommand('table.add', table);
+    this.notify(`数据表 ${table.name} 已创建`);
+    this.refresh();
+  }
+
   async createDataSourceFromSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primaryRange = this.getPrimaryRange();
