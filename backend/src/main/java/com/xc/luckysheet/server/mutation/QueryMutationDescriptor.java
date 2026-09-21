@@ -23,7 +23,7 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._:-]{1,200}");
     private static final Pattern SHA256 = Pattern.compile("[A-Fa-f0-9]{64}");
     private static final Set<String> TARGET_KINDS = Set.of("range", "sheet-table", "pivot-source", "workbook-table");
-    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "sort", "group-by", "join", "pivot", "custom");
+    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "trim-text", "split-column", "remove-duplicates", "sort", "group-by", "join", "pivot", "custom");
     private static final Pattern SECRET_KEY = Pattern.compile("(?:pass(word)?|secret|token|api[-_]?key|credential|authorization|private[-_]?key|client[-_]?secret)", Pattern.CASE_INSENSITIVE);
 
     QueryMutationDescriptor(String id) {

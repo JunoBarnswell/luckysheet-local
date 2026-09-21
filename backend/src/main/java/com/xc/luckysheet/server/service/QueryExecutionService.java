@@ -49,7 +49,7 @@ import java.util.concurrent.TimeoutException;
 
 @Service
 public class QueryExecutionService {
-    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "sort", "group-by", "join", "pivot");
+    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "trim-text", "split-column", "remove-duplicates", "sort", "group-by", "join", "pivot");
     private static final Set<String> FILTER_OPERATORS = Set.of("eq", "neq", "contains", "startsWith", "endsWith", "gt", "gte", "lt", "lte", "isNull", "notNull");
     private static final Set<String> AGGREGATIONS = Set.of("sum", "count", "average", "min", "max");
 
@@ -265,6 +265,9 @@ public class QueryExecutionService {
             case "filter" -> filter(input, step);
             case "select-columns" -> select(input, step);
             case "rename-column" -> rename(input, step);
+            case "trim-text" -> trimText(input, step);
+            case "split-column" -> splitColumn(input, step);
+            case "remove-duplicates" -> removeDuplicates(input, step);
             case "sort" -> sort(input, step);
             case "group-by" -> group(input, step);
             case "join" -> join(input, step);
@@ -299,6 +302,61 @@ public class QueryExecutionService {
         if (columns.contains(to) && !from.equals(to)) throw QueryFailure.validation("Renamed column already exists");
         columns.set(index, to);
         return new QueryTable(columns, input.rows);
+    }
+
+    private QueryTable trimText(QueryTable input, QueryStep step) {
+        List<String> names = stringList(step.config().get("columns"), step.id());
+        int[] indexes = names.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
+        Set<Integer> selected = new HashSet<>();
+        for (int index : indexes) selected.add(index);
+        List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            List<JsonNode> next = new ArrayList<>(row);
+            for (int index : selected) {
+                JsonNode value = row.get(index);
+                if (value != null && value.isTextual()) next.set(index, JsonNodeFactory.instance.textNode(value.asText().trim()));
+            }
+            return List.copyOf(next);
+        }).toList();
+        return new QueryTable(input.columns, rows);
+    }
+
+    private QueryTable splitColumn(QueryTable input, QueryStep step) {
+        String column = required(step.config(), "column", step.id());
+        String delimiter = required(step.config(), "delimiter", step.id());
+        List<String> outputs = stringList(step.config().get("outputColumns"), step.id());
+        if (outputs.size() < 2 || new HashSet<>(outputs).size() != outputs.size()) throw QueryFailure.validation("Split output columns must be unique and contain at least two entries");
+        int sourceIndex = input.columnIndex(column, step.id());
+        List<String> retained = input.columns.stream().filter(name -> !name.equals(column)).toList();
+        for (String output : outputs) if (retained.contains(output)) throw QueryFailure.validation("Split output column already exists");
+        List<String> columns = new ArrayList<>();
+        columns.addAll(input.columns.subList(0, sourceIndex));
+        columns.addAll(outputs);
+        columns.addAll(input.columns.subList(sourceIndex + 1, input.columns.size()));
+        List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            JsonNode raw = row.get(sourceIndex);
+            List<JsonNode> parts;
+            if (raw != null && raw.isTextual()) {
+                parts = new ArrayList<>();
+                for (String value : raw.asText().split(java.util.regex.Pattern.quote(delimiter), -1)) parts.add(JsonNodeFactory.instance.textNode(value));
+            } else {
+                parts = List.of(scalarOrNull(raw));
+            }
+            List<JsonNode> next = new ArrayList<>();
+            next.addAll(row.subList(0, sourceIndex));
+            for (int index = 0; index < outputs.size(); index++) next.add(index < parts.size() ? parts.get(index) : JsonNodeFactory.instance.nullNode());
+            next.addAll(row.subList(sourceIndex + 1, row.size()));
+            return List.copyOf(next);
+        }).toList();
+        return new QueryTable(columns, rows);
+    }
+
+    private QueryTable removeDuplicates(QueryTable input, QueryStep step) {
+        List<String> names = stringList(step.config().get("columns"), step.id());
+        int[] indexes = names.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
+        Set<String> seen = new HashSet<>();
+        List<List<JsonNode>> rows = new ArrayList<>();
+        for (List<JsonNode> row : input.rows) if (seen.add(indexesAsJson(row, indexes))) rows.add(List.copyOf(row));
+        return new QueryTable(input.columns, rows);
     }
 
     private QueryTable sort(QueryTable input, QueryStep step) {

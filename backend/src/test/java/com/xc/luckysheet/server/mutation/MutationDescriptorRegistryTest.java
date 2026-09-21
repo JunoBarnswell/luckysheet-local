@@ -690,7 +690,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("a4", current.path("printDocuments").get(0).path("pageSetup").path("paperSize").asText());
 
         OperationMutation load = new OperationMutation("query.load.range", "sheet-1", mapper.readTree("""
-                {"kind":"data-source-load","queryId":"query-1","queryDefinition":{"schema":"QueryDefinition","id":"query-1","name":"Block backed","connectorId":"json","connectorConfig":{"data":[]},"steps":[],"sourceRevision":0},"target":{"kind":"range","sheetId":"sheet-1"},"sourceId":"query:query-1","source":null,"binding":null}
+                {"kind":"data-source-load","queryId":"query-1","queryDefinition":{"schema":"QueryDefinition","id":"query-1","name":"Block backed","connectorId":"json","connectorConfig":{"data":[]},"steps":[{"id":"trim-1","kind":"trim-text","name":"Trim","config":{"columns":["Name"]},"enabled":true},{"id":"split-1","kind":"split-column","name":"Split","config":{"column":"Name","delimiter":",","outputColumns":["First","Last"]},"enabled":true},{"id":"dedupe-1","kind":"remove-duplicates","name":"Dedupe","config":{"columns":["First"]},"enabled":true}],"sourceRevision":0},"target":{"kind":"range","sheetId":"sheet-1"},"sourceId":"query:query-1","source":null,"binding":null}
                 """));
         current = registry.prepare(current, load, WorkbookAclRole.EDITOR).descriptor().apply(current, load);
         assertEquals("query-1", current.path("queryDefinitions").get(0).path("id").asText());
