@@ -258,6 +258,31 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.notEqual(snapshot.activeSheetId, sheetId);
   });
 
+  it('drillDownPivot grows the detail worksheet for more than the default row extent', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-drill-large';
+    if (pivot.source.kind !== 'worksheet-range') throw new Error('Expected a single worksheet Pivot source');
+    const sourceSheet = app['runtime'].model.getSheet(sheetId);
+    for (let row = 3; row <= 1_200; row += 1) {
+      sourceSheet.cells.set(row, 0, { value: 'East' });
+      sourceSheet.cells.set(row, 1, { value: row });
+    }
+    sourceSheet.rowCount = 2_000;
+    pivot.source = { ...pivot.source, range: { ...pivot.source.range, endRow: 1_200 } };
+    pivot.target = { ...pivot.target, anchor: { row: 1_300, column: 0 } };
+    const added = await app.addPivot(pivot);
+    if (added.status === 'rejected') throw new Error(added.error.message);
+    assert.equal(added.status, 'created');
+
+    app.drillDownPivot(pivot.id, 'Large', Array.from({ length: 1_200 }, (_, index) => ({ sheetId, row: index + 1 })));
+
+    const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    assert.equal(detailSheet.rowCount, 1_201);
+    assert.equal(detailSheet.columnCount, 26);
+    assert.equal(detailSheet.cells.get(1_200, 0)?.value, 'East');
+  });
+
   it('creates a slicer drawing and refreshes a derived result without persisted refresh state', async () => {
     const app = new WorkbookSession();
     const { pivot } = seed(app);

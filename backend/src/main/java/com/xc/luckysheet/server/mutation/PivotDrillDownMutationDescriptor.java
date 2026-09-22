@@ -50,7 +50,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         }
         DrillPlan plan = plan(root, mutation.sheetId(), params);
         if (sheetExists(root, plan.targetSheetId())) throw ServiceException.conflict("Pivot drill-down target already exists: " + plan.targetSheetId());
-        ObjectNode target = createSheet(plan.targetSheetId(), plan.sheetName());
+        ObjectNode target = createSheet(plan.targetSheetId(), plan.sheetName(), plan.rowCount(), plan.columnCount());
         writePlan(root, target, plan);
         SnapshotMutationSupport.sheets(root).add(target);
         return root;
@@ -85,12 +85,16 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         }
         int rowsPerResult = Math.max(sourceRanges.size(), 1);
         int detailRows = (int) Math.ceil(sourcePaths.size() / (double) rowsPerResult);
-        if (anchor.row() + detailRows >= 1_000 || anchor.column() + columns.size() - 1 >= 26) {
+        long targetRowCount = (long) anchor.row() + detailRows + 1L;
+        long targetColumnCount = (long) anchor.column() + columns.size();
+        if (targetRowCount > (long) SnapshotMutationSupport.MAX_ROW + 1L
+                || targetColumnCount > (long) SnapshotMutationSupport.MAX_COLUMN + 1L) {
             throw ServiceException.validation("Pivot drill-down target exceeds the new worksheet bounds");
         }
         RangeRef targetRange = new RangeRef(targetSheetId, anchor.row(), anchor.row() + detailRows, anchor.column(), anchor.column() + columns.size() - 1);
         String sheetName = ("Drill " + pivotId + " " + label).substring(0, Math.min(31, ("Drill " + pivotId + " " + label).length()));
-        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, sourcePaths, targetRange, rowsPerResult);
+        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, sourcePaths, targetRange, rowsPerResult,
+                Math.max(1_000, Math.toIntExact(targetRowCount)), Math.max(26, Math.toIntExact(targetColumnCount)));
     }
 
     private String targetSheetId(ObjectNode params) {
@@ -171,12 +175,12 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         return false;
     }
 
-    private ObjectNode createSheet(String id, String name) {
+    private ObjectNode createSheet(String id, String name, int rowCount, int columnCount) {
         ObjectNode sheet = JsonNodeFactory.instance.objectNode();
         sheet.put("id", id);
         sheet.put("name", name);
-        sheet.put("rowCount", 1_000);
-        sheet.put("columnCount", 26);
+        sheet.put("rowCount", rowCount);
+        sheet.put("columnCount", columnCount);
         sheet.set("cells", JsonNodeFactory.instance.objectNode());
         sheet.set("merges", JsonNodeFactory.instance.arrayNode());
         sheet.putObject("pane").put("kind", "none");
@@ -242,7 +246,9 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
             List<DrillColumn> columns,
             List<SourcePath> paths,
             RangeRef targetRange,
-            int rowsPerResult
+            int rowsPerResult,
+            int rowCount,
+            int columnCount
     ) {
     }
 }
