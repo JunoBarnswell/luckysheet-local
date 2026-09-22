@@ -16,6 +16,15 @@ import {
   DataSourceContentQuery,
   type DataBlockReader,
 } from './content-query';
+import {
+  applyDataRegionMaterialization,
+  migrateDataRegionCellPatches,
+  prepareDataRegionMaterialization,
+  resolveCell,
+  restoreDataRegionMaterialization,
+  writeCellPatch,
+} from './resolved-cell';
+import { WorkbookModel } from '@react-sheets/core-model';
 
 const fields: ColumnarBlockField[] = [
   { id: 'code', name: 'Code', ordinal: 0, type: 'text' },
@@ -99,6 +108,101 @@ test('content query reads blocks, publishes loading/ready, and applies block-loc
   assert.deepEqual(events, [`${block.ref.id}:loading`, `${block.ref.id}:ready`]);
   unsubscribe();
 });
+
+test('distinct field values stay unloaded until requested and fail closed at the member limit', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'members-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'members-2', 2, [['A', 30], [null, 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  let reads = 0;
+  const reader: DataBlockReader = {
+    get: async (ref) => {
+      reads += 1;
+      return store.get(ref);
+    },
+  };
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+
+  assert.equal(reads, 0);
+  const members = await query.getDistinctFieldValues('code');
+  assert.deepEqual(members.value, ['A', 'B', null]);
+  assert.equal(members.state.availability, 'ready');
+  assert.equal(reads, 2);
+
+  const limited = await query.getDistinctFieldValues('code', 2);
+  assert.equal(limited.value, undefined);
+  assert.equal(limited.state.availability, 'error');
+  assert.match(limited.state.error ?? '', /exceeds the 2 distinct-value limit/i);
+
+  const invalidLimit = await query.getDistinctFieldValues('amount', 0);
+  assert.equal(invalidLimit.value, undefined);
+  assert.equal(invalidLimit.state.availability, 'error');
+  assert.match(invalidLimit.state.error ?? '', /positive safe integer/i);
+});
+
+test('ensures every block is readable without returning a copied full-range matrix', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'ensure-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'ensure-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  let reads = 0;
+  const reader: DataBlockReader = {
+    get: async (ref) => {
+      reads += 1;
+      return store.get(ref);
+    },
+  };
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+
+  const loaded = await query.ensureAllBlocksLoaded();
+  assert.equal(loaded.availability, 'ready');
+  assert.equal(reads, 2);
+  assert.deepEqual((await query.getCellValue(3, 'code')).value, 'D');
+  assert.equal(reads, 2);
+});
+
+test('returns cached block row views without copying the decoded row arrays', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'view-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'view-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), store);
+
+  const firstView = await query.getAllBlockRows();
+  const secondView = await query.getAllBlockRows();
+  assert.equal(firstView.state.availability, 'ready');
+  assert.equal(firstView.value?.length, 2);
+  assert.strictEqual(firstView.value?.[0]?.rows, secondView.value?.[0]?.rows);
+  assert.deepEqual(firstView.value?.[1]?.rows[1], ['D', 40]);
+  const copied = await query.getRows(0, 1);
+  assert.notStrictEqual(copied.value?.[0], firstView.value?.[0]?.rows[0]);
+});
+
+test('maps logical rows through a virtual sort order without changing block storage', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const first = await buildBlock(sourceId, 'order-1', 0, [['A', 10], ['B', 20]]);
+  const second = await buildBlock(sourceId, 'order-2', 2, [['C', 30], ['D', 40]]);
+  await store.put(first.ref, first.bytes);
+  await store.put(second.ref, second.bytes);
+  const query = new DataSourceContentQuery({
+    ...manifest(sourceId, 4, [first.ref, second.ref]),
+    rowOrder: [3, 0, 2, 1],
+  }, store);
+
+  assert.deepEqual((await query.getRows(0, 4)).value, [['D', 40], ['A', 10], ['C', 30], ['B', 20]]);
+  assert.equal((await query.getCellValue(0, 'code')).value, 'D');
+  assert.equal((await query.getCellValue(3, 'amount')).value, 20);
+  assert.equal((await query.getLoadState(first.ref.id))?.availability, 'ready');
+  assert.equal((await query.getLoadState(second.ref.id))?.availability, 'ready');
+});
+
 test('concurrent requests share one block read and cross block reads preserve row order', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
@@ -178,3 +282,113 @@ test('invalid ranges and fields are errors, while empty ranges are ready and emp
   assert.deepEqual(empty.value, []);
 });
 
+test('one-time overlay migration preserves block values before canonical resolution', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const block = await buildBlock(sourceId, 'resolved-block', 0, [['A', 10], ['B', 20]]);
+  await store.put(block.ref, block.bytes);
+  const query = new DataSourceContentQuery(manifest(sourceId, 2, [block.ref]), store);
+  const workbook = new WorkbookModel('resolved-cell', 'Resolved Cell');
+  workbook.addDataSource(query.manifest);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.rowCount = 4;
+  sheet.columnCount = 2;
+  sheet.addDataRegion({
+    id: 'resolved-region',
+    sourceId,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    headerRow: 0,
+    revision: 0,
+  });
+
+  // This is the legacy shape produced by the large-data import path.  Its
+  // value is stale by design; migrate it once before entering the resolver.
+  sheet.cells.set(1, 1, { value: 999, style: { bold: true } });
+  assert.throws(
+    () => resolveCell(sheet, 1, 1, new Map([[sourceId, query]])),
+    /non-canonical cell overlay/,
+  );
+  assert.equal(migrateDataRegionCellPatches(sheet), 1);
+  assert.equal(migrateDataRegionCellPatches(sheet), 0);
+  await query.getRowValues(0);
+  const loaded = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
+  assert.equal(loaded?.source, 'data-block-overlay');
+  assert.equal(loaded?.base?.value, 10);
+  assert.equal(loaded?.cell?.value, 10);
+  assert.equal(loaded?.cell?.style?.bold, true);
+
+  writeCellPatch(sheet, 1, 1, {
+    schema: 'CellPatch',
+    value: { kind: 'inherit' },
+    style: { kind: 'set', value: { italic: true } },
+  });
+  const styled = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
+  assert.equal(styled?.cell?.value, 10);
+  assert.deepEqual(styled?.cell?.style, { italic: true });
+
+  writeCellPatch(sheet, 1, 1, {
+    schema: 'CellPatch',
+    value: { kind: 'set', value: 42 },
+  });
+  const changed = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
+  assert.equal(changed?.cell?.value, 42);
+  assert.equal(changed?.cell?.style?.italic, true);
+
+  writeCellPatch(sheet, 1, 1, {
+    schema: 'CellPatch',
+    style: { kind: 'clear' },
+  });
+  const cleared = resolveCell(sheet, 1, 1, new Map([[sourceId, query]]));
+  assert.equal(cleared?.cell?.value, 42);
+  assert.equal(cleared?.cell?.style, undefined);
+
+  const restored = WorkbookModel.fromSnapshot(workbook.snapshot());
+  const restoredCell = resolveCell(restored.getSheet(sheet.id), 1, 1, new Map([[sourceId, query]]));
+  assert.equal(restoredCell?.cell?.value, 42);
+  assert.equal(restoredCell?.cell?.style, undefined);
+
+  const prepared = await prepareDataRegionMaterialization(workbook, sheet.id, 'resolved-region', new Map([[sourceId, query]]));
+  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
+  assert.equal(workbook.dataModel.sources.has(sourceId), true);
+  const transaction = applyDataRegionMaterialization(workbook, prepared);
+  assert.equal(transaction.sourceRemoved, true);
+  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 0);
+  assert.equal(workbook.dataModel.sources.has(sourceId), false);
+  assert.equal(workbook.getSheet(sheet.id).cells.get(1, 1)?.value, 42);
+  restoreDataRegionMaterialization(workbook, transaction);
+  assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
+  assert.equal(workbook.dataModel.sources.has(sourceId), true);
+  const restoredTransactionCell = resolveCell(workbook.getSheet(sheet.id), 1, 1, new Map([[sourceId, query]]));
+  assert.equal(restoredTransactionCell?.cell?.value, 42);
+});
+
+test('resolved cells expose loading and missing states without replacing a block with an empty cell', async () => {
+  const sourceId = nextSourceId();
+  const block = await buildBlock(sourceId, 'unloaded-block', 0, [['A', 10]]);
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), store);
+  const workbook = new WorkbookModel('resolved-unloaded', 'Resolved Unloaded');
+  const sheet = workbook.getSheet('sheet-1');
+  workbook.addDataSource(query.manifest);
+  sheet.addDataRegion({
+    id: 'unloaded-region',
+    sourceId,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    headerRow: 0,
+    revision: 0,
+  });
+
+  const loading = resolveCell(sheet, 1, 0, new Map([[sourceId, query]]));
+  assert.equal(loading?.state?.availability, 'loading');
+  assert.equal(loading?.cell?.value, 'Loading…');
+  const missing = await query.getCellValue(0, 0);
+  assert.equal(missing.state.availability, 'missing');
+  const afterFailure = resolveCell(sheet, 1, 0, new Map([[sourceId, query]]));
+  assert.equal(afterFailure?.state?.availability, 'missing');
+  assert.equal(afterFailure?.cell?.value, '#BLOCK!');
+  await assert.rejects(
+    prepareDataRegionMaterialization(workbook, sheet.id, 'unloaded-region', new Map([[sourceId, query]])),
+    /could not be fully loaded|missing from local storage/i,
+  );
+  assert.equal(sheet.dataRegions.length, 1);
+});

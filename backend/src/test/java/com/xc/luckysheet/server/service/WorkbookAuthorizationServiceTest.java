@@ -3,6 +3,7 @@ package com.xc.luckysheet.server.service;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSource;
+import com.xc.luckysheet.server.contract.WorkbookStorageLocation;
 import com.xc.luckysheet.server.persistence.SpaceMemberEntity;
 import com.xc.luckysheet.server.persistence.SpaceMemberEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookAclEntity;
@@ -27,8 +28,8 @@ class WorkbookAuthorizationServiceTest {
         SpaceMemberEntityRepository members = mock(SpaceMemberEntityRepository.class);
         WorkbookAuthorizationService service = new WorkbookAuthorizationService(workbooks, acl, members);
         Instant now = Instant.now();
-        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", 0,
-                now, now, "owner", "space-1", null, WorkbookSource.NATIVE,
+        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
+                now, now, "owner", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
                 WorkbookLifecycle.ACTIVE, null)));
         when(acl.findForSubject("book-1", "member")).thenReturn(Optional.of(
                 new WorkbookAclEntity("book-1", "member", WorkbookAclRole.VIEWER, now, now)));

@@ -33,6 +33,7 @@ server:
 
 luckysheet:
   auth:
+    mode: oidc
     issuer: ${AUTH_ISSUER}
     audience: ${AUTH_AUDIENCE}
     jwks-url: ${AUTH_JWKS_URL}
@@ -50,9 +51,10 @@ luckysheet:
     presence-ttl: ${COORDINATION_PRESENCE_TTL:PT45S}
   query:
     enabled: ${QUERY_EXECUTION_ENABLED:true}
-    max-rows: ${QUERY_MAX_ROWS:10000}
+    max-rows: ${QUERY_MAX_ROWS:100000}
     max-columns: ${QUERY_MAX_COLUMNS:500}
     max-response-bytes: ${QUERY_MAX_RESPONSE_BYTES:5000000}
+    block-row-count: ${QUERY_BLOCK_ROW_COUNT:2048}
     timeout: ${QUERY_TIMEOUT:PT10S}
     worker-threads: ${QUERY_WORKER_THREADS:4}
     sources: {}

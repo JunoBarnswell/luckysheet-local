@@ -1,4 +1,4 @@
-import React, { lazy, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Box,
   Button,
@@ -9,7 +9,6 @@ import {
   PanelBody,
   PanelHeader,
   PanelTitle,
-  Select,
   Stack,
   StatePanel,
   TabList,
@@ -36,46 +35,47 @@ import type {
   ReportSheetDefinition,
   SheetTableModel,
   RangeRef,
+  AnalysisViewDefinition,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
-import type { ConnectorManifest, PrintLayout, QueryDefinition } from '@react-sheets/spreadsheet-app';
+import type { PrintLayout } from '@react-sheets/spreadsheet-app';
+import type { QueryDefinition, QueryPreview } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
-import type { DrawingSelectionMode } from './home/SelectionPane';
-import type {
-  FormulaAuditPanelCallbacks,
-  FormulaAuditPanelProps,
-  FormulaAuditSectionStates,
+import { ChartPanel } from './panels/ChartPanel';
+import { BarcodePanel } from './panels/BarcodePanel';
+import { PivotPanel } from './panels/PivotPanel';
+import { SlicerEditorPanel } from './panels/SlicerEditorPanel';
+import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
+import { TextBoxEditorPanel } from './panels/TextBoxEditorPanel';
+import { FormControlPanel } from './panels/FormControlPanel';
+import { PicturePanel } from './panels/PicturePanel';
+import { SparklinePanel } from './panels/SparklinePanel';
+import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
+import { DataValidationPanel } from './panels/DataValidationPanel';
+import { PrintPanel } from './panels/PrintPanel';
+import { QueryPanel } from './panels/QueryPanel';
+import { ExtendedPanel } from './panels/ExtendedPanel';
+import { HistoryPanel } from './panels/HistoryPanel';
+import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
+import { DataSourcePanel } from './panels/DataSourcePanel';
+import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
+import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
+import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
+import { TableDesignPanel } from './panels/TableDesignPanel';
+import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
+import { QuickAnalysisPanel } from './panels/QuickAnalysisPanel';
+import { AnalysisViewPanel } from './panels/AnalysisViewPanel';
+import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
+import {
+  FormulaAuditPanel,
+  type FormulaAuditPanelCallbacks,
+  type FormulaAuditPanelProps,
+  type FormulaAuditSectionStates,
 } from './panels/FormulaAuditPanel';
-
-const ChartPanel = lazy(() => import('./panels/ChartPanel').then((module) => ({ default: module.ChartPanel })));
-const BarcodePanel = lazy(() => import('./panels/BarcodePanel').then((module) => ({ default: module.BarcodePanel })));
-const PivotPanel = lazy(() => import('./panels/PivotPanel').then((module) => ({ default: module.PivotPanel })));
-const SlicerEditorPanel = lazy(() => import('./panels/SlicerEditorPanel').then((module) => ({ default: module.SlicerEditorPanel })));
-const ShapeEditorPanel = lazy(() => import('./panels/ShapeEditorPanel').then((module) => ({ default: module.ShapeEditorPanel })));
-const TextBoxEditorPanel = lazy(() => import('./panels/TextBoxEditorPanel').then((module) => ({ default: module.TextBoxEditorPanel })));
-const FormControlPanel = lazy(() => import('./panels/FormControlPanel').then((module) => ({ default: module.FormControlPanel })));
-const PicturePanel = lazy(() => import('./panels/PicturePanel').then((module) => ({ default: module.PicturePanel })));
-const SparklinePanel = lazy(() => import('./panels/SparklinePanel').then((module) => ({ default: module.SparklinePanel })));
-const ConditionalFormatPanel = lazy(() => import('./panels/ConditionalFormatPanel').then((module) => ({ default: module.ConditionalFormatPanel })));
-const DataValidationPanel = lazy(() => import('./panels/DataValidationPanel').then((module) => ({ default: module.DataValidationPanel })));
-const PrintPanel = lazy(() => import('./panels/PrintPanel').then((module) => ({ default: module.PrintPanel })));
-const QueryPanel = lazy(() => import('./panels/QueryPanel').then((module) => ({ default: module.QueryPanel })));
-const ExtendedPanel = lazy(() => import('./panels/ExtendedPanel').then((module) => ({ default: module.ExtendedPanel })));
-const HistoryPanel = lazy(() => import('./panels/HistoryPanel').then((module) => ({ default: module.HistoryPanel })));
-const CompatibilityReportPanel = lazy(() => import('./panels/CompatibilityReportPanel').then((module) => ({ default: module.CompatibilityReportPanel })));
-const DataSourcePanel = lazy(() => import('./panels/DataSourcePanel').then((module) => ({ default: module.DataSourcePanel })));
-const TableSheetDesignerPanel = lazy(() => import('./panels/TableSheetDesignerPanel').then((module) => ({ default: module.TableSheetDesignerPanel })));
-const GanttDesignerPanel = lazy(() => import('./panels/GanttDesignerPanel').then((module) => ({ default: module.GanttDesignerPanel })));
-const ReportDesignerPanel = lazy(() => import('./panels/ReportDesignerPanel').then((module) => ({ default: module.ReportDesignerPanel })));
-const TableDesignPanel = lazy(() => import('./panels/TableDesignPanel').then((module) => ({ default: module.TableDesignPanel })));
-const DefinedNamesPanel = lazy(() => import('./panels/DefinedNamesPanel').then((module) => ({ default: module.DefinedNamesPanel })));
-const QuickAnalysisPanel = lazy(() => import('./panels/QuickAnalysisPanel').then((module) => ({ default: module.QuickAnalysisPanel })));
-const SelectionPane = lazy(() => import('./home/SelectionPane').then((module) => ({ default: module.SelectionPane })));
-const FormulaAuditPanel = lazy(() => import('./panels/FormulaAuditPanel').then((module) => ({ default: module.FormulaAuditPanel })));
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface FeatureSidebarProps {
@@ -107,6 +107,11 @@ export interface FeatureSidebarProps {
   pivotTimelineControls?: readonly PivotTimelineControl[];
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
+  analysisViews: readonly AnalysisViewDefinition[];
+  analysisSourceSheets?: readonly CanvasSheetSnapshot[];
+  analysisChartIds?: readonly string[];
+  onSetAnalysisView: (view: AnalysisViewDefinition) => void;
+  onRemoveAnalysisView: (viewId: string) => void;
   formulaAudit?: FormulaAuditPanelProps['projection'];
   formulaAuditState?: FormulaAuditPanelProps['state'];
   formulaAuditError?: string;
@@ -155,17 +160,16 @@ export interface FeatureSidebarProps {
   onReorderConditionalFormats?: (ruleIds: readonly string[]) => void;
   onAddDataValidation: (rule: DataValidationRule) => void;
   onRemoveDataValidation: (id: string) => void;
-  onPrint: (layout: PrintLayout, scope: import('./panels/PrintPanel').PrintScope) => void;
-  onExportPdf: (layout: PrintLayout, scope: import('./panels/PrintPanel').PrintScope) => Promise<void>;
-  printLayout: PrintLayout;
+  onPrint: (layout: PrintLayout) => void;
+  onExportPdf: (layout: PrintLayout) => void;
   printPageCount?: number;
-  queryConnectors?: readonly ConnectorManifest[];
+  queryConnectors?: readonly string[];
   loadedQueries?: readonly { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string }[];
   lastQueryResult?: { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string } | null;
   canQuery: boolean;
   onLoadQuery: (query: QueryDefinition) => Promise<void>;
+  onPreviewQuery: (query: QueryDefinition) => Promise<QueryPreview>;
   onRefreshQuery: (queryId: string) => Promise<void>;
-  onCancelQuery: (queryId: string) => Promise<void>;
   onTestQueryConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
@@ -176,17 +180,18 @@ export interface FeatureSidebarProps {
     changingValue: number;
     resultCell: { row: number; column: number };
   }) => void;
-  onSaveComment: (text: string, threadId?: string) => void;
-  onReplyComment: (text: string, threadId?: string) => void;
-  onResolveComment: (threadId?: string) => void;
-  onRemoveComment: (threadId?: string) => void;
-  onSaveNote: (text: string) => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
   onRemoveNote: () => void;
 }
 
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
+  { id: 'analysis', label: 'Analysis', icon: 'chart' },
   { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'slicer', label: 'Slicer', icon: 'sliders' },
@@ -222,22 +227,22 @@ function InspectorPanel({
   sheet,
   compatibilityReport,
   onClearCompatibilityReport,
-  onSaveComment,
+  onAddComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onSaveNote,
+  onAddNote,
   onRemoveNote,
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
-  onSaveComment: (text: string, threadId?: string) => void;
-  onReplyComment: (text: string, threadId?: string) => void;
-  onResolveComment: (threadId?: string) => void;
-  onRemoveComment: (threadId?: string) => void;
-  onSaveNote: (text: string) => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
   onRemoveNote: () => void;
 }) {
   const selectedAddress = parseAddress(activeCell);
@@ -270,13 +275,14 @@ function InspectorPanel({
       </Panel>
 
       <CommentHyperlinkForms
-        comments={selectedCell?.comments ?? []}
+        comment={selectedCell?.comment}
+        commentText={selectedCell?.commentText ?? ''}
         note={selectedCell?.note}
-        onSaveComment={onSaveComment}
+        onAddComment={onAddComment}
         onReplyComment={onReplyComment}
         onResolveComment={onResolveComment}
         onRemoveComment={onRemoveComment}
-        onSaveNote={onSaveNote}
+        onAddNote={onAddNote}
         onRemoveNote={onRemoveNote}
       />
 
@@ -328,6 +334,11 @@ export function FeatureSidebar({
   pivotTimelineControls,
   pivotPanelState,
   pivotCallbacks,
+  analysisViews,
+  analysisSourceSheets = [],
+  analysisChartIds = [],
+  onSetAnalysisView,
+  onRemoveAnalysisView,
   formulaAudit,
   formulaAuditState,
   formulaAuditError,
@@ -378,25 +389,24 @@ export function FeatureSidebar({
   onRemoveDataValidation,
   onPrint,
   onExportPdf,
-  printLayout,
   printPageCount = 0,
   queryConnectors = [],
   loadedQueries = [],
   lastQueryResult = null,
   canQuery,
   onLoadQuery,
+  onPreviewQuery,
   onRefreshQuery,
-  onCancelQuery,
   onTestQueryConnection,
   lastWhatIfMessage = null,
   canRunExtended,
   onGoalSeek,
   onRunScenario,
-  onSaveComment,
+  onAddComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onSaveNote,
+  onAddNote,
   onRemoveNote,
 }: FeatureSidebarProps) {
   const tableResizeRange = activeTable && selectedRange
@@ -437,6 +447,21 @@ export function FeatureSidebar({
         <PivotPanel locale={locale} pivot={pivot} pivotList={pivotList} activePivotId={activePivotId} fieldCatalog={pivotFieldCatalog} slicerControls={pivotSlicerControls} timelineControls={pivotTimelineControls} state={pivotPanelState} callbacks={pivotCallbacks} onClose={onClosePanel} />
       </Box>
     );
+  }
+
+  if (activePanel === 'analysis' && phase === 'ready') {
+    return <AnalysisViewPanel views={analysisViews} tables={tables} sourceSheets={analysisSourceSheets} chartIds={analysisChartIds} onSetView={onSetAnalysisView} onRemoveView={onRemoveAnalysisView} onClose={onClosePanel} />;
+  }
+
+  if (activePanel === 'chart' && phase === 'ready') {
+    return <Box as="aside" aria-label="Feature sidebar" className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ChartPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads}
+        selectedDrawingIds={selectedDrawingIds} selectedChartElement={selectedChartElement}
+        defaultRange={selectionText} readCellValue={(sourceSheetId, row, column) => {
+          if (sourceSheetId !== sheet.id) throw new Error('UNSUPPORTED_FEATURE: 当前图表数据源不在活动工作表');
+          return sheet.getCell(row, column)?.rawValue ?? null;
+        }} onInsertChart={onInsertChart} onCommand={onCommand} onClose={onClosePanel} />
+    </Box>;
   }
 
   return (
@@ -502,28 +527,16 @@ export function FeatureSidebar({
             sheet={sheet}
             compatibilityReport={compatibilityReport}
             onClearCompatibilityReport={onClearCompatibilityReport}
-            onSaveComment={onSaveComment}
+            onAddComment={onAddComment}
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}
             onRemoveComment={onRemoveComment}
-            onSaveNote={onSaveNote}
+            onAddNote={onAddNote}
             onRemoveNote={onRemoveNote}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'slicer' ? (
           <SlicerEditorPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads} selectedDrawingIds={selectedDrawingIds} onCommand={onCommand} />
-        ) : null}
-        {phase === 'ready' && activePanel === 'chart' ? (
-          <ChartPanel
-            sheetId={sheetId}
-            drawings={drawings}
-            drawingPayloads={drawingPayloads}
-            selectedDrawingIds={selectedDrawingIds}
-            selectedChartElement={selectedChartElement}
-            defaultRange={selectionText}
-            onInsertChart={onInsertChart}
-            onCommand={onCommand}
-          />
         ) : null}
         {phase === 'ready' && activePanel === 'barcode' ? (
           <BarcodePanel
@@ -648,14 +661,13 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'dataValidation' ? (
           <DataValidationPanel
             sheetId={sheetId}
-            range={selectedRange ? { sheetId, ...selectedRange } : undefined}
             rules={dataValidations}
             onAddRule={onAddDataValidation}
             onRemoveRule={onRemoveDataValidation}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'print' ? (
-          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} initialLayout={printLayout} />
+          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} />
         ) : null}
         {phase === 'ready' && activePanel === 'extended' ? (
           <ExtendedPanel
@@ -672,8 +684,8 @@ export function FeatureSidebar({
             lastResult={lastQueryResult}
             canQuery={canQuery}
             onLoadQuery={onLoadQuery}
+            onPreviewQuery={onPreviewQuery}
             onRefreshQuery={onRefreshQuery}
-            onCancelQuery={onCancelQuery}
             onTestConnection={onTestQueryConnection}
           />
         ) : null}
@@ -710,38 +722,33 @@ export function FeatureSidebar({
 
 
 function CommentHyperlinkForms({
-  comments,
+  comment,
+  commentText: initialCommentText,
   note,
-  onSaveComment,
+  onAddComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
-  onSaveNote,
+  onAddNote,
   onRemoveNote,
 }: {
-  comments: CellComment[];
+  comment?: CellComment;
+  commentText: string;
   note?: import('@react-sheets/core-model').CellNote;
-  onSaveComment: (text: string, threadId?: string) => void;
-  onReplyComment: (text: string, threadId?: string) => void;
-  onResolveComment: (threadId?: string) => void;
-  onRemoveComment: (threadId?: string) => void;
-  onSaveNote: (text: string) => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
   onRemoveNote: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
   const [noteText, setNoteText] = useState('');
   const [replyText, setReplyText] = useState('');
-  const [reviewError, setReviewError] = useState<string | null>(null);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(comments[0]?.id ?? null);
-  const comment = comments.find((entry) => entry.id === selectedThreadId);
 
-  useEffect(() => {
-    setSelectedThreadId((current) => comments.some((entry) => entry.id === current) ? current : (comments[0]?.id ?? null));
-  }, [comments]);
-  useEffect(() => setCommentText(comment?.text ?? ''), [comment?.id, comment?.text]);
+  useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
   useEffect(() => setNoteText(note?.text ?? ''), [note?.id, note?.text]);
-  useEffect(() => setReplyText(''), [selectedThreadId]);
-  useEffect(() => setReviewError(null), [selectedThreadId, note?.id]);
+  useEffect(() => setReplyText(''), [comment?.id]);
 
   return (
     <Stack gap="md">
@@ -762,10 +769,7 @@ function CommentHyperlinkForms({
             />
             <Inline gap="sm" className="justify-end">
               {note ? (
-                <Button size="sm" variant="ghost" onClick={() => {
-                  try { onRemoveNote(); setNoteText(''); setReviewError(null); }
-                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Note removal failed'); }
-                }}>
+                <Button size="sm" variant="ghost" onClick={() => { onRemoveNote(); setNoteText(''); }}>
                   Remove
                 </Button>
               ) : null}
@@ -774,8 +778,7 @@ function CommentHyperlinkForms({
                 variant="primary"
                 onClick={() => {
                   if (!noteText.trim()) return;
-                  try { onSaveNote(noteText.trim()); setReviewError(null); }
-                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Note save failed'); }
+                  onAddNote(noteText.trim());
                 }}
               >
                 Save note
@@ -794,14 +797,6 @@ function CommentHyperlinkForms({
         </PanelHeader>
         <PanelBody>
           <Stack gap="sm">
-            {comments.length > 1 ? (
-              <Select
-                value={selectedThreadId ?? ''}
-                onChange={(event) => setSelectedThreadId(event.target.value)}
-                sizeVariant="sm"
-                options={comments.map((entry) => ({ value: entry.id, label: `${entry.author} · ${entry.text.slice(0, 32)}` }))}
-              />
-            ) : null}
             <Textarea
               rows={3}
               placeholder="Add a comment for the selected cell"
@@ -809,11 +804,7 @@ function CommentHyperlinkForms({
               onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setCommentText(event.target.value)}
             />
             <Inline gap="sm" className="justify-end">
-              <Button size="sm" variant="ghost" disabled={!comment} onClick={() => {
-                if (!comment) return;
-                try { onRemoveComment(comment.id); setReviewError(null); }
-                catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment removal failed'); }
-              }}>
+              <Button size="sm" variant="ghost" onClick={() => { onRemoveComment(); }}>
                 Clear
               </Button>
               <Button
@@ -821,11 +812,11 @@ function CommentHyperlinkForms({
                 variant="primary"
                 onClick={() => {
                   if (!commentText.trim()) return;
-                  try { onSaveComment(commentText.trim(), comment?.id); setReviewError(null); }
-                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment save failed'); }
+                  onAddComment(commentText.trim());
+                  setCommentText('');
                 }}
               >
-                {comment ? 'Update comment' : 'Add comment'}
+                Save comment
               </Button>
             </Inline>
           </Stack>
@@ -851,21 +842,13 @@ function CommentHyperlinkForms({
               ))}
               <Textarea rows={2} aria-label="Reply to comment" placeholder="Reply to this comment" value={replyText} onChange={(event) => setReplyText(event.target.value)} />
               <Inline gap="sm" className="justify-end">
-                <Button size="xs" variant="ghost" onClick={() => {
-                  try { onResolveComment(comment.id); setReviewError(null); }
-                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment state update failed'); }
-                }}>{comment.resolved ? 'Reopen' : 'Resolve'}</Button>
-                <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => {
-                  try { onReplyComment(replyText.trim(), comment.id); setReplyText(''); setReviewError(null); }
-                  catch (cause) { setReviewError(cause instanceof Error ? cause.message : 'Comment reply failed'); }
-                }}>Reply</Button>
+                <Button size="xs" variant="ghost" onClick={onResolveComment}>{comment.resolved ? 'Reopen' : 'Resolve'}</Button>
+                <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => { onReplyComment(replyText.trim()); setReplyText(''); }}>Reply</Button>
               </Inline>
             </Stack>
           </PanelBody>
         </Panel>
       ) : null}
-
-      {reviewError ? <Text size="xs" tone="danger">{reviewError}</Text> : null}
 
     </Stack>
   );

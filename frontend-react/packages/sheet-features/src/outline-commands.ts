@@ -57,6 +57,15 @@ function validateGroup(group: OutlineGroup, sheet: { rowCount: number; columnCou
   if (group.end >= limit) throw new Error('Outline group exceeds the worksheet boundary');
 }
 
+function validateOutline(outline: OutlineModel, sheet: { rowCount: number; columnCount: number }): void {
+  const ids = new Set<string>();
+  for (const group of outline.groups) {
+    validateGroup(group, sheet);
+    if (ids.has(group.id)) throw new Error(`Outline group already exists: ${group.id}`);
+    ids.add(group.id);
+  }
+}
+
 export interface OutlineGroupParams {
   sheetId: string;
   group: OutlineGroup;
@@ -71,10 +80,18 @@ export interface OutlineToggleParams {
 export function registerOutlineCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation({
     id: 'outline.set',
+    handler: (item, context) => {
+    if (!isOutlineMutation(item.params)) throw new Error('Invalid outline.set mutation payload');
+    const params = item.params;
+    const sheet = context.workbook.getSheet(params.sheetId);
+    validateOutline(params.outline, sheet);
+    sheet.outline = structuredClone(params.outline);
+    },
     metadata: {
       schema: { name: 'OutlineMutation', validate: isOutlineMutation },
       permission: { capability: 'sheet.outline.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: outlineAffectedRanges, mode: 'declared' },
+      inverseIds: ['outline.set'],
     },
   });
 
@@ -83,8 +100,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       validateGroup(params.group, sheet);
-      const current = outlineOf(sheet);
-      if (current.groups.some((group) => group.id === params.group.id)) throw new Error(`Outline group already exists: ${params.group.id}`);
+      const previous = structuredClone(outlineOf(sheet));
+      if (previous.groups.some((group) => group.id === params.group.id)) throw new Error(`Outline group already exists: ${params.group.id}`);
       const outline = structuredClone(outlineOf(sheet));
       outline.groups.push(structuredClone(params.group));
       const affectedRanges: RangeRef[] = [groupRange(params.group, sheet)];
@@ -94,6 +111,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
+        inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
+        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -103,8 +122,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     id: 'outline.group.remove',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const current = outlineOf(sheet);
-      const removed = current.groups.find((group) => group.id === params.groupId);
+      const previous = structuredClone(outlineOf(sheet));
+      const removed = previous.groups.find((group) => group.id === params.groupId);
       if (!removed) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const outline = structuredClone(outlineOf(sheet));
       outline.groups = outline.groups.filter((group) => group.id !== params.groupId);
@@ -115,6 +134,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
+        inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
+        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -124,6 +145,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     id: 'outline.group.toggle',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = structuredClone(outlineOf(sheet));
       const outline = structuredClone(outlineOf(sheet));
       const group = outline.groups.find((entry) => entry.id === params.groupId);
       if (!group) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
@@ -135,6 +157,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
+        inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
+        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -145,6 +169,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!Number.isInteger(params.level) || params.level < 1 || params.level > 3) throw new Error('Outline level must be 1, 2, or 3');
       const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = structuredClone(outlineOf(sheet));
       const outline = structuredClone(outlineOf(sheet));
       for (const group of outline.groups) {
         group.collapsed = group.level > params.level;
@@ -156,6 +181,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, outline },
         affectedRanges,
+        inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, outline: previous }, affectedRanges }],
+        apply: () => { sheet.outline = outline; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

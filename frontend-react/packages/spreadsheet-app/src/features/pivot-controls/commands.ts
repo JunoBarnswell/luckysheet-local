@@ -126,6 +126,26 @@ function validateCreatePair(sheet: WorksheetModel, params: PivotSlicerCreatePara
   }
 }
 
+function insertDrawing(sheet: WorksheetModel, params: DrawingAddParams): void {
+  if (sheet.drawings.some((entry) => entry.id === params.drawing.id)) {
+    throw new Error(`Drawing already exists: ${params.drawing.id}`);
+  }
+  if (sheet.drawingPayloads.has(params.drawing.payloadId)) {
+    throw new Error(`Drawing payload already exists: ${params.drawing.payloadId}`);
+  }
+  sheet.drawings.push(structuredClone(params.drawing));
+  sheet.drawingPayloads.set(params.drawing.payloadId, structuredClone(params.payload));
+}
+
+function updateDrawingPayload(sheet: WorksheetModel, params: DrawingPayloadUpdateParams): void {
+  const current = sheet.drawingPayloads.get(params.payloadId);
+  if (!current) throw new Error(`Missing drawing payload: ${params.payloadId}`);
+  if (JSON.stringify(current) !== JSON.stringify(params.before)) {
+    throw new Error(`Drawing payload changed before update: ${params.payloadId}`);
+  }
+  sheet.drawingPayloads.set(params.payloadId, structuredClone(params.after));
+}
+
 function executeCreate(
   params: PivotSlicerCreateParams | PivotTimelineCreateParams,
   context: CommandContext,
@@ -148,6 +168,14 @@ function executeCreate(
     sheetId: params.sheetId,
     params: mutationParams,
     affectedRanges,
+    inverse: [{
+      id: 'drawing.remove',
+      unitId: context.workbook.unitId,
+      sheetId: params.sheetId,
+      params: { sheetId: params.sheetId, drawingId: params.drawing.id },
+      affectedRanges,
+    }],
+    apply: () => insertDrawing(context.workbook.getSheet(params.sheetId), mutationParams),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -179,6 +207,19 @@ function executePayloadUpdate(
     sheetId,
     params: mutationParams,
     affectedRanges,
+    inverse: [{
+      id: 'drawing.payload.update',
+      unitId: context.workbook.unitId,
+      sheetId,
+      params: {
+        sheetId,
+        payloadId: record.drawing.payloadId,
+        before: after,
+        after: before,
+      },
+      affectedRanges,
+    }],
+    apply: () => updateDrawingPayload(context.workbook.getSheet(sheetId), mutationParams),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }

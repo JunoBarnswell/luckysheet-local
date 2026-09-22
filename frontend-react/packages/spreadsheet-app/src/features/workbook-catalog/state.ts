@@ -5,7 +5,9 @@ export const WORKBOOK_SYNC_STATE_PRIORITY: Readonly<Record<WorkbookSyncState, nu
   error: 0,
   conflict: 1,
   syncing: 2,
-  synced: 3,
+  pending: 3,
+  offline: 4,
+  synced: 5,
 };
 
 export function compareWorkbookSyncState(left: WorkbookSyncState, right: WorkbookSyncState): number {
@@ -36,6 +38,7 @@ export function filterWorkbookCatalog(
   const filtered = entries.filter((entry) => {
     if (query.view === 'trash' && entry.lifecycle !== 'trashed') return false;
     if (query.view !== 'trash' && entry.lifecycle === 'trashed') return false;
+    if (query.view === 'local' && entry.storage === 'remote') return false;
     if (query.view === 'owned' && entry.role !== 'owner') return false;
     if (query.view === 'shared' && !['commenter', 'editor', 'viewer'].includes(entry.role)) return false;
     if (query.spaceId && entry.spaceId !== query.spaceId) return false;
@@ -50,9 +53,14 @@ export function filterWorkbookCatalog(
 
 export function resolveWorkbookSyncState(input: {
   syncState?: WorkbookSyncState;
+  storage: 'local' | 'remote' | 'mirrored';
+  pendingOperationCount?: number;
+  syncMode?: 'remote' | 'local-only';
   remoteAvailable?: boolean;
 }): WorkbookSyncState {
   if (input.syncState) return input.syncState;
-  if (input.remoteAvailable === false) return 'error';
-  return 'synced';
+  if (input.pendingOperationCount && input.pendingOperationCount > 0) return 'pending';
+  if (input.syncMode === 'local-only' && input.storage !== 'local') return 'offline';
+  if (input.storage === 'local') return input.remoteAvailable === false ? 'offline' : 'synced';
+  return input.remoteAvailable === false ? 'offline' : 'synced';
 }

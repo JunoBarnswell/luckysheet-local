@@ -3,6 +3,7 @@ import type {
   ChartBoxWhiskerOptions,
   ChartDrawingPayload,
   ChartHistogramOptions,
+  ChartMapResource,
   ChartMapOptions,
   ChartSeriesModel,
   ChartSubtype,
@@ -106,6 +107,14 @@ export interface ChartWaterfallBarLayout {
   color: string;
 }
 
+export interface ChartMapFeatureLayout {
+  id: string;
+  label: string;
+  value: number | null;
+  color: string;
+  polygons: Array<Array<{ x: number; y: number }>>;
+}
+
 export interface ChartLayout {
   status: ChartDataStatus;
   width: number;
@@ -127,34 +136,8 @@ export interface ChartLayout {
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
   surfaceCells?: Array<{ row: number; column: number; value: number; color: string }>;
   radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; color: string }> };
-  map?: ChartMapOptions & { resolved: false; reason: string };
-}
-
-/** Revision-bound layout cache used by Canvas and print projections. */
-export class ChartLayoutCache {
-  private readonly entries = new Map<string, { key: string; layout: ChartLayout }>();
-
-  resolve(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number): ChartLayout {
-    const key = `${data.sourceRevision ?? 'unversioned'}:${width}:${height}:${stableLayoutValue(payload)}`;
-    const current = this.entries.get(payload.chartId);
-    if (current?.key === key) return structuredClone(current.layout);
-    const layout = buildChartLayout(payload, data, width, height);
-    if (layout.status.kind === 'ready') this.entries.set(payload.chartId, { key, layout: structuredClone(layout) });
-    else this.entries.delete(payload.chartId);
-    return layout;
-  }
-
-  invalidate(chartId?: string): void {
-    if (chartId === undefined) this.entries.clear();
-    else this.entries.delete(chartId);
-  }
-}
-
-function stableLayoutValue(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
-  if (Array.isArray(value)) return `[${value.map(stableLayoutValue).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableLayoutValue(record[key])}`).join(',')}}`;
+  map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
+  mapFeatures?: ChartMapFeatureLayout[];
 }
 
 const DEFAULT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
@@ -169,8 +152,8 @@ function defaultAxis(id: string, position: ChartAxisModel['position'], axisType:
 
 function axisBounds(model: ChartAxisModel, values: readonly number[], percent = false): ChartAxisLayout {
   const finite = values.filter(Number.isFinite);
-  const dataMinimum = finite.length ? Math.min(...finite) : 0;
-  const dataMaximum = finite.length ? Math.max(...finite) : 1;
+  const dataMinimum = finite.length ? finite.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
+  const dataMaximum = finite.length ? finite.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 1;
   let minimum = model.minimum ?? (percent ? 0 : Math.min(0, dataMinimum));
   let maximum = model.maximum ?? (percent ? 100 : dataMaximum);
   if (model.minimum === undefined && !percent && minimum === maximum) minimum -= 1;
@@ -225,14 +208,12 @@ function sizeValueAt(series: ResolvedChartSeries, index: number): number | null 
   return value === undefined ? null : value;
 }
 
-function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefined, value: number, values: readonly number[], index: number, plusValues?: readonly PivotScalar[], minusValues?: readonly PivotScalar[]): { plus: number; minus: number } {
+function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefined, value: number, statistics: { count: number; deviation: number }, index: number, plusValues?: readonly PivotScalar[], minusValues?: readonly PivotScalar[]): { plus: number; minus: number } {
   if (!model) return { plus: 0, minus: 0 };
   if (model.type === 'custom') return { plus: Math.abs(chartNumericValue(plusValues?.[index]) ?? model.plusValue ?? 0), minus: Math.abs(chartNumericValue(minusValues?.[index]) ?? model.minusValue ?? 0) };
   if (model.type === 'fixed') return { plus: Math.abs(model.value ?? 0), minus: Math.abs(model.value ?? 0) };
   if (model.type === 'percentage') { const amount = Math.abs(value) * Math.abs(model.value ?? 0) / 100; return { plus: amount, minus: amount }; }
-  const mean = values.length ? values.reduce((sum, current) => sum + current, 0) / values.length : 0;
-  const deviation = values.length > 1 ? Math.sqrt(values.reduce((sum, current) => sum + (current - mean) ** 2, 0) / (values.length - 1)) : 0;
-  const amount = model.type === 'standard-error' ? deviation / Math.sqrt(Math.max(1, values.length)) : deviation * Math.abs(model.value ?? 1);
+  const amount = model.type === 'standard-error' ? statistics.deviation / Math.sqrt(Math.max(1, statistics.count)) : statistics.deviation * Math.abs(model.value ?? 1);
   return { plus: amount, minus: amount };
 }
 
@@ -253,8 +234,8 @@ function linearRegression(points: Array<{ x: number; y: number }>): { slope: num
 
 function buildTrendline(model: ChartTrendlineModel, source: ChartLayoutPoint[], axis: ChartAxisLayout, plot: ChartLayout['plot']): ChartLayoutTrendline {
   const points = source.filter((point) => point.visible && point.value !== null).map((point) => ({ x: point.x, yValue: point.value! }));
-  const xMin = points.length ? Math.min(...points.map((point) => point.x)) : plot.left;
-  const xMax = points.length ? Math.max(...points.map((point) => point.x)) : plot.left + plot.width;
+  const xMin = points.length ? points.reduce((value, point) => Math.min(value, point.x), Infinity) : plot.left;
+  const xMax = points.length ? points.reduce((value, point) => Math.max(value, point.x), -Infinity) : plot.left + plot.width;
   const raw = points.map((point, index) => ({ x: index, y: point.yValue }));
   const regression = linearRegression(raw);
   const output: Array<{ x: number; y: number }> = [];
@@ -300,8 +281,8 @@ function standardDeviation(values: readonly number[]): number {
 
 function histogram(values: readonly number[], options: ChartHistogramOptions | undefined): ChartHistogramBinLayout[] {
   if (!values.length) return [];
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
+  const minimum = values.reduce((value, next) => Math.min(value, next), Infinity);
+  const maximum = values.reduce((value, next) => Math.max(value, next), -Infinity);
   const span = Math.max(Number.EPSILON, maximum - minimum);
   const deviation = standardDeviation(values);
   const scottWidth = deviation > 0 ? 3.5 * deviation / values.length ** (1 / 3) : span / Math.max(1, Math.ceil(Math.sqrt(values.length)));
@@ -360,6 +341,9 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
     const points: ChartLayoutPoint[] = [];
     const bars: ChartLayoutBar[] = [];
     const subtype = series.subtype ?? model?.subtype ?? payload.subtype;
+    const errorModel = model?.errorBars ?? series.errorBars;
+    const errorValues = errorModel && ['standard-error', 'standard-deviation'].includes(errorModel.type) ? numberValues(series.values) : [];
+    const errorStatistics = { count: errorValues.length, deviation: standardDeviation(errorValues) };
     for (let index = 0; index < Math.max(categoryCount, series.values.length); index += 1) {
       const value = valueAt(series, index);
       const xValue = isScatter ? xValueAt(series, index) : null;
@@ -368,7 +352,7 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
       const visible = hasValue && (series.missing?.[index] !== true);
       const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (index + 0.5) / categoryCount;
       const yRatio = value === null ? 0 : scale(value, axis);
-      const error = errorAmount(model?.errorBars ?? series.errorBars, value ?? 0, numberValues(series.values), index, series.errorPlusValues, series.errorMinusValues);
+      const error = errorAmount(errorModel, value ?? 0, errorStatistics, index, series.errorPlusValues, series.errorMinusValues);
       const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(series.sizeValues ? { sizeValue: sizeValueAt(series, index) } : {}), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
       points.push(point);
       if (chartType === 'column' || chartType === 'bar') {
@@ -458,6 +442,64 @@ function stockLayouts(data: ResolvedChartData): ChartLayout['stockPoints'] {
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
 }
 
+function mapColor(scaleName: ChartMapOptions['colorScale'], value: number | null, minimum: number, maximum: number, index: number): string {
+  if (value === null) return '#e2e8f0';
+  if (scaleName === 'category') return DEFAULT_COLORS[index % DEFAULT_COLORS.length]!;
+  const ratio = maximum === minimum ? 0.5 : Math.max(0, Math.min(1, (value - minimum) / (maximum - minimum)));
+  const from = scaleName === 'diverging' ? (ratio < 0.5 ? [37, 99, 235] : [255, 255, 255]) : [219, 234, 254];
+  const to = scaleName === 'diverging' ? (ratio < 0.5 ? [255, 255, 255] : [220, 38, 38]) : [29, 78, 216];
+  const local = scaleName === 'diverging' ? (ratio < 0.5 ? ratio * 2 : (ratio - 0.5) * 2) : ratio;
+  const channels = from.map((channel, channelIndex) => Math.round(channel + (to[channelIndex]! - channel) * local));
+  return `rgb(${channels[0]},${channels[1]},${channels[2]})`;
+}
+
+function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): { resource: ChartMapResource; features: ChartMapFeatureLayout[] } | ChartDataStatus {
+  const options: ChartMapOptions = payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' };
+  const resource = options.resource;
+  if (!resource || resource.features.length === 0) return statusError('unsupported', 'UNSUPPORTED_FEATURE', 'UNSUPPORTED_FEATURE: map requires a validated offline GeoJSON resource');
+  let minimumLongitude = Number.POSITIVE_INFINITY;
+  let maximumLongitude = Number.NEGATIVE_INFINITY;
+  let minimumLatitude = Number.POSITIVE_INFINITY;
+  let maximumLatitude = Number.NEGATIVE_INFINITY;
+  for (const feature of resource.features) {
+    for (const polygon of feature.polygons) {
+      for (const [longitude, latitude] of polygon) {
+        minimumLongitude = Math.min(minimumLongitude, longitude);
+        maximumLongitude = Math.max(maximumLongitude, longitude);
+        minimumLatitude = Math.min(minimumLatitude, latitude);
+        maximumLatitude = Math.max(maximumLatitude, latitude);
+      }
+    }
+  }
+  if (!Number.isFinite(minimumLongitude) || !Number.isFinite(maximumLongitude) || !Number.isFinite(minimumLatitude) || !Number.isFinite(maximumLatitude)) {
+    return statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: map resource has no drawable coordinates');
+  }
+  const longitudeSpan = Math.max(Number.EPSILON, maximumLongitude - minimumLongitude);
+  const latitudeSpan = Math.max(Number.EPSILON, maximumLatitude - minimumLatitude);
+  const firstSeries = data.series[0];
+  const categoryKeys = data.categories.map((category) => String(category ?? '').trim().toLowerCase());
+  const values = resource.features.map((feature) => {
+    const key = feature.id.trim().toLowerCase();
+    const label = feature.label.trim().toLowerCase();
+    const index = categoryKeys.findIndex((candidate) => candidate === key || candidate === label);
+    return index < 0 ? null : chartNumericValue(firstSeries?.values[index]);
+  });
+  const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  const minimum = finite.length ? Math.min(...finite) : 0;
+  const maximum = finite.length ? Math.max(...finite) : 1;
+  const features = resource.features.map((feature, index) => ({
+    id: feature.id,
+    label: feature.label,
+    value: values[index] ?? null,
+    color: mapColor(options.colorScale, values[index] ?? null, minimum, maximum, index),
+    polygons: feature.polygons.map((polygon) => polygon.map(([longitude, latitude]) => ({
+      x: plot.left + ((longitude - minimumLongitude) / longitudeSpan) * plot.width,
+      y: plot.top + ((maximumLatitude - latitude) / latitudeSpan) * plot.height,
+    }))),
+  }));
+  return { resource, features };
+}
+
 /** Build the only geometry contract consumed by Canvas and preview renderers. */
 export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number): ChartLayout {
   const kind = chartKind(payload);
@@ -474,6 +516,17 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   layout.valueAxis = valueAxis;
   layout.secondaryValueAxis = secondaryAxis;
   layout.series = createSeriesLayouts(payload, data, layout.plot, categoryAxis, valueAxis, secondaryAxis);
+  if (kind === 'map') {
+    const map = mapLayouts(payload, data, layout.plot);
+    if ('kind' in map) {
+      layout.status = map;
+      layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: false, reason: map.message ?? 'Map resource is unavailable' };
+    } else {
+      layout.mapFeatures = map.features;
+      layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: true, featureCount: map.features.length };
+    }
+    return layout;
+  }
   if (kind === 'pie') {
     layout.pieSlices = pieSlices(payload, data, layout.plot);
     return layout;
@@ -508,20 +561,15 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   }
   if (kind === 'surface') {
     const all = data.series.flatMap((series) => numberValues(series.values));
-    const min = Math.min(...all, 0);
-    const max = Math.max(...all, 1);
+    const min = all.reduce((value, next) => Math.min(value, next), 0);
+    const max = all.reduce((value, next) => Math.max(value, next), 1);
     const span = Math.max(Number.EPSILON, max - min);
     layout.surfaceCells = data.series.flatMap((series, row) => series.values.map(chartNumericValue).map((value, column) => ({ row, column, value: value ?? 0, color: `rgb(${Math.round(37 + 202 * ((value ?? min) - min) / span)},${Math.round(99 + 100 * (1 - ((value ?? min) - min) / span))},${Math.round(235 - 167 * ((value ?? min) - min) / span)})` })));
     return layout;
   }
   if (kind === 'radar') {
     const count = Math.max(3, data.categories.length, ...data.series.map((series) => series.values.length));
-    layout.radar = { count, maximum: Math.max(1, ...values.map(Math.abs)), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
-    return layout;
-  }
-  if (kind === 'map') {
-    layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: false, reason: 'UNSUPPORTED_FEATURE: geographic entity resolution has no authoritative geometry source' };
-    layout.status = statusError('unsupported', 'UNSUPPORTED_FEATURE', layout.map.reason);
+    layout.radar = { count, maximum: values.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
     return layout;
   }
   if (payload.chartType === 'scatter' || payload.chartType === 'bubble') {

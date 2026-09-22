@@ -1,5 +1,6 @@
 import type {
   DataBlockRef,
+  DataSourceField,
   DataSourceFieldType,
   DataSourceManifest,
   PivotSource,
@@ -9,21 +10,16 @@ import type {
   WorkbookModel,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
-import { DEFAULT_DATA_BLOCK_ROW_COUNT } from '@react-sheets/core-model';
+import { DEFAULT_DATA_BLOCK_ROW_COUNT, PIVOT_DAY_MS, pivotTimelineInstant } from '@react-sheets/core-model';
 import {
   COLUMNAR_BLOCK_ENCODING,
   computeColumnarBlockChecksum,
   encodeColumnarBlock,
   type ColumnarBlockField,
 } from '../data-source/codec';
+import { serializeQueryDefinition, type ConnectorRegistry, type QueryDefinitionPersistence, type QueryResult } from './index';
 import {
-  serializeQueryDefinition,
-  type AnalyticsExecutor,
-  type AnalyticsQueryContext,
-  type QueryDefinitionPersistence,
-  type QueryResult,
-} from './index';
-import {
+  QueryStepPipeline,
   validateQuerySteps,
   type LoadTarget,
   type QueryDefinition,
@@ -37,9 +33,16 @@ export interface QueryResultSnapshot {
   loadedAt: string;
   target: LoadTarget;
   sourceRevision: number;
-  executionToken?: string;
-  resultHash?: string;
   persistedDefinition?: QueryDefinitionPersistence;
+}
+
+/** Read-only result projection used before a query is loaded into a worksheet. */
+export interface QueryPreview {
+  queryId: string;
+  queryName: string;
+  columns: string[];
+  rowCount: number;
+  sampleRows: TableScalar[][];
 }
 
 export interface QuerySessionEntry {
@@ -80,81 +83,38 @@ export interface QueryLoadCommandPayload {
   extent?: QueryLoadExtent;
   /** Pivot-source loads switch the Pivot to the same block-backed source. */
   pivotSource?: PivotSource;
-  /** Proof binding returned by the authoritative query host. */
-  executionToken?: string;
-  resultHash?: string;
-  sourceRevision?: number;
 }
 
-export type QueryLoadMutationPayload = QueryLoadCommandPayload;
+export interface QueryLoadRestorePayload extends Omit<QueryLoadCommandPayload, 'source' | 'binding'> {
+  source: DataSourceManifest | null;
+  binding: QueryLoadBinding | null;
+}
+
+export type QueryLoadMutationPayload = QueryLoadCommandPayload | QueryLoadRestorePayload;
 
 export interface PreparedQueryLoad {
   payload: QueryLoadCommandPayload;
   blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }>;
 }
 
-/**
- * Execute a persisted query through the revision-pinned Rust analytics host.
- * This function intentionally does not inspect connector bytes or apply query
- * steps in TypeScript.  The returned rows are the host's bounded projection,
- * carrying proof that the exact source revision was used.
- */
-export async function executeCanonicalQueryDefinition(
-  analytics: AnalyticsExecutor,
+export async function executeQueryDefinition(
+  connectors: ConnectorRegistry,
   query: QueryDefinition,
-  context: AnalyticsQueryContext,
 ): Promise<QueryResult> {
   validateQueryDefinition(query);
-  if (!Number.isSafeInteger(context.revision) || context.revision < 0) {
-    throw new Error('ANALYTICS_REVISION_REQUIRED: query execution requires a non-negative workbook revision');
+  const serverOnlyConnectors = new Set(['rest', 'sqlite', 'jdbc']);
+  if (serverOnlyConnectors.has(query.connectorId)) throw new Error(`Connector ${query.connectorId} is server-only and cannot execute in the local workbook`);
+  const connector = connectors.get(query.connectorId);
+  if (connector.execution !== 'local') throw new Error(`Connector ${connector.id} is server-only and cannot execute in the local workbook`);
+  await connector.connect(query.connectorConfig);
+  try {
+    const raw = await connector.executeQuery(query.id);
+    validateQueryResult(raw);
+    const transformed = new QueryStepPipeline(query.steps).applySteps({ columns: raw.columns, rows: raw.rows });
+    return { columns: transformed.columns, rows: transformed.rows as QueryResult['rows'], rowCount: transformed.rows.length };
+  } finally {
+    await connector.disconnect();
   }
-  const raw = await analytics.execute({
-    unitId: context.unitId,
-    revision: context.revision,
-    request: {
-      kind: 'query',
-      revision: context.revision,
-      range: structuredClone(context.range),
-      definition: serializeQueryDefinition(query),
-    },
-  });
-  return normalizeCanonicalQueryResult(raw, context.revision);
-}
-
-function normalizeCanonicalQueryResult(raw: unknown, expectedRevision: number): QueryResult {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('ANALYTICS_RESPONSE_INVALID: query response must be an object');
-  const value = raw as Record<string, unknown>;
-  if (value.kind !== 'query') throw new Error(`ANALYTICS_RESPONSE_INVALID: expected query response, got ${String(value.kind)}`);
-  if (value.revision !== expectedRevision) throw new Error('ANALYTICS_REVISION_MISMATCH: query response revision does not match the pinned request');
-  if (!Array.isArray(value.columns) || value.columns.length === 0 || value.columns.some((column) => typeof column !== 'string' || !column.trim())) {
-    throw new Error('ANALYTICS_RESPONSE_INVALID: query response columns are missing');
-  }
-  if (!Array.isArray(value.rows) || !Number.isSafeInteger(value.total) || Number(value.total) < value.rows.length) {
-    throw new Error('ANALYTICS_RESPONSE_INVALID: query response rows are invalid');
-  }
-  const columns = value.columns as string[];
-  const rows: TableScalar[][] = [];
-  for (const entry of value.rows) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !Array.isArray((entry as Record<string, unknown>).values)) {
-      throw new Error('ANALYTICS_RESPONSE_INVALID: query row projection is invalid');
-    }
-    const row = (entry as { values: unknown[] }).values;
-    if (row.length !== columns.length) throw new Error('ANALYTICS_RESPONSE_INVALID: query row width does not match columns');
-    rows.push(row.map((cell) => {
-      if (cell === null || typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') return cell;
-      throw new Error('ANALYTICS_RESPONSE_INVALID: query row contains a non-scalar value');
-    }));
-  }
-  const executionToken = typeof value.executionToken === 'string' && value.executionToken.trim() ? value.executionToken : undefined;
-  const resultHash = typeof value.resultHash === 'string' && value.resultHash.trim() ? value.resultHash : undefined;
-  return {
-    columns: [...columns],
-    rows,
-    rowCount: rows.length,
-    ...(executionToken ? { executionToken } : {}),
-    ...(resultHash ? { resultHash } : {}),
-    sourceRevision: expectedRevision,
-  };
 }
 
 export function resolveLoadTarget(activeSheetId: string, selectionRange: RangeRef): LoadTarget {
@@ -179,9 +139,18 @@ export function buildQueryResultSnapshot(query: QueryDefinition, result: QueryRe
     loadedAt: new Date().toISOString(),
     target,
     sourceRevision: query.sourceRevision ?? 0,
-    ...(result.executionToken ? { executionToken: result.executionToken } : {}),
-    ...(result.resultHash ? { resultHash: result.resultHash } : {}),
     persistedDefinition: serializeQueryDefinition(query),
+  };
+}
+
+export function buildQueryPreview(query: QueryDefinition, result: QueryResult, sampleSize = 5): QueryPreview {
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) throw new Error('Query preview sample size must be a non-negative integer');
+  return {
+    queryId: query.id,
+    queryName: query.name,
+    columns: [...result.columns],
+    rowCount: result.rowCount,
+    sampleRows: result.rows.slice(0, sampleSize).map((row) => [...row]),
   };
 }
 
@@ -240,11 +209,32 @@ function sourceRangeForPivot(pivot: import('@react-sheets/core-model').PivotMode
 function inferDataSourceFieldType(values: readonly TableScalar[]): DataSourceFieldType {
   if (values.every((value) => value === null || typeof value === 'number')) return 'number';
   if (values.every((value) => value === null || typeof value === 'boolean')) return 'boolean';
+  const present = values.filter((value) => value !== null && value !== '');
+  const dateLike = present.length > 0 && present.every((value) => typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value)
+    && pivotTimelineInstant(value) !== undefined);
+  if (dateLike) return 'date';
   if (values.every((value) => value === null || typeof value === 'string')) return 'text';
   return 'mixed';
 }
 
-function sourceIdForQuery(queryId: string): string {
+function normalizeQueryRowsForDataSource(
+  rows: readonly (readonly TableScalar[])[],
+  fields: readonly DataSourceField[],
+): TableScalar[][] {
+  const excelEpoch = Date.UTC(1899, 11, 30);
+  return rows.map((row, rowIndex) => row.map((value, ordinal) => {
+    if (fields[ordinal]?.type !== 'date') return value;
+    if (value === null || value === '') return null;
+    if (typeof value === 'number') return value;
+    if (typeof value !== 'string') throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} cannot be encoded`);
+    const instant = pivotTimelineInstant(value);
+    if (instant === undefined) throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} is invalid`);
+    return (instant - excelEpoch) / PIVOT_DAY_MS;
+  }));
+}
+
+export function querySourceId(queryId: string): string {
   const id = queryId.trim();
   if (!id) throw new Error('Query id is required for block-backed loading');
   if (!/^[A-Za-z0-9._:-]{1,180}$/.test(id)) throw new Error(`Query id cannot be used as a data source identity: ${id}`);
@@ -255,22 +245,22 @@ function columnarField(sourceId: string, name: string, ordinal: number, type: Da
   return { id: `${sourceId}:field:${ordinal}`, name, ordinal, type };
 }
 
-function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, result: QueryResult): RangeRef {
+function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, columns: readonly string[], rowCount: number): RangeRef {
   if (target.kind === 'range') {
     if (!target.sheetId || !target.range) throw new Error('Range query target requires sheetId and range');
     if (![target.range.startRow, target.range.startColumn].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error('Range query target start is invalid');
-    const width = Math.max(result.columns.length, 1);
-    return { sheetId: target.sheetId, startRow: target.range.startRow, endRow: target.range.startRow + result.rows.length, startColumn: target.range.startColumn, endColumn: target.range.startColumn + width - 1 };
+    const width = Math.max(columns.length, 1);
+    return { sheetId: target.sheetId, startRow: target.range.startRow, endRow: target.range.startRow + rowCount, startColumn: target.range.startColumn, endColumn: target.range.startColumn + width - 1 };
   }
   if (target.kind === 'sheet-table') {
     if (!target.sheetId || !target.tableId) throw new Error('Sheet-table query target requires sheetId and tableId');
     const table = workbook.getSheet(target.sheetId).sheetTables.find((entry) => entry.id === target.tableId);
     if (!table) throw new Error(`Unknown sheet table: ${target.tableId}`);
     if (!table.hasHeaderRow) throw new Error(`Sheet table ${table.name} has no header row for a canonical data region`);
-    if (result.columns.length > table.columns.length) throw new Error(`Query result has too many columns for table ${table.name}`);
+    if (columns.length > table.columns.length) throw new Error(`Query result has too many columns for table ${table.name}`);
     const capacity = table.range.endRow - table.range.startRow - (table.hasTotalRow ? 1 : 0);
-    if (result.rows.length > capacity) throw new Error(`Query result has too many rows for table ${table.name}`);
-    return { ...structuredClone(table.range), endRow: Math.min(table.range.endRow - (table.hasTotalRow ? 1 : 0), table.range.startRow + result.rows.length) };
+    if (rowCount > capacity) throw new Error(`Query result has too many rows for table ${table.name}`);
+    return { ...structuredClone(table.range), endRow: Math.min(table.range.endRow - (table.hasTotalRow ? 1 : 0), table.range.startRow + rowCount) };
   }
   if (target.kind === 'pivot-source') {
     if (!target.pivotId) throw new Error('Pivot-source query target requires pivotId');
@@ -283,49 +273,160 @@ function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, result
     const startColumn = target.range?.startColumn ?? fallback!.startColumn;
     const capacityRows = target.range?.endRow === undefined ? fallback ? fallback.endRow - fallback.startRow : undefined : target.range.endRow - startRow;
     const capacityColumns = target.range?.endColumn === undefined ? fallback ? fallback.endColumn - fallback.startColumn + 1 : undefined : target.range.endColumn - startColumn + 1;
-    if (capacityRows !== undefined && result.rows.length > capacityRows) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
-    if (capacityColumns !== undefined && result.columns.length > capacityColumns) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
-    return { sheetId, startRow, endRow: startRow + result.rows.length, startColumn, endColumn: startColumn + Math.max(result.columns.length, 1) - 1 };
+    if (capacityRows !== undefined && rowCount > capacityRows) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
+    if (capacityColumns !== undefined && columns.length > capacityColumns) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
+    return { sheetId, startRow, endRow: startRow + rowCount, startColumn, endColumn: startColumn + Math.max(columns.length, 1) - 1 };
   }
   throw new Error(`Query target ${target.kind} does not project to a worksheet region`);
 }
 
-function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
-  return left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
-    && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+export interface QueryBlockLoadMetadata {
+  columns: readonly string[];
+  columnTypes: readonly DataSourceFieldType[];
+  rowCount: number;
+  blockRowCount: number;
 }
 
-function assertQueryTargetIsOwnedOrEmpty(workbook: WorkbookModel, sourceId: string, range: RangeRef): void {
-  const sheet = workbook.getSheet(range.sheetId);
-  const owned = sheet.dataRegions.filter((region) => region.sourceId === sourceId);
-  const foreign = sheet.dataRegions.find((region) => region.sourceId !== sourceId && rangesOverlap(region.range, range));
-  if (foreign) throw new Error(`QUERY_TARGET_OWNED: target overlaps data region ${foreign.id}`);
-  let conflict: string | undefined;
-  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (_cell, row, column) => {
-    if (owned.some((region) => row >= region.range.startRow && row <= region.range.endRow && column >= region.range.startColumn && column <= region.range.endColumn)) return;
-    conflict ??= `${row}:${column}`;
-  });
-  if (conflict) throw new Error(`QUERY_TARGET_NOT_EMPTY: target contains authored cell ${range.sheetId}!${conflict}; choose an empty range or explicitly materialize/clear it first`);
-  const merge = sheet.merges.find((entry) => rangesOverlap(entry.range, range));
-  if (merge) throw new Error('QUERY_TARGET_MERGED: query output cannot replace merged cells');
+export interface PreparedQueryLoadBlock {
+  ref: DataBlockRef;
+  payload: ArrayBuffer;
+}
+
+function validateQueryBlockLoadMetadata(metadata: QueryBlockLoadMetadata): void {
+  if (!metadata || !Array.isArray(metadata.columns) || metadata.columns.length === 0) throw new Error('Query block metadata must contain columns');
+  if (metadata.columns.some((column) => typeof column !== 'string' || !column.trim())) throw new Error('Query block columns must be non-empty strings');
+  if (new Set(metadata.columns).size !== metadata.columns.length) throw new Error('Query block columns must be unique');
+  if (!Array.isArray(metadata.columnTypes) || metadata.columnTypes.length !== metadata.columns.length) throw new Error('Query block column types do not match columns');
+  const types = new Set<DataSourceFieldType>(['text', 'number', 'boolean', 'date', 'mixed']);
+  if (metadata.columnTypes.some((type) => !types.has(type))) throw new Error('Query block contains an unsupported column type');
+  if (!Number.isSafeInteger(metadata.rowCount) || metadata.rowCount < 0) throw new Error('Query block rowCount must be a non-negative integer');
+  if (!Number.isSafeInteger(metadata.blockRowCount) || metadata.blockRowCount < 1 || metadata.blockRowCount > DEFAULT_DATA_BLOCK_ROW_COUNT) throw new Error('Query block row size is invalid');
+}
+
+function queryFields(sourceId: string, metadata: QueryBlockLoadMetadata): DataSourceField[] {
+  return metadata.columns.map((name, ordinal) => ({
+    id: `${sourceId}:field:${ordinal}`,
+    name,
+    ordinal,
+    type: metadata.columnTypes[ordinal]!,
+  }));
+}
+
+export async function encodeQueryLoadBlock(
+  sourceId: string,
+  revision: number,
+  metadata: QueryBlockLoadMetadata,
+  startRow: number,
+  rows: readonly (readonly TableScalar[])[],
+): Promise<PreparedQueryLoadBlock> {
+  validateQueryBlockLoadMetadata(metadata);
+  if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Query block revision must be a non-negative integer');
+  if (!Number.isSafeInteger(startRow) || startRow < 0 || startRow % metadata.blockRowCount !== 0) throw new Error('Query block start row is invalid');
+  if (rows.length < 1 || rows.length > metadata.blockRowCount || startRow + rows.length > metadata.rowCount) throw new Error('Query block row coverage is invalid');
+  if (rows.some((row) => row.length !== metadata.columns.length)) throw new Error('Query block row width does not match columns');
+  const fields = queryFields(sourceId, metadata);
+  const normalizedRows = normalizeQueryRowsForDataSource(rows, fields);
+  const payload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows: normalizedRows });
+  const id = `${sourceId}:r${revision}:b${startRow}`;
+  return {
+    ref: {
+      id,
+      dataSourceId: sourceId,
+      startRow,
+      rowCount: rows.length,
+      storageKey: `data-source/${sourceId}/revision-${revision}/${id}`,
+      checksum: await computeColumnarBlockChecksum(payload),
+      byteLength: payload.byteLength,
+      encoding: COLUMNAR_BLOCK_ENCODING,
+      revision,
+    },
+    payload,
+  };
+}
+
+export function buildQueryLoadPayloadFromBlocks(
+  workbook: WorkbookModel,
+  query: QueryDefinition,
+  target: LoadTarget,
+  metadata: QueryBlockLoadMetadata,
+  blocks: readonly DataBlockRef[],
+): QueryLoadCommandPayload {
+  validateQueryDefinition(query);
+  validateQueryBlockLoadMetadata(metadata);
+  const sourceId = querySourceId(query.id);
+  const revision = (workbook.dataModel.sources.get(sourceId)?.revision ?? -1) + 1;
+  const ordered = [...blocks].sort((left, right) => left.startRow - right.startRow);
+  let covered = 0;
+  for (const block of ordered) {
+    if (block.dataSourceId !== sourceId || block.revision !== revision || block.startRow !== covered || block.rowCount < 1 || block.rowCount > metadata.blockRowCount) {
+      throw new Error(`Query block coverage is invalid: ${block.id}`);
+    }
+    covered += block.rowCount;
+  }
+  if (covered !== metadata.rowCount) throw new Error('Query blocks do not cover the complete result');
+  const fields = queryFields(sourceId, metadata);
+  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, metadata.columns, metadata.rowCount);
+  const source: DataSourceManifest = {
+    schema: 'DataSourceManifest',
+    version: 1,
+    id: sourceId,
+    name: query.name,
+    kind: 'chunked-table',
+    ...(sourceRange ? { sourceSheetId: sourceRange.sheetId, sourceRange: structuredClone(sourceRange) } : {}),
+    rowCount: metadata.rowCount,
+    fields,
+    blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT,
+    blocks: ordered.map((block) => structuredClone(block)),
+    revision,
+  };
+  const definition = serializeQueryDefinition({ ...query, sourceRevision: revision });
+  if (target.kind === 'workbook-table') {
+    if (!target.tableId) throw new Error('Workbook-table query target requires tableId');
+    const table = workbook.dataModel.tables.get(target.tableId);
+    if (!table) throw new Error(`Unknown workbook table: ${target.tableId}`);
+    const nextTable: WorkbookTableModel = {
+      ...structuredClone(table),
+      sourceId,
+      sourceSheetId: undefined,
+      sourceRange: undefined,
+      rowCount: metadata.rowCount,
+      fields,
+      blocks: [],
+      revision: table.revision + 1,
+    };
+    return { kind: 'data-source-load', queryId: query.id, queryDefinition: definition, target: structuredClone(target), sourceId, source, binding: { kind: 'workbook-table', tableId: table.id, table: nextTable } };
+  }
+  if (!sourceRange) throw new Error(`Query target ${target.kind} requires a worksheet range`);
+  const sheet = workbook.getSheet(sourceRange.sheetId);
+  return {
+    kind: 'data-source-load',
+    queryId: query.id,
+    queryDefinition: definition,
+    target: structuredClone(target),
+    sourceId,
+    source,
+    binding: { kind: 'sheet-region', region: { id: `${sourceId}:region`, sourceId, range: structuredClone(sourceRange), headerRow: sourceRange.startRow, revision }, header: [...metadata.columns] },
+    extent: { sheetId: sourceRange.sheetId, rowCount: Math.max(sheet.rowCount, sourceRange.endRow + 1), columnCount: Math.max(sheet.columnCount, sourceRange.endColumn + 1) },
+    ...(target.kind === 'pivot-source' && target.pivotId ? { pivotSource: { kind: 'data-source', dataSourceId: sourceId } as PivotSource } : {}),
+  };
 }
 
 export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: QueryDefinition, target: LoadTarget, result: QueryResult): Promise<PreparedQueryLoad> {
   validateQueryDefinition(query);
   validateQueryResult(result);
-  const sourceId = sourceIdForQuery(query.id);
+  const sourceId = querySourceId(query.id);
   const previousSource = workbook.dataModel.sources.get(sourceId);
   const revision = (previousSource?.revision ?? -1) + 1;
-  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result);
-  if (sourceRange) assertQueryTargetIsOwnedOrEmpty(workbook, sourceId, sourceRange);
   const fields = result.columns.map((name, ordinal) => ({ id: `${sourceId}:field:${ordinal}`, name, ordinal, type: inferDataSourceFieldType(result.rows.map((row) => row[ordinal] ?? null)) }));
+  const normalizedRows = normalizeQueryRowsForDataSource(result.rows, fields);
   const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
-  for (let startRow = 0; startRow < result.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
-    const rows = result.rows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT).map((row) => [...row]);
+  for (let startRow = 0; startRow < normalizedRows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
+    const rows = normalizedRows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
     const blockPayload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
     const blockId = `${sourceId}:r${revision}:b${startRow}`;
     blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
   }
+  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result.columns, result.rowCount);
   const source: DataSourceManifest = { schema: 'DataSourceManifest', version: 1, id: sourceId, name: query.name, kind: 'chunked-table', ...(sourceRange ? { sourceSheetId: sourceRange.sheetId, sourceRange: structuredClone(sourceRange) } : {}), rowCount: result.rows.length, fields, blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT, blocks: blocks.map((entry) => entry.ref), revision };
   const definition = serializeQueryDefinition({ ...query, sourceRevision: revision });
   if (target.kind === 'workbook-table') {
@@ -333,7 +434,7 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
     const table = workbook.dataModel.tables.get(target.tableId);
     if (!table) throw new Error(`Unknown workbook table: ${target.tableId}`);
     const nextTable: WorkbookTableModel = { ...structuredClone(table), sourceId, sourceSheetId: undefined, sourceRange: undefined, rowCount: result.rowCount, fields: fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal, type: field.type })), blocks: [], revision: table.revision + 1 };
-    return { payload: { kind: 'data-source-load', queryId: query.id, queryDefinition: definition, target: structuredClone(target), sourceId, source, binding: { kind: 'workbook-table', tableId: table.id, table: nextTable }, ...(result.executionToken ? { executionToken: result.executionToken } : {}), ...(result.resultHash ? { resultHash: result.resultHash } : {}), ...(result.sourceRevision === undefined ? {} : { sourceRevision: result.sourceRevision }) }, blocks };
+    return { payload: { kind: 'data-source-load', queryId: query.id, queryDefinition: definition, target: structuredClone(target), sourceId, source, binding: { kind: 'workbook-table', tableId: table.id, table: nextTable } }, blocks };
   }
   if (!sourceRange) throw new Error(`Query target ${target.kind} requires a worksheet range`);
   const sheet = workbook.getSheet(sourceRange.sheetId);
@@ -343,12 +444,26 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
       binding: { kind: 'sheet-region', region: { id: `${sourceId}:region`, sourceId, range: structuredClone(sourceRange), headerRow: sourceRange.startRow, revision }, header: [...result.columns] },
       extent: { sheetId: sourceRange.sheetId, rowCount: Math.max(sheet.rowCount, sourceRange.endRow + 1), columnCount: Math.max(sheet.columnCount, sourceRange.endColumn + 1) },
       ...(target.kind === 'pivot-source' && target.pivotId ? { pivotSource: { kind: 'data-source', dataSourceId: sourceId } as PivotSource } : {}),
-      ...(result.executionToken ? { executionToken: result.executionToken } : {}),
-      ...(result.resultHash ? { resultHash: result.resultHash } : {}),
-      ...(result.sourceRevision === undefined ? {} : { sourceRevision: result.sourceRevision }),
     },
     blocks,
   };
+}
+
+function currentBinding(workbook: WorkbookModel, sourceId: string, target?: LoadTarget): QueryLoadBinding | null {
+  for (const sheet of workbook.getSheets()) {
+    const region = sheet.dataRegions.find((entry) => entry.sourceId === sourceId);
+    if (region) {
+      const header: TableScalar[] = [];
+      for (let column = region.range.startColumn; column <= region.range.endColumn; column += 1) header.push(sheet.cells.get(region.headerRow, column)?.value ?? null);
+      return { kind: 'sheet-region', region: structuredClone(region), header };
+    }
+  }
+  if (target?.kind === 'workbook-table' && target.tableId) {
+    const table = workbook.dataModel.tables.get(target.tableId);
+    if (table) return { kind: 'workbook-table', tableId: table.id, table: structuredClone(table) };
+  }
+  for (const table of workbook.dataModel.tables.values()) if (table.sourceId === sourceId) return { kind: 'workbook-table', tableId: table.id, table: structuredClone(table) };
+  return null;
 }
 
 function currentRanges(workbook: WorkbookModel, sourceId: string): RangeRef[] {
@@ -358,14 +473,30 @@ function currentRanges(workbook: WorkbookModel, sourceId: string): RangeRef[] {
 export interface QueryLoadPlan {
   mutationId: 'query.load.range' | 'query.load.sheet-table' | 'query.load.workbook-table' | 'query.load.pivot-source';
   payload: QueryLoadCommandPayload;
+  inverse: QueryLoadRestorePayload;
   affectedRanges: RangeRef[];
 }
 
 export function buildQueryLoadPlan(workbook: WorkbookModel, params: QueryLoadCommandPayload): QueryLoadPlan {
   if (params.kind !== 'data-source-load') throw new Error('Query load payload must use the block-backed data-source contract');
-  if (!params.queryId.trim() || params.sourceId !== sourceIdForQuery(params.queryId)) throw new Error('Query load source identity is invalid');
+  if (!params.queryId.trim() || params.sourceId !== querySourceId(params.queryId)) throw new Error('Query load source identity is invalid');
   if (!params.source || !params.binding) throw new Error('Query load source and binding are required');
+  const previousBinding = currentBinding(workbook, params.sourceId, params.target);
+  const previousSource = workbook.dataModel.sources.get(params.sourceId);
   const affectedRanges = [...currentRanges(workbook, params.sourceId), ...(params.binding.kind === 'sheet-region' ? [params.binding.region.range] : [])];
+  const previousSheetId = previousBinding?.kind === 'sheet-region'
+    ? previousBinding.region.range.sheetId
+    : (params.target.sheetId ?? (params.binding.kind === 'sheet-region' ? params.binding.region.range.sheetId : undefined));
+  const previousSheet = previousSheetId ? workbook.getSheet(previousSheetId) : undefined;
+  const inverse: QueryLoadRestorePayload = {
+    kind: 'data-source-load', queryId: params.queryId, queryDefinition: workbook.getQueryDefinition(params.queryId) ?? null,
+    target: structuredClone(params.target), sourceId: params.sourceId, source: previousSource ? structuredClone(previousSource) : null,
+    binding: previousBinding,
+    ...(params.target.kind === 'pivot-source' && params.target.pivotId
+      ? { pivotSource: workbook.getSheets().flatMap((sheet) => sheet.pivots).find((pivot) => pivot.id === params.target.pivotId)?.source }
+      : {}),
+    ...(previousSheet ? { extent: { sheetId: previousSheet.id, rowCount: previousSheet.rowCount, columnCount: previousSheet.columnCount } } : {}),
+  };
   const mutationId = params.target.kind === 'range' ? 'query.load.range' : params.target.kind === 'sheet-table' ? 'query.load.sheet-table' : params.target.kind === 'pivot-source' ? 'query.load.pivot-source' : 'query.load.workbook-table';
-  return { mutationId, payload: structuredClone(params), affectedRanges: affectedRanges.filter((range, index, all) => all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(range)) === index) };
+  return { mutationId, payload: structuredClone(params), inverse, affectedRanges: affectedRanges.filter((range, index, all) => all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(range)) === index) };
 }

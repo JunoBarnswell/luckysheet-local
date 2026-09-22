@@ -13,10 +13,8 @@ export { RIBBON_TAB_ORDER } from './shell-types';
  * horizontal scrolling; it must never change command density, labels or
  * available capabilities.
  */
-export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
-  if (width >= 1600) return 'wide';
-  if (width >= 1200) return 'compact';
-  return 'narrow';
+export function ribbonLayoutModeForWidth(_width: number): RibbonLayoutMode {
+  return 'wide';
 }
 
 const DENSE_COMPACT_MIN_WIDTH = 1440;

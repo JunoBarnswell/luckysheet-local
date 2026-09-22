@@ -40,6 +40,14 @@ test('PermissionService fails closed while an online access projection is unavai
   assert.equal(result.blockedBy, 'share-role');
 });
 
+test('PermissionService recognizes data-region materialization mutations', () => {
+  const perm = new PermissionService();
+  const affectedRanges = [{ sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }];
+
+  assert.equal(perm.checkMutation({ id: 'dataRegion.materialize.commit', affectedRanges }).allowed, true);
+  assert.equal(perm.checkMutation({ id: 'dataRegion.materialize.restore', affectedRanges }).allowed, true);
+});
+
 test('PermissionService blocks locked range', () => {
   const perm = new PermissionService();
   perm.applyServerAccess('editor');

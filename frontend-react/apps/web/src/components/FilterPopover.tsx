@@ -53,6 +53,12 @@ function currentCriterionValues(criterion: FilterCriterion | undefined): Set<str
   return new Set(criterion?.kind === 'values' ? criterion.values.map(filterScalarKey) : []);
 }
 
+function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) if (!right.has(value)) return false;
+  return true;
+}
+
 type DateGroupUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
 type DateGroupNode = { key: string; group: DateGroupItem; unit: DateGroupUnit; depth: number; label: string };
 const dateGroupUnits: readonly DateGroupUnit[] = ['year', 'month', 'day', 'hour', 'minute', 'second'];
@@ -110,7 +116,10 @@ export function FilterPopover({ locale, column, x, y, sheet, onApply, onSort, on
   const [mode, setMode] = useState<FilterMode>(initialMode);
   const [selected, setSelected] = useState<Set<string>>(() => currentCriterionValues(currentCriterion));
   const [includeBlank, setIncludeBlank] = useState(currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false);
-  const currentDateGroups = currentCriterion?.kind === 'values' ? currentCriterion.dateGroups ?? [] : [];
+  const currentDateGroups = useMemo(
+    () => currentCriterion?.kind === 'values' ? currentCriterion.dateGroups ?? [] : [],
+    [currentCriterion],
+  );
   const [selectedDateGroups, setSelectedDateGroups] = useState<Set<string>>(() => new Set(currentDateGroups.map(dateGroupKey)));
   const [dateGroupsDirty, setDateGroupsDirty] = useState(false);
   const [search, setSearch] = useState('');
@@ -149,10 +158,13 @@ export function FilterPopover({ locale, column, x, y, sheet, onApply, onSort, on
   useEffect(() => {
     if (!descriptor) return;
     const nextValues = currentCriterionValues(currentCriterion);
-    setSelected(nextValues.size > 0 ? nextValues : new Set(descriptor.values.map(filterScalarKey)));
-    setIncludeBlank(currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false);
-    setSelectedDateGroups(new Set(currentDateGroups.map(dateGroupKey)));
-    setDateGroupsDirty(false);
+    const resolvedValues = nextValues.size > 0 ? nextValues : new Set(descriptor.values.map(filterScalarKey));
+    setSelected((previous) => sameSet(previous, resolvedValues) ? previous : resolvedValues);
+    const resolvedIncludeBlank = currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false;
+    setIncludeBlank((previous) => previous === resolvedIncludeBlank ? previous : resolvedIncludeBlank);
+    const resolvedDateGroups = new Set(currentDateGroups.map(dateGroupKey));
+    setSelectedDateGroups((previous) => sameSet(previous, resolvedDateGroups) ? previous : resolvedDateGroups);
+    setDateGroupsDirty((previous) => previous ? false : previous);
   }, [descriptor, currentCriterion, currentDateGroups]);
 
   const beginResize = (event: React.PointerEvent<HTMLElement>): void => {

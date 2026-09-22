@@ -44,8 +44,13 @@ export function FeaturePanelHost({
   title,
 }: FeaturePanelHostProps): ReactNode {
   const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
+  const analysisChartIds = [...new Set(state.projectionSheets.flatMap((sheet) => sheet.drawings.flatMap((drawing) => {
+    if (drawing.kind !== 'chart') return [];
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    return payload?.kind === 'chart' ? [payload.chartId] : [];
+  })))];
   return (
-    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} contentOverflow={state.panels.active === 'pivot' ? 'hidden' : 'auto'} width={state.panels.active === 'pivot' ? 360 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 340 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
+    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot' && state.panels.active !== 'chart' && state.panels.active !== 'analysis'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
         <FeatureSidebar
           activeCell={state.activeCell}
@@ -70,7 +75,6 @@ export function FeaturePanelHost({
           drawings={state.selectedSheet.drawings}
           drawingPayloads={state.selectedSheet.drawingPayloads}
           selectedDrawingIds={state.selectedDrawingIds}
-          printLayout={state.printLayout}
           initialBarcodeSymbology={session.getBarcodeDraftSymbology()}
           onSelectDrawing={(drawingId, mode) => session.setDrawingSelection([drawingId], mode === "extend" ? "add" : mode)}
           onSetDrawingVisibility={(drawingId, visible) => session.setDrawingVisibility(drawingId, visible)}
@@ -84,6 +88,11 @@ export function FeaturePanelHost({
           pivotTimelineControls={commands.pivotTimelineControls}
           pivotPanelState={commands.pivotPanelState}
           pivotCallbacks={commands.pivotCallbacks}
+          analysisViews={state.analysisViews}
+          analysisSourceSheets={state.projectionSheets}
+          analysisChartIds={analysisChartIds}
+          onSetAnalysisView={session.setAnalysisView.bind(session)}
+          onRemoveAnalysisView={session.removeAnalysisView.bind(session)}
           formulaAudit={state.formulaAudit}
           formulaAuditState={state.phase === "loading" ? "loading" : state.phase === "error" ? "error" : "ready"}
           formulaAuditError={state.phase === "error" ? "Formula audit is unavailable while the workbook is in an error state." : undefined}
@@ -109,9 +118,9 @@ export function FeaturePanelHost({
           canRestoreHistory={state.permissions.restore}
           onUndoToHistory={session.undoToHistoryIndex.bind(session)}
           onRestoreRevision={(revision) => { void session.restoreToRevision(revision); }}
-          onPreviewRevision={(revision) => { void session.previewRevision(revision).catch(() => undefined); }}
+          onPreviewRevision={(revision) => { void session.previewRevision(revision); }}
           onClearHistoryPreview={session.clearHistoryPreview.bind(session)}
-          onRefreshRevisions={() => { void session.refreshRevisionLog().catch(() => undefined); }}
+          onRefreshRevisions={() => { void session.refreshRevisionLog(); }}
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}
@@ -147,8 +156,8 @@ export function FeaturePanelHost({
           lastQueryResult={state.lastQueryResult}
           canQuery={state.permissions.query}
           onLoadQuery={session.loadQuery.bind(session)}
+          onPreviewQuery={session.previewQuery.bind(session)}
           onRefreshQuery={session.refreshQuery.bind(session)}
-          onCancelQuery={session.cancelQuery.bind(session)}
           onTestQueryConnection={session.testQueryConnection.bind(session)}
           lastWhatIfMessage={state.lastWhatIfResult && "message" in state.lastWhatIfResult
             ? state.lastWhatIfResult.message
@@ -163,11 +172,11 @@ export function FeaturePanelHost({
             changingCells: [{ row: params.changingCell.row, column: params.changingCell.column, value: params.changingValue }],
             resultCells: [{ row: params.resultCell.row, column: params.resultCell.column }],
           })}
-          onSaveComment={session.saveComment.bind(session)}
+          onAddComment={session.addComment.bind(session)}
           onReplyComment={session.replyComment.bind(session)}
           onResolveComment={session.resolveComment.bind(session)}
           onRemoveComment={session.removeComment.bind(session)}
-          onSaveNote={session.saveNote.bind(session)}
+          onAddNote={session.addNote.bind(session)}
           onRemoveNote={session.removeNote.bind(session)}
         />
       </Suspense>

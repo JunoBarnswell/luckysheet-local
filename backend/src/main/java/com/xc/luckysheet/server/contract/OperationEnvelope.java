@@ -9,6 +9,7 @@ import java.util.Objects;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record OperationEnvelope(
+        @JsonProperty("clientSessionId") String clientSessionId,
         @JsonProperty("schema") String schema,
         @JsonProperty("operationId") String operationId,
         @JsonProperty("unitId") String unitId,
@@ -22,19 +23,19 @@ public record OperationEnvelope(
 
     @JsonCreator
     public OperationEnvelope {
+        if (clientSessionId == null || clientSessionId.isBlank() || clientSessionId.length() > 200) throw new IllegalArgumentException("clientSessionId is required and must be at most 200 characters");
         if (!SCHEMA.equals(schema)) throw new IllegalArgumentException("schema must be OperationEnvelope");
         if (operationId == null || operationId.isBlank()) throw new IllegalArgumentException("operationId is required");
         if (unitId == null || unitId.isBlank()) throw new IllegalArgumentException("unitId is required");
         if (clientSequence < 1) throw new IllegalArgumentException("clientSequence must be positive");
         if (baseRevision < 0) throw new IllegalArgumentException("baseRevision must be non-negative");
-        if (mutations == null) throw new IllegalArgumentException("mutations are required");
-        if (intent == null && mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
-        if (intent != null && !mutations.isEmpty()) throw new IllegalArgumentException("undo intent must not include client mutations");
+        if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
         mutations = List.copyOf(mutations);
         Objects.requireNonNull(createdAt, "createdAt is required");
     }
 
     public OperationEnvelope(
+            String clientSessionId,
             String schema,
             String operationId,
             String unitId,
@@ -43,6 +44,6 @@ public record OperationEnvelope(
             List<OperationMutation> mutations,
             Instant createdAt
     ) {
-        this(schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt, null);
+        this(clientSessionId, schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt, null);
     }
 }

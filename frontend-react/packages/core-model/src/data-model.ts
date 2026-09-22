@@ -58,6 +58,64 @@ export interface DataViewDefinition {
   fields: DataViewField[];
   groupBy?: string[];
   sort?: Array<{ fieldId: string; direction: 'asc' | 'desc' }>;
+  /** Present only for the persisted analysis/dashboard view variant. */
+  kind?: 'analysis';
+  filters?: AnalysisFilterClause[];
+  charts?: AnalysisChartBinding[];
+  layout?: AnalysisViewLayout;
+  revision?: number;
+}
+
+export type AnalysisFilterOperator = 'equals' | 'not-equals' | 'contains' | 'in' | 'between';
+
+export interface AnalysisFilterClause {
+  id: string;
+  fieldId: string;
+  operator: AnalysisFilterOperator;
+  values: TableScalar[];
+}
+
+export interface AnalysisChartFieldMap {
+  category?: string;
+  series?: string;
+  value?: string;
+  color?: string;
+  size?: string;
+  tooltip?: string;
+}
+
+export interface AnalysisChartBinding {
+  chartId: string;
+  fieldMap: AnalysisChartFieldMap;
+}
+
+export interface AnalysisViewLayout {
+  columns: number;
+  rowHeightPx: number;
+  gapPx: number;
+}
+
+/**
+ * Persisted dashboard/analysis state. It intentionally extends the existing
+ * data view shape so older table views remain valid and the workbook keeps a
+ * single canonical `dataModel.views` collection.
+ */
+export interface AnalysisViewDefinition extends DataViewDefinition {
+  kind: 'analysis';
+  filters: AnalysisFilterClause[];
+  charts: AnalysisChartBinding[];
+  layout: AnalysisViewLayout;
+  revision: number;
+}
+
+export function isAnalysisViewDefinition(value: DataViewDefinition): value is AnalysisViewDefinition {
+  return value.kind === 'analysis'
+    && Array.isArray(value.filters)
+    && Array.isArray(value.charts)
+    && typeof value.layout === 'object'
+    && value.layout !== null
+    && Number.isSafeInteger(value.revision)
+    && Number(value.revision) >= 0;
 }
 
 /** Canonical structured-data graph consumed by TableSheet, GanttSheet and Chart sources. */

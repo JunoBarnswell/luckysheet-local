@@ -6,10 +6,12 @@ export * from './commands';
 export * from './helpers';
 export * from './recommendation';
 export * from './engine';
+export * from './source-index';
+export * from './task-protocol';
+export * from './task-port';
+export * from './block-source';
 export * from './panel-state';
 export * from './writeback';
-export * from './rust-analytics';
-export * from './server-task-port';
 
 export function registerPivotFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   return {
@@ -18,6 +20,10 @@ export function registerPivotFeature(runtime: CommandRuntime): SpreadsheetFeatur
     dependencies: ['sheet-features'],
     commandIds: registerPivotCommands(runtime),
     mutationIds: [...PIVOT_MUTATION_IDS],
+    contextualTabs: [
+      { id: 'pivot-analyze', tab: 'Analyze', group: 'Pivot', label: 'Refresh', commandId: 'pivot.refresh', icon: 'pivot' },
+      { id: 'pivot-remove', tab: 'Analyze', group: 'Pivot', label: 'Remove', commandId: 'pivot.remove', icon: 'pivot' },
+    ],
     permissions: ['pivot.edit', 'pivot.refresh', 'pivot.delete'],
   };
 }

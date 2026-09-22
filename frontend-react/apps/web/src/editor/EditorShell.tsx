@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { DesignerShell, Box, DocumentBar, Inline } from "@react-sheets/ui-system";
+import { DesignerShell, Box, Inline } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
 import { StatusBar } from "../components/StatusBar";
@@ -7,7 +7,7 @@ import { type Locale } from "../i18n";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
-import { selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, selectedHeaderIndices, type ChartElementSelection, type UiSessionIntent, type UiSnapshot, type WorkbookSession } from "@react-sheets/spreadsheet-app";
 import type { SelectionState } from "@react-sheets/spreadsheet-app";
 import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
@@ -78,21 +78,43 @@ export function EditorShell({
 
   const handleSelectionChange = (selection: SelectionState) => controller.applySelection(selection);
 
+  const applyAnalysisChartFilter = (chartId: string, pointIndex: number, additive = false): boolean => {
+    const viewBinding = state.analysisViews
+      .flatMap((view) => view.charts.map((binding) => ({ view, binding })))
+      .find((entry) => entry.binding.chartId === chartId);
+    const categoryFieldId = viewBinding?.binding.fieldMap.category;
+    if (!viewBinding || !categoryFieldId) return false;
+    const table = state.tables.find((entry) => entry.id === viewBinding.view.tableId);
+    const sourceSheet = table?.sourceRange ? state.projectionSheets.find((entry) => entry.id === table.sourceRange?.sheetId) : undefined;
+    const projection = buildAnalysisViewProjection(viewBinding.view, table, sourceSheet);
+    const chart = projection.charts.find((entry) => entry.chartId === chartId);
+    const point = chart?.points[pointIndex];
+    if (projection.status !== 'ready' || !point || (typeof point.category === 'object' && point.category !== null)) return false;
+    const next = structuredClone(viewBinding.view);
+    const existing = next.filters.find((filter) => filter.fieldId === categoryFieldId);
+    if (!additive) {
+      next.filters = [
+        ...next.filters.filter((filter) => filter.fieldId !== categoryFieldId),
+        { id: `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: 'equals', values: [point.category] },
+      ];
+    } else {
+      const values = existing && (existing.operator === 'equals' || existing.operator === 'in') ? [...existing.values] : [];
+      const index = values.findIndex((value) => value === point.category);
+      if (index >= 0) values.splice(index, 1);
+      else values.push(point.category);
+      next.filters = next.filters.filter((filter) => filter.fieldId !== categoryFieldId);
+      if (values.length > 0) {
+        next.filters.push({ id: existing?.id ?? `chart-filter-${chartId}-${categoryFieldId}`, fieldId: categoryFieldId, operator: values.length === 1 ? 'equals' : 'in', values });
+      }
+    }
+    next.revision += 1;
+    session.setAnalysisView(next);
+    return true;
+  };
+
   return (
     <>
       <DesignerShell
-        documentBar={(
-          <DocumentBar
-            workbookName={state.workbookName}
-            saveState={state.saveState}
-            onSave={saveWorkbook}
-            onUndo={() => session.undo()}
-            onRedo={() => session.redo()}
-            onSearch={() => dispatchSessionIntent({ type: "notice", message: "搜索请使用 Ctrl+F 或开始选项卡中的查找和选择。" })}
-            onComments={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "选择单元格后可在审阅工具中查看评论。" })}
-            onShare={copyWorkbookLink}
-          />
-        )}
         formulaBar={(
           <FormulaBar
             cellName={state.activeCell}
@@ -160,10 +182,13 @@ export function EditorShell({
             onZoomChange={session.setZoom.bind(session)}
             phase={state.phase}
             saveState={state.saveState}
+            notice={state.notice}
             sheetCount={state.sheets.length}
             zoom={state.zoom}
             collabStatus={state.collabStatus}
+            pendingChangeSetCount={state.pendingChangeSetCount}
             collabRevision={state.collabRevision}
+            hasPendingOperations={state.hasPendingOperations}
             fixedDecimalPlaces={state.editingOptions.fixedDecimalPlaces}
           />
         )}
@@ -180,24 +205,15 @@ export function EditorShell({
                 activeCell={state.activeCell}
                 cellEdit={session.cellEdit}
                 phase={state.phase}
+                errorMessage={state.notice}
+                onExportRecovery={session.exportRecoveryDraft.bind(session)}
+                onDiscardRecovery={session.discardRecoveryDraft.bind(session)}
                 zoom={state.zoom}
                 peers={state.peers}
                 selectedFloatingId={state.selectedFloatingId}
                 textBoxPlacementActive={state.textBoxPlacement}
                 textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
-                onActivateHyperlink={async (row, column) => {
-                  try {
-                    const result = await session.activateHyperlinkAt(row, column);
-                    if (result.kind === 'none') return;
-                    if (result.kind === 'external') {
-                      const opened = window.open(result.href, '_blank', 'noopener,noreferrer');
-                      if (!opened) throw new Error('HYPERLINK_POPUP_BLOCKED: allow popups and retry');
-                    }
-                  } catch (cause) {
-                    dispatchSessionIntent({ type: 'notice', message: cause instanceof Error ? cause.message : 'Hyperlink activation failed' });
-                  }
-                }}
                 onPivotContextHit={(hit) => {
                   const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
                   if (pivotId) {
@@ -273,6 +289,13 @@ export function EditorShell({
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}
                 onPivotExpansionToggle={(pivotId, nodeId) => { void session.togglePivotExpansion(pivotId, nodeId); }}
+                onLoadPivotFieldValues={async (pivotId, fieldId) => {
+                  const pivot = state.selectedSheet.pivots.find((candidate) => candidate.id === pivotId);
+                  if (pivot?.source.kind !== 'data-source') return undefined;
+                  await session.loadPivotFieldValues(pivotId, fieldId);
+                  return session.getPivotFieldCatalogForPivot(pivotId).find((field) => field.fieldId === fieldId)?.values;
+                }}
+                onPivotFilterLoadError={(error) => session.notify(error instanceof Error ? error.message : '字段值加载失败')}
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
@@ -280,11 +303,12 @@ export function EditorShell({
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
                 tables={state.tables}
+                analysisViews={state.analysisViews}
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
                 onEnsureSheetExtent={(rowCount, columnCount) => session.ensureSheetExtent(rowCount, columnCount)}
-                onEnsureVisibleRanges={(ranges) => session.ensureVisibleRanges(ranges)}
+                canGrowSheetExtent={state.phase === 'ready' && session.canExecute('sheet.extent.grow')}
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
                 onSelectAllDrawings={session.selectAllDrawings.bind(session)}
@@ -317,6 +341,9 @@ export function EditorShell({
                   const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                   if (!drawing || payload?.kind !== 'chart' || !data || typeof data !== 'object' || !('kind' in data)) return;
                   const kind = String((data as { kind: string }).kind);
+                  if (kind === 'point' && 'pointIndex' in data && typeof (data as { pointIndex: unknown }).pointIndex === 'number') {
+                    applyAnalysisChartFilter(payload.chartId, Number((data as { pointIndex: number }).pointIndex), 'additive' in data && data.additive === true);
+                  }
                   if ((kind === 'point' || kind === 'series' || kind === 'data-label') && 'seriesId' in data) {
                     session.selectChartElement({ kind: kind as 'point' | 'series' | 'data-label', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), ...('pointIndex' in data ? { pointIndex: Number((data as { pointIndex: number }).pointIndex) } : {}) });
                   } else if (['chart-area', 'plot-area', 'title', 'legend', 'axis', 'axis-title', 'gridline', 'data-table', 'trendline', 'error-bar'].includes(kind)) {

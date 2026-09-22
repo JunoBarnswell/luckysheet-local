@@ -136,7 +136,7 @@ function packageFromFile(file) {
 function collectPackageImports(source) {
   const imports = new Set();
   for (const match of source.matchAll(packageImportPattern)) {
-    imports.add(match[1].split('/')[0]);
+    imports.add(match[1]);
   }
   return imports;
 }
@@ -214,10 +214,8 @@ for (const file of files) {
     if (!ownerDependencies?.has(packageName)) {
       violations.push(`${relPath}: ${owner} imports ${packageName} without declaring it in package.json`);
     }
-    if (!isTestFile(relPath)) {
-      if (!packageGraph.has(ownerPackage)) packageGraph.set(ownerPackage, new Set());
-      packageGraph.get(ownerPackage).add(imported);
-    }
+    if (!packageGraph.has(ownerPackage)) packageGraph.set(ownerPackage, new Set());
+    packageGraph.get(ownerPackage).add(imported);
   }
 }
 

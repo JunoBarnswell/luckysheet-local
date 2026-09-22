@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Button, CheckToggle, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { CHART_SUBTYPES_BY_TYPE, defaultChartSubtype, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type DrawingObject, type DrawingPayload, type RangeRef } from '@react-sheets/core-model';
+import React, { useEffect, useState } from 'react';
+import { Box, Button, CheckToggle, FileButton, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
-import type { ChartElementSelection } from '@react-sheets/spreadsheet-app';
-import { parseRangeInput } from '../../domain/range-input';
+import { parseGeoJsonMapResource, type ChartElementSelection } from '@react-sheets/spreadsheet-app';
+import { chartLabels, chartSubtypeLabels, chartTypes } from '../chart/chart-labels';
+import { chartEditorDraft, chartPayloadFromDraft, chartSeriesDraft, parseChartRange, type ChartEditorDraft } from '../chart/chart-editor-state';
+import { ChartSeriesEditor } from '../chart/ChartSeriesEditor';
 
 export interface ChartPanelProps {
   sheetId: string;
@@ -12,122 +14,183 @@ export interface ChartPanelProps {
   selectedDrawingIds?: readonly string[];
   selectedChartElement?: ChartElementSelection | null;
   defaultRange?: string;
+  readCellValue: (sourceSheetId: string, row: number, column: number) => FormulaValue;
   onInsertChart: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], sourceRange: RangeRef, title: string, stacked: NonNullable<ChartDrawingPayload['stacked']>) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
 }
 
-const chartTypes: readonly ChartDrawingPayload['chartType'][] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'bubble', 'treemap', 'sunburst', 'histogram', 'pareto', 'box-whisker', 'waterfall', 'funnel', 'stock', 'surface', 'radar', 'map', 'combo'];
-const seriesTypes: readonly Exclude<ChartDrawingPayload['chartType'], 'combo'>[] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'bubble', 'treemap', 'sunburst', 'histogram', 'pareto', 'box-whisker', 'waterfall', 'funnel', 'stock', 'surface', 'radar', 'map'];
-
-function parseA1Range(value: string, sheetId: string): RangeRef | undefined {
-  const range = parseRangeInput(value, sheetId);
-  return range ? { sheetId, ...range } : undefined;
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <Box className="space-y-1.5"><Text size="xs" weight="medium" className="text-slate-600">{label}</Text>{children}</Box>;
 }
-
-function columnLabel(column: number): string {
-  let result = '';
-  for (let value = column + 1; value > 0; value = Math.floor((value - 1) / 26)) result = String.fromCharCode(65 + ((value - 1) % 26)) + result;
-  return result;
+function Group({ title, children, open = false }: { title: string; children: React.ReactNode; open?: boolean }) {
+  return <details open={open} className="rounded-lg border border-slate-200 bg-white">
+    <summary className="cursor-pointer select-none px-3 py-2.5 text-sm font-semibold text-slate-700 focus-visible:outline-emerald-600">{title}</summary>
+    <Box className="space-y-3 border-t border-slate-100 p-3">{children}</Box>
+  </details>;
 }
-
-function formatRange(range: RangeRef | undefined): string {
-  if (!range) return '';
-  return `${columnLabel(range.startColumn)}${range.startRow + 1}:${columnLabel(range.endColumn)}${range.endRow + 1}`;
+function TypeFields({ value, onChange }: { value: Pick<ChartDrawingPayload, 'chartType' | 'subtype'>; onChange: (type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype']) => void }) {
+  return <Box className="grid grid-cols-2 gap-2">
+    <Field label="图表类型"><Select aria-label="图表类型" value={value.chartType} onChange={event => { const type = event.target.value as ChartDrawingPayload['chartType']; onChange(type, defaultChartSubtype(type)); }}>{chartTypes.map(type => <option key={type} value={type}>{chartLabels[type]}</option>)}</Select></Field>
+    <Field label="图表子类型"><Select aria-label="图表子类型" value={value.subtype} onChange={event => onChange(value.chartType, event.target.value as ChartDrawingPayload['subtype'])}>{CHART_SUBTYPES_BY_TYPE[value.chartType].map(type => <option key={type} value={type}>{chartSubtypeLabels[type]}</option>)}</Select></Field>
+  </Box>;
 }
-
-function chartLabel(type: ChartDrawingPayload['chartType']): string {
-  return type === 'box-whisker' ? 'Box & Whisker' : type[0]!.toUpperCase() + type.slice(1);
+function AxisFields({ axis, position, onChange }: { axis?: ChartAxisModel; position: ChartAxisModel['position']; onChange: (axis: ChartAxisModel) => void }) {
+  const value: ChartAxisModel = axis ?? { id: position, position, axisType: position === 'bottom' ? 'category' : 'value' };
+  const update = (patch: Partial<ChartAxisModel>) => onChange({ ...value, ...patch });
+  return <Stack gap="sm">
+    <TextInput aria-label={position + ' 轴标题'} placeholder="轴标题" value={value.title ?? ''} onChange={event => update({ title: event.target.value })} />
+    {position !== 'bottom' ? <>
+      <Select aria-label={position + ' 轴刻度'} value={value.scale ?? 'linear'} onChange={event => update({ scale: event.target.value as ChartAxisModel['scale'] })}><option value="linear">线性刻度</option><option value="logarithmic">对数刻度</option></Select>
+      <Box className="grid grid-cols-2 gap-2"><TextInput aria-label={position + ' 轴最小值'} type="number" placeholder="自动最小值" value={value.minimum ?? ''} onChange={event => update({ minimum: event.target.value === '' ? undefined : Number(event.target.value), automaticMinimum: event.target.value === '' })} /><TextInput aria-label={position + ' 轴最大值'} type="number" placeholder="自动最大值" value={value.maximum ?? ''} onChange={event => update({ maximum: event.target.value === '' ? undefined : Number(event.target.value), automaticMaximum: event.target.value === '' })} /></Box>
+    </> : null}
+    <TextInput aria-label={position + ' 轴数字格式'} placeholder="数字格式，例如 0.00%" value={value.numberFormat ?? ''} onChange={event => update({ numberFormat: event.target.value || undefined })} />
+    <CheckToggle label="显示主要网格线" checked={value.majorGridlines?.visible === true} onChange={event => update({ majorGridlines: { ...value.majorGridlines, visible: event.currentTarget.checked } })} />
+  </Stack>;
 }
+const elementLabels: Record<ChartElementSelection['kind'], string> = {
+  'chart-area': '图表区', 'plot-area': '绘图区', title: '标题', legend: '图例', axis: '坐标轴', 'axis-title': '轴标题',
+  gridline: '网格线', 'data-table': '数据表', trendline: '趋势线', 'error-bar': '误差线', series: '数据系列', point: '数据点', 'data-label': '数据标签',
+};
 
-function seriesId(entry: ChartSeriesModel, index: number): string { return entry.id ?? `series:${index + 1}`; }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }): React.ReactNode {
-  return <Box><Text size="xs" weight="medium" className="mb-1 text-slate-700">{label}</Text>{children}</Box>;
-}
-
-function axisWith(axis: ChartAxisModel | undefined, position: ChartAxisModel['position']): ChartAxisModel {
-  return { id: axis?.id ?? position, position, axisType: axis?.axisType ?? 'value', ...(axis ?? {}) };
-}
-
-function fillValue(fill: NonNullable<ChartDrawingPayload['elements']['chartArea']>['fill'] | undefined): string {
-  return typeof fill === 'string' ? fill : fill?.color ?? '';
-}
-
-export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], selectedChartElement = null, defaultRange, onInsertChart, onCommand, onClose }: ChartPanelProps) {
-  const chartEntries = drawings
-    .filter((drawing) => drawing.kind === 'chart')
-    .map((drawing) => ({ drawing, payload: drawingPayloads.get(drawing.payloadId) }))
-    .filter((entry): entry is { drawing: DrawingObject; payload: Extract<DrawingPayload, { kind: 'chart' }> } => entry.payload?.kind === 'chart');
-  const selectedEntry = chartEntries.find(({ drawing }) => selectedDrawingIds.includes(drawing.id));
-  const selectedPayload = selectedEntry?.payload;
-  const [type, setType] = useState<ChartDrawingPayload['chartType']>('column');
-  const [subtype, setSubtype] = useState<ChartDrawingPayload['subtype']>('clustered');
-  const [stacked, setStacked] = useState<NonNullable<ChartDrawingPayload['stacked']>>('none');
-  const [title, setTitle] = useState('Sales Overview');
-  const [rangeInput, setRangeInput] = useState(defaultRange ?? 'A1:C5');
-  const [categoryInput, setCategoryInput] = useState('');
-  const sourceRange = parseA1Range(rangeInput, sheetId);
-  const selectedId = selectedPayload?.chartId;
-  const selectedCategoryRange = useMemo(() => parseA1Range(categoryInput, sheetId), [categoryInput, sheetId]);
-  const primaryWorksheetRange = selectedPayload?.source.kind === 'worksheet-ranges' ? selectedPayload.source.ranges[0] : undefined;
-
+export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], selectedChartElement = null, defaultRange, readCellValue, onInsertChart, onCommand, onClose }: ChartPanelProps) {
+  const entries = drawings.flatMap(drawing => {
+    const payload = drawingPayloads.get(drawing.payloadId);
+    return drawing.kind === 'chart' && payload?.kind === 'chart' ? [{ drawing, payload }] : [];
+  });
+  const current = entries.find(entry => selectedDrawingIds.includes(entry.drawing.id))?.payload;
+  // Editor drafts never become a second workbook state. Only chart.update writes canonical data.
+  const [drafts, setDrafts] = useState<Record<string, ChartEditorDraft>>({});
+  const [applied, setApplied] = useState<Record<string, ChartDrawingPayload>>({});
+  const [createType, setCreateType] = useState<ChartDrawingPayload['chartType']>('column');
+  const [createSubtype, setCreateSubtype] = useState<ChartDrawingPayload['subtype']>('clustered');
+  const [createTitle, setCreateTitle] = useState('');
+  const [createRange, setCreateRange] = useState(defaultRange ?? '');
+  const [message, setMessage] = useState<string | null>(null);
+  const id = current?.chartId;
+  const submitted = id ? applied[id] : undefined;
+  const submittedApplied = current && submitted && JSON.stringify(current) === JSON.stringify(submitted);
   useEffect(() => {
-    if (!selectedPayload) return;
-    setType(selectedPayload.chartType);
-    setSubtype(selectedPayload.subtype);
-    setStacked(selectedPayload.stacked ?? 'none');
-    setTitle(selectedPayload.elements.title ?? '');
-    const source = selectedPayload.source.kind === 'worksheet-ranges' ? selectedPayload.source.ranges[0] : selectedPayload.source.kind === 'report-range' ? selectedPayload.source.range : undefined;
-    setRangeInput(formatRange(source));
-    setCategoryInput(formatRange(selectedPayload.categoryRange));
-  }, [selectedId, selectedPayload]);
-
-  const updateElements = (elements: Partial<ChartDrawingPayload['elements']>) => {
-    if (!selectedPayload) return;
-    onCommand({ commandId: 'chart.setElements', params: { sheetId, chartId: selectedPayload.chartId, elements } });
+    if (!id || !submittedApplied) return;
+    setDrafts(all => { const next = { ...all }; delete next[id]; return next; });
+    setApplied(all => { const next = { ...all }; delete next[id]; return next; });
+  }, [id, submittedApplied]);
+  const storedDraft = id && !submittedApplied ? drafts[id] : undefined;
+  const draft = current ? storedDraft ?? chartEditorDraft(current) : undefined;
+  const payload = draft?.value;
+  const conflict = Boolean(storedDraft && current && JSON.stringify(storedDraft.base) !== JSON.stringify(current));
+  const preserved = current?.nativeIdentity?.status === 'preserved-native';
+  let validationError: string | null = null;
+  let candidate: ChartDrawingPayload | undefined;
+  if (draft) {
+    try { candidate = chartPayloadFromDraft(draft, sheetId); }
+    catch (error) { validationError = error instanceof Error ? error.message : '图表输入无效'; }
+  }
+  const dirty = Boolean(storedDraft && (!candidate || JSON.stringify(candidate) !== JSON.stringify(current)));
+  const edit = (change: (value: ChartEditorDraft) => ChartEditorDraft) => {
+    if (!id || !draft) return;
+    setDrafts(all => ({ ...all, [id]: change(structuredClone(draft)) }));
+    setApplied(all => { const next = { ...all }; delete next[id]; return next; });
+    setMessage(null);
   };
-  const updateSeries = (series: NonNullable<ChartDrawingPayload['series']>, categoryRange = selectedCategoryRange) => {
-    if (!selectedPayload) return;
-    onCommand({ commandId: 'chart.setSeries', params: { sheetId, chartId: selectedPayload.chartId, source: selectedPayload.source, series: series.map((entry, index) => ({ ...entry, id: seriesId(entry, index) })), categoryRange } });
+  const updatePayload = (patch: Partial<ChartDrawingPayload>) => edit(value => ({ ...value, value: { ...value.value, ...patch } }));
+  const updateElements = (patch: Partial<ChartDrawingPayload['elements']>) => edit(value => ({ ...value, value: { ...value.value, elements: { ...value.value.elements, ...patch } } }));
+  const cancel = () => {
+    if (!id) return;
+    setDrafts(all => { const next = { ...all }; delete next[id]; return next; });
+    setApplied(all => { const next = { ...all }; delete next[id]; return next; });
+    setMessage(null);
   };
-  const updateAxis = (key: 'valueAxis' | 'categoryAxis' | 'secondaryValueAxis', patch: Partial<ChartAxisModel>) => {
-    if (!selectedPayload) return;
-    const current = selectedPayload.elements[key];
-    updateElements({ [key]: { ...axisWith(current, key === 'categoryAxis' ? 'bottom' : key === 'secondaryValueAxis' ? 'right' : 'left'), ...patch } });
+  const apply = () => {
+    if (!draft || !candidate || !id || conflict || preserved) return;
+    onCommand({ commandId: 'chart.update', params: { sheetId, chartId: id, payload: candidate, expectedPayload: draft.base } });
+    setApplied(all => ({ ...all, [id]: candidate }));
   };
-  const handleCreate = () => { if (sourceRange) onInsertChart(type, subtype, sourceRange, title, stacked); };
-
-  return (
-    <Panel className="h-full border-0 bg-transparent shadow-none">
-      <PanelHeader className="h-12 border-b border-slate-200 px-4"><PanelTitle size="sm">Chart Design & Format</PanelTitle></PanelHeader>
-      <PanelBody className="p-4"><Stack gap="md">
-        {selectedChartElement ? <Box className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2"><Text size="xs" weight="semibold" className="text-emerald-800">Selected element: {selectedChartElement.kind}{selectedChartElement.kind === 'point' || selectedChartElement.kind === 'series' ? ` · ${selectedChartElement.seriesId}` : ''}</Text></Box> : null}
-        {selectedPayload ? <>
-          <Field label="Chart Title"><TextInput value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => updateElements({ title })} /></Field>
-          <Field label="Chart Type"><Select value={selectedPayload.chartType} onChange={(event) => { const chartType = event.target.value as ChartDrawingPayload['chartType']; onCommand({ commandId: 'chart.setType', params: { sheetId, chartId: selectedPayload.chartId, chartType, subtype: defaultChartSubtype(chartType) } }); }} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{chartLabel(entry)}</option>)}</Select></Field>
-          <Field label="Chart Subtype"><Select value={selectedPayload.subtype} onChange={(event) => onCommand({ commandId: 'chart.setType', params: { sheetId, chartId: selectedPayload.chartId, chartType: selectedPayload.chartType, subtype: event.target.value } })} sizeVariant="sm">{CHART_SUBTYPES_BY_TYPE[selectedPayload.chartType].map((entry) => <option key={entry} value={entry}>{entry}</option>)}</Select></Field>
-          <Field label="Legend"><Select value={selectedPayload.elements.legend?.visible ? selectedPayload.elements.legend.position : 'none'} onChange={(event) => updateElements({ legend: event.target.value === 'none' ? { visible: false, position: 'bottom' } : { visible: true, position: event.target.value as NonNullable<ChartDrawingPayload['elements']['legend']>['position'] } })} sizeVariant="sm"><option value="none">None</option><option value="top">Top</option><option value="top-right">Top Right</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></Select></Field>
-          <Field label="Data Labels"><Stack gap="xs"><CheckToggle label="Show labels" checked={selectedPayload.elements.dataLabels?.visible === true} onChange={(event) => updateElements({ dataLabels: { ...(selectedPayload.elements.dataLabels ?? { visible: false }), visible: event.currentTarget.checked } })} /><CheckToggle label="Value" checked={selectedPayload.elements.dataLabels?.showValue !== false} onChange={(event) => updateElements({ dataLabels: { ...(selectedPayload.elements.dataLabels ?? { visible: true }), showValue: event.currentTarget.checked } })} /><CheckToggle label="Category / Series" checked={selectedPayload.elements.dataLabels?.showCategoryName === true || selectedPayload.elements.dataLabels?.showSeriesName === true} onChange={(event) => updateElements({ dataLabels: { ...(selectedPayload.elements.dataLabels ?? { visible: true }), showCategoryName: event.currentTarget.checked, showSeriesName: event.currentTarget.checked } })} /></Stack></Field>
-          <Field label="Data Table"><CheckToggle label="Show chart data table" checked={selectedPayload.elements.dataTable?.visible === true} onChange={(event) => onCommand({ commandId: 'chart.setDataTable', params: { sheetId, chartId: selectedPayload.chartId, dataTable: { ...(selectedPayload.elements.dataTable ?? { visible: false }), visible: event.currentTarget.checked } } })} /></Field>
-          <Field label="Hidden / Empty Data"><Stack gap="xs"><Select value={selectedPayload.elements.hiddenData} onChange={(event) => updateElements({ hiddenData: event.target.value as ChartDrawingPayload['elements']['hiddenData'] })} sizeVariant="sm"><option value="show">Show all data</option><option value="hideRows">Do not plot hidden rows</option><option value="hideColumns">Do not plot hidden columns</option></Select><Select value={selectedPayload.elements.emptyCells ?? 'gap'} onChange={(event) => updateElements({ emptyCells: event.target.value as ChartDrawingPayload['elements']['emptyCells'] })} sizeVariant="sm"><option value="gap">Empty cells: gap</option><option value="zero">Empty cells: zero</option><option value="connect">Empty cells: connect</option></Select></Stack></Field>
-          <Field label="Chart Area Format"><Stack gap="xs"><TextInput value={fillValue(selectedPayload.elements.chartArea?.fill)} placeholder="#ffffff" onChange={(event) => updateElements({ chartArea: { ...(selectedPayload.elements.chartArea ?? {}), fill: event.target.value } })} /><TextInput value={selectedPayload.elements.chartArea?.border ?? ''} placeholder="#cbd5e1" onChange={(event) => updateElements({ chartArea: { ...(selectedPayload.elements.chartArea ?? {}), border: event.target.value } })} /></Stack></Field>
-          <Field label="Value Axis"><Stack gap="xs"><TextInput value={selectedPayload.elements.valueAxis?.title ?? ''} placeholder="Axis title" onChange={(event) => updateAxis('valueAxis', { title: event.target.value })} /><Select value={selectedPayload.elements.valueAxis?.scale ?? 'linear'} onChange={(event) => updateAxis('valueAxis', { scale: event.target.value as ChartAxisModel['scale'] })} sizeVariant="sm"><option value="linear">Linear scale</option><option value="logarithmic">Logarithmic scale</option></Select><Inline gap="xs"><TextInput value={selectedPayload.elements.valueAxis?.minimum?.toString() ?? ''} placeholder="Automatic min" onChange={(event) => updateAxis('valueAxis', { minimum: event.target.value === '' ? undefined : Number(event.target.value), automaticMinimum: event.target.value === '' })} /><TextInput value={selectedPayload.elements.valueAxis?.maximum?.toString() ?? ''} placeholder="Automatic max" onChange={(event) => updateAxis('valueAxis', { maximum: event.target.value === '' ? undefined : Number(event.target.value), automaticMaximum: event.target.value === '' })} /></Inline><CheckToggle label="Major gridlines" checked={selectedPayload.elements.valueAxis?.majorGridlines?.visible !== false} onChange={(event) => updateAxis('valueAxis', { majorGridlines: { ...(selectedPayload.elements.valueAxis?.majorGridlines ?? {}), visible: event.currentTarget.checked } })} /></Stack></Field>
-          <Field label="Select Data"><Stack gap="xs"><TextInput value={formatRange(primaryWorksheetRange)} placeholder="Chart data range" onChange={(event) => setRangeInput(event.target.value)} onBlur={() => primaryWorksheetRange && onCommand({ commandId: 'chart.selectData', params: { sheetId, chartId: selectedPayload.chartId, source: { kind: 'worksheet-ranges', ranges: [parseA1Range(rangeInput, sheetId) ?? primaryWorksheetRange] }, categoryRange: selectedCategoryRange, series: selectedPayload.series } })} /><TextInput value={categoryInput} onChange={(event) => setCategoryInput(event.target.value)} onBlur={() => updateSeries(selectedPayload.series ?? [], selectedCategoryRange)} placeholder="Horizontal axis labels: A2:A5" /><Button variant="secondary" size="sm" onClick={() => onCommand({ commandId: 'chart.selectData', params: { sheetId, chartId: selectedPayload.chartId, source: selectedPayload.source, series: selectedPayload.series, categoryRange: selectedCategoryRange, switchRowColumn: true } })}>Switch Row / Column</Button></Stack></Field>
-          <Field label="Series"><Stack gap="xs">{(selectedPayload.series ?? []).map((entry, index, all) => { const id = seriesId(entry, index); return <Box key={id} className="rounded border border-slate-200 bg-white p-2"><Stack gap="xs"><TextInput value={entry.name} onChange={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, name: event.target.value } : candidate))} /><Inline gap="xs"><Select value={entry.chartType ?? (selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType)} onChange={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, chartType: event.target.value as Exclude<ChartDrawingPayload['chartType'], 'combo'> } : candidate))} sizeVariant="sm">{seriesTypes.map((entryType) => <option key={entryType} value={entryType}>{chartLabel(entryType)}</option>)}</Select><Select value={entry.axis ?? 'primary'} onChange={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, axis: event.target.value as 'primary' | 'secondary' } : candidate))} sizeVariant="sm"><option value="primary">Primary axis</option><option value="secondary">Secondary axis</option></Select></Inline>{selectedPayload.chartType === 'scatter' || selectedPayload.chartType === 'bubble' ? <Stack gap="xs"><TextInput value={formatRange(entry.xRange)} placeholder="X values range" onBlur={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, xRange: parseA1Range(event.target.value, sheetId) } : candidate))} /><TextInput value={formatRange(entry.yRange ?? entry.range)} placeholder="Y values range" onBlur={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, yRange: parseA1Range(event.target.value, sheetId) } : candidate))} /><TextInput value={formatRange(entry.sizeRange)} placeholder="Bubble size range" onBlur={(event) => updateSeries(all.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, sizeRange: parseA1Range(event.target.value, sheetId) } : candidate))} /></Stack> : null}<Inline gap="xs"><Button icon="arrow-up" iconOnly variant="ghost" size="xs" disabled={index === 0} onClick={() => onCommand({ commandId: 'chart.series.move', params: { sheetId, chartId: selectedPayload.chartId, seriesId: id, direction: 'up' } })} /><Button icon="arrow-down" iconOnly variant="ghost" size="xs" disabled={index === all.length - 1} onClick={() => onCommand({ commandId: 'chart.series.move', params: { sheetId, chartId: selectedPayload.chartId, seriesId: id, direction: 'down' } })} /><Button icon="trash" iconOnly variant="ghost" size="xs" disabled={all.length <= 1} onClick={() => onCommand({ commandId: 'chart.series.remove', params: { sheetId, chartId: selectedPayload.chartId, seriesId: id } })} /></Inline></Stack></Box>; })}{primaryWorksheetRange ? <Button variant="secondary" size="sm" onClick={() => onCommand({ commandId: 'chart.series.add', params: { sheetId, chartId: selectedPayload.chartId, series: { id: `series:${(selectedPayload.series?.length ?? 0) + 1}`, name: `Series ${(selectedPayload.series?.length ?? 0) + 1}`, range: structuredClone(primaryWorksheetRange), chartType: selectedPayload.chartType === 'combo' ? 'column' : selectedPayload.chartType } } })}>Add series</Button> : null}</Stack></Field>
-          {(selectedPayload.series ?? []).length > 0 ? <Field label="Analysis"><Stack gap="xs"><Button variant="secondary" size="sm" onClick={() => { const first = selectedPayload.series![0]!; onCommand({ commandId: 'chart.setTrendlines', params: { sheetId, chartId: selectedPayload.chartId, seriesId: seriesId(first, 0), trendlines: [...(first.trendlines ?? []), { type: 'linear', displayEquation: true, displayRSquared: true, color: first.color ?? '#2563eb', width: 1.5 }] } }); }}>Add linear trendline</Button><Button variant="secondary" size="sm" onClick={() => { const first = selectedPayload.series![0]!; onCommand({ commandId: 'chart.setErrorBars', params: { sheetId, chartId: selectedPayload.chartId, seriesId: seriesId(first, 0), errorBars: { type: 'standard-error', direction: 'vertical', endStyle: 'cap', color: first.color ?? '#2563eb', width: 1 } } }); }}>Add standard error bars</Button></Stack></Field> : null}
-          <Box><Text size="xs" tone="muted">Source: {selectedPayload.source.kind} · {selectedPayload.nativeIdentity?.status === 'preserved-native' ? 'preserved-native' : 'canonical owned'}</Text></Box>
-        </> : <>
-          <Field label="Chart Title"><TextInput value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Monthly Revenue" /></Field>
-          <Field label="Chart Type"><Select value={type} onChange={(event) => { const next = event.target.value as ChartDrawingPayload['chartType']; setType(next); setSubtype(defaultChartSubtype(next)); }} sizeVariant="sm">{chartTypes.map((entry) => <option key={entry} value={entry}>{chartLabel(entry)}</option>)}</Select></Field>
-          <Field label="Chart Subtype"><Select value={subtype} onChange={(event) => setSubtype(event.target.value as ChartDrawingPayload['subtype'])} sizeVariant="sm">{CHART_SUBTYPES_BY_TYPE[type].map((entry) => <option key={entry} value={entry}>{entry}</option>)}</Select></Field>
-          <Field label="Stacking"><Select value={stacked} onChange={(event) => setStacked(event.target.value as NonNullable<ChartDrawingPayload['stacked']>)} sizeVariant="sm"><option value="none">Grouped</option><option value="stacked">Stacked</option><option value="percent">100% Stacked</option></Select></Field>
-          <Field label="Data Source Range"><TextInput value={rangeInput} onChange={(event) => setRangeInput(event.target.value)} placeholder="e.g. A1:F6" /></Field>
-          <Button variant="primary" size="sm" icon="plus" disabled={!sourceRange} onClick={handleCreate}>Insert Chart to Canvas</Button>
-        </>}
-        {chartEntries.length > 0 ? <Box className="mt-4 border-t border-slate-200 pt-3"><Text size="xs" weight="semibold" className="mb-2 text-slate-700">Worksheet Charts ({chartEntries.length})</Text><Stack gap="xs">{chartEntries.map(({ drawing, payload }) => <Box key={drawing.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"><Stack gap="none"><Text size="sm" weight="medium" className="text-slate-800">{payload.elements.title || chartLabel(payload.chartType)}</Text><Text size="xs" tone="subtle">{payload.chartType.toUpperCase()} · {payload.subtype}</Text></Stack><Button variant="ghost" size="xs" icon="trash" iconOnly aria-label={`Delete ${payload.chartId}`} onClick={() => onCommand({ commandId: 'chart.remove', params: { sheetId, chartId: payload.chartId } })} className="text-rose-600 hover:bg-rose-50" /></Box>)}</Stack></Box> : null}
-      </Stack></PanelBody>
-      {onClose ? <PanelFooter className="border-t border-slate-200 px-4 py-2"><Button variant="ghost" size="sm" onClick={onClose}>Close Panel</Button></PanelFooter> : null}
-    </Panel>
-  );
+  const create = () => {
+    try {
+      const range = parseChartRange(createRange, sheetId, '数据区域');
+      onInsertChart(createType, createSubtype, range, createTitle, chartStackingForSubtype(createSubtype) ?? 'none');
+      setMessage(null);
+    } catch (error) { setMessage(error instanceof Error ? error.message : '创建图表失败'); }
+  };
+  const selectedSeriesId = selectedChartElement && 'seriesId' in selectedChartElement ? selectedChartElement.seriesId : undefined;
+  return <Panel className="flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0 bg-slate-50/70 shadow-none" onKeyDown={event => {
+    if (event.key === 'Escape' && dirty) { event.preventDefault(); event.stopPropagation(); cancel(); }
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && dirty && !validationError) { event.preventDefault(); apply(); }
+  }}>
+    <PanelHeader className="shrink-0 border-b border-slate-200 bg-white px-4 py-3"><Stack gap="xs"><PanelTitle size="sm">{current ? '图表设计与格式' : '插入图表'}</PanelTitle><Text size="xs" tone="muted">{current ? '编辑草稿后应用 · Ctrl+Enter 应用 · Esc 取消' : '从选定的数据区域创建图表'}</Text></Stack>{onClose ? <Button icon="x" iconOnly aria-label="关闭图表面板" variant="ghost" size="sm" onClick={onClose} /> : null}</PanelHeader>
+    <PanelBody className="min-h-0 flex-1 overflow-y-auto p-3"><Stack gap="sm">
+      {selectedChartElement ? <Box className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><Text size="xs" className="text-emerald-800">当前选择：{elementLabels[selectedChartElement.kind]}{selectedSeriesId ? ' · ' + selectedSeriesId : ''}</Text></Box> : null}
+      {conflict ? <Box role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">图表已被其他操作修改。你的草稿仍保留；请核对当前图表，取消草稿后重新编辑。</Box> : null}
+      {preserved ? <Box role="status" className="rounded-lg bg-amber-50 p-3 text-xs">该原生图表尚未支持编辑，原始内容将保留。</Box> : null}
+      {validationError && dirty ? <Box role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{validationError}</Box> : null}
+      {message ? <Box role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{message}</Box> : null}
+      {payload && draft ? <fieldset disabled={preserved} className="min-w-0 space-y-3 border-0 p-0">
+        <Group title="图表与数据" open>
+          <Field label="图表标题"><TextInput aria-label="图表标题" value={payload.elements.title ?? ''} placeholder="输入标题" onChange={event => updateElements({ title: event.target.value })} /></Field>
+          <TypeFields value={payload} onChange={(chartType, subtype) => edit(value => ({ ...value, value: { ...value.value, chartType, subtype, stacked: chartStackingForSubtype(subtype) }, series: value.series.map(entry => ({ ...entry, value: { ...entry.value, chartType: chartType === 'combo' ? (entry.value.chartType && ['column', 'bar', 'line', 'area'].includes(entry.value.chartType) ? entry.value.chartType : 'column') : chartType, subtype: chartType === 'combo' ? undefined : subtype } })) }))} />
+          {payload.chartType === 'map' ? <Group title="离线地图资源" open>
+            <Text size="xs" tone="muted">地图只读取工作簿内已校验的 GeoJSON，不访问外部地图服务。</Text>
+            {payload.mapOptions?.resource ? <Inline className="items-center justify-between rounded-md bg-slate-100 px-2 py-1.5" gap="xs"><Text size="xs">{payload.mapOptions.resource.resourceId} · {payload.mapOptions.resource.features.length} 个区域</Text><Button size="xs" variant="ghost" onClick={() => updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource: undefined } })}>移除</Button></Inline> : <Text size="xs" tone="muted">尚未导入 GeoJSON。没有资源时地图会明确显示不可用。</Text>}
+            <FileButton accept=".geojson,application/geo+json,.json" icon="chart" size="sm" variant="secondary" onFile={(file) => {
+              void file.text().then((text) => parseGeoJsonMapResource(text, file.name)).then((resource) => {
+                updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource } });
+                setMessage(null);
+              }).catch((error) => setMessage(error instanceof Error ? error.message : 'GeoJSON 地图资源无效'));
+            }}>导入 GeoJSON</FileButton>
+          </Group> : null}
+          {payload.source.kind === 'worksheet-ranges' || payload.source.kind === 'report-range' ? <Field label="数据区域（多个区域用分号分隔）"><TextInput aria-label="图表数据区域" value={draft.sourceRanges} onChange={event => edit(value => ({ ...value, sourceRanges: event.target.value }))} /></Field> : <Text size="xs" tone="muted">数据绑定：{payload.source.kind === 'pivot' ? '透视结果' : 'Table'}，请在对应数据源中调整范围。</Text>}
+          <Field label="分类标签范围"><TextInput aria-label="分类标签范围" placeholder="自动，或 A2:A20" value={draft.categoryRange} onChange={event => edit(value => ({ ...value, categoryRange: event.target.value }))} /></Field>
+          <Button size="sm" variant="secondary" disabled={payload.source.kind === 'pivot'} onClick={() => updatePayload({ dataOrientation: payload.dataOrientation === 'rows' ? 'columns' : 'rows' })}>切换行／列（当前按{payload.dataOrientation === 'rows' ? '行' : '列'}）</Button>
+        </Group>
+        <Group title={'数据系列（' + (draft.series.length || '自动') + '）'} open={Boolean(selectedSeriesId)}>
+          <ChartSeriesEditor chartType={payload.chartType} series={draft.series} selectedSeriesId={selectedSeriesId} onChange={series => edit(value => ({ ...value, series }))} canAdd={payload.source.kind === 'worksheet-ranges'} onMaterialize={payload.source.kind === 'worksheet-ranges' && !draft.series.length ? () => {
+            try {
+              const candidate = chartPayloadFromDraft(draft, sheetId);
+              if (candidate.source.kind !== 'worksheet-ranges') throw new Error('INVALID_CHART_SOURCE: 当前图表没有工作表数据区域');
+              if (candidate.source.ranges.some(range => range.sheetId !== sheetId)) throw new Error('UNSUPPORTED_FEATURE: 请在图表数据源所在工作表中生成可编辑系列');
+              const bindings = resolveWorksheetChartRanges(candidate, range => readCellValue(range.sheetId, range.startRow, range.startColumn));
+              const series = bindings.series.map(entry => chartSeriesDraft({ ...entry, ...(candidate.chartType === 'combo' ? { chartType: 'column' as const } : {}) }));
+              edit(value => ({ ...value, series }));
+            } catch (error) { setMessage(error instanceof Error ? error.message : '无法生成可编辑系列'); }
+          } : undefined} onAdd={() => {
+            try {
+              const existing = draft.series[draft.series.length - 1];
+              if (!existing) throw new Error('请先生成可编辑系列');
+              const range = parseChartRange(existing.range, existing.value.range.sheetId, `系列 ${draft.series.length + 1} 范围`);
+              const series = chartSeriesDraft({ id: crypto.randomUUID(), name: '系列 ' + (draft.series.length + 1), range, ...(payload.chartType === 'combo' ? { chartType: 'column' } : {}) });
+              edit(value => ({ ...value, series: [...value.series, series] }));
+            } catch (error) { setMessage(error instanceof Error ? error.message : '数据范围无效'); }
+          }} />
+        </Group>
+        <Group title="图例与标签" open={selectedChartElement?.kind === 'legend' || selectedChartElement?.kind === 'data-label'}>
+          <Field label="图例位置"><Select aria-label="图例位置" value={payload.elements.legend?.visible ? payload.elements.legend.position : 'none'} onChange={event => updateElements({ legend: { ...payload.elements.legend, visible: event.target.value !== 'none', position: event.target.value === 'none' ? 'bottom' : event.target.value as NonNullable<ChartDrawingPayload['elements']['legend']>['position'] } })}><option value="none">隐藏</option><option value="top">上方</option><option value="bottom">下方</option><option value="left">左侧</option><option value="right">右侧</option><option value="top-right">右上方</option></Select></Field>
+          {(['visible', 'showValue', 'showCategoryName', 'showSeriesName', 'showPercentage'] as const).map((key, index) => <CheckToggle key={key} label={['显示数据标签', '显示数值', '显示分类', '显示系列名称', '显示百分比'][index]!} checked={payload.elements.dataLabels?.[key] === true} onChange={event => updateElements({ dataLabels: { visible: false, ...payload.elements.dataLabels, [key]: event.currentTarget.checked } })} />)}
+          <TextInput aria-label="数据标签数字格式" placeholder="数字格式，例如 0.00" value={payload.elements.dataLabels?.numberFormat ?? ''} onChange={event => updateElements({ dataLabels: { visible: true, ...payload.elements.dataLabels, numberFormat: event.target.value || undefined } })} />
+          <CheckToggle label="显示图表数据表" checked={payload.elements.dataTable?.visible === true} onChange={event => updateElements({ dataTable: { ...payload.elements.dataTable, visible: event.currentTarget.checked } })} />
+        </Group>
+        <Group title="坐标轴" open={selectedChartElement?.kind === 'axis' || selectedChartElement?.kind === 'axis-title'}>
+          {(['categoryAxis', 'valueAxis', 'secondaryValueAxis'] as const).map((key, index) => <Box key={key} className="space-y-2 border-b border-slate-100 pb-3 last:border-0"><Text size="xs" weight="semibold">{['分类轴', '主数值轴', '次数值轴'][index]}</Text><AxisFields axis={payload.elements[key]} position={key === 'categoryAxis' ? 'bottom' : key === 'valueAxis' ? 'left' : 'right'} onChange={axis => updateElements({ [key]: axis })} /></Box>)}
+        </Group>
+        <Group title="外观与空值">
+          <Field label="图表背景"><TextInput aria-label="图表背景" placeholder="自动，例如 #ffffff" value={typeof payload.elements.chartArea?.fill === 'string' ? payload.elements.chartArea.fill : payload.elements.chartArea?.fill?.color ?? ''} onChange={event => updateElements({ chartArea: { ...payload.elements.chartArea, fill: event.target.value || undefined } })} /></Field>
+          <Field label="图表边框"><TextInput aria-label="图表边框" placeholder="自动，例如 #cbd5e1" value={payload.elements.chartArea?.border ?? ''} onChange={event => updateElements({ chartArea: { ...payload.elements.chartArea, border: event.target.value || undefined } })} /></Field>
+          <Select aria-label="隐藏数据" value={payload.elements.hiddenData} onChange={event => updateElements({ hiddenData: event.target.value as ChartDrawingPayload['elements']['hiddenData'] })}><option value="show">显示全部数据</option><option value="hideRows">忽略隐藏行</option><option value="hideColumns">忽略隐藏列</option></Select>
+          <Select aria-label="空值处理" value={payload.elements.emptyCells ?? 'gap'} onChange={event => updateElements({ emptyCells: event.target.value as ChartDrawingPayload['elements']['emptyCells'] })}><option value="gap">空值留空</option><option value="zero">空值显示为零</option><option value="connect">跨空值连接</option></Select>
+        </Group>
+      </fieldset> : <Group title="新建图表" open>
+        <Field label="图表标题"><TextInput aria-label="图表标题" value={createTitle} placeholder="输入标题" onChange={event => setCreateTitle(event.target.value)} /></Field>
+        <TypeFields value={{ chartType: createType, subtype: createSubtype }} onChange={(type, subtype) => { setCreateType(type); setCreateSubtype(subtype); }} />
+        <Field label="数据区域"><TextInput aria-label="图表数据区域" value={createRange} placeholder="例如 A1:C20" onChange={event => setCreateRange(event.target.value)} /></Field>
+        <Button size="sm" variant="primary" icon="plus" disabled={!createRange.trim()} onClick={create}>插入图表</Button>
+      </Group>}
+      {entries.length ? <Group title={'工作表中的图表（' + entries.length + '）'}>
+        {entries.map(({ payload: item }) => <Box key={item.chartId} className="flex items-center justify-between gap-2"><Text size="xs">{item.elements.title || chartLabels[item.chartType]}{drafts[item.chartId] && !applied[item.chartId] ? ' · 草稿' : ''}</Text><Button size="xs" variant="ghost" icon="trash" iconOnly aria-label={'删除图表 ' + (item.elements.title || item.chartId)} onClick={() => onCommand({ commandId: 'chart.remove', params: { sheetId, chartId: item.chartId } })} /></Box>)}
+      </Group> : null}
+    </Stack></PanelBody>
+    <PanelFooter className="shrink-0 border-t border-slate-200 bg-white px-3 py-3"><Inline className="justify-between" gap="xs">
+      <Text size="xs" tone="muted">{dirty ? '有未应用的草稿' : '修改后统一应用'}</Text>
+      <Inline gap="xs">{current ? <><Button size="sm" variant="ghost" disabled={!storedDraft} onClick={cancel}>取消</Button><Button size="sm" variant="primary" disabled={!dirty || Boolean(validationError) || conflict || preserved} onClick={apply}>应用</Button></> : null}</Inline>
+    </Inline></PanelFooter>
+  </Panel>;
 }

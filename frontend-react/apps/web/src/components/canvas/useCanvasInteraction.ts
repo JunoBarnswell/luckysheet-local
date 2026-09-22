@@ -152,7 +152,6 @@ export interface CanvasInteractionOptions {
   onCancelTextBoxPlacement: () => void;
   onBeginTextBoxEdit: (drawingId: string, initialText?: string) => void;
   onToggleOutline?: (groupId: string) => void;
-  onActivateHyperlink?: (row: number, column: number) => void | Promise<void>;
   onShortcut?: (id: string) => boolean;
   onCancelFormatPainter?: () => void;
   onPivotResolve: (sheet: CanvasSheetSnapshot, row: number, column: number) => ResolvedContextHit | null;
@@ -243,7 +242,6 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onTextBoxPlacementCommit,
     onCancelTextBoxPlacement,
     onBeginTextBoxEdit,
-    onActivateHyperlink,
     onJumpEdge,
     onMovePrimary,
     onRequestExtentGrowth,
@@ -495,7 +493,12 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (floatingHit.control) {
         const action = floatingHit.control.data;
         if (floatingHit.control.action === 'chart.select-element') {
-          onChartElementAction?.(floatingHit.id, action);
+          const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+          if (additive && action && typeof action === 'object') {
+            onChartElementAction?.(floatingHit.id, { ...(action as Record<string, unknown>), additive: true });
+          } else {
+            onChartElementAction?.(floatingHit.id, action);
+          }
         } else if (action && typeof action === 'object' && 'kind' in action) {
           onPivotControlAction?.(floatingHit.id, action as PivotControlAction);
         }
@@ -1023,14 +1026,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
     const cell = resolveSelectionTarget(sheet, hitCell, 'cells', sheet.id).cell;
     const sourceCell = sheet.getCell(cell.row, cell.column);
-    if (sourceCell?.hyperlink && onActivateHyperlink) {
-      void onActivateHyperlink(cell.row, cell.column);
-      return;
-    }
     const text = sourceCell?.formula ?? (sourceCell?.value == null ? '' : String(sourceCell.value));
     const caretOffset = engine.textCaretAtLocalPoint(local, cell, text);
     cellEdit.dispatch({ type: 'begin.request', source: 'double-click', surface: 'grid', ...(caretOffset === null ? {} : { caret: { start: caretOffset, end: caretOffset } }) });
-  }, [cellEdit, drawingPayloads, drawings, engineRef, findPivotProjectionCell, isPivotValueCell, localPointOf, onActivateHyperlink, onAutoFitColumn, onAutoFitRow, onBeginTextBoxEdit, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onPivotShowDetails, onUnhideColumns, onUnhideRows, sheet]);
+  }, [cellEdit, drawingPayloads, drawings, engineRef, findPivotProjectionCell, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginTextBoxEdit, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onPivotShowDetails, onUnhideColumns, onUnhideRows, sheet]);
 
   const handleWheel = useCallback((event: React.WheelEvent) => {
     const engine = engineRef.current;
@@ -1038,8 +1037,21 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     event.preventDefault();
     // Excel's Shift+wheel is the horizontal outline/worksheet scroll gesture;
     // keep the axis decision at the input boundary before PaneMap consumes it.
-    engine.scrollBy(event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX, event.shiftKey ? 0 : event.deltaY);
-  }, [engineRef]);
+    const deltaX = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+    const deltaY = event.shiftKey ? 0 : event.deltaY;
+    engine.scrollBy(deltaX, deltaY);
+    // A sheet shorter than the viewport cannot emit a changed scroll offset.
+    // Explicit forward intent must still be able to grow its canonical extent.
+    const axes = resolveAutoScrollExtentGrowth({
+      right: deltaX > 0,
+      bottom: deltaY > 0,
+      viewport: engine.viewport.getSnapshot(),
+      content: engine.skeleton.contentSize,
+      defaultRowHeight: sheet.defaultRowHeightPx,
+      defaultColumnWidth: sheet.defaultColumnWidthPx,
+    });
+    if (axes.rows || axes.columns) onRequestExtentGrowth(axes);
+  }, [engineRef, onRequestExtentGrowth, sheet.defaultColumnWidthPx, sheet.defaultRowHeightPx]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (phase !== "ready") return;

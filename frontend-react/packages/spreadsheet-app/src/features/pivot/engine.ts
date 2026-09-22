@@ -1,7 +1,9 @@
 import type {
+  PivotAggregateFunction,
   PivotDefinition,
   PivotFieldCatalog,
   PivotFieldDataType,
+  PivotFieldDefinition,
   PivotErrorValue,
   PivotFieldPlacement,
   PivotFilter,
@@ -10,21 +12,26 @@ import type {
   PivotGridProjection,
   PivotHitTest,
   PivotLayout,
+  PivotCalculatedItem,
   PivotMemberKey,
   PivotModel,
   PivotProjectionCell,
   PivotRefreshState,
   PivotReportFilterSummary,
   PivotReportFilterSummaryEntry,
+  PivotResultCell,
   PivotResultNode,
   PivotResultTree,
+  PivotResultValueField,
   PivotScalar,
   PivotSort,
   PivotShowAsBaseItem,
   PivotTopBottomMode,
   PivotSource,
+  PivotSourceRowPath,
   PivotTarget,
   PivotSlicerDrawingPayload,
+  PivotSlicerItemProjection,
   PivotTimelineDrawingPayload,
   PivotValueField,
   ContextHit,
@@ -34,6 +41,7 @@ import type {
 } from '@react-sheets/core-model';
 import {
   PIVOT_GRID_PROJECTION_SCHEMA,
+  PIVOT_RESULT_TREE_SCHEMA,
   DEFAULT_PIVOT_DISPLAY_OPTIONS,
   DEFAULT_PIVOT_STYLE_OPTIONS,
   DEFAULT_SHEET_COLUMN_COUNT,
@@ -44,18 +52,158 @@ import {
   createPivotMemberKey,
   formatPivotMember,
   isPivotError,
+  normalizePivotTimelinePeriod,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
   normalizePivotDisplayOptions,
   normalizePivotNumberFormat,
   pivotNumericValue,
   PIVOT_MAX_MEMBER_COUNT,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
+  pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
+  parsePivotCalculatedItemFormula,
 } from '@react-sheets/core-model';
-import { FormulaEngine } from '@react-sheets/formula-engine';
+import type { PivotCalculatedItemFormulaToken } from '@react-sheets/core-model';
+import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
+import { collectNameReferences, FormulaEngine, isFormulaError, parseFormula, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
-import { readFormulaSpillPages } from '../../formula-spill-sync';
+import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
+import {
+  assertPivotSourceIndex,
+  createPivotSourceIndex,
+  inferPivotSourceFieldType,
+  pivotSourceColumnValues,
+  pivotSourceRowPaths,
+  pivotSourceValueAt,
+  type PivotSourceFieldInput,
+  type PivotSourceIndex,
+} from './source-index';
+
+export type PivotSourceTableInput = PivotSourceIndex;
+export type { PivotSourceFieldInput, PivotSourceIndex } from './source-index';
+
+interface SourceTable {
+  index: PivotSourceIndex;
+  fields: PivotSourceFieldInput[];
+  fieldOrdinals: ReadonlyMap<string, number>;
+  rows: SourceRow[];
+  /** Bounded, lazy indexes for low-cardinality manual filters. */
+  memberIndexes: Map<number, ReadonlyMap<string, readonly number[]> | null>;
+}
+
+interface SourceRow {
+  source: SourceTable;
+  row: number;
+  overrides?: ReadonlyMap<string, PivotScalar>;
+  pathsOverride?: readonly PivotSourceRowPath[];
+}
+
+type SourceField = PivotSourceFieldInput;
+
+// A registered source index is immutable for the lifetime of its revision.
+// Reusing its row wrappers avoids allocating one object per source row for
+// every filter or sort interaction while preserving the source-index contract.
+const sourceTableCache = new WeakMap<PivotSourceIndex, SourceTable>();
+const MAX_SOURCE_MEMBER_INDEX_FIELDS = 4;
+const MAX_SOURCE_MEMBER_INDEX_MEMBERS = 20_000;
+
+function openSourceTable(index: PivotSourceIndex): SourceTable {
+  assertPivotSourceIndex(index);
+  const cached = sourceTableCache.get(index);
+  if (cached) return cached;
+  const fields = index.fields.map((field) => ({ ...field }));
+  const fieldOrdinals = new Map(fields.map((field, ordinal) => [field.fieldId, ordinal] as const));
+  const table = { index, fields, fieldOrdinals, rows: [] as SourceRow[], memberIndexes: new Map<number, ReadonlyMap<string, readonly number[]> | null>() };
+  table.rows = Array.from({ length: index.rowCount }, (_, row) => ({ source: table, row }));
+  sourceTableCache.set(index, table);
+  return table;
+}
+
+function sourceMemberIndex(table: SourceTable, ordinal: number): ReadonlyMap<string, readonly number[]> | undefined {
+  if (table.memberIndexes.has(ordinal)) return table.memberIndexes.get(ordinal) ?? undefined;
+  if (table.memberIndexes.size >= MAX_SOURCE_MEMBER_INDEX_FIELDS) return undefined;
+  const index = new Map<string, number[]>();
+  const addRow = (key: string, row: number): boolean => {
+    const bucket = index.get(key);
+    if (bucket) {
+      bucket.push(row);
+      return true;
+    }
+    if (index.size >= MAX_SOURCE_MEMBER_INDEX_MEMBERS) {
+      table.memberIndexes.set(ordinal, null);
+      return false;
+    }
+    index.set(key, [row]);
+    return true;
+  };
+  const column = table.index.columns[ordinal];
+  if (column?.kind === 'dictionary') {
+    // Dictionary columns already carry the canonical member identity per
+    // row. Reusing those keys avoids decoding and re-keying every value while
+    // building a large-table filter index.
+    const blankKey = pivotMemberKey(createPivotMemberKey(null));
+    const dictionaryKeys = column.dictionary.map((value) => pivotMemberKey(createPivotMemberKey(value)));
+    for (let row = 0; row < table.index.rowCount; row += 1) {
+      const code = column.codes[row] ?? 0;
+      const key = code === 0 ? blankKey : dictionaryKeys[code - 1] ?? blankKey;
+      if (!addRow(key, row)) return undefined;
+    }
+  } else {
+    for (let row = 0; row < table.index.rowCount; row += 1) {
+      if (!addRow(pivotMemberKey(createPivotMemberKey(pivotSourceValueAt(table.index, ordinal, row))), row)) return undefined;
+    }
+  }
+  table.memberIndexes.set(ordinal, index);
+  return index;
+}
+
+function sourceRowValue(row: SourceRow, fieldId: string): PivotScalar {
+  if (row.overrides?.has(fieldId)) return row.overrides.get(fieldId) ?? null;
+  const ordinal = row.source.fieldOrdinals.get(fieldId);
+  return ordinal === undefined ? null : pivotSourceValueAt(row.source.index, ordinal, row.row);
+}
+
+/**
+ * Build a collision-free compound member key without allocating an array and
+ * serialising it for every source row. The length prefix keeps text members
+ * containing the separator unambiguous while avoiding JSON array overhead in
+ * the hot grouping/filtering paths.
+ */
+function pivotGroupKey(values: readonly PivotScalar[]): string {
+  let key = '';
+  for (const value of values) {
+    const member = pivotMemberKey(createPivotMemberKey(value));
+    key += `${member.length}:${member}`;
+  }
+  return key;
+}
+
+function sourceRowPaths(row: SourceRow): readonly PivotSourceRowPath[] {
+  return row.pathsOverride ?? pivotSourceRowPaths(row.source.index, row.row);
+}
+
+function sourceColumnValues(table: SourceTable, fieldId: string): PivotScalar[] {
+  const ordinal = table.fieldOrdinals.get(fieldId);
+  return ordinal === undefined ? [] : pivotSourceColumnValues(table.index, ordinal);
+}
+
+interface AxisGroup {
+  values: PivotScalar[];
+  rows: SourceRow[];
+  rowSet: Set<SourceRow>;
+}
+
+const PIVOT_MAX_RESULT_CELL_COUNT = 250_000;
+const PIVOT_MAX_PROVENANCE_REFERENCE_COUNT = 2_000_000;
+
+export interface PivotResultTable {
+  headers: string[];
+  rows: Array<{ keys: string[]; values: PivotScalar[] }>;
+  grandTotal: PivotScalar[];
+  tree: PivotResultTree;
+}
 
 export interface PivotRevisionKey {
   pivotId: string;
@@ -91,6 +239,14 @@ interface LastValidPivotProjection {
  * collision/load failure must never destroy the last successful projection.
  */
 const lastValidPivotProjections = new WeakMap<WorkbookModel, Map<string, LastValidPivotProjection>>();
+
+const same = (left: PivotScalar, right: PivotScalar): boolean => {
+  if ((left == null || left === '') && (right == null || right === '')) return true;
+  if (isPivotError(left) || isPivotError(right)) {
+    return isPivotError(left) && isPivotError(right) && left.code === right.code;
+  }
+  return left === right;
+};
 
 const display = (value: PivotScalar): string => formatPivotMember(value);
 
@@ -131,8 +287,7 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel, formula?: Fo
     const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[index]?.sourceId : undefined;
     return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
   }).sort();
-  const spills = formula ? ranges.map((range) => [...readFormulaSpillPages(formula, range.sheetId, { limit: 256 })]
-    .flatMap((page) => page.spills)
+  const spills = formula ? ranges.map((range) => formula.getSpillsForSheet(range.sheetId)
     .filter((spill) => spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
       && spill.range.startColumn <= range.endColumn && range.startColumn <= spill.range.endColumn)
     .map((spill) => ({ anchor: spill.anchor, range: spill.range, values: spill.values, state: spill.state }))) : [];
@@ -157,22 +312,7 @@ function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): un
     const payload = sheet.drawingPayloads.get(drawing.payloadId);
     if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return undefined;
     const linked = [payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)];
-    if (!linked.includes(pivot.id)) return undefined;
-    // A newly-created control with its default "all"/empty period has no
-    // semantic effect on the aggregate.  Its drawing identity and styling
-    // must not invalidate a completed Pivot result; only an active filter or
-    // period, together with its report connections, belongs in filterRevision.
-    const active = payload.kind === 'slicer'
-      ? payload.filter.mode !== 'all' && payload.filter.memberKeys.length > 0
-      : payload.period.start !== undefined || payload.period.end !== undefined;
-    if (!active) return undefined;
-    return {
-      kind: payload.kind,
-      pivotId: payload.pivotId,
-      fieldId: payload.fieldId,
-      ...(payload.kind === 'slicer' ? { filter: payload.filter } : { period: payload.period, level: payload.level }),
-      connections: payload.connections ?? [],
-    };
+    return linked.includes(pivot.id) ? { drawingId: drawing.id, payload } : undefined;
   })).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
@@ -255,6 +395,22 @@ export function getStablePivotFieldId(source: PivotSource, range: RangeRef, ordi
   return sourceIdentity(source, range, ordinal, rangeIndex);
 }
 
+function createPivotFormulaEngine(workbook: WorkbookModel): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, recalculationMode: 'manual' });
+  engine.setDefinedNameModels(workbook.definedNameModels);
+  configureWorkbookSpillEnvironments(engine, workbook);
+  syncWorkbookSheetTables(engine, workbook);
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
+      else if (cell.value != null) engine.setValue(address, cell.value as never);
+    });
+  }
+  engine.recalculate();
+  return engine;
+}
+
 function sourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): RangeRef[] {
   const source = getPivotSource(pivot);
   if (source.kind === 'worksheet-range') return [source.range];
@@ -264,13 +420,10 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: Form
   }
   if (source.kind === 'data-source') {
     const manifest = workbook.getDataSource(source.dataSourceId);
-    // A block-backed source is not required to have a worksheet materializing
-    // range.  The async block acquisition path owns its rows and returns an
-    // explicit source index; callers that need structural overlap receive no
-    // fabricated worksheet range.
-    return manifest.sourceRange ? [manifest.sourceRange] : [];
+    if (!manifest.sourceRange) throw new Error(`Pivot data source ${source.dataSourceId} has no worksheet range`);
+    return [manifest.sourceRange];
   }
-  return [resolveNamedRange(workbook, source.name, source.sheetId, formula)];
+  return [resolveNamedRange(workbook, source.name, source.sheetId, formula ?? createPivotFormulaEngine(workbook))];
 }
 
 function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
@@ -292,6 +445,26 @@ function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
     range: sheetTable.range,
     fields: sheetTable.columns.map((column) => ({ id: column.id, name: column.name })),
   };
+}
+
+function cellScalar(value: unknown): PivotScalar {
+  if (Array.isArray(value) && value.length === 1 && Array.isArray(value[0]) && value[0].length === 1) {
+    return cellScalar(value[0][0]);
+  }
+  if (Array.isArray(value)) throw new Error('Pivot source array value must be resolved through its spill range');
+  if (isFormulaError(value)) return { kind: 'error', code: value.code, ...(value.message ? { message: value.message } : {}) };
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  throw new Error(`Unsupported Pivot source value type: ${typeof value}`);
+}
+
+function formulaCellValue(formula: FormulaEngine, address: { sheetId: string; row: number; column: number }, fallback: unknown): FormulaValue | unknown {
+  // Spill children are derived values and therefore have no authored cell
+  // result. Authored cells absent from a session engine still use the model
+  // value until the canonical engine receives that input.
+  if (formula.getSpillValueAt(address.sheetId, address.row, address.column) !== undefined || formula.getCellResult(address) !== undefined) {
+    return formula.getCellValue(address);
+  }
+  return fallback;
 }
 
 function parseColumnLabel(value: string): number {
@@ -319,9 +492,7 @@ function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId:
   if (startRow < 0 || endRow < startRow || startColumn < 0 || endColumn < startColumn) throw new Error(`Invalid named range: ${formula}`);
   if (spillReference) {
     if (match[5] || !calculator) throw new Error(`Named range spill reference is not resolved: ${formula}`);
-    const spill = [...readFormulaSpillPages(calculator, sheet.id, { limit: 256 })]
-      .flatMap((page) => page.spills)
-      .find((candidate) => candidate.anchor.row === startRow && candidate.anchor.column === startColumn);
+    const spill = calculator.getSpillsForSheet(sheet.id).find((candidate) => candidate.anchor.row === startRow && candidate.anchor.column === startColumn);
     if (!spill) throw new Error(`Named range spill anchor has no resolved spill: ${formula}`);
     if (spill.state !== 'ok') throw new Error(`Named range spill is blocked: ${formula}`);
     return structuredClone(spill.range);
@@ -338,59 +509,434 @@ function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: stri
   return parseA1Range(formula, workbook, sheetId ?? workbook.primarySheetId, calculator);
 }
 
-function scalarCellValue(value: unknown): PivotScalar | null {
-  if (isPivotError(value)) return value;
-  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
-}
-
-function inferFieldDataType(values: readonly PivotScalar[]): PivotFieldDataType {
-  const present = values.filter((value) => value !== null && value !== '');
-  if (!present.length) return 'mixed';
-  if (present.every(isPivotError)) return 'error';
-  if (present.some(isPivotError)) return 'mixed';
-  if (present.every((value) => typeof value === 'boolean')) return 'boolean';
-  if (present.every((value) => typeof value === 'number' && Number.isFinite(value))) return 'number';
-  if (present.every((value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value) && !Number.isNaN(Date.parse(value)))) return 'date';
-  if (present.every((value) => typeof value === 'string')) return 'text';
-  return 'mixed';
-}
-
-/**
- * Build only field metadata for a new worksheet Pivot. This bounded metadata
- * read supports the create/recommend flow; it never constructs a source row
- * index and never feeds an analytics calculation. Existing definitions keep
- * their persisted catalog, while the server prepare phase owns execution.
- */
-export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotFieldCatalog {
-  if (pivot.fieldCatalog.fields.length) return structuredClone(pivot.fieldCatalog);
-  const source = getPivotSource(pivot);
-  if (source.kind === 'data-source') {
-    const manifest = workbook.getDataSource(source.dataSourceId);
-    return {
-      schema: 'PivotFieldCatalog',
-      fields: manifest.fields.map((field) => ({ fieldId: field.id, name: field.name, dataType: field.type, ordinal: field.ordinal, values: [] })),
-    };
-  }
-  const ranges = sourceRanges(workbook, pivot, formula);
-  const fields: PivotFieldCatalog['fields'] = [];
-  for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex += 1) {
-    const range = ranges[rangeIndex]!;
-    const sheet = workbook.getSheet(range.sheetId);
-    const tableFields = source.kind === 'table' ? resolvePivotTable(workbook, source.tableId).fields : [];
-    for (let offset = 0; offset <= range.endColumn - range.startColumn; offset += 1) {
-      const column = range.startColumn + offset;
-      const header = sheet.cells.get(range.startRow, column);
-      const name = typeof header?.value === 'string' && header.value.trim() ? header.value : tableFields[offset]?.name ?? `Column ${offset + 1}`;
-      const values: PivotScalar[] = [];
-      for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-        const cell = sheet.cells.get(row, column);
-        const raw = formula && cell?.formula !== undefined ? formula.getCellValue({ sheetId: sheet.id, row, column }) : cell?.formulaValue ?? cell?.value ?? null;
-        values.push(scalarCellValue(raw));
-      }
-      fields.push({ fieldId: sourceIdentity(source, range, offset, rangeIndex), name, dataType: inferFieldDataType(values), ordinal: fields.length, values: canonicalPivotMembers(values) });
+function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+  if (formula) {
+    for (const spill of formula.getSpillsForSheet(sheet.id)) {
+      const intersects = spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
+        && spill.range.startColumn <= range.endColumn && range.startColumn <= spill.range.endColumn;
+      if (intersects && spill.state !== 'ok') throw new Error(`Pivot source intersects blocked spill at ${sheet.id}!${spill.anchor.row}:${spill.anchor.column}`);
     }
   }
-  return { schema: 'PivotFieldCatalog', fields };
+  const fields: SourceField[] = [];
+  for (let ordinal = 0; ordinal <= range.endColumn - range.startColumn; ordinal += 1) {
+    const column = range.startColumn + ordinal;
+    const headerCell = sheet.cells.get(range.startRow, column);
+    const raw = formula
+      ? formulaCellValue(formula, { sheetId: sheet.id, row: range.startRow, column }, headerCell?.formulaValue ?? headerCell?.value ?? null)
+      : headerCell?.formulaValue ?? headerCell?.value ?? null;
+    const name = raw == null || raw === '' ? `Column ${ordinal + 1}` : String(raw);
+    // Ordinal/source-column identity survives a header rename. A changed
+    // physical column is a new field, while a changed caption is not.
+    const fieldId = sourceIdentity(source, range, ordinal, rangeIndex);
+    const persistedField = persisted?.fields.find((field) => field.fieldId === fieldId);
+    fields.push({ fieldId: persistedField?.fieldId ?? fieldId, name, ordinal });
+  }
+  const columnValues = fields.map(() => [] as PivotScalar[]);
+  const rowPaths: PivotSourceRowPath[][] = [];
+  const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[rangeIndex]?.sourceId : undefined;
+  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+    fields.forEach((field, ordinal) => {
+      const cell = sheet.cells.get(row, range.startColumn + ordinal);
+      const raw = formula
+        ? formulaCellValue(formula, { sheetId: sheet.id, row, column: range.startColumn + ordinal }, cell?.formulaValue ?? cell?.value ?? null)
+        : cell?.formulaValue ?? cell?.value ?? null;
+      columnValues[ordinal]!.push(cellScalar(raw));
+    });
+    rowPaths.push([{ ...(sourceId ? { sourceId } : {}), recordId: `${sourceId ?? range.sheetId}:${row}`, sheetId: range.sheetId, row }]);
+  }
+  return openSourceTable(createPivotSourceIndex({
+    columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
+    rowPaths,
+  }));
+}
+
+export interface PivotSourceAcquireOptions {
+  signal?: AbortSignal;
+  yieldEveryCells?: number;
+  onChunk?: (metrics: { cells: number; durationMs: number }) => void;
+}
+
+async function readRangeAsync(
+  sheet: WorksheetModel,
+  range: RangeRef,
+  source: PivotSource,
+  rangeIndex: number,
+  persisted: PivotFieldCatalog | undefined,
+  formula: FormulaEngine | undefined,
+  options: PivotSourceAcquireOptions,
+): Promise<SourceTable> {
+  assertPivotAcquireActive(options.signal);
+  if (formula) {
+    for (const spill of formula.getSpillsForSheet(sheet.id)) {
+      const intersects = spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
+        && spill.range.startColumn <= range.endColumn && range.startColumn <= spill.range.endColumn;
+      if (intersects && spill.state !== 'ok') throw new Error(`Pivot source intersects blocked spill at ${sheet.id}!${spill.anchor.row}:${spill.anchor.column}`);
+    }
+  }
+  const fields: SourceField[] = [];
+  for (let ordinal = 0; ordinal <= range.endColumn - range.startColumn; ordinal += 1) {
+    const column = range.startColumn + ordinal;
+    const headerCell = sheet.cells.get(range.startRow, column);
+    const raw = formula
+      ? formulaCellValue(formula, { sheetId: sheet.id, row: range.startRow, column }, headerCell?.formulaValue ?? headerCell?.value ?? null)
+      : headerCell?.formulaValue ?? headerCell?.value ?? null;
+    const name = raw == null || raw === '' ? `Column ${ordinal + 1}` : String(raw);
+    const fieldId = sourceIdentity(source, range, ordinal, rangeIndex);
+    const persistedField = persisted?.fields.find((field) => field.fieldId === fieldId);
+    fields.push({ fieldId: persistedField?.fieldId ?? fieldId, name, ordinal });
+  }
+  const columnValues = fields.map(() => [] as PivotScalar[]);
+  const rowPaths: PivotSourceRowPath[][] = [];
+  const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[rangeIndex]?.sourceId : undefined;
+  const yieldEvery = Math.max(128, options.yieldEveryCells ?? 2_048);
+  let visitedCells = 0;
+  let chunkCells = 0;
+  let chunkStartedAt = performance.now();
+  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+    for (let ordinal = 0; ordinal < fields.length; ordinal += 1) {
+      const cell = sheet.cells.get(row, range.startColumn + ordinal);
+      const raw = formula
+        ? formulaCellValue(formula, { sheetId: sheet.id, row, column: range.startColumn + ordinal }, cell?.formulaValue ?? cell?.value ?? null)
+        : cell?.formulaValue ?? cell?.value ?? null;
+      columnValues[ordinal]!.push(cellScalar(raw));
+      visitedCells += 1;
+      chunkCells += 1;
+      if (visitedCells % yieldEvery === 0) {
+        options.onChunk?.({ cells: chunkCells, durationMs: performance.now() - chunkStartedAt });
+        assertPivotAcquireActive(options.signal);
+        await yieldPivotAcquire();
+        chunkCells = 0;
+        chunkStartedAt = performance.now();
+      }
+    }
+    rowPaths.push([{ ...(sourceId ? { sourceId } : {}), recordId: `${sourceId ?? range.sheetId}:${row}`, sheetId: range.sheetId, row }]);
+  }
+  if (chunkCells > 0) options.onChunk?.({ cells: chunkCells, durationMs: performance.now() - chunkStartedAt });
+  assertPivotAcquireActive(options.signal);
+  return openSourceTable(createPivotSourceIndex({
+    columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
+    rowPaths,
+  }));
+}
+
+function assertPivotAcquireActive(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new DOMException('Pivot source acquisition cancelled', 'AbortError');
+}
+
+function yieldPivotAcquire(): Promise<void> {
+  if (typeof MessageChannel === 'undefined') return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(undefined);
+  });
+}
+
+interface LocalSourceNode {
+  sourceId: string;
+  range: RangeRef;
+  table: SourceTable;
+}
+
+interface LocalRelationship {
+  id: string;
+  left: { sourceId: string; fieldId: string };
+  right: { sourceId: string; fieldId: string };
+  join: 'inner' | 'left';
+}
+
+function sourceField(table: SourceTable, fieldId: string, sourceId: string): SourceField {
+  const field = table.fields.find((candidate) => candidate.fieldId === fieldId);
+  if (!field) throw new Error(`Pivot relationship references unknown field ${sourceId}:${fieldId}`);
+  return field;
+}
+
+function sourceFieldType(table: SourceTable, fieldId: string): PivotFieldDataType {
+  return inferPivotSourceFieldType(sourceColumnValues(table, fieldId));
+}
+
+function joinKey(value: PivotScalar): string {
+  return pivotMemberKey(createPivotMemberKey(value));
+}
+
+function assertUniqueLookupKeys(table: SourceTable, fieldId: string, sourceId: string): void {
+  const keys = new Set<string>();
+  for (const row of table.rows) {
+    const key = joinKey(sourceRowValue(row, fieldId));
+    if (keys.has(key)) throw new Error(`Pivot relationship lookup key is not unique: ${sourceId}:${fieldId}`);
+    keys.add(key);
+  }
+}
+
+function validateRelationshipGraph(nodes: LocalSourceNode[], relationships: readonly LocalRelationship[]): { edges: LocalRelationship[]; rootId: string } {
+  const nodeIds = new Set(nodes.map((node) => node.sourceId));
+  const nodeById = new Map(nodes.map((node) => [node.sourceId, node]));
+  const relationshipIds = new Set<string>();
+  const edges = relationships.map((relationship) => {
+    if (!relationship.id || relationshipIds.has(relationship.id)) throw new Error(`Pivot relationship id is duplicated: ${relationship.id}`);
+    relationshipIds.add(relationship.id);
+    if (!nodeIds.has(relationship.left.sourceId) || !nodeIds.has(relationship.right.sourceId) || relationship.left.sourceId === relationship.right.sourceId) {
+      throw new Error(`Pivot relationship references an unknown or self source node: ${relationship.id}`);
+    }
+    const leftNode = nodeById.get(relationship.left.sourceId)!;
+    const rightNode = nodeById.get(relationship.right.sourceId)!;
+    const leftField = sourceField(leftNode.table, relationship.left.fieldId, relationship.left.sourceId);
+    const rightField = sourceField(rightNode.table, relationship.right.fieldId, relationship.right.sourceId);
+    const leftType = sourceFieldType(leftNode.table, leftField.fieldId);
+    const rightType = sourceFieldType(rightNode.table, rightField.fieldId);
+    if (leftType === 'mixed' || rightType === 'mixed' || leftType !== rightType) {
+      throw new Error(`Pivot relationship key types are incompatible: ${relationship.id}`);
+    }
+    assertUniqueLookupKeys(rightNode.table, rightField.fieldId, relationship.right.sourceId);
+    if (relationship.join === 'inner') assertUniqueLookupKeys(leftNode.table, leftField.fieldId, relationship.left.sourceId);
+    return structuredClone(relationship);
+  });
+  if (nodes.length > 1 && edges.length === 0) throw new Error('Pivot relationship graph is disconnected');
+  const parent = new Map<string, string>(nodes.map((node) => [node.sourceId, node.sourceId]));
+  const find = (sourceId: string): string => {
+    const current = parent.get(sourceId);
+    if (!current || current === sourceId) return sourceId;
+    const root = find(current);
+    parent.set(sourceId, root);
+    return root;
+  };
+  for (const edge of edges) {
+    const left = find(edge.left.sourceId);
+    const right = find(edge.right.sourceId);
+    if (left === right) throw new Error(`Pivot relationship graph contains a cycle: ${edge.id}`);
+    parent.set(left, right);
+  }
+  const rootCandidates = edges.some((edge) => edge.join === 'left')
+    ? nodes.filter((node) => !edges.some((edge) => edge.join === 'left' && edge.right.sourceId === node.sourceId))
+    : [[...nodes].sort((left, right) => left.sourceId.localeCompare(right.sourceId))[0]!];
+  if (rootCandidates.length !== 1) throw new Error('Pivot relationship graph has an ambiguous root');
+  const rootId = rootCandidates[0]!.sourceId;
+  const reachable = new Set<string>([rootId]);
+  while (true) {
+    const next = edges.flatMap((edge) => {
+      if (reachable.has(edge.left.sourceId) && !reachable.has(edge.right.sourceId)) return [edge.right.sourceId];
+      if (reachable.has(edge.right.sourceId) && !reachable.has(edge.left.sourceId)) return [edge.left.sourceId];
+      return [];
+    });
+    if (!next.length) break;
+    next.forEach((sourceId) => reachable.add(sourceId));
+  }
+  if (reachable.size !== nodes.length) throw new Error('Pivot relationship graph is disconnected');
+  return { edges: edges.sort((left, right) => left.id.localeCompare(right.id)), rootId };
+}
+
+function joinSourceTables(current: SourceTable, attached: SourceTable, currentFieldId: string, attachedFieldId: string, join: 'inner' | 'left'): SourceTable {
+  const lookup = new Map<string, SourceRow>();
+  for (const row of attached.rows) lookup.set(joinKey(sourceRowValue(row, attachedFieldId)), row);
+  const fields = [...current.fields, ...attached.fields].map((field, ordinal) => ({ ...field, ordinal }));
+  const columnValues = fields.map(() => [] as PivotScalar[]);
+  const rowPaths: PivotSourceRowPath[][] = [];
+  for (const left of current.rows) {
+    const match = lookup.get(joinKey(sourceRowValue(left, currentFieldId)));
+    if (!match) {
+      if (join === 'left') {
+        current.fields.forEach((field, ordinal) => columnValues[ordinal]!.push(sourceRowValue(left, field.fieldId)));
+        attached.fields.forEach((_field, ordinal) => columnValues[current.fields.length + ordinal]!.push(null));
+        rowPaths.push([...sourceRowPaths(left)]);
+      }
+      continue;
+    }
+    current.fields.forEach((field, ordinal) => columnValues[ordinal]!.push(sourceRowValue(left, field.fieldId)));
+    attached.fields.forEach((field, ordinal) => columnValues[current.fields.length + ordinal]!.push(sourceRowValue(match, field.fieldId)));
+    const recordId = sourceRowPaths(left)[0]?.recordId ?? sourceRowPaths(match)[0]?.recordId;
+    rowPaths.push([...sourceRowPaths(left), ...sourceRowPaths(match)].map((path) => ({ ...path, ...(recordId ? { recordId } : {}) })));
+  }
+  return openSourceTable(createPivotSourceIndex({
+    columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
+    rowPaths,
+  }));
+}
+
+function remapTableSourceFields(table: SourceTable, stored: readonly { id: string; name: string }[]): SourceTable {
+  const fields = table.fields.map((field, index) => {
+    const declared = stored[index];
+    return {
+      ...field,
+      ...(declared?.id ? { fieldId: declared.id } : {}),
+      ...(declared?.name ? { name: declared.name } : {}),
+    };
+  });
+  return openSourceTable({ ...table.index, fields });
+}
+
+function buildSourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+  const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') {
+    throw new Error(`Block-backed data source ${source.dataSourceId} requires asynchronous Pivot computation`);
+  }
+  const ranges = sourceRanges(workbook, pivot, formula);
+  if (source.kind === 'worksheet-ranges') {
+    const nodes = source.ranges.map((sourceRange, index) => ({
+      sourceId: sourceRange.sourceId,
+      range: sourceRange.range,
+      table: readRange(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog, formula),
+    }));
+    if (new Set(nodes.map((node) => node.sourceId)).size !== nodes.length || nodes.some((node) => !node.sourceId.trim())) {
+      throw new Error('Every local worksheet range must have a unique stable sourceId');
+    }
+    const plan = validateRelationshipGraph(nodes, source.relationships);
+    let current = nodes.find((node) => node.sourceId === plan.rootId)!.table;
+    const visited = new Set<string>([plan.rootId]);
+    while (visited.size < nodes.length) {
+      const candidate = plan.edges.find((edge) => (visited.has(edge.left.sourceId) && !visited.has(edge.right.sourceId)) || (visited.has(edge.right.sourceId) && !visited.has(edge.left.sourceId)));
+      if (!candidate) throw new Error('Pivot relationship graph cannot be planned from its root');
+      if (visited.has(candidate.left.sourceId)) {
+        const attached = nodes.find((node) => node.sourceId === candidate.right.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.left.fieldId, candidate.right.fieldId, candidate.join);
+        visited.add(candidate.right.sourceId);
+      } else {
+        if (candidate.join === 'left') throw new Error(`Left relationship ${candidate.id} cannot be traversed from its lookup side`);
+        const attached = nodes.find((node) => node.sourceId === candidate.left.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.right.fieldId, candidate.left.fieldId, 'inner');
+        visited.add(candidate.left.sourceId);
+      }
+    }
+    return current;
+  }
+  const range = ranges[0]!;
+  // Table field IDs come from the table model, so read the source columns with
+  // their physical identities first and remap once below.
+  const table = readRange(workbook.getSheet(range.sheetId), range, source, 0, source.kind === 'table' ? undefined : catalog, formula);
+  if (source.kind === 'table') {
+    return remapTableSourceFields(table, resolvePivotTable(workbook, source.tableId).fields);
+  }
+  return table;
+}
+
+async function buildSourceTableAsync(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  catalog: PivotFieldCatalog | undefined,
+  formula: FormulaEngine | undefined,
+  options: PivotSourceAcquireOptions,
+): Promise<SourceTable> {
+  const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') throw new Error(`Block-backed data source ${source.dataSourceId} requires asynchronous content acquisition`);
+  const ranges = sourceRanges(workbook, pivot, formula);
+  if (source.kind === 'worksheet-ranges') {
+    const nodes: LocalSourceNode[] = [];
+    for (let index = 0; index < source.ranges.length; index += 1) {
+      const sourceRange = source.ranges[index]!;
+      nodes.push({
+        sourceId: sourceRange.sourceId,
+        range: sourceRange.range,
+        table: await readRangeAsync(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog, formula, options),
+      });
+    }
+    if (new Set(nodes.map((node) => node.sourceId)).size !== nodes.length || nodes.some((node) => !node.sourceId.trim())) {
+      throw new Error('Every local worksheet range must have a unique stable sourceId');
+    }
+    const plan = validateRelationshipGraph(nodes, source.relationships);
+    let current = nodes.find((node) => node.sourceId === plan.rootId)!.table;
+    const visited = new Set<string>([plan.rootId]);
+    while (visited.size < nodes.length) {
+      assertPivotAcquireActive(options.signal);
+      const candidate = plan.edges.find((edge) => (visited.has(edge.left.sourceId) && !visited.has(edge.right.sourceId)) || (visited.has(edge.right.sourceId) && !visited.has(edge.left.sourceId)));
+      if (!candidate) throw new Error('Pivot relationship graph cannot be planned from its root');
+      if (visited.has(candidate.left.sourceId)) {
+        const attached = nodes.find((node) => node.sourceId === candidate.right.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.left.fieldId, candidate.right.fieldId, candidate.join);
+        visited.add(candidate.right.sourceId);
+      } else {
+        if (candidate.join === 'left') throw new Error(`Left relationship ${candidate.id} cannot be traversed from its lookup side`);
+        const attached = nodes.find((node) => node.sourceId === candidate.left.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.right.fieldId, candidate.left.fieldId, 'inner');
+        visited.add(candidate.left.sourceId);
+      }
+      await yieldPivotAcquire();
+    }
+    return current;
+  }
+  const range = ranges[0]!;
+  const table = await readRangeAsync(workbook.getSheet(range.sheetId), range, source, 0, source.kind === 'table' ? undefined : catalog, formula, options);
+  return source.kind === 'table' ? remapTableSourceFields(table, resolvePivotTable(workbook, source.tableId).fields) : table;
+}
+
+interface PivotSourceTableCacheEntry {
+  revision: string;
+  table: SourceTable;
+}
+
+const pivotSourceTableCaches = new WeakMap<WorkbookModel, Map<string, PivotSourceTableCacheEntry>>();
+const pendingPivotSourceTables = new WeakMap<WorkbookModel, Map<string, { revision: string; promise: Promise<SourceTable> }>>();
+const MAX_PIVOT_SOURCE_CACHE_ENTRIES = 8;
+
+function sourceIndexAttached(table: SourceTable): boolean {
+  return table.index.columns.every((column) => (column.kind === 'dictionary' ? column.codes.length : column.values.length) === table.index.rowCount);
+}
+
+function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+  if (pivot.source.kind === 'data-source') return buildSourceTable(workbook, pivot, catalog, formula);
+  const cacheKey = fingerprint(canonicalPivotSource(pivot.source));
+  const revision = sourceRevision(workbook, pivot, formula);
+  const cache = pivotSourceTableCaches.get(workbook) ?? new Map<string, PivotSourceTableCacheEntry>();
+  const current = cache.get(cacheKey);
+  if (current?.revision === revision && sourceIndexAttached(current.table)) return current.table;
+  const table = buildSourceTable(workbook, pivot, catalog, formula);
+  cache.delete(cacheKey);
+  cache.set(cacheKey, { revision, table });
+  while (cache.size > MAX_PIVOT_SOURCE_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
+  if (!pivotSourceTableCaches.has(workbook)) pivotSourceTableCaches.set(workbook, cache);
+  return table;
+}
+
+async function sourceTableAsync(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  catalog: PivotFieldCatalog | undefined,
+  formula: FormulaEngine | undefined,
+  options: PivotSourceAcquireOptions,
+): Promise<SourceTable> {
+  const cacheKey = fingerprint(canonicalPivotSource(pivot.source));
+  const revision = sourceRevision(workbook, pivot, formula);
+  const cache = pivotSourceTableCaches.get(workbook) ?? new Map<string, PivotSourceTableCacheEntry>();
+  const current = cache.get(cacheKey);
+  if (current?.revision === revision && sourceIndexAttached(current.table)) return current.table;
+  const pending = pendingPivotSourceTables.get(workbook) ?? new Map<string, { revision: string; promise: Promise<SourceTable> }>();
+  const existing = pending.get(cacheKey);
+  if (existing?.revision === revision) return existing.promise;
+  const promise = buildSourceTableAsync(workbook, pivot, catalog, formula, options).then((table) => {
+    cache.delete(cacheKey);
+    cache.set(cacheKey, { revision, table });
+    while (cache.size > MAX_PIVOT_SOURCE_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
+    if (!pivotSourceTableCaches.has(workbook)) pivotSourceTableCaches.set(workbook, cache);
+    return table;
+  }).finally(() => {
+    if (pending.get(cacheKey)?.promise === promise) pending.delete(cacheKey);
+  });
+  pending.set(cacheKey, { revision, promise });
+  if (!pendingPivotSourceTables.has(workbook)) pendingPivotSourceTables.set(workbook, pending);
+  return promise;
+}
+
+function pivotSourceCalculator(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): FormulaEngine | undefined {
+  if (formula) return formula;
+  const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') return undefined;
+  if (source.kind === 'named-range') return createPivotFormulaEngine(workbook);
+  const ranges = sourceRanges(workbook, pivot);
+  let requiresFormula = false;
+  for (const range of ranges) {
+    workbook.getSheet(range.sheetId).cells.forEachInRange(
+      range.startRow,
+      range.endRow,
+      range.startColumn,
+      range.endColumn,
+      (cell) => {
+        if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) requiresFormula = true;
+      },
+    );
+  }
+  return requiresFormula ? createPivotFormulaEngine(workbook) : undefined;
 }
 
 export function canonicalPivotMembers(values: readonly PivotScalar[]): PivotScalar[] {
@@ -404,6 +950,33 @@ export function canonicalPivotMembers(values: readonly PivotScalar[]): PivotScal
     throw new Error(`Pivot field member domain exceeds ${PIVOT_MAX_MEMBER_COUNT} unique members`);
   }
   return members;
+}
+
+function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
+  const fields = sourceTableValue.fields.map((field, ordinal) => {
+    const values = sourceColumnValues(sourceTableValue, field.fieldId);
+    const persistedField = persisted?.fields.find((candidate) => candidate.fieldId === field.fieldId);
+    const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
+    const members = canonicalPivotMembers(values);
+    return { fieldId, name: field.name, dataType: inferPivotSourceFieldType(values), ordinal, values: members };
+  });
+  return { schema: 'PivotFieldCatalog', fields };
+}
+
+interface PivotFieldCatalogCacheEntry {
+  identity: string;
+  catalog: PivotFieldCatalog;
+}
+
+const pivotFieldCatalogCache = new WeakMap<SourceTable, PivotFieldCatalogCacheEntry>();
+
+function normalizedFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
+  const identity = fingerprint((persisted?.fields ?? []).map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })));
+  const cached = pivotFieldCatalogCache.get(sourceTableValue);
+  if (cached?.identity === identity) return structuredClone(cached.catalog);
+  const catalog = normalizeFieldCatalog(sourceTableValue, persisted);
+  pivotFieldCatalogCache.set(sourceTableValue, { identity, catalog: structuredClone(catalog) });
+  return catalog;
 }
 
 function resolveFieldId(reference: string | undefined, catalog: PivotFieldCatalog): string | undefined {
@@ -639,13 +1212,74 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   };
 }
 
+/**
+ * Validate calculated-item definitions without widening the source field
+ * catalogue. A calculated item is a derived member identity owned by its
+ * target field; it is never a field that can be placed on an axis or in
+ * Values. This runtime check mirrors the protocol/backend effective-field
+ * boundary so direct local projection cannot accept a shape the server will
+ * reject.
+ */
+function normalizeCalculatedItemDefinitions(
+  calculatedItems: PivotLayout['calculatedItems'] = [],
+  catalog: PivotFieldCatalog,
+  calculatedFieldIds: ReadonlySet<string> = new Set(),
+): void {
+  const fieldIds = new Set(catalog.fields.map((field) => field.fieldId));
+  const itemIds = new Set<string>();
+  const itemNames = new Set<string>();
+  for (const item of calculatedItems) {
+    if (!item || typeof item !== 'object' || typeof item.fieldId !== 'string' || !item.fieldId.trim()
+      || typeof item.targetFieldId !== 'string' || !item.targetFieldId.trim()
+      || typeof item.name !== 'string' || !item.name.trim()
+      || typeof item.formula !== 'string' || !item.formula.trim()) {
+      throw new Error('Pivot calculated item definition is invalid');
+    }
+    if (fieldIds.has(item.fieldId) || calculatedFieldIds.has(item.fieldId) || !itemIds.add(item.fieldId)) {
+      throw new Error(`Pivot calculated item identity collides with an effective field or another item: ${item.fieldId}`);
+    }
+    if (calculatedFieldIds.has(item.targetFieldId)) {
+      throw new Error(`Pivot calculated item target field cannot be a calculated field: ${item.targetFieldId}`);
+    }
+    const targetField = catalog.fields.find((field) => field.fieldId === item.targetFieldId);
+    if (!targetField) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    const nameKey = `${targetField.fieldId}|${item.name}`;
+    if (!itemNames.add(nameKey)) throw new Error(`Pivot calculated item member is duplicated: ${item.name}`);
+    if ((targetField.values ?? []).some((value) => same(value, item.name))) {
+      throw new Error(`Pivot calculated item member already exists in source data: ${item.name}`);
+    }
+  }
+}
+
+function appendCalculatedItemMembers(catalog: PivotFieldCatalog, calculatedItems: readonly PivotCalculatedItem[] = []): void {
+  for (const item of calculatedItems) {
+    const target = catalog.fields.find((field) => field.fieldId === item.targetFieldId);
+    if (!target) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    const values = target.values ?? [];
+    if (!values.some((value) => same(value, item.name))) target.values = [...values, item.name];
+  }
+}
+
+function normalizePivotDefinitionWithCalculator(workbook: WorkbookModel, pivot: PivotModel, calculator: FormulaEngine | undefined): PivotDefinition {
+  const source = getPivotSource(pivot);
+  const fieldCatalog = source.kind === 'data-source'
+    ? getPivotFieldCatalog(workbook, pivot)
+    : normalizedFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
+  return normalizePivotDefinitionFromCatalog({ ...pivot, source, fieldCatalog });
+}
+
 /** Canonicalize a command/task definition from its already validated revision-owned field catalog. */
 export function normalizePivotDefinitionFromCatalog(pivot: PivotModel): PivotDefinition {
   const source = getPivotSource(pivot);
-  if ((pivot.layout.calculatedFields?.length ?? 0) > 0 || (pivot.layout.calculatedItems?.length ?? 0) > 0) {
-    throw new Error('UNSUPPORTED_FEATURE: Pivot calculated fields and items are owned by Rust analytics');
-  }
   const fieldCatalog = structuredClone(pivot.fieldCatalog);
+  const calculatedFields = (pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name }));
+  for (const calculated of calculatedFields) {
+    if (!fieldCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
+      fieldCatalog.fields.push({ fieldId: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: fieldCatalog.fields.length, values: [] });
+    }
+  }
+  normalizeCalculatedItemDefinitions(pivot.layout.calculatedItems, fieldCatalog, new Set(calculatedFields.map((field) => field.fieldId)));
+  appendCalculatedItemMembers(fieldCatalog, pivot.layout.calculatedItems);
   const layout = normalizeLayout(pivot.layout, fieldCatalog);
   return {
     schema: 'PivotDefinition',
@@ -666,9 +1300,521 @@ export function normalizePivotDefinitionFromCatalog(pivot: PivotModel): PivotDef
 
 /** Canonicalize field catalog values against the live source. Calculation has one model shape. */
 export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotDefinition {
-  // Definition normalization is metadata-only. Source acquisition and
-  // calculation belong to the revision-pinned analytics task port.
-  return normalizePivotDefinitionFromCatalog(pivot);
+  return normalizePivotDefinitionWithCalculator(workbook, pivot, pivotSourceCalculator(workbook, pivot, formula));
+}
+
+export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotFieldCatalog {
+  const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(source.dataSourceId);
+    return {
+      schema: 'PivotFieldCatalog',
+      fields: manifest.fields.map((field) => ({
+        fieldId: field.id,
+        name: field.name,
+        dataType: field.type,
+        ordinal: field.ordinal,
+        values: [],
+      })),
+    };
+  }
+  const calculator = pivotSourceCalculator(workbook, pivot, formula);
+  return normalizedFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
+}
+
+function formulaScalar(value: FormulaValue): PivotScalar | null {
+  if (isFormulaError(value)) return { kind: 'error', code: value.code, ...(value.message ? { message: value.message } : {}) };
+  if (Array.isArray(value)) throw new Error('Pivot calculated formula returned an array instead of a scalar');
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+}
+
+function columnLabel(index: number): string {
+  let value = '';
+  let current = index + 1;
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    value = String.fromCharCode(65 + remainder) + value;
+    current = Math.floor((current - 1) / 26);
+  }
+  return value;
+}
+
+const formulaFunctions = new Set(['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX', 'IF', 'AND', 'OR', 'NOT', 'ROUND', 'ABS', 'CONCAT', 'LEFT', 'RIGHT', 'LEN']);
+
+type PivotCalculatedField = NonNullable<PivotLayout['calculatedFields']>[number];
+
+interface CalculatedFieldPlan {
+  fields: SourceField[];
+  definitions: Map<string, PivotCalculatedField>;
+  ordered: PivotCalculatedField[];
+}
+
+function rewriteCalculatedFormula(formula: string, fields: SourceField[]): string {
+  let rewritten = formula.trim().replace(/^=/, '');
+  fields.flatMap((field, index) => [
+    { field: field.name, index },
+    { field: field.fieldId, index },
+  ]).filter(({ field }) => field.length > 0).sort((left, right) => right.field.length - left.field.length).forEach(({ field, index }) => {
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const reference = `${columnLabel(index)}1`;
+    rewritten = rewritten.replace(new RegExp(`\\[${escaped}\\]`, 'g'), reference);
+    if (!formulaFunctions.has(field.toUpperCase())) rewritten = rewritten.replace(new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'g'), reference);
+  });
+  return `=${rewritten}`;
+}
+
+interface CalculatedItemReference {
+  fieldId: string;
+  member: PivotScalar;
+  itemId?: string;
+}
+
+interface CalculatedItemPlanEntry extends PivotCalculatedItem {
+  references: CalculatedItemReference[];
+  rewrittenFormula: string;
+}
+
+interface CalculatedItemPlan {
+  ordered: CalculatedItemPlanEntry[];
+}
+
+function itemMemberMatches(value: PivotScalar, text: string): boolean {
+  if (value === null || isPivotError(value)) return false;
+  return String(value).toLocaleUpperCase() === text.toLocaleUpperCase();
+}
+
+function itemFieldLabel(field: PivotFieldDefinition): string {
+  return field.name || field.fieldId;
+}
+
+function calculatedItemMemberKey(fieldId: string, value: PivotScalar): string {
+  return `${fieldId}|${pivotMemberKey(createPivotMemberKey(value))}`;
+}
+
+/**
+ * Resolve the deliberately small, canonical Pivot-item formula grammar.
+ *
+ * Item formulas are not worksheet formulas: bare names identify a member and
+ * `Field[Member]` is the qualified form.  Resolving names before handing the
+ * expression to FormulaEngine keeps worksheet cell references out of this
+ * contract and makes ambiguous cross-field names fail closed.
+ */
+function resolveCalculatedItemReferences(
+  formula: string,
+  fields: readonly PivotFieldDefinition[],
+  calculatedItems: readonly PivotCalculatedItem[],
+): { references: CalculatedItemReference[]; rewritten: string } {
+  const source = formula.trim().replace(/^=/, '').trim();
+  const tokens = parsePivotCalculatedItemFormula(formula);
+  const membersByField = new Map<string, PivotScalar[]>();
+  for (const field of fields) membersByField.set(field.fieldId, [...(field.values ?? [])]);
+  for (const item of calculatedItems) {
+    const members = membersByField.get(item.targetFieldId);
+    if (!members) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    if (!members.some((value) => same(value, item.name))) members.push(item.name);
+  }
+
+  const fieldByReference = (reference: string): PivotFieldDefinition | undefined => fields.find((field) => field.fieldId === reference || itemFieldLabel(field) === reference);
+  const resolveMember = (field: PivotFieldDefinition, text: string): PivotScalar => {
+    const candidates = (membersByField.get(field.fieldId) ?? []).filter((value) => itemMemberMatches(value, text));
+    if (candidates.length !== 1) {
+      if (!candidates.length) throw new Error(`Pivot calculated item references unknown item ${field.name}[${text}]`);
+      throw new Error(`Pivot calculated item reference is ambiguous: ${field.name}[${text}]`);
+    }
+    return candidates[0]!;
+  };
+  const itemByMember = new Map<string, PivotCalculatedItem>();
+  for (const item of calculatedItems) itemByMember.set(calculatedItemMemberKey(item.targetFieldId, item.name), item);
+  const references: CalculatedItemReference[] = [];
+  const replacements: Array<{ start: number; end: number; cell: string }> = [];
+  const referenceCells = new Map<string, string>();
+  const cellFor = (reference: CalculatedItemReference): string => {
+    const key = calculatedItemMemberKey(reference.fieldId, reference.member);
+    const existing = referenceCells.get(key);
+    if (existing) return existing;
+    const cell = `${columnLabel(referenceCells.size)}1`;
+    referenceCells.set(key, cell);
+    references.push(reference);
+    return cell;
+  };
+  const occupied: Array<{ start: number; end: number }> = [];
+  const addReplacement = (start: number, end: number, reference: CalculatedItemReference): void => {
+    if (occupied.some((range) => start < range.end && end > range.start)) return;
+    occupied.push({ start, end });
+    replacements.push({ start, end, cell: cellFor(reference) });
+  };
+  const referenceFor = (field: PivotFieldDefinition, member: PivotScalar): CalculatedItemReference => ({
+    fieldId: field.fieldId,
+    member,
+    ...(itemByMember.get(calculatedItemMemberKey(field.fieldId, member))?.fieldId
+      ? { itemId: itemByMember.get(calculatedItemMemberKey(field.fieldId, member))!.fieldId }
+      : {}),
+  });
+  const resolveToken = (token: Extract<PivotCalculatedItemFormulaToken, { kind: 'item' }>): void => {
+    if (token.fieldReference !== undefined) {
+      const field = fieldByReference(token.fieldReference);
+      if (!field) throw new Error(`Pivot calculated item references unknown field: ${token.fieldReference}`);
+      addReplacement(token.start, token.end, referenceFor(field, resolveMember(field, token.member)));
+      return;
+    }
+    // Numeric literals are represented by number tokens, so an unqualified
+    // token can only be a textual item.  It must resolve to exactly one field;
+    // the target field is not an implicit disambiguation rule.
+    if (/^[A-Z]{1,3}[1-9][0-9]*$/i.test(token.member)) {
+      throw new Error(`Pivot calculated item worksheet reference is unsupported: ${token.member}`);
+    }
+    const candidates = fields.flatMap((field) => (membersByField.get(field.fieldId) ?? [])
+      .filter((value) => typeof value === 'string' && itemMemberMatches(value, token.member))
+      .map((member) => ({ field, member })));
+    if (!candidates.length) throw new Error(`Pivot calculated item references unknown item: ${token.member}`);
+    if (candidates.length !== 1) throw new Error(`Pivot calculated item reference is ambiguous: ${token.member}`);
+    addReplacement(token.start, token.end, referenceFor(candidates[0]!.field, candidates[0]!.member));
+  };
+  for (const token of tokens) if (token.kind === 'item') resolveToken(token);
+  const rewritten = replacements.sort((left, right) => right.start - left.start).reduce((current, replacement) => `${current.slice(0, replacement.start)}${replacement.cell}${current.slice(replacement.end)}`, source);
+  try {
+    parseFormula(`=${rewritten}`);
+  } catch (error) {
+    throw new Error(`Pivot calculated item formula is invalid: ${formula}`, { cause: error });
+  }
+  return { references, rewritten: `=${rewritten}` };
+}
+
+function createCalculatedItemPlan(
+  fields: readonly PivotFieldDefinition[],
+  calculatedItems: readonly PivotCalculatedItem[] = [],
+): CalculatedItemPlan {
+  const entries = new Map<string, CalculatedItemPlanEntry>();
+  for (const item of calculatedItems) {
+    if (entries.has(item.fieldId)) throw new Error(`Pivot calculated item is duplicated: ${item.fieldId}`);
+    if (!item.name.trim() || !item.formula.trim()) throw new Error(`Pivot calculated item definition is invalid: ${item.fieldId}`);
+    if (!fields.some((field) => field.fieldId === item.targetFieldId)) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    entries.set(item.fieldId, { ...item, references: [], rewrittenFormula: item.formula });
+  }
+  const orderedEntries = [...entries.values()];
+  for (const entry of orderedEntries) {
+    const resolved = resolveCalculatedItemReferences(entry.formula, fields, calculatedItems);
+    const references = resolved.references.map((reference) => ({ ...reference, ...(entries.has(reference.itemId ?? '') ? { itemId: reference.itemId } : {}) }));
+    entry.references = references;
+    entry.rewrittenFormula = resolved.rewritten;
+  }
+  const state = new Map<string, 'visiting' | 'visited'>();
+  const ordered: CalculatedItemPlanEntry[] = [];
+  const visit = (fieldId: string, path: string[]): void => {
+    const current = state.get(fieldId);
+    if (current === 'visited') return;
+    if (current === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, fieldId].join(' -> ')}`);
+    const entry = entries.get(fieldId);
+    if (!entry) return;
+    state.set(fieldId, 'visiting');
+    for (const reference of entry.references) if (reference.itemId) visit(reference.itemId, [...path, fieldId]);
+    state.set(fieldId, 'visited');
+    ordered.push(entry);
+  };
+  for (const entry of orderedEntries) visit(entry.fieldId, []);
+  return { ordered };
+}
+
+function calculatedItemContextKey(row: SourceRow, contextFieldIds: readonly string[], placements: readonly PivotFieldPlacement[]): string {
+  return JSON.stringify(contextFieldIds.map((fieldId) => {
+    const placement = placements.find((candidate) => candidate.fieldId === fieldId);
+    return createPivotMemberKey(grouped(sourceRowValue(row, fieldId), placement?.group));
+  }));
+}
+
+function evaluateCalculatedItemFormula(
+  entry: CalculatedItemPlanEntry,
+  rows: readonly SourceRow[],
+  valueFieldId: string,
+): PivotScalar {
+  const engine = new FormulaEngine({ defaultSheetId: 'pivot-calculated-item' });
+  entry.references.forEach((reference, index) => {
+    const memberRows = rows.filter((row) => same(sourceRowValue(row, reference.fieldId), reference.member));
+    const value = aggregateSourceRows(memberRows, valueFieldId, 'sum');
+    if (isPivotError(value)) throw new Error(`Pivot calculated item source aggregate failed: ${entry.fieldId} (${value.code})`);
+    engine.setValue({ sheetId: 'pivot-calculated-item', row: 0, column: index }, value);
+  });
+  try {
+    engine.setFormula({ sheetId: 'pivot-calculated-item', row: 1, column: 0 }, entry.rewrittenFormula);
+  } catch (error) {
+    throw new Error(`Pivot calculated item formula evaluation failed: ${entry.fieldId}`, { cause: error });
+  }
+  const value = formulaScalar(engine.getCellValue({ sheetId: 'pivot-calculated-item', row: 1, column: 0 }));
+  if (value === null && entry.references.length > 0 && rows.length === 0) return null;
+  return value;
+}
+
+function applyCalculatedItems(
+  rows: SourceRow[],
+  fields: PivotFieldDefinition[],
+  layout: PivotLayout,
+  valueFields: readonly PivotValueField[],
+): SourceRow[] {
+  const calculatedItems = layout.calculatedItems ?? [];
+  if (!calculatedItems.length) return rows;
+  const plan = createCalculatedItemPlan(fields, calculatedItems);
+  let currentRows = rows;
+  const axisPlacements = [...layout.rows, ...layout.columns];
+  for (const entry of plan.ordered) {
+    const contextFieldIds = axisPlacements
+      .map((placement) => placement.fieldId)
+      // A calculated item is a new member of its target field.  Every other
+      // axis field remains part of the summary context, even when the formula
+      // explicitly references one of its members; otherwise a cross-field
+      // qualified reference would silently aggregate across that axis.
+      .filter((fieldId, index, all) => fieldId !== entry.targetFieldId && all.indexOf(fieldId) === index);
+    const contexts = new Map<string, SourceRow[]>();
+    for (const row of rows) {
+      const key = calculatedItemContextKey(row, contextFieldIds, axisPlacements);
+      const context = contexts.get(key) ?? [];
+      context.push(row);
+      contexts.set(key, context);
+    }
+    const generated = [...contexts.values()].map((context) => {
+      const template = context[0];
+      if (!template) throw new Error(`Pivot calculated item context is empty: ${entry.fieldId}`);
+      const contextKey = calculatedItemContextKey(template, contextFieldIds, axisPlacements);
+      const candidateRows = currentRows.filter((row) => calculatedItemContextKey(row, contextFieldIds, axisPlacements) === contextKey);
+      const overrides = new Map(template.overrides ?? []);
+      overrides.set(entry.targetFieldId, entry.name);
+      for (const valueField of valueFields) {
+        if (valueField.fieldId === entry.targetFieldId) continue;
+        overrides.set(valueField.fieldId, evaluateCalculatedItemFormula(entry, candidateRows, valueField.fieldId));
+      }
+      return {
+        source: template.source,
+        row: template.row,
+        overrides,
+        pathsOverride: [...new Map(context.flatMap((row) => sourceRowPaths(row)).map((path) => [stableSerialize(path), path])).values()],
+      };
+    });
+    currentRows = [...currentRows, ...generated];
+  }
+  return currentRows;
+}
+
+function calculatedFieldReferenceIds(formula: string, fields: SourceField[], definitions: Map<string, PivotCalculatedField>, ownerId: string): string[] {
+  let ast;
+  try {
+    ast = parseFormula(rewriteCalculatedFormula(formula, fields));
+  } catch (error) {
+    const bracketReference = formula.match(/\[([^\]]+)\]/)?.[1];
+    if (bracketReference && !fields.some((field) => field.name.toUpperCase() === bracketReference.toUpperCase() || field.fieldId.toUpperCase() === bracketReference.toUpperCase())) {
+      throw new Error(`Pivot calculated field references unknown field: ${bracketReference}`, { cause: error });
+    }
+    throw new Error(`Pivot calculated field formula is invalid: ${ownerId}`, { cause: error });
+  }
+  const fieldReferences = new Map<string, string>();
+  for (const field of fields) {
+    for (const fieldName of [field.fieldId, field.name]) {
+      const key = fieldName.toUpperCase();
+      const previous = fieldReferences.get(key);
+      if (previous && previous !== field.fieldId) throw new Error(`Pivot calculated field reference is ambiguous: ${fieldName}`);
+      fieldReferences.set(key, field.fieldId);
+    }
+  }
+  const references: string[] = [];
+  for (const field of fields) {
+    for (const fieldName of [field.fieldId, field.name]) {
+      const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const referenced = new RegExp(`\\[${escaped}\\]`, 'i').test(formula)
+        || (!formulaFunctions.has(fieldName.toUpperCase()) && new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'i').test(formula));
+      if (referenced && definitions.has(field.fieldId) && !references.includes(field.fieldId)) references.push(field.fieldId);
+    }
+  }
+  for (const name of collectNameReferences(ast)) {
+    const fieldId = fieldReferences.get(name.toUpperCase());
+    if (!fieldId) throw new Error(`Pivot calculated field references unknown field: ${name}`);
+  }
+  return references;
+}
+
+function createCalculatedFieldPlan(fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = []): CalculatedFieldPlan {
+  const descriptors: SourceField[] = fields
+    .map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
+  const definitions = new Map<string, PivotCalculatedField>();
+  for (const calculated of calculatedFields ?? []) {
+    if (definitions.has(calculated.fieldId)) throw new Error(`Pivot calculated field is duplicated: ${calculated.fieldId}`);
+    if (!calculated.name.trim() || !calculated.formula.trim()) throw new Error(`Pivot calculated field definition is invalid: ${calculated.fieldId}`);
+    definitions.set(calculated.fieldId, calculated);
+    if (!descriptors.some((field) => field.fieldId === calculated.fieldId)) {
+      descriptors.push({ fieldId: calculated.fieldId, name: calculated.name, ordinal: descriptors.length, dataType: 'mixed' });
+    }
+  }
+  const dependencies = new Map<string, string[]>();
+  for (const calculated of definitions.values()) dependencies.set(calculated.fieldId, calculatedFieldReferenceIds(calculated.formula, descriptors, definitions, calculated.fieldId));
+  const state = new Map<string, 'visiting' | 'visited'>();
+  const ordered: PivotCalculatedField[] = [];
+  const visit = (fieldId: string, path: string[]): void => {
+    const current = state.get(fieldId);
+    if (current === 'visited') return;
+    if (current === 'visiting') throw new Error(`Pivot calculated field dependency cycle: ${[...path, fieldId].join(' -> ')}`);
+    state.set(fieldId, 'visiting');
+    for (const dependency of dependencies.get(fieldId) ?? []) visit(dependency, [...path, fieldId]);
+    state.set(fieldId, 'visited');
+    ordered.push(definitions.get(fieldId)!);
+  };
+  for (const calculated of definitions.values()) visit(calculated.fieldId, []);
+  return { fields: descriptors, definitions, ordered };
+}
+
+interface CalculatedFieldEvaluator {
+  has(fieldId: string): boolean;
+  evaluate(rows: ReadonlyArray<SourceRow>, fieldId: string): PivotScalar | null;
+}
+
+function createCalculatedFieldEvaluator(plan: CalculatedFieldPlan, aggregates: PivotAggregatePlanner): CalculatedFieldEvaluator {
+  const calculatedIds = new Set(plan.definitions.keys());
+  const evaluate = (rows: ReadonlyArray<SourceRow>, fieldId: string): PivotScalar | null => {
+    if (!calculatedIds.has(fieldId)) return null;
+    const engine = new FormulaEngine({ defaultSheetId: 'pivot-summary' });
+    const values = new Map<string, PivotScalar | null>();
+    plan.fields.forEach((field, index) => {
+      if (!calculatedIds.has(field.fieldId)) {
+        const value = aggregates.aggregate(rows, field.fieldId, 'sum');
+        values.set(field.fieldId, value);
+        engine.setValue({ sheetId: 'pivot-summary', row: 0, column: index }, isPivotError(value) ? null : value);
+      }
+    });
+    for (const calculated of plan.ordered) {
+      const index = plan.fields.findIndex((field) => field.fieldId === calculated.fieldId);
+      if (index < 0) throw new Error(`Pivot calculated field descriptor is missing: ${calculated.fieldId}`);
+      const address = { sheetId: 'pivot-summary', row: 1, column: index };
+      engine.setFormula(address, rewriteCalculatedFormula(calculated.formula, plan.fields));
+      const value = formulaScalar(engine.getCellValue(address));
+      values.set(calculated.fieldId, value);
+      engine.setValue({ sheetId: 'pivot-summary', row: 0, column: index }, isPivotError(value) ? null : value);
+    }
+    return values.get(fieldId) ?? null;
+  };
+  return { has: (fieldId) => calculatedIds.has(fieldId), evaluate };
+}
+
+function toNumber(value: PivotScalar): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = Number(value.replace(/[$,%]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldDataType | undefined, collator: Intl.Collator): number {
+  if (same(left, right)) return 0;
+  if (left == null || left === '') return -1;
+  if (right == null || right === '') return 1;
+  if (isPivotError(left) || isPivotError(right)) {
+    if (isPivotError(left) && isPivotError(right)) return collator.compare(left.code, right.code);
+    return isPivotError(left) ? 1 : -1;
+  }
+  if (dataType === 'boolean' && typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
+  if (dataType === 'date') {
+    const leftDate = pivotTimelineInstant(left);
+    const rightDate = pivotTimelineInstant(right);
+    if (leftDate !== undefined && rightDate !== undefined) return leftDate - rightDate;
+  }
+  if (dataType === 'text') return collator.compare(String(left), String(right));
+  const leftNumber = pivotNumericValue(left);
+  const rightNumber = pivotNumericValue(right);
+  if (leftNumber != null && rightNumber != null) return leftNumber - rightNumber;
+  return collator.compare(String(left), String(right));
+}
+
+/** Every aggregate has its own semantics; no operation falls through to sum. */
+export function aggregatePivotValues(rows: ReadonlyArray<{ values: Record<string, PivotScalar> }>, fieldId: string, operation: PivotAggregateFunction): PivotScalar {
+  return aggregatePivotValueStream(rows.map((row) => row.values[fieldId] ?? null), operation);
+}
+
+function aggregateSourceRows(rows: ReadonlyArray<SourceRow>, fieldId: string, operation: PivotAggregateFunction): PivotScalar {
+  return aggregatePivotValueStream(rows.map((row) => sourceRowValue(row, fieldId)), operation);
+}
+
+function aggregatePivotValueStream(values: readonly PivotScalar[], operation: PivotAggregateFunction): PivotScalar {
+  return aggregatePivotState(buildPivotAggregateState(values), operation);
+}
+
+interface PivotAggregateState {
+  count: number;
+  numericCount: number;
+  distinct: Set<string>;
+  firstError: Extract<PivotScalar, { kind: 'error' }> | undefined;
+  sum: number;
+  product: number;
+  minimum: number;
+  maximum: number;
+  mean: number;
+  m2: number;
+}
+
+function buildPivotAggregateState(values: readonly PivotScalar[]): PivotAggregateState {
+  const state: PivotAggregateState = {
+    count: 0,
+    numericCount: 0,
+    distinct: new Set<string>(),
+    firstError: undefined,
+    sum: 0,
+    product: 1,
+    minimum: Number.POSITIVE_INFINITY,
+    maximum: Number.NEGATIVE_INFINITY,
+    mean: 0,
+    m2: 0,
+  };
+  for (const raw of values) {
+    if (raw != null && raw !== '') {
+      state.count += 1;
+      state.distinct.add(pivotMemberKey(createPivotMemberKey(raw)));
+    }
+    if (!state.firstError && isPivotError(raw)) state.firstError = raw;
+    const number = pivotNumericValue(raw);
+    if (number == null) continue;
+    state.numericCount += 1;
+    const delta = number - state.mean;
+    state.mean += delta / state.numericCount;
+    state.m2 += delta * (number - state.mean);
+    state.sum += number;
+    state.product *= number;
+    state.minimum = Math.min(state.minimum, number);
+    state.maximum = Math.max(state.maximum, number);
+  }
+  return state;
+}
+
+function aggregatePivotState(state: PivotAggregateState, operation: PivotAggregateFunction): PivotScalar {
+  switch (operation) {
+    case 'count': return state.count;
+    case 'distinct-count': return state.distinct.size;
+    case 'count-numbers': return state.numericCount;
+    case 'sum': return state.firstError ?? state.sum;
+    case 'average': return state.firstError ?? (state.numericCount ? state.sum / state.numericCount : null);
+    case 'min': return state.firstError ?? (state.numericCount ? state.minimum : null);
+    case 'max': return state.firstError ?? (state.numericCount ? state.maximum : null);
+    case 'product': return state.firstError ?? (state.numericCount ? state.product : null);
+    case 'stdev': return state.firstError ?? (state.numericCount < 2 ? null : Math.sqrt(state.m2 / (state.numericCount - 1)));
+    case 'stdevp': return state.firstError ?? (!state.numericCount ? null : Math.sqrt(state.m2 / state.numericCount));
+    case 'var': return state.firstError ?? (state.numericCount < 2 ? null : state.m2 / (state.numericCount - 1));
+    case 'varp': return state.firstError ?? (!state.numericCount ? null : state.m2 / state.numericCount);
+    default: return assertNever(operation);
+  }
+}
+
+class PivotAggregatePlanner {
+  private readonly states = new WeakMap<ReadonlyArray<SourceRow>, Map<string, PivotAggregateState>>();
+
+  aggregate(rows: ReadonlyArray<SourceRow>, fieldId: string, operation: PivotAggregateFunction): PivotScalar {
+    let fields = this.states.get(rows);
+    if (!fields) {
+      fields = new Map<string, PivotAggregateState>();
+      this.states.set(rows, fields);
+    }
+    let state = fields.get(fieldId);
+    if (!state) {
+      state = buildPivotAggregateState(rows.map((row) => sourceRowValue(row, fieldId)));
+      fields.set(fieldId, state);
+    }
+    return aggregatePivotState(state, operation);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported pivot aggregate: ${String(value)}`);
 }
 
 function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
@@ -744,6 +1890,512 @@ function dateGroupLabel(date: Date, group: Extract<PivotGroup, { kind: 'date' }>
   return labels.length === 1 && units[0] === 'year' ? Number(labels[0]) : labels.join(' / ');
 }
 
+function valueSourceFieldId(valueId: string, values: readonly Pick<PivotValueField, 'valueId' | 'fieldId'>[]): string {
+  const value = values.find((entry) => entry.valueId === valueId);
+  if (!value) throw new Error(`Pivot Values placement is missing: ${valueId}`);
+  return value.fieldId;
+}
+
+function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, values: readonly PivotResultValueField[] = [], calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner): AxisGroup[] {
+  const map = new Map<string, AxisGroup>();
+  for (const row of rows) {
+    const values = placements.map((placement) => grouped(sourceRowValue(row, placement.fieldId), placement.group));
+    const key = pivotGroupKey(values);
+    const group = map.get(key) ?? { values, rows: [], rowSet: new Set<SourceRow>() };
+    group.rows.push(row);
+    group.rowSet.add(row);
+    map.set(key, group);
+  }
+  const placement = placements[placements.length - 1];
+  const fieldTypes = placements.map((entry) => fieldCatalog.fields.find((field) => field.fieldId === entry.fieldId)?.dataType);
+  const dataType = fieldTypes[fieldTypes.length - 1];
+  const valueSort = placement?.sort?.by === 'value' ? placement.sort : undefined;
+  const valueSortField = valueSort ? values.find((value) => value.valueId === valueSort.valueId) : undefined;
+  if (valueSort && !valueSortField) throw new Error(`Pivot value sort placement is not in Values: ${valueSort.valueId}`);
+  const compareLabels = (left: AxisGroup, right: AxisGroup): number => {
+    for (let index = 0; index < left.values.length; index += 1) {
+      const fieldType = fieldTypes[index] ?? dataType;
+      const order = compare(left.values[index] ?? null, right.values[index] ?? null, fieldType, collator);
+      if (order) return order;
+    }
+    return 0;
+  };
+  const valueSortValues = valueSortField
+    ? new Map([...map.values()].map((group) => [group, pivotNumericValue(resultValue(group.rows, valueSortField, valueSortField.summarizeBy, calculatedFields, aggregates)) ?? 0] as const))
+    : undefined;
+  const result = [...map.values()].sort((left, right) => {
+    if (valueSort && valueSortValues) {
+      const leftValue = valueSortValues.get(left) ?? 0;
+      const rightValue = valueSortValues.get(right) ?? 0;
+      const valueOrder = leftValue - rightValue;
+      if (valueOrder) return valueSort.direction === 'descending' ? -valueOrder : valueOrder;
+      const labelOrder = compareLabels(left, right);
+      return valueSort.direction === 'descending' ? -labelOrder : labelOrder;
+    }
+    return compareLabels(left, right);
+  });
+  if (!valueSort && placement?.sort?.direction === 'descending') result.reverse();
+  return result;
+}
+
+function axisGroupRows(rows: SourceRow[], placement: PivotFieldPlacement): SourceRow[][] {
+  const groups = new Map<string, SourceRow[]>();
+  for (const row of rows) {
+    const value = grouped(sourceRowValue(row, placement.fieldId), placement.group);
+    const key = pivotGroupKey([value]);
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function countPivotResultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, limit: number): number {
+  if (placements.length === 0) return 1;
+  if (depth >= placements.length) return 0;
+  const groups = axisGroupRows(rows, placements[depth]!);
+  let count = groups.length;
+  if (count > limit) return count;
+  for (const group of groups) {
+    count += countPivotResultNodes(group, placements, depth + 1, limit - count);
+    if (count > limit) return count;
+  }
+  return count;
+}
+
+function assertPivotTaskFootprint(
+  definition: PivotDefinition,
+  filtered: SourceRow[],
+  columns: readonly AxisGroup[],
+  values: readonly PivotResultValueField[],
+  targetBounds: { rowCount: number; columnCount: number },
+): void {
+  const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
+  const rowHeaderCount = definition.layout.reportLayout === 'compact' ? 1 : Math.max(definition.layout.rows.length, 1);
+  const valueCount = Math.max(values.length, 1);
+  const projectedColumns = rowHeaderCount + Math.max(columns.length, 1) * valueCount + (definition.layout.showRowGrandTotals ? valueCount : 0);
+  const availableRows = targetBounds.rowCount - definition.target.anchor.row;
+  const availableColumns = targetBounds.columnCount - definition.target.anchor.column;
+  if (projectedColumns > availableColumns) throw new Error('Pivot target range exceeds the destination worksheet boundary');
+  const reportFilterRows = displayOptions.showFieldHeaders
+    ? new Set(definition.layout.filters.filter((entry) => entry.scope !== 'field').map((entry) => entry.fieldId)).size
+    : 0;
+  const fixedRows = 1 + reportFilterRows + (displayOptions.showFieldHeaders ? 1 : 0) + (definition.layout.showColumnGrandTotals ? 1 : 0);
+  const nodeLimit = Math.max(0, availableRows - fixedRows);
+  const nodeCount = countPivotResultNodes(filtered, definition.layout.rows, 0, nodeLimit);
+  if (nodeCount > nodeLimit) throw new Error('Pivot target range exceeds the destination worksheet boundary');
+  const resultCellCount = nodeCount * Math.max(columns.length, 1)
+    + (definition.layout.showRowGrandTotals ? nodeCount : 0)
+    + Math.max(columns.length, 1)
+    + 1;
+  if (resultCellCount > PIVOT_MAX_RESULT_CELL_COUNT) {
+    throw new Error(`Pivot result cell limit exceeded: ${String(resultCellCount)} > ${String(PIVOT_MAX_RESULT_CELL_COUNT)}`);
+  }
+  const provenanceReferences = filtered.length * (4 + Math.max(1, definition.layout.rows.length) * 2);
+  if (provenanceReferences > PIVOT_MAX_PROVENANCE_REFERENCE_COUNT) {
+    throw new Error(`Pivot result provenance limit exceeded: ${String(provenanceReferences)} > ${String(PIVOT_MAX_PROVENANCE_REFERENCE_COUNT)}`);
+  }
+}
+
+function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'manual' }>, group?: PivotGroup, memberSet?: ReadonlySet<string>): boolean {
+  if (filter.mode === 'all') return true;
+  const key = group ? groupedMemberKey(value, group) : createPivotMemberKey(value);
+  const included = memberSet
+    ? memberSet.has(pivotMemberKey(key))
+    : (filter.memberKeys ?? []).some((candidate) => pivotMemberKeyEquals(candidate, key));
+  return filter.mode === 'include' ? included : !included;
+}
+
+function buildManualFilterIndex(filters: readonly PivotFilter[]): ReadonlyMap<PivotFilter, ReadonlySet<string>> {
+  const index = new Map<PivotFilter, ReadonlySet<string>>();
+  for (const filter of filters) {
+    if (filter.kind === 'manual') index.set(filter, new Set(filter.memberKeys.map((member) => pivotMemberKey(member))));
+  }
+  return index;
+}
+
+function dynamicDateBounds(kind: NonNullable<Extract<PivotFilter, { kind: 'condition'; family: 'date' }>['dynamic']>, now = Date.now()): [number, number] {
+  const today = new Date(Math.floor(now / 86_400_000) * 86_400_000);
+  const startOfWeek = new Date(today);
+  startOfWeek.setUTCDate(today.getUTCDate() - ((today.getUTCDay() + 6) % 7));
+  const startOfMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const startOfQuarter = new Date(Date.UTC(today.getUTCFullYear(), Math.floor(today.getUTCMonth() / 3) * 3, 1));
+  const startOfYear = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
+  const shift = (base: Date, months: number, days = 0): [number, number] => {
+    const start = new Date(base);
+    start.setUTCMonth(start.getUTCMonth() + months);
+    start.setUTCDate(start.getUTCDate() + days);
+    const end = new Date(start);
+    if (months === 0) end.setUTCDate(end.getUTCDate() + 1);
+    else end.setUTCMonth(end.getUTCMonth() + months);
+    return [start.getTime(), end.getTime()];
+  };
+  if (kind === 'today') return [today.getTime(), today.getTime() + 86_400_000];
+  if (kind === 'yesterday') return shift(today, 0, -1);
+  if (kind === 'tomorrow') return shift(today, 0, 1);
+  if (kind === 'this-week') return [startOfWeek.getTime(), startOfWeek.getTime() + 7 * 86_400_000];
+  if (kind === 'last-week') return [startOfWeek.getTime() - 7 * 86_400_000, startOfWeek.getTime()];
+  if (kind === 'next-week') return [startOfWeek.getTime() + 7 * 86_400_000, startOfWeek.getTime() + 14 * 86_400_000];
+  if (kind === 'this-month') return [startOfMonth.getTime(), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)).getTime()];
+  if (kind === 'last-month') return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1)).getTime(), startOfMonth.getTime()];
+  if (kind === 'next-month') return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 2, 1)).getTime()];
+  if (kind === 'this-quarter') return [startOfQuarter.getTime(), new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 3, 1)).getTime()];
+  if (kind === 'last-quarter') return [new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() - 3, 1)).getTime(), startOfQuarter.getTime()];
+  if (kind === 'next-quarter') return [new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 3, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 6, 1)).getTime()];
+  if (kind === 'this-year') return [startOfYear.getTime(), new Date(Date.UTC(today.getUTCFullYear() + 1, 0, 1)).getTime()];
+  if (kind === 'last-year') return [new Date(Date.UTC(today.getUTCFullYear() - 1, 0, 1)).getTime(), startOfYear.getTime()];
+  if (kind === 'next-year') return [new Date(Date.UTC(today.getUTCFullYear() + 1, 0, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear() + 2, 0, 1)).getTime()];
+  return [startOfYear.getTime(), today.getTime() + 86_400_000];
+}
+
+function dateFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'date' }>): boolean {
+  const instant = pivotTimelineInstant(value);
+  if (instant === undefined) return false;
+  if (filter.dynamic) {
+    const [start, end] = dynamicDateBounds(filter.dynamic);
+    return instant >= start && instant < end;
+  }
+  const first = pivotTimelineInstant(filter.value);
+  const second = filter.value2 === undefined ? undefined : pivotTimelineInstant(filter.value2);
+  if (first === undefined || ((filter.operator === 'between' || filter.operator === 'not-between') && second === undefined)) return false;
+  const left = filter.wholeDay ? Math.floor(instant / 86_400_000) : instant;
+  const right = filter.wholeDay ? Math.floor(first / 86_400_000) : first;
+  if (filter.operator === 'equals') return left === right;
+  if (filter.operator === 'not-equals') return left !== right;
+  if (filter.operator === 'before') return left < right;
+  if (filter.operator === 'after') return left > right;
+  const upper = filter.wholeDay ? Math.floor(second! / 86_400_000) : second!;
+  const inside = left >= Math.min(right, upper) && left <= Math.max(right, upper);
+  return filter.operator === 'between' ? inside : !inside;
+}
+
+function labelFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'label' }>, collator: Intl.Collator): boolean {
+  const text = String(value ?? '');
+  const operand = String(filter.value ?? '');
+  if (filter.operator === 'equals') return text === operand;
+  if (filter.operator === 'not-equals') return text !== operand;
+  if (filter.operator === 'begins-with') return text.startsWith(operand);
+  if (filter.operator === 'not-begins-with') return !text.startsWith(operand);
+  if (filter.operator === 'ends-with') return text.endsWith(operand);
+  if (filter.operator === 'not-ends-with') return !text.endsWith(operand);
+  if (filter.operator === 'contains') return text.includes(operand);
+  if (filter.operator === 'not-contains') return !text.includes(operand);
+  const order = collator.compare(text, operand);
+  if (filter.operator === 'greater-than') return order > 0;
+  if (filter.operator === 'greater-or-equal') return order >= 0;
+  if (filter.operator === 'less-than') return order < 0;
+  if (filter.operator === 'less-or-equal') return order <= 0;
+  const upper = String(filter.value2 ?? '');
+  const inside = collator.compare(text, operand) >= 0 && collator.compare(text, upper) <= 0;
+  return filter.operator === 'between' ? inside : !inside;
+}
+
+function groupedPlacementForFilter(definition: PivotDefinition, filter: PivotFilter): PivotFieldPlacement | undefined {
+  if ((filter.scope ?? 'report') !== 'field' || filter.kind === 'top-items') return undefined;
+  if (filter.kind === 'condition' && filter.valueId !== undefined) return undefined;
+  return [...definition.layout.rows, ...definition.layout.columns].find((placement) => placement.fieldId === filter.fieldId && placement.group);
+}
+
+function groupedDateFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'date' }>, group: PivotGroup, collator: Intl.Collator): boolean {
+  if (filter.dynamic) return dateFilterMatches(value, filter);
+  const projectedValue = grouped(value, group);
+  const projectedFilter = { ...filter, value: grouped(filter.value, group), ...(filter.value2 === undefined ? {} : { value2: grouped(filter.value2, group) }) };
+  const left = String(projectedValue ?? '');
+  const right = String(projectedFilter.value ?? '');
+  const order = collator.compare(left, right);
+  if (filter.operator === 'equals') return order === 0;
+  if (filter.operator === 'not-equals') return order !== 0;
+  if (filter.operator === 'before') return order < 0;
+  if (filter.operator === 'after') return order > 0;
+  const upper = String(projectedFilter.value2 ?? '');
+  const inside = collator.compare(left, right) >= 0 && collator.compare(left, upper) <= 0;
+  return filter.operator === 'between' ? inside : !inside;
+}
+
+type PivotSourceFilter = Exclude<PivotFilter, { kind: 'condition'; family: 'value' }>;
+
+interface PivotSourceFilterMatcher {
+  filter: PivotSourceFilter;
+  placement?: PivotFieldPlacement;
+  memberSet?: ReadonlySet<string>;
+}
+
+function buildSourceFilterMatchers(definition: PivotDefinition): PivotSourceFilterMatcher[] {
+  const filters = definition.layout.filters.filter((filter): filter is PivotSourceFilter => filter.kind !== 'top-items'
+    && !(filter.kind === 'condition' && filter.family === 'value'));
+  const manualFilterIndex = buildManualFilterIndex(filters);
+  return filters.map((filter) => ({
+    filter,
+    placement: groupedPlacementForFilter(definition, filter),
+    memberSet: filter.kind === 'manual' ? manualFilterIndex.get(filter) : undefined,
+  }));
+}
+
+function matchesSourceFilter(row: SourceRow, matcher: PivotSourceFilterMatcher, collator: Intl.Collator): boolean {
+  const { filter, placement } = matcher;
+  const rawValue = sourceRowValue(row, filter.fieldId);
+  const value = placement?.group ? grouped(rawValue, placement.group) : rawValue;
+  if (filter.kind === 'top-items') return true;
+  if (filter.kind === 'manual') return manualFilterMatches(rawValue, filter, placement?.group, matcher.memberSet);
+  if (filter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, filter, placement.group, collator) : dateFilterMatches(value, filter);
+  if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
+  throw new Error('Unsupported Pivot source filter family');
+}
+
+function applySourceFilters(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[], collator: Intl.Collator): SourceRow[] {
+  if (matchers.length === 0) return rows;
+  const indexedRows = indexedManualFilterRows(rows, matchers);
+  const candidates = indexedRows?.rows ?? rows;
+  const satisfiedMatcher = indexedRows?.satisfiedMatcher;
+  const result: SourceRow[] = [];
+  for (const row of candidates) {
+    let accepted = true;
+    for (const matcher of matchers) {
+      // The indexed candidate set is constructed from this exact manual
+      // include matcher, so evaluating it again only decodes and keys the
+      // same source value a second time for every candidate row.
+      if (matcher === satisfiedMatcher) continue;
+      if (!matchesSourceFilter(row, matcher, collator)) {
+        accepted = false;
+        break;
+      }
+    }
+    if (accepted) result.push(row);
+  }
+  return result;
+}
+
+interface IndexedManualFilterResult {
+  rows: SourceRow[];
+  satisfiedMatcher: PivotSourceFilterMatcher;
+}
+
+/**
+ * Use the smallest low-cardinality manual include filter as the candidate set.
+ * The index is only valid for the immutable base table; calculated-item rows
+ * and already projected subsets continue through the regular predicate path.
+ */
+function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSourceFilterMatcher[]): IndexedManualFilterResult | undefined {
+  const table = rows[0]?.source;
+  // The source-table path preserves the immutable row-array identity. A
+  // filtered/control/calculated-item subset is a new array and must use the
+  // general predicate path. Avoid scanning every row just to rediscover that
+  // identity on each large-table filter interaction.
+  if (!table || rows !== table.rows) return undefined;
+  let best: IndexedManualFilterResult | undefined;
+  for (const matcher of matchers) {
+    const { filter, placement, memberSet } = matcher;
+    if (filter.kind !== 'manual' || filter.mode !== 'include' || placement?.group || !memberSet) continue;
+    const ordinal = table.fieldOrdinals.get(filter.fieldId);
+    if (ordinal === undefined) continue;
+    const index = sourceMemberIndex(table, ordinal);
+    if (!index) continue;
+    const rowNumbers: number[] = [];
+    for (const member of memberSet) {
+      const matches = index.get(member);
+      if (matches) rowNumbers.push(...matches);
+    }
+    rowNumbers.sort((left, right) => left - right);
+    const candidates = rowNumbers.map((row) => table.rows[row]!);
+    if (!best || candidates.length < best.rows.length) best = { rows: candidates, satisfiedMatcher: matcher };
+  }
+  return best;
+}
+
+function matchesValueFilter(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'value' }>, collator: Intl.Collator): boolean {
+  const leftNumber = pivotNumericValue(value);
+  const rightNumber = pivotNumericValue(filter.value);
+  const upperNumber = filter.value2 === undefined ? null : pivotNumericValue(filter.value2);
+  const order = leftNumber != null && rightNumber != null ? leftNumber - rightNumber : compare(value, filter.value, undefined, collator);
+  switch (filter.operator) {
+    case 'equals': return same(value, filter.value);
+    case 'not-equals': return !same(value, filter.value);
+    case 'greater-than': return order > 0;
+    case 'greater-or-equal': return order >= 0;
+    case 'less-than': return order < 0;
+    case 'less-or-equal': return order <= 0;
+    case 'between': return filter.value2 !== undefined && order >= 0 && (leftNumber != null && upperNumber != null ? leftNumber <= upperNumber : compare(value, filter.value2, undefined, collator) <= 0);
+    case 'not-between': return filter.value2 !== undefined && !(order >= 0 && (leftNumber != null && upperNumber != null ? leftNumber <= upperNumber : compare(value, filter.value2, undefined, collator) <= 0));
+    default: return false;
+  }
+}
+
+/**
+ * Apply aggregate value predicates to Pivot item buckets.
+ *
+ * Label/manual/date predicates intentionally run before this stage because
+ * they restrict source members. A value predicate is different: its left
+ * operand is the selected Values placement's configured aggregate for one
+ * item, never a raw source-row member. The preceding row/column placements
+ * form the parent context for field-scoped filters; report-scoped filters
+ * aggregate the target field globally.
+ */
+function applyValueFilters(
+  rows: SourceRow[],
+  filters: readonly PivotFilter[],
+  definition: PivotDefinition,
+  calculatedFields: CalculatedFieldEvaluator,
+  collator: Intl.Collator,
+  aggregates: PivotAggregatePlanner,
+): SourceRow[] {
+  const source = rows;
+  let result = rows;
+  for (const rawFilter of filters) {
+    if (rawFilter.kind !== 'condition' || rawFilter.family !== 'value') continue;
+    const filter = rawFilter;
+    if (!filter.valueId) throw new Error(`Pivot value filter requires valueId for ${filter.fieldId}`);
+    const valueField = definition.layout.values.find((entry) => entry.valueId === filter.valueId);
+    if (!valueField) throw new Error(`Unknown Pivot Values placement: ${filter.valueId}`);
+
+    const rowPlacements = definition.layout.rows.filter((placement) => placement.fieldId === filter.fieldId);
+    const columnPlacements = definition.layout.columns.filter((placement) => placement.fieldId === filter.fieldId);
+    const fieldScoped = (filter.scope ?? 'report') === 'field';
+    if (fieldScoped && rowPlacements.length + columnPlacements.length !== 1) {
+      throw new Error(`Pivot value filter field must resolve to exactly one axis placement: ${filter.fieldId}`);
+    }
+    const axis = !fieldScoped ? undefined : rowPlacements.length === 1 && columnPlacements.length === 0
+      ? definition.layout.rows
+      : columnPlacements.length === 1 && rowPlacements.length === 0
+        ? definition.layout.columns
+        : undefined;
+    const targetIndex = axis?.findIndex((placement) => placement.fieldId === filter.fieldId) ?? -1;
+    const contextPlacements = axis && targetIndex >= 0 ? axis.slice(0, targetIndex + 1) : undefined;
+    const targetPlacement = [...rowPlacements, ...columnPlacements][0];
+    const buckets = new Map<string, SourceRow[]>();
+    for (const row of source) {
+      const keyValues = contextPlacements?.map((placement) => grouped(sourceRowValue(row, placement.fieldId), placement.group))
+        ?? [grouped(sourceRowValue(row, filter.fieldId), targetPlacement?.group)];
+      const key = pivotGroupKey(keyValues);
+      const bucket = buckets.get(key) ?? [];
+      bucket.push(row);
+      buckets.set(key, bucket);
+    }
+    const aggregateField: PivotResultValueField = { ...valueField, sourceFieldId: valueField.fieldId };
+    const accepted = new Set<SourceRow>();
+    for (const bucket of buckets.values()) {
+      const aggregate = resultValue(bucket, aggregateField, valueField.summarizeBy, calculatedFields, aggregates);
+      if (matchesValueFilter(aggregate, filter, collator)) bucket.forEach((row) => accepted.add(row));
+    }
+    result = result.filter((row) => accepted.has(row));
+  }
+  return result;
+}
+
+interface PivotRankedBucket {
+  key: string;
+  bucket: SourceRow[];
+  aggregate: number;
+}
+
+/**
+ * Compare two top/bottom members using the same ordering as the full sort.
+ * A negative result means `left` must appear before `right` in the result.
+ */
+function compareTopBottomBuckets(left: PivotRankedBucket, right: PivotRankedBucket, direction: 'top' | 'bottom'): number {
+  const valueOrder = direction === 'top'
+    ? right.aggregate - left.aggregate
+    : left.aggregate - right.aggregate;
+  return valueOrder || left.key.localeCompare(right.key);
+}
+
+/**
+ * Select the best N members without sorting the entire high-cardinality
+ * domain. The heap root is the worst retained member, so each non-selected
+ * member costs O(1) comparison and each replacement costs O(log N).
+ */
+function selectTopBottomItems(entries: PivotRankedBucket[], threshold: number, direction: 'top' | 'bottom'): PivotRankedBucket[] {
+  if (threshold >= entries.length) return entries.sort((left, right) => compareTopBottomBuckets(left, right, direction));
+  const heap = entries.slice(0, threshold);
+  const siftDown = (start: number): void => {
+    let index = start;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let worst = index;
+      if (left < heap.length && compareTopBottomBuckets(heap[left]!, heap[worst]!, direction) > 0) worst = left;
+      if (right < heap.length && compareTopBottomBuckets(heap[right]!, heap[worst]!, direction) > 0) worst = right;
+      if (worst === index) return;
+      [heap[index], heap[worst]] = [heap[worst]!, heap[index]!];
+      index = worst;
+    }
+  };
+  for (let index = Math.floor(heap.length / 2) - 1; index >= 0; index -= 1) siftDown(index);
+  for (let index = threshold; index < entries.length; index += 1) {
+    const candidate = entries[index]!;
+    if (compareTopBottomBuckets(candidate, heap[0]!, direction) >= 0) continue;
+    heap[0] = candidate;
+    siftDown(0);
+  }
+  return heap.sort((left, right) => compareTopBottomBuckets(left, right, direction));
+}
+
+function topItems(
+  rows: SourceRow[],
+  filters: PivotFilter[],
+  values: readonly PivotValueField[],
+  calculatedFields?: CalculatedFieldEvaluator,
+  definition?: PivotDefinition,
+  aggregates?: PivotAggregatePlanner,
+): SourceRow[] {
+  let result = rows;
+  for (const filter of filters) {
+    if (filter.kind !== 'top-items') continue;
+    const fieldId = filter.fieldId;
+    const valueField = values.find((value) => value.valueId === filter.valueId);
+    if (!valueField) throw new Error(`Pivot top-items references an unknown Values placement: ${filter.valueId}`);
+    validateTopBottomDirection(filter.direction);
+    validateTopBottomThreshold(filter.mode, filter.threshold);
+    const groupedField = definition
+      ? [...definition.layout.rows, ...definition.layout.columns].find((placement) => placement.fieldId === fieldId)?.group
+      : undefined;
+    const buckets = new Map<string, SourceRow[]>();
+    for (const row of result) {
+      const member = groupedField ? grouped(sourceRowValue(row, fieldId), groupedField) : sourceRowValue(row, fieldId);
+      const key = pivotMemberKey(createPivotMemberKey(member));
+      const bucket = buckets.get(key) ?? [];
+      bucket.push(row);
+      buckets.set(key, bucket);
+    }
+    const ranked: PivotRankedBucket[] = [...buckets.entries()].map(([key, bucket]) => ({
+      key,
+      bucket,
+      aggregate: pivotNumericValue(resultValue(bucket, { ...valueField, sourceFieldId: valueField.fieldId }, valueField.summarizeBy, calculatedFields, aggregates)) ?? 0,
+    }));
+    let selected: typeof ranked;
+    if (filter.mode === 'items') {
+      selected = selectTopBottomItems(ranked, filter.threshold, filter.direction);
+    } else {
+      ranked.sort((left, right) => compareTopBottomBuckets(left, right, filter.direction));
+      // Excel's Percent and Sum modes select the ranked prefix whose
+      // aggregate reaches the requested target; they do not compare every
+      // member independently with the threshold.  This is also what keeps a
+      // selected Average/Count/Min/Max Values placement authoritative.
+      const target = filter.mode === 'percent'
+        ? ranked.reduce((total, entry) => total + (entry.aggregate ?? 0), 0) * filter.threshold / 100
+        : filter.threshold;
+      let accumulated = 0;
+      selected = [];
+      for (const entry of ranked) {
+        selected.push(entry);
+        accumulated += entry.aggregate;
+        if (accumulated >= target) break;
+      }
+    }
+    result = selected.flatMap((entry) => entry.bucket);
+  }
+  return result;
+}
+
+function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string, memberSet?: ReadonlySet<string>): boolean {
+  const { filter } = slicer;
+  if (filter.mode === 'all') return true;
+  const key = pivotMemberKey(createPivotMemberKey(sourceRowValue(row, fieldId)));
+  const included = memberSet
+    ? memberSet.has(key)
+    : filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(sourceRowValue(row, fieldId))));
+  return filter.mode === 'include' ? included : !included;
+}
+
 export interface PivotTaskControl {
   drawingId: string;
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
@@ -761,24 +2413,606 @@ export function collectPivotTaskControls(workbook: WorkbookModel, pivot: PivotMo
   }));
 }
 
-/**
- * Metadata-only task declaration. Source registration and every analytics
- * phase are owned by ServerPivotTaskPort; this descriptor never contains
- * worksheet rows, a source index, or a client evaluator.
- */
-export interface PivotTaskDescriptor {
-  definition: PivotDefinition;
-  controls: PivotTaskControl[];
-  revisions: PivotRevisionKey;
-  targetBounds: { rowCount: number; columnCount: number };
+function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, fieldId: string, bounds: PivotTimelinePeriodBounds): boolean {
+  const raw = sourceRowValue(row, fieldId);
+  if (raw == null || raw === '') return false;
+  const instant = pivotTimelineInstant(raw);
+  if (instant === undefined) return false;
+  return instant >= (bounds.start ?? Number.NEGATIVE_INFINITY)
+    && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
+interface IndexedSlicerMask {
+  mask: Uint8Array;
+  acceptedCount: number;
+  hasRestriction: boolean;
+}
+
+/**
+ * Build a slicer mask from the same immutable member postings used by manual
+ * filters. Include/exclude controls otherwise decode and key every source row
+ * on every layout/filter change, even when only a few members are selected.
+ */
+function indexedSlicerMask(rows: SourceRow[], fieldId: string, slicer: PivotSlicerDrawingPayload): IndexedSlicerMask | undefined {
+  if (slicer.filter.mode === 'all') {
+    const mask = new Uint8Array(rows.length);
+    mask.fill(1);
+    return { mask, acceptedCount: rows.length, hasRestriction: false };
+  }
+  const table = rows[0]?.source;
+  if (!table || rows !== table.rows) return undefined;
+  const ordinal = table.fieldOrdinals.get(fieldId);
+  if (ordinal === undefined) return undefined;
+  const index = sourceMemberIndex(table, ordinal);
+  if (!index) return undefined;
+  const memberSet = new Set(slicer.filter.memberKeys.map((member) => pivotMemberKey(member)));
+  const mask = new Uint8Array(rows.length);
+  if (slicer.filter.mode === 'include') {
+    for (const member of memberSet) {
+      for (const row of index.get(member) ?? []) mask[row] = 1;
+    }
+  } else {
+    mask.fill(1);
+    for (const member of memberSet) {
+      for (const row of index.get(member) ?? []) mask[row] = 0;
+    }
+  }
+  let acceptedCount = 0;
+  for (const accepted of mask) acceptedCount += accepted;
+  return { mask, acceptedCount, hasRestriction: acceptedCount !== rows.length };
+}
+
+function indexedSlicerMembers(rows: SourceRow[], fieldId: string): PivotScalar[] | undefined {
+  const table = rows[0]?.source;
+  if (!table || rows !== table.rows) return undefined;
+  const ordinal = table.fieldOrdinals.get(fieldId);
+  if (ordinal === undefined) return undefined;
+  const index = sourceMemberIndex(table, ordinal);
+  if (!index) return undefined;
+  return [...index.values()].flatMap((memberRows) => {
+    const row = memberRows[0];
+    return row === undefined ? [] : [pivotSourceValueAt(table.index, ordinal, row)];
+  });
+}
+
+interface PivotControlMatcher {
+  rows: SourceRow[];
+  controls: readonly PivotTaskControl[];
+  matches: ReadonlyMap<string, Uint8Array>;
+  unrestricted: ReadonlySet<string>;
+}
+
+/**
+ * Evaluate each slicer/timeline once per source row. Slicer item projections
+ * ask for the same control state repeatedly (once per slicer); retaining the
+ * byte masks makes those projections a cheap mask intersection instead of a
+ * full value decode and predicate pass for every control.
+ */
+function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTaskControl[]): PivotControlMatcher {
+  const matches = new Map<string, Uint8Array>();
+  const unrestricted = new Set<string>();
+  const orderedControls: Array<{ control: PivotTaskControl; acceptedCount: number; order: number }> = [];
+  for (const [order, control] of controls.entries()) {
+    const mask = new Uint8Array(rows.length);
+    let hasRestriction = false;
+    let acceptedCount = 0;
+    const payload = control.payload;
+    if (payload.kind === 'slicer') {
+      const indexed = indexedSlicerMask(rows, control.fieldId, payload);
+      if (indexed) {
+        mask.set(indexed.mask);
+        acceptedCount = indexed.acceptedCount;
+        hasRestriction = indexed.hasRestriction;
+      } else {
+        const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
+        rows.forEach((row, rowIndex) => {
+          const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
+          mask[rowIndex] = accepted ? 1 : 0;
+          if (accepted) acceptedCount += 1;
+          if (!accepted) hasRestriction = true;
+        });
+      }
+    } else {
+      const bounds = normalizePivotTimelinePeriod(payload.period);
+      rows.forEach((row, rowIndex) => {
+        const accepted = matchesTimeline(row, payload, control.fieldId, bounds);
+        mask[rowIndex] = accepted ? 1 : 0;
+        if (accepted) acceptedCount += 1;
+        if (!accepted) hasRestriction = true;
+      });
+    }
+    matches.set(control.drawingId, mask);
+    if (!hasRestriction) unrestricted.add(control.drawingId);
+    orderedControls.push({ control, acceptedCount, order });
+  }
+  orderedControls.sort((left, right) => left.acceptedCount - right.acceptedCount || left.order - right.order);
+  return { rows, controls: orderedControls.map((entry) => entry.control), matches, unrestricted };
+}
+
+function rowsMatchingControls(matcher: PivotControlMatcher, excludedDrawingId?: string): SourceRow[] {
+  if (matcher.controls.length === 0 || matcher.controls.every((control) => control.drawingId === excludedDrawingId)) return matcher.rows;
+  return matcher.rows.filter((_, rowIndex) => matcher.controls.every((control) => control.drawingId === excludedDrawingId
+    || matcher.matches.get(control.drawingId)?.[rowIndex] === 1));
+}
+
+function slicerItemProjection(
+  definition: PivotDefinition,
+  rows: SourceRow[],
+  drawingId: string,
+  payload: PivotSlicerDrawingPayload,
+  collator: Intl.Collator,
+  calculatedFields: CalculatedFieldEvaluator,
+  controlMatcher: PivotControlMatcher,
+  sourceFilterMatchers: readonly PivotSourceFilterMatcher[],
+  aggregates: PivotAggregatePlanner,
+  precomputedAvailableRows?: SourceRow[],
+): PivotSlicerItemProjection[] {
+  const fieldValues = indexedSlicerMembers(rows, payload.fieldId)
+    ?? rows.map((row) => sourceRowValue(row, payload.fieldId));
+  const members = new Map<string, PivotSlicerItemProjection>();
+  for (const value of fieldValues) {
+    const key = createPivotMemberKey(value);
+    const identity = pivotMemberKey(key);
+    if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
+  }
+  const filteredRows = precomputedAvailableRows
+    ?? applySourceFilters(rowsMatchingControls(controlMatcher, drawingId), sourceFilterMatchers, collator);
+  const availableRows = precomputedAvailableRows ?? topItems(
+    applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator, aggregates),
+    definition.layout.filters,
+    definition.layout.values,
+    calculatedFields,
+    definition,
+    aggregates,
+  );
+  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, payload.fieldId)))));
+  const selectedMembers = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
+  for (const item of members.values()) {
+    item.hasData = available.has(pivotMemberKey(item.key));
+    const included = selectedMembers.has(pivotMemberKey(item.key));
+    item.selected = payload.filter.mode === 'all' || (payload.filter.mode === 'include' ? included : !included);
+  }
+  const sorted = [...members.values()].sort((left, right) => collator.compare(left.label, right.label));
+  if (payload.settings.sort === 'descending') sorted.reverse();
+  if (payload.settings.noDataItemsLast) sorted.sort((left, right) => Number(right.hasData) - Number(left.hasData));
+  return sorted.length > PIVOT_MEMBER_DISPLAY_LIMIT ? sorted.slice(0, PIVOT_MEMBER_DISPLAY_LIMIT) : sorted;
+}
+
+function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
+  const customFunctions = [...layout.rows, ...layout.columns].flatMap((placement) => placement.subtotal?.mode === 'custom'
+    ? placement.subtotal.functions.map((fn) => ({ fieldId: placement.fieldId, fn }))
+    : []);
+  if (!customFunctions.length) return layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  return layout.values.flatMap((field) => {
+    const base = { ...field, sourceFieldId: field.fieldId };
+    const extras = customFunctions.filter(({ fieldId, fn }, index, all) => fn !== field.summarizeBy && all.findIndex((candidate) => candidate.fieldId === fieldId && candidate.fn === fn) === index).map(({ fieldId, fn }) => ({
+      ...field,
+      valueId: `${field.valueId}:subtotal:${fn}`,
+      sourceFieldId: field.fieldId,
+      subtotalFunction: fn,
+      subtotalFieldId: fieldId,
+      displayName: `${field.displayName ?? field.fieldId} (${fn})`,
+    }));
+    return [base, ...extras];
+  });
+}
+
+function resultValue(rows: ReadonlyArray<SourceRow>, value: PivotResultValueField, operation: PivotAggregateFunction, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner): PivotScalar {
+  if (calculatedFields?.has(value.sourceFieldId)) return calculatedFields.evaluate(rows, value.sourceFieldId);
+  return aggregates?.aggregate(rows, value.sourceFieldId, operation) ?? aggregateSourceRows(rows, value.sourceFieldId, operation);
+}
+
+function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner): PivotResultCell[] {
+  // When a row node spans more source rows than a column group, the previous
+  // implementation rebuilt this Set once per column. Keep one membership set
+  // for the whole matrix cell pass; it is immutable for this node.
+  const nodeRowSet = columns.some((column) => rows.length > column.rows.length) ? new Set(rows) : undefined;
+  return columns.map((column, columnIndex) => {
+    const columnRows = rows.length <= column.rows.length
+      ? rows.filter((candidate) => column.rowSet.has(candidate))
+      : column.rows.filter((candidate) => nodeRowSet?.has(candidate) ?? false);
+    return {
+      id: `${nodePath.join('/') || 'root'}|column:${columnIndex}`,
+      nodePath,
+      kind,
+      columnPath: column.values,
+      sourceRowPaths: columnRows.flatMap((row) => sourceRowPaths(row)),
+      values: values.map((value) => resultValue(columnRows, value, kind === 'subtotal' && value.subtotalFieldId === subtotalFieldId
+        ? value.subtotalFunction ?? value.summarizeBy
+        : value.summarizeBy, calculatedFields, aggregates)),
+    };
+  });
+}
+
+function resultGrandTotalCell(rows: SourceRow[], values: PivotResultValueField[], nodePath: string[], subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner): PivotResultCell {
+  return {
+    id: `${nodePath.join('/') || 'root'}|grand-total:row`,
+    nodePath,
+    kind: 'grand-total',
+    columnPath: [],
+    sourceRowPaths: rows.flatMap((row) => sourceRowPaths(row)),
+    values: values.map((value) => resultValue(rows, value, subtotalFieldId === value.subtotalFieldId
+      ? value.subtotalFunction ?? value.summarizeBy
+      : value.summarizeBy, calculatedFields, aggregates)),
+  };
+}
+
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, calculatedFields?: CalculatedFieldEvaluator, aggregates?: PivotAggregatePlanner, prefix: string[] = [], precomputedRootGroups?: AxisGroup[]): PivotResultNode[] {
+  // A Pivot with no Row fields still owns one data row: the root aggregation
+  // crossing every Column path and Values placement. Grand Total is a
+  // separate axis total and must not stand in for this matrix row.
+  if (depth >= placements.length) {
+    if (placements.length !== 0 || depth !== 0) return [];
+    const path = ['__root__'];
+    return [{
+      nodeId: path[0],
+      path,
+      kind: 'leaf',
+      key: null,
+      label: 'Values',
+      depth: 0,
+      children: [],
+      values: resultCells(rows, columns, values, path, 'detail', undefined, calculatedFields, aggregates),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(rows, values, path, undefined, calculatedFields, aggregates) } : {}),
+      subtotal: false,
+      sourceRowPaths: rows.flatMap((row) => sourceRowPaths(row)),
+    }];
+  }
+  const placement = placements[depth]!;
+  const groups = depth === 0 && precomputedRootGroups
+    ? precomputedRootGroups
+    : axisGroups(rows, [placement], fieldCatalog, collator, values, calculatedFields, aggregates);
+  return groups.map((group) => {
+    const fieldId = placement.fieldId;
+    const member = createPivotMemberKey(group.values[0] ?? null);
+    const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, calculatedFields, aggregates, path, precomputedRootGroups);
+    const leaf = children.length === 0;
+    const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
+    return {
+      nodeId: path.join('/'),
+      path,
+      kind: subtotal ? 'subtotal' : 'leaf',
+      fieldId,
+      memberKey: member,
+      key: group.values[0] ?? null,
+      label: display(group.values[0] ?? null),
+      depth,
+      children,
+      values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined, calculatedFields, aggregates),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(group.rows, values, path, subtotal ? placement.fieldId : undefined, calculatedFields, aggregates) } : {}),
+      subtotal,
+      sourceRowPaths: group.rows.flatMap((row) => sourceRowPaths(row)),
+    };
+  });
+}
+
+interface PivotShowAsCellContext {
+  cell: PivotResultCell;
+  node?: PivotResultNode;
+  parent?: PivotResultNode;
+  columnIndex: number;
+  kind: 'detail' | 'subtotal' | 'grand-total';
+}
+
+interface PivotShowAsAxisResolution {
+  base: number | null;
+  same: boolean;
+  series: number[];
+  position: number;
+}
+
+/**
+ * Apply Show Values As from one immutable result matrix.
+ *
+ * The result tree contains three different calculation domains: detail rows,
+ * subtotal rows and the grand-total row.  Keeping those contexts explicit is
+ * important because subtotal values are valid Pivot members in their own
+ * right; they must never be looked up in a leaf-only sequence.
+ */
+function applyShowAs(tree: PivotResultTree, fields: PivotValueField[], layout: PivotLayout): void {
+  const raw = new Map<PivotResultCell, PivotScalar[]>();
+  const contexts: PivotShowAsCellContext[] = [];
+  const visit = (nodes: PivotResultNode[], parent?: PivotResultNode) => nodes.forEach((node) => {
+    node.values.forEach((cell, columnIndex) => {
+      raw.set(cell, [...cell.values]);
+      contexts.push({ cell, node, parent, columnIndex, kind: node.subtotal ? 'subtotal' : 'detail' });
+    });
+    visit(node.children, node);
+  });
+  visit(tree.rows);
+  if (tree.grandTotal) {
+    raw.set(tree.grandTotal, [...tree.grandTotal.values]);
+    contexts.push({ cell: tree.grandTotal, columnIndex: 0, kind: 'grand-total' });
+  }
+  for (const cell of tree.columnGrandTotals ?? []) {
+    raw.set(cell, [...cell.values]);
+    contexts.push({ cell, columnIndex: 0, kind: 'grand-total' });
+  }
+  const visitRowTotals = (nodes: PivotResultNode[]) => nodes.forEach((node) => {
+    if (node.rowGrandTotal) {
+      raw.set(node.rowGrandTotal, [...node.rowGrandTotal.values]);
+      contexts.push({ cell: node.rowGrandTotal, node, columnIndex: 0, kind: 'grand-total' });
+    }
+    visitRowTotals(node.children);
+  });
+  visitRowTotals(tree.rows);
+
+  const rawValue = (cell: PivotResultCell | undefined, index: number): PivotScalar | null => cell ? raw.get(cell)?.[index] ?? null : null;
+  const grandValues = tree.grandTotal ? raw.get(tree.grandTotal) ?? [] : [];
+  const rowContexts = contexts.filter((context) => context.kind !== 'grand-total');
+  const leafContexts = rowContexts.filter((context) => context.node?.children.length === 0);
+
+  const numericSum = (cells: PivotShowAsCellContext[], valueIndex: number, columnIndex: number): number => cells.reduce((sum, context) => {
+    const cell = context.node?.values[columnIndex];
+    return sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0);
+  }, 0);
+
+  const rowFieldIds = layout.rows.map((placement) => placement.fieldId);
+  const columnFieldIds = layout.columns.map((placement) => placement.fieldId);
+  const nodeContexts = new Map<string, PivotShowAsCellContext>();
+  for (const context of rowContexts) {
+    const id = context.node?.nodeId ?? context.node?.path?.join('/') ?? '';
+    if (id && context.node && !nodeContexts.has(id)) nodeContexts.set(id, context);
+  }
+  const sameScalar = (left: PivotScalar | undefined, right: PivotScalar): boolean => same(left ?? null, right);
+  const baseItemMatches = (value: PivotScalar | undefined, item: PivotShowAsBaseItem): boolean => {
+    if (item === 'previous' || item === 'next') return false;
+    return sameScalar(value, pivotScalarFromMemberKey(item));
+  };
+
+  const rowResolution = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (context.kind === 'grand-total' || !context.node?.path) return undefined;
+    const depth = rowFieldIds.indexOf(spec.baseFieldId);
+    if (depth < 0 || context.node.depth < depth) return undefined;
+    const currentPath = context.node.path[depth];
+    const prefix = context.node.path.slice(0, depth).join('\u001f');
+    const candidates = [...nodeContexts.values()].filter((candidate) => candidate.node?.fieldId === spec.baseFieldId
+      && candidate.node.path?.slice(0, depth).join('\u001f') === prefix);
+    if (candidates.length === 0) return undefined;
+    const currentIndex = candidates.findIndex((candidate) => candidate.node?.path?.[depth] === currentPath);
+    let position = currentIndex;
+    let target = currentIndex;
+    if ('baseItem' in spec) {
+      if (spec.baseItem === 'previous' || spec.baseItem === 'next') target = currentIndex + (spec.baseItem === 'previous' ? -1 : 1);
+      else target = candidates.findIndex((candidate) => baseItemMatches(candidate.node?.memberKey?.value, spec.baseItem));
+    }
+    if (target < 0 || target >= candidates.length) return undefined;
+    const series = candidates.map((candidate) => pivotNumericValue(rawValue(candidate.node?.values[context.columnIndex], valueIndex)) ?? 0);
+    return { base: pivotNumericValue(rawValue(candidates[target]?.node?.values[context.columnIndex], valueIndex)), same: target === currentIndex, series, position };
+  };
+
+  const columnResolution = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (context.kind === 'grand-total' || !context.node) return undefined;
+    const depth = columnFieldIds.indexOf(spec.baseFieldId);
+    if (depth < 0) return undefined;
+    const currentPath = tree.columnPaths[context.columnIndex];
+    if (!currentPath) return undefined;
+    const candidateIndexes = tree.columnPaths.map((path, index) => ({ path, index })).filter(({ path }) => path.length > depth
+      && columnFieldIds.every((fieldId, index) => index === depth || same(path[index] ?? null, currentPath[index] ?? null)));
+    const currentIndex = candidateIndexes.findIndex(({ index }) => index === context.columnIndex);
+    let target = currentIndex;
+    if ('baseItem' in spec) {
+      if (spec.baseItem === 'previous' || spec.baseItem === 'next') target = currentIndex + (spec.baseItem === 'previous' ? -1 : 1);
+      else target = candidateIndexes.findIndex(({ path }) => baseItemMatches(path[depth], spec.baseItem));
+    }
+    if (target < 0 || target >= candidateIndexes.length) return undefined;
+    const series = candidateIndexes.map(({ index }) => pivotNumericValue(rawValue(context.node?.values[index], valueIndex)) ?? 0);
+    const targetColumn = candidateIndexes[target]?.index;
+    return { base: targetColumn === undefined ? null : pivotNumericValue(rawValue(context.node.values[targetColumn], valueIndex)), same: targetColumn === context.columnIndex, series, position: currentIndex };
+  };
+
+  const resolveAxis = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (rowFieldIds.includes(spec.baseFieldId)) return rowResolution(context, spec, valueIndex);
+    if (columnFieldIds.includes(spec.baseFieldId)) return columnResolution(context, spec, valueIndex);
+    return undefined;
+  };
+
+  const transform = (
+    spec: NonNullable<PivotValueField['showAs']>,
+    current: number,
+    grand: number | null,
+    rowTotal: number,
+    columnTotal: number,
+    parentTotal: number | null,
+    context: PivotShowAsCellContext,
+    valueIndex: number,
+  ): number | null => {
+    if (spec.kind === 'normal') return current;
+    if (context.kind === 'grand-total') {
+      // A grand total has no row/column member coordinate. It is nevertheless
+      // part of the calculation domain: total-relative modes resolve to the
+      // identity, differences to zero, running totals to the final aggregate,
+      // and rank/index to the sole total member.
+      if (spec.kind === 'grand-percentage' || spec.kind === 'row-percentage' || spec.kind === 'column-percentage' || spec.kind === 'parent-percentage') return grand ? current / grand : null;
+      if (spec.kind === 'difference' || spec.kind === 'percentage-difference') return null;
+      if (spec.kind === 'running-total') return current;
+      if (spec.kind === 'percentage-running-total') return grand ? current / grand : null;
+      if (spec.kind === 'rank') return 1;
+      if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
+    }
+    if (spec.kind === 'grand-percentage') return grand ? current / grand : null;
+    if (spec.kind === 'row-percentage') return rowTotal ? current / rowTotal : null;
+    if (spec.kind === 'column-percentage') return columnTotal ? current / columnTotal : null;
+    if (spec.kind === 'parent-percentage') return parentTotal == null ? null : parentTotal ? current / parentTotal : null;
+    if (spec.kind === 'difference' || spec.kind === 'percentage-difference') {
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.same || resolved.base == null) return null;
+      return spec.kind === 'difference' ? current - resolved.base : resolved.base ? (current - resolved.base) / resolved.base : null;
+    }
+    if (spec.kind === 'running-total' || spec.kind === 'percentage-running-total') {
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.position < 0) return null;
+      const cumulative = resolved.series.slice(0, resolved.position + 1).reduce((sum, value) => sum + value, 0);
+      if (spec.kind === 'running-total') return cumulative;
+      const total = resolved.series.reduce((sum, value) => sum + value, 0);
+      return total ? cumulative / total : null;
+    }
+    if (spec.kind === 'rank') {
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.base == null) return null;
+      const series = resolved.series;
+      const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left);
+      const rank = ranked.findIndex((value) => value === resolved.base);
+      return rank < 0 ? null : rank + 1;
+    }
+    if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
+    return null;
+  };
+
+  for (const context of contexts) {
+    for (const [valueIndex, field] of fields.entries()) {
+      const spec = field.showAs ?? { kind: 'normal' as const };
+      const current = pivotNumericValue(rawValue(context.cell, valueIndex));
+      if (current == null || spec.kind === 'normal') continue;
+      const grand = pivotNumericValue(grandValues[valueIndex] ?? null);
+      const rowTotal = context.kind === 'grand-total'
+        ? (grand ?? current)
+        : context.node?.values.reduce((sum, cell) => sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0), 0) ?? 0;
+      const columnTotal = context.kind === 'grand-total'
+        ? (grand ?? current)
+        : numericSum(leafContexts, valueIndex, context.columnIndex);
+      // Top-level members have the grand total as their parent context. This
+      // is the only deterministic parent for a Pivot root member.
+      const parentTotal = context.kind === 'grand-total'
+        ? grand
+        : context.parent ? pivotNumericValue(rawValue(context.parent.values[context.columnIndex], valueIndex)) : grand;
+      context.cell.values[valueIndex] = transform(spec, current, grand, rowTotal, columnTotal, parentTotal, context, valueIndex);
+    }
+  }
+}
+
+function computePivotResultFromTable(
+  definition: PivotDefinition,
+  rawTable: SourceTable,
+  controls: readonly PivotTaskControl[],
+  revisions: PivotRevisionKey,
+  targetBounds: { rowCount: number; columnCount: number },
+): PivotResultTree {
+  const collator = createPivotCollator(definition.layout.collation);
+  const calculatedFieldIds = new Set((definition.layout.calculatedFields ?? []).map((field) => field.fieldId));
+  const calculatedItemIds = new Set((definition.layout.calculatedItems ?? []).map((field) => field.fieldId));
+  const structuralReferences: string[] = [
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => {
+      if (filter.kind === 'top-items') return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      if (filter.kind === 'condition' && filter.valueId !== undefined) return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      return [filter.fieldId];
+    }),
+  ];
+  const calculatedStructuralReference = structuralReferences.find((field) => calculatedFieldIds.has(field));
+  if (calculatedStructuralReference) throw new Error(`Pivot calculated field is only valid in Values: ${calculatedStructuralReference}`);
+  const calculatedItemStructuralReference = structuralReferences.find((field) => calculatedItemIds.has(field));
+  if (calculatedItemStructuralReference) throw new Error(`Pivot calculated item is only valid in Values: ${calculatedItemStructuralReference}`);
+  const aggregates = new PivotAggregatePlanner();
+  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields);
+  const calculatedFields = createCalculatedFieldEvaluator(calculatedPlan, aggregates);
+  const resultFields = resultValueFields(definition.layout);
+  const rows = applyCalculatedItems(rawTable.rows, definition.fieldCatalog.fields, definition.layout, resultFields);
+  const references = [
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => {
+      if (filter.kind === 'top-items') return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      if (filter.kind === 'condition' && filter.valueId !== undefined) return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      return [filter.fieldId];
+    }),
+    ...definition.layout.values.map((entry) => entry.fieldId),
+  ];
+  const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
+  const unknown = references.find((field) => field && !known.has(field));
+  if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
+  const controlMatcher = buildPivotControlMatcher(rows, controls);
+  const sourceFilterMatchers = buildSourceFilterMatchers(definition);
+  let filtered = applySourceFilters(rowsMatchingControls(controlMatcher), sourceFilterMatchers, collator);
+  filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator, aggregates);
+  filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition, aggregates);
+  const columns = definition.layout.columns.length
+    ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields, aggregates)
+    : [{ values: [], rows: filtered, rowSet: new Set(filtered) }];
+  assertPivotTaskFootprint(definition, filtered, columns, resultFields, targetBounds);
+  // The root row axis is consumed once for sorting/grouping and again while
+  // materializing the result tree. Reuse the immutable groups so a large
+  // value-sorted Pivot does not rebuild and resort the full source domain.
+  const rootRowGroups = definition.layout.rows.length
+    ? axisGroups(filtered, [definition.layout.rows[0]!], definition.fieldCatalog, collator, resultFields, calculatedFields, aggregates)
+    : undefined;
+  const grandTotal: PivotResultCell = {
+    id: `${definition.id}|grand-total`,
+    kind: 'grand-total',
+    columnPath: [],
+    values: resultFields.map((field) => resultValue(filtered, field, field.summarizeBy, calculatedFields, aggregates)),
+    sourceRowPaths: filtered.flatMap((row) => sourceRowPaths(row)),
+  };
+  const tree: PivotResultTree = {
+    schema: PIVOT_RESULT_TREE_SCHEMA,
+    pivotId: definition.id,
+    fields: definition.fieldCatalog,
+    columnPaths: columns.map((column) => column.values),
+    valueFields: resultFields,
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator, calculatedFields, aggregates, [], rootRowGroups),
+    columnGrandTotals: resultCells(filtered, columns, resultFields, [`${definition.id}|grand-total`], 'grand-total', undefined, calculatedFields, aggregates),
+    grandTotal,
+    sourceRowPaths: filtered.flatMap((row) => sourceRowPaths(row)),
+  };
+  const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
+  for (const control of controls) {
+    if (control.payload.kind !== 'slicer') continue;
+    const availableRows = controlMatcher.unrestricted.has(control.drawingId) ? filtered : undefined;
+    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
+  }
+  if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
+  applyShowAs(tree, resultFields, definition.layout);
+  tree.sourceRevision = revisions.sourceRevision;
+  tree.layoutRevision = revisions.layoutRevision;
+  tree.filterRevision = revisions.filterRevision;
+  return tree;
+}
+
+export function preparePivotTaskInput(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotTaskEvaluationInput {
+  if (pivot.source.kind === 'data-source') throw new Error('Block-backed Pivot tasks require an asynchronously acquired source index');
+  const calculator = pivotSourceCalculator(workbook, pivot, formula);
+  const definition = normalizePivotDefinitionWithCalculator(workbook, pivot, calculator);
+  const rawTable = sourceTable(workbook, definition, definition.fieldCatalog, calculator);
+  return {
+    definition,
+    source: rawTable.index,
+    controls: collectPivotTaskControls(workbook, pivot),
+    revisions: getPivotRevisionKey(workbook, definition, calculator),
+    targetBounds: pivotTargetBounds(workbook, definition),
+  };
+}
+
+/** Product source acquisition: bounded main-thread chunks, cancellation, then one transferable index. */
+export async function preparePivotTaskInputAsync(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  formula: FormulaEngine,
+  options: PivotSourceAcquireOptions = {},
+): Promise<PivotTaskEvaluationInput> {
+  if (pivot.source.kind === 'data-source') throw new Error('Block-backed Pivot tasks require an asynchronously acquired source index');
+  const table = await sourceTableAsync(workbook, pivot, pivot.fieldCatalog, formula, options);
+  const fieldCatalog = normalizedFieldCatalog(table, pivot.fieldCatalog);
+  const definition = normalizePivotDefinitionFromCatalog({ ...pivot, fieldCatalog });
+  return {
+    definition,
+    controls: collectPivotTaskControls(workbook, pivot),
+    revisions: getPivotRevisionKey(workbook, definition, formula),
+    targetBounds: pivotTargetBounds(workbook, definition),
+    source: table.index,
+  };
+}
+
+export type PivotTaskDescriptor = Omit<PivotTaskEvaluationInput, 'source'>;
+
+/** Build a new layout/filter task without touching source cells or transferred source buffers. */
 export function preparePivotTaskDescriptor(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotTaskDescriptor {
   const definition = normalizePivotDefinitionFromCatalog(pivot);
   return {
     definition,
     controls: collectPivotTaskControls(workbook, pivot),
-    revisions: getPivotRevisionKey(workbook, pivot, formula),
+    revisions: getPivotRevisionKey(workbook, definition, formula),
     targetBounds: pivotTargetBounds(workbook, definition),
   };
 }
@@ -788,6 +3022,60 @@ function pivotTargetBounds(workbook: WorkbookModel, definition: PivotDefinition)
   return target
     ? { rowCount: target.rowCount, columnCount: target.columnCount }
     : { rowCount: DEFAULT_SHEET_ROW_COUNT, columnCount: DEFAULT_SHEET_COLUMN_COUNT };
+}
+
+function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
+  const input = preparePivotTaskInput(workbook, pivot, formula);
+  return evaluatePivotTask({ ...input, targetBounds: { rowCount: MAX_SHEET_ROW_COUNT, columnCount: MAX_SHEET_COLUMN_COUNT } });
+}
+
+export function computePivotResultFromDefinition(workbook: WorkbookModel, definition: PivotDefinition, formula?: FormulaEngine): PivotResultTree {
+  return evaluatePivotTask(preparePivotTaskInput(workbook, definition, formula));
+}
+
+export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
+  return computePivotResultUncached(workbook, pivot, formula);
+}
+
+export interface PivotTaskEvaluationInput {
+  definition: PivotDefinition;
+  source: PivotSourceIndex;
+  controls: PivotTaskControl[];
+  revisions: PivotRevisionKey;
+  targetBounds: { rowCount: number; columnCount: number };
+}
+
+/** Pure worker evaluator: no WorkbookModel, renderer, command runtime, or UI state is reachable here. */
+export function evaluatePivotTask(input: PivotTaskEvaluationInput): PivotResultTree {
+  if (input.definition.id !== input.revisions.pivotId) throw new Error('Pivot task revision identity does not match its definition');
+  return computePivotResultFromTable(
+    input.definition,
+    openSourceTable(input.source),
+    input.controls,
+    input.revisions,
+    input.targetBounds,
+  );
+}
+
+/** Apply the normal Pivot calculation pipeline to asynchronously loaded block data. */
+export function computePivotResultFromBlockSource(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  source: PivotSourceTableInput,
+  sourceRevision: string,
+): PivotResultTree {
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
+  if (definition.source.kind !== 'data-source') throw new Error('Block source calculation requires a data-source Pivot');
+  return evaluatePivotTask({
+    definition,
+    source,
+    controls: collectPivotTaskControls(workbook, pivot),
+    revisions: { ...getPivotRevisionKey(workbook, pivot), sourceRevision },
+    targetBounds: {
+      rowCount: workbook.getSheet(pivot.target.sheetId).rowCount,
+      columnCount: workbook.getSheet(pivot.target.sheetId).columnCount,
+    },
+  });
 }
 
 function nodeExpanded(node: PivotResultNode, layout: PivotLayout): boolean {
@@ -1229,16 +3517,10 @@ export function buildPivotGridProjection(
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
   const revision = getPivotRevisionKey(workbook, pivot, options.formula);
-  const sourceRevisionMismatch = pivot.source.kind === 'data-source'
-    && options.sourceState?.sourceRevision !== undefined
-    && cachedResult !== undefined
-    && cachedResult.sourceRevision !== String(options.sourceState.sourceRevision);
   const blockResultReady = pivot.source.kind === 'data-source'
     && options.sourceState?.availability === 'ready'
-    && !sourceRevisionMismatch
     && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula);
   const staleResult = pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula)
-    && !sourceRevisionMismatch
     && cachedResult.sourceRevision !== revision.sourceRevision;
   let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult, options.formula) || staleResult || blockResultReady ? cachedResult : undefined;
   const candidate = buildPivotGridProjectionCandidate(workbook, pivot, effectiveResult, options);
@@ -1333,6 +3615,17 @@ export function findPivotProjectionCellAt(projection: PivotGridProjection, row: 
 
 export function resolvePivotContextHit(projection: PivotGridProjection, row: number, column: number): ContextHit {
   return { ...hitTestPivotProjection(projection, row, column), context: 'pivot', priority: 30 };
+}
+
+export function computePivotTable(pivot: PivotModel, tree: PivotResultTree): PivotResultTable {
+  const definition = normalizePivotDefinitionFromCatalog(pivot);
+  const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) }));
+  const values = tree.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  const headers = [
+    ...definition.layout.rows.map((field) => fieldName(field.fieldId, definition.fieldCatalog)),
+    ...tree.columnPaths.flatMap((path) => values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog))),
+  ];
+  return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }
 
 function pivotSourceRangesForExport(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): RangeRef[] {

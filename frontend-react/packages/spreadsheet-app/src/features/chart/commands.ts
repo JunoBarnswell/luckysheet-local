@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -24,6 +24,7 @@ export interface ChartUpdateParams {
   sheetId: string;
   chartId: string;
   payload: Partial<ChartPayload>;
+  expectedPayload?: ChartPayload;
 }
 
 export interface ChartSetTypeParams {
@@ -249,6 +250,32 @@ function isStockRoles(value: unknown): boolean {
   return (value.open === undefined || isRange(value.open)) && (value.volume === undefined || isRange(value.volume));
 }
 
+function isMapResource(value: unknown): value is ChartMapResource {
+  if (!isRecord(value) || value.schema !== 'ChartMapResource' || (value.source !== 'geojson' && value.source !== 'builtin')
+    || typeof value.resourceId !== 'string' || !value.resourceId.trim() || typeof value.checksum !== 'string' || !/^[0-9a-f]{64}$/i.test(value.checksum)) return false;
+  if (!Array.isArray(value.features) || value.features.length === 0) return false;
+  const ids = new Set<string>();
+  return value.features.every((feature) => {
+    if (!isRecord(feature) || typeof feature.id !== 'string' || !feature.id.trim() || typeof feature.label !== 'string' || !feature.label.trim()
+      || ids.has(feature.id) || !Array.isArray(feature.polygons) || feature.polygons.length === 0) return false;
+    ids.add(feature.id);
+    return feature.polygons.every((polygon) => Array.isArray(polygon) && polygon.length >= 4 && polygon.every((point) => Array.isArray(point)
+      && point.length === 2 && typeof point[0] === 'number' && typeof point[1] === 'number'
+      && Number.isFinite(point[0]) && Number.isFinite(point[1]) && point[0] >= -180 && point[0] <= 180 && point[1] >= -90 && point[1] <= 90)
+      && polygon[0]?.[0] === polygon[polygon.length - 1]?.[0]
+      && polygon[0]?.[1] === polygon[polygon.length - 1]?.[1]);
+  });
+}
+
+function isMapOptions(value: unknown): boolean {
+  return isRecord(value)
+    && ['country-region', 'state-province', 'county', 'postal-code'].includes(String(value.geography))
+    && ['automatic', 'only-data', 'world', 'continent', 'country', 'state'].includes(String(value.mapArea))
+    && ['none', 'best-fit', 'show-all'].includes(String(value.labelLevel))
+    && ['sequential', 'diverging', 'category'].includes(String(value.colorScale))
+    && (value.resource === undefined || isMapResource(value.resource));
+}
+
 function isNativeIdentity(value: unknown): boolean {
   return isRecord(value)
     && typeof value.family === 'string'
@@ -299,12 +326,13 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && (payload.histogramOptions === undefined || isRecord(payload.histogramOptions))
     && (payload.boxWhiskerOptions === undefined || isRecord(payload.boxWhiskerOptions))
     && (payload.waterfallOptions === undefined || isRecord(payload.waterfallOptions))
-    && (payload.mapOptions === undefined || isRecord(payload.mapOptions))
+    && (payload.mapOptions === undefined || isMapOptions(payload.mapOptions))
     && (payload.dataOrientation === undefined || payload.dataOrientation === 'rows' || payload.dataOrientation === 'columns')
     && (payload.chartType !== 'combo' || (Array.isArray(series) && series.every((entry) => entry.chartType !== undefined)));
 }
 
 function validateChartSemantics(payload: ChartPayload): void {
+  if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${payload.chartId} has no editable canonical owner`);
   if (payload.chartType === 'combo') {
     if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
@@ -323,7 +351,6 @@ function validateChartSemantics(payload: ChartPayload): void {
     if (seriesType === 'bubble' && !series.sizeRange) throw new Error('INVALID_CHART_SOURCE: Bubble charts require an independent Size range binding');
     if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
   }
-  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow === series.range.endRow)) throw new Error('INVALID_CHART_SOURCE: Row-oriented chart series must contain at least one data column');
 }
 
 function validateChartPair(sheet: WorksheetModel, drawing: DrawingObject, payload: ChartPayload): void {
@@ -376,6 +403,8 @@ function executeChartInsert(params: ChartInsertParams, context: CommandContext, 
     sheetId: params.sheetId,
     params,
     affectedRanges,
+    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawing.id }, affectedRanges }],
+    apply: () => addChartDrawing(context.workbook.getSheet(params.sheetId), params),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -399,6 +428,8 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
     sheetId: params.sheetId,
     params: mutationParams,
     affectedRanges,
+    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: params.chartId, before: nextPayload, after: current.payload }, affectedRanges }],
+    apply: () => updateChartPayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload }),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
@@ -415,7 +446,12 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
     commandIds.push(id);
   }
 
-  runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId })) });
+  runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    if (input.expectedPayload && JSON.stringify(payload) !== JSON.stringify(input.expectedPayload)) {
+      throw new Error('CHART_EDIT_CONFLICT: 图表已被其他操作修改，请保留草稿并核对当前图表');
+    }
+    return { ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId };
+  }) });
   commandIds.push('chart.update');
   runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     if (!isChartSubtypeForType(input.chartType, input.subtype)) throw new Error(`Chart subtype ${input.subtype} does not belong to ${input.chartType}`);
@@ -524,12 +560,15 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
       const current = findChartDrawing(sheet, params.chartId);
       if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       const affectedRanges = sheetRange(params.sheetId);
+      const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
       context.applyMutation({
         id: 'drawing.remove',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawingId: current.drawing.id },
         affectedRanges,
+        inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverseParams, affectedRanges }],
+        apply: () => removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

@@ -38,7 +38,7 @@ export interface PrintDocumentSnapshot {
 
 export interface QueryStepSnapshot {
   id: string;
-  kind: 'source' | 'filter' | 'select-columns' | 'rename-column' | 'sort' | 'group-by' | 'join' | 'pivot' | 'custom';
+  kind: 'source' | 'filter' | 'select-columns' | 'rename-column' | 'trim-text' | 'split-column' | 'remove-duplicates' | 'sort' | 'group-by' | 'join' | 'pivot' | 'custom';
   name: string;
   config: Record<string, unknown>;
   enabled: boolean;
@@ -71,7 +71,7 @@ export interface QueryLoadTargetSnapshot {
 }
 
 const QUERY_STEP_KINDS = new Set<QueryStepSnapshot['kind']>([
-  'source', 'filter', 'select-columns', 'rename-column', 'sort', 'group-by', 'join', 'pivot', 'custom',
+  'source', 'filter', 'select-columns', 'rename-column', 'trim-text', 'split-column', 'remove-duplicates', 'sort', 'group-by', 'join', 'pivot', 'custom',
 ]);
 
 const SECRET_KEY = /(?:pass(word)?|secret|token|api[-_]?key|credential|authorization|private[-_]?key|client[-_]?secret)/i;

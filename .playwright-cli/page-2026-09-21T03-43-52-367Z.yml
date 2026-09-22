@@ -1,0 +1,162 @@
+- application "Spreadsheet Designer" [ref=e16]:
+  - generic [ref=e18]:
+    - generic [ref=e19]:
+      - button "Open workbook menu" [ref=e22] [cursor=pointer]: 文件
+      - tablist "Workbook ribbon tabs" [ref=e23]:
+        - tab "开始" [ref=e24] [cursor=pointer]
+        - tab "插入" [ref=e25] [cursor=pointer]
+        - tab "页面布局" [ref=e26] [cursor=pointer]
+        - tab "公式" [ref=e27] [cursor=pointer]
+        - tab "数据" [ref=e28] [cursor=pointer]
+        - tab "视图" [ref=e29] [cursor=pointer]
+        - tab "审阅" [ref=e30] [cursor=pointer]
+        - tab "设置" [ref=e31] [cursor=pointer]
+        - tab "数据透视表分析" [selected] [ref=e239] [cursor=pointer]
+        - tab "数据透视表设计" [ref=e240] [cursor=pointer]
+      - generic [ref=e32]: 引擎已连接
+    - generic [ref=e242]:
+      - generic [ref=e243]:
+        - button "刷新" [active] [ref=e244] [cursor=pointer]
+        - button "字段列表" [ref=e249] [cursor=pointer]
+        - button "插入切片器" [ref=e254] [cursor=pointer]
+        - button "插入时间线" [ref=e260] [cursor=pointer]
+        - button "数据透视图" [ref=e265] [cursor=pointer]
+      - generic [ref=e269]: 数据透视表
+  - form "Formula bar" [ref=e162]:
+    - textbox "选中单元格" [ref=e164]: A1
+    - button "打开名称管理器" [ref=e165] [cursor=pointer]
+    - button "取消公式编辑" [ref=e170] [cursor=pointer]
+    - button "应用公式" [ref=e173] [cursor=pointer]
+    - button "插入函数向导" [ref=e176] [cursor=pointer]: fx
+    - textbox "公式输入" [ref=e180]:
+      - /placeholder: ""
+  - generic [ref=e181]:
+    - generic [ref=e183]:
+      - grid "Spreadsheet canvas" [ref=e188]:
+        - scrollbar "horizontal scrollbar" [ref=e191]
+        - scrollbar "vertical scrollbar" [ref=e193]
+      - complementary "属性" [ref=e270]:
+        - button "Resize sidebar" [ref=e271]
+        - complementary "Feature sidebar" [ref=e274]:
+          - generic [ref=e275]:
+            - generic [ref=e276]:
+              - generic [ref=e277]: 数据透视表字段
+              - generic [ref=e278]:
+                - generic [ref=e279]: AI
+                - button "关闭数据透视表字段" [ref=e280] [cursor=pointer]
+            - generic [ref=e283]:
+              - generic [ref=e284]:
+                - button "格式与选项" [ref=e287] [cursor=pointer]
+                - combobox "字段列表布局" [ref=e291]:
+                  - option "字段与区域堆叠" [selected]
+                  - option "字段与区域并排"
+                  - option "区域 2×2"
+                  - option "区域 1×4"
+                  - option "仅字段"
+                  - option "仅区域"
+              - generic [ref=e292]:
+                - generic [ref=e293]:
+                  - generic [ref=e294]:
+                    - generic [ref=e295]: 选择要添加到报表的字段
+                    - generic [ref=e296]: 已用 0/6
+                  - generic [ref=e297]:
+                    - textbox "搜索" [ref=e299]
+                    - generic [ref=e300]:
+                      - generic [ref=e301]:
+                        - generic [ref=e302]:
+                          - checkbox "合计" [ref=e304] [cursor=pointer]
+                          - generic [ref=e305]: 合计
+                        - button "折叠字段" [ref=e306] [cursor=pointer]
+                      - generic [ref=e310]:
+                        - generic [ref=e378]:
+                          - generic [ref=e381]:
+                            - checkbox "日期" [ref=e383] [cursor=pointer]
+                            - generic [ref=e384]: 日期
+                          - 'button "字段菜单: 日期" [ref=e387] [cursor=pointer]'
+                        - generic [ref=e390]:
+                          - generic [ref=e393]:
+                            - checkbox "区域" [ref=e395] [cursor=pointer]
+                            - generic [ref=e396]: 区域
+                          - 'button "字段菜单: 区域" [ref=e399] [cursor=pointer]'
+                        - generic [ref=e402]:
+                          - generic [ref=e405]:
+                            - checkbox "产品" [ref=e407] [cursor=pointer]
+                            - generic [ref=e408]: 产品
+                          - 'button "字段菜单: 产品" [ref=e411] [cursor=pointer]'
+                        - generic [ref=e414]:
+                          - generic [ref=e417]:
+                            - checkbox "销售员" [ref=e419] [cursor=pointer]
+                            - generic [ref=e420]: 销售员
+                          - 'button "字段菜单: 销售员" [ref=e423] [cursor=pointer]'
+                        - generic [ref=e426]:
+                          - generic [ref=e429]:
+                            - checkbox "数量" [ref=e431] [cursor=pointer]
+                            - generic [ref=e432]: 数量
+                          - 'button "字段菜单: 数量" [ref=e435] [cursor=pointer]'
+                        - generic [ref=e438]:
+                          - generic [ref=e441]:
+                            - checkbox "金额" [ref=e443] [cursor=pointer]
+                            - generic [ref=e444]: 金额
+                          - 'button "字段菜单: 金额" [ref=e447] [cursor=pointer]'
+                - separator "调整字段和区域大小" [ref=e323]
+                - generic [ref=e324]:
+                  - generic [ref=e325]:
+                    - generic [ref=e326]: 字段区域
+                    - generic [ref=e327]: 拖动字段，或使用字段菜单添加
+                  - generic [ref=e328]:
+                    - region "筛选 field area" [ref=e329]:
+                      - generic [ref=e330]:
+                        - generic [ref=e332]: 筛选
+                        - generic [ref=e333]: "0"
+                      - list [ref=e334]:
+                        - generic [ref=e335]: 将字段拖到此处
+                    - region "列 field area" [ref=e336]:
+                      - generic [ref=e337]:
+                        - generic [ref=e341]: 列
+                        - generic [ref=e342]: "0"
+                      - list [ref=e343]:
+                        - generic [ref=e344]: 将字段拖到此处
+                    - region "行 field area" [ref=e345]:
+                      - generic [ref=e346]:
+                        - generic [ref=e350]: 行
+                        - generic [ref=e351]: "0"
+                      - list [ref=e352]:
+                        - generic [ref=e353]: 将字段拖到此处
+                    - region "值 field area" [ref=e354]:
+                      - generic [ref=e355]:
+                        - generic [ref=e359]: 值
+                        - generic [ref=e360]: "0"
+                      - list [ref=e361]:
+                        - generic [ref=e362]: 将字段拖到此处
+              - generic [ref=e363]:
+                - generic [ref=e365]:
+                  - checkbox "延迟布局更新" [ref=e367] [cursor=pointer]
+                  - generic [ref=e368]: 延迟布局更新
+                - button "应用布局" [disabled] [ref=e369]
+            - generic [ref=e370]:
+              - combobox "分类汇总位置" [ref=e372]:
+                - option "组顶部"
+                - option "组底部" [selected]
+                - option "关闭"
+              - button "高级数据透视表字段" [ref=e375] [cursor=pointer]
+    - navigation "Worksheets" [ref=e195]:
+      - navigation "工作表" [ref=e196]:
+        - generic [ref=e197]:
+          - button "向左滚动工作表" [ref=e198] [cursor=pointer]
+          - button "向右滚动工作表" [ref=e201] [cursor=pointer]
+          - button "添加工作表" [ref=e204] [cursor=pointer]
+          - generic [ref=e209]:
+            - tab "Sheet1" [ref=e211] [cursor=pointer]
+            - tab "PivotTable" [selected] [ref=e214] [cursor=pointer]
+          - button "更多工作表操作" [ref=e218] [cursor=pointer]
+  - contentinfo [ref=e226]:
+    - generic "Workbook status bar" [ref=e227]:
+      - generic [ref=e228]:
+        - generic [ref=e229]: 就绪
+        - status "Workbook restored from server" [ref=e230]: 已保存
+        - generic [ref=e231]: A1 · r1
+      - button "Open keyboard shortcuts" [ref=e232] [cursor=pointer]: 快捷键
+      - generic [ref=e233]:
+        - button "Zoom out" [ref=e234] [cursor=pointer]: −
+        - button "Zoom in" [ref=e237] [cursor=pointer]: +
+        - generic [ref=e238]: 100%

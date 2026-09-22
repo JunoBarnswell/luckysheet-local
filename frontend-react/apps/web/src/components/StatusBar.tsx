@@ -10,10 +10,13 @@ export interface StatusBarProps {
   onZoomChange: (zoom: number) => void;
   phase: AppPhase;
   saveState: SaveState;
+  notice?: string;
   sheetCount: number;
   zoom: number;
   collabStatus?: 'connecting' | 'open' | 'closed';
+  pendingChangeSetCount?: number;
   collabRevision?: number;
+  hasPendingOperations?: boolean;
   fixedDecimalPlaces?: number | null;
 }
 
@@ -25,20 +28,24 @@ export function StatusBar({
   onZoomChange,
   phase,
   saveState,
+  notice,
   sheetCount,
   zoom,
   collabStatus = 'closed',
+  pendingChangeSetCount = 0,
   collabRevision = 0,
+  hasPendingOperations = false,
   fixedDecimalPlaces = null,
 }: StatusBarProps) {
   const edit = useCellEdit(cellEdit);
   const disabled = phase !== 'ready';
-  void activeCell;
-  void locale;
-  void saveState;
-  void sheetCount;
-  void collabStatus;
-  void collabRevision;
+  const saveLabels: Record<SaveState, string> = locale === 'zh-CN'
+    ? { saved: '已保存', saving: '正在保存', offline: '已断线 · 编辑暂停', syncing: '正在核对服务器版本', conflict: '存在冲突 · 草稿已保留', calculating: '计算中', error: '保存失败' }
+    : { saved: 'Saved', saving: 'Saving', offline: 'Offline · Editing paused', syncing: 'Reconciling', conflict: 'Conflict · Draft retained', calculating: 'Calculating', error: 'Save failed' };
+  const persistenceText = phase === 'error' ? saveLabels.error
+    : collabStatus !== 'open' ? saveLabels.offline
+    : hasPendingOperations || pendingChangeSetCount > 0 ? saveLabels[saveState === 'saved' ? 'saving' : saveState]
+    : saveLabels[saveState];
   const labels = locale === 'zh-CN'
     ? { ready: '就绪', enter: '输入', edit: '编辑', point: '点选', overtype: '覆盖' }
     : { ready: 'Ready', enter: 'Enter', edit: 'Edit', point: 'Point', overtype: 'Overtype' };
@@ -46,7 +53,9 @@ export function StatusBar({
   return (
     <Box aria-label="Workbook status bar" className="relative flex h-[22px] items-center justify-between px-2">
       <Inline gap="sm">
-        <Text size="xs" tone="inverse" className="!text-[#6ba78b] text-[10px] leading-none">{statusText}</Text>
+        <Text size="xs" tone="inverse" className="text-[11px] leading-none">{statusText}</Text>
+        <Text title={notice} role="status" aria-live="polite" size="xs" tone="inverse" className="border-l border-white/30 pl-3 text-[11px] leading-none">{persistenceText}</Text>
+        <Text size="xs" tone="inverse" className="text-[10px] opacity-75">{activeCell} · r{collabRevision}</Text>
         {fixedDecimalPlaces !== null ? <Text size="xs" tone="inverse" className="text-[10px] leading-none">Fixed Decimal: {fixedDecimalPlaces}</Text> : null}
       </Inline>
       <Button aria-label="Open keyboard shortcuts" disabled={disabled} className="sr-only" onClick={onOpenShortcuts}>快捷键</Button>

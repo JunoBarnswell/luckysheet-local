@@ -4,17 +4,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.config.QueryProperties;
 import com.xc.luckysheet.server.config.QuerySource;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.contract.AnalyticsExecutionRequest;
-import com.xc.luckysheet.server.contract.AnalyticsExecutionResponse;
-import com.xc.luckysheet.server.contract.AnalyticsPrepareRequest;
-import com.xc.luckysheet.server.contract.AnalyticsPrepareResponse;
+import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
@@ -22,8 +20,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -31,7 +27,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -42,11 +37,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -54,254 +49,45 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class QueryExecutionService {
-    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "sort", "group-by", "join", "pivot");
+    private static final int MAX_BLOCK_SESSIONS = 32;
+    private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "trim-text", "split-column", "remove-duplicates", "sort", "group-by", "join", "pivot");
     private static final Set<String> FILTER_OPERATORS = Set.of("eq", "neq", "contains", "startsWith", "endsWith", "gt", "gte", "lt", "lte", "isNull", "notNull");
     private static final Set<String> AGGREGATIONS = Set.of("sum", "count", "average", "min", "max");
-    private static final Set<String> WRITE_SQL_KEYWORDS = Set.of(
-            "insert", "update", "delete", "drop", "alter", "create", "truncate", "grant", "revoke", "copy", "call", "merge", "replace",
-            "into", "outfile", "dumpfile", "load", "set", "reset", "use", "lock", "unlock", "attach", "detach", "vacuum", "analyze", "pragma",
-            "reindex", "refresh", "comment", "execute", "prepare", "deallocate"
-    );
 
     private final QueryProperties properties;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
-    private final QueryExecutionProofService proofs;
+    private final WorkbookStore store;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
-    private final AtomicReference<HttpClient> http = new AtomicReference<>();
-    private final KernelHostClient kernel;
-    private final KernelPersistenceService persistence;
-    private final Map<ActiveTaskKey, ActiveQuery> active = new ConcurrentHashMap<>();
-    private final Map<ActiveTaskKey, ActiveAnalytics> analyticsActive = new ConcurrentHashMap<>();
+    private volatile HttpClient http;
+    private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final Map<String, BlockQuery> blockSessions = new ConcurrentHashMap<>();
 
-    @org.springframework.beans.factory.annotation.Autowired
     public QueryExecutionService(
             QueryProperties properties,
             AccessControlService access,
             WorkbookLifecycleService lifecycle,
-            QueryExecutionProofService proofs,
+            WorkbookStore store,
             AuditRecorder audit,
-            ObjectMapper mapper,
-            KernelHostClient kernel,
-            KernelPersistenceService persistence
+            ObjectMapper mapper
     ) {
         this.properties = properties;
         this.access = access;
         this.lifecycle = lifecycle;
-        this.proofs = proofs;
+        this.store = store;
         this.audit = audit;
         this.mapper = mapper;
-        this.kernel = kernel;
-        this.persistence = persistence;
         this.workers = new ThreadPoolExecutor(properties.workerThreads(), properties.workerThreads(), 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(Math.max(8, properties.workerThreads() * 8)), runnable -> {
             Thread thread = new Thread(runnable, "server-query-worker");
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-    }
-
-    /** Compatibility constructor for connector-only unit tests. Native
-     * analytics calls fail closed when no kernel boundary was supplied. */
-    public QueryExecutionService(QueryProperties properties, AccessControlService access,
-            WorkbookLifecycleService lifecycle, QueryExecutionProofService proofs,
-            AuditRecorder audit, ObjectMapper mapper) {
-        this(properties, access, lifecycle, proofs, audit, mapper, null, null);
-    }
-
-    public AnalyticsPrepareResponse prepareAnalytics(String unitId, AnalyticsPrepareRequest request, String actor) {
-        if (!properties.enabled()) throw ServiceException.unavailable("Server analytics is disabled");
-        validateAnalyticsRequest(request.request(), request.revision());
-        QueryExecutionProofService.StartedExecution execution = proofs.beginAnalytics(unitId, request.queryId(), actor,
-                request.revision(), properties.timeout().plus(Duration.ofMinutes(15)));
-        Instant expiresAt = execution.expiresAt() == null
-                ? Instant.now().plus(properties.timeout()).plus(Duration.ofMinutes(15)) : execution.expiresAt();
-        return new AnalyticsPrepareResponse(request.queryId(), execution.sourceRevision(), execution.executionToken(), expiresAt);
-    }
-
-    public AnalyticsExecutionResponse executeAnalytics(String unitId, String queryId,
-            AnalyticsExecutionRequest request, String actor) {
-        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_EXECUTE");
-    }
-
-    public AnalyticsExecutionResponse viewportAnalytics(String unitId, String queryId,
-            AnalyticsExecutionRequest request, String actor) {
-        requireViewport(request.request());
-        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_VIEWPORT");
-    }
-
-    public AnalyticsExecutionResponse drilldownAnalytics(String unitId, String queryId,
-            AnalyticsExecutionRequest request, String actor) {
-        requireDrilldown(request.request());
-        return runAnalyticsPage(unitId, queryId, request, actor, "ANALYTICS_DRILLDOWN");
-    }
-
-    public void cancelAnalytics(String unitId, String queryId, String actor) {
-        // Seal cancellation in the database first. A worker racing this call
-        // can no longer publish a result after the proof becomes CANCELLED.
-        proofs.cancelAnalytics(unitId, queryId, actor);
-        ActiveAnalytics running = analyticsActive.get(new ActiveTaskKey(unitId, queryId));
-        if (running != null) {
-            running.control().cancel();
-            running.future().cancel(true);
-        }
-        audit.accepted(queryId, unitId, actor, "ANALYTICS_CANCEL", null, mapper.createObjectNode());
-    }
-
-    private AnalyticsExecutionResponse runAnalyticsPage(String unitId, String queryId,
-            AnalyticsExecutionRequest request, String actor, String auditKind) {
-        if (!properties.enabled()) throw ServiceException.unavailable("Server analytics is disabled");
-        QueryExecutionProofService.AnalyticsExecution proof = proofs.authorizeAnalytics(unitId, queryId,
-                request.executionToken(), actor);
-        validateAnalyticsRequest(request.request(), proof.sourceRevision());
-        ActiveTaskKey key = new ActiveTaskKey(unitId, queryId);
-        ExecutionControl control = new ExecutionControl();
-        FutureTask<JsonNode> future = new FutureTask<>(() -> executeNativeAnalytics(unitId, proof.sourceRevision(), request.request(), control));
-        ActiveAnalytics running = new ActiveAnalytics(control, future);
-        ActiveAnalytics previous = analyticsActive.putIfAbsent(key, running);
-        if (previous != null) throw ServiceException.conflict("An analytics request with this id is already running");
-        Instant started = Instant.now();
-        try {
-            workers.execute(future);
-            JsonNode result = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
-            control.ensureActive();
-            if (result == null || !result.isObject() || !request.request().path("kind").asText().equals(result.path("kind").asText())
-                    || result.path("revision").asLong(-1) != proof.sourceRevision()) {
-                proofs.invalidate(unitId, queryId, proof.executionToken());
-                throw new KernelHostException("ANALYTICS_RESPONSE_INVALID", "Native analytics response is not revision or kind pinned",
-                        queryId, "deploy-matching-kernel-host");
-            }
-            String resultHash = proofs.publishAnalytics(unitId, queryId, proof.executionToken(), actor, result);
-            long duration = Duration.between(started, Instant.now()).toMillis();
-            audit.accepted(queryId, unitId, actor, auditKind, null,
-                    mapper.createObjectNode().put("revision", proof.sourceRevision()).put("durationMs", duration));
-            return new AnalyticsExecutionResponse(queryId, proof.sourceRevision(), proof.executionToken(), resultHash,
-                    result, Instant.now(), duration);
-        } catch (TimeoutException error) {
-            control.cancel(); future.cancel(true); proofs.invalidate(unitId, queryId, proof.executionToken());
-            audit.rejected(queryId, unitId, actor, auditKind, "Analytics task timed out");
-            throw ServiceException.timeout("Analytics task timed out");
-        } catch (InterruptedException error) {
-            control.cancel(); future.cancel(true); proofs.invalidate(unitId, queryId, proof.executionToken());
-            Thread.currentThread().interrupt();
-            throw ServiceException.timeout("Analytics task was cancelled");
-        } catch (CancellationException error) {
-            proofs.invalidate(unitId, queryId, proof.executionToken());
-            throw ServiceException.timeout("Analytics task was cancelled");
-        } catch (ExecutionException error) {
-            proofs.invalidate(unitId, queryId, proof.executionToken());
-            Throwable cause = error.getCause() == null ? error : error.getCause();
-            if (control.cancelled() || cause instanceof CancellationException) throw ServiceException.timeout("Analytics task was cancelled");
-            if (cause instanceof KernelHostException kernelError) throw kernelError;
-            if (cause instanceof ServiceException serviceError) throw serviceError;
-            throw ServiceException.validation("Analytics task failed");
-        } finally {
-            analyticsActive.remove(key, running);
-        }
-    }
-
-    private JsonNode executeNativeAnalytics(String unitId, long revision, JsonNode request, ExecutionControl control) {
-        if (kernel == null || persistence == null) {
-            throw ServiceException.unavailable("Native analytics kernel is not configured");
-        }
-        control.ensureActive();
-        synchronized (kernel) {
-            RuntimeException primaryFailure = null;
-            try {
-                control.ensureActive();
-                persistence.reopen(unitId, revision, kernel);
-                loadAnalyticsPages(unitId, revision, request, kernel, control);
-                control.ensureActive();
-                ObjectNode params = mapper.createObjectNode().put("unitId", unitId).put("revision", revision);
-                params.set("request", request.deepCopy());
-                return kernel.call("analytics.execute", params);
-            } catch (RuntimeException error) {
-                primaryFailure = error;
-                throw error;
-            } finally {
-                try {
-                    kernel.closeWorkbookContext(unitId);
-                } catch (RuntimeException closeFailure) {
-                    if (primaryFailure == null) throw closeFailure;
-                    primaryFailure.addSuppressed(closeFailure);
-                }
-            }
-        }
-    }
-
-    /** Loads only pages intersecting canonical source/range references. */
-    private void loadAnalyticsPages(String unitId, long revision, JsonNode request,
-            KernelHostClient host, ExecutionControl control) {
-        List<JsonNode> ranges = analyticsRanges(request);
-        JsonNode manifest = persistence.readManifest(unitId, revision);
-        for (JsonNode descriptor : manifest.path("pages")) {
-            control.ensureActive();
-            if (ranges.stream().anyMatch(range -> intersectsPage(range, descriptor))) {
-                persistence.loadPage(unitId, revision, descriptor.path("sheetId").asText(),
-                        descriptor.path("pageRow").asInt(-1), descriptor.path("pageColumn").asInt(-1), host);
-            }
-        }
-    }
-
-    private List<JsonNode> analyticsRanges(JsonNode request) {
-        List<JsonNode> ranges = new ArrayList<>();
-        JsonNode range = request.get("range");
-        if (range == null) range = request.get("source");
-        if (range != null && range.isObject()) ranges.add(range);
-        if (request.path("joins").isArray()) for (JsonNode join : request.path("joins")) {
-            if (join.path("range").isObject()) ranges.add(join.path("range"));
-        }
-        return ranges;
-    }
-
-    private boolean intersectsPage(JsonNode range, JsonNode descriptor) {
-        String sheet = range.path("sheetId").asText();
-        if (!sheet.equals(descriptor.path("sheetId").asText())) return false;
-        long startRow = range.path("startRow").asLong(-1), endRow = range.path("endRow").asLong(-1);
-        long startColumn = range.path("startColumn").asLong(-1), endColumn = range.path("endColumn").asLong(-1);
-        long pageRow = descriptor.path("pageRow").asLong(-1), pageColumn = descriptor.path("pageColumn").asLong(-1);
-        return startRow >= 0 && endRow >= startRow && startColumn >= 0 && endColumn >= startColumn
-                && startRow <= pageRow * 1024L + 1023 && endRow >= pageRow * 1024L
-                && startColumn <= pageColumn * 32L + 31 && endColumn >= pageColumn * 32L;
-    }
-
-    private void validateAnalyticsRequest(JsonNode request, long revision) {
-        if (request == null || !request.isObject() || !request.path("kind").isTextual()
-                || !Set.of("filter", "query", "pivot").contains(request.path("kind").asText())) {
-            throw ServiceException.validation("Analytics request kind is invalid");
-        }
-        if (!request.path("revision").isIntegralNumber() || request.path("revision").asLong(-1) != revision) {
-            throw ServiceException.conflict("Analytics request revision does not match its proof");
-        }
-        if (request.path("kind").asText().equals("query") && request.path("limit").asLong(0) <= 0) {
-            throw ServiceException.validation("Query analytics requires a positive result limit");
-        }
-    }
-
-    private void requireViewport(JsonNode request) {
-        if (!request.path("kind").asText().equals("pivot") || !request.path("viewport").isObject()) {
-            throw ServiceException.validation("Viewport endpoint requires a pivot viewport");
-        }
-        JsonNode viewport = request.path("viewport");
-        if (viewport.path("rowLimit").asLong(0) <= 0 || viewport.path("columnLimit").asLong(0) <= 0) {
-            throw ServiceException.validation("Pivot viewport limits must be positive");
-        }
-    }
-
-    private void requireDrilldown(JsonNode request) {
-        if (!request.path("kind").asText().equals("pivot") || !request.path("drilldown").isObject()) {
-            throw ServiceException.validation("Drilldown endpoint requires a pivot drilldown request");
-        }
-        if (request.path("drilldown").path("limit").asLong(0) <= 0) {
-            throw ServiceException.validation("Pivot drilldown limit must be positive");
-        }
     }
 
     public QueryExecutionResponse execute(String unitId, QueryExecutionRequest request, String actor) {
@@ -317,159 +103,204 @@ public class QueryExecutionService {
             throw ServiceException.validation(error.getMessage());
         }
 
-        QueryExecutionProofService.StartedExecution execution = proofs.begin(unitId, request.queryId(), actor,
-                properties.timeout().plus(Duration.ofMinutes(15)));
         Instant started = Instant.now();
-        ExecutionControl control = new ExecutionControl();
-        FutureTask<QueryTable> future = new FutureTask<>(() -> executeInternal(request, source, control));
-        ActiveTaskKey executionKey = new ActiveTaskKey(unitId, request.queryId());
-        ActiveQuery running = new ActiveQuery(control, future);
-        ActiveQuery previous = active.putIfAbsent(executionKey, running);
+        Future<QueryTable> future;
+        try {
+            future = workers.submit(() -> executeInternal(request, source, true));
+        } catch (RejectedExecutionException error) {
+            throw ServiceException.unavailable("Query execution queue is full");
+        }
+        String executionKey = unitId + ":" + request.queryId();
+        ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
         if (previous != null) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            control.cancel();
             future.cancel(true);
             throw ServiceException.conflict("A query with this id is already running");
         }
         try {
-            workers.execute(future);
-        } catch (RejectedExecutionException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            active.remove(executionKey, running);
-            control.cancel();
-            future.cancel(true);
-            throw ServiceException.unavailable("Query execution queue is full");
-        }
-        try {
             QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
-            control.ensureActive();
-            checkFinalSize(table);
-            com.fasterxml.jackson.databind.node.ObjectNode result = mapper.createObjectNode();
-            result.set("columns", mapper.valueToTree(table.columns));
-            result.set("rows", mapper.valueToTree(table.rows));
-            String resultHash = proofs.publish(unitId, request.queryId(), execution.executionToken(), actor, result);
             long duration = Duration.between(started, Instant.now()).toMillis();
             audit.accepted(request.queryId(), unitId, actor, "QUERY_EXECUTION", null, mapper.createObjectNode()
                     .put("connectorId", request.connectorId())
                     .put("sourceRef", request.sourceRef())
                     .put("rowCount", table.rows.size())
                     .put("durationMs", duration));
-            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), execution.sourceRevision(),
-                    execution.executionToken(), resultHash,
+            long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
+            return new QueryExecutionResponse(request.queryId(), request.connectorId(), request.sourceRef(), sourceRevision,
                     table.columns, table.rows, table.rows.size(), Instant.now(), duration);
         } catch (TimeoutException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            control.cancel();
             future.cancel(true);
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query timed out");
             throw ServiceException.timeout("Query timed out");
         } catch (InterruptedException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            control.cancel();
             future.cancel(true);
             Thread.currentThread().interrupt();
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (CancellationException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
             throw ServiceException.timeout("Query was cancelled");
         } catch (ExecutionException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
             Throwable cause = error.getCause() == null ? error : error.getCause();
-            if (control.cancelled() || cause instanceof CancellationException) {
-                audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", "Query was cancelled");
-                throw ServiceException.timeout("Query was cancelled");
-            }
             String reason = cause instanceof QueryFailure failure ? failure.safeMessage() : "Query execution failed";
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", reason);
             if (cause instanceof QueryFailure failure) throw failure.exception();
             throw ServiceException.validation(reason);
-        } catch (QueryFailure error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            throw error.exception();
-        } catch (ServiceException error) {
-            proofs.invalidate(unitId, request.queryId(), execution.executionToken());
-            throw error;
         } finally {
-            active.remove(executionKey, running);
+            active.remove(executionKey, new ActiveQuery(actor, future));
         }
+    }
+
+    /**
+     * Execute a query for an explicit block session. The result is never
+     * serialized as one HTTP response; callers fetch bounded blocks and then
+     * commit only the DataSource manifest through query.load.
+     */
+    public QueryBlockExecutionResponse executeBlocks(String unitId, QueryExecutionRequest request, String actor) {
+        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
+        if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
+        QuerySource source;
+        try {
+            source = properties.requireSource(request.sourceRef(), request.connectorId());
+            validateRequest(request, source);
+        } catch (IllegalArgumentException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", error.getMessage());
+            throw ServiceException.validation(error.getMessage());
+        }
+
+        purgeExpiredBlockSessions();
+        Instant started = Instant.now();
+        Future<QueryTable> future;
+        try {
+            future = workers.submit(() -> executeInternal(request, source, false));
+        } catch (RejectedExecutionException error) {
+            throw ServiceException.unavailable("Query execution queue is full");
+        }
+        String executionKey = unitId + ":" + request.queryId();
+        ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
+        if (previous != null) {
+            future.cancel(true);
+            throw ServiceException.conflict("A query with this id is already running");
+        }
+        try {
+            QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            purgeExpiredBlockSessions();
+            if (blockSessions.size() >= MAX_BLOCK_SESSIONS) throw ServiceException.unavailable("Too many query block sessions are active");
+            String executionId = UUID.randomUUID().toString();
+            long duration = Duration.between(started, Instant.now()).toMillis();
+            blockSessions.put(executionId, new BlockQuery(
+                    unitId,
+                    request.queryId(),
+                    actor,
+                    table,
+                    Instant.now().plus(properties.timeout().multipliedBy(3))
+            ));
+            audit.accepted(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", null, mapper.createObjectNode()
+                    .put("connectorId", request.connectorId())
+                    .put("sourceRef", request.sourceRef())
+                    .put("rowCount", table.rows.size())
+                    .put("blockRowCount", properties.blockRowCount())
+                    .put("durationMs", duration));
+            long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
+            return new QueryBlockExecutionResponse(
+                    request.queryId(), executionId, request.connectorId(), request.sourceRef(), sourceRevision,
+                    table.columns, inferColumnTypes(table), table.rows.size(), properties.blockRowCount(), Instant.now(), duration
+            );
+        } catch (TimeoutException error) {
+            future.cancel(true);
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query timed out");
+            throw ServiceException.timeout("Query timed out");
+        } catch (InterruptedException error) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (CancellationException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            String reason = cause instanceof QueryFailure failure ? failure.safeMessage() : "Query execution failed";
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", reason);
+            if (cause instanceof QueryFailure failure) throw failure.exception();
+            throw ServiceException.validation(reason);
+        } finally {
+            active.remove(executionKey, new ActiveQuery(actor, future));
+        }
+    }
+
+    public QueryBlockResponse readBlock(String unitId, String queryId, String executionId, long offset, String actor) {
+        BlockQuery session = requireBlockSession(unitId, queryId, executionId, actor);
+        if (offset < 0 || offset > session.table().rows.size() || offset % properties.blockRowCount() != 0) {
+            throw ServiceException.validation("Query block offset is invalid");
+        }
+        int start = Math.toIntExact(offset);
+        int end = Math.min(start + properties.blockRowCount(), session.table().rows.size());
+        List<List<JsonNode>> rows = session.table().rows.subList(start, end);
+        checkBlockResponseSize(session.table().columns, rows);
+        return new QueryBlockResponse(queryId, executionId, offset, rows, end < session.table().rows.size());
+    }
+
+    public void finishBlocks(String unitId, String queryId, String executionId, String actor) {
+        BlockQuery session = requireBlockSession(unitId, queryId, executionId, actor);
+        blockSessions.remove(executionId, session);
     }
 
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         lifecycle.requireActive(unitId);
-        proofs.cancel(unitId, queryId, actor);
-        ActiveQuery query = active.get(new ActiveTaskKey(unitId, queryId));
-        if (query != null) {
-            query.control().cancel();
-            query.future().cancel(true);
+        ActiveQuery query = active.get(unitId + ":" + queryId);
+        if (query == null) throw ServiceException.notFound("Running query not found");
+        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
         }
+        query.future().cancel(true);
         audit.accepted(queryId, unitId, actor, "QUERY_CANCEL", null, mapper.createObjectNode());
     }
 
     @PreDestroy
     public void close() {
+        blockSessions.clear();
         workers.shutdownNow();
     }
 
-    private QueryTable executeInternal(QueryExecutionRequest request, QuerySource source, ExecutionControl control) {
-        control.ensureActive();
+    private QueryTable executeInternal(QueryExecutionRequest request, QuerySource source, boolean enforceResponseLimit) {
         QueryTable sourceTable = switch (request.connectorId().toLowerCase(Locale.ROOT)) {
-            case "jdbc", "sqlite" -> executeJdbc(request, source, control);
-            case "rest" -> executeRest(request, source, control);
+            case "jdbc", "sqlite" -> executeJdbc(request, source);
+            case "rest" -> executeRest(request, source);
             default -> throw QueryFailure.validation("Only server JDBC, SQLite and REST connectors are executable");
         };
-        checkSize(sourceTable);
+        checkSize(sourceTable, enforceResponseLimit);
         QueryTable current = sourceTable;
         for (QueryStep step : request.steps()) {
-            control.ensureActive();
             if (!step.enabled() || step.kind().equals("source")) continue;
             if (!STEP_KINDS.contains(step.kind())) throw QueryFailure.validation("Unsupported query step kind: " + step.kind());
-            current = applyStep(current, step, control);
-            checkSize(current);
+            current = applyStep(current, step);
+            checkSize(current, enforceResponseLimit);
         }
         return current;
     }
 
-    private QueryTable executeJdbc(QueryExecutionRequest request, QuerySource source, ExecutionControl control) {
+    private QueryTable executeJdbc(QueryExecutionRequest request, QuerySource source) {
         if (source.url() == null || source.url().isBlank()) throw QueryFailure.validation("Configured JDBC source has no URL");
         if (!source.url().toLowerCase(Locale.ROOT).startsWith("jdbc:")) throw QueryFailure.validation("Configured source URL must be a JDBC URL");
         if (request.connectorId().equalsIgnoreCase("sqlite") && !source.url().toLowerCase(Locale.ROOT).startsWith("jdbc:sqlite:")) {
             throw QueryFailure.validation("SQLite source must use a jdbc:sqlite URL");
         }
         String sql = readOnlySql(request.statement());
-        try (Connection connection = DriverManager.getConnection(jdbcReadOnlyUrl(request, source), nullToEmpty(source.username()), nullToEmpty(source.password()))) {
-            control.ensureActive();
-            try {
-                boolean sqliteUriReadOnly = request.connectorId().equalsIgnoreCase("sqlite");
-                if (!sqliteUriReadOnly) connection.setReadOnly(true);
-                connection.setAutoCommit(false);
-                if (!sqliteUriReadOnly && !connection.isReadOnly()) throw QueryFailure.validation("Read-only database session was not accepted by the driver");
-            } catch (SQLException error) {
-                throw QueryFailure.validation("Read-only database session is unavailable");
-            }
-            try (PreparedStatement statement = connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-                control.bind(statement);
-                statement.setQueryTimeout(timeoutSeconds());
-                statement.setFetchSize(QueryTable.CHUNK_ROWS);
-                for (int index = 0; index < request.parameters().size(); index++) bind(statement, index + 1, request.parameters().get(index));
-                control.ensureActive();
-                try (ResultSet result = statement.executeQuery()) {
-                    return readResult(result, control);
-                } finally {
-                    control.unbind(statement);
-                }
-            } finally {
-                try { connection.rollback(); } catch (SQLException ignored) { }
+        try (Connection connection = DriverManager.getConnection(source.url(), nullToEmpty(source.username()), nullToEmpty(source.password()));
+             PreparedStatement statement = connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+            statement.setQueryTimeout(timeoutSeconds());
+            for (int index = 0; index < request.parameters().size(); index++) bind(statement, index + 1, request.parameters().get(index));
+            try (ResultSet result = statement.executeQuery()) {
+                return readResult(result);
             }
         } catch (SQLException error) {
-            if (control.cancelled() || Thread.currentThread().isInterrupted()) throw QueryFailure.cancelled();
             throw QueryFailure.validation("Configured database query failed");
         }
     }
 
-    private QueryTable executeRest(QueryExecutionRequest request, QuerySource source, ExecutionControl control) {
+    private QueryTable executeRest(QueryExecutionRequest request, QuerySource source) {
         if (source.baseUrl() == null || source.baseUrl().isBlank()) throw QueryFailure.validation("Configured REST source has no base URL");
         URI target;
         try {
@@ -493,62 +324,15 @@ public class QueryExecutionService {
             } else {
                 builder.GET();
             }
-            CompletableFuture<HttpResponse<InputStream>> pending = httpClient().sendAsync(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
-            control.bind(pending);
-            HttpResponse<InputStream> response;
-            try {
-                response = pending.get();
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                throw QueryFailure.cancelled();
-            } catch (ExecutionException error) {
-                if (control.cancelled()) throw QueryFailure.cancelled();
-                throw error;
-            } finally {
-                control.unbind(pending);
-            }
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                try (InputStream ignored = response.body()) { }
-                throw QueryFailure.validation("REST source returned an unsuccessful status");
-            }
-            try (InputStream body = response.body()) {
-                control.bind(body);
-                byte[] bytes;
-                try {
-                    bytes = readBounded(body, properties.maxResponseBytes(), control);
-                } finally {
-                    control.unbind(body);
-                }
-                if (bytes.length > properties.maxResponseBytes()) throw QueryFailure.validation("REST response is too large");
-                control.ensureActive();
-                JsonNode parsed = mapper.readTree(new String(bytes, StandardCharsets.UTF_8));
-                if (parsed == null) throw QueryFailure.validation("REST response is empty");
-                return parseRestResponse(parsed);
-            }
+            HttpResponse<String> response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.body().getBytes(StandardCharsets.UTF_8).length > properties.maxResponseBytes()) throw QueryFailure.validation("REST response is too large");
+            if (response.statusCode() < 200 || response.statusCode() >= 300) throw QueryFailure.validation("REST source returned an unsuccessful status");
+            return parseRestResponse(mapper.readTree(response.body()));
         } catch (QueryFailure error) {
             throw error;
-        } catch (IOException error) {
-            if (control.cancelled()) throw QueryFailure.cancelled();
-            throw QueryFailure.validation("REST query failed");
         } catch (Exception error) {
-            if (control.cancelled()) throw QueryFailure.cancelled();
             throw QueryFailure.validation("REST query failed");
         }
-    }
-
-    private byte[] readBounded(InputStream input, int maximumBytes, ExecutionControl control) throws IOException {
-        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(Math.min(maximumBytes, 64 * 1024));
-        byte[] buffer = new byte[Math.min(64 * 1024, maximumBytes + 1)];
-        int total = 0;
-        while (total <= maximumBytes) {
-            control.ensureActive();
-            int read = input.read(buffer, 0, Math.min(buffer.length, maximumBytes + 1 - total));
-            if (read < 0) break;
-            output.write(buffer, 0, read);
-            total += read;
-            if (total > maximumBytes) break;
-        }
-        return output.toByteArray();
     }
 
     private QueryTable parseRestResponse(JsonNode root) {
@@ -562,100 +346,121 @@ public class QueryExecutionService {
         throw QueryFailure.validation("REST response must be an object or array of objects");
     }
 
-    /** Opens SQLite through its URI read-only mode instead of trusting SQL text alone. */
-    private String jdbcReadOnlyUrl(QueryExecutionRequest request, QuerySource source) {
-        if (!request.connectorId().equalsIgnoreCase("sqlite")) return source.url();
-        String prefix = "jdbc:sqlite:";
-        String value = source.url().substring(prefix.length());
-        if (value.equals(":memory:") || value.startsWith("file::memory:")) return source.url();
-        if (!value.startsWith("file:")) value = "file:" + value.replace('\\', '/');
-        if (value.matches(".*[?&]mode=(?!ro(?:&|$))[^&]+.*")) {
-            throw QueryFailure.validation("SQLite source must be opened in read-only mode");
-        }
-        if (value.matches(".*[?&]mode=ro(?:&|$).*") || value.endsWith("?mode=ro")) return prefix + value;
-        return prefix + value + (value.contains("?") ? "&mode=ro" : "?mode=ro");
-    }
-
-    private QueryTable readResult(ResultSet result, ExecutionControl control) throws SQLException {
+    private QueryTable readResult(ResultSet result) throws SQLException {
         ResultSetMetaData metadata = result.getMetaData();
         if (metadata.getColumnCount() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         List<String> columns = new ArrayList<>();
         for (int index = 1; index <= metadata.getColumnCount(); index++) columns.add(metadata.getColumnLabel(index));
-        List<QueryChunk> chunks = new ArrayList<>();
-        List<List<JsonNode>> rows = new ArrayList<>(QueryTable.CHUNK_ROWS);
-        int totalRows = 0;
+        List<List<JsonNode>> rows = new ArrayList<>();
         while (result.next()) {
-            control.ensureActive();
-            if (totalRows >= properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
+            if (rows.size() >= properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
             List<JsonNode> row = new ArrayList<>();
             for (int index = 1; index <= metadata.getColumnCount(); index++) row.add(toNode(result.getObject(index)));
             rows.add(row);
-            totalRows++;
-            if (rows.size() == QueryTable.CHUNK_ROWS) {
-                chunks.add(QueryChunk.fromRows(rows, columns.size()));
-                rows = new ArrayList<>(QueryTable.CHUNK_ROWS);
-            }
         }
-        if (!rows.isEmpty()) chunks.add(QueryChunk.fromRows(rows, columns.size()));
-        return QueryTable.fromChunks(columns, chunks);
+        return new QueryTable(columns, rows);
     }
 
-    private QueryTable applyStep(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable applyStep(QueryTable input, QueryStep step) {
         return switch (step.kind()) {
-            case "filter" -> filter(input, step, control);
-            case "select-columns" -> select(input, step, control);
-            case "rename-column" -> rename(input, step, control);
-            case "sort" -> sort(input, step, control);
-            case "group-by" -> group(input, step, control);
-            case "join" -> join(input, step, control);
-            case "pivot" -> pivot(input, step, control);
+            case "filter" -> filter(input, step);
+            case "select-columns" -> select(input, step);
+            case "rename-column" -> rename(input, step);
+            case "trim-text" -> trimText(input, step);
+            case "split-column" -> splitColumn(input, step);
+            case "remove-duplicates" -> removeDuplicates(input, step);
+            case "sort" -> sort(input, step);
+            case "group-by" -> group(input, step);
+            case "join" -> join(input, step);
+            case "pivot" -> pivot(input, step);
             default -> throw QueryFailure.validation("Unsupported query step: " + step.kind());
         };
     }
 
-    private QueryTable filter(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable filter(QueryTable input, QueryStep step) {
         String column = required(step.config(), "column", step.id());
         int index = input.columnIndex(column, step.id());
         String operator = step.config().path("operator").asText("eq");
         if (!FILTER_OPERATORS.contains(operator)) throw QueryFailure.validation("Unsupported filter operator");
         JsonNode expected = scalarOrNull(step.config().get("value"));
         boolean caseSensitive = !step.config().has("caseSensitive") || step.config().path("caseSensitive").asBoolean();
-        List<QueryChunk> chunks = new ArrayList<>();
-        for (QueryChunk chunk : input.chunks) {
-            List<List<JsonNode>> selected = new ArrayList<>();
-            for (int rowIndex = 0; rowIndex < chunk.rowCount(); rowIndex++) {
-                control.ensureActive();
-                List<JsonNode> row = chunk.row(rowIndex);
-                if (matches(row.get(index), expected, operator, caseSensitive)) selected.add(row);
-            }
-            if (!selected.isEmpty()) chunks.add(QueryChunk.fromRows(selected, input.columns.size()));
-        }
-        return QueryTable.fromChunks(input.columns, chunks);
+        List<List<JsonNode>> rows = input.rows.stream().filter(row -> matches(row.get(index), expected, operator, caseSensitive)).map(List::copyOf).toList();
+        return new QueryTable(input.columns, rows);
     }
 
-    private QueryTable select(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable select(QueryTable input, QueryStep step) {
         List<String> columns = stringList(step.config().get("columns"), step.id());
         int[] indexes = columns.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
-        List<QueryChunk> chunks = new ArrayList<>();
-        for (QueryChunk chunk : input.chunks) {
-            control.ensureActive();
-            chunks.add(chunk.select(indexes));
-        }
-        return QueryTable.fromChunks(columns, chunks);
+        List<List<JsonNode>> rows = input.rows.stream().map(row -> java.util.Arrays.stream(indexes).mapToObj(index -> row.get(index)).toList()).toList();
+        return new QueryTable(columns, rows);
     }
 
-    private QueryTable rename(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable rename(QueryTable input, QueryStep step) {
         String from = required(step.config(), "from", step.id());
         String to = required(step.config(), "to", step.id());
         int index = input.columnIndex(from, step.id());
         List<String> columns = new ArrayList<>(input.columns);
         if (columns.contains(to) && !from.equals(to)) throw QueryFailure.validation("Renamed column already exists");
         columns.set(index, to);
-        control.ensureActive();
-        return input.withColumns(columns);
+        return new QueryTable(columns, input.rows);
     }
 
-    private QueryTable sort(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable trimText(QueryTable input, QueryStep step) {
+        List<String> names = stringList(step.config().get("columns"), step.id());
+        int[] indexes = names.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
+        Set<Integer> selected = new HashSet<>();
+        for (int index : indexes) selected.add(index);
+        List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            List<JsonNode> next = new ArrayList<>(row);
+            for (int index : selected) {
+                JsonNode value = row.get(index);
+                if (value != null && value.isTextual()) next.set(index, JsonNodeFactory.instance.textNode(value.asText().trim()));
+            }
+            return List.copyOf(next);
+        }).toList();
+        return new QueryTable(input.columns, rows);
+    }
+
+    private QueryTable splitColumn(QueryTable input, QueryStep step) {
+        String column = required(step.config(), "column", step.id());
+        String delimiter = required(step.config(), "delimiter", step.id());
+        List<String> outputs = stringList(step.config().get("outputColumns"), step.id());
+        if (outputs.size() < 2 || new HashSet<>(outputs).size() != outputs.size()) throw QueryFailure.validation("Split output columns must be unique and contain at least two entries");
+        int sourceIndex = input.columnIndex(column, step.id());
+        List<String> retained = input.columns.stream().filter(name -> !name.equals(column)).toList();
+        for (String output : outputs) if (retained.contains(output)) throw QueryFailure.validation("Split output column already exists");
+        List<String> columns = new ArrayList<>();
+        columns.addAll(input.columns.subList(0, sourceIndex));
+        columns.addAll(outputs);
+        columns.addAll(input.columns.subList(sourceIndex + 1, input.columns.size()));
+        List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            JsonNode raw = row.get(sourceIndex);
+            List<JsonNode> parts;
+            if (raw != null && raw.isTextual()) {
+                parts = new ArrayList<>();
+                for (String value : raw.asText().split(java.util.regex.Pattern.quote(delimiter), -1)) parts.add(JsonNodeFactory.instance.textNode(value));
+            } else {
+                parts = List.of(scalarOrNull(raw));
+            }
+            List<JsonNode> next = new ArrayList<>();
+            next.addAll(row.subList(0, sourceIndex));
+            for (int index = 0; index < outputs.size(); index++) next.add(index < parts.size() ? parts.get(index) : JsonNodeFactory.instance.nullNode());
+            next.addAll(row.subList(sourceIndex + 1, row.size()));
+            return List.copyOf(next);
+        }).toList();
+        return new QueryTable(columns, rows);
+    }
+
+    private QueryTable removeDuplicates(QueryTable input, QueryStep step) {
+        List<String> names = stringList(step.config().get("columns"), step.id());
+        int[] indexes = names.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
+        Set<String> seen = new HashSet<>();
+        List<List<JsonNode>> rows = new ArrayList<>();
+        for (List<JsonNode> row : input.rows) if (seen.add(indexesAsJson(row, indexes))) rows.add(List.copyOf(row));
+        return new QueryTable(input.columns, rows);
+    }
+
+    private QueryTable sort(QueryTable input, QueryStep step) {
         List<SortKey> keys = new ArrayList<>();
         JsonNode by = step.config().get("by");
         if (by != null && by.isArray()) {
@@ -663,10 +468,8 @@ public class QueryExecutionService {
         } else {
             keys.add(new SortKey(required(step.config(), "column", step.id()), !step.config().has("ascending") || step.config().path("ascending").asBoolean()));
         }
-        control.ensureActive();
         List<List<JsonNode>> rows = new ArrayList<>(input.rows);
         rows.sort((left, right) -> {
-            control.ensureActive();
             for (SortKey key : keys) {
                 int comparison = compare(left.get(input.columnIndex(key.column(), step.id())), right.get(input.columnIndex(key.column(), step.id())));
                 if (comparison != 0) return key.ascending() ? comparison : -comparison;
@@ -676,19 +479,17 @@ public class QueryExecutionService {
         return new QueryTable(input.columns, rows);
     }
 
-    private QueryTable group(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable group(QueryTable input, QueryStep step) {
         List<String> groups = stringList(first(step.config(), "by", "columns", "groupBy"), step.id());
         List<Aggregate> aggregates = aggregates(step.config().get("aggregations"), input, step.id());
         int[] indexes = groups.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         Map<String, List<List<JsonNode>>> buckets = new LinkedHashMap<>();
         for (List<JsonNode> row : input.rows) {
-            control.ensureActive();
             String key = indexesAsJson(row, indexes);
             buckets.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
         }
         List<List<JsonNode>> rows = new ArrayList<>();
         for (List<List<JsonNode>> bucket : buckets.values()) {
-            control.ensureActive();
             List<JsonNode> row = new ArrayList<>();
             List<JsonNode> key = bucket.get(0) == null ? List.of() : indexesAsValues(bucket.get(0), indexes);
             row.addAll(key);
@@ -698,41 +499,32 @@ public class QueryExecutionService {
         return new QueryTable(concat(groups, aggregates.stream().map(Aggregate::as).toList()), rows);
     }
 
-    private QueryTable join(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable join(QueryTable input, QueryStep step) {
         JsonNode rightConfig = step.config().has("right") ? step.config().get("right") : step.config().get("rightTable");
-        control.ensureActive();
         QueryTable right = tableFromJson(rightConfig, step.id());
-        checkSize(right);
+        checkSize(right, true);
         List<String> leftOn = stringList(first(step.config(), "leftOn", "on"), step.id());
         List<String> rightOn = step.config().has("rightOn") ? stringList(step.config().get("rightOn"), step.id()) : leftOn;
         if (leftOn.size() != rightOn.size()) throw QueryFailure.validation("Join keys must have equal lengths");
         int[] leftIndexes = leftOn.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         int[] rightIndexes = rightOn.stream().mapToInt(name -> right.columnIndex(name, step.id())).toArray();
         Map<String, List<List<JsonNode>>> matches = new HashMap<>();
-        for (List<JsonNode> row : right.rows) {
-            control.ensureActive();
-            matches.computeIfAbsent(indexesAsJson(row, rightIndexes), ignored -> new ArrayList<>()).add(row);
-        }
+        for (List<JsonNode> row : right.rows) matches.computeIfAbsent(indexesAsJson(row, rightIndexes), ignored -> new ArrayList<>()).add(row);
         String type = step.config().path("type").asText("inner");
-        if (!Set.of("inner", "left", "full").contains(type)) throw QueryFailure.validation("Join type is invalid");
         List<List<JsonNode>> rows = new ArrayList<>();
         Set<List<JsonNode>> matched = new HashSet<>();
         for (List<JsonNode> left : input.rows) {
-            control.ensureActive();
             List<List<JsonNode>> candidates = matches.getOrDefault(indexesAsJson(left, leftIndexes), List.of());
             if (candidates.isEmpty()) {
                 if (type.equals("left") || type.equals("full")) rows.add(concatValues(left, nulls(right.columns.size())));
             } else for (List<JsonNode> rightRow : candidates) { matched.add(rightRow); rows.add(concatValues(left, rightRow)); }
         }
-        if (type.equals("full")) for (List<JsonNode> row : right.rows) {
-            control.ensureActive();
-            if (!matched.contains(row)) rows.add(concatValues(nulls(input.columns.size()), row));
-        }
+        if (type.equals("full")) for (List<JsonNode> row : right.rows) if (!matched.contains(row)) rows.add(concatValues(nulls(input.columns.size()), row));
         List<String> rightColumns = right.columns.stream().map(column -> input.columns.contains(column) ? column + "_right" : column).toList();
         return new QueryTable(concat(input.columns, rightColumns), rows);
     }
 
-    private QueryTable pivot(QueryTable input, QueryStep step, ExecutionControl control) {
+    private QueryTable pivot(QueryTable input, QueryStep step) {
         List<String> rowFields = stringList(first(step.config(), "rows", "rowFields"), step.id());
         List<String> columnFields = stringList(first(step.config(), "columns", "columnFields"), step.id());
         List<String> values = stringList(first(step.config(), "values", "valueFields"), step.id());
@@ -741,33 +533,13 @@ public class QueryExecutionService {
         int[] rowIndexes = rowFields.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         int[] columnIndexes = columnFields.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         int[] valueIndexes = values.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
-        List<String> columnKeys = new ArrayList<>();
-        Map<String, String> columnKeyLabels = new LinkedHashMap<>();
-        Set<String> seenColumnKeys = new HashSet<>();
-        for (List<JsonNode> row : input.rows) {
-            control.ensureActive();
-            String key = indexesAsJson(row, columnIndexes);
-            if (seenColumnKeys.add(key)) {
-                columnKeys.add(key);
-                columnKeyLabels.put(key, indexesAsValues(row, columnIndexes).stream()
-                        .map(this::queryScalarLabel)
-                        .collect(java.util.stream.Collectors.joining(" / ")));
-            }
-        }
+        List<String> columnKeys = input.rows.stream().map(row -> indexesAsJson(row, columnIndexes)).distinct().toList();
         Map<String, List<List<JsonNode>>> groups = new LinkedHashMap<>();
-        for (List<JsonNode> row : input.rows) {
-            control.ensureActive();
-            groups.computeIfAbsent(indexesAsJson(row, rowIndexes), ignored -> new ArrayList<>()).add(row);
-        }
+        for (List<JsonNode> row : input.rows) groups.computeIfAbsent(indexesAsJson(row, rowIndexes), ignored -> new ArrayList<>()).add(row);
         List<String> columns = new ArrayList<>(rowFields);
-        for (String key : columnKeys) for (String value : values) {
-            String label = columnKeyLabels.get(key) + " · " + value;
-            if (columns.contains(label)) throw QueryFailure.validation("Pivot produces duplicate column " + label);
-            columns.add(label);
-        }
+        for (String key : columnKeys) for (String value : values) columns.add(key + " · " + value);
         List<List<JsonNode>> rows = new ArrayList<>();
         for (List<List<JsonNode>> group : groups.values()) {
-            control.ensureActive();
             List<JsonNode> row = new ArrayList<>(indexesAsValues(group.get(0), rowIndexes));
             for (String key : columnKeys) {
                 List<List<JsonNode>> matching = group.stream().filter(value -> indexesAsJson(value, columnIndexes).equals(key)).toList();
@@ -819,7 +591,7 @@ public class QueryExecutionService {
         List<List<JsonNode>> rows = new ArrayList<>();
         for (JsonNode record : records) rows.add(names.stream().map(name -> scalarOrNull(record.get(name))).toList());
         QueryTable table = new QueryTable(names, rows);
-        checkSize(table);
+        checkSize(table, true);
         return table;
     }
 
@@ -942,15 +714,6 @@ public class QueryExecutionService {
         return values;
     }
 
-    private String queryScalarLabel(JsonNode value) {
-        if (value == null || value.isNull()) return "";
-        if (value.isNumber()) {
-            java.math.BigDecimal number = value.decimalValue().stripTrailingZeros();
-            return number.signum() == 0 ? "0" : number.toPlainString();
-        }
-        return value.asText();
-    }
-
     private JsonNode scalarOrNull(JsonNode node) {
         if (node == null || node.isNull()) return JsonNodeFactory.instance.nullNode();
         if (!node.isValueNode()) throw QueryFailure.validation("Query values must be scalar");
@@ -976,68 +739,15 @@ public class QueryExecutionService {
 
     private String readOnlySql(String sql) {
         String normalized = sql.trim();
-        List<String> tokens = sqlTokens(normalized);
-        if (tokens.isEmpty()) throw QueryFailure.validation("Only one read-only SQL statement is allowed");
-        String first = tokens.getFirst();
-        if (!(first.equals("select") || first.equals("with") || first.equals("values") || first.equals("explain"))) {
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (normalized.isBlank() || normalized.contains(";")) throw QueryFailure.validation("Only one read-only SQL statement is allowed");
+        if (!(lower.startsWith("select") || lower.startsWith("with") || lower.startsWith("values") || lower.startsWith("explain"))) {
             throw QueryFailure.validation("Only read-only SQL statements are allowed");
         }
-        if (tokens.stream().anyMatch(WRITE_SQL_KEYWORDS::contains)) throw QueryFailure.validation("Read-only SQL cannot contain a write operation");
-        return normalized;
-    }
-
-    /** Tokenizes SQL outside literals/comments; the JDBC read-only session remains the enforcement authority. */
-    private List<String> sqlTokens(String sql) {
-        List<String> tokens = new ArrayList<>();
-        StringBuilder word = new StringBuilder();
-        for (int index = 0; index < sql.length(); index++) {
-            char current = sql.charAt(index);
-            if (current == '-' && index + 1 < sql.length() && sql.charAt(index + 1) == '-') {
-                flushToken(word, tokens);
-                index += 2;
-                while (index < sql.length() && sql.charAt(index) != '\n') index++;
-                continue;
-            }
-            if (current == '/' && index + 1 < sql.length() && sql.charAt(index + 1) == '*') {
-                flushToken(word, tokens);
-                index += 2;
-                boolean closed = false;
-                while (index + 1 < sql.length()) {
-                    if (sql.charAt(index) == '*' && sql.charAt(index + 1) == '/') { closed = true; index++; break; }
-                    index++;
-                }
-                if (!closed) throw QueryFailure.validation("SQL comment is not closed");
-                continue;
-            }
-            if (current == '\'' || current == '"' || current == '`') {
-                flushToken(word, tokens);
-                char quote = current;
-                boolean closed = false;
-                while (++index < sql.length()) {
-                    if (sql.charAt(index) == quote) {
-                        if (index + 1 < sql.length() && sql.charAt(index + 1) == quote) { index++; continue; }
-                        closed = true;
-                        break;
-                    }
-                }
-                if (!closed) throw QueryFailure.validation("SQL literal is not closed");
-                continue;
-            }
-            if (current == ';') {
-                flushToken(word, tokens);
-                throw QueryFailure.validation("Only one read-only SQL statement is allowed");
-            }
-            if (Character.isLetter(current) || current == '_') word.append(Character.toLowerCase(current));
-            else flushToken(word, tokens);
+        if (lower.matches(".*\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call)\\b.*")) {
+            throw QueryFailure.validation("Read-only SQL cannot contain a write operation");
         }
-        flushToken(word, tokens);
-        return tokens;
-    }
-
-    private void flushToken(StringBuilder word, List<String> tokens) {
-        if (word.length() == 0) return;
-        tokens.add(word.toString());
-        word.setLength(0);
+        return normalized;
     }
 
     private boolean sameOrigin(URI base, URI target) {
@@ -1055,16 +765,21 @@ public class QueryExecutionService {
         return Math.max(1, (int) Math.ceil(properties.timeout().toMillis() / 1000d));
     }
 
-    private String nullToEmpty(String value) { return value == null ? "" : value; }
-
-    private void checkSize(QueryTable table) {
-        if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
-        if (table.rowCount > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
-        if (table.estimatedBytes > properties.maxResponseBytes() * 2L) throw QueryFailure.validation("Query response exceeds the configured byte limit");
+    private HttpClient httpClient() {
+        HttpClient current = http;
+        if (current != null) return current;
+        synchronized (this) {
+            if (http == null) http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
+            return http;
+        }
     }
 
-    /** Serialize only the final bounded result; intermediate steps use the columnar estimate. */
-    private void checkFinalSize(QueryTable table) {
+    private String nullToEmpty(String value) { return value == null ? "" : value; }
+
+    private void checkSize(QueryTable table, boolean enforceResponseLimit) {
+        if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
+        if (table.rows.size() > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
+        if (!enforceResponseLimit) return;
         try {
             if (mapper.writeValueAsBytes(Map.of("columns", table.columns, "rows", table.rows)).length > properties.maxResponseBytes()) {
                 throw QueryFailure.validation("Query response exceeds the configured byte limit");
@@ -1074,60 +789,56 @@ public class QueryExecutionService {
         }
     }
 
-    /**
-     * Immutable, bounded columnar table.  Narrowing and renaming reuse the
-     * same chunks; only operators that inherently need global row ordering
-     * materialize row views.
-     */
-    private static final class QueryTable {
-        private static final int CHUNK_ROWS = 1_024;
-        private final List<String> columns;
-        private final List<QueryChunk> chunks;
-        private final List<List<JsonNode>> rows;
-        private final int rowCount;
-        private final long estimatedBytes;
-
-        private QueryTable(List<String> columns, List<List<JsonNode>> rows) {
-            this(columns, chunkRows(columns, rows), true);
-        }
-
-        private QueryTable(List<String> columns, List<QueryChunk> chunks, boolean columnar) {
-            this.columns = List.copyOf(columns);
-            this.chunks = List.copyOf(chunks);
-            this.rowCount = this.chunks.stream().mapToInt(QueryChunk::rowCount).sum();
-            this.rows = new RowView(this.chunks, this.rowCount);
-            this.estimatedBytes = estimateBytes(this.columns, this.chunks);
-        }
-
-        private static QueryTable fromChunks(List<String> columns, List<QueryChunk> chunks) {
-            return new QueryTable(columns, chunks, true);
-        }
-
-        private QueryTable withColumns(List<String> nextColumns) {
-            return fromChunks(nextColumns, chunks);
-        }
-
-        private static List<QueryChunk> chunkRows(List<String> columns, List<List<JsonNode>> rows) {
-            List<QueryChunk> result = new ArrayList<>();
-            List<List<JsonNode>> chunk = new ArrayList<>(CHUNK_ROWS);
-            for (List<JsonNode> row : rows) {
-                if (row.size() != columns.size()) throw QueryFailure.validation("Query row width is invalid");
-                chunk.add(List.copyOf(row));
-                if (chunk.size() == CHUNK_ROWS) {
-                    result.add(QueryChunk.fromRows(chunk, columns.size()));
-                    chunk = new ArrayList<>(CHUNK_ROWS);
-                }
+    private void checkBlockResponseSize(List<String> columns, List<List<JsonNode>> rows) {
+        try {
+            if (mapper.writeValueAsBytes(Map.of("columns", columns, "rows", rows)).length > properties.maxResponseBytes()) {
+                throw ServiceException.validation("Query block exceeds the configured response byte limit");
             }
-            if (!chunk.isEmpty()) result.add(QueryChunk.fromRows(chunk, columns.size()));
-            return result;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw ServiceException.validation("Query block could not be serialized");
         }
+    }
 
-        private static long estimateBytes(List<String> columns, List<QueryChunk> chunks) {
-            long bytes = columns.stream().mapToLong(column -> column.length() * 2L + 8).sum();
-            for (QueryChunk chunk : chunks) bytes += chunk.estimatedBytes();
-            return bytes;
+    private List<String> inferColumnTypes(QueryTable table) {
+        List<String> types = new ArrayList<>();
+        for (int column = 0; column < table.columns.size(); column += 1) {
+            String type = null;
+            for (List<JsonNode> row : table.rows) {
+                JsonNode value = row.get(column);
+                if (value == null || value.isNull()) continue;
+                String candidate = value.isBoolean() ? "boolean" : value.isNumber() ? "number" : value.isTextual() ? "text" : "mixed";
+                if (type == null) type = candidate;
+                else if (!type.equals(candidate)) { type = "mixed"; break; }
+            }
+            types.add(type == null ? "mixed" : type);
         }
+        return types;
+    }
 
+    private BlockQuery requireBlockSession(String unitId, String queryId, String executionId, String actor) {
+        purgeExpiredBlockSessions();
+        BlockQuery session = blockSessions.get(executionId);
+        if (session == null || !session.unitId().equals(unitId) || !session.queryId().equals(queryId)) {
+            throw ServiceException.notFound("Query block session not found");
+        }
+        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the query owner or workbook owner may read this query block session");
+        }
+        lifecycle.requireActive(unitId);
+        return session;
+    }
+
+    private void purgeExpiredBlockSessions() {
+        Instant now = Instant.now();
+        blockSessions.entrySet().removeIf(entry -> !entry.getValue().expiresAt().isAfter(now));
+    }
+
+    private record QueryTable(List<String> columns, List<List<JsonNode>> rows) {
+        private QueryTable {
+            columns = List.copyOf(columns);
+            rows = rows.stream().map(List::copyOf).toList();
+        }
         private int columnIndex(String name, String stepId) {
             int index = columns.indexOf(name);
             if (index < 0) throw QueryFailure.validation("Step " + stepId + " references missing column " + name);
@@ -1135,178 +846,10 @@ public class QueryExecutionService {
         }
     }
 
-    private static final class QueryChunk {
-        private final List<List<JsonNode>> columns;
-        private final int rowCount;
-        private final long estimatedBytes;
+    private record ActiveQuery(String actor, Future<QueryTable> future) {}
 
-        private QueryChunk(List<List<JsonNode>> columns, int rowCount) {
-            this.columns = columns.stream().map(List::copyOf).toList();
-            this.rowCount = rowCount;
-            long bytes = 0;
-            for (List<JsonNode> column : this.columns) {
-                for (JsonNode value : column) bytes += value == null || value.isNull() ? 4 : value.toString().length() * 2L + 4;
-            }
-            this.estimatedBytes = bytes;
-        }
+    private record BlockQuery(String unitId, String queryId, String actor, QueryTable table, Instant expiresAt) {}
 
-        private static QueryChunk fromRows(List<List<JsonNode>> rows, int columnCount) {
-            List<List<JsonNode>> columns = new ArrayList<>(columnCount);
-            for (int column = 0; column < columnCount; column++) {
-                List<JsonNode> values = new ArrayList<>(rows.size());
-                for (List<JsonNode> row : rows) values.add(row.get(column));
-                columns.add(values);
-            }
-            return new QueryChunk(columns, rows.size());
-        }
-
-        private QueryChunk select(int[] indexes) {
-            List<List<JsonNode>> selected = new ArrayList<>(indexes.length);
-            for (int index : indexes) selected.add(columns.get(index));
-            return new QueryChunk(selected, rowCount);
-        }
-
-        private int rowCount() { return rowCount; }
-        private long estimatedBytes() { return estimatedBytes; }
-
-        private List<JsonNode> row(int index) {
-            List<JsonNode> row = new ArrayList<>(columns.size());
-            for (List<JsonNode> column : columns) row.add(column.get(index));
-            return List.copyOf(row);
-        }
-    }
-
-    private static final class RowView extends java.util.AbstractList<List<JsonNode>> {
-        private final List<QueryChunk> chunks;
-        private final int[] starts;
-        private final int size;
-
-        private RowView(List<QueryChunk> chunks, int size) {
-            this.chunks = chunks;
-            this.size = size;
-            this.starts = new int[chunks.size()];
-            int offset = 0;
-            for (int index = 0; index < chunks.size(); index++) {
-                starts[index] = offset;
-                offset += chunks.get(index).rowCount();
-            }
-        }
-
-        @Override
-        public List<JsonNode> get(int index) {
-            if (index < 0 || index >= size) throw new IndexOutOfBoundsException(index);
-            int low = 0;
-            int high = starts.length - 1;
-            while (low <= high) {
-                int middle = (low + high) >>> 1;
-                if (starts[middle] <= index) low = middle + 1;
-                else high = middle - 1;
-            }
-            int chunkIndex = Math.max(0, high);
-            return chunks.get(chunkIndex).row(index - starts[chunkIndex]);
-        }
-
-        @Override
-        public int size() { return size; }
-    }
-
-    private static final class ActiveQuery {
-        private final ExecutionControl control;
-        private final Future<QueryTable> future;
-
-        private ActiveQuery(ExecutionControl control, Future<QueryTable> future) {
-            this.control = control;
-            this.future = future;
-        }
-
-        private ExecutionControl control() { return control; }
-        private Future<QueryTable> future() { return future; }
-    }
-
-    private record ActiveTaskKey(String unitId, String queryId) {}
-
-    /** REST transport is initialized only when a configured REST source runs. */
-    private HttpClient httpClient() {
-        HttpClient existing = http.get();
-        if (existing != null) return existing;
-        HttpClient created = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
-        if (http.compareAndSet(null, created)) return created;
-        return http.get();
-    }
-
-    private static final class ActiveAnalytics {
-        private final ExecutionControl control;
-        private final Future<JsonNode> future;
-
-        private ActiveAnalytics(ExecutionControl control, Future<JsonNode> future) {
-            this.control = control;
-            this.future = future;
-        }
-
-        private ExecutionControl control() { return control; }
-        private Future<JsonNode> future() { return future; }
-    }
-
-    /** Cancellation propagates into JDBC statements and HTTP request futures. */
-    private static final class ExecutionControl {
-        private final AtomicBoolean cancelled = new AtomicBoolean();
-        private final AtomicReference<Statement> statement = new AtomicReference<>();
-        private final AtomicReference<CompletableFuture<?>> request = new AtomicReference<>();
-        private final AtomicReference<InputStream> body = new AtomicReference<>();
-
-        private boolean cancelled() { return cancelled.get(); }
-
-        private void ensureActive() {
-            if (cancelled() || Thread.currentThread().isInterrupted()) throw QueryFailure.cancelled();
-        }
-
-        private void bind(Statement value) {
-            ensureActive();
-            statement.set(value);
-            if (cancelled()) {
-                try { value.cancel(); } catch (SQLException ignored) { }
-                ensureActive();
-            }
-        }
-
-        private void unbind(Statement value) { statement.compareAndSet(value, null); }
-
-        private void bind(CompletableFuture<?> value) {
-            ensureActive();
-            request.set(value);
-            if (cancelled()) {
-                value.cancel(true);
-                ensureActive();
-            }
-        }
-
-        private void unbind(CompletableFuture<?> value) { request.compareAndSet(value, null); }
-
-        private void bind(InputStream value) {
-            ensureActive();
-            body.set(value);
-            if (cancelled()) {
-                try { value.close(); } catch (IOException ignored) { }
-                ensureActive();
-            }
-        }
-
-        private void unbind(InputStream value) { body.compareAndSet(value, null); }
-
-        private void cancel() {
-            if (!cancelled.compareAndSet(false, true)) return;
-            Statement currentStatement = statement.get();
-            if (currentStatement != null) {
-                try { currentStatement.cancel(); } catch (SQLException ignored) { }
-            }
-            CompletableFuture<?> currentRequest = request.get();
-            if (currentRequest != null) currentRequest.cancel(true);
-            InputStream currentBody = body.get();
-            if (currentBody != null) {
-                try { currentBody.close(); } catch (IOException ignored) { }
-            }
-        }
-    }
 
     private record SortKey(String column, boolean ascending) {}
     private record Aggregate(String column, String function, String as) {}
@@ -1315,7 +858,6 @@ public class QueryExecutionService {
         private final ServiceException exception;
         private QueryFailure(ServiceException exception) { this.exception = exception; }
         static QueryFailure validation(String message) { return new QueryFailure(ServiceException.validation(message)); }
-        static QueryFailure cancelled() { return new QueryFailure(ServiceException.timeout("Query was cancelled")); }
         String safeMessage() { return exception.getMessage(); }
         ServiceException exception() { return exception; }
     }

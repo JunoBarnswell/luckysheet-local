@@ -23,21 +23,9 @@ export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWr
 export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
-  activateSpreadsheetFeatures,
-  advanceSpreadsheetFeatures,
-  createSpreadsheetFeatureRuntime,
-  compileFeatureSurfaceSchema,
   getFeatureRegistry,
   getExcelParityReport,
-  SpreadsheetFeatureRuntime,
   type SpreadsheetFeatureManifest,
-  type SpreadsheetFeatureSurface,
-  type FeatureLifecyclePhase,
-  type FeatureLifecycleContext,
-  type FeatureLifecycleHooks,
-  type FeatureRuntimeActivation,
-  type CompiledFeatureSurfaceEntry,
-  type CompiledFeatureSurfaceSchema,
 } from './feature-registry';
 export * from './ui-command-catalog';
 export {
@@ -58,8 +46,6 @@ export * from './features/formula-audit';
 export * from './features/pivot-controls';
 export {
   buildPivotChartData,
-  chartSourceRevision,
-  ChartDataCache,
   chartNumericValue,
   resolveChartData,
   resolveChartDataFromSources,
@@ -80,7 +66,6 @@ export {
 } from './features/chart/data';
 export {
   buildChartLayout,
-  ChartLayoutCache,
   type ChartLayout,
   type ChartLayoutBar,
   type ChartLayoutPoint,
@@ -91,11 +76,14 @@ export {
   type ChartHistogramBinLayout,
   type ChartBoxLayout,
   type ChartWaterfallBarLayout,
+  type ChartMapFeatureLayout,
 } from './features/chart/layout';
 export { recommendCharts, type ChartRecommendation } from './features/chart/recommendation';
+export { parseGeoJsonMapResource } from './features/chart/map-resource';
 export { recommendPivotTables, type PivotTableRecommendation } from './features/pivot/recommendation';
 export { resolveSparklineData } from './features/sparkline/helpers';
 export * from './features/data-source';
+export * from './features/analysis';
 export { registerEditingFeatures, buildSelectionSnapshot, planRangeDrag, isRangeBorderPoint, rangeDragMode, type SetSelectionParams, type RangeDragMode, type RangeDragPlan } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export * from './cell-edit';
@@ -132,35 +120,46 @@ export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction }
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
-  createNativeDocumentTransaction,
-  NativeDocumentTransactionRegistry,
-  WorkbookApiNativeDocumentTransport,
+  exchangeExportDocument,
+  exchangeImportDocument,
+  exchangeSaveAsDocument,
+  exchangeSaveDocument,
   summarizeCompatibilityReport,
-  type NativeDocumentExchangeResult,
-  type NativeDocumentTransaction,
 } from './features/native-document';
 export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
+  LocalWorkspaceStore,
+  MemoryWorkspaceStore,
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
+  LocalNativeDocumentStore,
   LocalAssetStore,
   RemoteAssetStore,
+  migrateLegacyImageAssets,
+  buildWorkspaceRecord,
+  verifyWorkspaceRecord,
+  verifyPendingOperationJournal,
   WorkspaceStorageError,
   isWorkspaceStorageError,
   WorkspaceMemoryCoordinator,
   type WorkspacePersistenceState,
+  type WorkspacePersistenceMode,
   type PersistenceSnapshotMeta,
+  type WorkspaceRecord,
+  type WorkspaceRecordInput,
+  type PendingOperationJournal,
+  type LocalWorkspaceSummary,
   type WorkspacePersistenceOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
+  type NativeDocumentRecord,
   type AssetStore,
   type AssetPutInput,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
-  buildPrintProjection,
   summarizePrintSnapshot,
   printLayoutToPageSetup,
   pageSetupToPrintLayout,
@@ -181,12 +180,6 @@ export {
   type PrintArea,
   type PrintPageBreak,
   type PrintTitleSpan,
-  type PrintCellReader,
-  type PrintProjectionOptions,
-  type PrintProjection,
-  type PrintProjectionCell,
-  type PrintProjectionDrawing,
-  type PrintChartProjection,
 } from './features/print';
 export {
   FormulaAuditController,
@@ -214,17 +207,19 @@ export {
 } from './features/formula-audit';
 export {
   buildQueryResultSnapshot,
+  buildQueryPreview,
   summarizeQueryResult,
-  executeCanonicalQueryDefinition,
+  executeQueryDefinition,
   resolveLoadTarget,
   createInlineJsonQuery,
   prepareQueryLoadPayload,
   type QueryResultSnapshot,
+  type QueryPreview,
   type QuerySessionEntry,
   type QueryLoadCommandPayload,
 } from './features/query';
 export type { QueryDefinition, LoadTarget, QueryStep } from './features/query/query-steps';
-export type { ConnectorKind, ConnectorManifest, ConnectorInputField, QueryResult, DataConnector } from './features/query';
+export type { ConnectorKind, QueryResult, DataConnector } from './features/query';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
 export {
   runGoalSeek,
@@ -235,10 +230,13 @@ export {
   type HistoryEntryMeta,
   type HistoryPreviewProjection,
   type RestoreCommandParams,
+  type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { buildPivotGroupedFilterMembers, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, getPivotSourceRanges, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskDescriptor, type PivotGroupedFilterMember, type PivotRevisionKey, type PivotTaskControl, type PivotTaskDescriptor } from './features/pivot/engine';
-export { ServerPivotTaskPort, type PivotTaskError, type PivotTaskErrorCode, type ServerPivotRunRequest } from './features/pivot/server-task-port';
+export { buildPivotGroupedFilterMembers, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskInput, type PivotGroupedFilterMember, type PivotTaskControl, type PivotTaskEvaluationInput } from './features/pivot/engine';
+export { BrowserPivotTaskPort, InlinePivotTaskPort, createBrowserPivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
+export { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError, type PivotTaskErrorCode, type PivotTaskResult } from './features/pivot/task-protocol';
+export { createPivotSourceIndex, estimatePivotSourceIndexBytes, type PivotSourceIndex } from './features/pivot/source-index';
 export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
 export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';

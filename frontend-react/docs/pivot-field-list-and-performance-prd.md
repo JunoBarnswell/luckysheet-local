@@ -195,7 +195,7 @@ interface PivotTaskError {
 
 UI 必须显示该失败；console/network 只用于诊断，不是产品错误通道。异常不得被 catch 后转换成 `undefined` 或仅写入瞬时 notice。
 
-DuckDB-Wasm Worker/Arrow 依据：https://www.vldb.org/pvldb/vol15/p3574-kohn.pdf
+Worker/Arrow 列式布局的实现依据已由上面的 Apache Arrow 格式说明和本仓库的 `PivotTaskProtocol` 约束覆盖；本产品不引入 WASM 或 DuckDB runtime。
 
 ## 内存合同
 

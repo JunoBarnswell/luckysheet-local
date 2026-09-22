@@ -1,30 +1,8 @@
 import type { QueryDefinitionSnapshot, TableScalar } from '@react-sheets/core-model';
 import { validateQuerySteps, type QueryDefinition, type QueryRefreshPolicy, type QueryStep } from './query-steps';
 
-export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'sqlite' | 'jdbc';
+export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite' | 'jdbc';
 export type ConnectorExecution = 'local' | 'server';
-
-export type ConnectorInputKind = 'multiline-text' | 'file' | 'text' | 'select';
-
-export interface ConnectorInputField {
-  key: string;
-  label: string;
-  kind: ConnectorInputKind;
-  required: boolean;
-  accept?: string;
-  options?: ReadonlyArray<{ value: string; label: string }>;
-  placeholder?: string;
-}
-
-export interface ConnectorManifest {
-  id: string;
-  kind: ConnectorKind;
-  execution: ConnectorExecution;
-  label: string;
-  fields: readonly ConnectorInputField[];
-  available?: boolean;
-  unavailableReason?: string;
-}
 
 export interface ConnectorContext {
   signal?: AbortSignal;
@@ -35,30 +13,9 @@ export interface QueryResult {
   columns: string[];
   rows: TableScalar[][];
   rowCount: number;
-  /** Proof returned by the authoritative query execution boundary. */
-  executionToken?: string;
-  resultHash?: string;
-  sourceRevision?: number;
 }
 
-/**
- * The only production query execution boundary.  Implementations are backed
- * by the Rust host (`analytics.execute`) and must pin every read to the
- * workbook revision supplied by the caller.
- */
-export interface AnalyticsExecutor {
-  execute(input: {
-    unitId: string;
-    revision: number;
-    request: unknown;
-  }): Promise<unknown>;
-}
-
-export interface AnalyticsQueryContext {
-  unitId: string;
-  revision: number;
-  range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number };
-}
+export type { QueryPreview } from './runtime';
 
 /** Canonical persistence-safe workbook state. */
 export type QueryDefinitionPersistence = QueryDefinitionSnapshot;
@@ -68,7 +25,6 @@ export interface DataConnector {
   readonly kind: ConnectorKind;
   readonly id: string;
   readonly execution: ConnectorExecution;
-  readonly manifest: ConnectorManifest;
   connect(config: Record<string, unknown>): Promise<void>;
   disconnect(): Promise<void>;
   executeQuery(query: string, context?: ConnectorContext): Promise<QueryResult>;
@@ -142,12 +98,6 @@ const SECRET_KEY = /(?:pass(word)?|secret|token|api[-_]?key|credential|authoriza
 function redactConnectorConfig(config: Record<string, unknown>): Record<string, unknown> {
   const redact = (value: unknown, key?: string): unknown => {
     if (key && SECRET_KEY.test(key)) return '[redacted]';
-    if (typeof File !== 'undefined' && value instanceof File) {
-      return { source: 'file', fileName: value.name, byteLength: value.size, mediaType: value.type, reattachRequired: true };
-    }
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      return { source: 'bytes', byteLength: value instanceof ArrayBuffer ? value.byteLength : value.byteLength, reattachRequired: true };
-    }
     if (Array.isArray(value)) return value.map((item) => redact(item));
     if (value && typeof value === 'object') {
       return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [entryKey, redact(entryValue, entryKey)]));
@@ -222,9 +172,6 @@ function parseDelimitedScalar(value: string): TableScalar {
 }
 
 async function readText(config: Record<string, unknown>): Promise<string> {
-  if (config.reattachRequired === true || (config.file && typeof config.file === 'object' && (config.file as Record<string, unknown>).reattachRequired === true)) {
-    throw new Error('QUERY_SOURCE_REATTACH_REQUIRED: select the original text file before refreshing');
-  }
   if (typeof config.text === 'string') return config.text;
   if (typeof config.data === 'string') return config.data;
   const file = config.file;
@@ -232,18 +179,52 @@ async function readText(config: Record<string, unknown>): Promise<string> {
   throw new Error('Local text connector requires text, data, or file input');
 }
 
+async function readBytes(config: Record<string, unknown>): Promise<Uint8Array> {
+  const data = config.bytes ?? config.buffer ?? config.file;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (data && typeof data === 'object' && 'arrayBuffer' in data && typeof (data as { arrayBuffer?: unknown }).arrayBuffer === 'function') return new Uint8Array(await (data as Blob).arrayBuffer());
+  const base64 = config.base64;
+  if (typeof base64 === 'string') {
+    const buffer = (globalThis as { Buffer?: { from(value: string, encoding: string): Uint8Array } }).Buffer;
+    const binary = typeof atob === 'function' ? atob(base64) : String.fromCharCode(...(buffer?.from(base64, 'base64') ?? new Uint8Array()));
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+  throw new Error('Local binary connector requires bytes, buffer, file, or base64 input');
+}
+
+function snapshotSheetResult(snapshot: import('@react-sheets/core-model').WorkbookSnapshot['sheets'][number]): QueryResult {
+  const matrix = new Map<number, Map<number, TableScalar>>();
+  let maxRow = -1;
+  let maxColumn = -1;
+  for (const [rowKey, columns] of Object.entries(snapshot.cells)) {
+    const row = Number(rowKey);
+    if (!Number.isInteger(row)) continue;
+    const rowValues = matrix.get(row) ?? new Map<number, TableScalar>();
+    for (const [columnKey, cell] of Object.entries(columns)) {
+      const column = Number(columnKey);
+      if (!Number.isInteger(column)) continue;
+      rowValues.set(column, cell.value);
+      maxColumn = Math.max(maxColumn, column);
+    }
+    matrix.set(row, rowValues); maxRow = Math.max(maxRow, row);
+  }
+  if (maxRow < 0 || maxColumn < 0) return { columns: [], rows: [], rowCount: 0 };
+  const grid = Array.from({ length: maxRow + 1 }, (_, row) => Array.from({ length: maxColumn + 1 }, (_, column) => matrix.get(row)?.get(column) ?? null));
+  const header = grid.shift()!.map((value, index) => value == null || value === '' ? `Column${index + 1}` : String(value));
+  const columns = header.map((value, index) => {
+    const candidate = value.trim() || `Column${index + 1}`;
+    return header.slice(0, index).includes(candidate) ? `${candidate}_${index + 1}` : candidate;
+  });
+  const rows = grid.map((row) => row.slice(0, columns.length));
+  return { columns, rows, rowCount: rows.length };
+}
+
 /** Built-in JSON connector for in-memory local data. */
 export class JsonDataConnector implements DataConnector {
   readonly kind = 'json' as const;
   readonly id = 'json';
   readonly execution = 'local' as const;
-  readonly manifest: ConnectorManifest = {
-    id: this.id,
-    kind: this.kind,
-    execution: this.execution,
-    label: 'JSON records',
-    fields: [{ key: 'data', label: 'JSON records', kind: 'multiline-text', required: true, placeholder: '[{"Column": "Value"}]' }],
-  };
   private result: QueryResult = { columns: [], rows: [], rowCount: 0 };
 
   async connect(config: Record<string, unknown>): Promise<void> { this.result = parseJsonRecords(config.data ?? config.text); }
@@ -256,16 +237,6 @@ export class CsvDataConnector implements DataConnector {
   readonly kind: ConnectorKind = 'csv';
   readonly id: string = 'csv';
   readonly execution = 'local' as const;
-  readonly manifest: ConnectorManifest = {
-    id: this.id,
-    kind: this.kind,
-    execution: this.execution,
-    label: 'CSV text or file',
-    fields: [
-      { key: 'text', label: 'Delimited text', kind: 'multiline-text', required: false },
-      { key: 'file', label: 'CSV file', kind: 'file', required: false, accept: '.csv,text/csv,text/plain' },
-    ],
-  };
   protected result: QueryResult = { columns: [], rows: [], rowCount: 0 };
   protected delimiter = ',';
   async connect(config: Record<string, unknown>): Promise<void> { this.result = parseDelimited(await readText(config), this.delimiter); }
@@ -278,16 +249,24 @@ export class TsvDataConnector extends CsvDataConnector {
   readonly kind: ConnectorKind = 'tsv';
   readonly id = 'tsv';
   protected delimiter = '\t';
-  override readonly manifest: ConnectorManifest = {
-    id: this.id,
-    kind: this.kind,
-    execution: this.execution,
-    label: 'TSV text or file',
-    fields: [
-      { key: 'text', label: 'Tab-separated text', kind: 'multiline-text', required: false },
-      { key: 'file', label: 'TSV file', kind: 'file', required: false, accept: '.tsv,text/tab-separated-values,text/plain' },
-    ],
-  };
+}
+
+export class OoxmlDataConnector implements DataConnector {
+  readonly kind = 'xlsx' as const;
+  readonly id = 'xlsx';
+  readonly execution = 'local' as const;
+  private result: QueryResult = { columns: [], rows: [], rowCount: 0 };
+  async connect(config: Record<string, unknown>): Promise<void> {
+    const bytes = await readBytes(config);
+    const { importOoxmlDocument } = await import('@react-sheets/exchange-excel-ooxml');
+    const imported = await importOoxmlDocument({ fileName: typeof config.fileName === 'string' ? config.fileName : 'query.xlsx', buffer: bytes.slice().buffer as ArrayBuffer, options: { compatibilityTarget: 'A' } });
+    const first = imported.snapshot.sheets[0];
+    if (!first) throw new Error('XLSX workbook contains no worksheets');
+    this.result = snapshotSheetResult(first);
+  }
+  async disconnect(): Promise<void> { this.result = { columns: [], rows: [], rowCount: 0 }; }
+  async testConnection(config: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> { try { await this.connect(config); return { ok: true, message: `${this.result.rowCount} record(s) ready` }; } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Invalid XLSX data' }; } }
+  async executeQuery(_query: string): Promise<QueryResult> { return structuredClone(this.result); }
 }
 
 /** Server-only connector descriptor. It is never registered by the local default registry. */
@@ -295,46 +274,10 @@ export class RestDataConnector implements DataConnector {
   readonly kind = 'rest' as const;
   readonly id = 'rest';
   readonly execution = 'server' as const;
-  readonly manifest: ConnectorManifest = serverConnectorManifest(this.id, this.kind, 'REST source', true);
   async connect(): Promise<void> { throw new Error('REST connector is server-only'); }
   async disconnect(): Promise<void> {}
   async testConnection(): Promise<{ ok: boolean; message?: string }> { return { ok: false, message: 'REST connector is server-only' }; }
   async executeQuery(): Promise<QueryResult> { throw new Error('REST connector is server-only'); }
-}
-
-export class DatabaseDataConnector implements DataConnector {
-  readonly execution = 'server' as const;
-  readonly manifest: ConnectorManifest;
-
-  constructor(readonly kind: 'sqlite' | 'jdbc') {
-    this.manifest = serverConnectorManifest(kind, kind, kind === 'sqlite' ? 'SQLite source' : 'JDBC source', false);
-  }
-
-  get id(): string { return this.kind; }
-  async connect(): Promise<void> { throw new Error(`${this.kind.toUpperCase()} connector is server-only`); }
-  async disconnect(): Promise<void> {}
-  async testConnection(): Promise<{ ok: boolean; message?: string }> { return { ok: false, message: `${this.kind.toUpperCase()} connector is server-only` }; }
-  async executeQuery(): Promise<QueryResult> { throw new Error(`${this.kind.toUpperCase()} connector is server-only`); }
-}
-
-function serverConnectorManifest(
-  id: 'rest' | 'sqlite' | 'jdbc',
-  kind: 'rest' | 'sqlite' | 'jdbc',
-  label: string,
-  includeMethod: boolean,
-): ConnectorManifest {
-  return {
-    id,
-    kind,
-    execution: 'server',
-    label,
-    fields: [
-      { key: 'sourceRef', label: 'Configured source reference', kind: 'text', required: true, placeholder: 'server-source-id' },
-      { key: 'statement', label: includeMethod ? 'Relative path' : 'Read-only query', kind: 'multiline-text', required: true, placeholder: includeMethod ? '/records' : 'SELECT * FROM table_name' },
-      ...(includeMethod ? [{ key: 'method', label: 'HTTP method', kind: 'select' as const, required: true, options: [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }] }] : []),
-      ...(includeMethod ? [{ key: 'body', label: 'POST JSON body', kind: 'multiline-text' as const, required: false, placeholder: '{}' }] : []),
-    ],
-  };
 }
 
 export function createDefaultConnectorRegistry(): ConnectorRegistry {
@@ -342,9 +285,7 @@ export function createDefaultConnectorRegistry(): ConnectorRegistry {
   registry.register(new JsonDataConnector());
   registry.register(new CsvDataConnector());
   registry.register(new TsvDataConnector());
-  registry.register(new RestDataConnector());
-  registry.register(new DatabaseDataConnector('sqlite'));
-  registry.register(new DatabaseDataConnector('jdbc'));
+  registry.register(new OoxmlDataConnector());
   return registry;
 }
 

@@ -12,6 +12,8 @@ export type RibbonTabId =
   | 'review'
   | 'view'
   | 'settings'
+  | 'pivotAnalyze'
+  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'
@@ -27,6 +29,7 @@ export type RibbonTabId =
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
+  | 'analysis'
   | 'barcode'
   | 'pivot'
   | 'slicer'

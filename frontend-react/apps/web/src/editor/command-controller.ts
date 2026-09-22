@@ -162,16 +162,8 @@ export function useEditorCommandController({
 }: EditorCommandControllerOptions): EditorCommandController {
   const [activePivotId, setActivePivotId] = useState<string>();
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
-  const needsDataRegionProjection = state.ribbonTab === 'data'
-    || state.ribbonTab === 'tableDesign'
-    || state.dialogs.active === 'create-pivot'
-    || state.dialogs.active === 'create-table'
-    || state.dialogs.active === 'sort-dialog';
-  const dataRegionContext = useMemo(
-    () => needsDataRegionProjection ? session.getDataRegionContext() : null,
-    [needsDataRegionProjection, session, state.activeSheetId, state.selection, state.version],
-  );
-  const currentDataRange = dataRegionContext?.range ?? state.selectedSheet.usedRange;
+  const dataRegionContext = session.getDataRegionContext();
+  const currentDataRange = dataRegionContext.range;
   const sortColumns = state.selectedSheet.columns.slice(currentDataRange.startColumn, currentDataRange.endColumn + 1);
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
@@ -183,24 +175,21 @@ export function useEditorCommandController({
 
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
-  // The Pivot definition owns its field identities.  During a worker refresh
-  // `pivotTree` is temporarily absent; falling back to the active worksheet's
-  // used range at that point changes a 23-column source into the Pivot output
-  // (often a single `Column 1` field) and makes the pending layout reference
-  // unknown value fields.  Keep the catalog stable until the canonical Pivot
-  // mutation publishes a new definition.
-  // Field identities are owned by a committed Pivot definition. Building a
-  // speculative catalog during every editor render scans the entire source
-  // range and blocks large imported workbooks before the Pivot flow is used.
-  const pivotFields: PivotFieldDefinition[] = activePivot?.fieldCatalog.fields ?? [];
+  // The result tree is asynchronous. While a refresh is in flight, keep the
+  // field list owned by the active PivotTable instead of deriving it from the
+  // current worksheet region (which is the PivotTable output sheet and can
+  // legitimately contain a single fallback column).
+  const pivotFields: PivotFieldDefinition[] = activePivot
+    ? session.getPivotFieldCatalogForPivot(activePivot.id, pivotTree?.fields.fields ?? activePivot.fieldCatalog.fields)
+    : session.getPivotFieldCatalog(pivotSourceRange);
   const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
   const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connections: record.payload.connections }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connections: record.payload.connections, compatibleConnections: session.listCompatiblePivotControlConnections(record.payload.pivotId, record.payload.fieldId, 'slicer') }]
     : []);
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections, compatibleConnections: session.listCompatiblePivotControlConnections(record.payload.pivotId, record.payload.fieldId, 'timeline') }]
     : []);
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
@@ -233,24 +222,21 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
+  const activeFilterOwner = dataRegionContext.owner.kind === 'sheet-table'
+    ? { kind: 'table' as const, tableId: dataRegionContext.owner.tableId }
+    : { kind: 'worksheet' as const };
   const activeAutoFilter = state.selectedSheet.getActiveAutoFilter(state.selection.activeCell.column);
-  const buildFilterSelectionCommand = (): CommandDescriptor => {
-    const context = session.getDataRegionContext();
-    return context.owner.kind === 'sheet-table'
-      ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: context.owner.tableId, dataRegionContext: context } }
-      : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: context.range, dataRegionContext: context } };
-  };
-  const buildClearFilterCommand = (): CommandDescriptor => {
-    const context = session.getDataRegionContext();
-    return context.owner.kind === 'sheet-table'
-      ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: context.owner.tableId, dataRegionContext: context } }
-      : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: activeAutoFilter?.range ?? context.range, dataRegionContext: context } };
-  };
+  const buildFilterSelectionCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
+    : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange, dataRegionContext } };
+  const filterRange = activeAutoFilter?.range ?? currentDataRange;
+  const buildClearFilterCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
+    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange, dataRegionContext } };
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
-    const context = session.getDataRegionContext();
-    const range = context.range;
+    const range = dataRegionContext.range;
     if (range.endRow <= range.startRow) return undefined;
-    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: context.header.kind === 'present', dataRegionContext: context } };
+    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: dataRegionContext.header.kind === 'present', dataRegionContext } };
   };
 
   const sheetNames = useMemo(() => new Map(state.sheets.map((sheet) => [sheet.id, sheet.name] as const)), [state.sheets]);
@@ -305,12 +291,12 @@ export function useEditorCommandController({
     if (!activePivot) return;
     session.createPivotChart(activePivot.id, pivotText(locale, 'pivotChart'));
   };
-  const removePivotTimeline = () => {
-    for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);
-  };
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: () => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" }),
     onPivotSelect: setActivePivotId,
+    onLoadFieldValues: activePivot?.source.kind === 'data-source'
+      ? (fieldId) => session.loadPivotFieldValues(activePivot.id, fieldId)
+      : undefined,
     onFieldAreaChange: (fieldId, area, index) => {
       if (!activePivot) return;
       const next = area === "values" ? cloneLayout(activePivot.layout) : removePivotField(activePivot.layout, fieldId);
@@ -372,7 +358,8 @@ export function useEditorCommandController({
         } });
     },
     onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) void session.updatePivotConfiguration(activePivot.id, { refreshPolicy: structuredClone(refreshPolicy) }); },
-    onTimelineRemove: removePivotTimeline,
+    onControlConnectionsChange: (drawingId, connections) => session.setPivotControlConnections(drawingId, connections),
+    onTimelineClear: (timelineId) => session.setPivotTimelinePeriod(timelineId),
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
     onTimelineLevelChange: (timelineId, level) => session.setPivotTimelineLevel(timelineId, level),
@@ -463,7 +450,7 @@ export function useEditorCommandController({
       case "column.hide": session.hideColumnsAtPrimary(); return true;
       case "zoom.in": session.setZoom(session.getZoom() + 10); return true;
       case "zoom.out": session.setZoom(session.getZoom() - 10); return true;
-      case "table.create": dispatchSessionIntent({ type: "dialog.open", dialog: "create-table" }); return true;
+      case "table.create": case "table.create.legacy": dispatchSessionIntent({ type: "dialog.open", dialog: "create-table" }); return true;
       case "chart.insert": session.insertChart(); return true;
       case "edit.begin": session.cellEdit.dispatch({ type: 'begin.request', source: 'f2', surface: 'grid' }); return true;
       case "drawing.remove": session.removeSelectedDrawing(); return true;

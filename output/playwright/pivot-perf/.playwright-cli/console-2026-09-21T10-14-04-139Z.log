@@ -1,0 +1,28 @@
+[     187ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/favicon.ico:0
+[     425ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8083/:0
+[ 1382497ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1384119ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1387343ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1393925ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1406833ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1421882ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1436960ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1452353ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1467465ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1482539ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1497606ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1512666ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1527746ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:8083/ws' failed: Error during WebSocket handshake: Unexpected response code: 500 @ http://127.0.0.1:8083/assets/workbook-runtime-B-XjSSsx.js:0
+[ 1714183ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations:0
+[ 2030062ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2080398ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2112448ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2117144ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations:0
+[ 2188075ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2233181ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2263291ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2266853ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations:0
+[ 2596194ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2651496ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2693370ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations/bb33cbe1-7750-45c8-a030-f44c88817372:0
+[ 2699852ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ http://127.0.0.1:8083/api/workbooks/wb-030479ee-1137-4ce6-82cf-ceaffde60d49/operations:0

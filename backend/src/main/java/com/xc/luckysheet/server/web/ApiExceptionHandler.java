@@ -3,6 +3,7 @@ package com.xc.luckysheet.server.web;
 import com.xc.luckysheet.server.contract.ApiErrorResponse;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -12,13 +13,20 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleUploadLimit(Exception error) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(new ApiErrorResponse("VALIDATION_ERROR",
+                "Import exceeds the configured upload limit. Original file is unchanged; no workbook was created."));
+    }
+
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingResource(Exception error) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiErrorResponse("NOT_FOUND", "Resource not found"));
+    }
     @ExceptionHandler(ServiceException.class)
     public ResponseEntity<ApiErrorResponse> handleDomain(ServiceException error) {
-        if (error instanceof com.xc.luckysheet.server.service.KernelHostException kernel) {
-            var details = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
-            details.put("object", kernel.object()); details.put("recovery", kernel.recovery());
-            return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage(), details));
-        }
         return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage()));
     }
 
@@ -37,8 +45,31 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiErrorResponse("CONFLICT", "The operation conflicts with current workbook state"));
     }
 
+    /**
+     * A workbook operation and a catalog/checkpoint write can race at the
+     * entity version boundary.  Surface that race as a retryable, visible
+     * workbook conflict instead of leaking it as an opaque 500 response.
+     * The browser keeps the durable operation draft until it has rechecked
+     * the operation result and current revision.
+     */
+    @ExceptionHandler({
+            OptimisticLockingFailureException.class,
+            jakarta.persistence.OptimisticLockException.class,
+            org.hibernate.StaleObjectStateException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleOptimisticConflict(Exception error) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiErrorResponse(
+                "CONFLICT",
+                "Workbook changed while this operation was being saved; the draft was retained and must be retried against the latest revision"
+        ));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception error) {
+        // Do not log request bodies, SQL values or exception messages containing workbook data.
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            LOG.error("Unhandled request failure: {} at {}", cause.getClass().getName(), java.util.Arrays.toString(cause.getStackTrace()));
+        }
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new ApiErrorResponse("INTERNAL_ERROR", "The request could not be completed"));
     }
 

@@ -1,5 +1,7 @@
 import {
   createPivotMemberKey,
+  resolveWorksheetChartRanges,
+  validateChartVector,
   formatPivotMember,
   pivotMemberKey,
   type ChartDrawingPayload,
@@ -14,7 +16,6 @@ import {
   type WorkbookTableModel,
 } from '@react-sheets/core-model';
 import type { ChartPayload, ChartSeries } from './commands';
-import type { ResolvedVisibility } from '@react-sheets/sheet-features';
 
 export type ChartDataSourceKind = 'range' | 'pivot' | 'table' | 'report-range';
 
@@ -58,7 +59,7 @@ export interface ChartBindingModel {
 }
 
 export interface ChartDataStatus {
-  kind: 'ready' | 'invalid' | 'unsupported';
+  kind: 'ready' | 'loading' | 'invalid' | 'unsupported';
   code?: 'INVALID_CHART_SOURCE' | 'UNSUPPORTED_FEATURE' | 'PIVOT_REFERENCE_UNAVAILABLE';
   message?: string;
 }
@@ -69,96 +70,12 @@ export interface ResolvedChartData {
   source: ChartDataSourceKind;
   binding: ChartBindingModel;
   status: ChartDataStatus;
-  /** Source revision used by chart layout/render caches. */
-  sourceRevision?: string;
 }
 
 export interface StructuredChartSheet {
   getCell(row: number, column: number): { value?: PivotScalar } | undefined;
-  resolvedVisibility: ResolvedVisibility;
-  revision: number;
-}
-
-function assertPinnedVisibility(sheet: StructuredChartSheet): void {
-  if (sheet.revision !== sheet.resolvedVisibility.revision) {
-    throw new Error(`STALE_VISIBILITY: chart source revision ${sheet.revision} does not match visibility revision ${sheet.resolvedVisibility.revision}`);
-  }
-}
-
-export function chartSourceRevision(
-  payload: ChartDrawingPayload,
-  getSheet: (sheetId: string) => StructuredChartSheet | undefined,
-  pivotResults: Readonly<Record<string, PivotResultTree>> = {},
-  tables: readonly WorkbookTableModel[] = [],
-): string {
-  const source = payload.source;
-  const revisions: unknown[] = [source];
-  const rangeRevision = (range: RangeRef): unknown => {
-    const sheet = getSheet(range.sheetId);
-    if (sheet) assertPinnedVisibility(sheet);
-    return {
-      range,
-      revision: sheet?.revision ?? 'unknown',
-      visibilityRevision: sheet?.resolvedVisibility.revision ?? 'missing',
-    };
-  };
-  if (source.kind === 'pivot') {
-    const tree = pivotResults[source.pivotId];
-    revisions.push(tree ? { sourceRevision: tree.sourceRevision, layoutRevision: tree.layoutRevision, filterRevision: tree.filterRevision } : 'missing');
-  } else if (source.kind === 'worksheet-ranges') {
-    for (const range of source.ranges) revisions.push(rangeRevision(range));
-    if (payload.categoryRange) revisions.push(rangeRevision(payload.categoryRange));
-    for (const series of payload.series ?? []) {
-      for (const range of [
-        series.range,
-        series.xRange,
-        series.yRange,
-        series.sizeRange,
-        series.errorBars?.plusRange,
-        series.errorBars?.minusRange,
-        series.stockRoles?.open,
-        series.stockRoles?.high,
-        series.stockRoles?.low,
-        series.stockRoles?.close,
-        series.stockRoles?.volume,
-      ]) if (range) revisions.push(rangeRevision(range));
-    }
-  } else if (source.kind === 'report-range') {
-    revisions.push(rangeRevision(source.range));
-    if (payload.categoryRange) revisions.push(rangeRevision(payload.categoryRange));
-  } else {
-    const table = tables.find((entry) => entry.id === source.tableId);
-    revisions.push({
-      tableId: source.tableId,
-      revision: table?.revision ?? 'unknown',
-      sourceRange: table?.sourceRange ? rangeRevision(table.sourceRange) : 'missing',
-    });
-  }
-  return fingerprintChartRevision(revisions);
-}
-
-export class ChartDataCache {
-  private readonly entries = new Map<string, { revision: string; value: ResolvedChartData }>();
-
-  resolve(
-    payload: ChartDrawingPayload,
-    getSheet: (sheetId: string) => StructuredChartSheet | undefined,
-    pivotResults: Readonly<Record<string, PivotResultTree>> = {},
-    tables: readonly WorkbookTableModel[] = [],
-  ): ResolvedChartData {
-    const revision = chartSourceRevision(payload, getSheet, pivotResults, tables);
-    const cached = this.entries.get(payload.chartId);
-    if (cached?.revision === revision) return structuredClone(cached.value);
-    const value = resolveChartDataFromSources(payload, getSheet, pivotResults, tables);
-    if (value.status.kind === 'ready') this.entries.set(payload.chartId, { revision, value: structuredClone(value) });
-    else this.entries.delete(payload.chartId);
-    return value;
-  }
-
-  invalidate(chartId?: string): void {
-    if (chartId === undefined) this.entries.clear();
-    else this.entries.delete(chartId);
-  }
+  hiddenRows: ReadonlySet<number> | readonly number[];
+  hiddenColumns: ReadonlySet<number> | readonly number[];
 }
 
 export interface StructuredChartSeries {
@@ -279,12 +196,8 @@ function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember
 function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
 function fieldName(fieldId: string | undefined, tree: PivotResultTree): string { return tree.fields.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Value'; }
 
-function rowHidden(sheet: StructuredChartSheet, row: number): boolean {
-  return sheet.resolvedVisibility.isRowHidden(row);
-}
-
-function columnHidden(sheet: StructuredChartSheet, column: number): boolean {
-  return sheet.resolvedVisibility.isColumnHidden(column);
+function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
+  return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
 }
 
 function isMissing(value: PivotScalar | undefined): boolean {
@@ -312,28 +225,17 @@ function scalarValue(sheet: StructuredChartSheet, row: number, column: number): 
   return sheet.getCell(row, column)?.value ?? null;
 }
 
-function readRange(
-  sheet: StructuredChartSheet,
-  range: RangeRef,
-  hiddenData: ChartPayload['elements']['hiddenData'],
-): PivotScalar[][] {
-  const rows: PivotScalar[][] = [];
+function scalarVector(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData']): PivotScalar[] {
+  validateChartVector(range);
+  const values: PivotScalar[] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
-    if (hiddenData === 'hideRows' && rowHidden(sheet, row)) continue;
-    const values: PivotScalar[] = [];
+    if (hiddenData === 'hideRows' && containsHidden(sheet.hiddenRows, row)) continue;
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      if (hiddenData === 'hideColumns' && columnHidden(sheet, column)) continue;
+      if (hiddenData === 'hideColumns' && containsHidden(sheet.hiddenColumns, column)) continue;
       values.push(scalarValue(sheet, row, column));
     }
-    rows.push(values);
   }
-  return rows;
-}
-
-function scalarColumn(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData'], headerRow?: number): PivotScalar[] {
-  const rows = readRange(sheet, range, hiddenData);
-  const values = rows.map((row) => row[0] ?? null);
-  return headerRow === range.startRow && values.length > 0 ? values.slice(1) : values;
+  return values;
 }
 
 function seriesName(sheet: StructuredChartSheet, range: RangeRef, fallback: string): string {
@@ -344,24 +246,22 @@ function seriesName(sheet: StructuredChartSheet, range: RangeRef, fallback: stri
 function sheetFor(getSheet: (sheetId: string) => StructuredChartSheet | undefined, range: RangeRef): StructuredChartSheet {
   const sheet = getSheet(range.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${range.sheetId}`);
-  assertPinnedVisibility(sheet);
   return sheet;
 }
 
-function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined, sourceRange?: RangeRef): ResolvedChartSeries {
+function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined): ResolvedChartSeries {
   const valueRange = declared.yRange ?? declared.range;
   const sheet = sheetFor(getSheet, valueRange);
-  const headerRow = sourceRange?.startRow;
-  const normalizedValues = normalizeEmptyValues(scalarColumn(sheet, valueRange, payload.elements.hiddenData, headerRow), payload.elements.emptyCells);
+  const normalizedValues = normalizeEmptyValues(scalarVector(sheet, valueRange, payload.elements.hiddenData), payload.elements.emptyCells);
   const values = normalizedValues.values;
-  const xValues = declared.xRange ? scalarColumn(sheetFor(getSheet, declared.xRange), declared.xRange, payload.elements.hiddenData, headerRow) : undefined;
-  const sizeValues = declared.sizeRange ? scalarColumn(sheetFor(getSheet, declared.sizeRange), declared.sizeRange, payload.elements.hiddenData, headerRow) : undefined;
+  const xValues = declared.xRange ? scalarVector(sheetFor(getSheet, declared.xRange), declared.xRange, payload.elements.hiddenData) : undefined;
+  const sizeValues = declared.sizeRange ? scalarVector(sheetFor(getSheet, declared.sizeRange), declared.sizeRange, payload.elements.hiddenData) : undefined;
   const stockValues = declared.stockRoles ? {
-    ...(declared.stockRoles.open ? { open: scalarColumn(sheetFor(getSheet, declared.stockRoles.open), declared.stockRoles.open, payload.elements.hiddenData, headerRow) } : {}),
-    high: scalarColumn(sheetFor(getSheet, declared.stockRoles.high), declared.stockRoles.high, payload.elements.hiddenData, headerRow),
-    low: scalarColumn(sheetFor(getSheet, declared.stockRoles.low), declared.stockRoles.low, payload.elements.hiddenData, headerRow),
-    close: scalarColumn(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData, headerRow),
-    ...(declared.stockRoles.volume ? { volume: scalarColumn(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData, headerRow) } : {}),
+    ...(declared.stockRoles.open ? { open: scalarVector(sheetFor(getSheet, declared.stockRoles.open), declared.stockRoles.open, payload.elements.hiddenData) } : {}),
+    high: scalarVector(sheetFor(getSheet, declared.stockRoles.high), declared.stockRoles.high, payload.elements.hiddenData),
+    low: scalarVector(sheetFor(getSheet, declared.stockRoles.low), declared.stockRoles.low, payload.elements.hiddenData),
+    close: scalarVector(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData),
+    ...(declared.stockRoles.volume ? { volume: scalarVector(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData) } : {}),
   } : undefined;
   return {
     id: declared.id ?? `series:${declared.name}:${valueRange.sheetId}:${valueRange.startRow}:${valueRange.startColumn}`,
@@ -378,65 +278,23 @@ function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries
     smooth: declared.smooth,
     trendlines: declared.trendlines,
     errorBars: declared.errorBars,
-    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData, headerRow) } : {}),
-    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarColumn(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData, headerRow) } : {}),
+    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarVector(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData) } : {}),
+    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarVector(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData) } : {}),
     stockRoles: declared.stockRoles,
     ...(stockValues ? { stockValues } : {}),
   };
 }
 
 function rangeSourceData(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
-  if (payload.source.kind !== 'worksheet-ranges') throw new Error(`Chart source mismatch: expected worksheet-ranges, received ${payload.source.kind}`);
-  const sourceRange = payload.source.ranges[0];
-  if (!sourceRange) return { categories: [], series: [] };
-  const sheet = sheetFor(getSheet, sourceRange);
-  const matrix = readRange(sheet, sourceRange, payload.elements.hiddenData);
-  const categoryRange = payload.categoryRange;
-  const categories = categoryRange
-    ? scalarColumn(sheetFor(getSheet, categoryRange), categoryRange, payload.elements.hiddenData, categoryRange.startRow === sourceRange.startRow ? sourceRange.startRow : undefined)
-    : payload.dataOrientation === 'rows'
-      ? (matrix[0]?.slice(1) ?? [])
-      : matrix.slice(1).map((row) => row[0] ?? null);
-  const declared = payload.series ?? [];
-  if (declared.length > 0) return { categories, series: declared.map((entry) => chartSeriesFromDeclaration(payload, entry, getSheet, sourceRange)) };
-  const series: ResolvedChartSeries[] = [];
-  const width = sourceRange.endColumn - sourceRange.startColumn + 1;
-  if (payload.dataOrientation === 'rows') {
-    for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
-      const row = matrix[rowIndex] ?? [];
-      const normalized = normalizeEmptyValues(row.slice(1), payload.elements.emptyCells);
-      series.push({ id: `series:${sourceRange.sheetId}:${sourceRange.startRow + rowIndex}`, name: String(row[0] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-    }
-    return { categories, series };
-  }
-  const appendMatrixSeries = (range: RangeRef, rangeMatrix: PivotScalar[][]): void => {
-    const rangeWidth = range.endColumn - range.startColumn + 1;
-    if (rangeWidth <= 1) {
-      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
-      series.push({ id: `series:${range.sheetId}:${range.startColumn}`, name: seriesName(sheetFor(getSheet, range), range, `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-      return;
-    }
-    for (let columnIndex = 1; columnIndex < rangeWidth; columnIndex += 1) {
-      const normalized = normalizeEmptyValues(rangeMatrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
-      series.push({ id: `series:${range.sheetId}:${range.startColumn + columnIndex}`, name: String(rangeMatrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-    }
-  };
-  if (width <= 1) {
-    const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[0] ?? null), payload.elements.emptyCells);
-    series.push({ id: 'series:1', name: seriesName(sheet, sourceRange, 'Series 1'), values: normalized.values, missing: normalized.missing, axis: 'primary' });
-  } else {
-    for (let columnIndex = 1; columnIndex < width; columnIndex += 1) {
-      const normalized = normalizeEmptyValues(matrix.slice(1).map((row) => row[columnIndex] ?? null), payload.elements.emptyCells);
-      series.push({
-        id: `series:${sourceRange.sheetId}:${sourceRange.startColumn + columnIndex}`,
-        name: String(matrix[0]?.[columnIndex] ?? `Series ${series.length + 1}`),
-        values: normalized.values,
-        missing: normalized.missing,
-        axis: 'primary',
-      });
-    }
-  }
-  for (const range of payload.source.ranges.slice(1)) appendMatrixSeries(range, readRange(sheetFor(getSheet, range), range, payload.elements.hiddenData));
+  const binding = resolveWorksheetChartRanges(payload, range => scalarValue(sheetFor(getSheet, range), range.startRow, range.startColumn));
+  const categories = scalarVector(sheetFor(getSheet, binding.categoryRange), binding.categoryRange, payload.elements.hiddenData);
+  const series = binding.series.filter(entry => {
+    if (payload.elements.hiddenData === 'show') return true;
+    const range = entry.yRange ?? entry.range;
+    const sheet = sheetFor(getSheet, range);
+    return !(payload.elements.hiddenData === 'hideColumns' && range.startColumn === range.endColumn && containsHidden(sheet.hiddenColumns, range.startColumn))
+      && !(payload.elements.hiddenData === 'hideRows' && range.startRow === range.endRow && containsHidden(sheet.hiddenRows, range.startRow));
+  }).map(entry => chartSeriesFromDeclaration(payload, entry, getSheet));
   return { categories, series };
 }
 
@@ -466,24 +324,6 @@ function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): { categ
   return { categories: projected.categories.map((category) => category.label), series };
 }
 
-function fingerprintChartRevision(value: unknown): string {
-  const serialized = stableChartSerialize(value);
-  let hash = 0xcbf29ce484222325n;
-  for (let index = 0; index < serialized.length; index += 1) {
-    hash ^= BigInt(serialized.charCodeAt(index));
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return hash.toString(16).padStart(16, '0');
-}
-
-function stableChartSerialize(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
-  if (Array.isArray(value)) return `[${value.map(stableChartSerialize).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableChartSerialize(record[key])}`).join(',')}}`;
-}
-
 function bindingFor(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options: Partial<Pick<ChartBindingModel, 'orientation' | 'hierarchyLevels' | 'nonContiguous' | 'dynamicRangeIdentity' | 'tableStructuredReference'>> = {}): ChartBindingModel {
   return {
     source: source.kind === 'worksheet-ranges' ? 'range' : source.kind,
@@ -497,28 +337,33 @@ function bindingFor(source: ChartSource, categories: PivotScalar[], series: Reso
   };
 }
 
-function readyData(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options?: Parameters<typeof bindingFor>[3], sourceRevision?: string): ResolvedChartData {
-  return { categories, series, source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, categories, series, options), status: { kind: 'ready' }, ...(sourceRevision ? { sourceRevision } : {}) };
+function readyData(source: ChartSource, categories: PivotScalar[], series: ResolvedChartSeries[], options?: Parameters<typeof bindingFor>[3]): ResolvedChartData {
+  return { categories, series, source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, categories, series, options), status: { kind: 'ready' } };
 }
 
-function invalidData(source: ChartSource, code: ChartDataStatus['code'], message: string, sourceRevision?: string): ResolvedChartData {
-  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message }, ...(sourceRevision ? { sourceRevision } : {}) };
+function invalidData(source: ChartSource, code: ChartDataStatus['code'], message: string): ResolvedChartData {
+  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message } };
+}
+
+function loadingData(source: ChartSource, message: string): ResolvedChartData {
+  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: 'loading', message } };
 }
 
 /** Resolve a canonical chart against a worksheet reader without constructing a second model. */
-export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = []): ResolvedChartData {
-  let revision = 'unavailable';
-  try { revision = chartSourceRevision(payload, getSheet, pivotResults, tables); } catch { /* source validation below emits the canonical failure */ }
+export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = [], loadingPivotIds: ReadonlySet<string> = new Set()): ResolvedChartData {
   try {
     if (payload.source.kind === 'pivot') {
       const tree = pivotResults[payload.source.pivotId];
-      if (!tree) return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`, revision);
+      if (!tree) {
+        if (loadingPivotIds.has(payload.source.pivotId)) return loadingData(payload.source, `Loading PivotTable chart data: ${payload.source.pivotId}`);
+        return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`);
+      }
       const resolved = resolvePivotData(payload, tree);
-      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' }, revision);
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' });
     }
     if (payload.source.kind === 'worksheet-ranges') {
       const resolved = rangeSourceData(payload, getSheet);
-      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns', dynamicRangeIdentity: payload.source.identity }, revision);
+      return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns', dynamicRangeIdentity: payload.source.identity });
     }
     const structured = resolveStructuredChartBindings(payload, tables, getSheet);
     const series = structured.series.map((entry) => ({
@@ -531,23 +376,19 @@ export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sh
     return readyData(payload.source, structured.categories, series, {
       tableStructuredReference: payload.source.kind === 'table' ? payload.source.structuredReference ?? `${payload.source.tableId}[${payload.source.bindings.values.map((entry) => entry.fieldId).join(',')}]` : undefined,
       dynamicRangeIdentity: payload.source.kind === 'report-range' ? payload.source.identity : undefined,
-    }, revision);
+    });
   } catch (error) {
-    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error), revision);
+    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
   }
 }
 
 /** Resolve chart data from the live WorkbookModel for command/unit-test consumers. */
-export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, visibility: ResolvedVisibility): ResolvedChartData {
-  if (!visibility) throw new Error('RESOLVED_VISIBILITY_REQUIRED: chart resolution requires the kernel visibility projection');
-  if (visibility.revision !== workbook.revision) {
-    throw new Error(`STALE_VISIBILITY: chart workbook revision ${workbook.revision} does not match visibility revision ${visibility.revision}`);
-  }
+export function resolveChartData(workbook: WorkbookModel, payload: ChartPayload, pivotResults: Readonly<Record<string, PivotResultTree>> = {}): ResolvedChartData {
   const result = resolveChartDataFromSources(
     payload,
     (sheetId) => {
       const sheet = workbook.getSheet(sheetId);
-      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), resolvedVisibility: visibility, revision: sheet.cells.revision };
+      return { getCell: (row: number, column: number) => sheet.cells.get(row, column), hiddenRows: sheet.hiddenRows, hiddenColumns: sheet.hiddenColumns };
     },
     pivotResults,
     [...workbook.dataModel.tables.values()],
@@ -566,20 +407,19 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   if (!sourceRange) throw new Error(`Chart source ${source.kind} has no worksheet-backed range`);
   const sheet = getSheet(sourceRange.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${sourceRange.sheetId}`);
-  assertPinnedVisibility(sheet);
   const fields = source.kind === 'table'
     ? table!.fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
     : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const showHiddenData = payload.elements.hiddenData === 'show';
-  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !columnHidden(sheet, sourceRange.startColumn + field.ordinal)));
+  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
   const categoryBinding = source.bindings.category[0];
   const categoryField = categoryBinding && visible(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
   const valueBindings = source.bindings.values.filter((binding) => visible(fieldById.get(binding.fieldId)));
   if (!valueBindings.length) throw new Error(`Chart source ${source.kind} has no visible numeric value bindings`);
   const buckets = new Map<string, Map<string, number[]>>();
   for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
-    if (!showHiddenData && rowHidden(sheet, row)) continue;
+    if (!showHiddenData && containsHidden(sheet.hiddenRows, row)) continue;
     const category = String(categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow);
     const byField = buckets.get(category) ?? new Map<string, number[]>();
     for (const binding of valueBindings) {
@@ -651,14 +491,13 @@ export function resolveSparklineSeries(
   const source = sparkline.sourceRange;
   const sheet = getSheet(source.sheetId);
   if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
-  assertPinnedVisibility(sheet);
   const orientation = group?.dataOrientation ?? sparkline.dataOrientation ?? 'rows';
   const rows: Array<Array<PivotScalar>> = [];
   for (let row = source.startRow; row <= source.endRow; row += 1) {
-    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && rowHidden(sheet, row)) continue;
+    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenRows, row)) continue;
     const values: PivotScalar[] = [];
     for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && columnHidden(sheet, column)) continue;
+      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenColumns, column)) continue;
       values.push(scalarValue(sheet, row, column));
     }
     rows.push(values);

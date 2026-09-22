@@ -7,7 +7,9 @@ import {
   Stack,
   StatePanel,
   Button,
+  Inline,
   ScrollBar,
+  Text,
   Textarea,
 } from "@react-sheets/ui-system";
 import {
@@ -15,7 +17,6 @@ import {
   CanvasRenderEngine,
   SheetSkeleton,
   type CellRenderData,
-  type CellRange,
   type ChromeState,
   type FloatingDrawable,
   type FloatingHit,
@@ -36,6 +37,7 @@ import type {
   PivotPresentation,
   PivotReportFilterSummary,
   PivotReportFilterSummaryEntry,
+  PivotScalar,
   PivotSort,
   RangeRef,
   SparklineModel,
@@ -60,19 +62,9 @@ import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
-import { planSheetExtentGrowth } from './canvas/sheet-extent-growth';
+import { planSheetExtentGrowth, resolveAutoScrollExtentGrowth } from './canvas/sheet-extent-growth';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
-
-const MAX_CELL_RENDER_CACHE_ENTRIES = 50_000;
-
-function cacheCellRenderData(cache: Map<string, CellRenderData | undefined>, key: string, value: CellRenderData | undefined): void {
-  if (!cache.has(key) && cache.size >= MAX_CELL_RENDER_CACHE_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
-  cache.set(key, value);
-}
 
 export interface SheetCanvasProps {
   locale: Locale;
@@ -82,6 +74,9 @@ export interface SheetCanvasProps {
   activeCell: string;
   cellEdit: CellEditController;
   phase: AppPhase;
+  errorMessage?: string;
+  onExportRecovery?: () => void;
+  onDiscardRecovery?: () => void;
   zoom: number;
   peers: PeerCursor[];
   drawings?: readonly DrawingObject[];
@@ -90,6 +85,7 @@ export interface SheetCanvasProps {
   pivotResults?: Record<string, PivotResultTree>;
   sparklines?: SparklineModel[];
   tables?: readonly WorkbookTableModel[];
+  analysisViews?: readonly import('@react-sheets/core-model').AnalysisViewDefinition[];
   selectedFloatingId: string | null;
   textBoxPlacementActive?: boolean;
   textBoxEdit?: { sheetId: string; drawingId: string; draftText: string } | null;
@@ -103,12 +99,14 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
-  onActivateHyperlink?: (row: number, column: number) => void | Promise<void>;
+  /** Loads a data-source field member domain before opening its picker. */
+  onLoadPivotFieldValues?: (pivotId: string, fieldId: string) => Promise<readonly PivotScalar[] | undefined>;
+  onPivotFilterLoadError?: (error: unknown) => void;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onEnsureSheetExtent: (rowCount: number, columnCount: number) => void;
-  onEnsureVisibleRanges?: (ranges: readonly RangeRef[]) => Promise<void>;
+  canGrowSheetExtent: boolean;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
   onSelectAllDrawings?: () => void;
@@ -382,6 +380,9 @@ export function SheetCanvas({
   activeCell,
   cellEdit,
   phase,
+  errorMessage,
+  onExportRecovery,
+  onDiscardRecovery,
   zoom,
   peers,
   drawings = sheet.drawings,
@@ -390,6 +391,7 @@ export function SheetCanvas({
   pivotResults = {},
   sparklines = [],
   tables = [],
+  analysisViews = [],
   selectedFloatingId,
   showFormulas = false,
   onPivotContextHit,
@@ -397,12 +399,13 @@ export function SheetCanvas({
   getPivotContextMenuItems,
   onPivotShowDetails,
   onPivotExpansionToggle,
-  onActivateHyperlink,
+  onLoadPivotFieldValues,
+  onPivotFilterLoadError,
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
   onEnsureSheetExtent,
-  onEnsureVisibleRanges,
+  canGrowSheetExtent,
   onJumpEdge,
   onSelectAll,
   onSelectAllDrawings,
@@ -464,43 +467,45 @@ export function SheetCanvas({
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [pivotFilterPopover, setPivotFilterPopover] = useState<{ pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number } | null>(null);
+  const [pivotFilterLoading, setPivotFilterLoading] = useState<{ x: number; y: number } | null>(null);
+  const [loadedPivotFieldValues, setLoadedPivotFieldValues] = useState<Record<string, readonly PivotScalar[]>>({});
+  const pivotFilterLoadGeneration = useRef(0);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
-  const [pageLoadState, setPageLoadState] = useState<{ status: 'idle' | 'loading' | 'error'; blocking?: boolean; message?: string }>({ status: 'idle' });
-  const pageLoadGenerationRef = useRef(0);
-  const hasPreparedViewportRef = useRef(false);
   const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
-  const visibleRangeLoaderRef = useRef(onEnsureVisibleRanges);
-  const visibleRangeSheetIdRef = useRef(sheetId);
-  visibleRangeLoaderRef.current = onEnsureVisibleRanges;
-  visibleRangeSheetIdRef.current = sheetId;
-
-  const prepareVisibleRanges = useCallback(async (ranges: readonly CellRange[]) => {
-    const loader = visibleRangeLoaderRef.current;
-    if (!loader || ranges.length === 0) return;
-    const generation = ++pageLoadGenerationRef.current;
-    const blocking = !hasPreparedViewportRef.current;
-    setPageLoadState({ status: 'loading', blocking });
-    try {
-      await loader(ranges.map((range) => ({ ...range, sheetId: visibleRangeSheetIdRef.current })));
-      if (generation !== pageLoadGenerationRef.current) return;
-      hasPreparedViewportRef.current = true;
-      setPageLoadState({ status: 'idle' });
-    } catch (error) {
-      if (generation !== pageLoadGenerationRef.current) return;
-      setPageLoadState({ status: 'error', blocking: !hasPreparedViewportRef.current, message: error instanceof Error ? error.message : 'Worksheet pages could not be loaded' });
-      throw error;
-    }
-  }, []);
-
-  useEffect(() => {
-    pageLoadGenerationRef.current += 1;
-    hasPreparedViewportRef.current = false;
-    setPageLoadState({ status: 'idle' });
-  }, [sheetId]);
 
   const zoomFactor = zoom / 100;
+
+  const openPivotFilter = useCallback(async (request: { pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number }): Promise<void> => {
+    const generation = ++pivotFilterLoadGeneration.current;
+    const cacheKey = `${request.pivotId}:${request.fieldId}`;
+    const pivot = sheet.pivots.find((candidate) => candidate.id === request.pivotId);
+    const baseField = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === request.fieldId);
+    const shouldLoad = Boolean(
+      onLoadPivotFieldValues
+      && pivot?.source.kind === 'data-source'
+      && !Object.prototype.hasOwnProperty.call(loadedPivotFieldValues, cacheKey)
+      && (baseField?.values?.length ?? 0) === 0,
+    );
+    if (!shouldLoad || !onLoadPivotFieldValues) {
+      setPivotFilterPopover(request);
+      return;
+    }
+    setPivotFilterLoading({ x: request.x, y: request.y });
+    try {
+      const values = await onLoadPivotFieldValues(request.pivotId, request.fieldId);
+      if (generation !== pivotFilterLoadGeneration.current) return;
+      if (values !== undefined) {
+        setLoadedPivotFieldValues((previous) => ({ ...previous, [cacheKey]: [...values] }));
+      }
+      setPivotFilterPopover(request);
+    } catch (error) {
+      if (generation === pivotFilterLoadGeneration.current) onPivotFilterLoadError?.(error);
+    } finally {
+      if (generation === pivotFilterLoadGeneration.current) setPivotFilterLoading(null);
+    }
+  }, [loadedPivotFieldValues, onLoadPivotFieldValues, onPivotFilterLoadError, sheet.pivots]);
 
   useEffect(() => {
     const pending = requestedExtentRef.current;
@@ -514,21 +519,47 @@ export function SheetCanvas({
   }, [sheet.columnCount, sheet.rowCount, sheetId]);
 
   const requestExtentGrowth = useCallback((axes: { rows?: boolean; columns?: boolean }) => {
+    if (!canGrowSheetExtent) return;
     const next = planSheetExtentGrowth(
       { sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount },
       requestedExtentRef.current,
       axes,
     );
     if (!next) return;
+    const previous = requestedExtentRef.current;
     requestedExtentRef.current = next;
-    onEnsureSheetExtent(next.rowCount, next.columnCount);
-  }, [onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
+    try {
+      onEnsureSheetExtent(next.rowCount, next.columnCount);
+    } catch (error) {
+      requestedExtentRef.current = previous;
+      throw error;
+    }
+  }, [canGrowSheetExtent, onEnsureSheetExtent, sheet.columnCount, sheet.rowCount, sheetId]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engineReady) return;
+    let previous = engine.viewport.getSnapshot();
+    return engine.onViewportChanged(() => {
+      const viewport = engine.viewport.getSnapshot();
+      const axes = resolveAutoScrollExtentGrowth({
+        right: viewport.scrollX > previous.scrollX,
+        bottom: viewport.scrollY > previous.scrollY,
+        viewport,
+        content: engine.skeleton.contentSize,
+        defaultRowHeight: sheet.defaultRowHeightPx,
+        defaultColumnWidth: sheet.defaultColumnWidthPx,
+      });
+      previous = viewport;
+      if (axes.rows || axes.columns) requestExtentGrowth(axes);
+    });
+  }, [engineReady, requestExtentGrowth, sheet.defaultColumnWidthPx, sheet.defaultRowHeightPx]);
 
   const skeleton = useMemo(
     () =>
       new SheetSkeleton({
-        rowCount: Math.max(sheet.rowCount, 200),
-        columnCount: Math.max(sheet.columnCount, 26),
+        rowCount: sheet.rowCount,
+        columnCount: sheet.columnCount,
         defaultRowHeight: sheet.defaultRowHeightPx,
         defaultColumnWidth: sheet.defaultColumnWidthPx,
         rowHeights: new Map(Object.entries(sheet.rowHeightsPx).map(([key, value]) => [Number(key), value])),
@@ -560,18 +591,9 @@ export function SheetCanvas({
     return { startColumn, endColumn, isAnchor: column === anchorColumn };
   };
 
-  /** One immutable sheet projection owns one render-data cache generation. */
-  const cellRenderCache = useMemo(() => new Map<string, CellRenderData | undefined>(), [locale, sheet, showFormulas]);
-
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
-    const cacheKey = `${row}:${column}`;
-    if (cellRenderCache.has(cacheKey)) return cellRenderCache.get(cacheKey);
     const pivotCell = findPivotProjectionCell(sheet, row, column);
-    if (pivotCell) {
-      const projected = pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
-      cacheCellRenderData(cellRenderCache, cacheKey, projected);
-      return projected;
-    }
+    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
 
     const cell = sheet.getCell(row, column);
     const merge = findMerge(row, column);
@@ -579,11 +601,8 @@ export function SheetCanvas({
     // can suppress the merge's internal boundaries. Returning undefined here
     // made blank merged areas look like ordinary cells.
     if (!cell) {
-      if (!merge) {
-        cacheCellRenderData(cellRenderCache, cacheKey, undefined);
-        return undefined;
-      }
-      const projected: CellRenderData = {
+      if (!merge) return undefined;
+      return {
         value: undefined,
         merge: {
           startRow: merge.range.startRow,
@@ -593,11 +612,9 @@ export function SheetCanvas({
           isAnchor: merge.anchor.row === row && merge.anchor.column === column,
         },
       };
-      cacheCellRenderData(cellRenderCache, cacheKey, projected);
-      return projected;
     }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
-    const projected: CellRenderData = {
+    return {
       value: showFormulas && cell.formula ? cell.formula : cell.rawValue !== undefined ? cell.rawValue : parseCellValue(cell),
       formula: cell.formula,
       displayValue: cell.value,
@@ -614,7 +631,6 @@ export function SheetCanvas({
           }
         : undefined,
       hasComment: cell.hasComment,
-      hyperlink: cell.hyperlink,
       invalid: cell.invalid,
       merge: merge
         ? {
@@ -626,9 +642,7 @@ export function SheetCanvas({
           }
         : undefined,
     };
-    cacheCellRenderData(cellRenderCache, cacheKey, projected);
-    return projected;
-  }, [cellRenderCache, findMerge, locale, sheet, showFormulas]);
+  }, [findMerge, locale, sheet, showFormulas]);
 
   const pivotStatusProjections = useMemo(
     () => Object.values(sheet.pivotProjections).filter((projection) =>
@@ -669,7 +683,8 @@ export function SheetCanvas({
     skeleton,
     sparklines,
     tables,
-  }), [allSheets, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
+    analysisViews,
+  }), [allSheets, analysisViews, drawingPayloads, drawings, pivotResults, resolveAssetUrl, sparklines, skeleton, sheet, tables]);
 
   // ---------- 引擎生命周期与 chrome 同步 ----------
 
@@ -728,7 +743,6 @@ export function SheetCanvas({
     onPivotContextHit,
     onPivotControlAction,
     onPivotExpansionToggle,
-    onActivateHyperlink,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
     onResizeColumn: (column, widthPx) => {
@@ -781,12 +795,6 @@ export function SheetCanvas({
     zoom,
     textBoxPlacementActive: Boolean(textBoxPlacementActive),
   });
-
-  useEffect(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    engine.setSheetId(sheetId);
-  }, [sheetId]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -1044,11 +1052,15 @@ export function SheetCanvas({
       <Panel className="m-4 flex-1">
         <StatePanel
           kind="error"
-          description="The workbook engine failed to initialize. Retry to recover."
+          description={errorMessage || "工作簿初始化失败，请重试。"}
           actionLabel="Retry"
           onAction={onRetry}
           title="Engine error"
         />
+        {errorMessage?.startsWith('RECOVERY_') ? <Inline className="justify-center pb-5" gap="sm">
+          <Button onClick={onExportRecovery} size="sm">导出待确认操作</Button>
+          <Button onClick={onDiscardRecovery} size="sm" variant="danger">舍弃草稿并重新加载</Button>
+        </Inline> : null}
       </Panel>
     );
   }
@@ -1080,16 +1092,7 @@ export function SheetCanvas({
           >
             <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
               <CanvasRenderSurface
-                options={{
-                  sheetId,
-                  skeleton,
-                  cellProvider,
-                  prepareVisibleRanges,
-                  resolveAssetUrl,
-                  assetUrlCache: assetUrlCacheRef.current,
-                  assetUrlPending: assetUrlPendingRef.current,
-                  assetUrlErrors: assetUrlErrorsRef.current,
-                }}
+                options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
                 onReady={(engine) => {
                   engineRef.current = engine;
                   setEngineReady(true);
@@ -1101,21 +1104,6 @@ export function SheetCanvas({
                 className="absolute inset-0"
               />
             </Box>
-            {pageLoadState.status === 'error' || (pageLoadState.status === 'loading' && pageLoadState.blocking) ? (
-              <StatePanel
-                kind={pageLoadState.status === 'error' ? 'error' : 'loading'}
-                className={`absolute inset-0 z-40 min-h-0 rounded-none bg-white/90 ${pageLoadState.status === 'loading' ? 'pointer-events-none' : ''}`}
-                title={pageLoadState.status === 'error' ? 'Worksheet page unavailable' : 'Loading worksheet pages'}
-                description={pageLoadState.message}
-                actionLabel={pageLoadState.status === 'error' ? 'Retry' : undefined}
-                onAction={pageLoadState.status === 'error' ? () => engineRef.current?.requestRender() : undefined}
-              />
-            ) : pageLoadState.status === 'loading' ? (
-              <Box aria-live="polite" className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2 rounded-md border border-[#D1D1D1] bg-white/95 px-3 py-2 text-xs text-[#424242] shadow-sm">
-                <Box aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-[#C8E6D4] border-t-[#107C41]" />
-                Loading visible cells
-              </Box>
-            ) : null}
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} />
             ) : null}
@@ -1141,7 +1129,7 @@ export function SheetCanvas({
               if (!rect || !cell.fieldId) return null;
               const fieldName = sheet.pivots.find((pivot) => pivot.id === projection.pivotId)?.fieldCatalog.fields.find((field) => field.fieldId === cell.fieldId)?.name ?? cell.fieldId;
               const summaryLabel = cell.filterSummary ? pivotFilterSummaryText(cell.filterSummary, locale) : `${fieldName}: ${pivotText(locale, 'allItems')}`;
-              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${summaryLabel}`} icon="chevron-down" iconOnly size="xs" variant={cell.filterSummary?.active ? 'soft' : 'ghost'} className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => setPivotFilterPopover({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height })} />;
+              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${summaryLabel}`} icon="chevron-down" iconOnly size="xs" variant={cell.filterSummary?.active ? 'soft' : 'ghost'} className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => { void openPivotFilter({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height }); }} />;
             }) : null}
           </Box>
 
@@ -1167,9 +1155,13 @@ export function SheetCanvas({
             </Box>
           ) : null}
 
+          {pivotFilterLoading ? <Panel className="absolute z-40 w-[300px] rounded-none border border-[#a9a9a9] bg-white p-3 shadow-[2px_4px_10px_rgba(0,0,0,0.2)]" style={{ left: pivotFilterLoading.x, top: pivotFilterLoading.y }}><Text size="sm">{locale === 'zh-CN' ? '正在加载字段值…' : 'Loading field values…'}</Text></Panel> : null}
+
           {pivotFilterPopover ? (() => {
             const pivot = sheet.pivots.find((candidate) => candidate.id === pivotFilterPopover.pivotId);
-            const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
+            const baseField = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
+            const loadedValues = loadedPivotFieldValues[`${pivotFilterPopover.pivotId}:${pivotFilterPopover.fieldId}`];
+            const field = baseField && loadedValues !== undefined ? { ...baseField, values: [...loadedValues] } : baseField;
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
             const currentFilters = pivot?.layout.filters.filter((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope) ?? [];
             const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({

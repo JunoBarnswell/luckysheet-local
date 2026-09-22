@@ -68,13 +68,8 @@ export function RibbonHost({
     }
     : undefined;
   const activeSparklineContext = state.activeContext.kind === 'sparkline' ? state.activeContext : undefined;
-  const runSessionAction = (action: () => void): void => {
-    try { action(); }
-    catch (error) { session.notify(error instanceof Error ? error.message : 'Ribbon action failed'); }
-  };
   return (
     <Ribbon
-      session={session}
       activeTab={state.ribbon.activeTab}
       activePivot={state.activeContext.kind === "pivot"
         ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
@@ -137,12 +132,12 @@ export function RibbonHost({
       onFill={(direction, mode) => mode === 'series' ? dispatchSessionIntent({ type: 'dialog.open', dialog: 'fill-series' }) : session.fillSelection(direction)}
       onFreezeAtPrimary={() => session.freezeAtPrimary()}
       onOpenColumnWidth={() => onOpenColumnWidthDialog(selectedColumns)}
-      onAutoFitColumns={() => { void columnDimensions.autoFit(selectedColumns).catch((error) => session.notify(error instanceof Error ? error.message : 'Column AutoFit failed')); }}
+      onAutoFitColumns={() => { void columnDimensions.autoFit(selectedColumns); }}
       onHideColumns={() => columnDimensions.setHidden(selectedColumns, true)}
       onUnhideColumns={() => columnDimensions.setHidden(selectedColumns, false)}
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
       onOpenRowHeight={() => onOpenRowHeightDialog(selectedRows)}
-      onAutoFitRows={() => { void columnDimensions.autoFitRows(selectedRows).catch((error) => session.notify(error instanceof Error ? error.message : 'Row AutoFit failed')); }}
+      onAutoFitRows={() => { void columnDimensions.autoFitRows(selectedRows); }}
       onHideRows={() => columnDimensions.setRowsHidden(selectedRows, true)}
       onUnhideRows={() => columnDimensions.setRowsHidden(selectedRows, false)}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
@@ -151,7 +146,8 @@ export function RibbonHost({
       onOpenTableSettings={() => session.openTableSettings()}
       onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
       onConvertActiveTableToRange={() => session.convertActiveSheetTableToRange()}
-      onCreateDataSource={() => { void session.createDataSourceFromSelection().catch((error) => session.notify(error instanceof Error ? error.message : 'Data Source creation failed')); }}
+      onCreateDataTable={() => session.createDataTable()}
+      onCreateDataSource={() => { void session.createDataSourceFromSelection(); }}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
       onApplyFilterSelection={commands.buildFilterSelectionCommand}
       onClearFilter={commands.buildClearFilterCommand}
@@ -174,15 +170,14 @@ export function RibbonHost({
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
       onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}
-      onCreateCamera={() => runSessionAction(() => session.insertCamera())}
-      onCaptureScreenshot={() => session.captureScreenshot()}
-      onCreateFormControl={(type) => runSessionAction(() => session.insertFormControl(type))}
-      onApplyCheckbox={() => runSessionAction(() => session.setCellEditor({ kind: 'checkbox' }))}
-      onCreateTextBox={() => runSessionAction(() => session.insertTextBox())}
-      onInsertChartType={(type, subtype) => runSessionAction(() => session.insertChart(type, subtype))}
-      onInsertSparklineType={(type) => runSessionAction(() => session.insertSparkline(type))}
-      onInsertShapeType={(type) => runSessionAction(() => session.insertShape(type))}
-      onInsertConnectorType={(type: DrawingConnectorType) => runSessionAction(() => session.insertConnector(type))}
+      onCreateCamera={() => session.insertCamera()}
+      onCreateFormControl={(type) => session.insertFormControl(type)}
+      onApplyCheckbox={() => session.setCellEditor({ kind: 'checkbox' })}
+      onCreateTextBox={() => session.insertTextBox()}
+      onInsertChartType={(type, subtype) => session.insertChart(type, subtype)}
+      onInsertSparklineType={(type) => { session.insertSparkline(type); }}
+      onInsertShapeType={(type) => session.insertShape(type)}
+      onInsertConnectorType={(type: DrawingConnectorType) => session.insertConnector(type)}
       onTabChange={(tab: RibbonTabId) => session.setRibbonTab(tab)}
       phase={state.phase}
       homeState={state.homeRibbon}
@@ -192,7 +187,6 @@ export function RibbonHost({
       onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
       onMergeCells={(operation) => session.requestMergeAction(operation)}
       canExecute={session.canExecute.bind(session)}
-      featureSurfaceSchema={session.getFeatureSurfaceSchema()}
     />
   );
 }

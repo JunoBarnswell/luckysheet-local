@@ -3,6 +3,7 @@ package com.xc.luckysheet.server.service;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import com.xc.luckysheet.server.security.GuestShareAuthentication;
+import com.xc.luckysheet.server.security.LocalUserAuthentication;
 
 import java.security.Principal;
 
@@ -13,6 +14,9 @@ public final class ActorIdentity {
     public static String subject(Authentication authentication) {
         if (authentication instanceof JwtAuthenticationToken token && token.getToken().getSubject() != null && !token.getToken().getSubject().isBlank()) {
             return token.getToken().getSubject();
+        }
+        if (authentication instanceof LocalUserAuthentication local && local.getName() != null && !local.getName().isBlank()) {
+            return local.getName();
         }
         if (authentication instanceof GuestShareAuthentication guest) return guest.getName();
         throw ServiceException.forbidden("Authenticated subject is required");

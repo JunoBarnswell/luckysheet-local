@@ -7,10 +7,11 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { getInitialSessionPhase, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { getInitialSessionPhase, isWorkbookResolutionError, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
+import { AdminUsersPage } from './auth/AdminUsersPage';
 
 function WorkbookRouteGate({ unitId }: { unitId: string }) {
   const auth = useAuthSession();
@@ -33,17 +34,13 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
     return () => { active = false; controller.abort(); };
   }, [authSnapshot.phase, catalog, shareToken, unitId]);
 
-  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在确认云端工作簿与访问权限。" /></Box>;
+  if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在读取服务器版本并确认访问权限。" /></Box>;
   if (localState === "denied") {
     const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !shareToken;
-    const title = canSignIn ? "需要云端登录" : "无法打开工作簿";
-    const description = canSignIn
-      ? "请登录后打开云端工作簿。"
-      : resolutionError?.message ?? (authSnapshot.phase === "unconfigured" ? "云端工作簿服务尚未配置。" : "工作簿解析失败。");
-    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={!canSignIn ? "返回工作簿中心" : "登录以打开云端文件"} kind="error" title={title} description={description} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
+    return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={canSignIn ? "登录" : "返回文件中心"} kind="error" title="无法打开工作簿" description={resolutionError?.message ?? "工作簿服务不可用，请检查服务或访问权限。"} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;
-  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "unresolved"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
+  return <WorkspaceErrorBoundary><EditorRoute key={`${unitId}:${resolution.source}:${resolution.mode}:${resolution.revision}:${resolution.access?.role ?? "local"}`} resolution={resolution} onOpenHub={() => navigate("/workbooks")} /></WorkspaceErrorBoundary>;
 }
 
 /** Route-level orchestration. Visual responsibilities live in editor/* hosts. */
@@ -52,7 +49,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const auth = useAuthSession();
   const { catalog, createWorkbookSessionOptions } = useApplicationServices();
   const { session, snapshot: state } = useWorkbookSession({
-    ...createWorkbookSessionOptions(unitId, auth.getAccessToken, resolution.mode !== "remote"),
+    ...createWorkbookSessionOptions(unitId, auth.getAccessToken),
     initialPhase: getInitialSessionPhase(),
     resolution,
     onReady: () => catalog.markOpened(resolution),
@@ -60,6 +57,8 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsBusy, setSaveAsBusy] = useState(false);
+  const [saveAsError, setSaveAsError] = useState<string | null>(null);
+  useEffect(() => { if (saveAsOpen) setSaveAsError(null); }, [saveAsOpen]);
   const initialSelectionApplied = useRef(false);
   const isBusy = state.phase !== "ready" || state.pendingCommandCount > 0;
 
@@ -78,7 +77,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
 
   const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
-  const saveWorkbook = () => { void session.saveWorkbook("Ribbon save"); };
+  const saveWorkbook = () => { void session.saveWorkbook("Manual save").catch(cause => session.notify(cause instanceof Error ? cause.message : "保存失败")); };
   const exportDocument = async () => {
     try {
       await session.saveWorkbook("Export workbook");
@@ -94,22 +93,23 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const importDocument = () => navigate("/workbooks?dialog=import");
   const saveAsDocument = async (fileName: string) => {
     setSaveAsBusy(true);
+    setSaveAsError(null);
     try {
-      await session.saveWorkbook("Save before Save As");
+      await session.flushPendingChanges();
       const exported = await catalog.exportWorkbook(state.unitId, { fileName });
       const href = URL.createObjectURL(new Blob([exported.buffer], { type: mimeTypeForFileName(exported.fileName) }));
       const link = document.createElement("a"); link.href = href; link.download = exported.fileName; link.click(); URL.revokeObjectURL(href);
       setSaveAsOpen(false);
-    } catch (cause) { session.notify(cause instanceof Error ? cause.message : "另存为失败"); }
+    } catch (cause) { const message = cause instanceof Error ? cause.message : "另存为失败"; setSaveAsError(message); session.notify(message); }
     finally { setSaveAsBusy(false); }
   };
 
   if (state.backstage.open) {
-    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : "error";
-    const closeWorkbook = async () => { await session.saveWorkbook("Close workbook"); onOpenHub(); };
+    const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
+    const closeWorkbook = async () => { try { await session.saveWorkbook("Close workbook"); onOpenHub(); } catch (cause) { session.notify(cause instanceof Error ? cause.message : "保存失败，工作簿保持打开"); } };
     const actions = [
       { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },
-      { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: () => { void session.saveWorkbook("Backstage save"); } },
+      { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: saveWorkbook },
       { id: "save-as", label: "另存为", description: "选择目标协议导出副本", icon: "save" as const, disabled: isBusy, onSelect: () => setSaveAsOpen(true) },
       { id: "import", label: "打开 / 导入", description: "按原生协议打开为新的工作簿", icon: "upload" as const, disabled: isBusy, onSelect: importDocument },
       { id: "export", label: "导出", description: "下载当前工作簿的原生文档副本", icon: "download" as const, disabled: isBusy, onSelect: () => { void exportDocument(); } },
@@ -118,12 +118,13 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     ];
     return (
       <>
-      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+      <WorkbookBackstageShell activeActionId={state.backstage.panel === "info" ? "info" : state.backstage.panel === "options" ? "options" : undefined} actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：打开 / 导入会创建新的工作簿；另存为只创建目标协议副本；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+        {state.saveState === 'error' || state.saveState === 'conflict' ? <Text role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-red-800">{state.notice}</Text> : null}
         {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>
             <Stack gap="xs">
-              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "原生文档导入" : "原生工作簿"}</Text>
+              <Text size="sm">文件名：{state.workbookName}</Text><Text size="sm">工作簿 ID：{state.unitId}</Text><Text size="sm">当前权限：{state.shareRole ?? "owner"}</Text><Text size="sm">服务端版本：{state.collabRevision}</Text><Text size="sm">待同步操作：{state.pendingChangeSetCount}</Text><Text size="sm">校验和：{state.persistenceChecksum}</Text><Text size="sm">来源：{state.compatibilityReport ? "原生文档导入" : "原生工作簿"}</Text>
             </Stack>
           </Stack>
         ) : (
@@ -153,7 +154,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
           </Stack>
         )}
       </WorkbookBackstageShell>
-      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.xlsx`} supportedFormats={[session.getNativeDocumentFormat()]} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} />
+      <SaveAsDocumentDialog currentFileName={session.getNativeDocumentFileName() ?? `${state.workbookName}.xlsx`} onClose={() => setSaveAsOpen(false)} onSubmit={(fileName) => { void saveAsDocument(fileName); }} open={saveAsOpen} submitting={saveAsBusy} error={saveAsError} />
       </>
     );
   }
@@ -177,10 +178,11 @@ export default function App() {
   const auth = useAuthSnapshot();
   useEffect(() => { if (typeof window !== "undefined" && window.location.pathname === "/") navigate("/workbooks", { replace: true }); }, []);
   if (route.kind === "auth-callback" || route.kind === "auth-silent-renew" || auth.phase === "loading") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在验证登录状态" description="正在建立云端工作簿会话。" /></Box>;
-  if (route.kind === "hub") return <WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
+  if (route.kind === 'admin-users') return auth.admin ? <AdminUsersPage /> : <main role="alert" className="p-8">需要管理员权限。</main>;
+  if (route.kind === "hub") return <><Box className="flex justify-end gap-4 border-b px-6 py-2 text-sm">{auth.displayName}{auth.admin && <Button onClick={() => navigate('/admin/users')}>用户管理</Button>}</Box><WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
     const query = options?.initialCell ? `?initialCell=${encodeURIComponent(options.initialCell)}` : "";
     navigate(`/workbooks/${encodeURIComponent(unitId)}${query}`);
-  }} />;
+  }} /></>;
   if (route.kind === "not-found") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="页面不存在" description={`未找到 ${route.pathname}`} onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   if (route.kind !== "workbook") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="路由状态无效" description="无法解析当前工作簿路由。" onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   return <WorkbookRouteGate unitId={route.unitId} />;

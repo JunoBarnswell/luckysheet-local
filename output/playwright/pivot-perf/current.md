@@ -1,0 +1,114 @@
+- application "Spreadsheet Designer" [ref=f2e5]:
+  - generic [ref=f2e7]:
+    - generic [ref=f2e8]:
+      - button "Open workbook menu" [disabled] [ref=f2e11] [cursor=pointer]: 文件
+      - tablist "Workbook ribbon tabs" [ref=f2e12]:
+        - tab "开始" [disabled] [selected] [ref=f2e13]
+        - tab "插入" [disabled] [ref=f2e14]
+        - tab "页面布局" [disabled] [ref=f2e15]
+        - tab "公式" [disabled] [ref=f2e16]
+        - tab "数据" [disabled] [ref=f2e17]
+        - tab "视图" [disabled] [ref=f2e18]
+        - tab "审阅" [disabled] [ref=f2e19]
+        - tab "设置" [disabled] [ref=f2e20]
+      - generic [ref=f2e21]: 引擎已连接
+    - generic "home ribbon commands" [ref=f2e27]:
+      - generic [ref=f2e28]:
+        - generic [ref=f2e29]:
+          - generic [ref=f2e31]:
+            - generic [ref=f2e32]:
+              - button "粘贴 (Ctrl+V)" [disabled] [ref=f2e33]:
+                - generic [ref=f2e35]: 粘贴
+              - button "选择性粘贴" [disabled] [ref=f2e38]
+            - generic [ref=f2e39]:
+              - button "剪切 (Ctrl+X)" [disabled] [ref=f2e40]:
+                - generic [ref=f2e42]: 剪切
+              - button "复制 (Ctrl+C)" [disabled] [ref=f2e43]:
+                - generic [ref=f2e45]: 复制
+              - button "格式刷" [disabled] [ref=f2e46]
+          - generic [ref=f2e48]: 剪贴板
+        - separator [ref=f2e49]
+        - generic [ref=f2e50]:
+          - generic [ref=f2e52]:
+            - generic [ref=f2e53]:
+              - combobox "字体" [disabled] [ref=f2e56]: Microsoft YaHei
+              - textbox "字号" [disabled] [ref=f2e58]: "11"
+              - button "增大字号" [disabled] [ref=f2e59]: A↑
+              - button "减小字号" [disabled] [ref=f2e60]: A↓
+            - generic [ref=f2e61]:
+              - button "加粗 (Ctrl+B)" [disabled] [ref=f2e62]
+              - button "斜体 (Ctrl+I)" [disabled] [ref=f2e64]
+              - button "下划线 (Ctrl+U)" [disabled] [ref=f2e66]
+              - button "边框" [disabled] [ref=f2e70]
+              - button "文字颜色" [disabled] [ref=f2e74]
+              - button "填充背景" [disabled] [ref=f2e78]
+              - button "拼音指南" [disabled] [ref=f2e80]
+              - button "字体设置" [disabled] [ref=f2e83]
+          - generic [ref=f2e87]: 字体
+        - separator [ref=f2e88]
+        - button "对齐工具" [ref=f2e92] [cursor=pointer]: 对齐
+        - separator [ref=f2e96]
+        - generic [ref=f2e97]:
+          - generic [ref=f2e99]:
+            - combobox "数字" [disabled] [ref=f2e102]:
+              - option "常规" [selected]
+              - option "货币 ($)"
+              - option "会计专用 ($)"
+              - option "百分比 (%)"
+              - option "千位分隔 (#,##0)"
+              - option "数值 (0.00)"
+              - option "短日期"
+              - option "长日期"
+              - option "时间 (hh:mm)"
+              - option "分数"
+              - option "科学记数法"
+              - option "文本 (@)"
+              - option "更多数字格式…"
+            - generic [ref=f2e103]:
+              - button "百分比格式" [disabled] [ref=f2e104]:
+                - generic [ref=f2e105]: "%"
+              - button "千位分隔格式" [disabled] [ref=f2e106]:
+                - generic [ref=f2e107]: ","
+              - button "增加小数位" [disabled] [ref=f2e108]
+              - button "减少小数位" [disabled] [ref=f2e110]
+              - button "数字格式设置" [disabled] [ref=f2e112]
+          - generic [ref=f2e116]: 数字
+        - separator [ref=f2e117]
+        - button "样式工具" [ref=f2e121] [cursor=pointer]: 样式
+        - separator [ref=f2e129]
+        - button "单元格工具" [ref=f2e133] [cursor=pointer]: 单元格
+        - separator [ref=f2e139]
+        - button "编辑工具" [ref=f2e143] [cursor=pointer]: 编辑
+  - form "Formula bar" [ref=f2e151]:
+    - textbox "选中单元格" [disabled] [ref=f2e153]: A1
+    - button "打开名称管理器" [ref=f2e154] [cursor=pointer]
+    - button "取消公式编辑" [disabled] [ref=f2e159]
+    - button "应用公式" [disabled] [ref=f2e162]
+    - button "插入函数向导" [disabled] [ref=f2e165]: fx
+    - textbox "公式输入" [disabled] [ref=f2e169]:
+      - /placeholder: ""
+      - text: Category
+  - generic [ref=f2e170]:
+    - generic [ref=f2e226]:
+      - heading "Engine error" [level=3] [ref=f2e230]
+      - generic [ref=f2e231]: Sparse clipboard occupied cells are required and bounded
+      - button "Retry" [ref=f2e232] [cursor=pointer]
+    - navigation "Worksheets" [ref=f2e184]:
+      - navigation "工作表" [ref=f2e185]:
+        - generic [ref=f2e186]:
+          - button "向左滚动工作表" [disabled] [ref=f2e187]
+          - button "向右滚动工作表" [disabled] [ref=f2e190]
+          - button "添加工作表" [disabled] [ref=f2e193]
+          - tab "Sheet1" [disabled] [selected] [ref=f2e200]
+          - button "更多工作表操作" [disabled] [ref=f2e204] [cursor=pointer]
+  - contentinfo [ref=f2e212]:
+    - generic "Workbook status bar" [ref=f2e213]:
+      - generic [ref=f2e214]:
+        - generic [ref=f2e215]: 就绪
+        - status "Sparse clipboard occupied cells are required and bounded" [ref=f2e233]: 保存失败
+        - generic [ref=f2e217]: A1 · r5
+      - button "Open keyboard shortcuts" [disabled] [ref=f2e218]: 快捷键
+      - generic [ref=f2e219]:
+        - button "Zoom out" [disabled] [ref=f2e220]: −
+        - button "Zoom in" [disabled] [ref=f2e223]: +
+        - generic [ref=f2e224]: 100%

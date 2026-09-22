@@ -8,6 +8,8 @@ import java.util.Locale;
 public enum WorkbookSyncStatus {
     SYNCED,
     SYNCING,
+    PENDING,
+    OFFLINE,
     CONFLICT,
     ERROR;
 

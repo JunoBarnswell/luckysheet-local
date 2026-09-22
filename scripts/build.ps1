@@ -1,45 +1,201 @@
+[CmdletBinding()]
+param(
+    [string]$JavaHome,
+    [string]$MavenCommand = 'mvn.cmd',
+    [string]$LogRoot,
+    [switch]$SkipTests,
+    [switch]$SkipFrontend,
+    [switch]$SkipBackend
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Root = Split-Path -Parent $PSScriptRoot
-$Frontend = Join-Path $Root 'frontend-react'
-$Cargo = Join-Path $Root 'Cargo.toml'
-$Target = Join-Path $Root 'target'
-$WebKernel = Join-Path $Frontend 'apps\web\public\kernel'
-$ToolRoot = Join-Path $Root '.tools'
-$LocalJdk = Get-ChildItem (Join-Path $ToolRoot 'jdk-21') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-$JavaCommand = if ($LocalJdk) { Join-Path $LocalJdk.FullName 'bin\java.exe' } else { 'java' }
-$MavenCommand = if (Test-Path (Join-Path $ToolRoot 'maven\apache-maven-3.9.9\bin\mvn.cmd')) { Join-Path $ToolRoot 'maven\apache-maven-3.9.9\bin\mvn.cmd' } else { 'mvn' }
-if ($LocalJdk) { $env:JAVA_HOME = $LocalJdk.FullName; $env:Path = "$($LocalJdk.FullName)\bin;$env:Path" }
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$frontendRoot = Join-Path $repositoryRoot 'frontend-react'
+$backendRoot = Join-Path $repositoryRoot 'backend'
+$webDistribution = Join-Path $frontendRoot 'dist\web'
+$generatedWeb = Join-Path $backendRoot 'target\generated-web'
 
-function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$WorkingDirectory = $Root) {
-    Write-Host ("==> {0} {1}" -f $Command, ($Arguments -join ' '))
-    Push-Location $WorkingDirectory
-    try { & $Command @Arguments; if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Command" } }
-    finally { Pop-Location }
+if ([string]::IsNullOrWhiteSpace($LogRoot)) {
+    $LogRoot = Join-Path ([IO.Path]::GetTempPath()) ('react-sheets-build\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+}
+New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
+
+function Resolve-CommandPath {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $command = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) {
+        throw "Required command '$Name' was not found on PATH."
+    }
+    return $command.Source
 }
 
-function Require-Version([string]$Command, [string]$ExpectedPattern, [string]$DisplayName) {
-    $actual = (& $Command '--version' 2>&1 | Out-String).Trim()
-    if ($actual -notmatch $ExpectedPattern) { throw "$DisplayName must match '$ExpectedPattern'; found '$actual'" }
-    Write-Host "    $DisplayName $actual"
+function Invoke-LoggedCommand {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$WorkingDirectory
+    )
+
+    $safeName = ($Name -replace '[^A-Za-z0-9_.-]', '-')
+    $logPath = Join-Path $LogRoot ($safeName + '.log')
+    $stdoutPath = Join-Path $LogRoot ($safeName + '.stdout.tmp')
+    $stderrPath = Join-Path $LogRoot ($safeName + '.stderr.tmp')
+    Write-Host "==> $Name"
+    Write-Host "    log: $logPath"
+
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = $process.ExitCode
+        Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue | Set-Content -LiteralPath $logPath
+        Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Add-Content -LiteralPath $logPath
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($exitCode -ne 0) {
+        Write-Host "    exit: $exitCode"
+        Get-Content -LiteralPath $logPath -Tail 60 -ErrorAction SilentlyContinue
+        throw "$Name failed with exit code $exitCode. Full log: $logPath"
+    }
+
+    Write-Host '    exit: 0'
 }
 
-Require-Version 'node' '^v24\.18\.0' 'Node'
-Require-Version 'rustc' '^rustc 1\.97\.1' 'Rust'
-Require-Version $JavaCommand '^(openjdk|java) 21(?:\.|\s)' 'Java'
-Require-Version $MavenCommand '^Apache Maven 3\.9\.9' 'Maven'
-Invoke-Checked 'cargo' @('build', '--manifest-path', $Cargo, '-p', 'kernel-host', '--release')
-Invoke-Checked 'cargo' @('build', '--manifest-path', $Cargo, '-p', 'kernel-host', '--target', 'wasm32-unknown-unknown', '--release')
+function Get-VersionOutput {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
 
-$nativeName = if ($env:OS -eq 'Windows_NT') { 'workbook-kernel-host.exe' } else { 'workbook-kernel-host' }
-$native = Join-Path $Target (Join-Path 'release' $nativeName)
-$wasm = Join-Path $Target 'wasm32-unknown-unknown\release\kernel_host.wasm'
-if (-not (Test-Path $native)) { throw "Rust native artifact not found: $native" }
-if (-not (Test-Path $wasm)) { throw "Rust WASM artifact not found: $wasm" }
-New-Item -ItemType Directory -Path $WebKernel -Force | Out-Null
-Copy-Item -LiteralPath $wasm -Destination (Join-Path $WebKernel 'kernel_host.wasm') -Force
-Invoke-Checked 'node' @((Join-Path $PSScriptRoot 'write-kernel-manifest.mjs'), $WebKernel)
-Invoke-Checked 'npm' @('ci', '--ignore-scripts', '--no-audit', '--no-fund') $Frontend
-Invoke-Checked 'npm' @('run', 'build') $Frontend
-Write-Host "==> Build completed`n    native: $native`n    wasm:   $WebKernel\kernel_host.wasm"
+    # The Java launcher writes version information to stderr even on success.
+    # Keep the process exit-code gate, but capture that expected stream in a
+    # file so strict PowerShell error handling cannot promote it to failure.
+    $stdoutPath = [IO.Path]::GetTempFileName()
+    $stderrPath = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $exitCode = $process.ExitCode
+        $output = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) {
+        throw "Unable to query '$FilePath'."
+    }
+    return ($output + $stderr).Trim()
+}
+
+function Select-JavaHome {
+    param([string]$RequestedHome)
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($RequestedHome)) { $candidates.Add($RequestedHome) }
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) { $candidates.Add($env:JAVA_HOME) }
+
+    $pathJava = Get-Command java.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $pathJava) {
+        $javaBin = Split-Path -Parent $pathJava.Source
+        $candidates.Add((Split-Path -Parent $javaBin))
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        $jdkRoot = [IO.Path]::GetFullPath($candidate)
+        $javaExe = Join-Path $jdkRoot 'bin\java.exe'
+        $javacExe = Join-Path $jdkRoot 'bin\javac.exe'
+        if (-not (Test-Path -LiteralPath $javaExe) -or -not (Test-Path -LiteralPath $javacExe)) { continue }
+
+        $versionText = Get-VersionOutput -FilePath $javaExe -Arguments @('-version')
+        $match = [regex]::Match($versionText, 'version\s+"(?<version>[^"\s]+)')
+        if (-not $match.Success) { continue }
+        $major = [int]($match.Groups['version'].Value.Split('.')[0])
+        $javacVersion = Get-VersionOutput -FilePath $javacExe -Arguments @('-version')
+        if ($major -eq 21 -and $javacVersion -match '\b21\.') {
+            return $jdkRoot
+        }
+    }
+
+    $observed = if ($pathJava) { Get-VersionOutput -FilePath $pathJava.Source -Arguments @('-version') } else { 'java-not-found' }
+    throw "JDK 21 is required. Pass -JavaHome <JDK21 directory> or set JAVA_HOME. Observed: $observed"
+}
+
+if (-not (Test-Path -LiteralPath $frontendRoot -PathType Container)) { throw "Frontend root not found: $frontendRoot" }
+if (-not (Test-Path -LiteralPath $backendRoot -PathType Container)) { throw "Backend root not found: $backendRoot" }
+
+$nodeCommand = Resolve-CommandPath -Name 'node.exe'
+$npmCommand = Resolve-CommandPath -Name 'npm.cmd'
+$nodeVersion = Get-VersionOutput -FilePath $nodeCommand -Arguments @('--version')
+$nodeMatch = [regex]::Match($nodeVersion, '^v(?<major>\d+)')
+if (-not $nodeMatch.Success -or [int]$nodeMatch.Groups['major'].Value -ne 24) {
+    throw "Node 24 is required. Observed: $nodeVersion"
+}
+Write-Host "Node: $nodeVersion"
+Invoke-LoggedCommand -Name 'runtime-stack' -FilePath $nodeCommand -Arguments @((Join-Path $PSScriptRoot 'check-runtime-stack.mjs')) -WorkingDirectory $repositoryRoot
+Write-Host "npm:  $(Get-VersionOutput -FilePath $npmCommand -Arguments @('--version'))"
+
+$selectedJavaHome = Select-JavaHome -RequestedHome $JavaHome
+$env:JAVA_HOME = $selectedJavaHome
+$env:Path = (Join-Path $selectedJavaHome 'bin') + [IO.Path]::PathSeparator + $env:Path
+$javaCommand = Join-Path $selectedJavaHome 'bin\java.exe'
+Write-Host "JDK:  $selectedJavaHome"
+Write-Host "Java: $(Get-VersionOutput -FilePath $javaCommand -Arguments @('-version') | Select-Object -First 1)"
+
+$mavenPath = if (Test-Path -LiteralPath $MavenCommand -PathType Leaf) {
+    [IO.Path]::GetFullPath($MavenCommand)
+} else {
+    Resolve-CommandPath -Name $MavenCommand
+}
+
+if (-not $SkipFrontend) {
+    if (-not (Test-Path -LiteralPath (Join-Path $frontendRoot 'package-lock.json') -PathType Leaf)) {
+        throw "frontend-react/package-lock.json is required for npm ci."
+    }
+    Invoke-LoggedCommand -Name 'frontend-npm-ci' -FilePath $npmCommand -Arguments @('ci', '--no-audit', '--no-fund') -WorkingDirectory $frontendRoot
+    Invoke-LoggedCommand -Name 'frontend-build' -FilePath $npmCommand -Arguments @('run', 'build') -WorkingDirectory $frontendRoot
+}
+
+if (-not (Test-Path -LiteralPath (Join-Path $webDistribution 'index.html') -PathType Leaf)) {
+    throw "Frontend build output is missing: $webDistribution\index.html"
+}
+
+if (-not $SkipBackend) {
+    Invoke-LoggedCommand -Name 'backend-clean' -FilePath $mavenPath -Arguments @('--batch-mode', '--no-transfer-progress', 'clean') -WorkingDirectory $backendRoot
+
+    if (Test-Path -LiteralPath $generatedWeb) {
+        $resolvedGeneratedWeb = [IO.Path]::GetFullPath($generatedWeb)
+        $expectedGeneratedWeb = [IO.Path]::GetFullPath((Join-Path $backendRoot 'target\generated-web'))
+        if ($resolvedGeneratedWeb -ne $expectedGeneratedWeb -or -not $resolvedGeneratedWeb.StartsWith([IO.Path]::GetFullPath($repositoryRoot) + [IO.Path]::DirectorySeparatorChar)) {
+            throw "Generated web directory is outside the expected workspace build output."
+        }
+        Remove-Item -LiteralPath $generatedWeb -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $generatedWeb -Force | Out-Null
+    Copy-Item -Path (Join-Path $webDistribution '*') -Destination $generatedWeb -Recurse -Force
+
+    $packageArguments = [System.Collections.Generic.List[string]]::new()
+    $packageArguments.Add('--batch-mode')
+    $packageArguments.Add('--no-transfer-progress')
+    $packageArguments.Add('package')
+    if ($SkipTests) { $packageArguments.Add('-DskipTests') }
+    Invoke-LoggedCommand -Name 'backend-package' -FilePath $mavenPath -Arguments $packageArguments.ToArray() -WorkingDirectory $backendRoot
+
+    $jar = Get-ChildItem -LiteralPath (Join-Path $backendRoot 'target') -Filter '*.jar' -File |
+        Where-Object { $_.Name -notlike '*.original' } |
+        Sort-Object Length -Descending |
+        Select-Object -First 1
+    if ($null -eq $jar) { throw "Maven package completed without a runnable JAR in backend/target." }
+    $jarCommand = Join-Path $selectedJavaHome 'bin\jar.exe'
+    $hasStaticIndex = & $jarCommand tf $jar.FullName 2>$null | Select-String -SimpleMatch 'static/index.html'
+    if ($null -eq $hasStaticIndex) { throw "Packaged JAR does not contain static/index.html: $($jar.FullName)" }
+    Write-Host "Backend JAR: $($jar.FullName)"
+}
+
+Write-Host "Build completed. Logs: $LogRoot"

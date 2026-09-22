@@ -57,7 +57,7 @@ export function CellEditOverlay({ cellEdit, engine, host, scrollTick, sheet }: C
           className="absolute z-20 overflow-visible rounded-none border border-[#5292f7] bg-white"
           style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
         >
-          <CellEditor editorSurface={session.editorSurface} cellEdit={cellEdit} cellStyle={cellStyle} draft={session.draft} caret={session.caret} layout={layout} />
+          <CellEditor active={session.surface === 'grid'} editorSurface={session.editorSurface} cellEdit={cellEdit} cellStyle={cellStyle} draft={session.draft} caret={session.caret} layout={layout} />
         {editorList ? (
           <Box className={`absolute left-0 z-30 max-h-56 min-w-full overflow-y-auto rounded border border-[#9ba8b6] bg-white py-1 shadow-lg ${popupAnchorClass}`}>
             {editorList.items.map((item, index) => (

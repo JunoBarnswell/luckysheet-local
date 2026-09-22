@@ -14,7 +14,8 @@ export function useCellEdit(controller: CellEditController): CellEditSnapshot {
 /**
  * The application shell owns one factory and passes the selected workbook id
  * explicitly. A factory prevents a session from deriving identity from
- * `window.location`.
+ * `window.location`, while still allowing tests to construct a local session
+ * directly with `new WorkbookSession()`.
  */
 export interface WorkbookSessionFactory {
   create(unitId: string, options?: Omit<WorkbookSessionOptions, 'unitId'>): WorkbookSession;

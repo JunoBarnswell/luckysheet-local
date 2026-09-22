@@ -1,6 +1,7 @@
 import type {
   CellData,
   CellStyle,
+  ConditionalFormatRule,
   DataSourceManifest,
   DrawingObject,
   AutoFilterModel,
@@ -10,17 +11,17 @@ import type {
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { protectionResolver } from '@react-sheets/core-model';
-import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
 import { assertDataRegionContextMatches, filterOwnerFromDataRegionContext, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
-import { resolveActiveAutoFilter, validateFilterOwnership } from './sheet-table-features';
-import { copyRangeToClipboardData, createPasteSpecialSpec, type ClipboardPayload } from './clipboard';
+import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
+import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
-import { planFill, type FillDirection, type FillMode, type FillSeriesOptions } from './fill-series';
-import { isFlashFillParams, isFlashFillPlan, isFlashFillWrite, planFlashFill, type FlashFillOperation, type FlashFillParams, type FlashFillWrite } from './flash-fill';
+import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillSeriesOptions, type FillWrite } from './fill-series';
+import { isFlashFillParams, isFlashFillPlan, isFlashFillWrite, planFlashFill, type FlashFillOperation, type FlashFillParams, type FlashFillPlan, type FlashFillWrite } from './flash-fill';
 import { AUTO_SUM_FUNCTIONS, type AutoSumFunctionName } from './auto-sum-contract';
 
 /**
@@ -82,6 +83,7 @@ export interface DataRegionMaterializeParams {
   manifest: DataSourceManifest;
   willRemoveSource: boolean;
   range: RangeRef;
+  previousCells: Array<{ row: number; column: number; cell: CellData }>;
   materializedCells: Array<{ row: number; column: number; cell: CellData }>;
   materializedCellCount?: number;
 }
@@ -421,6 +423,10 @@ function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
     && (value.insert === undefined || typeof value.insert === 'boolean');
 }
 
+function isCellSnapshot(value: unknown): value is { row: number; column: number; cell: CellData } {
+  return isRecord(value) && isFiniteInt(value.row) && isFiniteInt(value.column) && isRecord(value.cell) && 'value' in value.cell;
+}
+
 function isDataRegionMaterializeParams(value: unknown): value is DataRegionMaterializeParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRecord(value.region)
     || typeof value.region.id !== 'string' || typeof value.region.sourceId !== 'string' || !isRange(value.region.range)
@@ -428,14 +434,49 @@ function isDataRegionMaterializeParams(value: unknown): value is DataRegionMater
     || !Number.isSafeInteger(value.regionIndex) || Number(value.regionIndex) < 0
     || !isRecord(value.manifest) || value.manifest.schema !== 'DataSourceManifest' || value.manifest.version !== 1
     || typeof value.manifest.id !== 'string' || !Array.isArray(value.manifest.fields) || !Array.isArray(value.manifest.blocks)
-    || typeof value.willRemoveSource !== 'boolean'
-    || !Array.isArray(value.materializedCells) || !value.materializedCells.every((entry) => isRecord(entry) && isFiniteInt(entry.row) && isFiniteInt(entry.column) && isRecord(entry.cell) && 'value' in entry.cell)) return false;
+    || typeof value.willRemoveSource !== 'boolean' || !Array.isArray(value.previousCells) || !value.previousCells.every(isCellSnapshot)
+    || !Array.isArray(value.materializedCells) || !value.materializedCells.every(isCellSnapshot)) return false;
   return value.materializedCellCount === undefined || Number.isSafeInteger(value.materializedCellCount);
 }
 
 function dataRegionMaterializeAffected(params: DataRegionMaterializeParams): RangeRef[] {
   return [structuredClone(params.range)];
-}function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
+}
+
+function applyDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const index = sheet.dataRegions.findIndex((region) => region.id === params.region.id);
+  if (index < 0) throw new Error(`Unknown data region: ${params.region.id}`);
+  const currentRegion = sheet.dataRegions[index]!;
+  if (!rangeEquals(currentRegion.range, params.region.range)
+    || currentRegion.sourceId !== params.region.sourceId
+    || currentRegion.headerRow !== params.region.headerRow) {
+    throw new Error(`Data region ${params.region.id} changed before materialization commit`);
+  }
+  const currentManifest = context.workbook.dataModel.sources.get(params.manifest.id);
+  if (!currentManifest || currentManifest.revision !== params.manifest.revision) {
+    throw new Error(`Data source ${params.manifest.id} changed before materialization commit`);
+  }
+  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
+    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
+  }
+  for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+  sheet.removeDataRegionAt(index);
+  if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
+}
+
+function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  if (sheet.dataRegions.some((region) => region.id === params.region.id)) throw new Error(`Data region already exists: ${params.region.id}`);
+  if (params.willRemoveSource) context.workbook.dataModel.sources.set(params.manifest.id, structuredClone(params.manifest));
+  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
+    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
+  }
+  for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+  sheet.addDataRegion(params.region, params.regionIndex);
+}
+
+function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
   return replaceFindText(original, {
     query: params.find,
     matchCase: params.matchCase,
@@ -509,6 +550,11 @@ function flashFillAffectedRanges(params: FlashFillMutationParams): RangeRef[] {
   return [structuredClone(params.targetRange)];
 }
 
+function cellsEqual(left: CellData | undefined, right: CellData | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function assertFillProtection(sheet: WorksheetModel, range: RangeRef): void {
   const decision = protectionResolver.resolve({
     sheetId: sheet.id,
@@ -522,13 +568,99 @@ function assertFillProtection(sheet: WorksheetModel, range: RangeRef): void {
   if (!decision.allowed) throw new Error(decision.reason ?? `Fill target ${sheet.id}!${range.startRow}:${range.startColumn}-${range.endRow}:${range.endColumn} is protected`);
 }
 
+function fillWritesEqual(expected: readonly FillWrite[], actual: readonly FillMutationWrite[]): boolean {
+  if (expected.length !== actual.length) return false;
+  return expected.every((entry, index) => {
+    const candidate = actual[index];
+    return candidate !== undefined && entry.row === candidate.row && entry.column === candidate.column
+      && cellsEqual(entry.cell, candidate.after);
+  });
+}
+
+function applyFillMutation(params: FillMutationParams, context: CommandContext, canonical: boolean): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const target = normalizeRange(params.targetRange, params.sheetId);
+  assertNoDataRegionIntersection(sheet, target, 'Fill');
+  assertFillProtection(sheet, target);
+  const planParams: FillPlanParams = {
+    sheetId: params.sheetId,
+    sourceRange: params.sourceRange,
+    targetRange: params.targetRange,
+    direction: params.direction,
+    mode: params.mode,
+    dateSystem: params.dateSystem,
+    series: params.series,
+  };
+  const validated = validateFillPlan(sheet, planParams);
+  if (canonical) {
+    const plan = planFill(sheet, validated);
+    if (!fillWritesEqual(plan.writes, params.writes)) throw new Error('Fill mutation does not match the canonical plan');
+  }
+  for (const write of params.writes) {
+    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
+      throw new Error('Fill mutation contains a write outside its target range');
+    }
+    const current = sheet.cells.get(write.row, write.column);
+    if (!cellsEqual(current, write.before)) throw new Error(`Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
+  }
+  for (const write of params.writes) {
+    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
+    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
+  }
+}
+
+function flashFillWritesEqual(expected: readonly FlashFillWrite[], actual: readonly FlashFillWrite[]): boolean {
+  if (expected.length !== actual.length) return false;
+  return expected.every((entry, index) => {
+    const candidate = actual[index];
+    return candidate !== undefined
+      && entry.row === candidate.row
+      && entry.column === candidate.column
+      && cellsEqual(entry.before, candidate.before)
+      && cellsEqual(entry.after, candidate.after);
+  });
+}
+
+function applyFlashFillMutation(params: FlashFillMutationParams, context: CommandContext, canonical: boolean): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const source = normalizeRange(params.sourceRange, params.sheetId);
+  const target = normalizeRange(params.targetRange, params.sheetId);
+  assertNoDataRegionIntersection(sheet, source, 'Flash Fill');
+  assertNoDataRegionIntersection(sheet, target, 'Flash Fill');
+  assertFillProtection(sheet, target);
+  if (canonical) {
+    const plan: FlashFillPlan = planFlashFill(sheet, {
+      sheetId: params.sheetId,
+      sourceRange: source,
+      targetRange: target,
+    });
+    if (JSON.stringify(plan.operation) !== JSON.stringify(params.operation) || !flashFillWritesEqual(plan.writes, params.writes)) {
+      throw new Error('Flash Fill mutation does not match the canonical inferred pattern');
+    }
+  }
+  for (const write of params.writes) {
+    if (write.row < target.startRow || write.row > target.endRow || write.column < target.startColumn || write.column > target.endColumn) {
+      throw new Error('Flash Fill mutation contains a write outside its target range');
+    }
+    if (!cellsEqual(sheet.cells.get(write.row, write.column), write.before)) {
+      throw new Error(`Flash Fill target changed at ${params.sheetId}!${write.row}:${write.column}`);
+    }
+  }
+  for (const write of params.writes) {
+    if (write.after === undefined) sheet.cells.delete(write.row, write.column);
+    else sheet.cells.set(write.row, write.column, structuredClone(write.after));
+  }
+}
+
 /**
  * The sheet-features package intentionally has no dependency on the
- * application-owned block query/overlay service. Until that canonical service
- * is injected into CommandRuntime, Home commands fail closed for a
- * data-region intersection instead of treating CellMatrix as the block value.
+ * application-owned block query/overlay service. Cell-reading operations fail
+ * closed for a data-region intersection instead of treating CellMatrix as the
+ * block value. Metadata-only filter commands may opt in after the application
+ * boundary has loaded the canonical block query.
  */
-function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, operation: string, allowDataRegion = false): void {
+  if (allowDataRegion) return;
   const region = sheet.dataRegions.find((candidate) => rangesIntersect(candidate.range, range));
   if (region) throw new Error(`${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
 }
@@ -551,6 +683,12 @@ function rangeAreaOfCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: 
   return cellsInRange(sheet, range);
 }
 
+function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | undefined): void {
+  const target = sheet as SheetWithHomeState;
+  if (state === undefined) delete target.appliedSortState;
+  else target.appliedSortState = structuredClone(state);
+}
+
 function getAppliedSortState(sheet: WorksheetModel): AppliedSortState | undefined {
   const state = (sheet as SheetWithHomeState).appliedSortState;
   return state ? structuredClone(state) : undefined;
@@ -560,7 +698,7 @@ function hasFilterCriteria(filter: AutoFilterModel | undefined): boolean {
   return Boolean(filter && Object.values(filter.columns).some((entry) => Boolean(entry.criterion)));
 }
 
-function buildFilterFromParams(params: FilterToggleParams): AutoFilterModel {
+function buildFilterFromParams(params: FilterToggleParams, sheet: WorksheetModel): AutoFilterModel {
   if (params.autoFilter) return normalizeAutoFilterModel(params.autoFilter);
   if (!params.range) throw new Error('Filter range is required when creating a filter');
   const range = normalizeRange(params.range, params.sheetId);
@@ -596,7 +734,25 @@ interface StylePresetMutationParams {
 function isStylePresetMutation(value: unknown): value is StylePresetMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string' && typeof value.styleId === 'string'
     && isRecord(value.style) && Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange);
-}interface ConditionalFormatReorderParams {
+}
+
+function applyStylePresetMutation(params: StylePresetMutationParams, context: CommandContext): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  for (const range of params.ranges) {
+    const normalized = normalizeRange(range, params.sheetId);
+    for (let row = normalized.startRow; row <= normalized.endRow; row += 1) {
+      for (let column = normalized.startColumn; column <= normalized.endColumn; column += 1) {
+        const current = sheet.cells.get(row, column) ?? { value: null };
+        const next = { ...current, styleId: params.styleId, style: structuredClone(params.style) };
+        if (params.style.numberFormat !== undefined) next.numberFormat = params.style.numberFormat;
+        delete next.displayValue;
+        sheet.cells.set(row, column, next);
+      }
+    }
+  }
+}
+
+interface ConditionalFormatReorderParams {
   sheetId: string;
   ruleIds: string[];
   ranges?: RangeRef[];
@@ -675,18 +831,41 @@ function tableStyleAffected(params: TableStyleMutationParams): RangeRef[] {
 export function registerHomeCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<FillMutationParams>({
     id: 'fill.applied',
+    handler: (item, context) => {
+      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.applied mutation payload');
+      applyFillMutation(item.params, context, true);
+    },
     metadata: {
       schema: { name: 'FillApplied', validate: isValidFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
+      inverseIds: ['fill.restored'],
     },
   });
   runtime.registry.registerMutation<FlashFillMutationParams>({
     id: 'flashFill.applied',
+    handler: (item, context) => {
+      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.applied mutation payload');
+      applyFlashFillMutation(item.params, context, true);
+    },
     metadata: {
       schema: { name: 'FlashFillApplied', validate: isValidFlashFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
+      inverseIds: ['flashFill.restored'],
+    },
+  });
+  runtime.registry.registerMutation<FlashFillMutationParams>({
+    id: 'flashFill.restored',
+    handler: (item, context) => {
+      if (!isValidFlashFillMutationParams(item.params)) throw new Error('Invalid flashFill.restored mutation payload');
+      applyFlashFillMutation(item.params, context, false);
+    },
+    metadata: {
+      schema: { name: 'FlashFillRestored', validate: isValidFlashFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
+      inverseIds: ['flashFill.applied'],
     },
   });
   runtime.registry.registerCommand<FlashFillParams>({
@@ -713,22 +892,70 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         })),
       };
       const affectedRanges = flashFillAffectedRanges(mutationParams);
+      const inverseParams: FlashFillMutationParams = {
+        ...mutationParams,
+        writes: mutationParams.writes.map((write) => ({
+          row: write.row,
+          column: write.column,
+          ...(write.after === undefined ? {} : { before: structuredClone(write.after) }),
+          ...(write.before === undefined ? {} : { after: structuredClone(write.before) }),
+        })),
+      };
       context.applyMutation({
         id: 'flashFill.applied',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: mutationParams,
         affectedRanges,
+        inverse: [{
+          id: 'flashFill.restored',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: inverseParams,
+          affectedRanges,
+        }],
+        apply: () => applyFlashFillMutation(mutationParams, context, true),
       });
       return homeResult(context, affectedRanges, 1);
     },
   });
+  runtime.registry.registerMutation<FillMutationParams>({
+    id: 'fill.restored',
+    handler: (item, context) => {
+      if (!isValidFillMutationParams(item.params)) throw new Error('Invalid fill.restored mutation payload');
+      applyFillMutation(item.params, context, false);
+    },
+    metadata: {
+      schema: { name: 'FillRestored', validate: isValidFillMutationParams },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
+      inverseIds: ['fill.applied'],
+    },
+  });
   runtime.registry.registerMutation<DataRegionMaterializeParams>({
     id: 'dataRegion.materialize.commit',
+    handler: (item, context) => {
+      if (!isDataRegionMaterializeParams(item.params)) throw new Error('Invalid dataRegion.materialized mutation payload');
+      applyDataRegionMaterialization(item.params, context);
+    },
     metadata: {
       schema: { name: 'DataRegionMaterializeCommit', validate: isDataRegionMaterializeParams },
       permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: dataRegionMaterializeAffected, mode: 'exact' },
+      inverseIds: ['dataRegion.materialize.restore'],
+    },
+  });
+  runtime.registry.registerMutation<DataRegionMaterializeParams>({
+    id: 'dataRegion.materialize.restore',
+    handler: (item, context) => {
+      if (!isDataRegionMaterializeParams(item.params)) throw new Error('Invalid dataRegion.restored mutation payload');
+      restoreDataRegionMaterialization(item.params, context);
+    },
+    metadata: {
+      schema: { name: 'DataRegionMaterializeRestore', validate: isDataRegionMaterializeParams },
+      permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: dataRegionMaterializeAffected, mode: 'exact' },
+      inverseIds: ['dataRegion.materialize.commit'],
     },
   });
   runtime.registry.registerCommand<DataRegionMaterializeParams>({
@@ -742,6 +969,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params,
         affectedRanges,
+        inverse: [{ id: 'dataRegion.materialize.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
+        apply: () => applyDataRegionMaterialization(params, context),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -761,6 +990,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             (row - target.startRow) % params.pattern.rowCount
           ]![(column - target.startColumn) % params.pattern.columnCount]!;
           const range = cellRange(params.sheetId, row, column);
+          const previous = sheet.cells.get(row, column);
           const styleParams = {
             sheetId: params.sheetId,
             range,
@@ -775,6 +1005,15 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             sheetId: params.sheetId,
             params: styleParams,
             affectedRanges: [range],
+            inverse: [{
+              id: 'cell.restore' as const,
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, row, column, previous: previous ? structuredClone(previous) : undefined },
+              affectedRanges: [range],
+              permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' } as const,
+            }],
+            apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: styleParams, affectedRanges: [range] }, context),
           });
         }
       }
@@ -810,7 +1049,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (insert) {
         const axis = params.targetOrigin.row !== sourceRange.startRow ? 'row' as const : 'column' as const;
         const count = axis === 'row' ? targetRange.endRow - targetRange.startRow + 1 : targetRange.endColumn - targetRange.startColumn + 1;
-        context.executeCommand('sheet.cells.insert', {
+        runtime.execute('sheet.cells.insert', {
           sheetId: params.sheetId,
           range: axis === 'row'
             ? { sheetId: params.sheetId, startRow: targetRange.startRow, endRow: targetRange.endRow, startColumn: sourceRange.startColumn, endColumn: sourceRange.endColumn }
@@ -827,7 +1066,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         }
       }
       clipboard.transfer = copy ? 'copy' : 'move';
-      return context.executeCommand('sheet.range.paste', {
+      return runtime.execute('sheet.range.paste', {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
@@ -848,12 +1087,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     const hasNonAnchorContent = rangeAreaOfCells(sheet, range).some(({ row, column, cell }) =>
       (row !== range.startRow || column !== range.startColumn) && Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula)));
     if (hasNonAnchorContent && params.confirmDataLoss === false) throw new Error('Merge would discard non-anchor cell contents');
-    const result = context.executeCommand('sheet.merge.set', { sheetId: params.sheetId, range });
+    const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
-      context.executeCommand('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
-      if (anchor) context.executeCommand('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
+      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
+      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
     }
-    if (center) context.executeCommand('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
+    if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
     return result;
   };
 
@@ -872,7 +1111,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const range = requireRange(params, params.sheetId);
       let result = homeResult(context, []);
       for (let row = range.startRow; row <= range.endRow; row += 1) {
-        result = context.executeCommand('sheet.merge.cells', {
+        result = runtime.execute('sheet.merge.cells', {
           sheetId: params.sheetId,
           range: { ...range, startRow: row, endRow: row },
           confirmDataLoss: params.confirmDataLoss,
@@ -894,7 +1133,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       let mutationCount = 0;
       const affectedRanges: RangeRef[] = [];
       for (const span of spans) {
-        const result = context.executeCommand('sheet.merge.remove', { sheetId: params.sheetId, range: span.range });
+        const result = runtime.execute('sheet.merge.remove', { sheetId: params.sheetId, range: span.range });
         mutationCount += result.mutationCount;
         affectedRanges.push(...result.affectedRanges);
       }
@@ -951,7 +1190,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         }
         values.push(line);
       }
-      const result = context.executeCommand('sheet.range.set', {
+      const result = runtime.execute('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: minRow,
         startColumn: minColumn,
@@ -988,6 +1227,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         before: sheet.cells.get(write.row, write.column) ? structuredClone(sheet.cells.get(write.row, write.column)) : undefined,
         after: write.cell ? structuredClone(write.cell) : undefined,
       }));
+      const inverseWrites: FillMutationWrite[] = writes.map((write) => ({
+        row: write.row,
+        column: write.column,
+        before: write.after ? structuredClone(write.after) : undefined,
+        after: write.before ? structuredClone(write.before) : undefined,
+      }));
       const mutationParams: FillMutationParams = {
         sheetId: params.sheetId,
         sourceRange: source,
@@ -998,6 +1243,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         ...(params.series ? { series: structuredClone(params.series) } : {}),
         writes,
       };
+      const inverseParams: FillMutationParams = { ...mutationParams, writes: inverseWrites };
       const affectedRanges = rangeAffected(target);
       context.applyMutation({
         id: 'fill.applied',
@@ -1005,6 +1251,14 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: mutationParams,
         affectedRanges,
+        inverse: [{
+          id: 'fill.restored',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: inverseParams,
+          affectedRanges,
+        }],
+        apply: () => applyFillMutation(mutationParams, context, true),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1017,7 +1271,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!params.find) return homeResult(context, []);
       const sheets = params.scope === 'workbook' ? context.workbook.getSheets() : [context.workbook.getSheet(params.sheetId)];
       const defaultRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
-      const patches: Array<{ sheetId: string; row: number; column: number; next: CellData }> = [];
+      const patches: Array<{ sheetId: string; row: number; column: number; next: CellData; previous?: CellData }> = [];
       const searchIn = params.searchIn ?? 'values';
       for (const sheet of sheets) {
         const range = defaultRange && sheet.id === params.sheetId
@@ -1040,7 +1294,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             throw new Error(`Formula replacement at ${sheet.id}!${row}:${column} must produce a formula`);
           }
           const next = replacementCell(cell, replacement);
-          patches.push({ sheetId: sheet.id, row, column, next });
+          patches.push({ sheetId: sheet.id, row, column, next, previous: structuredClone(cell) });
         }
       }
       if (patches.length === 0) return homeResult(context, []);
@@ -1053,7 +1307,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
         if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
         if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
-        context.executeCommand('sheet.cell.set', {
+        runtime.execute('sheet.cell.set', {
           sheetId: patch.sheetId,
           row: patch.row,
           column: patch.column,
@@ -1085,27 +1339,27 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         assertDataRegionContextMatches(params.dataRegionContext, actual);
       }
       const effectiveRange = requestedRange ?? regionContext.range;
-      assertNoDataRegionIntersection(sheet, effectiveRange, 'Filter');
+      assertNoDataRegionIntersection(sheet, effectiveRange, 'Filter', true);
       const owner = filterOwnerFromDataRegionContext(regionContext);
       if (owner?.kind === 'table') {
         const active = resolveActiveAutoFilter(sheet);
         if (active && (!requestedRange || rangeEquals(active.range, requestedRange))) {
-          return context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, dataRegionContext: regionContext });
+          return runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, dataRegionContext: regionContext });
         }
         throw new Error('Use the Table AutoFilter owner for this range');
       }
       const current = sheet.autoFilter ? normalizeAutoFilterModel(sheet.autoFilter) : undefined;
-      if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
+      if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter', true);
       if (!current) {
-        const next = buildFilterFromParams({ ...params, range: effectiveRange });
-        return context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
+        const next = buildFilterFromParams({ ...params, range: effectiveRange }, sheet);
+        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       }
       const nextRange = requestedRange ?? current.range;
-      if (rangeEquals(current.range, nextRange)) return context.executeCommand('sheet.autoFilter.remove', { sheetId: params.sheetId, dataRegionContext: regionContext });
-      const next = params.autoFilter ? buildFilterFromParams({ ...params, range: nextRange }) : { ...current, range: nextRange };
+      if (rangeEquals(current.range, nextRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId, dataRegionContext: regionContext });
+      const next = params.autoFilter ? buildFilterFromParams({ ...params, range: nextRange }, sheet) : { ...current, range: nextRange };
       validateFilterOwnership(sheet, next, { kind: 'worksheet' });
       const nextContext = { ...regionContext, range: structuredClone(nextRange), currentRegion: structuredClone(nextRange) };
-      return context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: nextContext });
+      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: nextContext });
     },
   });
 
@@ -1132,13 +1386,13 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const owner = filterOwnerFromDataRegionContext(regionContext);
       if (!currentSource) return homeResult(context, []);
       const current = normalizeAutoFilterModel(currentSource);
-      assertNoDataRegionIntersection(sheet, current.range, 'Filter');
+      assertNoDataRegionIntersection(sheet, current.range, 'Filter', true);
       if (requestedRange && !rangesIntersect(current.range, requestedRange)) return homeResult(context, []);
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
       const cleared = { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) };
       return owner?.kind === 'table'
-        ? context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared, dataRegionContext: regionContext })
-        : context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared, dataRegionContext: regionContext });
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared, dataRegionContext: regionContext })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared, dataRegionContext: regionContext });
     },
   });
 
@@ -1147,7 +1401,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter reapply parameters');
       const autoFilter = resolveActiveAutoFilter(context.workbook.getSheet(params.sheetId));
-      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter');
+      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter', true);
       return autoFilter ? homeResult(context, [structuredClone(autoFilter.range)]) : homeResult(context, []);
     },
   });
@@ -1178,7 +1432,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sortRange = table?.hasTotalRow ? { ...filter.range, endRow: filter.range.endRow - 1 } : filter.range;
       assertNoDataRegionIntersection(sheet, sortRange, 'Sort');
       const sortContext = { ...regionContext, range: structuredClone(sortRange), currentRegion: structuredClone(sortRange) };
-      const sortResult = context.executeCommand('data.sort.rows', {
+      const sortResult = runtime.execute('data.sort.rows', {
         sheetId: params.sheetId,
         range: sortRange,
         criteria: [{ column: params.column, ascending: params.ascending }],
@@ -1194,8 +1448,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
       const next = { ...filter, sortState };
       const filterResult = owner.kind === 'table'
-        ? context.executeCommand('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next, dataRegionContext: regionContext })
-        : context.executeCommand('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next, dataRegionContext: regionContext })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
       return {
         ...filterResult,
         mutationCount: sortResult.mutationCount + filterResult.mutationCount,
@@ -1211,7 +1465,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const state = getAppliedSortState(sheet);
       if (!state) return homeResult(context, []);
-      return context.executeCommand('data.sort.rows', {
+      return runtime.execute('data.sort.rows', {
         sheetId: params.sheetId,
         range: state.range,
         criteria: state.criteria,
@@ -1226,7 +1480,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       requireSheetId(params);
       const range = requireRange(params, params.sheetId);
       if (!Number.isSafeInteger(params.sortColumn) || params.sortColumn < range.startColumn || params.sortColumn > range.endColumn) throw new Error('Sort column is outside range');
-      const result = context.executeCommand('data.sort.rows', {
+      const result = runtime.execute('data.sort.rows', {
         sheetId: params.sheetId,
         range,
         criteria: [{ column: params.sortColumn, ascending: params.ascending ?? true }],
@@ -1260,10 +1514,15 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<StylePresetMutationParams>({
     id: 'style.preset.set',
+    handler: (item, context) => {
+      if (!isStylePresetMutation(item.params)) throw new Error('Invalid style.preset.set mutation payload');
+      applyStylePresetMutation(item.params, context);
+    },
     metadata: {
       schema: { name: 'CellStylePreset', validate: isStylePresetMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: stylePresetMutationRanges, mode: 'exact' },
+      inverseIds: ['cell.restore'],
     },
   });
   runtime.registry.registerCommand<{ sheetId: string; ranges: RangeRef[]; preset: string | HomeStylePreset }>({
@@ -1273,8 +1532,17 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const ranges = params.ranges.map((range) => normalizeRange(range, params.sheetId));
       const preset = findPreset(params.preset);
       const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = ranges.flatMap((range) => cellsInRange(sheet, range));
       ranges.forEach((range) => assertNoDataRegionIntersection(sheet, range, 'Cell style preset'));
       const affectedRanges = ranges.map((range) => structuredClone(range));
+      const inverse: MutationInfo[] = previous.map(({ row, column, cell }) => ({
+        id: 'cell.restore' as const,
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
+        affectedRanges: [cellRange(params.sheetId, row, column)],
+        permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
+      }));
       const mutationParams = { sheetId: params.sheetId, ranges, styleId: preset.id, style: structuredClone(preset.style) };
       context.applyMutation({
         id: 'style.preset.set',
@@ -1282,6 +1550,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: mutationParams,
         affectedRanges,
+        inverse,
+        apply: () => applyStylePresetMutation(mutationParams, context),
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1289,10 +1559,24 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<TableStyleMutationParams>({
     id: 'sheetTable.style.set',
+    handler: (item, context) => {
+      if (!isTableStyleMutationParams(item.params)) throw new Error('Invalid table style mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const index = sheet.sheetTables.findIndex((table) => table.id === item.params.tableId);
+      if (index < 0) throw new Error(`Unknown sheet table: ${item.params.tableId}`);
+      const table = sheet.sheetTables[index]!;
+      sheet.sheetTables[index] = {
+        ...table,
+        ...(item.params.clearStyleName ? { styleName: undefined } : item.params.styleName === undefined ? {} : { styleName: item.params.styleName }),
+        ...(item.params.showBandedRows === undefined ? {} : { showBandedRows: item.params.showBandedRows }),
+        ...(item.params.showBandedColumns === undefined ? {} : { showBandedColumns: item.params.showBandedColumns }),
+      };
+    },
     metadata: {
       schema: { name: 'SheetTableStyleSet', validate: isTableStyleMutationParams },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableStyleAffected, mode: 'exact' },
+      inverseIds: ['sheetTable.style.set'],
     },
   });
   runtime.registry.registerCommand<TableStyleParams>({
@@ -1324,16 +1608,36 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: next,
         affectedRanges,
+        inverse: [{ id: 'sheetTable.style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
+        apply: () => {
+          const index = sheet.sheetTables.findIndex((entry) => entry.id === params.tableId);
+          if (index < 0) throw new Error(`Unknown sheet table: ${params.tableId}`);
+          sheet.sheetTables[index] = {
+            ...sheet.sheetTables[index]!,
+            ...(next.clearStyleName ? { styleName: undefined } : next.styleName === undefined ? {} : { styleName: next.styleName }),
+            ...(next.showBandedRows === undefined ? {} : { showBandedRows: next.showBandedRows }),
+            ...(next.showBandedColumns === undefined ? {} : { showBandedColumns: next.showBandedColumns }),
+          };
+        },
       });
       return homeResult(context, affectedRanges, 1);
     },
   });
   runtime.registry.registerMutation<ConditionalFormatReorderParams>({
     id: 'cf.reorder',
+    handler: (item, context) => {
+      if (!isConditionalFormatReorder(item.params)) throw new Error('Invalid cf.reorder mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
+      const next = item.params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
+      for (const rule of sheet.conditionalFormats) if (!item.params.ruleIds.includes(rule.id)) next.push(rule);
+      sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
+    },
     metadata: {
       schema: { name: 'ConditionalFormatReorder', validate: isConditionalFormatReorder },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges?.map((range) => structuredClone(range)) ?? [], mode: 'declared' },
+      inverseIds: ['cf.reorder'],
     },
   });
   runtime.registry.registerCommand<{ sheetId: string; ruleIds: string[] }>({
@@ -1341,6 +1645,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isConditionalFormatReorder(params)) throw new Error('Invalid conditional format reorder parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
+      const previousIds = sheet.conditionalFormats.map((rule) => rule.id);
       const affectedRanges = allConditionalRanges(sheet);
       context.applyMutation({
         id: 'cf.reorder',
@@ -1348,6 +1653,13 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { ...params, ranges: affectedRanges },
         affectedRanges,
+        inverse: [{ id: 'cf.reorder', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, ruleIds: previousIds, ranges: affectedRanges }, affectedRanges }],
+        apply: () => {
+          const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
+          const next = params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
+          for (const rule of sheet.conditionalFormats) if (!params.ruleIds.includes(rule.id)) next.push(rule);
+          sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next);
+        },
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1355,10 +1667,18 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<DrawingVisibilityParams>({
     id: 'drawing.visibility.set',
+    handler: (item, context) => {
+      if (!isDrawingVisibilityParams(item.params)) throw new Error('Invalid drawing.visibility.set mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const drawing = sheet.drawings.find((entry) => entry.id === item.params.drawingId) as DrawingWithHomeState | undefined;
+      if (!drawing) throw new Error(`Unknown drawing: ${item.params.drawingId}`);
+      drawing.visible = item.params.visible;
+    },
     metadata: {
       schema: { name: 'DrawingVisibilitySet', validate: isDrawingVisibilityParams },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => drawingAffected(params.sheetId), mode: 'exact' },
+      inverseIds: ['drawing.visibility.set'],
     },
   });
   runtime.registry.registerCommand<DrawingVisibilityParams>({
@@ -1367,6 +1687,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isDrawingVisibilityParams(params)) throw new Error('Invalid drawing visibility parameters');
       const drawing = context.workbook.getSheet(params.sheetId).drawings.find((entry) => entry.id === params.drawingId) as DrawingWithHomeState | undefined;
       if (!drawing) throw new Error(`Unknown drawing: ${params.drawingId}`);
+      const previous = drawing.visible ?? true;
       const affectedRanges = drawingAffected(params.sheetId);
       context.applyMutation({
         id: 'drawing.visibility.set',
@@ -1374,6 +1695,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params,
         affectedRanges,
+        inverse: [{ id: 'drawing.visibility.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, visible: previous }, affectedRanges }],
+        apply: () => { drawing.visible = params.visible; },
       });
       return homeResult(context, affectedRanges, 1);
     },
@@ -1381,10 +1704,18 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerMutation<DrawingRenameMutationParams>({
     id: 'drawing.rename',
+    handler: (item, context) => {
+      if (!isDrawingRenameMutation(item.params)) throw new Error('Invalid drawing.rename mutation payload');
+      const drawing = context.workbook.getSheet(item.params.sheetId).drawings.find((entry) => entry.id === item.params.drawingId);
+      if (!drawing) throw new Error(`Unknown drawing: ${item.params.drawingId}`);
+      if (item.params.name.trim()) drawing.name = item.params.name;
+      else delete drawing.name;
+    },
     metadata: {
       schema: { name: 'DrawingRename', validate: isDrawingRenameMutation },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => drawingAffected(params.sheetId), mode: 'exact' },
+      inverseIds: ['drawing.rename'],
     },
   });
   runtime.registry.registerCommand<DrawingRenameParams>({
@@ -1393,6 +1724,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isDrawingRenameParams(params)) throw new Error('Invalid drawing rename parameters');
       const drawing = context.workbook.getSheet(params.sheetId).drawings.find((entry) => entry.id === params.drawingId);
       if (!drawing) throw new Error(`Unknown drawing: ${params.drawingId}`);
+      const previous = drawing.name;
       const affectedRanges = drawingAffected(params.sheetId);
       context.applyMutation({
         id: 'drawing.rename',
@@ -1400,6 +1732,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params,
         affectedRanges,
+        inverse: [{ id: 'drawing.rename', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, name: previous ?? '' }, affectedRanges }],
+        apply: () => { drawing.name = params.name; },
       });
       return homeResult(context, affectedRanges, 1);
     },

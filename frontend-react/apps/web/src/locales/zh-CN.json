@@ -22,6 +22,8 @@
   "review": "审阅",
   "view": "视图",
   "settings": "设置",
+  "pivotAnalyze": "数据透视表分析",
+  "pivotDesign": "数据透视表设计",
   "tableSheetDesign": "集算表设计",
   "ganttTask": "甘特任务",
   "ganttProject": "甘特项目",
@@ -507,6 +509,8 @@
       "printLayout": "打印布局",
       "appearanceFiles": "外观与文件",
       "settings": "设置",
+      "pivotAnalyze": "数据透视表",
+      "pivotDesign": "数据透视表",
       "tableSheetDesign": "集算表"
       ,"ganttTask": "甘特任务"
       ,"ganttProject": "甘特项目"
@@ -718,6 +722,7 @@
       "chartFormatPanel": "设置图表格式",
       "chartSelectData": "选择数据",
       "chartBuilder": "图表构建器",
+      "analysisView": "分析视图",
       "sparkline": "迷你图",
       "pictureFormatPanel": "设置图片格式",
       "sparklineDesign": "迷你图设计",
@@ -765,7 +770,6 @@
       "textToColumns": "分列",
       "findReplace": "查找与替换",
       "goTo": "定位",
-      "selectionPane": "选择窗格",
       "transpose": "转置",
       "flipHorizontal": "水平翻转",
       "flipVertical": "垂直翻转",

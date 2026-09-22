@@ -26,14 +26,16 @@ public class WorkbookSourceArtifactEntity {
     @Column(name = "checksum", nullable = false, length = 64)
     private String checksum;
 
-    @Column(name = "workbook_revision", nullable = false)
-    private long workbookRevision;
-
     @Column(name = "byte_length", nullable = false)
     private long byteLength;
 
-    @Column(name = "storage_path", nullable = false, length = 2000)
-    private String storagePath;
+    // Null means a pre-migration artifact whose workbook revision cannot be proven.
+    @Column(name = "source_revision")
+    private Long sourceRevision;
+
+    @JdbcTypeCode(SqlTypes.LONGVARBINARY)
+    @Column(name = "content", nullable = false)
+    private byte[] content;
 
     @JdbcTypeCode(SqlTypes.LONGVARCHAR)
     @Column(name = "native_metadata_json", nullable = false)
@@ -47,16 +49,14 @@ public class WorkbookSourceArtifactEntity {
 
     protected WorkbookSourceArtifactEntity() {}
 
-    public WorkbookSourceArtifactEntity(String unitId, String fileName, String mimeType, String checksum, long workbookRevision, long byteLength,
-                                        String storagePath, String nativeMetadataJson, Instant createdAt, Instant updatedAt) {
+    public WorkbookSourceArtifactEntity(String unitId, String fileName, String mimeType, String checksum, long byteLength,
+                                        byte[] content, String nativeMetadataJson, Instant createdAt, Instant updatedAt) {
         this.unitId = unitId;
         this.fileName = fileName;
         this.mimeType = mimeType;
         this.checksum = checksum;
-        if (workbookRevision < 0) throw new IllegalArgumentException("Artifact workbook revision must be non-negative");
-        this.workbookRevision = workbookRevision;
         this.byteLength = byteLength;
-        this.storagePath = storagePath;
+        this.content = content;
         this.nativeMetadataJson = nativeMetadataJson == null ? "{}" : nativeMetadataJson;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -66,38 +66,32 @@ public class WorkbookSourceArtifactEntity {
     public String getFileName() { return fileName; }
     public String getMimeType() { return mimeType; }
     public String getChecksum() { return checksum; }
-    public long getWorkbookRevision() { return workbookRevision; }
     public long getByteLength() { return byteLength; }
-    public String getStoragePath() { return storagePath; }
+    public Long getSourceRevision() { return sourceRevision; }
+    public void bindRevision(long revision) {
+        if (revision < 0) throw new IllegalArgumentException("sourceRevision must be non-negative");
+        this.sourceRevision = revision;
+    }
+    public byte[] getContent() { return content; }
     public String getNativeMetadataJson() { return nativeMetadataJson; }
     public String getFormat() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"format\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(nativeMetadataJson);
-        if (!matcher.find() || matcher.group(1).isBlank()) throw new IllegalStateException("Native artifact format metadata is missing");
-        return matcher.group(1);
+        return matcher.find() ? matcher.group(1) : "unknown";
     }
     public int getCodecRevision() {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"codecRevision\\\"\\s*:\\s*(\\d+)").matcher(nativeMetadataJson);
-        if (!matcher.find()) throw new IllegalStateException("Native artifact codecRevision metadata is missing");
-        try {
-            int revision = Integer.parseInt(matcher.group(1));
-            if (revision < 1) throw new IllegalStateException("Native artifact codecRevision metadata is invalid");
-            return revision;
-        } catch (NumberFormatException error) {
-            throw new IllegalStateException("Native artifact codecRevision metadata is invalid", error);
-        }
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 1;
     }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
-    public void update(String fileName, String mimeType, String checksum, long workbookRevision, long byteLength, String storagePath,
+    public void update(String fileName, String mimeType, String checksum, long byteLength, byte[] content,
                        String nativeMetadataJson, Instant updatedAt) {
         this.fileName = fileName;
         this.mimeType = mimeType;
         this.checksum = checksum;
-        if (workbookRevision < 0) throw new IllegalArgumentException("Artifact workbook revision must be non-negative");
-        this.workbookRevision = workbookRevision;
         this.byteLength = byteLength;
-        this.storagePath = storagePath;
+        this.content = content;
         this.nativeMetadataJson = nativeMetadataJson == null ? "{}" : nativeMetadataJson;
         this.updatedAt = updatedAt;
     }

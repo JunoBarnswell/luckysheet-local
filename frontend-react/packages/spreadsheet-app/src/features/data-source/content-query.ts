@@ -1,5 +1,6 @@
 import {
   DEFAULT_DATA_BLOCK_ROW_COUNT,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
   normalizeDataSourceManifest,
   type DataBlockRef,
   type DataBlockAvailability,
@@ -39,6 +40,12 @@ export interface DataSourceContentLoadState {
 export interface DataSourceContentResult<T> {
   state: DataSourceContentLoadState;
   value?: T;
+}
+
+/** Read-only views over decoded blocks. Row arrays are shared with the cache. */
+export interface DataSourceLoadedBlockView {
+  readonly ref: DataBlockRef;
+  readonly rows: readonly (readonly TableScalar[])[];
 }
 
 export type DataSourceContentStateListener = (state: DataSourceContentLoadState) => void;
@@ -125,13 +132,6 @@ export class DataSourceContentQuery {
         throw new Error(`Data block exceeds the source rowCount: ${block.id}`);
       }
     }
-    for (let index = 1; index < normalized.blocks.length; index += 1) {
-      const previous = normalized.blocks[index - 1]!;
-      const current = normalized.blocks[index]!;
-      if (current.startRow < previous.startRow + previous.rowCount) {
-        throw new Error(`Data source blocks overlap or are not ordered: ${previous.id}/${current.id}`);
-      }
-    }
     this.source = normalized;
     this.store = store;
     const overlayMap = new Map<string, SparseCellOverlay>();
@@ -152,6 +152,7 @@ export class DataSourceContentQuery {
       ...this.source,
       fields: this.source.fields.map(cloneField),
       blocks: this.source.blocks.map((block) => ({ ...block })),
+      ...(this.source.rowOrder === undefined ? {} : { rowOrder: [...this.source.rowOrder] }),
     };
   }
 
@@ -192,11 +193,12 @@ export class DataSourceContentQuery {
     const field = this.resolveField(fieldRef);
     if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
     if (!isSafeRowIndex(rowIndex) || rowIndex >= this.source.rowCount) return this.errorResult(`Data source row is outside range: ${String(rowIndex)}`);
-    const ref = this.findBlock(rowIndex);
+    const physicalRow = this.physicalRow(rowIndex);
+    const ref = this.findBlock(physicalRow);
     if (ref === undefined) return this.missingResult(`No data block covers source row ${String(rowIndex)}`);
     const loaded = this.loadedBlocks.get(ref.id);
     if (loaded !== undefined) {
-      const row = loaded.rows[rowIndex - ref.startRow];
+      const row = loaded.rows[physicalRow - ref.startRow];
       if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(rowIndex)}`);
       return { state: state(this.source.id, ref.id, 'ready'), value: row[field.ordinal] ?? null };
     }
@@ -208,9 +210,52 @@ export class DataSourceContentQuery {
   prefetchRows(startRow: number, rowCount: number): void {
     const error = this.validateRange(startRow, rowCount);
     if (error || rowCount === 0) return;
-    const refs = this.blocksForRange(startRow, rowCount);
-    if (!refs) return;
-    for (const ref of refs) if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    const scheduled = new Set<string>();
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const ref = this.findBlock(this.physicalRow(row));
+      if (ref && !scheduled.has(ref.id)) {
+        scheduled.add(ref.id);
+        if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * Ensure every source block is available without constructing a copied
+   * range result. Metadata-only commands such as filtering need the canonical
+   * block projection to be readable, but do not need a second full row matrix.
+   */
+  async ensureAllBlocksLoaded(): Promise<DataSourceContentLoadState> {
+    let lastState = state(this.source.id, null, 'ready');
+    for (const ref of this.source.blocks) {
+      try {
+        await this.loadBlock(ref);
+      } catch (error) {
+        return this.loadStates.get(ref.id)
+          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
+      }
+      lastState = state(this.source.id, ref.id, 'ready');
+    }
+    return lastState;
+  }
+
+  /**
+   * Return decoded block views without rebuilding a copied full-range matrix.
+   * Mutation paths that only inspect or reorder rows can use this view while
+   * the public getRows copy contract remains unchanged.
+   */
+  async getAllBlockRows(): Promise<DataSourceContentResult<readonly DataSourceLoadedBlockView[]>> {
+    const loaded = await this.ensureAllBlocksLoaded();
+    if (loaded.availability !== 'ready') return { state: loaded };
+    const blocks: DataSourceLoadedBlockView[] = [];
+    for (const ref of this.source.blocks) {
+      const block = this.loadedBlocks.get(ref.id);
+      if (block === undefined) {
+        return this.errorResult(`Data block ${ref.id} was not available after loading`);
+      }
+      blocks.push(block);
+    }
+    return { state: loaded, value: blocks };
   }
 
   async getRowValues(rowIndex: number): Promise<DataSourceContentResult<TableScalar[]>> {
@@ -234,6 +279,46 @@ export class DataSourceContentQuery {
     };
   }
 
+  /**
+   * Load one field's member domain on demand.  The manifest deliberately does
+   * not materialize distinct values for large sources; callers should invoke
+   * this only when a value picker is opened.
+   */
+  async getDistinctFieldValues(
+    fieldRef: DataSourceFieldRef,
+    maxValues = PIVOT_MEMBER_DISPLAY_LIMIT,
+  ): Promise<DataSourceContentResult<TableScalar[]>> {
+    const field = this.resolveField(fieldRef);
+    if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
+    if (!Number.isSafeInteger(maxValues) || maxValues <= 0) return this.errorResult('Data source distinct-value limit must be a positive safe integer');
+
+    const values: TableScalar[] = [];
+    const seen = new Set<string>();
+    let lastState = state(this.source.id, null, 'ready');
+    for (const ref of this.source.blocks) {
+      let block: LoadedBlock;
+      try {
+        block = await this.loadBlock(ref);
+      } catch (error) {
+        const current = this.loadStates.get(ref.id)
+          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
+        return { state: { ...current } };
+      }
+      lastState = state(this.source.id, ref.id, 'ready');
+      for (const row of block.rows) {
+        const value = row[field.ordinal] ?? null;
+        const key = value === null ? 'null' : `${typeof value}:${JSON.stringify(value)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        values.push(value);
+        if (values.length > maxValues) {
+          return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
+        }
+      }
+    }
+    return { state: lastState, value: values };
+  }
+
   async getRows(
     startRow: number,
     rowCount: number,
@@ -247,8 +332,18 @@ export class DataSourceContentQuery {
       };
     }
 
-    const refs = this.blocksForRange(startRow, rowCount);
-    if (!refs) return this.missingResult(`No contiguous data blocks cover source rows ${startRow}-${startRow + rowCount - 1}`);
+    const refs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const ref = this.findBlock(this.physicalRow(row));
+      if (ref === undefined) {
+        return this.missingResult(`No data block covers source row ${String(row)}`);
+      }
+      if (!seen.has(ref.id)) {
+        seen.add(ref.id);
+        refs.push(ref);
+      }
+    }
 
     const loaded = new Map<string, LoadedBlock>();
     const outcomes = await Promise.all(refs.map(async (ref) => {
@@ -268,16 +363,16 @@ export class DataSourceContentQuery {
     }
 
     const rows: TableScalar[][] = [];
-    const endRowExclusive = startRow + rowCount;
-    for (const ref of refs) {
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const physicalRow = this.physicalRow(row);
+      const ref = this.findBlock(physicalRow)!;
       const block = loaded.get(ref.id)!;
-      const overlapStart = Math.max(startRow, ref.startRow);
-      const overlapEnd = Math.min(endRowExclusive, ref.startRow + ref.rowCount);
-      const localStart = overlapStart - ref.startRow;
-      const localEnd = overlapEnd - ref.startRow;
-      const values = block.rows.slice(localStart, localEnd);
-      if (values.length !== localEnd - localStart) return this.errorResult(`Data block ${ref.id} does not contain its declared row interval`);
-      rows.push(...values.map((row) => [...row]));
+      const localRow = physicalRow - ref.startRow;
+      const values = block.rows[localRow];
+      if (values === undefined) {
+        return this.errorResult(`Data block ${ref.id} does not contain source row ${String(row)}`);
+      }
+      rows.push([...values]);
     }
     return {
       state: state(this.source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'),
@@ -301,12 +396,11 @@ export class DataSourceContentQuery {
     return undefined;
   }
 
-  private findBlock(rowIndex: number): DataBlockRef | undefined {
-    const index = this.findBlockIndex(rowIndex);
-    return index < 0 ? undefined : this.source.blocks[index];
+  private physicalRow(logicalRow: number): number {
+    return this.source.rowOrder?.[logicalRow] ?? logicalRow;
   }
 
-  private findBlockIndex(rowIndex: number): number {
+  private findBlock(rowIndex: number): DataBlockRef | undefined {
     let low = 0;
     let high = this.source.blocks.length - 1;
     while (low <= high) {
@@ -317,27 +411,10 @@ export class DataSourceContentQuery {
       } else if (rowIndex >= block.startRow + block.rowCount) {
         low = middle + 1;
       } else {
-        return middle;
+        return block;
       }
     }
-    return -1;
-  }
-
-  /** Resolve a logical row range to a small contiguous list of block owners. */
-  private blocksForRange(startRow: number, rowCount: number): DataBlockRef[] | undefined {
-    if (rowCount === 0) return [];
-    const firstIndex = this.findBlockIndex(startRow);
-    if (firstIndex < 0) return undefined;
-    const endRowExclusive = startRow + rowCount;
-    const refs: DataBlockRef[] = [];
-    let cursor = startRow;
-    for (let index = firstIndex; index < this.source.blocks.length && cursor < endRowExclusive; index += 1) {
-      const ref = this.source.blocks[index]!;
-      if (ref.startRow > cursor || ref.startRow + ref.rowCount <= cursor) return undefined;
-      refs.push(ref);
-      cursor = Math.min(endRowExclusive, ref.startRow + ref.rowCount);
-    }
-    return cursor === endRowExclusive ? refs : undefined;
+    return undefined;
   }
 
   private async loadBlock(ref: DataBlockRef): Promise<LoadedBlock> {

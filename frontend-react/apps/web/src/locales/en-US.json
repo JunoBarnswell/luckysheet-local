@@ -22,6 +22,8 @@
   "review": "Review",
   "view": "View",
   "settings": "Settings",
+  "pivotAnalyze": "PivotTable Analyze",
+  "pivotDesign": "PivotTable Design",
   "tableSheetDesign": "TableSheet Design",
   "ganttTask": "Gantt Tasks",
   "ganttProject": "Gantt Project",
@@ -507,6 +509,8 @@
       "printLayout": "Print Layout",
       "appearanceFiles": "Appearance & Files",
       "settings": "Settings",
+      "pivotAnalyze": "PivotTable",
+      "pivotDesign": "PivotTable",
       "tableSheetDesign": "TableSheet"
       ,"ganttTask": "Gantt Tasks"
       ,"ganttProject": "Gantt Project"
@@ -718,6 +722,7 @@
       "chartFormatPanel": "Format Chart",
       "chartSelectData": "Select Data",
       "chartBuilder": "Chart Builder",
+      "analysisView": "Analysis View",
       "sparkline": "Sparkline",
       "pictureFormatPanel": "Format Picture",
       "sparklineDesign": "Sparkline Design",
@@ -765,7 +770,6 @@
       "textToColumns": "Text to Columns",
       "findReplace": "Find & Replace",
       "goTo": "Go To",
-      "selectionPane": "Selection Pane",
       "transpose": "Transpose",
       "flipHorizontal": "Flip H",
       "flipVertical": "Flip V",

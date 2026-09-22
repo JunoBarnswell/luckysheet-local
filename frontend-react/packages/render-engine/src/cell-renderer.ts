@@ -33,10 +33,6 @@ export interface PaneDrawOptions {
   assetUrlPending?: Set<string>;
   assetUrlErrors?: Map<string, string>;
   requestRender?: () => void;
-  /** Per-frame sparse neighbor index used by overflow text layout. */
-  neighborCache?: Map<string, { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] }>;
-  /** Lazily built row occupancy; one provider pass replaces per-cell scans. */
-  rowOccupancyCache?: Map<number, ReadonlySet<number>>;
 }
 
 export interface ExtensionsDrawOptions extends PaneDrawOptions {
@@ -224,11 +220,6 @@ export function drawCellLayer(options: PaneDrawOptions): void {
   });
 
   const deferredContent: Array<{ address: CellAddress; cell: CellRenderData; contentRect: Rect; spanRect: Rect }> = [];
-  const renderOptions: PaneDrawOptions = {
-    ...options,
-    neighborCache: options.neighborCache ?? new Map<string, { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] }>(),
-    rowOccupancyCache: options.rowOccupancyCache ?? new Map<number, ReadonlySet<number>>(),
-  };
   for (const address of addresses) {
       const { row, column } = address;
       const rect: Rect = {
@@ -290,7 +281,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
   for (const { address, cell, contentRect, spanRect } of deferredContent) {
     if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, contentRect, resolveDisplayText(cell), cell.presentation);
     else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, contentRect, cell.presentation, options);
-    else drawCellValue(context, skeleton, renderOptions, address, cell, contentRect);
+    else drawCellValue(context, skeleton, options, address, cell, contentRect);
     if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, checkboxStateFromValue(cell.editor, cell.value ?? null));
     if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
   }
@@ -715,7 +706,7 @@ function drawCellValue(
 
   context.save();
   context.font = layout.font;
-  context.fillStyle = style?.textColor ?? (cell.hyperlink ? '#0563c1' : theme.cellText);
+  context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
   const phoneticHeight = drawPhoneticGuide(context, cell, paintRect, layout.fontSizePx, style?.fontFamily, style?.textColor ?? theme.cellText);
 
@@ -766,26 +757,26 @@ function drawCellValue(
     context.fillText(text, x, y);
   }
 
-  if (style?.underline || style?.strikethrough || cell.hyperlink) {
+  if (style?.underline || style?.strikethrough) {
     const textWidth = Math.min(measured, layout.overflowWidthPx);
     const canvasAlign = canvasTextAlign(hAlign);
     let lineX1 = canvasAlign === "center" ? x - textWidth / 2 : canvasAlign === "right" ? x - textWidth : x;
     const lineX2 = lineX1 + textWidth;
-    context.strokeStyle = style?.textColor ?? (cell.hyperlink ? '#0563c1' : theme.cellText);
-    context.lineWidth = style?.underlineStyle === 'double' || style?.underlineStyle === 'doubleAccounting' ? 0.75 : 1;
+    context.strokeStyle = style.textColor ?? theme.cellText;
+    context.lineWidth = style.underlineStyle === 'double' || style.underlineStyle === 'doubleAccounting' ? 0.75 : 1;
     context.beginPath();
-    if (style?.underline || cell.hyperlink) {
+    if (style.underline) {
       const lineY = y + fontSize * 0.45;
-      const accounting = style?.underlineStyle === 'singleAccounting' || style?.underlineStyle === 'doubleAccounting';
+      const accounting = style.underlineStyle === 'singleAccounting' || style.underlineStyle === 'doubleAccounting';
       context.moveTo(lineX1, lineY);
       context.lineTo(lineX2, lineY);
-      if (style?.underlineStyle === 'double' || style?.underlineStyle === 'doubleAccounting') {
+      if (style.underlineStyle === 'double' || style.underlineStyle === 'doubleAccounting') {
         const secondLineY = lineY + (accounting ? 2.5 : 2);
         context.moveTo(lineX1, secondLineY);
         context.lineTo(lineX2, secondLineY);
       }
     }
-    if (style?.strikethrough) {
+    if (style.strikethrough) {
       context.moveTo(lineX1, y);
       context.lineTo(lineX2, y);
     }
@@ -826,40 +817,17 @@ function drawRichTextRuns(
 }
 
 function layoutNeighbors(options: PaneDrawOptions, address: CellAddress, range: { startColumn: number; endColumn: number }): { left: CellLayoutNeighbor[]; right: CellLayoutNeighbor[] } {
-  const cacheKey = `${address.row}:${range.startColumn}:${range.endColumn}`;
-  const cached = options.neighborCache?.get(cacheKey);
-  if (cached) return cached;
-  const occupied = options.rowOccupancyCache?.get(address.row) ?? buildRowOccupancy(options, address.row);
-  options.rowOccupancyCache?.set(address.row, occupied);
-  // Text can only paint inside the current PaneMap-owned pane. Resolving
-  // occupancy outside that pane cannot change the rendered result, but on an
-  // XLSX-width sheet it would turn every visible row into 16,384 canonical
-  // cell reads and allocate equally large neighbor arrays.
-  const firstVisibleColumn = options.visibleRange?.startColumn ?? 0;
-  const lastVisibleColumn = options.visibleRange?.endColumn ?? options.skeleton.columnCount - 1;
   const left: CellLayoutNeighbor[] = [];
-  for (let column = range.startColumn - 1; column >= firstVisibleColumn; column -= 1) {
-    left.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: occupied.has(column) });
-    if (left.at(-1)?.occupied) break;
+  for (let column = range.startColumn - 1; column >= 0; column -= 1) {
+    const neighbor = options.cellProvider({ row: address.row, column });
+    left.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: hasRenderableCellContent(neighbor) });
   }
   const right: CellLayoutNeighbor[] = [];
-  for (let column = range.endColumn + 1; column <= lastVisibleColumn; column += 1) {
-    right.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: occupied.has(column) });
-    if (right.at(-1)?.occupied) break;
+  for (let column = range.endColumn + 1; column < options.skeleton.columnCount; column += 1) {
+    const neighbor = options.cellProvider({ row: address.row, column });
+    right.push({ column, widthPx: options.skeleton.getColumnWidth(column), occupied: hasRenderableCellContent(neighbor) });
   }
-  const result = { left, right };
-  options.neighborCache?.set(cacheKey, result);
-  return result;
-}
-
-function buildRowOccupancy(options: PaneDrawOptions, row: number): ReadonlySet<number> {
-  const occupied = new Set<number>();
-  const firstVisibleColumn = options.visibleRange?.startColumn ?? 0;
-  const lastVisibleColumn = options.visibleRange?.endColumn ?? options.skeleton.columnCount - 1;
-  for (let column = firstVisibleColumn; column <= lastVisibleColumn; column += 1) {
-    if (hasRenderableCellContent(options.cellProvider({ row, column }))) occupied.add(column);
-  }
-  return occupied;
+  return { left, right };
 }
 
 function hasRenderableCellContent(cell: CellRenderData | undefined): boolean {

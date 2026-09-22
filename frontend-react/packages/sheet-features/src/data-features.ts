@@ -12,16 +12,14 @@ import type {
   RangeRef,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, columnLabel, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
+import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
-import { resolveValidationRule } from './rule-index';
-import { RuleIntervalIndex } from './rule-index';
-import type { ResolvedCellReader } from './rules-runtime';
-import type { CommandContext, CommandResult, CommandRuntime } from "@react-sheets/command-runtime";
+import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
+  evaluateFormula,
   formatFormula,
   isArrayValue,
   isFormulaError,
@@ -34,7 +32,6 @@ import {
   type FormulaValue,
   type ScalarValue,
 } from "@react-sheets/formula-engine";
-import { FormulaEngine } from '@react-sheets/formula-engine';
 
 // ---------- 基础 ----------
 
@@ -53,6 +50,7 @@ export interface AppliedSortState {
   range: RangeRef;
   criteria: Array<{ column: number; ascending: boolean }>;
   hasHeader?: boolean;
+  revision: number;
 }
 
 interface RowsPermutedMutationParams {
@@ -61,6 +59,7 @@ interface RowsPermutedMutationParams {
   sourceRows: number[];
   affectedColumnEnd: number;
   sortState?: AppliedSortState;
+  previousSortState?: AppliedSortState;
 }
 
 /**
@@ -98,6 +97,12 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
 }
 
+function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | undefined): void {
+  const target = sheet as WorksheetModel & { appliedSortState?: AppliedSortState };
+  if (state === undefined) delete target.appliedSortState;
+  else target.appliedSortState = structuredClone(state);
+}
+
 function rowsPermutedAffectedColumnEnd(sheet: WorksheetModel, range: RangeRef): number {
   return sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
 }
@@ -107,10 +112,25 @@ function inRange(range: RangeRef, row: number, column: number): boolean {
     && column >= range.startColumn && column <= range.endColumn;
 }
 
+function cellRange(sheetId: string, row: number, column: number): RangeRef {
+  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous?: CellData }> {
+  const result: Array<{ row: number; column: number; previous?: CellData }> = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      result.push({ row, column, previous: structuredClone(sheet.cells.get(row, column)) });
+    }
+  }
+  return result;
+}
+
 function applyRangeValues(
   context: CommandContext,
   params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
 ): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
   const range: RangeRef = {
     sheetId: params.sheetId,
     startRow: params.startRow,
@@ -119,6 +139,7 @@ function applyRangeValues(
     endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
   };
   const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
+  const previous = snapshotCells(sheet, range);
   const affectedRanges = [range];
   context.applyMutation({
     id: 'range.set',
@@ -129,10 +150,27 @@ function applyRangeValues(
       values,
     },
     affectedRanges,
+    inverse: previous.map((entry) => ({
+      id: 'cell.restore' as const,
+      unitId: context.workbook.unitId,
+      sheetId: params.sheetId,
+      params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
+      affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
+    })),
+    apply: () => {
+      for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset += 1) {
+          const value = values[rowOffset]?.[columnOffset];
+          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
+        }
+      }
+    },
   });
 }
 
 function clearRangeContents(context: CommandContext, range: RangeRef): void {
+  const sheet = context.workbook.getSheet(range.sheetId);
+  const previous = snapshotCells(sheet, range);
   const affectedRanges = [structuredClone(range)];
   context.applyMutation({
     id: 'range.clear',
@@ -140,6 +178,25 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
     sheetId: range.sheetId,
     params: { sheetId: range.sheetId, range, family: 'contents' as const },
     affectedRanges,
+    inverse: previous.map((entry) => ({
+      id: 'cell.restore' as const,
+      unitId: context.workbook.unitId,
+      sheetId: range.sheetId,
+      params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
+      affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
+    })),
+    apply: () => {
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          const current = sheet.cells.get(row, column);
+          if (!current) continue;
+          const next = { ...current, value: null };
+          delete next.formula;
+          delete next.displayValue;
+          sheet.cells.set(row, column, next);
+        }
+      }
+    },
   });
 }
 
@@ -153,6 +210,8 @@ function applyRowsInsert(context: CommandContext, sheetId: string, at: number, c
     sheetId,
     params: { sheetId, at, count },
     affectedRanges,
+    inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }),
   });
 }
 
@@ -160,6 +219,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
   if (count <= 0) return;
   const sheet = context.workbook.getSheet(sheetId);
   const end = at + count - 1;
+  const removed = snapshotCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
   const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
   context.applyMutation({
     id: 'rows.deleted',
@@ -167,16 +227,29 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
     sheetId,
     params: { sheetId, at, count },
     affectedRanges,
+    inverse: [
+      { id: 'rows.inserted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges },
+      ...removed.map((entry) => ({
+        id: 'cell.restore' as const,
+        unitId: context.workbook.unitId,
+        sheetId,
+        params: { sheetId, row: entry.row, column: entry.column, previous: entry.previous },
+        affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
+      })),
+    ],
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }),
   });
 }
 
-function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
+function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, previous: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
   context.applyMutation({
     id: 'outline.set',
     unitId: context.workbook.unitId,
     sheetId,
     params: { sheetId, outline: structuredClone(next) },
     affectedRanges,
+    inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, outline: structuredClone(previous) }, affectedRanges }],
+    apply: () => { context.workbook.getSheet(sheetId).outline = structuredClone(next); },
   });
 }
 
@@ -257,8 +330,7 @@ function cellText(resolved: FilterCellValue | undefined): string {
   return resolved?.text ?? '';
 }
 
-function cellStorageText(cell: CellData | undefined, resolvedValue?: unknown): string {
-  if (resolvedValue !== undefined && resolvedValue !== null && (typeof resolvedValue === 'string' || typeof resolvedValue === 'number' || typeof resolvedValue === 'boolean')) return String(resolvedValue);
+function cellStorageText(cell: CellData | undefined): string {
   return resolveFilterCellValue(cell).text;
 }
 
@@ -285,8 +357,7 @@ function canonicalFilterDate(resolved: FilterCellValue | undefined, dateSystem: 
   return null;
 }
 
-function numericOf(cell: CellData | undefined, resolvedValue?: unknown): number | undefined {
-  if (typeof resolvedValue === 'number') return Number.isFinite(resolvedValue) ? resolvedValue : undefined;
+function numericOf(cell: CellData | undefined): number | undefined {
   const text = cellStorageText(cell);
   if (!text) return undefined;
   const cleaned = text.replace(/[$,%\s]/g, "");
@@ -332,13 +403,13 @@ function conditionalRangeKey(range: RangeRef): string {
   return `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
 }
 
-function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalFormatRule, range: RangeRef, resolvedCells?: ResolvedCellReader): ConditionalRangeStats {
+function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalFormatRule, range: RangeRef): ConditionalRangeStats {
   const values: number[] = [];
-  for (const { cell, row, column } of sheet.cells.entries()) {
-    if (row < range.startRow || row > range.endRow || column < range.startColumn || column > range.endColumn) continue;
-    const resolved = resolvedCells?.resolve(sheet.id, row, column);
-    const value = numericOf(resolved?.cell ?? cell, resolved?.value);
-    if (value !== undefined) values.push(value);
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const value = numericOf(sheet.cells.get(row, column));
+      if (value !== undefined) values.push(value);
+    }
   }
   const min = values.length === 0 ? 0 : values.reduce((current, value) => Math.min(current, value), Number.POSITIVE_INFINITY);
   const max = values.length === 0 ? 1 : values.reduce((current, value) => Math.max(current, value), Number.NEGATIVE_INFINITY);
@@ -358,29 +429,20 @@ function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalForm
 
 /**
  * Compiles rule formulas once and evaluates only requested cells/ranges. The
- * public overlay projection below uses this same runtime, so there is one
- * evaluator and no top/bottom inner scan.
+ * compatibility computeConditionalOverlays wrapper below intentionally uses
+ * this same runtime, so there is one evaluator and no top/bottom inner scan.
  */
 export class ConditionalFormatRuntime {
   private readonly rules: ConditionalFormatRule[];
-  private valueCounts: Map<string, number>;
-  private readonly ruleIndex = new RuleIntervalIndex<ConditionalFormatRule>();
+  private readonly valueCounts: Map<string, number>;
   private readonly stats = new Map<string, ConditionalRangeStats>();
   private readonly compiledFormulas = new Map<string, FormulaAst | null>();
   private readonly cellCache = new Map<string, ConditionalOverlay | undefined>();
-  private readonly formulaEngine: FormulaEngine;
 
-  constructor(
-    private readonly sheet: WorksheetModel,
-    private readonly resolvedCells?: ResolvedCellReader,
-    formulaEngine?: FormulaEngine,
-  ) {
-    if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: conditional rules require the workbook-owned Rust FormulaEngine');
-    this.formulaEngine = formulaEngine;
+  constructor(private readonly sheet: WorksheetModel) {
     this.rules = [...sheet.conditionalFormats].sort((left, right) =>
       (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER));
-    for (const rule of this.rules) for (const range of rule.ranges) this.ruleIndex.add(range, rule);
-    this.valueCounts = buildValueCounts(sheet, this.rules, this.resolvedCells);
+    this.valueCounts = buildValueCounts(sheet, this.rules);
     for (const rule of this.rules) {
       if (rule.operator === 'formula') {
         try {
@@ -393,22 +455,7 @@ export class ConditionalFormatRuntime {
       for (const range of rule.ranges) {
         if (range.sheetId !== sheet.id) continue;
         if (rule.type === 'dataBar' || rule.type === 'colorScale' || rule.type === 'iconSet' || rule.type === 'topBottom') {
-          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(sheet, rule, range, this.resolvedCells));
-        }
-      }
-    }
-  }
-
-  /** Invalidate only derived rule state after a cell/rule mutation. */
-  invalidate(): void {
-    this.cellCache.clear();
-    this.stats.clear();
-    this.valueCounts = buildValueCounts(this.sheet, this.rules, this.resolvedCells);
-    for (const rule of this.rules) {
-      for (const range of rule.ranges) {
-        if (range.sheetId !== this.sheet.id) continue;
-        if (rule.type === 'dataBar' || rule.type === 'colorScale' || rule.type === 'iconSet' || rule.type === 'topBottom') {
-          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(this.sheet, rule, range, this.resolvedCells));
+          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(sheet, rule, range));
         }
       }
     }
@@ -419,24 +466,21 @@ export class ConditionalFormatRuntime {
     if (this.cellCache.has(key)) return this.cellCache.get(key);
     let overlay: ConditionalOverlay | undefined;
     let stoppedByRule = false;
-    for (const rule of [...this.ruleIndex.query(this.sheet.id, row, column)].sort((left, right) =>
-      (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))) {
+    for (const rule of this.rules) {
       const range = rule.ranges.find((candidate) => candidate.sheetId === this.sheet.id
         && row >= candidate.startRow && row <= candidate.endRow
         && column >= candidate.startColumn && column <= candidate.endColumn);
       if (!range || stoppedByRule) continue;
-      const resolved = this.resolvedCells?.resolve(this.sheet.id, row, column);
-      const cell = resolved?.cell ?? this.sheet.cells.get(row, column);
-      const resolvedValue = resolved?.value;
+      const cell = this.sheet.cells.get(row, column);
       const stats = this.stats.get(`${rule.id}:${conditionalRangeKey(range)}`);
       let matches = false;
       switch (rule.type) {
         case 'highlight':
-          matches = evaluateHighlight(rule, cell, this.sheet, row, column, this.valueCounts, this.compiledFormulas.get(rule.id), resolvedValue, this.resolvedCells, this.formulaEngine);
+          matches = evaluateHighlight(rule, cell, this.sheet, row, column, this.valueCounts, this.compiledFormulas.get(rule.id));
           if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
           break;
         case 'dataBar': {
-          const numeric = numericOf(cell, resolvedValue);
+          const numeric = numericOf(cell);
           if (numeric !== undefined && stats) {
             matches = true;
             const span = stats.max - stats.min || 1;
@@ -445,7 +489,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'colorScale': {
-          const numeric = numericOf(cell, resolvedValue);
+          const numeric = numericOf(cell);
           if (numeric !== undefined && stats) {
             matches = true;
             const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
@@ -458,7 +502,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'iconSet': {
-          const numeric = numericOf(cell, resolvedValue);
+          const numeric = numericOf(cell);
           if (numeric !== undefined && stats) {
             matches = true;
             const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
@@ -467,7 +511,7 @@ export class ConditionalFormatRuntime {
           break;
         }
         case 'topBottom': {
-          matches = matchesTopBottom(rule, cell, stats, resolvedValue);
+          matches = matchesTopBottom(rule, cell, stats);
           if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
           break;
         }
@@ -494,17 +538,16 @@ export class ConditionalFormatRuntime {
   }
 }
 
-export function createConditionalFormatRuntime(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): ConditionalFormatRuntime {
-  return new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine);
+export function createConditionalFormatRuntime(sheet: WorksheetModel): ConditionalFormatRuntime {
+  return new ConditionalFormatRuntime(sheet);
 }
 
-export function computeConditionalOverlays(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): Map<string, ConditionalOverlay> {
-  return new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine).resolveAll();
+export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, ConditionalOverlay> {
+  return new ConditionalFormatRuntime(sheet).resolveAll();
 }
 
-function createDefaultConditionalVisualResolver(sheet: WorksheetModel, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): FilterVisualResolver {
-  if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: filter visual evaluation requires the workbook-owned Rust FormulaEngine');
-  const runtime = new ConditionalFormatRuntime(sheet, resolvedCells, formulaEngine);
+function createDefaultConditionalVisualResolver(sheet: WorksheetModel): FilterVisualResolver {
+  const runtime = new ConditionalFormatRuntime(sheet);
   return createEffectiveFilterVisualResolver((row, column) => runtime.resolveCell(row, column));
 }
 
@@ -512,11 +555,10 @@ function matchesTopBottom(
   rule: ConditionalFormatRule,
   cell: CellData | undefined,
   stats: ConditionalRangeStats | undefined,
-  resolvedValue?: unknown,
 ): boolean {
   if (!stats || !cell) return false;
   const config = rule.topBottom ?? { direction: rule.operator === 'bottom' ? 'bottom' : 'top', rank: Number(rule.value1 ?? 10) };
-  const numeric = numericOf(cell, resolvedValue);
+  const numeric = numericOf(cell);
   if (numeric === undefined) return false;
   return config.direction === 'top' ? stats.topThreshold !== undefined && numeric >= stats.topThreshold : stats.bottomThreshold !== undefined && numeric <= stats.bottomThreshold;
 }
@@ -529,12 +571,9 @@ function evaluateHighlight(
   column: number,
   valueCounts: Map<string, number>,
   compiledFormula?: FormulaAst | null,
-  resolvedValue?: unknown,
-  resolvedCells?: ResolvedCellReader,
-  formulaEngine?: FormulaEngine,
 ): boolean {
-  const text = cellStorageText(cell, resolvedValue);
-  const numeric = numericOf(cell, resolvedValue);
+  const text = cellStorageText(cell);
+  const numeric = numericOf(cell);
   const firstValue = rule.value1;
   const firstNumber = typeof firstValue === "number" ? firstValue : Number(firstValue);
   switch (rule.operator) {
@@ -552,40 +591,58 @@ function evaluateHighlight(
     case "notContainsText": return typeof firstValue === "string" && !text.toLowerCase().includes(String(firstValue).toLowerCase());
     case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
     case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
-    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), compiledFormula, resolvedCells, formulaEngine);
+    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), compiledFormula);
     default: return false;
   }
 }
 
-function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null, resolvedCells?: ResolvedCellReader, formulaEngine?: FormulaEngine): boolean {
+function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null): boolean {
   const source = formula.trim();
   if (!source) return false;
-  if (compiledFormula === null) throw new Error(`CONDITIONAL_FORMAT_EVALUATION_FAILED: invalid predicate for rule ${formula}`);
+  if (compiledFormula === null) return false;
   try {
     const parsed = compiledFormula ?? parseFormula(source.startsWith('=') ? source : `=${source}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    if (!formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: conditional formula evaluation requires the workbook-owned Rust FormulaEngine');
-    const evaluator = formulaEngine;
-    const result = evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column });
+    const result = evaluateFormula(ast, {
+      currentCell: { sheetId: sheet.id, row, column },
+      readCell: (address): FormulaValue => {
+        if (address.sheetId !== sheet.id) return null;
+        const target = sheet.cells.get(address.row, address.column);
+        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
+      },
+      readRange: (range): Iterable<FormulaValue> => {
+        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
+        const values: FormulaValue[] = [];
+        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
+            const target = sheet.cells.get(targetRow, targetColumn);
+            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
+          }
+        }
+        return values;
+      },
+    });
     if (isFormulaError(result)) return false;
     if (isArrayValue(result)) return Boolean(result[0]?.[0]);
     return result === true || (typeof result === 'number' && result !== 0) || (typeof result === 'string' && result.length > 0);
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('CONDITIONAL_FORMAT_EVALUATION_FAILED')) throw error;
-    throw new Error(`CONDITIONAL_FORMAT_EVALUATION_FAILED: ${error instanceof Error ? error.message : 'predicate evaluation failed'}`);
+  } catch {
+    // An unsupported/invalid CF formula is not a successful match. Do not
+    // fall back to the current cell value, which would silently apply a rule
+    // whose authored predicate could not be evaluated.
+    return false;
   }
 }
 
-function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[], resolvedCells?: ResolvedCellReader): Map<string, number> {
+function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const rule of rules) {
     if (rule.operator !== "duplicate" && rule.operator !== "unique") continue;
     for (const range of rule.ranges) {
-      for (const { cell, row: r, column: c } of sheet.cells.entries()) {
-        if (r < range.startRow || r > range.endRow || c < range.startColumn || c > range.endColumn) continue;
-        const resolved = resolvedCells?.resolve(sheet.id, r, c);
-        const text = cellStorageText(resolved?.cell ?? cell, resolved?.value);
-        counts.set(text, (counts.get(text) ?? 0) + 1);
+      for (let r = range.startRow; r <= range.endRow; r++) {
+        for (let c = range.startColumn; c <= range.endColumn; c++) {
+          const text = cellStorageText(sheet.cells.get(r, c));
+          counts.set(text, (counts.get(text) ?? 0) + 1);
+        }
       }
     }
   }
@@ -678,10 +735,9 @@ export function computeFilterHiddenRows(
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
-  formulaEngine?: FormulaEngine,
 ): Set<number> {
   const hidden = new Set<number>();
-  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet, undefined, formulaEngine);
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   let filters: import('@react-sheets/core-model').AutoFilterModel[] = [];
   try {
     filters = resolveAutoFilters(sheet).map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter));
@@ -1166,18 +1222,14 @@ export interface DataValidationResult {
   alertStyle?: 'stop' | 'warning' | 'information';
 }
 
-export interface RuleEvaluationOptions {
-  /** Canonical formula result authority shared with sorting/filtering. */
-  readonly formulaEngine?: import('@react-sheets/formula-engine').FormulaEngine;
-  /** Optional resolved-cell authority for data-block overlays. */
-  readonly readCell?: (sheet: WorksheetModel, row: number, column: number) => unknown;
-}
-
 export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
-  return resolveValidationRule(sheet, row, column);
+  return sheet.dataValidations.find((rule) =>
+    rule.ranges.some((range) =>
+      row >= range.startRow && row <= range.endRow
+      && column >= range.startColumn && column <= range.endColumn));
 }
 
-export function validationList(rule: DataValidationRule, sheet?: WorksheetModel, options?: RuleEvaluationOptions): string[] | undefined {
+export function validationList(rule: DataValidationRule, sheet?: WorksheetModel): string[] | undefined {
   if (rule.type !== "list") return undefined;
   if (rule.listSource?.kind === 'values') return [...rule.listSource.values];
   if (rule.listSource?.kind === 'range' && sheet && rule.listSource.range.sheetId === sheet.id) {
@@ -1185,8 +1237,7 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel,
     const range = normalizeRangeRef(rule.listSource.range);
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const resolved = options?.readCell?.(sheet, row, column);
-        const value = resolved === undefined ? sheet.cells.get(row, column)?.value : resolved;
+        const value = sheet.cells.get(row, column)?.value;
         if (value != null && String(value) !== '') values.push(String(value));
       }
     }
@@ -1195,7 +1246,7 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel,
   const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
   if (!formula) return undefined;
   if (sheet && formula.trim().startsWith('=')) {
-    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), options);
+    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     if (isArrayValue(evaluated)) {
       return evaluated.flat().filter((value): value is string | number | boolean =>
         value !== null && !isFormulaError(value)).map(String);
@@ -1228,17 +1279,32 @@ function evaluateValidationFormula(
   column: number,
   candidate: CellData['value'] | undefined,
   anchor?: { sheetId: string; row: number; column: number },
-  options?: RuleEvaluationOptions,
 ): FormulaValue {
   try {
     const parsed = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
-    if (!options?.formulaEngine) throw new Error('FORMULA_BINDING_REQUIRED: validation formula evaluation requires the workbook-owned Rust FormulaEngine');
-    const evaluator = options.formulaEngine;
-    const overrides = candidate === undefined ? [] : [{ address: { sheetId: sheet.id, row, column }, value: candidate }];
-    return evaluator.evaluateAst(ast, { sheetId: sheet.id, row, column }, overrides);
-  } catch (error) {
-    throw new Error(`RULE_EVALUATION_FAILED: ${error instanceof Error ? error.message : 'validation formula evaluation failed'}`);
+    return evaluateFormula(ast, {
+      currentCell: { sheetId: sheet.id, row, column },
+      readCell: (address): FormulaValue => {
+        if (address.sheetId !== sheet.id) return null;
+        if (address.row === row && address.column === column && candidate !== undefined) return candidate as FormulaValue;
+        const target = sheet.cells.get(address.row, address.column);
+        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
+      },
+      readRange: (range): Iterable<FormulaValue> => {
+        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
+        const values: FormulaValue[] = [];
+        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
+            const target = sheet.cells.get(targetRow, targetColumn);
+            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
+          }
+        }
+        return values;
+      },
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -1251,7 +1317,6 @@ export function validateDataInput(
   row: number,
   column: number,
   value: CellData["value"],
-  options?: RuleEvaluationOptions,
 ): DataValidationResult {
   const rule = findValidationRule(sheet, row, column);
   if (!rule) return { valid: true, blocking: false };
@@ -1264,7 +1329,7 @@ export function validateDataInput(
     const valid = Boolean(rule.allowBlank ?? true);
     return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
-  const list = validationList(rule, sheet, options);
+  const list = validationList(rule, sheet);
   if (list) {
     const candidateValues = rule.multiSelect ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : [String(value)];
     const ok = candidateValues.length > 0 && candidateValues.every((candidate) =>
@@ -1335,7 +1400,7 @@ export function validateDataInput(
   }
   if (rule.type === "custom") {
     if (!rule.formula1) return withRule({ valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") });
-    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), options);
+    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
     const ok = evaluated === true || (typeof evaluated === 'number' && evaluated !== 0) || (typeof evaluated === 'string' && evaluated.length > 0);
     return withRule(judge(ok, rule));
   }
@@ -1577,7 +1642,7 @@ function executeMatrixTransform(
   context: CommandContext,
   params: { sheetId: string; range: RangeRef; direction?: 'horizontal' | 'vertical' },
   transpose: boolean,
-): CommandResult {
+): ReturnType<CommandRuntime['execute']> {
   const sheet = runtime.workbook.getSheet(params.sheetId);
   const range = normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
   assertMatrixTransformSupported(sheet, range);
@@ -1648,10 +1713,19 @@ function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<
 export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<RowsPermutedMutationParams>({
     id: 'rows.permuted',
+    handler: (item, context) => {
+      if (!isRowsPermutedMutation(item.params)) throw new Error('Invalid rows.permuted mutation payload');
+      const params = item.params;
+      const range = params.range;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
+      setAppliedSortState(sheet, params.sortState);
+    },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
+      inverseIds: ['rows.permuted'],
     },
   });
 
@@ -1683,6 +1757,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       }
       const startRow = hasHeader ? range.startRow + 1 : range.startRow;
       const bodyRange: RangeRef = { ...range, startRow };
+      const inverseRows = new Array<number>(sourceRows.length);
+      sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
       const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
       context.applyMutation({
@@ -1701,9 +1777,34 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
             range,
             criteria: structuredClone(params.criteria),
             hasHeader,
+            revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
           },
+          previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+            ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+            : undefined),
         },
         affectedRanges,
+        inverse: [{
+          id: 'rows.permuted',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: {
+            ...params,
+            hasHeader,
+            dataRegionContext: regionContext,
+            range: bodyRange,
+            sourceRows: inverseRows,
+            affectedColumnEnd,
+            sortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+              : undefined),
+            previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+              : undefined),
+          },
+          affectedRanges,
+        }],
+        apply: () => applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1849,7 +1950,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
         const nextOutline = structuredClone(sheetOutline);
         nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
-        applyOutline(context, params.sheetId, nextOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
+        applyOutline(context, params.sheetId, nextOutline, sheetOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
         mutationCount += 1;
       }
       return { operationId: context.operationId, mutationCount, affectedRanges };

@@ -13,6 +13,8 @@ export type RibbonCatalogTabId =
   | 'review'
   | 'view'
   | 'settings'
+  | 'pivotAnalyze'
+  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'
@@ -66,6 +68,8 @@ export type RibbonGroupId =
   | 'printLayout'
   | 'appearanceFiles'
   | 'settings'
+  | 'pivotAnalyze'
+  | 'pivotDesign'
   | 'tableSheetDesign'
   | 'ganttTask'
   | 'ganttProject'
@@ -213,6 +217,7 @@ export type RibbonCommandId =
   | 'textbox'
   | 'pivotTable'
   | 'chartBuilder'
+  | 'analysisView'
   | 'sparkline'
   | 'pictureFormatPanel'
   | 'sparklineDesign'
@@ -223,6 +228,7 @@ export type RibbonCommandId =
   | 'sortDescending'
   | 'customSort'
   | 'dataSource'
+  | 'createDataTable'
   | 'createDataSource'
   | 'formatAsTable'
   | 'totalRow'
@@ -241,7 +247,6 @@ export type RibbonCommandId =
   | 'textToColumns'
   | 'findReplace'
   | 'goTo'
-  | 'selectionPane'
   | 'transpose'
   | 'flipHorizontal'
   | 'flipVertical'
@@ -471,6 +476,7 @@ export interface RibbonCommandActions {
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
   onConvertActiveTableToRange: () => void;
+  onCreateDataTable?: () => void;
   onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -495,7 +501,6 @@ export interface RibbonCommandActions {
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateCamera: () => void;
-  onCaptureScreenshot: () => void | Promise<void>;
   onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
   onCreateTextBox: () => void;
@@ -541,7 +546,7 @@ export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
   | { type: 'intent'; intent: UiSessionIntent }
-  | { type: 'callback'; invoke: () => void | Promise<void> };
+  | { type: 'callback'; invoke: () => void };
 
 export interface RibbonCommandPlacement {
   readonly tab: RibbonCatalogTabId;
@@ -561,7 +566,6 @@ export interface CommandDefinition {
   readonly commandId?: string;
   readonly when?: (context: RibbonCommandContext) => boolean;
   readonly enabled?: (context: RibbonCommandContext) => boolean;
-  readonly disabledReason?: (context: RibbonCommandContext) => string | undefined;
   readonly active?: (context: RibbonCommandContext) => boolean;
   readonly build: (context: RibbonCommandContext) => RibbonCommandResult | undefined;
 }
@@ -751,6 +755,8 @@ export const RIBBON_TEXT = {
     printLayout: 'groups.printLayout',
     appearanceFiles: 'groups.appearanceFiles',
     settings: 'groups.settings',
+    pivotAnalyze: 'groups.pivotAnalyze',
+    pivotDesign: 'groups.pivotDesign',
     tableSheetDesign: 'groups.tableSheetDesign',
     ganttTask: 'groups.ganttTask',
     ganttProject: 'groups.ganttProject',
@@ -930,6 +936,7 @@ export const RIBBON_TEXT = {
     chartFormatPanel: 'commands.chartFormatPanel',
     chartSelectData: 'commands.chartSelectData',
     chartBuilder: 'commands.chartBuilder',
+    analysisView: 'commands.analysisView',
     sparkline: 'commands.sparkline',
     pictureFormatPanel: 'commands.pictureFormatPanel',
     shapeFormatPanel: 'commands.shapeFormatPanel',
@@ -970,6 +977,7 @@ export const RIBBON_TEXT = {
     sortDescending: 'commands.sortDescending',
     customSort: 'commands.customSort',
     dataSource: 'commands.dataSource',
+    createDataTable: 'commands.createDataTable',
     createDataSource: 'commands.createDataSource',
     formatAsTable: 'commands.formatAsTable',
     totalRow: 'commands.totalRow',
@@ -988,7 +996,6 @@ export const RIBBON_TEXT = {
     textToColumns: 'commands.textToColumns',
     findReplace: 'commands.findReplace',
     goTo: 'commands.goTo',
-    selectionPane: 'commands.selectionPane',
     transpose: 'commands.transpose',
     flipHorizontal: 'commands.flipHorizontal',
     flipVertical: 'commands.flipVertical',
@@ -1064,6 +1071,8 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('printLayout', 'view', 40),
   group('appearanceFiles', 'view', 60),
   group('settings', 'settings', 10),
+  group('pivotAnalyze', 'pivotAnalyze', 10),
+  group('pivotDesign', 'pivotDesign', 10),
   group('tableSheetDesign', 'tableSheetDesign', 10),
   group('ganttTask', 'ganttTask', 10),
   group('ganttProject', 'ganttProject', 20),
@@ -1162,8 +1171,8 @@ const BASE_RIBBON_LAYOUT_SPECS: Readonly<Record<Extract<RibbonLayoutSpec['tab'],
     tab: 'data',
     groups: [
       groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort-ascending'), commandNode('sortDescending', 'sortDescending', 'sort-descending')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'custom-sort')))),
-        groupSpec('dataTools', 20, rowNode('dataTools.layout', commandNode('dataSource', 'dataSource', 'data-source', 'large'), columnNode('dataTools.options', rowNode('dataTools.source', commandNode('createDataSource', 'createDataSource', 'create-data-source'), commandNode('dataValidation', 'dataValidation', 'data-validation')), rowNode('dataTools.filter', commandNode('filterSelection', 'filterSelection', 'filter-selection'), commandNode('clearFilter', 'clearFilter', 'clear-filter'))))),
-        groupSpec('findTransform', 30, columnNode('findTransform.primary', rowNode('findTransform.search', commandNode('findReplace', 'findReplace', 'find-replace'), commandNode('goTo', 'goTo', 'go-to')), rowNode('findTransform.transform', commandNode('transpose', 'transpose', 'transpose'), commandNode('flipHorizontal', 'flipHorizontal', 'flip-horizontal'), commandNode('flipVertical', 'flipVertical', 'flip-vertical'), commandNode('splitByDelimiter', 'splitByDelimiter', 'split-delimiter')))),
+        groupSpec('dataTools', 20, rowNode('dataTools.layout', commandNode('dataSource', 'dataSource', 'data-source', 'large'), columnNode('dataTools.options', rowNode('dataTools.source', commandNode('createDataTable', 'createDataTable', 'data-source'), commandNode('createDataSource', 'createDataSource', 'create-data-source')), rowNode('dataTools.validation', commandNode('dataValidation', 'dataValidation', 'data-validation')), rowNode('dataTools.filter', commandNode('filterSelection', 'filterSelection', 'filter-selection'), commandNode('clearFilter', 'clearFilter', 'clear-filter'))))),
+        groupSpec('findTransform', 30, columnNode('findTransform.primary', rowNode('findTransform.search', commandNode('findReplace', 'findReplace', 'find-replace'), commandNode('goTo', 'goTo', 'go-to')), rowNode('findTransform.transform', commandNode('transpose', 'transpose', 'transpose'), commandNode('flipHorizontal', 'flipHorizontal', 'flip-horizontal')), rowNode('findTransform.split', commandNode('flipVertical', 'flipVertical', 'flip-vertical'), commandNode('splitByDelimiter', 'splitByDelimiter', 'split-delimiter')))),
       groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'group-rows'), commandNode('ungroupRows', 'ungroupRows', 'ungroup-rows'), commandNode('showLevel1', 'showLevel1', 'show-outline-level')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'group-columns'), commandNode('ungroupColumns', 'ungroupColumns', 'ungroup-columns'), commandNode('showLevel2', 'showLevel2', 'show-outline-level')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'subtotal'), commandNode('removeDuplicates', 'removeDuplicates', 'remove-duplicates'), commandNode('textToColumns', 'textToColumns', 'text-to-columns'), commandNode('showLevel3', 'showLevel3', 'show-outline-level')))),
         groupSpec('whatIf', 70, rowNode('whatIf.layout', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'), commandNode('sjsTable', 'sjsTable', 'function', 'large'))),
     ],
@@ -1220,7 +1229,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   homeControl('fill-color', 'font', 100),
   ribbonSurface('home', 'font.phonetic-guide', 'font', 105, 'small', 'phoneticGuide'),
   ribbonSurface('home', 'font.dialog-launcher', 'font', 110, 'small', 'formatCellsFont'),
-  homeControl('alignment-menu', 'alignment', 10),
+  homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1253,6 +1262,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
   ribbonSurface('home', 'number.comma', 'number', 40, 'small', 'numberFormatComma'),
+  ribbonSurface('home', 'number.decimal', 'number', 50, 'menu', 'numberFormatDecimal', ['wide', 'compact', 'narrow'], undefined, 'control.number-format'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
   ribbonSurface('home', 'number.dialog-launcher', 'number', 99, 'small', 'formatCellsNumber'),
@@ -1269,8 +1279,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'styles.table', 'styles', 30, 'tile', 'formatAsTable'),
   ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'menu', 'formatCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-format-menu'),
   ribbonSurface('home', 'styles.validation', 'styles', 50, 'menu', 'dataValidation', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
-  ribbonSurface('home', 'styles.template', 'styles', 60, 'menu', 'cellTemplate', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
-  ribbonSurface('home', 'styles.editor', 'styles', 70, 'menu', 'cellEditor', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
+  ribbonSurface('home', 'styles.template', 'styles', 60, 'tile', 'cellTemplate'),
+  ribbonSurface('home', 'styles.editor', 'styles', 70, 'tile', 'cellEditor'),
   homeControl('cells-insert-menu', 'cells', 10),
   homeControl('cells-delete-menu', 'cells', 20),
   homeControl('cells-format-menu', 'cells', 30),
@@ -1309,7 +1319,6 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
   ribbonSurface('home', 'editing.go-to', 'editing', 101, 'menu', 'goTo', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
-  ribbonSurface('home', 'editing.selection-pane', 'editing', 102, 'menu', 'selectionPane', ['wide', 'compact', 'narrow'], undefined, 'editing.find'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1327,6 +1336,7 @@ export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('insert', 'charts.recommended', 'charts', 10, 'large', 'recommendedCharts'),
   ribbonSurface('insert', 'charts.gallery', 'charts', 20, 'gallery', 'chartBuilder'),
   ribbonSurface('insert', 'charts.pivot', 'charts', 30, 'large', 'pivotChart'),
+  ribbonSurface('insert', 'charts.analysis-view', 'charts', 40, 'large', 'analysisView'),
   ribbonSurface('insert', 'sparklines.gallery', 'sparklines', 10, 'gallery', 'sparkline'),
   ribbonSurface('insert', 'filters.slicer', 'filters', 10, 'large', 'pivotSlicer'),
   ribbonSurface('insert', 'filters.timeline', 'filters', 20, 'large', 'pivotTimeline'),
@@ -1400,9 +1410,8 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
         columnNode(
           'alignment.controls',
           rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom')),
-          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.indent-increase')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right')),
         ),
-        homeSurfaceNode('control.alignment-menu'),
         columnNode(
           'alignment.wrap-merge',
           homeSurfaceNode('alignment.wrap'),
@@ -1417,7 +1426,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       columnNode(
         'number.layout',
         rowNode('number.format', homeSurfaceNode('control.number-format')),
-        rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
+        rowNode('number.actions', homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease'), homeSurfaceNode('number.dialog-launcher')),
       ),
     ),
     groupSpec(
@@ -1437,8 +1446,7 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
           homeSurfaceNode('editing.fill-down'),
           homeSurfaceNode('control.clear-menu'),
         ),
-        homeSurfaceNode('editing.sort'),
-        homeSurfaceNode('editing.find'),
+        columnNode('editing.search-stack', homeSurfaceNode('editing.sort'), homeSurfaceNode('editing.find')),
       ),
     ),
   ],
@@ -1454,7 +1462,7 @@ export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], Ribbo
       groupSpec('tables', 10, rowNode('tables.layout', homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.recommended-pivot'), homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.forms'))),
       groupSpec('illustrations', 20, rowNode('illustrations.layout', homeSurfaceNode('illustrations.picture'), homeSurfaceNode('illustrations.shape'), homeSurfaceNode('illustrations.icons'), homeSurfaceNode('illustrations.models3d'), homeSurfaceNode('illustrations.smartart'), homeSurfaceNode('illustrations.screenshot'))),
       groupSpec('controls', 30, rowNode('controls.layout', homeSurfaceNode('controls.checkbox'))),
-      groupSpec('charts', 40, rowNode('charts.layout', homeSurfaceNode('charts.recommended'), homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.pivot'))),
+      groupSpec('charts', 40, rowNode('charts.layout', homeSurfaceNode('charts.recommended'), homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.pivot'), homeSurfaceNode('charts.analysis-view'))),
       groupSpec('sparklines', 50, rowNode('sparklines.layout', homeSurfaceNode('sparklines.gallery'))),
       groupSpec('filters', 60, rowNode('filters.layout', homeSurfaceNode('filters.slicer'), homeSurfaceNode('filters.timeline'))),
       groupSpec('links', 70, rowNode('links.layout', homeSurfaceNode('links.hyperlink'))),
@@ -1503,19 +1511,16 @@ const callback = (
   tab: RibbonCatalogTabId,
   groupId: RibbonGroupId,
   labelKey: RibbonTextKey,
-  invoke: (context: RibbonCommandContext) => void | Promise<void>,
+  invoke: (context: RibbonCommandContext) => void,
   icon?: RibbonIconName,
   additionalPlacements: readonly RibbonCommandPlacement[] = [],
-  requiredCommandId?: string,
 ): CommandDefinition => ({
   id,
   placements: [{ tab, group: groupId }, ...additionalPlacements],
-  ...(requiredCommandId ? { commandId: requiredCommandId } : {}),
   labelKey,
   icon,
   priority: 30,
   display: icon ? 'small' : 'medium',
-  ...(requiredCommandId ? { enabled: (context: RibbonCommandContext) => !context.canExecute || context.canExecute(requiredCommandId) } : {}),
   build: (context) => ({ type: 'callback', invoke: () => invoke(context) }),
 });
 
@@ -1792,11 +1797,11 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('threadedComment', 'insert', 'insertComments', RIBBON_TEXT.commands.threadedComment, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
   intent('headerFooter', 'insert', 'text', RIBBON_TEXT.commands.headerFooter, () => ({ type: 'panel.open', panel: 'print' }), 'printer'),
   intent('recommendedPivotTables', 'insert', 'tables', RIBBON_TEXT.commands.recommendedPivotTables, () => ({ type: 'dialog.open', dialog: 'recommended-pivots' }), 'table-pivot'),
-  callback('forms', 'insert', 'tables', RIBBON_TEXT.commands.forms, (context) => context.actions.onCreateFormControl('button'), 'form-control', [], 'drawing.add.form-control'),
+  intent('forms', 'insert', 'tables', RIBBON_TEXT.commands.forms, () => ({ type: 'notice', message: 'Microsoft Forms requires an Office host connection' }), 'form-control'),
   intent('icons', 'insert', 'illustrations', RIBBON_TEXT.commands.icons, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'icon' }), 'picture'),
   intent('models3d', 'insert', 'illustrations', RIBBON_TEXT.commands.models3d, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'model3d' }), 'picture'),
   intent('smartArt', 'insert', 'illustrations', RIBBON_TEXT.commands.smartArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'smartart' }), 'layout'),
-  callback('screenshot', 'insert', 'illustrations', RIBBON_TEXT.commands.screenshot, (context) => context.actions.onCaptureScreenshot(), 'camera', [], 'drawing.add.image'),
+  intent('screenshot', 'insert', 'illustrations', RIBBON_TEXT.commands.screenshot, () => ({ type: 'notice', message: 'System Screenshot requires an Office host capture capability' }), 'camera'),
   intent('recommendedCharts', 'insert', 'charts', RIBBON_TEXT.commands.recommendedCharts, () => ({ type: 'dialog.open', dialog: 'recommended-charts' }), 'chart'),
   intent('wordArt', 'insert', 'text', RIBBON_TEXT.commands.wordArt, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'wordart' }), 'type'),
   intent('signatureLine', 'insert', 'text', RIBBON_TEXT.commands.signatureLine, () => ({ type: 'dialog.open', dialog: 'local-object', localObjectKind: 'signature-line' }), 'type'),
@@ -1810,7 +1815,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     id: 'pivotRefresh',
-    placements: [{ tab: 'insert', group: 'tables' }],
+    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }],
     labelKey: RIBBON_TEXT.commands.pivotRefresh,
     icon: 'table-pivot',
     priority: 10,
@@ -1822,38 +1827,38 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
       : undefined,
   },
   {
-    ...intent('pivotFieldList', 'insert', 'tables', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
+    ...intent('pivotFieldList', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
     enabled: (context) => Boolean(context.activePivot)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotSlicer', 'insert', 'filters', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer()),
-    placements: [{ tab: 'insert', group: 'filters' }],
+    ...callback('pivotSlicer', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotSlicer, (context) => context.pivotActions?.onSlicer(), 'sliders', [{ tab: 'insert', group: 'filters' }]),
+    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }, { tab: 'insert', group: 'filters' }],
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.slicer.create', context.activePivot)),
   },
   {
-    ...callback('pivotTimeline', 'insert', 'filters', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline()),
+    ...callback('pivotTimeline', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotTimeline, (context) => context.pivotActions?.onTimeline(), 'history', [{ tab: 'insert', group: 'filters' }]),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.control.timeline.create', context.activePivot)),
   },
   {
-    ...callback('pivotChart', 'insert', 'charts', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart()),
+    ...callback('pivotChart', 'pivotAnalyze', 'pivotAnalyze', RIBBON_TEXT.commands.pivotChart, (context) => context.pivotActions?.onPivotChart(), 'chart', [{ tab: 'insert', group: 'charts' }]),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.chart.create', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutCompact', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutCompact, (context) => context.pivotActions?.onLayoutChange('compact'), 'layout'),
+    ...callback('pivotLayoutCompact', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutCompact, (context) => context.pivotActions?.onLayoutChange('compact'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutOutline', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutOutline, (context) => context.pivotActions?.onLayoutChange('outline'), 'layout'),
+    ...callback('pivotLayoutOutline', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutOutline, (context) => context.pivotActions?.onLayoutChange('outline'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
   {
-    ...callback('pivotLayoutTabular', 'insert', 'tables', RIBBON_TEXT.commands.pivotLayoutTabular, (context) => context.pivotActions?.onLayoutChange('tabular'), 'layout'),
+    ...callback('pivotLayoutTabular', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotLayoutTabular, (context) => context.pivotActions?.onLayoutChange('tabular'), 'layout'),
     enabled: (context) => Boolean(context.activePivot && context.pivotActions)
       && (!context.canExecute || context.canExecute('pivot.update', context.activePivot)),
   },
@@ -1999,6 +2004,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   dynamicCommand('shapeSendToBack', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeSendToBack, (context) => shapeZOrderDescriptor(context, 'back'), 'undo'),
   dynamicCommand('shapeCopy', 'shapeFormat', 'shapeFormat', RIBBON_TEXT.commands.shapeCopy, shapeCopyDescriptor, 'copy'),
   intent('chartBuilder', 'insert', 'charts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
+  intent('analysisView', 'insert', 'charts', RIBBON_TEXT.commands.analysisView, () => ({ type: 'panel.open', panel: 'analysis' }), 'chart'),
   intent('sparkline', 'insert', 'sparklines', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
   intent('shapesLines', 'insert', 'illustrations', RIBBON_TEXT.commands.shapesLines, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
 
@@ -2012,6 +2018,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   intent('customSort', 'data', 'sortFilter', RIBBON_TEXT.commands.customSort, () => ({ type: 'dialog.open', dialog: 'sort-dialog' }), 'sliders'),
   intent('dataSource', 'data', 'dataTools', RIBBON_TEXT.commands.dataSource, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+  callback('createDataTable', 'data', 'dataTools', RIBBON_TEXT.commands.createDataTable, (context) => context.actions.onCreateDataTable?.(), 'table'),
   callback('createDataSource', 'data', 'dataTools', RIBBON_TEXT.commands.createDataSource, (context) => context.actions.onCreateDataSource(), 'table'),
   {
     ...intent('dataValidation', 'data', 'dataTools', RIBBON_TEXT.commands.dataValidation, () => ({ type: 'panel.open', panel: 'dataValidation' }), 'check-circle'),
@@ -2020,12 +2027,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...dynamicCommand('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
     placements: [{ tab: 'data', group: 'dataTools' }, { tab: 'home', group: 'editing' }],
-    enabled: (context) => Boolean(context.actions.onApplyFilterSelection),
   },
-  {
-    ...dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
-    enabled: (context) => Boolean(context.actions.onClearFilter),
-  },
+  dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
   dynamicCommand('groupRows', 'data', 'outline', RIBBON_TEXT.commands.groupRows, (context) => context.actions.onGroupRows()),
   dynamicCommand('ungroupRows', 'data', 'outline', RIBBON_TEXT.commands.ungroupRows, (context) => context.actions.onUngroupRows()),
   dynamicCommand('groupColumns', 'data', 'outline', RIBBON_TEXT.commands.groupColumns, (context) => context.actions.onGroupColumns()),
@@ -2041,7 +2044,6 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     placements: [{ tab: 'data', group: 'findTransform' }, { tab: 'home', group: 'editing' }],
   },
   intent('goTo', 'data', 'findTransform', RIBBON_TEXT.commands.goTo, () => ({ type: 'dialog.open', dialog: 'goto' })),
-  intent('selectionPane', 'home', 'editing', RIBBON_TEXT.commands.selectionPane, () => ({ type: 'panel.open', panel: 'selectionPane' }), 'shape-square'),
   callback('transpose', 'data', 'findTransform', RIBBON_TEXT.commands.transpose, (context) => context.actions.onTransposeSelection(), 'layout'),
   callback('flipHorizontal', 'data', 'findTransform', RIBBON_TEXT.commands.flipHorizontal, (context) => context.actions.onFlipSelection('h')),
   callback('flipVertical', 'data', 'findTransform', RIBBON_TEXT.commands.flipVertical, (context) => context.actions.onFlipSelection('v')),
@@ -2143,13 +2145,8 @@ export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonComma
 }
 
 export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {
-  if (context.disabled) return false;
-  if (definition.enabled) return definition.enabled(context);
+  if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
   return definition.build(context) !== undefined;
-}
-
-export function getRibbonCommandDisabledReason(definition: CommandDefinition, context: RibbonCommandContext): string | undefined {
-  return isRibbonCommandEnabled(definition, context) ? undefined : definition.disabledReason?.(context);
 }
 
 export function buildRibbonCommand(id: RibbonCommandId, context: RibbonCommandContext): RibbonCommandResult | undefined {

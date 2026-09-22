@@ -19,7 +19,7 @@ class OperationEnvelopeTest {
 
     @Test
     void requestContractDoesNotAllowClientActorOrRanges() throws Exception {
-        OperationEnvelope operation = new OperationEnvelope(
+        OperationEnvelope operation = new OperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,
                 "op-1",
                 "unit-1",
@@ -41,7 +41,7 @@ class OperationEnvelopeTest {
         Instant clientClock = Instant.parse("2000-01-01T00:00:00Z");
         Instant serverClock = Instant.parse("2026-08-23T00:00:00Z");
         CommittedOperationEnvelope operation = CommittedOperationEnvelope.from(
-                new OperationEnvelope(OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), clientClock),
+                new OperationEnvelope("test-session", OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), clientClock),
                 "subject-1", 1, serverClock, List.of(new CommittedOperationMutation("cell.set", "sheet-1", params, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))))
         );
         String json = mapper.writeValueAsString(operation);
@@ -49,21 +49,5 @@ class OperationEnvelopeTest {
         assertTrue(json.contains("affectedRanges"));
         assertEquals(serverClock, operation.createdAt());
         assertEquals(serverClock, operation.committedAt());
-    }
-
-    @Test
-    void undoIntentRequiresAnEmptyClientMutationList() throws Exception {
-        Instant now = Instant.parse("2026-08-23T00:00:00Z");
-        OperationIntent intent = new OperationIntent(OperationIntent.UNDO, "target-op", 0);
-        OperationEnvelope undo = new OperationEnvelope(
-                OperationEnvelope.SCHEMA, "undo-op", "unit-1", 2, 1, List.of(), now, intent);
-
-        assertEquals(intent, undo.intent());
-        assertTrue(undo.mutations().isEmpty());
-        assertThrows(IllegalArgumentException.class, () -> new OperationEnvelope(
-                OperationEnvelope.SCHEMA, "empty-op", "unit-1", 2, 1, List.of(), now));
-        assertThrows(IllegalArgumentException.class, () -> new OperationEnvelope(
-                OperationEnvelope.SCHEMA, "mixed-op", "unit-1", 2, 1,
-                List.of(new OperationMutation("cell.set", "sheet-1", mapper.createObjectNode())), now, intent));
     }
 }

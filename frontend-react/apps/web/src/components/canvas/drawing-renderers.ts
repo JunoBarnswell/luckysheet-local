@@ -7,6 +7,7 @@ import {
 } from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
+  AnalysisViewDefinition,
   ChartMarkerModel,
   CameraDrawingPayload,
   ScreenshotDrawingPayload,
@@ -36,7 +37,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildChartLayout, ChartDataCache, ChartLayoutCache, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
 import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
@@ -67,12 +68,68 @@ function getChartSeries(
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
   tables: readonly WorkbookTableModel[],
-  chartDataCache?: ChartDataCache,
+  analysisViews: readonly AnalysisViewDefinition[],
 ): ResolvedChartData {
+  const analysisBinding = analysisViews
+    .flatMap((view) => view.charts.map((binding) => ({ view, binding })))
+    .find((entry) => entry.binding.chartId === payload.chartId);
+  if (analysisBinding) {
+    const table = tables.find((entry) => entry.id === analysisBinding.view.tableId);
+    const sourceSheet = table?.sourceRange ? getSheet(table.sourceRange.sheetId) : undefined;
+    const projection = buildAnalysisViewProjection(analysisBinding.view, table, sourceSheet);
+    const chart = projection.charts.find((entry) => entry.chartId === payload.chartId);
+    if (projection.status !== 'ready' || !chart) {
+      return {
+        categories: [],
+        series: [],
+        source: 'table',
+        binding: { source: 'table', orientation: 'columns', categories: [], series: [], hierarchyLevels: [], nonContiguous: false },
+        status: { kind: 'invalid', code: 'INVALID_CHART_SOURCE', message: projection.message ?? `Analysis chart binding is unavailable: ${payload.chartId}` },
+      };
+    }
+    const categories = [...new Set(chart.points.map((point) => analysisValueKey(point.category)))].map((key) => chart.points.find((point) => analysisValueKey(point.category) === key)?.category ?? null);
+    const seriesKeys = chart.seriesFieldId
+      ? [...new Set(chart.points.map((point) => analysisValueKey(point.series ?? null)))]
+      : ['__single__'];
+    const series = seriesKeys.map((seriesKey, seriesIndex) => {
+      const points = chart.points.filter((point) => !chart.seriesFieldId || analysisValueKey(point.series ?? null) === seriesKey);
+      const values = categories.map((category) => {
+        const matching = points.filter((point) => analysisValueKey(point.category) === analysisValueKey(category));
+        const numeric = matching.map((point) => point.value).filter((value): value is number => value !== null && Number.isFinite(value));
+        return numeric.length > 0 ? numeric.reduce((sum, value) => sum + value, 0) : null;
+      });
+      return {
+        id: `${payload.chartId}:analysis:${seriesIndex}`,
+        name: chart.seriesFieldId ? String(points[0]?.series ?? `Series ${seriesIndex + 1}`) : 'Value',
+        values,
+        missing: values.map((value) => value === null),
+        axis: 'primary' as const,
+      };
+    });
+    return {
+      categories,
+      series,
+      source: 'table',
+      binding: { source: 'table', orientation: 'columns', categories, series, hierarchyLevels: [], nonContiguous: false },
+      status: { kind: 'ready' },
+    };
+  }
   const pivotSources = { ...pivotResults };
   for (const source of sheets) for (const [pivotId, result] of Object.entries(source.pivotResults)) pivotSources[pivotId] ??= result;
-  return chartDataCache?.resolve(payload, (sheetId) => getSheet(sheetId), pivotSources, tables)
-    ?? resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
+  const loadingPivotIds = new Set<string>();
+  const pivotSourceId = payload.source.kind === 'pivot' ? payload.source.pivotId : undefined;
+  if (pivotSourceId && !pivotSources[pivotSourceId]) {
+    const sourceSheet = sheets.find((candidate) => candidate.pivots?.some((pivot) => pivot.id === pivotSourceId) === true);
+    if (sourceSheet?.pivotProjections?.[pivotSourceId]?.refresh.status === 'refreshing') loadingPivotIds.add(pivotSourceId);
+  }
+  const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables, loadingPivotIds);
+  return data;
+}
+
+function analysisValueKey(value: import('@react-sheets/spreadsheet-app').AnalysisCellValue): string {
+  if (value === null) return 'null';
+  if (typeof value === 'object') return `error:${value.code}`;
+  return `${typeof value}:${String(value)}`;
 }
 
 function drawCanonicalShapeOnCanvas(options: {
@@ -456,6 +513,21 @@ function drawUnsupportedDrawingOnCanvas(context: CanvasRenderingContext2D, bound
   context.restore();
 }
 
+function drawChartLoadingOnCanvas(context: CanvasRenderingContext2D, bounds: Rect, message: string): void {
+  context.save();
+  context.strokeStyle = '#94a3b8';
+  context.fillStyle = '#64748b';
+  context.lineWidth = 1.5;
+  context.setLineDash([4, 3]);
+  context.strokeRect(bounds.x + 1, bounds.y + 1, Math.max(0, bounds.width - 2), Math.max(0, bounds.height - 2));
+  context.setLineDash([]);
+  context.font = '11px Segoe UI, sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(message, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(10, bounds.width - 8));
+  context.restore();
+}
+
 /** Return an endpoint control hit in drawable-local coordinates. */
 export function connectorEndpointHitTest(
   payload: ConnectorDrawingPayload,
@@ -507,8 +579,8 @@ export function resolveCameraSourceGeometry(source: CanvasSheetSnapshot, range: 
     defaultColumnWidth: source.defaultColumnWidthPx,
     rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([key, value]) => [Number(key), value])),
     columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([key, value]) => [Number(key), value])),
-    hiddenRows: new Set(source.resolvedVisibility.rows.keys()),
-    hiddenColumns: new Set(source.resolvedVisibility.columns.keys()),
+    hiddenRows: new Set(source.hiddenRows),
+    hiddenColumns: new Set(source.hiddenColumns),
   });
   let firstRow = range.startRow;
   while (firstRow <= range.endRow && skeleton.isRowHidden(firstRow)) firstRow += 1;
@@ -537,7 +609,6 @@ function cameraCellProvider(source: CanvasSheetSnapshot, range: RangeRef): CellP
   const mergeAt = (row: number, column: number) => merges.find((merge) => row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn);
   return ({ row, column }): CellRenderData | undefined => {
     const cell = source.getCell(row, column);
-    const hyperlink = cell?.hyperlink;
     const merge = mergeAt(row, column);
     if (!cell && !merge) return undefined;
     const value: CellRenderData = {
@@ -547,7 +618,6 @@ function cameraCellProvider(source: CanvasSheetSnapshot, range: RangeRef): CellP
       style: cell?.style,
       editor: cell?.editor,
       presentation: cell?.presentation,
-      ...(hyperlink ? { hyperlink } : {}),
       hasComment: cell?.hasComment,
       invalid: cell?.invalid,
       overlay: cell?.overlay,
@@ -607,8 +677,8 @@ function cameraSurface(source: CanvasSheetSnapshot, range: RangeRef): HTMLCanvas
     defaultColumnWidth: source.defaultColumnWidthPx,
     rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([entry, value]) => [Number(entry), value])),
     columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([entry, value]) => [Number(entry), value])),
-    hiddenRows: new Set(source.resolvedVisibility.rows.keys()),
-    hiddenColumns: new Set(source.resolvedVisibility.columns.keys()),
+    hiddenRows: new Set(source.hiddenRows),
+    hiddenColumns: new Set(source.hiddenColumns),
   });
   const cellProvider = cameraCellProvider(source, range);
   const options = { context: surfaceContext, skeleton, pane, visibleRange: pane.visibleRange, cellProvider, theme: DEFAULT_RENDER_THEME };
@@ -1121,6 +1191,26 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
     }
     return;
   }
+  if (layout.kind === 'map') {
+    for (const feature of layout.mapFeatures ?? []) {
+      context.fillStyle = feature.color;
+      context.strokeStyle = '#64748b';
+      context.lineWidth = 0.75;
+      for (const polygon of feature.polygons) {
+        if (polygon.length < 3) continue;
+        context.beginPath();
+        polygon.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
+        context.closePath();
+        context.fill('evenodd');
+        context.stroke();
+      }
+      if (payload.mapOptions?.labelLevel === 'show-all' || (payload.mapOptions?.labelLevel === 'best-fit' && feature.polygons.length === 1)) {
+        const first = feature.polygons[0]?.[0];
+        if (first) drawChartText(context, feature.label, first.x + 3, first.y + 10, { color: '#334155', size: 8 });
+      }
+    }
+    return;
+  }
   if (layout.kind === 'treemap') {
     const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => ({ value: Math.max(0, point.value ?? 0), label: String(point.category), color: series.color })));
     const total = values.reduce((sum, entry) => sum + entry.value, 0) || 1;
@@ -1511,8 +1601,7 @@ export interface CanvasFloatingRendererInput {
   imageCache: Map<string, HTMLImageElement>;
   requestRender: () => void;
   tables: readonly WorkbookTableModel[];
-  chartDataCache?: ChartDataCache;
-  chartLayoutCache?: ChartLayoutCache;
+  analysisViews?: readonly AnalysisViewDefinition[];
   resolveAssetUrl?: (asset: AssetRef) => Promise<string>;
   assetUrlCache?: Map<string, string>;
   assetUrlPending?: Set<string>;
@@ -1521,7 +1610,7 @@ export interface CanvasFloatingRendererInput {
 
 /** Build the render-engine floating scene without coupling it to SheetCanvas state. */
 export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput): FloatingDrawable[] {
-  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, chartDataCache, chartLayoutCache, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
+  const { allSheets, analysisViews = [], drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables, resolveAssetUrl, assetUrlCache, assetUrlPending, assetUrlErrors } = input;
   const drawables: FloatingDrawable[] = [];
   const sheets = allSheets.length > 0 ? allSheets : [sheet];
   const getSheet = (sheetId: string): CanvasSheetSnapshot | undefined =>
@@ -1532,9 +1621,12 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, chartDataCache);
-      const layout = chartLayoutCache?.resolve(payload, data, bounds.width, bounds.height)
-        ?? buildChartLayout(payload, data, bounds.width, bounds.height);
+      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
+      const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      if (layout.status.kind === 'loading') {
+        drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…') });
+        continue;
+      }
       if (layout.status.kind !== 'ready') {
         drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });
         continue;
@@ -1633,10 +1725,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
             if (resolveAssetUrl && assetUrlPending && !assetUrlPending.has(assetId) && !assetUrlErrors?.has(assetId)) {
               assetUrlPending.add(assetId);
               void resolveAssetUrl(payload.asset)
-                .then((url) => {
-                  if (!url.trim()) throw new Error(`ASSET_RESOLVE_EMPTY: ${assetId}`);
-                  assetUrlCache?.set(assetId, url);
-                })
+                .then((url) => assetUrlCache?.set(assetId, url))
                 .catch((error) => assetUrlErrors?.set(assetId, error instanceof Error ? error.message : `ASSET_RESOLVE_FAILED: ${assetId}`))
                 .finally(() => {
                   assetUrlPending.delete(assetId);
@@ -1655,10 +1744,6 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
             img.src = assetUrl;
             imageCache.set(assetId, img);
             img.onload = requestRender;
-            img.onerror = () => {
-              assetUrlErrors?.set(assetId, `ASSET_LOAD_FAILED: ${assetId}`);
-              requestRender();
-            };
           }
           if (img.complete && img.naturalWidth > 0) {
             const crop = payload.crop ?? { left: 0, top: 0, right: 0, bottom: 0 };

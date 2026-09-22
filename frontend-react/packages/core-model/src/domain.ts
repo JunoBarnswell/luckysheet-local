@@ -1019,16 +1019,41 @@ export interface ChartWaterfallOptions {
   connectorLines?: boolean;
 }
 
+export type ChartMapCoordinate = readonly [number, number];
+export type ChartMapRing = readonly ChartMapCoordinate[];
+
+/** A normalized offline GeoJSON feature owned by the chart payload. */
+export interface ChartMapFeature {
+  id: string;
+  label: string;
+  polygons: readonly ChartMapRing[];
+}
+
+/**
+ * GeoJSON is normalized before it enters the workbook model. Keeping the
+ * resource checksum with the normalized features makes map rendering
+ * deterministic and prevents a missing external provider from being hidden.
+ */
+export interface ChartMapResource {
+  schema: 'ChartMapResource';
+  resourceId: string;
+  source: 'geojson' | 'builtin';
+  checksum: string;
+  features: readonly ChartMapFeature[];
+}
+
 export interface ChartMapOptions {
   geography: 'country-region' | 'state-province' | 'county' | 'postal-code';
   mapArea: 'automatic' | 'only-data' | 'world' | 'continent' | 'country' | 'state';
   labelLevel: 'none' | 'best-fit' | 'show-all';
   colorScale: 'sequential' | 'diverging' | 'category';
+  resource?: ChartMapResource;
 }
 
 export interface ChartSeriesModel {
   id?: string;
   name: string;
+  /** Exact data vector (one row or column), excluding any header; includes its first point. */
   range: RangeRef;
   xRange?: RangeRef;
   yRange?: RangeRef;
@@ -1409,7 +1434,7 @@ export interface DrawingObject {
   sheetId: SheetId;
   kind: DrawingKind;
   name?: string;
-  /** Canonical optional visibility override; absence means visible. */
+  /** Persisted visibility state; omitted means visible for legacy snapshots. */
   visible?: boolean;
   anchor: DrawingAnchor;
   transform: DrawingTransform;

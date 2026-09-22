@@ -1,10 +1,30 @@
-import { MAX_WORKBOOK_NAME_LENGTH, type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery, type WorkbookSummary } from '@react-sheets/protocol';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import {
-  NativeDocumentTransactionRegistry,
-  WorkbookApiNativeDocumentTransport,
-  createNativeDocumentTransaction,
+  ApiRequestError,
+  AuthenticationRequiredError,
+  MAX_WORKBOOK_NAME_LENGTH,
+  type OperationEnvelope,
+  type SnapshotResponse,
+  type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
+  type WorkbookCreateMetadata,
+  type WorkbookSummary,
+} from '@react-sheets/protocol';
+import { buildOperation } from '../../collaboration/helpers';
+import {
+  exchangeImportDocument,
+  exchangeSaveAsDocument,
+  exchangeSaveDocument,
 } from '../native-document';
-import { filterWorkbookCatalog } from './state';
+import {
+  type WorkspaceRecord,
+  type WorkspaceRecordMetadata,
+  type WorkspaceRole,
+  type WorkspaceUserState,
+  WorkspacePersistence,
+} from '../persistence/storage';
+import { filterWorkbookCatalog, resolveWorkbookSyncState } from './state';
+import { createWorkbookUnitId } from './templates';
 import type {
   WorkbookCatalogCreateInput,
   WorkbookCatalogEntry,
@@ -21,7 +41,7 @@ import type {
 } from './types';
 import { WorkbookResolver } from './resolver';
 
-export const DEFAULT_NATIVE_IMPORT_MAX_BYTES = 1024 * 1024 * 1024;
+export const DEFAULT_NATIVE_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
 
 export class WorkbookCatalogError extends Error {
   readonly code: 'not-found' | 'permission-denied' | 'remote-unavailable' | 'invalid-input' | 'conflict';
@@ -34,11 +54,12 @@ export class WorkbookCatalogError extends Error {
 }
 
 export interface WorkbookCatalogServiceOptions {
+  persistence?: WorkspacePersistence;
   remote?: WorkbookCatalogRemoteClient;
   now?: () => Date;
+  unitIdFactory?: () => string;
   remoteAvailable?: () => boolean;
   shareTokenProvider?: import('@react-sheets/protocol').ShareTokenProvider;
-  nativeDocumentTransactions?: NativeDocumentTransactionRegistry;
 }
 
 export interface WorkbookCatalogMoveInput {
@@ -52,67 +73,81 @@ export interface WorkbookCatalogSyncResult {
   revision: number;
 }
 
-function normalizeRole(role: WorkbookRole | undefined, fallback: WorkbookRole = 'owner'): WorkbookRole {
+function normalizeRole(role: WorkbookRole | undefined, fallback: WorkspaceRole = 'owner'): WorkspaceRole {
   return role === 'owner' || role === 'editor' || role === 'commenter' || role === 'viewer' ? role : fallback;
 }
 
-function normalizeSyncState(state: WorkbookSummary['syncStatus']): WorkbookCatalogEntry['syncState'] {
-  if (state === undefined || state === 'synced' || state === 'syncing' || state === 'conflict' || state === 'error') return state ?? 'synced';
-  throw new WorkbookCatalogError('conflict', `Server returned obsolete workbook sync state: ${state}`);
+function sourceFromProtocol(summary: WorkbookSummary): WorkspaceRecordMetadata['source'] {
+  return summary.source === 'document-import' ? 'document-import' : 'native';
+}
+
+function metadataFromRemote(summary: WorkbookSummary): WorkspaceRecordMetadata {
+  return {
+    location: summary.storageLocation ?? 'remote',
+    lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
+    source: sourceFromProtocol(summary),
+    // An omitted server role is fail-closed. The backend contract should
+    // always return the actor's effective role in the catalog row.
+    role: normalizeRole(summary.role, 'viewer'),
+    ownerId: summary.ownerSubject,
+    sourceFileName: summary.sourceFileName,
+    spaceId: summary.spaceId,
+    folderId: summary.folderId,
+    locationPath: summary.locationPath?.join(' / '),
+    deletedAt: summary.deletedAt,
+  };
 }
 
 function remoteEntry(summary: WorkbookSummary): WorkbookCatalogEntry {
+  const metadata = metadataFromRemote(summary);
   return {
     unitId: summary.unitId,
     name: summary.name,
     revision: summary.revision,
     updatedAt: summary.updatedAt,
-    syncState: normalizeSyncState(summary.syncStatus),
-    role: normalizeRole(summary.role, 'viewer'),
-    lifecycle: summary.lifecycle ?? (summary.deletedAt ? 'trashed' : 'active'),
-    source: summary.source === 'document-import' ? 'document-import' : 'native',
-    ownerId: summary.ownerSubject,
-    spaceId: summary.spaceId,
+    storage: summary.storageLocation ?? 'remote',
+    syncState: summary.syncStatus ?? 'synced',
+    role: metadata.role,
+    lifecycle: metadata.lifecycle,
+    source: metadata.source,
+    ownerId: metadata.ownerId,
+    ownerName: undefined,
+    spaceId: metadata.spaceId,
     spaceName: summary.spaceName,
-    folderId: summary.folderId,
+    folderId: metadata.folderId,
     locationPath: summary.locationPath ?? [],
     sourceFileName: summary.sourceFileName,
     deletedAt: summary.deletedAt,
     favorite: Boolean(summary.favorite),
     lastOpenedAt: summary.lastOpenedAt,
+    pendingOperationCount: 0,
   };
 }
 
-function canonicalManifest(manifest: import('@react-sheets/core-model').KernelReplicaManifest): import('@react-sheets/protocol').WorkbookManifest {
+function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
   return {
-    schema: manifest.schema,
-    version: manifest.version,
-    unitId: manifest.unitId,
-    name: manifest.name,
-    revision: manifest.revision,
-    sheets: manifest.sheets.map(sheet => ({ ...sheet, metadata: { ...sheet.metadata } })),
-    pages: manifest.pages.map(page => ({
-      ...page,
-      occupiedRange: page.occupiedRange ? { ...page.occupiedRange } : null,
-    })),
-    metadata: { ...manifest.metadata },
+    ...snapshot,
+    unitId,
+    printDocuments: (snapshot.printDocuments ?? []).map((document) => ({ ...document, unitId })),
   };
 }
 
 export class WorkbookCatalogService {
-  private readonly nativeTransactions: NativeDocumentTransactionRegistry;
+  readonly persistence: WorkspacePersistence;
   readonly remote?: WorkbookCatalogRemoteClient;
   readonly resolver: WorkbookResolver;
   private readonly now: () => Date;
+  private readonly unitIdFactory: () => string;
   private readonly remoteAvailable?: () => boolean;
 
   constructor(options: WorkbookCatalogServiceOptions = {}) {
+    this.persistence = options.persistence ?? new WorkspacePersistence();
     this.remote = options.remote;
     this.now = options.now ?? (() => new Date());
+    this.unitIdFactory = options.unitIdFactory ?? (() => createWorkbookUnitId());
     this.remoteAvailable = options.remoteAvailable;
-    const transport = this.remote ? new WorkbookApiNativeDocumentTransport(this.remote) : undefined;
-    this.nativeTransactions = options.nativeDocumentTransactions ?? new NativeDocumentTransactionRegistry(transport);
     this.resolver = new WorkbookResolver({
+      persistence: this.persistence,
       remote: this.remote,
       remoteAvailable: () => this.canUseRemote(),
       shareTokenProvider: options.shareTokenProvider,
@@ -128,77 +163,21 @@ export class WorkbookCatalogService {
     return this.remote;
   }
 
-  private async entryFromManifest(
-    unitId: string,
-    overrides: Partial<Pick<WorkbookCatalogEntry, 'lifecycle' | 'source' | 'spaceId' | 'folderId' | 'sourceFileName'>> = {},
-  ): Promise<WorkbookCatalogEntry> {
-    const api = this.requireRemote();
-    const [manifest, access, state] = await Promise.all([
-      api.getManifest(unitId),
-      api.getAccess(unitId),
-      api.getWorkbookUserState(unitId),
-    ]);
-    return {
-      unitId,
-      name: manifest.name,
-      revision: manifest.revision,
-      updatedAt: this.now().toISOString(),
-      syncState: 'synced',
-      role: access.role,
-      lifecycle: overrides.lifecycle ?? 'active',
-      source: overrides.source ?? 'native',
-      spaceId: overrides.spaceId,
-      folderId: overrides.folderId,
-      locationPath: [],
-      sourceFileName: overrides.sourceFileName,
-      favorite: Boolean(state.favorite),
-      lastOpenedAt: state.lastOpenedAt,
-    };
-  }
-
   async listPage(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogPage> {
-    const protocolQuery: ProtocolWorkbookCatalogQuery = {
-      view: query.view,
-      query: query.query,
-      spaceId: query.spaceId,
-      folderId: query.folderId,
-      cursor: query.cursor,
-      limit: query.limit,
-    };
-    const page = await this.requireRemote().listWorkbookPage(protocolQuery, options);
-    return { entries: filterWorkbookCatalog(page.items.map(remoteEntry), query), nextCursor: page.nextCursor };
+    if (query.view === 'local') throw new WorkbookCatalogError('invalid-input', '页面内存文件已移除，请使用服务器文件中心');
+    const page = await this.requireRemote().listWorkbookPage(query as ProtocolWorkbookCatalogQuery, options);
+    return { entries: page.items.map(remoteEntry), nextCursor: page.nextCursor };
   }
 
   async list(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogEntry[]> {
-    return (await this.listPage(query, options)).entries;
+    const page = await this.listPage(query, options);
+    return page.entries;
   }
 
   async create(input: WorkbookCatalogCreateInput): Promise<WorkbookCatalogEntry> {
-    const plan = input.plan;
-    if (!plan.unitId.trim() || !plan.name.trim() || !plan.sheets?.length) {
-      throw new WorkbookCatalogError('invalid-input', 'Workbook creation plan requires identity, name, and worksheets');
-    }
-    if ((input.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
-    const opened = await this.requireRemote().createKernelWorkbook({
-      ...plan,
-      spaceId: input.metadata?.spaceId,
-      folderId: input.metadata?.folderId,
-      source: input.source ?? 'native',
-    });
-    return {
-      unitId: opened.unitId,
-      name: opened.manifest.name,
-      revision: opened.revision,
-      updatedAt: this.now().toISOString(),
-      syncState: 'synced',
-      role: normalizeRole(input.role),
-      lifecycle: 'active',
-      source: input.source ?? 'native',
-      spaceId: input.metadata?.spaceId,
-      folderId: input.metadata?.folderId,
-      locationPath: [],
-      favorite: false,
-    };
+    if (input.destination === 'local') throw new WorkbookCatalogError('invalid-input', '工作簿必须保存到服务器');
+    const response = await this.requireRemote().createWorkbook(input.snapshot, input.metadata);
+    return remoteEntry(await this.requireRemote().getWorkbookSummary(response.snapshot.unitId));
   }
 
   resolve(unitId: string, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookResolution> {
@@ -206,143 +185,96 @@ export class WorkbookCatalogService {
   }
 
   async markOpened(resolution: WorkbookResolution): Promise<WorkbookCatalogEntry> {
-    if (resolution.schema !== 'WorkbookResolution' || resolution.lifecycle !== 'active') {
-      throw new WorkbookCatalogError('conflict', `Workbook resolution is not openable: ${resolution.unitId}`);
-    }
-    const remote = this.requireRemote();
-    const current = await remote.getWorkbookUserState(resolution.unitId);
-    const { unitId: _unitId, updatedAt: _updatedAt, ...state } = current;
-    const openedAt = this.now().toISOString();
-    const saved = await remote.putWorkbookUserState(resolution.unitId, { ...state, lastOpenedAt: openedAt });
-    return {
-      unitId: resolution.unitId,
-      name: resolution.manifest.name,
-      revision: resolution.revision,
-      updatedAt: openedAt,
-      syncState: 'synced',
-      role: resolution.access?.role ?? 'viewer',
-      lifecycle: 'active',
-      source: 'native',
-      locationPath: [],
-      favorite: Boolean(saved.favorite),
-      lastOpenedAt: saved.lastOpenedAt,
-    };
+    const api = this.requireRemote();
+    const state = await api.getWorkbookUserState(resolution.unitId);
+    await api.putWorkbookUserState(resolution.unitId, { favorite: state.favorite, lastOpenedAt: this.now().toISOString() });
+    return remoteEntry(await api.getWorkbookSummary(resolution.unitId));
   }
 
   async importWorkbook(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
-    const fileName = input.fileName.trim();
-    if (!fileName) throw new WorkbookCatalogError('invalid-input', 'Native document file name is required');
-    if (input.buffer.byteLength < 1 || input.buffer.byteLength > DEFAULT_NATIVE_IMPORT_MAX_BYTES) {
-      throw new WorkbookCatalogError('invalid-input', `Native document must contain between 1 and ${DEFAULT_NATIVE_IMPORT_MAX_BYTES} bytes`);
-    }
-    if ((input.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
+    if (input.destination === 'local') throw new WorkbookCatalogError('invalid-input', '导入文件必须保存到服务器');
+    if (!input.fileName.trim() || input.buffer.byteLength > DEFAULT_NATIVE_IMPORT_MAX_BYTES) throw new WorkbookCatalogError('invalid-input', '文件名无效或超过导入大小限制');
     const api = this.requireRemote();
     const compatibilityTarget = input.options?.compatibilityTarget ?? (await api.getUserPreferences()).importCompatibility;
-    const transport = new WorkbookApiNativeDocumentTransport(api, {
-      name: fileName,
-      spaceId: input.spaceId,
-      folderId: input.folderId,
+    const imported = await exchangeImportDocument({ ...input, options: { ...input.options, compatibilityTarget } });
+    if (!imported.snapshot) throw new WorkbookCatalogError('invalid-input', '导入未生成工作簿');
+    const response = await api.createWorkbookImport({
+      artifact: new Blob([input.buffer], { type: nativeDocumentMimeType(input.fileName) }), artifactFileName: input.fileName,
+      snapshot: reidentifySnapshot(imported.snapshot, this.unitIdFactory()),
+      format: `${imported.artifact.format.family}/${imported.artifact.format.variant}`,
+      nativeMetadata: { schema: 'NativeDocumentMetadata', codecRevision: imported.artifact.codecRevision, detectedFeatures: imported.artifact.detectedFeatures, compatibility: imported.report },
+      source: 'document-import', spaceId: input.spaceId, folderId: input.folderId,
     });
-    const transaction = createNativeDocumentTransaction(transport);
-    const imported = await transaction.import({
-      fileName,
-      content: input.buffer,
-      options: { ...input.options, compatibilityTarget },
-    });
-    if (!imported.manifest) throw new WorkbookCatalogError('conflict', 'Native import omitted its committed manifest');
-    const bound = this.nativeTransactions.getOrCreate(imported.manifest.unitId, new WorkbookApiNativeDocumentTransport(api));
-    await bound.attach(imported.artifact);
-    const entry = await this.entryFromManifest(imported.manifest.unitId, {
-      source: 'document-import',
-      spaceId: input.spaceId,
-      folderId: input.folderId,
-      sourceFileName: fileName,
-    });
-    return { entry, manifest: canonicalManifest(imported.manifest), report: imported.report, artifact: imported.artifact };
+    return { entry: remoteEntry(response.summary), snapshot: response.snapshot, report: imported.report, artifact: imported.artifact };
   }
 
   async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
+    const api = this.requireRemote();
     const resolved = await this.resolve(unitId);
-    const transaction = this.nativeTransactions.getOrCreate(unitId, new WorkbookApiNativeDocumentTransport(this.requireRemote()));
-    const fileName = input.fileName ?? transaction.artifact?.fileName ?? `${resolved.manifest.name || 'workbook'}.xlsx`;
-    const exported = await transaction.export({
-      unitId,
-      revision: resolved.revision,
-      fileName,
-      options: input.options,
-      mode: input.fileName ? 'save-as' : 'export',
-    });
-    if (!exported.content || !exported.fileName) throw new WorkbookCatalogError('conflict', 'Native document export omitted its bytes or file name');
-    return { unitId, fileName: exported.fileName, buffer: exported.content, report: exported.report };
+    const summary = await api.getWorkbookSummary(unitId);
+    let artifact: NativeDocumentArtifact | undefined;
+    if (summary.sourceFileName) {
+      const source = await api.getWorkbookSourceArtifact(unitId);
+      artifact = (await exchangeImportDocument({ fileName: source.metadata.fileName, buffer: await source.artifact.arrayBuffer(), execution: 'worker' })).artifact;
+    }
+    const fileName = input.fileName ?? artifact?.fileName ?? `${resolved.snapshot.name || 'workbook'}.xlsx`;
+    const exported = await exchangeSaveAsDocument(resolved.snapshot, { ...input, fileName, artifact });
+    if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', '导出未生成文件');
+    return { unitId, fileName: exported.fileName, buffer: exported.buffer, report: exported.report };
   }
 
   async syncToServer(unitId: string): Promise<WorkbookCatalogSyncResult> {
     const api = this.requireRemote();
     const checkpoint = await api.checkpointWorkbook(unitId);
-    const entry = await this.entryFromManifest(unitId);
-    if (entry.revision !== checkpoint.workbook.revision) throw new WorkbookCatalogError('conflict', 'Checkpoint revision changed while reading the catalog');
-    return { entry, committedOperationCount: 0, revision: entry.revision };
+    return { entry: remoteEntry(await api.getWorkbookSummary(unitId)), committedOperationCount: 0, revision: checkpoint.revision };
   }
 
   async rename(unitId: string, name: string): Promise<WorkbookCatalogEntry> {
     const trimmed = name.trim();
-    if (!trimmed) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
-    if (trimmed.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
-    const renamed = await this.requireRemote().renameWorkbook(unitId, { name: trimmed });
-    const entry = await this.entryFromManifest(unitId);
-    if (entry.revision !== renamed.revision || entry.name !== trimmed) {
-      throw new WorkbookCatalogError('conflict', 'Workbook rename changed while refreshing the catalog');
-    }
-    return entry;
+    if (!trimmed || trimmed.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', '工作簿名称无效');
+    const api = this.requireRemote();
+    const current = await api.getSnapshot(unitId);
+    await api.commitOperation(unitId, buildOperation(crypto.randomUUID(), unitId, 1, current.revision,
+      [{ id: 'workbook.renamed', sheetId: current.snapshot.sheets[0]!.id, params: { name: trimmed } }]));
+    return remoteEntry(await api.getWorkbookSummary(unitId));
   }
 
-  async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'remote' } = {}): Promise<WorkbookCatalogEntry> {
-    if ((request.destination ?? 'remote') !== 'remote') throw new WorkbookCatalogError('remote-unavailable', 'Cloud workbook service is required');
-    return remoteEntry(await this.requireRemote().copyWorkbook(unitId, {
-      name: request.name,
-      spaceId: request.spaceId,
-      folderId: request.folderId,
-    }));
+  async copy(unitId: string, request: { name?: string; spaceId?: string; folderId?: string; destination?: 'local' | 'remote' } = {}): Promise<WorkbookCatalogEntry> {
+    if (request.destination === 'local') throw new WorkbookCatalogError('invalid-input', '副本必须保存到服务器');
+    return remoteEntry(await this.requireRemote().copyWorkbook(unitId, request));
   }
 
   async move(unitId: string, input: WorkbookCatalogMoveInput): Promise<WorkbookCatalogEntry> {
-    return remoteEntry(await this.requireRemote().updateWorkbook(unitId, { spaceId: input.spaceId, folderId: input.folderId }));
+    return remoteEntry(await this.requireRemote().updateWorkbook(unitId, input));
   }
 
   async grantAccess(unitId: string, subject: string, role: WorkbookRole): Promise<void> {
-    const normalizedSubject = subject.trim();
-    if (!normalizedSubject) throw new WorkbookCatalogError('invalid-input', 'Share subject is required');
-    if (role === 'owner') throw new WorkbookCatalogError('invalid-input', 'Owner role cannot be granted through workbook sharing');
-    await this.requireRemote().putWorkbookAcl(unitId, normalizedSubject, normalizeRole(role));
+    if (!subject.trim() || role === 'owner') throw new WorkbookCatalogError('invalid-input', '共享用户或角色无效');
+    await this.requireRemote().putWorkbookAcl(unitId, subject.trim(), role);
   }
 
   async revokeAccess(unitId: string, subject: string): Promise<void> {
-    const normalizedSubject = subject.trim();
-    if (!normalizedSubject) throw new WorkbookCatalogError('invalid-input', 'Share subject is required');
-    await this.requireRemote().deleteWorkbookAcl(unitId, normalizedSubject);
+    if (!subject.trim()) throw new WorkbookCatalogError('invalid-input', '共享用户不能为空');
+    await this.requireRemote().deleteWorkbookAcl(unitId, subject.trim());
   }
 
   async moveToTrash(unitId: string): Promise<WorkbookCatalogEntry> {
-    await this.requireRemote().moveToTrash(unitId);
-    return this.entryFromManifest(unitId, { lifecycle: 'trashed' });
+    const api = this.requireRemote();
+    await api.moveToTrash(unitId);
+    return remoteEntry(await api.getWorkbookSummary(unitId));
   }
 
   async restore(unitId: string): Promise<WorkbookCatalogEntry> {
     return remoteEntry(await this.requireRemote().restoreFromTrash(unitId));
   }
 
-  async purge(unitId: string): Promise<void> {
-    await this.requireRemote().purgeWorkbook(unitId);
-    this.nativeTransactions.delete(unitId);
-  }
+  async purge(unitId: string): Promise<void> { await this.requireRemote().purgeWorkbook(unitId); }
 
   async setFavorite(unitId: string, favorite: boolean): Promise<WorkbookCatalogEntry> {
-    const remote = this.requireRemote();
-    const current = await remote.getWorkbookUserState(unitId);
-    const { unitId: _unitId, updatedAt: _updatedAt, ...state } = current;
-    await remote.putWorkbookUserState(unitId, { ...state, favorite });
-    const entry = await this.entryFromManifest(unitId);
-    return { ...entry, favorite };
+    const api = this.requireRemote();
+    const state = await api.getWorkbookUserState(unitId);
+    await api.putWorkbookUserState(unitId, { favorite, lastOpenedAt: state.lastOpenedAt });
+    return remoteEntry(await api.getWorkbookSummary(unitId));
   }
 
   async listAccess(unitId: string): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listWorkbookAcl']>>> {
@@ -392,4 +324,15 @@ export class WorkbookCatalogService {
   async deleteSpaceMember(spaceId: string, subject: string): Promise<void> {
     await this.requireRemote().deleteSpaceMember(spaceId, subject.trim());
   }
+}
+
+function nativeDocumentMimeType(fileName: string): string {
+  const extension = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return extension === 'csv' ? 'text/csv'
+    : extension === 'txt' || extension === 'prn' || extension === 'dif' || extension === 'slk' ? 'text/plain'
+      : extension === 'xml' ? 'application/xml'
+        : extension === 'ods' ? 'application/vnd.oasis.opendocument.spreadsheet'
+          : extension === 'sjs' ? 'application/zip'
+            : extension === 'ssjson' ? 'application/json'
+              : 'application/octet-stream';
 }

@@ -143,7 +143,7 @@ export function EditorDialogHost({
       />
       <CreatePivotTableDialog
         open={state.dialogs.active === 'create-pivot'}
-        sourceRegion={state.dialogs.active === 'create-pivot' ? session.getCurrentRegion() : session.getPrimaryRange()}
+        sourceRegion={session.getCurrentRegion()}
         sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
         locale={locale}
@@ -162,9 +162,17 @@ export function EditorDialogHost({
       <PrintPreviewDialog
         open={state.dialogs.active === 'print-preview'}
         onClose={() => session.setShowPrintPreview(false)}
-        projections={state.printProjections}
-        headerText={state.printLayout.headerText}
-        footerText={state.printLayout.footerText}
+        sheetId={state.activeSheetId}
+        rowCount={state.selectedSheet.rowCount}
+        columnCount={state.selectedSheet.columnCount}
+        columns={state.selectedSheet.columns}
+        rows={[]}
+        layout={state.printLayout}
+        pages={state.printPages}
+        getRow={(row) => state.selectedSheet.hiddenRows.includes(row) ? undefined : ({
+          rowNumber: row + 1,
+          cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? "" })),
+        })}
       />
       <CellTemplateDialog
         open={state.dialogs.active === 'cell-template'}

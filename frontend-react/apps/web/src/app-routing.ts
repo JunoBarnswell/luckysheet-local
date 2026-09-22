@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 
 export type ApplicationRoute =
-  | { kind: 'auth-callback' | 'auth-silent-renew' | 'hub' }
+  | { kind: 'auth-callback' | 'auth-silent-renew' | 'hub' | 'admin-users' }
   | { kind: 'not-found'; pathname: string }
   | { kind: 'workbook'; unitId: string };
 
@@ -13,6 +13,7 @@ function normalizedPathname(pathname: string): string {
 export function parseApplicationRoute(pathname = typeof window === 'undefined' ? '/workbooks' : window.location.pathname): ApplicationRoute {
   const normalized = normalizedPathname(pathname);
   if (normalized === '/' || normalized === '/workbooks') return { kind: 'hub' };
+  if (normalized === '/admin/users') return { kind: 'admin-users' };
   if (normalized === '/auth/callback') return { kind: 'auth-callback' };
   if (normalized === '/auth/silent-renew') return { kind: 'auth-silent-renew' };
   const workbook = /^\/workbooks\/([^/]+)$/.exec(normalized);

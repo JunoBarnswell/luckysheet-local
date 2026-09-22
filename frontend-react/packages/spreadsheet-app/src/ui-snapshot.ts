@@ -60,7 +60,6 @@ import {
   type FilterButtonCell,
   type FilterButtonState,
   type OutlineControl,
-  type ResolvedVisibility,
 } from '@react-sheets/sheet-features';
 import { resolveFilterCellValue } from '@react-sheets/core-model';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
@@ -76,7 +75,9 @@ import { cellAddress, columnLabel } from './address';
 import type { DataSourceContentQuery } from './features/data-source';
 import { createWorkbookCellResolver } from './features/data-source';
 import {
+  findCommentThreadAt,
   getCellHyperlink,
+  resolveHyperlinkDisplay,
   threadToCellComment,
 } from './features/review';
 
@@ -88,16 +89,19 @@ export interface CanvasCellSnapshot {
   style?: CellStyle;
   /** Typed model value used by render semantics; `value` remains the display projection. */
   rawValue?: CellData['value'];
+  /** Typed formula result, including a canonical error value when calculation failed. */
+  formulaValue?: import('@react-sheets/core-model').FormulaValue;
   richText?: import('@react-sheets/core-model').RichTextRun[];
   editor?: CellEditorConfig;
   presentation?: CellPresentation;
   phonetic?: import('@react-sheets/core-model').CellPhoneticMetadata;
   value: string;
   hasComment?: boolean;
-  comments?: CellComment[];
+  commentText?: string;
+  comment?: CellComment;
   note?: CellNote;
   invalid?: boolean;
-  hyperlink?: import('@react-sheets/core-model').CellHyperlink;
+  hyperlink?: string;
   overlay?: ConditionalOverlay;
 }
 
@@ -112,9 +116,6 @@ export interface CanvasSheetSnapshot {
   isEmpty?: boolean;
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
-  /** Revision and visibility always describe the same committed kernel view. */
-  revision: number;
-  resolvedVisibility: ResolvedVisibility;
   /** Sparse model addresses for operations such as AutoFit; never a rectangle scan. */
   forEachOccupiedCell: (
     visitor: (row: number, column: number) => void,
@@ -129,7 +130,7 @@ export interface CanvasSheetSnapshot {
   snapSettings?: import('@react-sheets/core-model').WorksheetSnapSettings;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
-  pivotTaskErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>>;
+  pivotTaskErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>>;
   /** Derived worksheet overlay; never materialized in ordinary cells. */
   pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
@@ -187,16 +188,9 @@ function formatDisplayValue(
   column: number,
 ): string {
   if (cell?.formula) {
-    // Imported/committed pages carry the authoritative cached result. Opening
-    // a viewport must not construct a workbook-wide formula runtime merely to
-    // paint one formula cell.
-    return cell.formulaValue !== undefined
-      ? toFormulaDisplay(cell.formulaValue as FormulaValue)
-      : toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
+    return toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
   }
-  const insideSpill = sheet.spillRanges.some((spill) => row >= spill.range.startRow && row <= spill.range.endRow
-    && column >= spill.range.startColumn && column <= spill.range.endColumn);
-  const spillValue = insideSpill ? formula.getSpillValueAt(sheetId, row, column) : undefined;
+  const spillValue = formula.getSpillValueAt(sheetId, row, column);
   if (spillValue !== undefined) return toFormulaDisplay(spillValue);
   if (!cell) return '';
   const resolved = resolveFilterCellValue(cell);
@@ -235,20 +229,16 @@ export function buildCanvasSheetSnapshot(
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
   dateSystem: FilterDateSystem = '1900',
-  pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
+  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
   dateContext?: FilterDateContext,
-  options: { deferDataProjection?: boolean } = {},
 ): CanvasSheetSnapshot {
+  const conditionalRuntime = createConditionalFormatRuntime(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
-  const conditionalRuntime = createConditionalFormatRuntime(sheet, undefined, formula);
   const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
     const cell = cellResolver.resolve(owner, row, column)?.cell;
-    const insideSpill = owner.spillRanges.some((spill) => row >= spill.range.startRow && row <= spill.range.endRow
-      && column >= spill.range.startColumn && column <= spill.range.endColumn);
-    const spillValue = insideSpill ? formula.getSpillValueAt(owner.id, row, column) : undefined;
+    const spillValue = formula.getSpillValueAt(owner.id, row, column);
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, dateSystem);
     if (cell?.formula !== undefined) {
-      if (cell.formulaValue !== undefined) return resolveFilterCellValue(cell, cell.formulaValue, dateSystem);
       const result = formula.getCellResult({ sheetId: owner.id, row, column });
       // A missing calculation result is not permission to read authored
       // formula text/value.  It is an unresolved filter value until the
@@ -260,28 +250,11 @@ export function buildCanvasSheetSnapshot(
   };
   const readFilterCell = (row: number, column: number) => resolveFilterCell(sheet, row, column);
   const filterVisual = createEffectiveFilterVisualResolver((row, column) => conditionalRuntime.resolveCell(row, column));
-  const filterHidden = options.deferDataProjection
-    ? new Set<number>()
-    : computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
+  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
   const hiddenColumns = new Set<number>([...sheet.hiddenColumns, ...outlineHiddenColumns]);
-  const visibilityRows = new Map<number, { manualHidden: boolean; filterHidden: boolean; outlineHidden: boolean }>();
-  for (const row of hiddenRows) visibilityRows.set(row, {
-    manualHidden: sheet.hiddenRows.has(row),
-    filterHidden: filterHidden.has(row),
-    outlineHidden: outlineHiddenRows.has(row),
-  });
-  const visibilityColumns = new Map<number, { manualHidden: boolean }>();
-  for (const column of hiddenColumns) visibilityColumns.set(column, { manualHidden: sheet.hiddenColumns.has(column) });
-  const resolvedVisibility: ResolvedVisibility = {
-    revision: sheet.cells.revision,
-    rows: visibilityRows,
-    columns: visibilityColumns,
-    isRowHidden: (row) => visibilityRows.has(row),
-    isColumnHidden: (column) => visibilityColumns.has(column),
-  };
   const filterRangeColumns = resolveFilterRangeColumns(sheet);
   const activeFilterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
@@ -306,6 +279,16 @@ export function buildCanvasSheetSnapshot(
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
     const resolved = resolveModelCell(row, column);
     const modelCell = resolved.cell;
+    const evaluatedFormulaValue = modelCell?.formula
+      ? formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column })?.value
+      : undefined;
+    const formulaValue = evaluatedFormulaValue === null
+      || typeof evaluatedFormulaValue === 'string'
+      || typeof evaluatedFormulaValue === 'number'
+      || typeof evaluatedFormulaValue === 'boolean'
+      || isFormulaError(evaluatedFormulaValue)
+      ? evaluatedFormulaValue
+      : modelCell?.formulaValue;
     const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
     const overlay = conditionalRuntime.resolveCell(row, column);
@@ -317,26 +300,29 @@ export function buildCanvasSheetSnapshot(
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
     const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
-    const threads = sheet.review.getThreadsAt(row, column);
+    const thread = findCommentThreadAt(sheet, row, column);
     const note = sheet.review.getNoteAt(row, column);
-    const comments = threads.map(threadToCellComment);
-    const hyperlink = getCellHyperlink(resolved.owner, resolved.row, resolved.column);
+    const comment = thread ? threadToCellComment(thread) : undefined;
+    const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
+    const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
       rawValue: modelCell?.value ?? null,
+      ...(formulaValue === undefined ? {} : { formulaValue }),
       richText: modelCell?.richText ? structuredClone(modelCell.richText) : undefined,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,
       phonetic: modelCell?.phonetic ? structuredClone(modelCell.phonetic) : undefined,
       value,
       displayValue: value,
-      hasComment: comments.length > 0 || Boolean(note),
-      comments,
+      hasComment: Boolean(comment || note),
+      commentText: comment?.text ?? note?.text,
+      comment,
       note: note ? structuredClone(note) : undefined,
       invalid: showInvalid && resolvedFilter.value != null && !validation.valid,
-      hyperlink: hyperlink ? structuredClone(hyperlink) : undefined,
+      hyperlink,
       overlay,
     };
   };
@@ -367,7 +353,7 @@ export function buildCanvasSheetSnapshot(
 
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
-  for (const pivot of options.deferDataProjection ? [] : sheet.pivots) {
+  for (const pivot of sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
     // A snapshot is a projection boundary, never a refresh authority.  A
@@ -399,8 +385,6 @@ export function buildCanvasSheetSnapshot(
     isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
     occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
-    revision: sheet.cells.revision,
-    resolvedVisibility,
     forEachOccupiedCell,
     usedRange,
     drawings: structuredClone(sheet.drawings),
@@ -460,7 +444,7 @@ export function buildAllSheetSnapshots(
   formula: FormulaEngine,
   pivotResults: Readonly<Record<string, PivotResultTree>>,
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
-  pivotErrors: Readonly<Record<string, import('./features/pivot/server-task-port').PivotTaskError>> = {},
+  pivotErrors: Readonly<Record<string, import('./features/pivot/task-protocol').PivotTaskError>> = {},
 ): CanvasSheetSnapshot[] {
   return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults, dataContent, '1900', pivotErrors));
 }

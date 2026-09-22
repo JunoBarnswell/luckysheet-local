@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service>
+  <id>ReactSheets</id>
+  <name>React Sheets</name>
+  <description>React Sheets browser spreadsheet service</description>
+  <executable>%BASE%\runtime\bin\java.exe</executable>
+  <arguments>-Dspring.config.additional-location=@PROGRAMDATA@\ReactSheets\config\ -jar "%BASE%\app\react-sheets.jar"</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+  <startmode>Automatic</startmode>
+  <stoptimeout>30sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <env name="REACT_SHEETS_DATA" value="@PROGRAMDATA@\ReactSheets\data" />
+  <env name="REACT_SHEETS_BACKUPS" value="@PROGRAMDATA@\ReactSheets\backups" />
+  <logpath>@PROGRAMDATA@\ReactSheets\logs</logpath>
+  <log mode="roll-by-size-time" sizeThreshold="10485760" keepFiles="14" />
+</service>

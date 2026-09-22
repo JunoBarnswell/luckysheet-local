@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { CheckToggle, RichTextInput, Stack, Textarea } from '@react-sheets/ui-system';
 import type { CellStyle } from '@react-sheets/core-model';
 import type { CellContentLayoutResult } from '@react-sheets/render-engine';
@@ -6,6 +6,7 @@ import type { CellEditController, CellEditDraft, CellEditorSurfaceDescriptor } f
 import { toCanonicalKeyGesture } from '../editor/cell-edit-gesture';
 
 export interface CellEditorProps {
+  active: boolean;
   editorSurface: CellEditorSurfaceDescriptor;
   cellEdit: CellEditController;
   draft: CellEditDraft;
@@ -15,7 +16,7 @@ export interface CellEditorProps {
 }
 
 /** In-cell DOM surface. CellEditDomain owns every editing decision. */
-export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, layout }: CellEditorProps): React.ReactElement {
+export function CellEditor({ active, editorSurface, cellEdit, cellStyle, draft, caret, layout }: CellEditorProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const focusedRef = useRef(false);
   const editorStyle = useMemo<CSSProperties>(() => ({
@@ -32,7 +33,11 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
     ...(layout ? { font: layout.font, lineHeight: `${layout.lineHeightPx}px` } : {}),
   }), [cellStyle, layout]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!active) {
+      focusedRef.current = false;
+      return;
+    }
     const textarea = textareaRef.current;
     if (!textarea) return;
     if (!focusedRef.current) {
@@ -46,7 +51,7 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
     const start = Math.max(0, Math.min(textarea.value.length, caret.start));
     const end = Math.max(start, Math.min(textarea.value.length, caret.end));
     textarea.setSelectionRange(start, end);
-  }, [draft.text, caret.start, caret.end]);
+  }, [active, draft.text, caret.start, caret.end]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const result = cellEdit.dispatch({ type: 'keyboard', gesture: toCanonicalKeyGesture(event) });
@@ -75,6 +80,7 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
         />
       ) : draft.kind === 'rich-text' ? (
         <RichTextInput
+          active={active}
           ariaLabel="Cell editor"
           caret={caret}
           runs={draft.runs}
@@ -106,7 +112,9 @@ export function CellEditor({ editorSurface, cellEdit, cellStyle, draft, caret, l
         onChange={(event) => {
           cellEdit.dispatch({ type: 'text.replace', text: event.target.value, caret: { start: event.target.selectionStart, end: event.target.selectionEnd } });
         }}
-        onSelect={(event) => cellEdit.dispatch({ type: 'caret.set', caret: { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd } })}
+        onSelect={(event) => {
+          if (active) cellEdit.dispatch({ type: 'caret.set', caret: { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd } });
+        }}
         onKeyDown={handleKeyDown}
         />
       )}

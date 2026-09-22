@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import {
   Button,
@@ -13,7 +13,6 @@ import {
   RIBBON_COMMAND_CATALOG,
   getRibbonGroupDefinition,
   getRibbonCommandDefinition,
-  getRibbonCommandDisabledReason,
   isRibbonCommandEnabled,
   RIBBON_TEXT,
   type AppPhase,
@@ -26,8 +25,6 @@ import {
   type RibbonMergeOperation,
   type RibbonPivotActions,
   type UiSessionIntent,
-  type CompiledFeatureSurfaceSchema,
-  type WorkbookSession,
   EXCEL_KEY_TIP_BINDINGS,
   INITIAL_KEY_TIP_STATE,
   keyTipTransition,
@@ -46,7 +43,6 @@ import type { BarcodeSymbology, ChartDrawingPayload, DrawingConnectorType, FormC
 export interface RibbonProps {
   activeTab: RibbonTabId;
   locale: Locale;
-  session: WorkbookSession;
   onCommand: (descriptor: CommandDescriptor) => void;
   onSessionIntent: (intent: UiSessionIntent) => void;
   onCopy: () => void;
@@ -97,6 +93,7 @@ export interface RibbonProps {
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
   onConvertActiveTableToRange: () => void;
+  onCreateDataTable?: () => void;
   onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -121,7 +118,6 @@ export interface RibbonProps {
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateCamera: () => void;
-  onCaptureScreenshot: () => Promise<void>;
   onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
   onCreateTextBox: () => void;
@@ -147,8 +143,6 @@ export interface RibbonProps {
   activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
-  /** FeatureRuntime-compiled availability; command catalog is presentation only. */
-  featureSurfaceSchema: CompiledFeatureSurfaceSchema;
   canExecute?: (commandId: string, params?: unknown) => boolean;
   commandPaletteOpen?: boolean;
   onCloseCommandPalette: () => void;
@@ -195,8 +189,8 @@ function CatalogButton({
   const layout = useContext(RibbonLayoutContext);
   const definition = getRibbonCommandDefinition(id);
   const enabled = isRibbonCommandEnabled(definition, context);
-  const disabledReason = getRibbonCommandDisabledReason(definition, context);
   const label = labelOverride ?? translateRibbonText(locale, definition.labelKey);
+  const displayLabel = label.replace(/\s*[（(](?:Ctrl|Alt|Shift|⌘)[^）)]*[）)]/g, '');
   const isNarrow = layout === 'narrow';
   const compactIcon = isNarrow && definition.display === 'small';
   const compactTile = isNarrow && textBelow;
@@ -207,14 +201,13 @@ function CatalogButton({
     <Button
       aria-label={mixedLabel}
       aria-pressed={definition.active ? active : undefined}
-      title={disabledReason ?? mixedLabel}
+      title={mixedLabel}
       data-testid={testId}
       data-ribbon-command={id}
       data-ribbon-keytip={keyTip}
       data-ribbon-layout-node={ribbonLayoutNodeId}
       data-ribbon-surface={ribbonSurfaceId}
       data-mixed={mixed || undefined}
-      data-disabled-reason={disabledReason}
       disabled={!enabled}
       icon={iconNode ? undefined : iconOverride ?? definition.icon}
       iconNode={iconNode}
@@ -226,12 +219,12 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[58px] !min-h-0 min-w-[42px] max-w-[64px] flex-col gap-0.5 overflow-hidden rounded-none px-1 text-center text-[11px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none !px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[80px] !min-h-0 w-[58px] min-w-[58px] max-w-[58px] flex-col !gap-1 overflow-hidden rounded-none !px-1 text-center text-[11px] leading-[15px] !whitespace-normal break-words [&>svg]:!h-6 [&>svg]:!w-6 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
     >
-      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{label}{trailingNode}</Inline> : label}
+      {iconOnly || compactIcon || compactTile ? null : trailingNode ? <Inline gap="none" className="gap-0.5">{displayLabel}{trailingNode}</Inline> : textBelow ? <Text className="block max-w-full whitespace-normal text-center !text-[11px] !leading-[15px]">{displayLabel}</Text> : <Text className="min-w-0 truncate !text-xs text-inherit">{displayLabel}</Text>}
     </Button>
   );
 }
@@ -287,6 +280,7 @@ export function Ribbon({
   onOpenTableSettings,
   onToggleTableOption,
   onConvertActiveTableToRange,
+  onCreateDataTable,
   onCreateDataSource,
   onToggleSheetTableTotalRow,
   onApplyFilterSelection,
@@ -311,7 +305,6 @@ export function Ribbon({
   onCreateAdvancedSheet,
   onApplyBarcode,
   onCreateCamera,
-  onCaptureScreenshot,
   onCreateFormControl,
   onApplyCheckbox,
   onCreateTextBox,
@@ -331,38 +324,12 @@ export function Ribbon({
   activeShape,
   activeSparkline,
   homeState,
-  featureSurfaceSchema,
-  session,
   canExecute,
   commandPaletteOpen = false,
   onCloseCommandPalette,
   onInsertConnectorType,
 }: RibbonProps) {
   const [keyTipState, setKeyTipState] = useState<KeyTipState>(INITIAL_KEY_TIP_STATE);
-  const availableCommandIds = useMemo(() => new Set([
-    ...featureSurfaceSchema.ribbon.flatMap((surface) => surface.commandId ? [surface.commandId] : []),
-    ...featureSurfaceSchema.contextualTabs.flatMap((surface) => surface.commandId ? [surface.commandId] : []),
-  ]), [featureSurfaceSchema]);
-  const isSurfaceAvailable = (id: RibbonCommandId): boolean => availableCommandIds.has(id);
-  useEffect(() => {
-    const featurePhase = session.getFeatureLifecyclePhase();
-    if (featurePhase === 'ready') session.advanceFeatureLifecycle('rendered');
-    if (session.getFeatureLifecyclePhase() !== 'rendered') return;
-
-    let cancelled = false;
-    const advanceSteady = (): void => {
-      if (!cancelled) session.advanceFeatureLifecycle('steady');
-    };
-    const hasFrameScheduler = typeof globalThis.requestAnimationFrame === 'function';
-    const scheduled = hasFrameScheduler
-      ? globalThis.requestAnimationFrame(advanceSteady)
-      : globalThis.setTimeout(advanceSteady, 0);
-    return () => {
-      cancelled = true;
-      if (hasFrameScheduler) globalThis.cancelAnimationFrame(scheduled as number);
-      else globalThis.clearTimeout(scheduled);
-    };
-  }, [session, featureSurfaceSchema]);
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null;
@@ -402,14 +369,14 @@ export function Ribbon({
       // Resolve those commands through the same catalog builder instead of
       // silently dropping a valid KeyTip when its visual member is not mounted.
       const commandId = transition.action.id as RibbonCommandId;
-      if (RIBBON_COMMAND_CATALOG.some((definition) => definition.id === commandId) && isSurfaceAvailable(commandId)) {
+      if (RIBBON_COMMAND_CATALOG.some((definition) => definition.id === commandId)) {
         const result = buildRibbonCommand(commandId, catalogContext);
         if (result) executeCatalogResult(result);
       }
     };
     document.addEventListener('keydown', handleKeyDown, true);
     return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [keyTipState, onTabChange, availableCommandIds]);
+  }, [keyTipState, onTabChange]);
   const disabled = phase !== 'ready';
   const cellStyle = homeState.style;
   const canFormat = (style: Record<string, unknown>): boolean => !disabled && homeState.canFormat
@@ -452,6 +419,7 @@ export function Ribbon({
     onOpenTableSettings,
     onToggleTableOption,
     onConvertActiveTableToRange,
+    onCreateDataTable,
     onCreateDataSource,
     onToggleSheetTableTotalRow,
     onApplyFilterSelection,
@@ -476,7 +444,6 @@ export function Ribbon({
     onCreateAdvancedSheet,
     onApplyBarcode,
     onCreateCamera,
-    onCaptureScreenshot,
     onCreateFormControl,
     onApplyCheckbox,
     onCreateTextBox,
@@ -504,16 +471,9 @@ export function Ribbon({
   const executeCatalogResult = (result: RibbonCommandResult) => {
     if (result.type === 'command') onCommand(result.descriptor);
     else if (result.type === 'intent') onSessionIntent(result.intent);
-    else {
-      try {
-        const pending = result.invoke();
-        if (pending) void Promise.resolve(pending).catch((error) => session.notify(error instanceof Error ? error.message : 'Ribbon action failed'));
-      } catch (error) {
-        session.notify(error instanceof Error ? error.message : 'Ribbon action failed');
-      }
-    }
+    else result.invoke();
   };
-  const renderHomeCommand = (id: RibbonCommandId, options: HomeRibbonCommandOptions = {}) => !isSurfaceAvailable(id) ? null : (
+  const renderHomeCommand = (id: RibbonCommandId, options: HomeRibbonCommandOptions = {}) => (
     <CatalogButton
       key={id}
       id={id}
@@ -532,8 +492,8 @@ export function Ribbon({
     />
   );
 
-  const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.filter((definition) => isSurfaceAvailable(definition.id)).map((definition) => {
-    const enabled = isRibbonCommandEnabled(definition, catalogContext);
+  const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.map((definition) => {
+    const result = isRibbonCommandEnabled(definition, catalogContext) ? buildRibbonCommand(definition.id, catalogContext) : undefined;
     const groups = [...new Set(definition.placements.map((placement) => translateRibbonText(locale, getRibbonGroupDefinition(placement.group).labelKey)))];
     return {
       id: definition.id,
@@ -542,12 +502,8 @@ export function Ribbon({
       keywords: [definition.id, definition.commandId ?? ''],
       tip: definition.tooltipKey ? translateRibbonText(locale, definition.tooltipKey) : undefined,
       commandId: definition.commandId,
-      enabled,
-      execute: () => {
-        if (!enabled) return;
-        const result = buildRibbonCommand(definition.id, catalogContext);
-        if (result) executeCatalogResult(result);
-      },
+      enabled: result !== undefined,
+      execute: () => { if (result) executeCatalogResult(result); },
     };
   });
 
@@ -556,6 +512,7 @@ export function Ribbon({
       <RibbonShell
         activeTab={activeTab}
         contextualTabs={[
+          ...(activePivot ? ['pivotAnalyze', 'pivotDesign'] as const : []),
           ...(activeTableSheet ? ['tableSheetDesign'] as const : []),
           ...(activeGanttSheet ? ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'] as const : []),
           ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
@@ -581,9 +538,9 @@ export function Ribbon({
         {(layout) => (
           <RibbonLayoutContext.Provider value={layout.mode}>
         {activeTab === 'pageLayout' || activeTab === 'formulas' || activeTab === 'data'
-          ? <RibbonLayoutRenderer tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} featureSurfaceSchema={featureSurfaceSchema} />
+          ? <RibbonLayoutRenderer tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
           : activeTab !== 'home' && activeTab !== 'insert'
-            ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} featureSurfaceSchema={featureSurfaceSchema} />
+            ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} />
             : null}
 
         {activeTab === 'home' ? (
@@ -607,7 +564,6 @@ export function Ribbon({
             onUnhideRows={onUnhideRows}
             onUnhideColumns={onUnhideColumns}
             renderCommand={renderHomeCommand}
-            featureSurfaceSchema={featureSurfaceSchema}
           />
         ) : null}
         {activeTab === 'insert' ? (
@@ -616,15 +572,10 @@ export function Ribbon({
             layout={layout}
             disabled={disabled}
             renderCommand={renderHomeCommand}
-            featureSurfaceSchema={featureSurfaceSchema}
         onInsertChart={onInsertChartType}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
             onInsertConnector={onInsertConnectorType}
-            onInsertFormControl={onCreateFormControl}
-            onOpenMoreCharts={() => onSessionIntent({ type: 'dialog.open', dialog: 'recommended-charts' })}
-            canExecute={(commandId) => !canExecute || canExecute(commandId)}
-            canInsertConnector={(activeShape?.drawingIds.length ?? 0) >= 2}
           />
         ) : null}
 

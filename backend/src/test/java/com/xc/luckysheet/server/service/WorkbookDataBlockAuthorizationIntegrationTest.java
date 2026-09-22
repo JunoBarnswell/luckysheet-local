@@ -27,13 +27,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         "DATABASE_PASSWORD=",
         "JPA_DDL_AUTO=validate",
         "FLYWAY_BASELINE_ON_MIGRATE=false",
+        "luckysheet.auth.mode=oidc",
         "AUTH_ISSUER=https://issuer.test",
         "AUTH_AUDIENCE=test",
         "AUTH_JWKS_URL=https://issuer.test/.well-known/jwks.json",
         "COORDINATION_MULTI_INSTANCE=false",
         "COORDINATION_REDIS_ENABLED=false"
 })
-class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.server.NativeKernelIntegrationTestSupport {
+class WorkbookDataBlockAuthorizationIntegrationTest {
     @Autowired private WorkbookCatalogService catalog;
     @Autowired private GuestShareService shares;
     @Autowired private WorkbookDataBlockCommitService commits;
@@ -44,7 +45,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.se
     void revokedEditorCannotCommitBytesReadBeforeTheWriteBoundary() throws Exception {
         String unitId = "block-revoked";
         String owner = "owner-revoked";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null, null), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "blocked-after-revocation".getBytes(StandardCharsets.UTF_8);
 
@@ -61,7 +62,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.se
     void editorCommitThatCompletesBeforeRevocationRemainsPersisted() throws Exception {
         String unitId = "block-committed";
         String owner = "owner-committed";
-        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", null, null, null, null, null), owner);
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), owner);
         var share = shares.create(unitId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         byte[] content = "committed-before-revocation".getBytes(StandardCharsets.UTF_8);
 
@@ -78,4 +79,8 @@ class WorkbookDataBlockAuthorizationIntegrationTest extends com.xc.luckysheet.se
                 content.length, content, Instant.now(), Instant.now());
     }
 
+    private com.fasterxml.jackson.databind.JsonNode snapshot(String unitId) throws Exception {
+        return mapper.readTree("{\"schema\":\"WorkbookSnapshot\",\"version\":9,\"unitId\":\"" + unitId
+                + "\",\"name\":\"Blocks\",\"dimensionMetrics\":{\"normalFontFamily\":\"Calibri\",\"normalFontSizePx\":14.6666666667,\"maximumDigitWidthPx\":7},\"calculationSettings\":{},\"editingOptions\":{\"allowEditDirectly\":true,\"moveAfterEnter\":true,\"enterDirection\":\"down\",\"formulaAutoComplete\":true,\"valueAutoComplete\":true,\"fixedDecimalPlaces\":null},\"dataModel\":{\"sources\":[],\"tables\":[],\"relationships\":[],\"views\":[]},\"sheets\":[{\"kind\":\"worksheet\",\"id\":\"sheet-1\",\"name\":\"Sheet1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{},\"merges\":[],\"pane\":{\"kind\":\"none\"},\"defaultRowHeightPx\":20,\"defaultColumnWidthPx\":64,\"pivots\":[],\"sparklines\":[],\"drawings\":[],\"drawingPayloads\":{},\"review\":{\"notesByCell\":{},\"notesById\":{},\"threadIdsByCell\":{},\"threadsById\":{}}}]}");
+    }
 }

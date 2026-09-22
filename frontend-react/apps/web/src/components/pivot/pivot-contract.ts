@@ -82,6 +82,7 @@ export interface PivotSlicerControl {
   settings: PivotSlicerSettings;
   items: readonly PivotSlicerItemProjection[];
   connections?: readonly PivotControlConnection[];
+  compatibleConnections?: readonly PivotControlConnection[];
 }
 
 export interface PivotTimelineControl {
@@ -102,6 +103,7 @@ export interface PivotTimelineControl {
   caption?: string;
   styleName?: string;
   connections?: readonly PivotControlConnection[];
+  compatibleConnections?: readonly PivotControlConnection[];
 }
 
 export interface PivotPanelState {
@@ -122,6 +124,8 @@ export interface PivotPanelCallbacks {
   onCalculatedFieldsChange?: (fields: PivotCalculatedField[]) => void;
   onCalculatedItemsChange?: (items: PivotCalculatedItem[]) => void;
   onFilterChange: (fieldId: string, filter: PivotManualFilterState) => void;
+  /** Loads a data-source field's member domain only when its picker is opened. */
+  onLoadFieldValues?: (fieldId: string) => Promise<void>;
   onSortChange: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
@@ -131,7 +135,8 @@ export interface PivotPanelCallbacks {
   onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
-  onTimelineRemove: () => void;
+  onControlConnectionsChange?: (drawingId: string, connections: readonly PivotControlConnection[]) => void;
+  onTimelineClear?: (timelineId: string) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
   onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
   onTimelineWindowChange?: (timelineId: string, scrollPosition: string) => void;

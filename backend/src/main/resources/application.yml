@@ -1,17 +1,29 @@
 server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  shutdown: graceful
+  tomcat:
+    max-http-form-post-size: 150MB
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        http-only: true
+        same-site: strict
+        secure: ${SESSION_COOKIE_SECURE:false}
   port: ${SERVER_PORT:8082}
   forward-headers-strategy: framework
 
 spring:
   servlet:
     multipart:
-      max-file-size: 1GB
-      max-request-size: 1GB
-      file-size-threshold: 0
+      max-file-size: 50MB
+      max-request-size: 150MB
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   application:
     name: luckysheet-canonical
   datasource:
-    url: ${DATABASE_URL:jdbc:h2:file:./data/luckysheet_canonical;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE}
+    url: ${DATABASE_URL:jdbc:h2:file:${SHEETS_DATA_DIR:./data}/luckysheet_canonical;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
     hikari:
@@ -51,11 +63,13 @@ spring:
 
 luckysheet:
   auth:
+    mode: ${AUTH_MODE:local}
+    bootstrap-file: ${SHEETS_DATA_DIR:./data}/bootstrap-token
     issuer: ${AUTH_ISSUER:}
     audience: ${AUTH_AUDIENCE:}
     jwks-url: ${AUTH_JWKS_URL:}
   websocket:
-    allowed-origins: ${WEB_ALLOWED_ORIGINS:http://127.0.0.1:4180,http://localhost:4180}
+    allowed-origins: ${WEB_ALLOWED_ORIGINS:http://127.0.0.1:8082,http://localhost:8082,http://127.0.0.1:4180,http://localhost:4180}
   coordination:
     multi-instance: ${COORDINATION_MULTI_INSTANCE:false}
     redis-enabled: ${COORDINATION_REDIS_ENABLED:${COORDINATION_MULTI_INSTANCE:false}}
@@ -68,9 +82,10 @@ luckysheet:
     presence-ttl: ${COORDINATION_PRESENCE_TTL:PT45S}
   query:
     enabled: ${QUERY_EXECUTION_ENABLED:true}
-    max-rows: ${QUERY_MAX_ROWS:10000}
+    max-rows: ${QUERY_MAX_ROWS:100000}
     max-columns: ${QUERY_MAX_COLUMNS:500}
     max-response-bytes: ${QUERY_MAX_RESPONSE_BYTES:5000000}
+    block-row-count: ${QUERY_BLOCK_ROW_COUNT:2048}
     timeout: ${QUERY_TIMEOUT:PT10S}
     worker-threads: ${QUERY_WORKER_THREADS:4}
     # Credentials are supplied by server deployment configuration/secret
@@ -79,13 +94,3 @@ luckysheet:
   share:
     default-lifetime: ${SHARE_DEFAULT_LIFETIME:PT24H}
     max-lifetime: ${SHARE_MAX_LIFETIME:P30D}
-  kernel:
-    executable: ${KERNEL_HOST_EXECUTABLE:}
-    working-directory: ${KERNEL_HOST_WORKING_DIRECTORY:}
-    task-directory: ${KERNEL_HOST_TASK_DIRECTORY:}
-    startup-timeout: ${KERNEL_HOST_STARTUP_TIMEOUT:PT10S}
-    request-timeout: ${KERNEL_HOST_REQUEST_TIMEOUT:PT2M}
-    max-payload-bytes: ${KERNEL_HOST_MAX_PAYLOAD_BYTES:16777216}
-    max-page-bytes: ${KERNEL_HOST_MAX_PAGE_BYTES:1048576}
-    protocol-version: 1
-    manifest-version: 11

@@ -10,7 +10,7 @@ export interface OoxmlNormalFont {
   sizePt: number;
 }
 
-/** Host-injectable font metric with a deterministic Calibri-compatible default. */
+/** Host-injectable font metric. Workers use the deterministic Calibri-compatible fallback. */
 export interface OoxmlFontMeasurer {
   maximumDigitWidthPx(font: OoxmlNormalFont): number;
 }

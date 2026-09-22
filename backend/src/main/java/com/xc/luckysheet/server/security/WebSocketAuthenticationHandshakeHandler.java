@@ -7,6 +7,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.socket.WebSocketHandler;
@@ -17,6 +19,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -27,7 +30,6 @@ import java.util.Map;
  */
 @Component
 public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandshakeHandler {
-    public static final String COLLABORATION_PROTOCOL = "react-sheets.v1";
     private static final String BEARER_PROTOCOL_PREFIX = "bearer.";
     private static final String WEBSOCKET_PROTOCOL_HEADER = "Sec-WebSocket-Protocol";
 
@@ -37,10 +39,6 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
     public WebSocketAuthenticationHandshakeHandler(JwtDecoder jwtDecoder, GuestShareService shares) {
         this.jwtDecoder = jwtDecoder;
         this.shares = shares;
-        // The stable protocol is echoed by Spring during the upgrade. The
-        // bearer credential remains a second requested protocol used only for
-        // authentication and is never reflected in the response header.
-        setSupportedProtocols(COLLABORATION_PROTOCOL);
     }
 
     @Override
@@ -48,9 +46,25 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
         return authenticatedPrincipal(request);
     }
 
+    @Override
+    protected String selectProtocol(List<String> requestedProtocols, WebSocketHandler handler) {
+        return requestedProtocols.stream()
+                .map(String::trim)
+                .filter(protocol -> protocol.startsWith(BEARER_PROTOCOL_PREFIX))
+                .findFirst()
+                .orElse(null);
+    }
+
     Principal authenticatedPrincipal(ServerHttpRequest request) {
         Principal existing = request.getPrincipal();
-        if (existing instanceof JwtAuthenticationToken || existing instanceof GuestShareAuthentication) return existing;
+        if (isAuthenticatedPrincipal(existing)) return existing;
+
+        // Servlet WebSocket handshakes normally expose the HTTP session
+        // principal through ServerHttpRequest. The security context fallback
+        // keeps cookie-authenticated upgrades working with servlet adapters
+        // that do not copy request.getUserPrincipal().
+        Authentication context = SecurityContextHolder.getContext().getAuthentication();
+        if (isAuthenticatedPrincipal(context)) return context;
 
         String bearer = bearerToken(request.getHeaders());
         if (bearer != null) {
@@ -73,6 +87,12 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
             }
         }
         throw new HandshakeFailureException("Authenticated connection is required");
+    }
+
+    private boolean isAuthenticatedPrincipal(Principal principal) {
+        return principal instanceof JwtAuthenticationToken
+                || principal instanceof GuestShareAuthentication
+                || principal instanceof LocalUserAuthentication;
     }
 
     private String bearerToken(HttpHeaders headers) {

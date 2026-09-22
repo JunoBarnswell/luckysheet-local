@@ -5,6 +5,9 @@ export type QueryStepKind =
   | 'filter'
   | 'select-columns'
   | 'rename-column'
+  | 'trim-text'
+  | 'split-column'
+  | 'remove-duplicates'
   | 'sort'
   | 'group-by'
   | 'join'
@@ -53,7 +56,7 @@ type Scalar = string | number | boolean | null;
 type Table = { columns: string[]; rows: Scalar[][] };
 
 const IMPLEMENTED_QUERY_STEP_KINDS = new Set<QueryStepKind>([
-  'source', 'filter', 'select-columns', 'rename-column', 'sort', 'group-by', 'join', 'pivot',
+  'source', 'filter', 'select-columns', 'rename-column', 'trim-text', 'split-column', 'remove-duplicates', 'sort', 'group-by', 'join', 'pivot',
 ]);
 const FILTER_OPERATORS = new Set(['eq', 'neq', 'contains', 'startsWith', 'endsWith', 'gt', 'gte', 'lt', 'lte', 'isNull', 'notNull']);
 const AGGREGATIONS = new Set(['sum', 'count', 'average', 'min', 'max']);
@@ -99,6 +102,9 @@ export class QueryStepPipeline {
       case 'filter': return filterTable(input, step.config, step.id);
       case 'select-columns': return selectColumns(input, step.config, step.id);
       case 'rename-column': return renameColumn(input, step.config, step.id);
+      case 'trim-text': return trimText(input, step.config, step.id);
+      case 'split-column': return splitColumn(input, step.config, step.id);
+      case 'remove-duplicates': return removeDuplicates(input, step.config, step.id);
       case 'sort': return sortTable(input, step.config, step.id);
       case 'group-by': return groupTable(input, step.config, step.id);
       case 'join': return joinTable(input, step.config, step.id);
@@ -186,6 +192,52 @@ function renameColumn(input: Table, config: Record<string, unknown>, stepId: str
   const columns = [...input.columns];
   columns[index] = to;
   return { columns, rows: input.rows.map((row) => [...row]) };
+}
+
+function trimText(input: Table, config: Record<string, unknown>, stepId: string): Table {
+  const columns = requireStringArray(config, ['columns'], stepId);
+  const indices = columns.map((name) => columnIndex(input.columns, name, stepId));
+  const selected = new Set(indices);
+  return {
+    columns: [...input.columns],
+    rows: input.rows.map((row) => row.map((value, index) => selected.has(index) && typeof value === 'string' ? value.trim() : value)),
+  };
+}
+
+function splitColumn(input: Table, config: Record<string, unknown>, stepId: string): Table {
+  const column = requireString(config, 'column', stepId);
+  const delimiter = requireString(config, 'delimiter', stepId);
+  const outputColumns = requireStringArray(config, ['outputColumns'], stepId);
+  if (outputColumns.length < 2) throw new Error(`Query step "${stepId}" requires at least two output columns`);
+  if (new Set(outputColumns).size !== outputColumns.length) throw new Error(`Query step "${stepId}" output columns must be unique`);
+  const sourceIndex = columnIndex(input.columns, column, stepId);
+  const retainedColumns = input.columns.filter((name) => name !== column);
+  for (const output of outputColumns) {
+    if (retainedColumns.includes(output)) throw new Error(`Query step "${stepId}" cannot create existing column "${output}"`);
+  }
+  const columns = [...input.columns.slice(0, sourceIndex), ...outputColumns, ...input.columns.slice(sourceIndex + 1)];
+  return {
+    columns,
+    rows: input.rows.map((row) => {
+      const raw = row[sourceIndex];
+      const parts = typeof raw === 'string' ? raw.split(delimiter).slice(0, outputColumns.length) : [raw ?? null];
+      const split = outputColumns.map((_name, index) => parts[index] ?? null);
+      return [...row.slice(0, sourceIndex), ...split, ...row.slice(sourceIndex + 1)];
+    }),
+  };
+}
+
+function removeDuplicates(input: Table, config: Record<string, unknown>, stepId: string): Table {
+  const columns = requireStringArray(config, ['columns'], stepId);
+  const indices = columns.map((name) => columnIndex(input.columns, name, stepId));
+  const seen = new Set<string>();
+  const rows = input.rows.filter((row) => {
+    const key = JSON.stringify(indices.map((index) => row[index] ?? null));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { columns: [...input.columns], rows: rows.map((row) => [...row]) };
 }
 
 function sortTable(input: Table, config: Record<string, unknown>, stepId: string): Table {
@@ -330,11 +382,7 @@ function pivotTable(input: Table, config: Record<string, unknown>, stepId: strin
   const columns = [...rowFields];
   for (const columnKey of columnKeys) {
     const values = JSON.parse(columnKey!) as Scalar[];
-    for (const valueField of valueFields) {
-      const label = `${values.map((value) => value === null ? '' : typeof value === 'number' && Object.is(value, -0) ? '0' : String(value)).join(' / ')} · ${valueField}`;
-      if (columns.includes(label)) throw new Error(`Query step "${stepId}" produces duplicate pivot column "${label}"`);
-      columns.push(label);
-    }
+    for (const valueField of valueFields) columns.push(`${values.join(' / ')} · ${valueField}`);
   }
   const rows = [...groups.values()].map((group) => {
     const first = group[0]!;
@@ -365,6 +413,15 @@ export function validateQuerySteps(steps: readonly QueryStep[]): void {
       }
       case 'select-columns': requireStringArray(step.config, ['columns'], step.id); break;
       case 'rename-column': requireString(step.config, 'from', step.id); requireString(step.config, 'to', step.id); break;
+      case 'trim-text': requireStringArray(step.config, ['columns'], step.id); break;
+      case 'split-column': {
+        requireString(step.config, 'column', step.id);
+        requireString(step.config, 'delimiter', step.id);
+        const outputColumns = requireStringArray(step.config, ['outputColumns'], step.id);
+        if (outputColumns.length < 2 || new Set(outputColumns).size !== outputColumns.length) throw new Error(`Query step "${step.id}" output columns must be unique and contain at least two entries`);
+        break;
+      }
+      case 'remove-duplicates': requireStringArray(step.config, ['columns'], step.id); break;
       case 'sort':
         if (Array.isArray(step.config.by)) {
           if (step.config.by.length === 0) throw new Error(`Query step "${step.id}" requires sort criteria`);
