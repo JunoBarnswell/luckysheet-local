@@ -17,10 +17,13 @@ export interface CanonicalDataSourceRegion {
 export interface DataSourceCellPatchIdentity {
   row: number;
   column: number;
-  patch: CellPatch;
+  value?: CellPatch['value'];
+  formula?: CellPatch['formula'];
+  formulaValue?: CellPatch['formulaValue'];
 }
 
 interface CachedPatchIdentity {
+  rangeKey: string;
   cellRevision: number;
   entries: readonly DataSourceCellPatchIdentity[];
 }
@@ -123,22 +126,33 @@ export function resolveCanonicalDataSourceRegion(
 export function dataSourceCellPatchIdentity(source: CanonicalDataSourceRegion): readonly DataSourceCellPatchIdentity[] {
   const { manifest, region, sheet } = source;
   const range = manifest.sourceRange!;
-  const key = JSON.stringify([manifest.id, range.startRow, range.endRow, range.startColumn, range.endColumn]);
+  const rangeKey = JSON.stringify([range.startRow, range.endRow, range.startColumn, range.endColumn]);
   let sheetCache = patchIdentityCache.get(sheet);
   if (!sheetCache) {
     sheetCache = new Map<string, CachedPatchIdentity>();
     patchIdentityCache.set(sheet, sheetCache);
   }
-  const cached = sheetCache.get(key);
-  if (cached?.cellRevision === sheet.cells.revision) return cached.entries;
+  const activeSourceIds = new Set(sheet.dataRegions.map((entry) => entry.sourceId));
+  for (const cachedSourceId of sheetCache.keys()) {
+    if (!activeSourceIds.has(cachedSourceId)) sheetCache.delete(cachedSourceId);
+  }
+  const cached = sheetCache.get(manifest.id);
+  if (cached?.rangeKey === rangeKey && cached.cellRevision === sheet.cells.revision) return cached.entries;
 
   const entries: DataSourceCellPatchIdentity[] = [];
   sheet.cells.forEachInRange(range.startRow + 1, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
     const patch = readCellPatch(cell);
     if (!patch) throw new Error(`Data region ${region.id} contains a non-canonical cell overlay`);
-    entries.push({ row: row - region.headerRow - 1, column: column - range.startColumn, patch });
+    if (patch.value === undefined && patch.formula === undefined && patch.formulaValue === undefined) return;
+    entries.push({
+      row: row - region.headerRow - 1,
+      column: column - range.startColumn,
+      ...(patch.value === undefined ? {} : { value: patch.value }),
+      ...(patch.formula === undefined ? {} : { formula: patch.formula }),
+      ...(patch.formulaValue === undefined ? {} : { formulaValue: patch.formulaValue }),
+    });
   });
   entries.sort((left, right) => left.row - right.row || left.column - right.column);
-  sheetCache.set(key, { cellRevision: sheet.cells.revision, entries });
+  sheetCache.set(manifest.id, { rangeKey, cellRevision: sheet.cells.revision, entries });
   return entries;
 }

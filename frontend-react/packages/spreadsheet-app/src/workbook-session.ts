@@ -212,6 +212,7 @@ import {
   type PivotControlRecord,
 } from './features/pivot-controls';
 import {
+  applyCellPatch,
   prepareDataRegionMaterialization,
   computeColumnarBlockChecksum,
   createWorkbookCellResolver,
@@ -5068,8 +5069,10 @@ export class WorkbookSession {
 
     let pendingPivot: PivotModel | undefined;
     try {
-      const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
+      const blockRegions = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.filter((region) => region.range.startRow === sourceRegion.startRow
         && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
+      if (blockRegions.length > 1) throw new Error('Pivot source range has multiple data-region owners');
+      const blockRegion = blockRegions[0];
       const source = params.source?.kind === 'worksheet-range' && blockRegion
         ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
         : params.source
@@ -6701,19 +6704,19 @@ export class WorkbookSession {
       const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
       if (field.ordinal >= canonical.manifest.fields.length) throw new Error(`Pivot field ${field.name} is outside data source ${sourceId}`);
       const column = canonical.region.range.startColumn + field.ordinal;
-      const overlayValues = new Map<number, PivotScalar>();
+      const overlayPatches = new Map<number, NonNullable<ReturnType<typeof readCellPatch>>>();
       canonical.sheet.cells.forEachInRange(canonical.region.headerRow + 1, canonical.region.range.endRow, column, column, (cell, row) => {
-        if (!readCellPatch(cell)) throw new Error(`Data region ${canonical.region.id} contains a non-canonical cell overlay`);
-        const resolved = this.readResolvedCell(canonical.sheet, row, column);
+        const patch = readCellPatch(cell);
+        if (!patch) throw new Error(`Data region ${canonical.region.id} contains a non-canonical cell overlay`);
+        overlayPatches.set(row - canonical.region.headerRow - 1, patch);
+      });
+      const result = await query.getDistinctFieldValues(fieldId, undefined, (logicalRow, baseValue) => {
+        const resolved = applyCellPatch({ value: baseValue }, overlayPatches.get(logicalRow));
         const value = resolved?.formulaValue ?? resolved?.value ?? null;
         if (!(value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value))) {
           throw new Error(`Pivot field ${field.name} contains a non-scalar overlay value`);
         }
-        overlayValues.set(row - canonical.region.headerRow - 1, value);
-      });
-      const result = await query.getDistinctFieldValues(fieldId, undefined, (logicalRow, baseValue) => {
-        const physicalRow = canonical.manifest.rowOrder?.[logicalRow] ?? logicalRow;
-        return overlayValues.has(physicalRow) ? overlayValues.get(physicalRow)! : baseValue;
+        return value;
       });
       if (result.value === undefined) throw new Error(result.state.error ?? `Data source field ${field.name} values are unavailable`);
       const currentOwner = workbook.sheets.get(owner.id);

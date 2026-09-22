@@ -60,10 +60,17 @@ export interface PivotSourceIndex {
   rowPathOffsets: Uint32Array;
 }
 
-export interface PivotSourceIndexBuildInput {
+export type PivotSourceIndexBuildInput = {
   columns: readonly PivotSourceColumnValues[];
   rowPaths: readonly (readonly PivotSourceRowPath[])[];
-}
+  rowCount?: never;
+  rowPathAt?: never;
+} | {
+  columns: readonly PivotSourceColumnValues[];
+  rowCount: number;
+  rowPathAt: (row: number) => readonly PivotSourceRowPath[];
+  rowPaths?: never;
+};
 
 export function inferPivotSourceFieldType(values: readonly PivotScalar[]): PivotFieldDataType {
   const present = values.filter((value) => value != null && value !== '');
@@ -82,7 +89,8 @@ export function inferPivotSourceFieldType(values: readonly PivotScalar[]): Pivot
 }
 
 export function createPivotSourceIndex(input: PivotSourceIndexBuildInput): PivotSourceIndex {
-  const rowCount = input.rowPaths.length;
+  const rowCount = input.rowPaths === undefined ? input.rowCount : input.rowPaths.length;
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new Error('Pivot source row count is invalid');
   const fieldIds = new Set<string>();
   const fields = input.columns.map(({ field }, ordinal) => {
     if (!field.fieldId.trim()) throw new Error(`Pivot source field ${String(ordinal)} has no stable fieldId`);
@@ -103,10 +111,11 @@ export function createPivotSourceIndex(input: PivotSourceIndexBuildInput): Pivot
   });
   const rowPathPool: PivotSourceRowPath[] = [];
   const rowPathOffsets = new Uint32Array(rowCount + 1);
-  input.rowPaths.forEach((paths, row) => {
+  for (let row = 0; row < rowCount; row += 1) {
     rowPathOffsets[row] = rowPathPool.length;
+    const paths = input.rowPaths === undefined ? input.rowPathAt(row) : input.rowPaths[row]!;
     for (const path of paths) rowPathPool.push(structuredClone(path));
-  });
+  }
   rowPathOffsets[rowCount] = rowPathPool.length;
   return {
     schema: PIVOT_SOURCE_INDEX_SCHEMA,

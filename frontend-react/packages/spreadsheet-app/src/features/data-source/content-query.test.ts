@@ -97,6 +97,7 @@ test('canonical data-source region rejects a reader with same revision but diffe
   const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
   assert.equal(canonical.region.id, 'canonical-region');
   writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'set', value: 11 } });
+  writeCellPatch(sheet, 2, 0, { schema: 'CellPatch', style: { kind: 'set', value: { bold: true } } });
   assert.deepEqual(dataSourceCellPatchIdentity(canonical).map(({ row, column }) => [row, column]), [[0, 1]]);
 
   const mismatched = new DataSourceContentQuery({ ...source, name: 'Different metadata' }, store);
@@ -155,7 +156,7 @@ test('distinct field values stay unloaded until requested and fail closed at the
 
   assert.equal(reads, 0);
   const members = await query.getDistinctFieldValues('code');
-  assert.deepEqual(members.value, ['A', 'B', null]);
+  assert.deepEqual(members.value, ['A', null, 'B']);
   assert.equal(members.state.availability, 'ready');
   assert.equal(reads, 2);
 

@@ -347,15 +347,11 @@ export async function readPivotDrillDownRows(
     const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
     const { manifest, sheet: sourceSheet, region } = canonical;
     const manifestRange = manifest.sourceRange!;
-    const logicalRowsByPhysical = manifest.rowOrder === undefined
-      ? undefined
-      : new Map(manifest.rowOrder.map((physicalRow, logicalRow) => [physicalRow, logicalRow]));
     if (manifest.fields.length !== plan.columns.length) throw new Error(`Pivot drill-down source ${sourceId} field count changed`);
     const logicalRows = plan.records.map((record) => {
       const path = record.paths.get('__single-source__');
       if (!path || path.sheetId !== sourceSheet.id) throw new Error('Pivot drill-down provenance does not match its data region');
-      const physicalRow = path.row - region.headerRow - 1;
-      const logicalRow = logicalRowsByPhysical?.get(physicalRow) ?? physicalRow;
+      const logicalRow = path.row - region.headerRow - 1;
       if (!Number.isSafeInteger(logicalRow) || logicalRow < 0 || logicalRow >= manifest.rowCount) {
         throw new Error(`Pivot drill-down source row is outside data source ${sourceId}`);
       }

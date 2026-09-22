@@ -288,7 +288,7 @@ export class DataSourceContentQuery {
    * remain read-only views owned by this query.
    */
   async scanRows(
-    visitor: (row: readonly TableScalar[], logicalRow: number, physicalRow: number) => boolean | void,
+    visitor: (row: readonly TableScalar[], logicalRow: number) => boolean | void,
   ): Promise<DataSourceContentResult<boolean>> {
     let lastState = state(this.source.id, null, 'ready');
     for (let logicalRow = 0; logicalRow < this.source.rowCount; logicalRow += 1) {
@@ -307,7 +307,7 @@ export class DataSourceContentQuery {
       const row = block.rows[physicalRow - ref.startRow];
       if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(logicalRow)}`);
       try {
-        if (visitor(row, logicalRow, physicalRow) === false) return { state: lastState, value: false };
+        if (visitor(row, logicalRow) === false) return { state: lastState, value: false };
       } catch (error) {
         return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
       }

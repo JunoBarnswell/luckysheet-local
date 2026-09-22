@@ -472,6 +472,7 @@ export function SheetCanvas({
     scope: 'report' | 'field';
     x: number;
     y: number;
+    sourceRevision: string | null;
     loadedValues?: readonly PivotScalar[];
   } | null>(null);
   const [pivotFilterLoading, setPivotFilterLoading] = useState<{ x: number; y: number } | null>(null);
@@ -486,25 +487,33 @@ export function SheetCanvas({
   const openPivotFilter = useCallback(async (request: { pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number }): Promise<void> => {
     const generation = ++pivotFilterLoadGeneration.current;
     const pivot = sheet.pivots.find((candidate) => candidate.id === request.pivotId);
+    const popover = { ...request, sourceRevision: pivotResults[request.pivotId]?.sourceRevision ?? null };
     const shouldLoad = Boolean(
       onLoadPivotFieldValues
       && pivot?.source.kind === 'data-source',
     );
     if (!shouldLoad || !onLoadPivotFieldValues) {
-      setPivotFilterPopover(request);
+      setPivotFilterPopover(popover);
       return;
     }
     setPivotFilterLoading({ x: request.x, y: request.y });
     try {
       const values = await onLoadPivotFieldValues(request.pivotId, request.fieldId);
       if (generation !== pivotFilterLoadGeneration.current) return;
-      setPivotFilterPopover(values === undefined ? request : { ...request, loadedValues: [...values] });
+      setPivotFilterPopover(values === undefined ? popover : { ...popover, loadedValues: [...values] });
     } catch (error) {
       if (generation === pivotFilterLoadGeneration.current) onPivotFilterLoadError?.(error);
     } finally {
       if (generation === pivotFilterLoadGeneration.current) setPivotFilterLoading(null);
     }
-  }, [onLoadPivotFieldValues, onPivotFilterLoadError, sheet.pivots]);
+  }, [onLoadPivotFieldValues, onPivotFilterLoadError, pivotResults, sheet.pivots]);
+
+  useEffect(() => {
+    setPivotFilterPopover((current) => current !== null
+      && (pivotResults[current.pivotId]?.sourceRevision ?? null) !== current.sourceRevision
+      ? null
+      : current);
+  }, [pivotResults]);
 
   useEffect(() => {
     const pending = requestedExtentRef.current;

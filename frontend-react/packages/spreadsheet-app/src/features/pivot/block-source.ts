@@ -160,15 +160,11 @@ export async function readPivotBlockSource(
     : undefined;
   try {
     const columnValues = fields.map(() => [] as PivotScalar[]);
-    const rowPaths: PivotSourceRowPath[][] = [];
-    const physicalToLogical = new Map<number, number>();
-    const scanned = await query.scanRows((values, logicalRow, physicalRow) => {
+    const scanned = await query.scanRows((values, logicalRow) => {
       if (values.length !== fields.length) {
         throw new Error(`Data source row ${String(logicalRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
       }
       for (let ordinal = 0; ordinal < fields.length; ordinal += 1) columnValues[ordinal]!.push(values[ordinal] ?? null);
-      rowPaths.push([rowPath(sourceSheetId, sourceRowStart, physicalRow)]);
-      physicalToLogical.set(physicalRow, logicalRow);
     });
     const scanState = stateFromQuery(scanned.state);
     if (scanned.value === undefined || scanState.status !== 'ready') {
@@ -180,9 +176,7 @@ export async function readPivotBlockSource(
         || !Number.isSafeInteger(overlay.fieldOrdinal) || overlay.fieldOrdinal < 0 || overlay.fieldOrdinal >= fields.length) {
         throw new Error('Pivot source CellPatch overlay is outside the canonical data region');
       }
-      const logicalRow = physicalToLogical.get(overlay.rowIndex);
-      if (logicalRow === undefined) throw new Error('Pivot source CellPatch overlay has no logical data row');
-      columnValues[overlay.fieldOrdinal]![logicalRow] = overlay.value;
+      columnValues[overlay.fieldOrdinal]![overlay.rowIndex] = overlay.value;
     }
     const readyState: PivotBlockSourceState = {
       status: 'ready',
@@ -194,7 +188,8 @@ export async function readPivotBlockSource(
       state: readyState,
       source: createPivotSourceIndex({
         columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
-        rowPaths,
+        rowCount: queryManifest.rowCount,
+        rowPathAt: (logicalRow) => [rowPath(sourceSheetId, sourceRowStart, logicalRow)],
       }),
       sourceRevision: sourceRevision(query),
     };

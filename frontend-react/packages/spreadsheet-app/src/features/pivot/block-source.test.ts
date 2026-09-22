@@ -122,12 +122,12 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
     { fieldId: 'orders:field:1', name: 'Amount', ordinal: 1, dataType: 'number' },
   ]);
   assert.deepEqual(pivotSourceColumnValues(result.source, 0), ['East', 'East', 'North', 'West']);
-  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [30, 99, 40, 20]);
+  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [99, 10, 40, 20]);
   assert.deepEqual(Array.from({ length: result.source.rowCount }, (_, row) => pivotSourceRowPaths(result.source, row)), [
-    [{ sheetId: 'source-sheet', row: 3 }],
     [{ sheetId: 'source-sheet', row: 1 }],
-    [{ sheetId: 'source-sheet', row: 4 }],
     [{ sheetId: 'source-sheet', row: 2 }],
+    [{ sheetId: 'source-sheet', row: 3 }],
+    [{ sheetId: 'source-sheet', row: 4 }],
   ]);
   assert.deepEqual(events, ['loading', 'ready']);
 });
