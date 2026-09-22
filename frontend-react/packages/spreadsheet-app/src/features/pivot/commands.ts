@@ -268,7 +268,14 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
   const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
   const plan = planPivotDrillDown(context, params);
-  const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
+  const targetRowCount = Math.max(DEFAULT_SHEET_ROW_COUNT, params.target.row + plan.records.length + 1);
+  const targetColumnCount = Math.max(DEFAULT_SHEET_COLUMN_COUNT, params.target.column + plan.columns.length);
+  const target = context.workbook.addSheet(
+    params.targetSheetId,
+    createPivotDrillDownSheetName(pivot, params.label),
+    targetRowCount,
+    targetColumnCount,
+  );
   plan.columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
   plan.records.forEach((record, rowOffset) => {
     plan.columns.forEach((column, columnOffset) => {

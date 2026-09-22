@@ -116,7 +116,13 @@ function getChartSeries(
   }
   const pivotSources = { ...pivotResults };
   for (const source of sheets) for (const [pivotId, result] of Object.entries(source.pivotResults)) pivotSources[pivotId] ??= result;
-  const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables);
+  const loadingPivotIds = new Set<string>();
+  const pivotSourceId = payload.source.kind === 'pivot' ? payload.source.pivotId : undefined;
+  if (pivotSourceId && !pivotSources[pivotSourceId]) {
+    const sourceSheet = sheets.find((candidate) => candidate.pivots?.some((pivot) => pivot.id === pivotSourceId) === true);
+    if (sourceSheet?.pivotProjections?.[pivotSourceId]?.refresh.status === 'refreshing') loadingPivotIds.add(pivotSourceId);
+  }
+  const data = resolveChartDataFromSources(payload, (sheetId) => getSheet(sheetId), pivotSources, tables, loadingPivotIds);
   return data;
 }
 
@@ -504,6 +510,21 @@ function drawUnsupportedDrawingOnCanvas(context: CanvasRenderingContext2D, bound
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.fillText(reason, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(10, bounds.width - 8));
+  context.restore();
+}
+
+function drawChartLoadingOnCanvas(context: CanvasRenderingContext2D, bounds: Rect, message: string): void {
+  context.save();
+  context.strokeStyle = '#94a3b8';
+  context.fillStyle = '#64748b';
+  context.lineWidth = 1.5;
+  context.setLineDash([4, 3]);
+  context.strokeRect(bounds.x + 1, bounds.y + 1, Math.max(0, bounds.width - 2), Math.max(0, bounds.height - 2));
+  context.setLineDash([]);
+  context.font = '11px Segoe UI, sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(message, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(10, bounds.width - 8));
   context.restore();
 }
 
@@ -1602,6 +1623,10 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (payload.kind === "chart") {
       const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
       const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      if (layout.status.kind === 'loading') {
+        drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…') });
+        continue;
+      }
       if (layout.status.kind !== 'ready') {
         drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });
         continue;

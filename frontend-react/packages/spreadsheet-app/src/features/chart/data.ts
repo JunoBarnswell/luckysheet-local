@@ -59,7 +59,7 @@ export interface ChartBindingModel {
 }
 
 export interface ChartDataStatus {
-  kind: 'ready' | 'invalid' | 'unsupported';
+  kind: 'ready' | 'loading' | 'invalid' | 'unsupported';
   code?: 'INVALID_CHART_SOURCE' | 'UNSUPPORTED_FEATURE' | 'PIVOT_REFERENCE_UNAVAILABLE';
   message?: string;
 }
@@ -345,12 +345,19 @@ function invalidData(source: ChartSource, code: ChartDataStatus['code'], message
   return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: code === 'UNSUPPORTED_FEATURE' ? 'unsupported' : 'invalid', code, message } };
 }
 
+function loadingData(source: ChartSource, message: string): ResolvedChartData {
+  return { categories: [], series: [], source: source.kind === 'worksheet-ranges' ? 'range' : source.kind, binding: bindingFor(source, [], []), status: { kind: 'loading', message } };
+}
+
 /** Resolve a canonical chart against a worksheet reader without constructing a second model. */
-export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = []): ResolvedChartData {
+export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = [], loadingPivotIds: ReadonlySet<string> = new Set()): ResolvedChartData {
   try {
     if (payload.source.kind === 'pivot') {
       const tree = pivotResults[payload.source.pivotId];
-      if (!tree) return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`);
+      if (!tree) {
+        if (loadingPivotIds.has(payload.source.pivotId)) return loadingData(payload.source, `Loading PivotTable chart data: ${payload.source.pivotId}`);
+        return invalidData(payload.source, 'PIVOT_REFERENCE_UNAVAILABLE', `Pivot reference unavailable: ${payload.source.pivotId}`);
+      }
       const resolved = resolvePivotData(payload, tree);
       return readyData(payload.source, resolved.categories, resolved.series, { orientation: payload.dataOrientation ?? 'columns' });
     }

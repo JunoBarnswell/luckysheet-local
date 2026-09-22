@@ -8,6 +8,8 @@ import com.xc.luckysheet.server.config.QueryProperties;
 import com.xc.luckysheet.server.config.QuerySource;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.store.WorkbookStore;
@@ -35,6 +37,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,6 +52,7 @@ import java.util.concurrent.TimeoutException;
 
 @Service
 public class QueryExecutionService {
+    private static final int MAX_BLOCK_SESSIONS = 32;
     private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "trim-text", "split-column", "remove-duplicates", "sort", "group-by", "join", "pivot");
     private static final Set<String> FILTER_OPERATORS = Set.of("eq", "neq", "contains", "startsWith", "endsWith", "gt", "gte", "lt", "lte", "isNull", "notNull");
     private static final Set<String> AGGREGATIONS = Set.of("sum", "count", "average", "min", "max");
@@ -60,8 +64,9 @@ public class QueryExecutionService {
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
-    private final HttpClient http;
+    private volatile HttpClient http;
     private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final Map<String, BlockQuery> blockSessions = new ConcurrentHashMap<>();
 
     public QueryExecutionService(
             QueryProperties properties,
@@ -83,7 +88,6 @@ public class QueryExecutionService {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-        this.http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
     }
 
     public QueryExecutionResponse execute(String unitId, QueryExecutionRequest request, String actor) {
@@ -102,7 +106,7 @@ public class QueryExecutionService {
         Instant started = Instant.now();
         Future<QueryTable> future;
         try {
-            future = workers.submit(() -> executeInternal(request, source));
+            future = workers.submit(() -> executeInternal(request, source, true));
         } catch (RejectedExecutionException error) {
             throw ServiceException.unavailable("Query execution queue is full");
         }
@@ -146,6 +150,102 @@ public class QueryExecutionService {
         }
     }
 
+    /**
+     * Execute a query for an explicit block session. The result is never
+     * serialized as one HTTP response; callers fetch bounded blocks and then
+     * commit only the DataSource manifest through query.load.
+     */
+    public QueryBlockExecutionResponse executeBlocks(String unitId, QueryExecutionRequest request, String actor) {
+        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
+        if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
+        QuerySource source;
+        try {
+            source = properties.requireSource(request.sourceRef(), request.connectorId());
+            validateRequest(request, source);
+        } catch (IllegalArgumentException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", error.getMessage());
+            throw ServiceException.validation(error.getMessage());
+        }
+
+        purgeExpiredBlockSessions();
+        Instant started = Instant.now();
+        Future<QueryTable> future;
+        try {
+            future = workers.submit(() -> executeInternal(request, source, false));
+        } catch (RejectedExecutionException error) {
+            throw ServiceException.unavailable("Query execution queue is full");
+        }
+        String executionKey = unitId + ":" + request.queryId();
+        ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
+        if (previous != null) {
+            future.cancel(true);
+            throw ServiceException.conflict("A query with this id is already running");
+        }
+        try {
+            QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            purgeExpiredBlockSessions();
+            if (blockSessions.size() >= MAX_BLOCK_SESSIONS) throw ServiceException.unavailable("Too many query block sessions are active");
+            String executionId = UUID.randomUUID().toString();
+            long duration = Duration.between(started, Instant.now()).toMillis();
+            blockSessions.put(executionId, new BlockQuery(
+                    unitId,
+                    request.queryId(),
+                    actor,
+                    table,
+                    Instant.now().plus(properties.timeout().multipliedBy(3))
+            ));
+            audit.accepted(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", null, mapper.createObjectNode()
+                    .put("connectorId", request.connectorId())
+                    .put("sourceRef", request.sourceRef())
+                    .put("rowCount", table.rows.size())
+                    .put("blockRowCount", properties.blockRowCount())
+                    .put("durationMs", duration));
+            long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
+            return new QueryBlockExecutionResponse(
+                    request.queryId(), executionId, request.connectorId(), request.sourceRef(), sourceRevision,
+                    table.columns, inferColumnTypes(table), table.rows.size(), properties.blockRowCount(), Instant.now(), duration
+            );
+        } catch (TimeoutException error) {
+            future.cancel(true);
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query timed out");
+            throw ServiceException.timeout("Query timed out");
+        } catch (InterruptedException error) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (CancellationException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            String reason = cause instanceof QueryFailure failure ? failure.safeMessage() : "Query execution failed";
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", reason);
+            if (cause instanceof QueryFailure failure) throw failure.exception();
+            throw ServiceException.validation(reason);
+        } finally {
+            active.remove(executionKey, new ActiveQuery(actor, future));
+        }
+    }
+
+    public QueryBlockResponse readBlock(String unitId, String queryId, String executionId, long offset, String actor) {
+        BlockQuery session = requireBlockSession(unitId, queryId, executionId, actor);
+        if (offset < 0 || offset > session.table().rows.size() || offset % properties.blockRowCount() != 0) {
+            throw ServiceException.validation("Query block offset is invalid");
+        }
+        int start = Math.toIntExact(offset);
+        int end = Math.min(start + properties.blockRowCount(), session.table().rows.size());
+        List<List<JsonNode>> rows = session.table().rows.subList(start, end);
+        checkBlockResponseSize(session.table().columns, rows);
+        return new QueryBlockResponse(queryId, executionId, offset, rows, end < session.table().rows.size());
+    }
+
+    public void finishBlocks(String unitId, String queryId, String executionId, String actor) {
+        BlockQuery session = requireBlockSession(unitId, queryId, executionId, actor);
+        blockSessions.remove(executionId, session);
+    }
+
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         lifecycle.requireActive(unitId);
@@ -160,22 +260,23 @@ public class QueryExecutionService {
 
     @PreDestroy
     public void close() {
+        blockSessions.clear();
         workers.shutdownNow();
     }
 
-    private QueryTable executeInternal(QueryExecutionRequest request, QuerySource source) {
+    private QueryTable executeInternal(QueryExecutionRequest request, QuerySource source, boolean enforceResponseLimit) {
         QueryTable sourceTable = switch (request.connectorId().toLowerCase(Locale.ROOT)) {
             case "jdbc", "sqlite" -> executeJdbc(request, source);
             case "rest" -> executeRest(request, source);
             default -> throw QueryFailure.validation("Only server JDBC, SQLite and REST connectors are executable");
         };
-        checkSize(sourceTable);
+        checkSize(sourceTable, enforceResponseLimit);
         QueryTable current = sourceTable;
         for (QueryStep step : request.steps()) {
             if (!step.enabled() || step.kind().equals("source")) continue;
             if (!STEP_KINDS.contains(step.kind())) throw QueryFailure.validation("Unsupported query step kind: " + step.kind());
             current = applyStep(current, step);
-            checkSize(current);
+            checkSize(current, enforceResponseLimit);
         }
         return current;
     }
@@ -223,7 +324,7 @@ public class QueryExecutionService {
             } else {
                 builder.GET();
             }
-            HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<String> response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.body().getBytes(StandardCharsets.UTF_8).length > properties.maxResponseBytes()) throw QueryFailure.validation("REST response is too large");
             if (response.statusCode() < 200 || response.statusCode() >= 300) throw QueryFailure.validation("REST source returned an unsuccessful status");
             return parseRestResponse(mapper.readTree(response.body()));
@@ -401,7 +502,7 @@ public class QueryExecutionService {
     private QueryTable join(QueryTable input, QueryStep step) {
         JsonNode rightConfig = step.config().has("right") ? step.config().get("right") : step.config().get("rightTable");
         QueryTable right = tableFromJson(rightConfig, step.id());
-        checkSize(right);
+        checkSize(right, true);
         List<String> leftOn = stringList(first(step.config(), "leftOn", "on"), step.id());
         List<String> rightOn = step.config().has("rightOn") ? stringList(step.config().get("rightOn"), step.id()) : leftOn;
         if (leftOn.size() != rightOn.size()) throw QueryFailure.validation("Join keys must have equal lengths");
@@ -490,7 +591,7 @@ public class QueryExecutionService {
         List<List<JsonNode>> rows = new ArrayList<>();
         for (JsonNode record : records) rows.add(names.stream().map(name -> scalarOrNull(record.get(name))).toList());
         QueryTable table = new QueryTable(names, rows);
-        checkSize(table);
+        checkSize(table, true);
         return table;
     }
 
@@ -664,11 +765,21 @@ public class QueryExecutionService {
         return Math.max(1, (int) Math.ceil(properties.timeout().toMillis() / 1000d));
     }
 
+    private HttpClient httpClient() {
+        HttpClient current = http;
+        if (current != null) return current;
+        synchronized (this) {
+            if (http == null) http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
+            return http;
+        }
+    }
+
     private String nullToEmpty(String value) { return value == null ? "" : value; }
 
-    private void checkSize(QueryTable table) {
+    private void checkSize(QueryTable table, boolean enforceResponseLimit) {
         if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         if (table.rows.size() > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
+        if (!enforceResponseLimit) return;
         try {
             if (mapper.writeValueAsBytes(Map.of("columns", table.columns, "rows", table.rows)).length > properties.maxResponseBytes()) {
                 throw QueryFailure.validation("Query response exceeds the configured byte limit");
@@ -676,6 +787,51 @@ public class QueryExecutionService {
         } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
             throw QueryFailure.validation("Query response could not be serialized");
         }
+    }
+
+    private void checkBlockResponseSize(List<String> columns, List<List<JsonNode>> rows) {
+        try {
+            if (mapper.writeValueAsBytes(Map.of("columns", columns, "rows", rows)).length > properties.maxResponseBytes()) {
+                throw ServiceException.validation("Query block exceeds the configured response byte limit");
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw ServiceException.validation("Query block could not be serialized");
+        }
+    }
+
+    private List<String> inferColumnTypes(QueryTable table) {
+        List<String> types = new ArrayList<>();
+        for (int column = 0; column < table.columns.size(); column += 1) {
+            String type = null;
+            for (List<JsonNode> row : table.rows) {
+                JsonNode value = row.get(column);
+                if (value == null || value.isNull()) continue;
+                String candidate = value.isBoolean() ? "boolean" : value.isNumber() ? "number" : value.isTextual() ? "text" : "mixed";
+                if (type == null) type = candidate;
+                else if (!type.equals(candidate)) { type = "mixed"; break; }
+            }
+            types.add(type == null ? "mixed" : type);
+        }
+        return types;
+    }
+
+    private BlockQuery requireBlockSession(String unitId, String queryId, String executionId, String actor) {
+        purgeExpiredBlockSessions();
+        BlockQuery session = blockSessions.get(executionId);
+        if (session == null || !session.unitId().equals(unitId) || !session.queryId().equals(queryId)) {
+            throw ServiceException.notFound("Query block session not found");
+        }
+        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the query owner or workbook owner may read this query block session");
+        }
+        lifecycle.requireActive(unitId);
+        return session;
+    }
+
+    private void purgeExpiredBlockSessions() {
+        Instant now = Instant.now();
+        blockSessions.entrySet().removeIf(entry -> !entry.getValue().expiresAt().isAfter(now));
     }
 
     private record QueryTable(List<String> columns, List<List<JsonNode>> rows) {
@@ -691,6 +847,9 @@ public class QueryExecutionService {
     }
 
     private record ActiveQuery(String actor, Future<QueryTable> future) {}
+
+    private record BlockQuery(String unitId, String queryId, String actor, QueryTable table, Instant expiresAt) {}
+
 
     private record SortKey(String column, boolean ascending) {}
     private record Aggregate(String column, String function, String as) {}

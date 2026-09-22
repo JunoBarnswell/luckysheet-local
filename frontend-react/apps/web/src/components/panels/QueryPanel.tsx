@@ -51,6 +51,8 @@ export function QueryPanel({
 }: QueryPanelProps) {
   const [connectorId, setConnectorId] = useState(connectors[0] ?? 'json');
   const [jsonData, setJsonData] = useState(SAMPLE_JSON);
+  const [sourceRef, setSourceRef] = useState('');
+  const [statement, setStatement] = useState('');
   const [filterRegion, setFilterRegion] = useState('');
   const [recipeKind, setRecipeKind] = useState<RecipeKind>('trim-text');
   const [recipeColumn, setRecipeColumn] = useState('');
@@ -63,6 +65,7 @@ export function QueryPanel({
   const [status, setStatus] = useState<string | null>(null);
   const [preview, setPreview] = useState<QueryPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  const isServerConnector = connectorId === 'sqlite' || connectorId === 'jdbc' || connectorId === 'rest';
 
   const queryDefinition = useMemo<QueryDefinition>(() => {
     const quickFilter = filterRegion.trim()
@@ -77,12 +80,14 @@ export function QueryPanel({
     const steps = [...quickFilter, ...recipeSteps];
     return {
       id: 'inline-json-query',
-      name: filterRegion.trim() ? `Inline JSON (${filterRegion.trim()})` : recipeSteps.length > 0 ? 'Inline JSON (cleaning recipe)' : 'Inline JSON Query',
+      name: isServerConnector ? `Server ${connectorId.toUpperCase()} Query` : filterRegion.trim() ? `Inline JSON (${filterRegion.trim()})` : recipeSteps.length > 0 ? 'Inline JSON (cleaning recipe)' : 'Inline JSON Query',
       connectorId,
-      connectorConfig: connectorId === 'json' ? { data: jsonData } : { url: jsonData },
+      connectorConfig: isServerConnector
+        ? { sourceRef, statement }
+        : connectorId === 'json' ? { data: jsonData } : { url: jsonData },
       steps,
     };
-  }, [connectorId, filterRegion, jsonData, recipeSteps]);
+  }, [connectorId, filterRegion, isServerConnector, jsonData, recipeSteps, sourceRef, statement]);
 
   useEffect(() => {
     setPreview(null);
@@ -206,18 +211,44 @@ export function QueryPanel({
             </Select>
           </Box>
 
-          <Box>
-            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-              {connectorId === 'json' ? 'JSON Records' : 'REST URL'}
-            </Text>
-            <Textarea
-              value={jsonData}
-              onChange={(event) => setJsonData(event.target.value)}
-              rows={8}
-              disabled={!canQuery}
-              className="font-mono text-xs"
-            />
-          </Box>
+          {isServerConnector ? (
+            <Stack gap="sm">
+              <Box>
+                <Text size="xs" weight="medium" className="mb-1 text-slate-700">Configured sourceRef</Text>
+                <TextInput
+                  value={sourceRef}
+                  onChange={(event) => setSourceRef(event.target.value)}
+                  placeholder="The server-side source name"
+                  disabled={!canQuery}
+                />
+              </Box>
+              <Box>
+                <Text size="xs" weight="medium" className="mb-1 text-slate-700">Read-only statement</Text>
+                <Textarea
+                  value={statement}
+                  onChange={(event) => setStatement(event.target.value)}
+                  rows={6}
+                  placeholder={connectorId === 'rest' ? '/api/records' : 'SELECT * FROM records'}
+                  disabled={!canQuery}
+                  className="font-mono text-xs"
+                />
+              </Box>
+              <Text size="xs" tone="muted">Server queries load through bounded DataSource blocks; credentials stay in deployment configuration.</Text>
+            </Stack>
+          ) : (
+            <Box>
+              <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+                {connectorId === 'json' ? 'JSON Records' : 'Delimited/XLSX input'}
+              </Text>
+              <Textarea
+                value={jsonData}
+                onChange={(event) => setJsonData(event.target.value)}
+                rows={8}
+                disabled={!canQuery}
+                className="font-mono text-xs"
+              />
+            </Box>
+          )}
 
           <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">Optional filter (Region)</Text>

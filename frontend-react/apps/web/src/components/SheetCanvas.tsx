@@ -9,6 +9,7 @@ import {
   Button,
   Inline,
   ScrollBar,
+  Text,
   Textarea,
 } from "@react-sheets/ui-system";
 import {
@@ -36,6 +37,7 @@ import type {
   PivotPresentation,
   PivotReportFilterSummary,
   PivotReportFilterSummaryEntry,
+  PivotScalar,
   PivotSort,
   RangeRef,
   SparklineModel,
@@ -97,6 +99,9 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
+  /** Loads a data-source field member domain before opening its picker. */
+  onLoadPivotFieldValues?: (pivotId: string, fieldId: string) => Promise<readonly PivotScalar[] | undefined>;
+  onPivotFilterLoadError?: (error: unknown) => void;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
@@ -394,6 +399,8 @@ export function SheetCanvas({
   getPivotContextMenuItems,
   onPivotShowDetails,
   onPivotExpansionToggle,
+  onLoadPivotFieldValues,
+  onPivotFilterLoadError,
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
@@ -460,12 +467,45 @@ export function SheetCanvas({
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [pivotFilterPopover, setPivotFilterPopover] = useState<{ pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number } | null>(null);
+  const [pivotFilterLoading, setPivotFilterLoading] = useState<{ x: number; y: number } | null>(null);
+  const [loadedPivotFieldValues, setLoadedPivotFieldValues] = useState<Record<string, readonly PivotScalar[]>>({});
+  const pivotFilterLoadGeneration = useRef(0);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
   const requestedExtentRef = useRef({ sheetId, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
 
   const zoomFactor = zoom / 100;
+
+  const openPivotFilter = useCallback(async (request: { pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number }): Promise<void> => {
+    const generation = ++pivotFilterLoadGeneration.current;
+    const cacheKey = `${request.pivotId}:${request.fieldId}`;
+    const pivot = sheet.pivots.find((candidate) => candidate.id === request.pivotId);
+    const baseField = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === request.fieldId);
+    const shouldLoad = Boolean(
+      onLoadPivotFieldValues
+      && pivot?.source.kind === 'data-source'
+      && !Object.prototype.hasOwnProperty.call(loadedPivotFieldValues, cacheKey)
+      && (baseField?.values?.length ?? 0) === 0,
+    );
+    if (!shouldLoad || !onLoadPivotFieldValues) {
+      setPivotFilterPopover(request);
+      return;
+    }
+    setPivotFilterLoading({ x: request.x, y: request.y });
+    try {
+      const values = await onLoadPivotFieldValues(request.pivotId, request.fieldId);
+      if (generation !== pivotFilterLoadGeneration.current) return;
+      if (values !== undefined) {
+        setLoadedPivotFieldValues((previous) => ({ ...previous, [cacheKey]: [...values] }));
+      }
+      setPivotFilterPopover(request);
+    } catch (error) {
+      if (generation === pivotFilterLoadGeneration.current) onPivotFilterLoadError?.(error);
+    } finally {
+      if (generation === pivotFilterLoadGeneration.current) setPivotFilterLoading(null);
+    }
+  }, [loadedPivotFieldValues, onLoadPivotFieldValues, onPivotFilterLoadError, sheet.pivots]);
 
   useEffect(() => {
     const pending = requestedExtentRef.current;
@@ -1089,7 +1129,7 @@ export function SheetCanvas({
               if (!rect || !cell.fieldId) return null;
               const fieldName = sheet.pivots.find((pivot) => pivot.id === projection.pivotId)?.fieldCatalog.fields.find((field) => field.fieldId === cell.fieldId)?.name ?? cell.fieldId;
               const summaryLabel = cell.filterSummary ? pivotFilterSummaryText(cell.filterSummary, locale) : `${fieldName}: ${pivotText(locale, 'allItems')}`;
-              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${summaryLabel}`} icon="chevron-down" iconOnly size="xs" variant={cell.filterSummary?.active ? 'soft' : 'ghost'} className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => setPivotFilterPopover({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height })} />;
+              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${summaryLabel}`} icon="chevron-down" iconOnly size="xs" variant={cell.filterSummary?.active ? 'soft' : 'ghost'} className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => { void openPivotFilter({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height }); }} />;
             }) : null}
           </Box>
 
@@ -1115,9 +1155,13 @@ export function SheetCanvas({
             </Box>
           ) : null}
 
+          {pivotFilterLoading ? <Panel className="absolute z-40 w-[300px] rounded-none border border-[#a9a9a9] bg-white p-3 shadow-[2px_4px_10px_rgba(0,0,0,0.2)]" style={{ left: pivotFilterLoading.x, top: pivotFilterLoading.y }}><Text size="sm">{locale === 'zh-CN' ? '正在加载字段值…' : 'Loading field values…'}</Text></Panel> : null}
+
           {pivotFilterPopover ? (() => {
             const pivot = sheet.pivots.find((candidate) => candidate.id === pivotFilterPopover.pivotId);
-            const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
+            const baseField = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
+            const loadedValues = loadedPivotFieldValues[`${pivotFilterPopover.pivotId}:${pivotFilterPopover.fieldId}`];
+            const field = baseField && loadedValues !== undefined ? { ...baseField, values: [...loadedValues] } : baseField;
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
             const currentFilters = pivot?.layout.filters.filter((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope) ?? [];
             const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({

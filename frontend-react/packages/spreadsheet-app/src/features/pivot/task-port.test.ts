@@ -3,8 +3,44 @@ import { describe, it } from 'node:test';
 import { pivotSourceIdentity, WorkbookModel } from '@react-sheets/core-model';
 import { preparePivotTaskInput } from './engine';
 import { buildPivotModel } from './helpers';
-import { InlinePivotTaskPort } from './task-port';
+import { BrowserPivotTaskPort, InlinePivotTaskPort, type PivotBrowserWorker } from './task-port';
 import { createPivotCalculateRequest, createPivotSourceRegisterRequest } from './task-protocol';
+
+class StructuredCloneWorker implements PivotBrowserWorker {
+  private readonly listeners = new Map<string, (event: { readonly data?: unknown; readonly message?: string }) => void>();
+
+  postMessage(message: unknown, transfer: Transferable[] = []): void {
+    const request = structuredClone(message, { transfer: transfer as ArrayBuffer[] }) as {
+      kind?: string;
+      taskId: string;
+      generation: number;
+      sourceIdentity?: string;
+      sourceRevision?: string;
+    };
+    if (request.kind === 'cancel') return;
+    queueMicrotask(() => this.listeners.get('message')?.({
+      data: {
+        protocol: 'react-sheets/pivot-task',
+        version: 1,
+        taskId: request.taskId,
+        generation: request.generation,
+        status: 'accepted',
+        sourceIdentity: request.sourceIdentity,
+        sourceRevision: request.sourceRevision,
+      },
+    }));
+  }
+
+  terminate(): void {}
+
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void {
+    this.listeners.set(type, listener);
+  }
+
+  removeEventListener(type: 'message' | 'error' | 'messageerror'): void {
+    this.listeners.delete(type);
+  }
+}
 
 function preparedTask() {
   const workbook = new WorkbookModel('pivot-task', 'Pivot task');
@@ -22,6 +58,17 @@ function preparedTask() {
 }
 
 describe('Pivot task port', () => {
+  it('does not detach the canonical source when browser transport transfers a registration', async () => {
+    const port = new BrowserPivotTaskPort(new StructuredCloneWorker());
+    const { input, sourceIdentity } = preparedTask();
+    const first = await port.submit(createPivotSourceRegisterRequest('browser-register-1', 1, sourceIdentity, input.revisions.sourceRevision, input.source));
+    assert.equal(first.status, 'accepted');
+    assert.ok(input.source.rowPathOffsets.length > 0);
+    const second = await port.submit(createPivotSourceRegisterRequest('browser-register-2', 2, sourceIdentity, input.revisions.sourceRevision, input.source));
+    assert.equal(second.status, 'accepted');
+    port.dispose();
+  });
+
   it('registers one source revision and evaluates through the worker contract', async () => {
     const port = new InlinePivotTaskPort();
     const { input, sourceIdentity } = preparedTask();

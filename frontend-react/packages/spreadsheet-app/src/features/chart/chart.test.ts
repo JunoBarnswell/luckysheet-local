@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { buildChartLayout, buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
+import { buildChartLayout, buildPivotChartData, resolveChartData, resolveChartDataFromSources, registerChartCommands, type ChartPayload } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -124,6 +124,13 @@ describe('chart feature', () => {
     assert.equal(pivotData.source, 'pivot');
     assert.deepEqual(pivotData.categories, ['Jan', 'Feb']);
     assert.deepEqual(pivotData.series[0]?.values, [100, 120]);
+
+    const loadingPivotData = resolveChartDataFromSources(pivotPayload, () => undefined, {}, [], new Set(['pivot-1']));
+    assert.equal(loadingPivotData.status.kind, 'loading');
+    assert.match(loadingPivotData.status.message ?? '', /Loading PivotTable chart data/);
+    const missingPivotData = resolveChartDataFromSources(pivotPayload, () => undefined);
+    assert.equal(missingPivotData.status.kind, 'invalid');
+    assert.equal(missingPivotData.status.code, 'PIVOT_REFERENCE_UNAVAILABLE');
 
     const runtime = new CommandRuntime(workbook);
     registerDrawingFeature(runtime);

@@ -30,7 +30,9 @@ function fixture() {
 it('selects only canonical policy targets for open, source, and explicit refreshes', () => {
   const { workbook, pivots, sourceMutation, unrelatedMutation } = fixture();
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'open' }), ['open-2']);
+  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'open', sheetId: 'sheet-1' }), ['open-2']);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [sourceMutation] }), ['change-3']);
+  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [sourceMutation], sheetId: 'sheet-2' }), []);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [unrelatedMutation] }), []);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'explicit', pivotId: 'manual-1' }), ['manual-1']);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'explicit', pivotId: 'missing' }), []);

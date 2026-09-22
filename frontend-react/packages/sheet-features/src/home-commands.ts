@@ -654,11 +654,13 @@ function applyFlashFillMutation(params: FlashFillMutationParams, context: Comman
 
 /**
  * The sheet-features package intentionally has no dependency on the
- * application-owned block query/overlay service. Until that canonical service
- * is injected into CommandRuntime, Home commands fail closed for a
- * data-region intersection instead of treating CellMatrix as the block value.
+ * application-owned block query/overlay service. Cell-reading operations fail
+ * closed for a data-region intersection instead of treating CellMatrix as the
+ * block value. Metadata-only filter commands may opt in after the application
+ * boundary has loaded the canonical block query.
  */
-function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, operation: string, allowDataRegion = false): void {
+  if (allowDataRegion) return;
   const region = sheet.dataRegions.find((candidate) => rangesIntersect(candidate.range, range));
   if (region) throw new Error(`${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
 }
@@ -1337,7 +1339,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         assertDataRegionContextMatches(params.dataRegionContext, actual);
       }
       const effectiveRange = requestedRange ?? regionContext.range;
-      assertNoDataRegionIntersection(sheet, effectiveRange, 'Filter');
+      assertNoDataRegionIntersection(sheet, effectiveRange, 'Filter', true);
       const owner = filterOwnerFromDataRegionContext(regionContext);
       if (owner?.kind === 'table') {
         const active = resolveActiveAutoFilter(sheet);
@@ -1347,7 +1349,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         throw new Error('Use the Table AutoFilter owner for this range');
       }
       const current = sheet.autoFilter ? normalizeAutoFilterModel(sheet.autoFilter) : undefined;
-      if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
+      if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter', true);
       if (!current) {
         const next = buildFilterFromParams({ ...params, range: effectiveRange }, sheet);
         return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next, dataRegionContext: regionContext });
@@ -1384,7 +1386,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const owner = filterOwnerFromDataRegionContext(regionContext);
       if (!currentSource) return homeResult(context, []);
       const current = normalizeAutoFilterModel(currentSource);
-      assertNoDataRegionIntersection(sheet, current.range, 'Filter');
+      assertNoDataRegionIntersection(sheet, current.range, 'Filter', true);
       if (requestedRange && !rangesIntersect(current.range, requestedRange)) return homeResult(context, []);
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
       const cleared = { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) };
@@ -1399,7 +1401,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter reapply parameters');
       const autoFilter = resolveActiveAutoFilter(context.workbook.getSheet(params.sheetId));
-      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter');
+      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter', true);
       return autoFilter ? homeResult(context, [structuredClone(autoFilter.range)]) : homeResult(context, []);
     },
   });

@@ -59,6 +59,7 @@ import {
   normalizePivotNumberFormat,
   pivotNumericValue,
   PIVOT_MAX_MEMBER_COUNT,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
@@ -2574,7 +2575,7 @@ function slicerItemProjection(
   const sorted = [...members.values()].sort((left, right) => collator.compare(left.label, right.label));
   if (payload.settings.sort === 'descending') sorted.reverse();
   if (payload.settings.noDataItemsLast) sorted.sort((left, right) => Number(right.hasData) - Number(left.hasData));
-  return sorted;
+  return sorted.length > PIVOT_MEMBER_DISPLAY_LIMIT ? sorted.slice(0, PIVOT_MEMBER_DISPLAY_LIMIT) : sorted;
 }
 
 function resultValueFields(layout: PivotLayout): PivotResultValueField[] {

@@ -6,13 +6,16 @@ import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
   buildQueryResultSnapshot,
+  buildQueryLoadPayloadFromBlocks,
   buildQueryLoadPlan,
   createInlineJsonQuery,
+  encodeQueryLoadBlock,
   executeQueryDefinition,
   prepareQueryLoadPayload,
   resolveLoadTarget,
   summarizeQueryResult,
 } from './runtime';
+import { decodeColumnarBlock } from '../data-source/codec';
 import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefinition, RestDataConnector, serializeQueryDefinition, TsvDataConnector, OoxmlDataConnector } from './index';
 import { QueryStepPipeline } from './query-steps';
 import { registerQueryCommands } from './commands';
@@ -124,6 +127,46 @@ describe('query runtime', () => {
     assert.equal('result' in prepared.payload, false);
     assert.equal(prepared.blocks.length, 1);
     assert.equal(prepared.payload.source.blocks.length, 1);
+  });
+
+  it('infers ISO date strings as canonical date fields for block-backed queries', async () => {
+    const model = new WorkbookModel('wb-query-date-blocks', 'Query dates');
+    const query = createInlineJsonQuery('q-date-blocks', 'Date blocks', [
+      { PostedAt: '2026-08-25T00:00:00', Amount: 10 },
+      { PostedAt: '2026-08-26', Amount: 20 },
+    ]);
+    const prepared = await prepareQueryLoadPayload(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, {
+      columns: ['PostedAt', 'Amount'],
+      rows: [['2026-08-25T00:00:00', 10], ['2026-08-26', 20]],
+      rowCount: 2,
+    });
+
+    assert.deepEqual(prepared.payload.source.fields.map((field) => field.type), ['date', 'number']);
+    const decoded = await decodeColumnarBlock(prepared.blocks[0]!.payload, { expectedFields: prepared.payload.source.fields });
+    assert.deepEqual(decoded.rows, [[46259, 10], [46260, 20]]);
+
+    const serverBlock = await encodeQueryLoadBlock('query:q-date-blocks', 0, {
+      columns: ['PostedAt'], columnTypes: ['date'], rowCount: 1, blockRowCount: 2,
+    }, 0, [['2026-08-25']]);
+    assert.deepEqual((await decodeColumnarBlock(serverBlock.payload)).rows, [[46259]]);
+
+    const invalidDate = await prepareQueryLoadPayload(model, createInlineJsonQuery('q-invalid-date', 'Invalid date', [{ PostedAt: '2026-02-30' }]), { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, {
+      columns: ['PostedAt'], rows: [['2026-02-30']], rowCount: 1,
+    });
+    assert.equal(invalidDate.payload.source.fields[0]?.type, 'text');
+  });
+
+  it('assembles a streamed query result only from contiguous DataSource blocks', async () => {
+    const model = new WorkbookModel('wb-query-stream', 'Query');
+    const query = createInlineJsonQuery('q-stream', 'Streamed', []);
+    const metadata = { columns: ['Name', 'Amount'], columnTypes: ['text', 'number'] as const, rowCount: 3, blockRowCount: 2 };
+    const first = await encodeQueryLoadBlock('query:q-stream', 0, metadata, 0, [['a', 1], ['b', 2]]);
+    const second = await encodeQueryLoadBlock('query:q-stream', 0, metadata, 2, [['c', 3]]);
+    const payload = buildQueryLoadPayloadFromBlocks(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, metadata, [first.ref, second.ref]);
+    assert.equal(payload.source.rowCount, 3);
+    assert.deepEqual(payload.source.blocks.map((block) => [block.startRow, block.rowCount]), [[0, 2], [2, 1]]);
+    assert.equal(payload.binding.kind, 'sheet-region');
+    assert.throws(() => buildQueryLoadPayloadFromBlocks(model, query, { kind: 'range', sheetId: model.primarySheetId, range: { startRow: 0, startColumn: 0 } }, metadata, [second.ref]), /coverage is invalid/i);
   });
 
   it('builds query result snapshots', () => {

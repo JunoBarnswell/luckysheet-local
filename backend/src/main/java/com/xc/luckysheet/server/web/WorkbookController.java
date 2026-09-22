@@ -23,6 +23,8 @@ import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntity;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockExecutionResponse;
+import com.xc.luckysheet.server.contract.QueryBlockResponse;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.contract.ShareResponse;
 import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
@@ -261,6 +263,37 @@ public class WorkbookController {
             Authentication authentication
     ) {
         return queries.execute(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/queries/execute-blocks")
+    public QueryBlockExecutionResponse executeQueryBlocks(
+            @PathVariable String unitId,
+            @Valid @RequestBody QueryExecutionRequest request,
+            Authentication authentication
+    ) {
+        return queries.executeBlocks(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping("/{unitId}/queries/{queryId}/blocks/{executionId}")
+    public QueryBlockResponse readQueryBlock(
+            @PathVariable String unitId,
+            @PathVariable String queryId,
+            @PathVariable String executionId,
+            @RequestParam long offset,
+            Authentication authentication
+    ) {
+        return queries.readBlock(unitId, queryId, executionId, offset, ActorIdentity.subject(authentication));
+    }
+
+    @DeleteMapping("/{unitId}/queries/{queryId}/blocks/{executionId}")
+    public ResponseEntity<Void> finishQueryBlocks(
+            @PathVariable String unitId,
+            @PathVariable String queryId,
+            @PathVariable String executionId,
+            Authentication authentication
+    ) {
+        queries.finishBlocks(unitId, queryId, executionId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/queries/{queryId}/cancel")

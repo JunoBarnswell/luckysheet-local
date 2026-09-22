@@ -784,6 +784,24 @@ class MutationDescriptorRegistryTest {
         assertEquals("detail-1", current.path("sheets").get(1).path("id").asText());
         assertEquals("Region", current.path("sheets").get(1).path("cells").path("0").path("0").path("value").asText());
         assertEquals("East", current.path("sheets").get(1).path("cells").path("1").path("0").path("value").asText());
+
+        ObjectNode largeDrillDownParams = mapper.createObjectNode();
+        largeDrillDownParams.put("sheetId", "sheet-1");
+        largeDrillDownParams.put("pivotId", "pivot-1");
+        largeDrillDownParams.put("label", "Large");
+        ArrayNode largePaths = largeDrillDownParams.putArray("sourceRowPaths");
+        for (int index = 0; index < 1_001; index++) {
+            largePaths.addObject().put("sheetId", "sheet-1").put("row", 1);
+        }
+        largeDrillDownParams.put("targetSheetId", "detail-large");
+        largeDrillDownParams.putObject("target").put("row", 0).put("column", 0);
+        OperationMutation largeDrillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", largeDrillDownParams);
+        current = registry.prepare(current, largeDrillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, largeDrillDown);
+        JsonNode largeDetail = current.path("sheets").get(2);
+        assertEquals("worksheet", largeDetail.path("kind").asText());
+        assertEquals("detail-large", largeDetail.path("id").asText());
+        assertEquals(1_002, largeDetail.path("rowCount").asInt());
+        assertEquals(26, largeDetail.path("columnCount").asInt());
     }
 
     @Test

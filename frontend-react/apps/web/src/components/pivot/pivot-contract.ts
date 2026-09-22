@@ -124,6 +124,8 @@ export interface PivotPanelCallbacks {
   onCalculatedFieldsChange?: (fields: PivotCalculatedField[]) => void;
   onCalculatedItemsChange?: (items: PivotCalculatedItem[]) => void;
   onFilterChange: (fieldId: string, filter: PivotManualFilterState) => void;
+  /** Loads a data-source field's member domain only when its picker is opened. */
+  onLoadFieldValues?: (fieldId: string) => Promise<void>;
   onSortChange: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;

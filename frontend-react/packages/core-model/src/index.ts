@@ -966,19 +966,44 @@ export class CellMatrix {
   private readonly columnBounds = new SparseAxisBounds();
   private cellCount = 0;
   private revisionCounter = 0;
+  private deferredJSON?: Record<string, Record<string, CellData>>;
+  private deferredBounds?: {
+    count: number;
+    startRow: number;
+    endRow: number;
+    startColumn: number;
+    endColumn: number;
+  };
 
   constructor(private readonly onWrite?: (row: Row, column: Column) => void) {}
 
+  /** True until the persisted sparse matrix is first read or mutated. */
+  get isHydrated(): boolean {
+    return this.deferredJSON === undefined;
+  }
+
+  /**
+   * Keep the canonical sparse wire object intact until a caller needs cell
+   * semantics. The owning worksheet remains responsible for its extent.
+   */
+  deferJSON(input: Record<string, Record<string, CellData>> | undefined): void {
+    if (this.rows.size > 0 || this.deferredJSON !== undefined) throw new Error('CellMatrix already contains data');
+    this.deferredJSON = input ?? {};
+    this.deferredBounds = undefined;
+  }
+
   /** Monotonic content revision used by derived caches; it is not persisted. */
   get revision(): number {
-    return this.revisionCounter;
+    return this.deferredJSON !== undefined ? this.getDeferredBounds().count : this.revisionCounter;
   }
 
   get(row: Row, column: Column): CellData | undefined {
+    this.hydrate();
     return this.rows.get(row)?.get(column);
   }
 
   set(row: Row, column: Column, cell: CellData): void {
+    this.hydrate();
     this.onWrite?.(row, column);
     let rowMap = this.rows.get(row);
     if (!rowMap) {
@@ -1000,6 +1025,7 @@ export class CellMatrix {
   }
 
   delete(row: Row, column: Column): void {
+    this.hydrate();
     const rowMap = this.rows.get(row);
     const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
@@ -1013,10 +1039,12 @@ export class CellMatrix {
   }
 
   has(row: Row, column: Column): boolean {
+    this.hydrate();
     return this.rows.get(row)?.has(column) ?? false;
   }
 
   clear(): void {
+    this.hydrate();
     if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
     this.rowBounds.clear();
@@ -1025,11 +1053,22 @@ export class CellMatrix {
   }
 
   count(): number {
+    if (this.deferredJSON !== undefined) return this.getDeferredBounds().count;
     return this.cellCount;
   }
 
   /** Read the persisted-cell extent without walking CellMatrix rows. */
   occupiedRange(sheetId: SheetId): RangeRef {
+    if (this.deferredJSON !== undefined) {
+      const bounds = this.getDeferredBounds();
+      return {
+        sheetId,
+        startRow: bounds.startRow,
+        endRow: bounds.endRow,
+        startColumn: bounds.startColumn,
+        endColumn: bounds.endColumn,
+      };
+    }
     const startRow = this.rowBounds.minimum;
     const endRow = this.rowBounds.maximum;
     const startColumn = this.columnBounds.minimum;
@@ -1044,12 +1083,35 @@ export class CellMatrix {
   }
 
   forEach(callback: (cell: CellData, row: Row, column: Column) => void): void {
+    this.hydrate();
     for (const [row, columns] of this.rows) {
       for (const [column, cell] of columns) callback(cell, row, column);
     }
   }
 
+  /**
+   * Enumerate only calculated formula inputs without materializing a deferred
+   * value-only worksheet. Formula workbooks still materialize when their
+   * value inputs are required for calculation.
+   */
+  forEachFormula(callback: (cell: CellData & { formula: string }, row: Row, column: Column) => void): void {
+    if (this.deferredJSON !== undefined) {
+      for (const [row, columns] of Object.entries(this.deferredJSON)) {
+        for (const [column, cell] of Object.entries(columns)) {
+          if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) callback(cell as CellData & { formula: string }, Number(row), Number(column));
+        }
+      }
+      return;
+    }
+    for (const [row, columns] of this.rows) {
+      for (const [column, cell] of columns) {
+        if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) callback(cell as CellData & { formula: string }, row, column);
+      }
+    }
+  }
+
   forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    this.hydrate();
     for (const row of rows) {
       const columns = this.rows.get(row);
       if (!columns) continue;
@@ -1058,6 +1120,7 @@ export class CellMatrix {
   }
 
   forEachInColumns(columns: ReadonlySet<Column>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    this.hydrate();
     for (const [row, rowCells] of this.rows) {
       for (const column of columns) {
         const cell = rowCells.get(column);
@@ -1067,6 +1130,7 @@ export class CellMatrix {
   }
 
   *entriesInColumn(column: Column): IterableIterator<{ row: Row; cell: CellData }> {
+    this.hydrate();
     for (const [row, rowCells] of this.rows) {
       const cell = rowCells.get(column);
       if (cell) yield { row, cell };
@@ -1081,6 +1145,7 @@ export class CellMatrix {
     endColumn: Column,
     callback: (cell: CellData, row: Row, column: Column) => void,
   ): void {
+    this.hydrate();
     for (const [row, columns] of this.rows) {
       if (row < startRow || row > endRow) continue;
       for (const [column, cell] of columns) {
@@ -1090,12 +1155,14 @@ export class CellMatrix {
   }
 
   clone(): CellMatrix {
+    this.hydrate();
     const copy = new CellMatrix();
     this.forEach((cell, row, column) => copy.set(row, column, { ...cell }));
     return copy;
   }
 
   toJSON(): Record<string, Record<string, CellData>> {
+    if (this.deferredJSON !== undefined) return structuredClone(this.deferredJSON);
     const result: Record<string, Record<string, CellData>> = {};
     this.forEach((cell, row, column) => {
       result[row] ??= {};
@@ -1112,6 +1179,47 @@ export class CellMatrix {
       }
     }
     return matrix;
+  }
+
+  private hydrate(): void {
+    const input = this.deferredJSON;
+    if (input === undefined) return;
+    this.deferredJSON = undefined;
+    this.deferredBounds = undefined;
+    for (const [row, columns] of Object.entries(input)) {
+      for (const [column, cell] of Object.entries(columns)) {
+        this.set(Number(row), Number(column), { ...cell });
+      }
+    }
+  }
+
+  private getDeferredBounds(): NonNullable<CellMatrix['deferredBounds']> {
+    if (this.deferredBounds) return this.deferredBounds;
+    const input = this.deferredJSON ?? {};
+    let count = 0;
+    let startRow = Number.POSITIVE_INFINITY;
+    let endRow = Number.NEGATIVE_INFINITY;
+    let startColumn = Number.POSITIVE_INFINITY;
+    let endColumn = Number.NEGATIVE_INFINITY;
+    for (const [rowKey, columns] of Object.entries(input)) {
+      const row = Number(rowKey);
+      for (const columnKey of Object.keys(columns)) {
+        const column = Number(columnKey);
+        count += 1;
+        startRow = Math.min(startRow, row);
+        endRow = Math.max(endRow, row);
+        startColumn = Math.min(startColumn, column);
+        endColumn = Math.max(endColumn, column);
+      }
+    }
+    this.deferredBounds = {
+      count,
+      startRow: Number.isFinite(startRow) ? startRow : 0,
+      endRow: Number.isFinite(endRow) ? endRow : 0,
+      startColumn: Number.isFinite(startColumn) ? startColumn : 0,
+      endColumn: Number.isFinite(endColumn) ? endColumn : 0,
+    };
+    return this.deferredBounds;
   }
 
   /** 沿行轴整体平移:dir=+1 下移(插入),dir=-1 上移(删除);越界丢弃 */
@@ -1879,19 +1987,25 @@ export class WorkbookModel {
       sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
       sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
       sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
-      const matrix = CellMatrix.fromJSON(input.cells);
-      matrix.forEach((cell, row, column) => {
-        const normalized = structuredClone(cell);
-        const legacy = normalized.hyperlinkDetail
-          ?? (normalized.hyperlink ? {
-            id: `legacy-hyperlink-${row}-${column}`,
-            target: { kind: 'url' as const, url: normalized.hyperlink },
-          } : undefined);
-        delete normalized.hyperlink;
-        delete normalized.hyperlinkDetail;
-        sheet.cells.set(row, column, normalized);
-        if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
-      });
+      sheet.cells.deferJSON(input.cells);
+      // Canonical snapshots keep hyperlink metadata outside CellMatrix. The
+      // legacy hyperlink carrier is migrated only when this sheet is first
+      // materialized, so opening a workbook does not parse every sheet's
+      // sparse cell map up front.
+      if (Object.values(input.cells).some((columns) => Object.values(columns).some((cell) => cell.hyperlinkDetail !== undefined || cell.hyperlink !== undefined))) {
+        sheet.cells.forEach((cell, row, column) => {
+          const normalized = structuredClone(cell);
+          const legacy = normalized.hyperlinkDetail
+            ?? (normalized.hyperlink ? {
+              id: `legacy-hyperlink-${row}-${column}`,
+              target: { kind: 'url' as const, url: normalized.hyperlink },
+            } : undefined);
+          delete normalized.hyperlink;
+          delete normalized.hyperlinkDetail;
+          sheet.cells.set(row, column, normalized);
+          if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
+        });
+      }
       if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
       sheet.merges.push(...structuredClone(input.merges));
       sheet.pane = normalizeWorksheetPane(input.pane);

@@ -139,6 +139,35 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
   assert.equal(headers.has('authorization'), false);
 });
 
+test('WorkbookApiClient keeps server query block lifecycle explicit and bounded', async () => {
+  const requests: string[] = [];
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async (input, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${String(input)}`);
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          queryId: 'q-block', executionId: 'exec-1', connectorId: 'sqlite', sourceRef: 'sales', sourceRevision: 4,
+          columns: ['Name'], columnTypes: ['text'], rowCount: 3, blockRowCount: 2, executedAt: '2026-09-21T00:00:00Z', durationMs: 4,
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ queryId: 'q-block', executionId: 'exec-1', offset: 0, rows: [['a'], ['b']], hasMore: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const request = { queryId: 'q-block', name: 'Block', connectorId: 'sqlite' as const, sourceRef: 'sales', statement: 'select name from items', steps: [] };
+  const session = await api.startServerQueryBlocks('unit-1', request);
+  const block = await api.getServerQueryBlock('unit-1', request.queryId, session.executionId, 0);
+  await api.finishServerQueryBlocks('unit-1', request.queryId, session.executionId);
+  assert.equal(block.rows.length, 2);
+  assert.match(requests[0]!, /\/queries\/execute-blocks$/);
+  assert.match(requests[1]!, /offset=0$/);
+  assert.match(requests[2]!, /\/blocks\/exec-1$/);
+});
+
 test('WorkbookApiClient accepts access roles only from the server projection', async () => {
   const api = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',

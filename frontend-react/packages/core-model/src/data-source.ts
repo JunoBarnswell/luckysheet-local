@@ -45,6 +45,8 @@ export interface DataSourceManifest {
   fields: DataSourceField[];
   blockRowCount: number;
   blocks: DataBlockRef[];
+  /** Logical row -> immutable physical row mapping used by virtual sorts. */
+  rowOrder?: number[];
   revision: number;
 }
 
@@ -81,6 +83,17 @@ export function normalizeDataSourceManifest(input: DataSourceManifest): DataSour
   if (!Number.isSafeInteger(input.rowCount) || input.rowCount < 0) throw new Error('Data source rowCount must be non-negative');
   if (!Number.isSafeInteger(input.blockRowCount) || input.blockRowCount <= 0) throw new Error('Data source blockRowCount must be positive');
   if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new Error('Data source revision must be non-negative');
+  const rowOrder = input.rowOrder === undefined ? undefined : [...input.rowOrder];
+  if (rowOrder !== undefined) {
+    if (rowOrder.length !== input.rowCount) throw new Error('Data source rowOrder must cover every source row');
+    const physicalRows = new Set<number>();
+    for (const physicalRow of rowOrder) {
+      if (!Number.isSafeInteger(physicalRow) || physicalRow < 0 || physicalRow >= input.rowCount || physicalRows.has(physicalRow)) {
+        throw new Error('Data source rowOrder must be a permutation of source rows');
+      }
+      physicalRows.add(physicalRow);
+    }
+  }
 
   const fieldIds = new Set<string>();
   const fields = input.fields.map((field, ordinal) => {
@@ -118,6 +131,7 @@ export function normalizeDataSourceManifest(input: DataSourceManifest): DataSour
     ...input,
     fields,
     blocks,
+    ...(rowOrder === undefined ? {} : { rowOrder }),
     sourceRange: input.sourceRange ? { ...input.sourceRange } : undefined,
   };
 }

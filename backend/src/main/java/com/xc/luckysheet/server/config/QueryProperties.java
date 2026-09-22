@@ -11,6 +11,7 @@ public record QueryProperties(
         int maxRows,
         int maxColumns,
         int maxResponseBytes,
+        int blockRowCount,
         Duration timeout,
         int workerThreads,
         Map<String, QuerySource> sources
@@ -19,6 +20,7 @@ public record QueryProperties(
         if (maxRows < 1 || maxRows > 1_000_000) throw new IllegalStateException("Query max rows must be between 1 and 1000000");
         if (maxColumns < 1 || maxColumns > 10_000) throw new IllegalStateException("Query max columns must be between 1 and 10000");
         if (maxResponseBytes < 1_024 || maxResponseBytes > 100_000_000) throw new IllegalStateException("Query response size is invalid");
+        if (blockRowCount < 1 || blockRowCount > 65_536) throw new IllegalStateException("Query block row count must be between 1 and 65536");
         if (timeout == null || timeout.isZero() || timeout.isNegative() || timeout.compareTo(Duration.ofMinutes(5)) > 0) {
             throw new IllegalStateException("Query timeout must be between 1ms and 5m");
         }

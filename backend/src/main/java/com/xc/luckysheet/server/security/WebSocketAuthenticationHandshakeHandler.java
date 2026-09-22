@@ -19,6 +19,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,6 +44,15 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
     @Override
     protected Principal determineUser(ServerHttpRequest request, WebSocketHandler handler, Map<String, Object> attributes) {
         return authenticatedPrincipal(request);
+    }
+
+    @Override
+    protected String selectProtocol(List<String> requestedProtocols, WebSocketHandler handler) {
+        return requestedProtocols.stream()
+                .map(String::trim)
+                .filter(protocol -> protocol.startsWith(BEARER_PROTOCOL_PREFIX))
+                .findFirst()
+                .orElse(null);
     }
 
     Principal authenticatedPrincipal(ServerHttpRequest request) {

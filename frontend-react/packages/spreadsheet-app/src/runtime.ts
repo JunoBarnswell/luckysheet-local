@@ -70,6 +70,8 @@ export interface SpreadsheetRuntime {
   commands: CommandRuntime;
   drawing: DrawingRuntime;
   remoteConnected: boolean;
+  /** REST data blocks remain readable after an authorized snapshot while WebSocket sync is connecting. */
+  remoteDataAvailable: boolean;
   remoteRevision: number;
   pendingMutations: MutationInfo[];
   /** Local-durable geometry changed without producing a remote operation. */
@@ -83,6 +85,8 @@ export interface SpreadsheetRuntime {
   nextClientSequence: number;
   pivotResults: Record<string, import('@react-sheets/core-model').PivotResultTree>;
   pivotErrors: Record<string, import('./features/pivot/task-protocol').PivotTaskError>;
+  /** Set only when a new authoritative workbook model invalidates derived Pivot results. */
+  pivotRehydrationPending: boolean;
   collab: CollabSocketClient | null;
   collabDispose: (() => void) | null;
   broadcastPresence: (state: unknown) => boolean;
@@ -174,7 +178,7 @@ export function createSpreadsheetRuntime(options: {
   let runtime!: SpreadsheetRuntime;
   const dataBlocks = new DataBlockSynchronizer(workspacePersistence.dataBlocks, api, {
     unitId: () => runtime.model.unitId,
-    isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
+    isRemoteAvailable: () => !runtime.localOnly && (runtime.remoteDataAvailable || runtime.remoteConnected),
   });
   const assetStore = options.assetStore ?? new LocalAssetStore(model.unitId, workspacePersistence.coordinator);
   runtime = {
@@ -189,6 +193,7 @@ export function createSpreadsheetRuntime(options: {
     commands,
     drawing,
     remoteConnected: false,
+    remoteDataAvailable: false,
     remoteRevision: 0,
     pendingMutations: [],
     pendingLocalCheckpoint: false,
@@ -204,6 +209,7 @@ export function createSpreadsheetRuntime(options: {
     nextClientSequence: 0,
     pivotResults: {},
     pivotErrors: {},
+    pivotRehydrationPending: false,
     collab: null,
     collabDispose: null,
     broadcastPresence: () => false,
@@ -381,8 +387,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   syncWorkbookSheetTables(engine, workbook);
   let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
-      if (cell.formula === undefined || cell.formulaMetadata?.preservedOnly) return;
+    sheet.cells.forEachFormula((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       formulaCount += 1;
       engine.setFormula(address, cell.formula);
@@ -790,6 +795,7 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
     runtime.collaboration?.setRevision(revision);
   }
   runtime.pivotResults = {};
+  runtime.pivotRehydrationPending = true;
   void scheduleFormulaRecalculation(runtime);
 }
 
@@ -840,6 +846,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.collaboration?.setRevision(response.revision);
   runtime.collaboration?.rebindCommands(runtime.commands);
   runtime.pivotResults = {};
+  runtime.pivotRehydrationPending = true;
   initializeDataContent(runtime);
   void scheduleFormulaRecalculation(runtime);
 }
@@ -857,12 +864,21 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
         return { sourceId: ref.dataSourceId, blockId: ref.id, checksum: ref.checksum, bytes };
       },
     });
-    runtime.dataContentDetachers.push(query.subscribe(() => {
-      if (!runtime.disposed) {
+    let notificationScheduled = false;
+    const notifyContentChanged = (): void => {
+      if (notificationScheduled) return;
+      notificationScheduled = true;
+      // Block reads can be initiated by a synchronous render projection.  Do
+      // not publish a React-facing refresh from that render stack; coalesce
+      // loading/ready transitions from the same fetch wave into one task.
+      setTimeout(() => {
+        notificationScheduled = false;
+        if (runtime.disposed) return;
         runtime.handlers.onDataSourceContentChanged?.(manifest.id);
         runtime.handlers.onMutationsApplied?.();
-      }
-    }));
+      }, 0);
+    };
+    runtime.dataContentDetachers.push(query.subscribe(notifyContentChanged));
     runtime.dataContent.set(manifest.id, query);
   }
 }
@@ -1112,6 +1128,7 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
 export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed) return;
   runtime.disposed = true;
+  runtime.remoteDataAvailable = false;
   serverCheckpoints.get(runtime)?.dispose();
   serverCheckpoints.delete(runtime);
   runtime.recoveryJournal?.release();
@@ -1187,6 +1204,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   }
 
   if (runtime.localOnly) {
+    runtime.remoteDataAvailable = false;
     runtime.remoteConnected = false;
     runtime.handlers.onAccessRole?.(null);
     // A StrictMode dispose may have detached the collaboration journal even
@@ -1203,8 +1221,12 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     }
     if (isActive()) {
       runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
-      runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
+      // Publish ready only after the session observes the authoritative
+      // primary sheet.  Otherwise a user can click another tab between these
+      // callbacks and have that selection overwritten by the late bootstrap
+      // callback, leaving its lazy derived state unrequested.
+      runtime.handlers.onPhaseChange?.('ready');
     }
     return;
   }
@@ -1216,25 +1238,29 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     if (!isActive()) return;
     runtime.handlers.onAccessRole?.(access.role);
     hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
+    runtime.remoteDataAvailable = true;
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
     runtime.remoteSyncRequested = true;
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
     if (!isActive()) return;
-    runtime.remoteConnected = false;
-    if (isActive()) {
-      runtime.handlers.onSaveState?.('saved');
-      runtime.handlers.onNotice?.('Workbook restored from server');
-      runtime.handlers.onPhaseChange?.('ready');
-      runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-      runtime.handlers.onWorkspacePersisted?.();
-    }
+      runtime.remoteConnected = false;
+      if (isActive()) {
+        runtime.handlers.onSaveState?.('saved');
+        runtime.handlers.onNotice?.('Workbook restored from server');
+        runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
+        // Keep the visible ready boundary after the authoritative active-sheet
+        // callback so immediate tab interaction cannot be reverted by startup.
+        runtime.handlers.onPhaseChange?.('ready');
+        runtime.handlers.onWorkspacePersisted?.();
+      }
   } catch (error) {
     // Authentication, authorization and an unknown shared workbook are
     // authoritative server decisions. They must never be disguised as a new
     // local workbook with the same URL. Only an actual unavailable service
     // leaves the user in offline local mode.
+    runtime.remoteDataAvailable = false;
     if (isAuthoritativeRemoteFailure(error)) {
       runtime.remoteConnected = false;
       runtime.handlers.onAccessRole?.(null);

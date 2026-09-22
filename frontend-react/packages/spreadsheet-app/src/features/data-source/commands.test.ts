@@ -82,3 +82,21 @@ test('operation validation rejects block bytes while accepting metadata', () => 
     }],
   }), /not allowed|unsupported field/);
 });
+
+test('operation validation accepts virtual row order and rejects non-permutations', () => {
+  const accepted = validateOperationEnvelope({
+    schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
+    operationId: 'op-row-order', unitId: 'unit-1', clientSequence: 2, baseRevision: 0,
+    mutations: [{ id: 'dataSource.add', sheetId: 'sheet-1', params: { source: { ...source(), rowOrder: [1, 0] } } }],
+    createdAt: '2026-08-24T00:00:00.000Z',
+  });
+  assert.deepEqual((accepted.mutations[0]!.params as { source: DataSourceManifest }).source.rowOrder, [1, 0]);
+
+  assert.throws(() => validateOperationEnvelope({
+    ...accepted,
+    mutations: [{
+      id: 'dataSource.add', sheetId: 'sheet-1',
+      params: { source: { ...source(), rowOrder: [0, 0] } },
+    }],
+  }), /rowOrder/i);
+});
