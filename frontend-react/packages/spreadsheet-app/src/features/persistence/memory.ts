@@ -21,9 +21,13 @@ export interface WorkspaceMemoryState {
   assets: Map<string, unknown>;
 }
 
-export interface WorkspaceMemoryTransaction {
+/** Reads are detached values; changes must be published with transaction.set. */
+export interface WorkspaceMemoryReader {
   get<T>(bucket: WorkspaceMemoryBucket, key: string): T | undefined;
   getAll<T>(bucket: WorkspaceMemoryBucket): T[];
+}
+
+export interface WorkspaceMemoryTransaction extends WorkspaceMemoryReader {
   set<T>(bucket: WorkspaceMemoryBucket, key: string, value: T): void;
   delete(bucket: WorkspaceMemoryBucket, key: string): void;
 }
@@ -87,28 +91,38 @@ function createState(): WorkspaceMemoryState {
   };
 }
 
-function cloneState(source: WorkspaceMemoryState): WorkspaceMemoryState {
-  const target = createState();
-  for (const bucket of Object.keys(target) as WorkspaceMemoryBucket[]) {
-    for (const [key, value] of source[bucket]) target[bucket].set(key, clone(value));
-  }
-  return target;
-}
-
-function memoryTransaction(state: WorkspaceMemoryState): WorkspaceMemoryTransaction {
+function memoryReader(state: WorkspaceMemoryState, ensureActive: () => void): WorkspaceMemoryReader {
   return {
     get<T>(bucket: WorkspaceMemoryBucket, key: string) {
-      const value = state[bucket].get(key);
-      return value === undefined ? undefined : value as T;
+      ensureActive();
+      return clone(state[bucket].get(key)) as T | undefined;
     },
     getAll<T>(bucket: WorkspaceMemoryBucket) {
-      return [...state[bucket].values()] as T[];
+      ensureActive();
+      return clone([...state[bucket].values()]) as T[];
     },
+  };
+}
+
+function memoryTransaction(state: WorkspaceMemoryState, ensureActive: () => void): WorkspaceMemoryTransaction {
+  const copied = new Set<WorkspaceMemoryBucket>();
+  const writableBucket = (bucket: WorkspaceMemoryBucket): Map<string, unknown> => {
+    ensureActive();
+    if (!copied.has(bucket)) {
+      state[bucket] = new Map(state[bucket]);
+      copied.add(bucket);
+    }
+    return state[bucket];
+  };
+  return {
+    ...memoryReader(state, ensureActive),
     set<T>(bucket: WorkspaceMemoryBucket, key: string, value: T) {
-      state[bucket].set(key, value);
+      ensureActive();
+      const stored = clone(value);
+      writableBucket(bucket).set(key, stored);
     },
     delete(bucket: WorkspaceMemoryBucket, key: string) {
-      state[bucket].delete(key);
+      writableBucket(bucket).delete(key);
     },
   };
 }
@@ -117,6 +131,8 @@ function memoryTransaction(state: WorkspaceMemoryState): WorkspaceMemoryTransact
  * Page-session storage owner. Every local Store in one ApplicationServicesProvider
  * receives this same context. A transaction commits by replacing the complete
  * staged state, so a failed multi-store mutation cannot partially persist.
+ * Unchanged maps and records are shared internally; only written bucket maps
+ * and accessed values are copied, never all loaded block bytes on each write.
  */
 export class WorkspaceMemoryCoordinator {
   private stateValue = createState();
@@ -132,13 +148,15 @@ export class WorkspaceMemoryCoordinator {
     if (this.stateValueStatus === 'disposed') throw this.disposedError('ensure-ready');
   }
 
-  async read<T>(operation: (transaction: WorkspaceMemoryTransaction) => T | Promise<T>): Promise<T> {
+  async read<T>(operation: (reader: WorkspaceMemoryReader) => T | Promise<T>): Promise<T> {
     const read = this.transactionTail.then(async () => {
       this.ensureReady();
       try {
-        const result = await operation(memoryTransaction(this.stateValue));
+        const result = await operation(memoryReader(this.stateValue, () => this.ensureReady()));
+        this.ensureReady();
         return clone(result);
       } catch (cause) {
+        if (cause instanceof WorkspaceStorageError) throw cause;
         throw this.transactionError('read', cause);
       }
     });
@@ -149,15 +167,29 @@ export class WorkspaceMemoryCoordinator {
   async transaction<T>(operation: (transaction: WorkspaceMemoryTransaction) => T | Promise<T>): Promise<T> {
     const run = this.transactionTail.then(async () => {
       this.ensureReady();
-      const staged = cloneState(this.stateValue);
+      const staged = { ...this.stateValue };
+      let active = true;
+      const ensureActive = (): void => {
+        this.ensureReady();
+        if (!active) {
+          throw new WorkspaceStorageError({
+            code: 'STORAGE_MEMORY_TRANSACTION_FAILED',
+            operation: 'closed-transaction',
+            message: 'The memory transaction has already finished.',
+            recovery: 'Start a new transaction to access workspace state.',
+          });
+        }
+      };
       try {
-        const result = await operation(memoryTransaction(staged));
+        const result = clone(await operation(memoryTransaction(staged, ensureActive)));
         this.ensureReady();
         this.stateValue = staged;
-        return clone(result);
+        return result;
       } catch (cause) {
         if (cause instanceof WorkspaceStorageError) throw cause;
         throw this.transactionError('transaction', cause);
+      } finally {
+        active = false;
       }
     });
     this.transactionTail = run.then(() => undefined, () => undefined);

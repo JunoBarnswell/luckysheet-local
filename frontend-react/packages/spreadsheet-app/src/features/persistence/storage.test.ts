@@ -6,6 +6,7 @@ import type { OpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
   OperationJournalStore,
+  MemoryWorkspaceStore,
   WorkspacePersistence,
   buildWorkspaceRecord,
   buildPersistenceMeta,
@@ -14,9 +15,44 @@ import {
 import {
   WorkspaceMemoryCoordinator,
   WorkspaceStorageError,
+  memoryKey,
 } from './memory';
 
 describe('page-session memory persistence', () => {
+  it('opens only the selected current snapshot and rejects a missing current snapshot', async (context) => {
+    const coordinator = new WorkspaceMemoryCoordinator();
+    const store = new MemoryWorkspaceStore(coordinator);
+    const selected = new WorkbookModel('selected', 'Selected').snapshot();
+    const first = await store.save(buildWorkspaceRecord({
+      unitId: selected.unitId, snapshot: selected, localRevision: 1, serverRevision: 0,
+      syncMode: 'local-only', operations: [], nextClientSequence: 0,
+    }));
+    await store.save(buildWorkspaceRecord({
+      unitId: selected.unitId, snapshot: selected, localRevision: 2, serverRevision: 0,
+      storageRevision: first.storageRevision, syncMode: 'local-only', operations: [], nextClientSequence: 0,
+    }));
+    const cold = new WorkbookModel('cold', 'Cold').snapshot();
+    await store.save(buildWorkspaceRecord({
+      unitId: cold.unitId, snapshot: cold, localRevision: 1, serverRevision: 0,
+      syncMode: 'local-only', operations: [], nextClientSequence: 0,
+    }));
+    const actualClone = globalThis.structuredClone;
+    let copiedUnselectedSnapshot = false;
+    context.mock.method(globalThis, 'structuredClone', <T>(value: T): T => {
+      for (const candidate of Array.isArray(value) ? value : [value]) {
+        if (candidate !== null && typeof candidate === 'object' && 'schema' in candidate
+          && candidate.schema === 'WorkspaceSnapshot' && 'unitId' in candidate && 'revision' in candidate
+          && (candidate.unitId !== selected.unitId || candidate.revision !== 2)) copiedUnselectedSnapshot = true;
+      }
+      return actualClone(value);
+    });
+    assert.equal((await store.load(selected.unitId))?.localRevision, 2);
+    assert.equal(copiedUnselectedSnapshot, false);
+    assert.equal(await store.load('missing'), null);
+    await coordinator.transaction((transaction) => transaction.delete('workspaceSnapshots', memoryKey(selected.unitId, 2)));
+    await assert.rejects(store.load(selected.unitId), { code: 'STORAGE_SCHEMA_INVALID' });
+  });
+
   it('tracks pending local operation metadata', () => {
     const snapshot = new WorkbookModel('wb-meta', 'Meta').snapshot();
     const meta = buildPersistenceMeta(snapshot, 0, 1);
