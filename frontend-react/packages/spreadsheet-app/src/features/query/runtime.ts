@@ -104,17 +104,27 @@ export async function executeQueryDefinition(
   validateQueryDefinition(query);
   const serverOnlyConnectors = new Set(['rest', 'sqlite', 'jdbc']);
   if (serverOnlyConnectors.has(query.connectorId)) throw new Error(`Connector ${query.connectorId} is server-only and cannot execute in the local workbook`);
-  const connector = connectors.get(query.connectorId);
-  if (connector.execution !== 'local') throw new Error(`Connector ${connector.id} is server-only and cannot execute in the local workbook`);
-  await connector.connect(query.connectorConfig);
-  try {
-    const raw = await connector.executeQuery(query.id);
-    validateQueryResult(raw);
-    const transformed = new QueryStepPipeline(query.steps).applySteps({ columns: raw.columns, rows: raw.rows });
-    return { columns: transformed.columns, rows: transformed.rows as QueryResult['rows'], rowCount: transformed.rows.length };
-  } finally {
-    await connector.disconnect();
-  }
+  const definition = structuredClone(query);
+  return connectors.withConnector(definition.connectorId, async (connector) => {
+    if (connector.execution !== 'local') throw new Error(`Connector ${connector.id} is server-only and cannot execute in the local workbook`);
+    const failures: unknown[] = [];
+    try {
+      await connector.connect(definition.connectorConfig);
+      const raw = await connector.executeQuery(definition.id);
+      validateQueryResult(raw);
+      const transformed = new QueryStepPipeline(definition.steps).applySteps({ columns: raw.columns, rows: raw.rows });
+      return { columns: transformed.columns, rows: transformed.rows as QueryResult['rows'], rowCount: transformed.rows.length };
+    } catch (error) {
+      failures.push(error);
+      throw error;
+    } finally {
+      try { await connector.disconnect(); }
+      catch (error) {
+        if (failures.length > 0) throw new AggregateError([...failures, error], `Query ${definition.id} execution and disconnect both failed`);
+        throw error;
+      }
+    }
+  });
 }
 
 export function resolveLoadTarget(activeSheetId: string, selectionRange: RangeRef): LoadTarget {
@@ -292,7 +302,7 @@ export interface PreparedQueryLoadBlock {
   payload: ArrayBuffer;
 }
 
-function validateQueryBlockLoadMetadata(metadata: QueryBlockLoadMetadata): void {
+export function validateQueryBlockLoadMetadata(metadata: QueryBlockLoadMetadata): void {
   if (!metadata || !Array.isArray(metadata.columns) || metadata.columns.length === 0) throw new Error('Query block metadata must contain columns');
   if (metadata.columns.some((column) => typeof column !== 'string' || !column.trim())) throw new Error('Query block columns must be non-empty strings');
   if (new Set(metadata.columns).size !== metadata.columns.length) throw new Error('Query block columns must be unique');
@@ -327,7 +337,7 @@ export async function encodeQueryLoadBlock(
   const fields = queryFields(sourceId, metadata);
   const normalizedRows = normalizeQueryRowsForDataSource(rows, fields);
   const payload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows: normalizedRows });
-  const id = `${sourceId}:r${revision}:b${startRow}`;
+  const id = `query-block:${crypto.randomUUID()}`;
   return {
     ref: {
       id,
@@ -423,7 +433,7 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
   for (let startRow = 0; startRow < normalizedRows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
     const rows = normalizedRows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
     const blockPayload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
-    const blockId = `${sourceId}:r${revision}:b${startRow}`;
+    const blockId = `query-block:${crypto.randomUUID()}`;
     blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
   }
   const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result.columns, result.rowCount);

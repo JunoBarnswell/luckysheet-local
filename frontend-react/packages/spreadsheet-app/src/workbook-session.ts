@@ -246,6 +246,7 @@ import {
 } from './features/print';
 import { browserPrintHook, PdfExportService, type PrintLayout } from './features/print';
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
+import { QueryLoadError } from './features/query/query-load-error';
 import {
   buildQueryPreview,
   buildQueryLoadPayloadFromBlocks,
@@ -258,6 +259,7 @@ import {
   resolveLoadTarget,
   serializeQueryDefinition,
   summarizeQueryResult,
+  validateQueryBlockLoadMetadata,
   type QueryResultSnapshot,
   type QueryPreview,
   type QuerySessionEntry,
@@ -832,6 +834,7 @@ export class WorkbookSession {
   };
   private printSnapshot: PrintSnapshot | null = null;
   private querySessions = new Map<string, QuerySessionEntry>();
+  private readonly pendingQueryLoads = new Set<string>();
   private lastQueryResult: QueryResultSnapshot | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
@@ -6803,39 +6806,71 @@ export class WorkbookSession {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
-      let result: import('./features/query').QueryResult;
-      let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
-      let blockRefs: DataBlockRef[];
-      if (isServerQueryConnector(query.connectorId)) {
-        const loaded = await this.loadServerQueryBlocks(persistedQuery, resolvedTarget);
-        result = loaded.result;
-        payload = loaded.payload;
-        blockRefs = loaded.blockRefs;
-      } else {
-        result = await this.executeQuery(query);
-        const prepared = await prepareQueryLoadPayload(this.runtime.model, persistedQuery, resolvedTarget, result);
-        payload = prepared.payload;
-        blockRefs = prepared.blocks.map((block) => block.ref);
-        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
-      }
-      try {
-        this.runCommand('query.load', payload);
-      } catch (error) {
-        await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
-        throw error;
-      }
-      persistedQuery.sourceRevision = payload.source.revision;
-      const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
-      this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
-      this.lastQueryResult = snapshot;
-    this.panels = { ...this.panels, active: 'query', open: true };
+      const snapshot = await this.commitQueryLoad('query.load', query, resolvedTarget);
+      this.panels = { ...this.panels, active: 'query', open: true };
       this.notify(summarizeQueryResult(snapshot));
       this.refresh();
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query load failed');
       this.emit();
       throw error;
+    }
+  }
+
+  private async commitQueryLoad(commandId: 'query.load' | 'query.refresh', query: QueryDefinition, target: LoadTarget): Promise<QueryResultSnapshot> {
+    if (this.pendingQueryLoads.has(query.id)) throw new QueryLoadError('QUERY_LOAD_IN_PROGRESS', query.id, 'Wait for the current load to finish');
+    const workbook = this.runtime.model;
+    const sourceId = querySourceId(query.id);
+    const previousSource = workbook.dataModel.sources.get(sourceId);
+    const previousDefinition = workbook.queryDefinitions.get(query.id);
+    const definition = { ...structuredClone(query), lastTarget: structuredClone(target) };
+    const resolvedTarget = definition.lastTarget;
+    const assertCurrent = (): void => {
+      if (this.disposed || this.runtime.model !== workbook) throw new QueryLoadError('QUERY_LOAD_CANCELLED', query.id, 'The workbook session changed; load again in the current session');
+      if (workbook.dataModel.sources.get(sourceId) !== previousSource) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The data source changed while loading; refresh from the current source');
+      if (workbook.queryDefinitions.get(query.id) !== previousDefinition) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The query definition changed while loading; review the current definition before refreshing');
+    };
+    const blockRefs: DataBlockRef[] = [];
+    let committed = false;
+    this.pendingQueryLoads.add(query.id);
+    try {
+      assertCurrent();
+      let result: import('./features/query').QueryResult;
+      let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
+      if (isServerQueryConnector(definition.connectorId)) {
+        const loaded = await this.loadServerQueryBlocks(definition, resolvedTarget, blockRefs, assertCurrent);
+        result = loaded.result;
+        payload = loaded.payload;
+      } else {
+        result = await executeQueryDefinition(this.runtime.connectors, definition);
+        assertCurrent();
+        const prepared = await prepareQueryLoadPayload(workbook, definition, resolvedTarget, result);
+        payload = prepared.payload;
+        for (const block of prepared.blocks) {
+          assertCurrent();
+          // put() can save locally and fail during upload. Track ownership
+          // before writing, so partially written blocks are also cleaned up.
+          blockRefs.push(block.ref);
+          await this.runtime.dataBlocks.put(block.ref, block.payload);
+        }
+      }
+      assertCurrent();
+      this.runCommand(commandId, payload);
+      committed = true;
+      definition.sourceRevision = payload.source.revision;
+      const snapshot = buildQueryResultSnapshot(definition, result, resolvedTarget);
+      this.querySessions.set(query.id, { definition, lastResult: snapshot });
+      this.lastQueryResult = snapshot;
+      return snapshot;
+    } catch (error) {
+      if (!committed) {
+        const cleanup = await Promise.allSettled(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
+        const failures = cleanup.flatMap((entry) => entry.status === 'rejected' ? [entry.reason] : []);
+        if (failures.length > 0) throw new AggregateError([error, ...failures], `Query ${query.id} failed; some staged blocks could not be removed`);
+      }
+      throw error;
+    } finally {
+      this.pendingQueryLoads.delete(query.id);
     }
   }
 
@@ -6847,7 +6882,7 @@ export class WorkbookSession {
     }
     try {
       if (isServerQueryConnector(query.connectorId)) return await this.previewServerQuery(query);
-      const result = await this.executeQuery(query);
+      const result = await executeQueryDefinition(this.runtime.connectors, query);
       return buildQueryPreview(query, result);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query preview failed');
@@ -6858,24 +6893,19 @@ export class WorkbookSession {
 
   private async previewServerQuery(query: QueryDefinition): Promise<QueryPreview> {
     const request = this.buildServerQueryRequest(query);
-    const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
-    let finishAttempted = false;
-    try {
-      const rows = session.rowCount === 0
-        ? []
-        : (await this.runtime.api.getServerQueryBlock(this.runtime.model.unitId, query.id, session.executionId, 0)).rows;
-      finishAttempted = true;
-      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
+    return this.useServerQueryBlocks(request, async (session, unitId) => {
+      const block = session.rowCount === 0 ? undefined : await this.runtime.api.getServerQueryBlock(unitId, query.id, session.executionId, 0);
+      if (block && (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== 0
+        || block.rows.length !== Math.min(session.rowCount, session.blockRowCount)
+        || block.hasMore !== (block.rows.length < session.rowCount))) throw new Error('Java backend returned an invalid query preview block');
+      const rows = block?.rows ?? [];
       return buildQueryPreview(query, { columns: session.columns, rows: rows.slice(0, 5), rowCount: session.rowCount });
-    } catch (error) {
-      if (!finishAttempted) await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
-      throw error;
-    }
+    });
   }
 
   async refreshQuery(queryId: string): Promise<void> {
-    const session = this.querySessions.get(queryId);
-    if (!session) {
+    const persistedDefinition = this.runtime.model.getQueryDefinition(queryId);
+    if (!persistedDefinition) {
       const error = new Error('Query not found');
       this.notify(error.message);
       throw error;
@@ -6886,36 +6916,12 @@ export class WorkbookSession {
       throw error;
     }
     try {
-      const target = session.lastResult?.target ?? session.definition.lastTarget ?? resolveLoadTarget(
+      const definition = deserializeQueryDefinition(persistedDefinition);
+      const target = definition.lastTarget ?? resolveLoadTarget(
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      session.definition.lastTarget = structuredClone(target);
-      let result: import('./features/query').QueryResult;
-      let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
-      let blockRefs: DataBlockRef[];
-      if (isServerQueryConnector(session.definition.connectorId)) {
-        const loaded = await this.loadServerQueryBlocks(session.definition, target);
-        result = loaded.result;
-        payload = loaded.payload;
-        blockRefs = loaded.blockRefs;
-      } else {
-        result = await this.executeQuery(session.definition);
-        const prepared = await prepareQueryLoadPayload(this.runtime.model, session.definition, target, result);
-        payload = prepared.payload;
-        blockRefs = prepared.blocks.map((block) => block.ref);
-        await Promise.all(prepared.blocks.map((block) => this.runtime.dataBlocks.put(block.ref, block.payload)));
-      }
-      try {
-        this.runCommand('query.refresh', payload);
-      } catch (error) {
-        await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
-        throw error;
-      }
-      session.definition.sourceRevision = payload.source.revision;
-      const snapshot = buildQueryResultSnapshot(session.definition, result, target);
-      session.lastResult = snapshot;
-      this.lastQueryResult = snapshot;
+      const snapshot = await this.commitQueryLoad('query.refresh', definition, target);
       this.notify(summarizeQueryResult(snapshot));
       this.refresh();
     } catch (error) {
@@ -6942,12 +6948,29 @@ export class WorkbookSession {
         statement,
         steps: [],
       };
-      const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
-      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, request.queryId, session.executionId);
-      return { ok: true, message: `${session.rowCount} record(s) ready` };
+      return this.useServerQueryBlocks(request, async (session) => ({ ok: true, message: `${session.rowCount} record(s) ready` }));
     }
-    const connector = this.runtime.connectors.get(connectorId);
-    return connector.testConnection(config);
+    return this.runtime.connectors.withConnector(connectorId, (connector) => connector.testConnection(config));
+  }
+
+  private async useServerQueryBlocks<T>(request: ServerQueryRequest, consume: (session: Awaited<ReturnType<WorkbookApiClient['startServerQueryBlocks']>>, unitId: string) => Promise<T>): Promise<T> {
+    const unitId = this.runtime.model.unitId;
+    const session = await this.runtime.api.startServerQueryBlocks(unitId, request);
+    const failures: unknown[] = [];
+    try {
+      if (session.queryId !== request.queryId || session.connectorId !== request.connectorId || session.sourceRef !== request.sourceRef) throw new Error('Java backend returned mismatched query block metadata');
+      validateQueryBlockLoadMetadata(session);
+      return await consume(session, unitId);
+    } catch (error) {
+      failures.push(error);
+      throw error;
+    } finally {
+      try { await this.runtime.api.finishServerQueryBlocks(unitId, request.queryId, session.executionId); }
+      catch (error) {
+        if (failures.length > 0) throw new AggregateError([...failures, error], `Query ${request.queryId} failed and its server execution could not be closed`);
+        throw error;
+      }
+    }
   }
 
   private buildServerQueryRequest(query: QueryDefinition): ServerQueryRequest {
@@ -6982,68 +7005,43 @@ export class WorkbookSession {
     };
   }
 
-  private async loadServerQueryBlocks(query: QueryDefinition, target: LoadTarget): Promise<{
+  private async loadServerQueryBlocks(query: QueryDefinition, target: LoadTarget, blockRefs: DataBlockRef[], assertCurrent: () => void): Promise<{
     result: import('./features/query').QueryResult;
     payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
-    blockRefs: DataBlockRef[];
   }> {
     const request = this.buildServerQueryRequest(query);
-    const session = await this.runtime.api.startServerQueryBlocks(this.runtime.model.unitId, request);
-    if (session.queryId !== query.id || session.connectorId !== query.connectorId || session.rowCount < 0 || session.columnTypes.length !== session.columns.length) {
-      throw new Error('Java backend returned invalid query block metadata');
-    }
-    const metadata: QueryBlockLoadMetadata = {
-      columns: session.columns,
-      columnTypes: session.columnTypes as ServerQueryColumnType[],
-      rowCount: session.rowCount,
-      blockRowCount: session.blockRowCount,
-    };
     const sourceId = querySourceId(query.id);
     const revision = (this.runtime.model.dataModel.sources.get(sourceId)?.revision ?? -1) + 1;
-    const blockRefs: DataBlockRef[] = [];
-    let offset = 0;
-    let finishAttempted = false;
-    try {
+    return this.useServerQueryBlocks(request, async (session, unitId) => {
+      assertCurrent();
+      const metadata: QueryBlockLoadMetadata = {
+        columns: session.columns,
+        columnTypes: session.columnTypes as ServerQueryColumnType[],
+        rowCount: session.rowCount,
+        blockRowCount: session.blockRowCount,
+      };
+      let offset = 0;
       while (offset < metadata.rowCount) {
-        const block = await this.runtime.api.getServerQueryBlock(this.runtime.model.unitId, query.id, session.executionId, offset);
+        assertCurrent();
+        const block = await this.runtime.api.getServerQueryBlock(unitId, query.id, session.executionId, offset);
         if (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== offset) throw new Error('Java backend returned an out-of-order query block');
-        if (block.rows.length === 0 || block.rows.length > metadata.blockRowCount || offset + block.rows.length > metadata.rowCount) throw new Error('Java backend returned an invalid query block size');
+        if (block.rows.length !== Math.min(metadata.blockRowCount, metadata.rowCount - offset)
+          || block.hasMore !== (offset + block.rows.length < metadata.rowCount)) throw new Error('Java backend returned an invalid query block size or continuation flag');
         const encoded = await encodeQueryLoadBlock(sourceId, revision, metadata, offset, block.rows);
-        await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
+        assertCurrent();
         blockRefs.push(encoded.ref);
+        await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
         offset += block.rows.length;
-        if (!block.hasMore) {
-          if (offset !== metadata.rowCount) throw new Error('Java backend ended the query block session before the declared row count');
-          break;
-        }
       }
       if (offset !== metadata.rowCount) throw new Error('Java backend did not return the declared query row count');
-      finishAttempted = true;
-      await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
+      assertCurrent();
       const payload = buildQueryLoadPayloadFromBlocks(this.runtime.model, query, target, metadata, blockRefs);
       if (payload.source.revision !== revision) throw new Error('Workbook data source changed while the query was loading');
       return {
         result: { columns: [...metadata.columns], rows: [], rowCount: metadata.rowCount },
         payload,
-        blockRefs,
       };
-    } catch (error) {
-      if (!finishAttempted) {
-        await this.runtime.api.finishServerQueryBlocks(this.runtime.model.unitId, query.id, session.executionId);
-      }
-      await Promise.all(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
-      throw error;
-    }
-  }
-
-  private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
-    if (!isServerQueryConnector(query.connectorId)) {
-      return executeQueryDefinition(this.runtime.connectors, query);
-    }
-    const request = this.buildServerQueryRequest(query);
-    const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
-    if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
-    return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
+    });
   }
 
   getQuerySnapshot(): {

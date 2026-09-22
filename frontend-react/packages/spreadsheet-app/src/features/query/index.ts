@@ -33,6 +33,7 @@ export interface DataConnector {
 
 export class ConnectorRegistry {
   private readonly connectors = new Map<string, DataConnector>();
+  private readonly pendingUses = new Map<string, Promise<void>>();
 
   register(connector: DataConnector): void {
     if (this.connectors.has(connector.id)) throw new Error(`Connector already registered: ${connector.id}`);
@@ -48,6 +49,22 @@ export class ConnectorRegistry {
 
   list(): DataConnector[] {
     return [...this.connectors.values()];
+  }
+
+  /** A connector owns mutable connection state for one complete operation. */
+  async withConnector<T>(id: string, operation: (connector: DataConnector) => Promise<T>): Promise<T> {
+    const connector = this.get(id);
+    const previous = this.pendingUses.get(id);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.pendingUses.set(id, current);
+    try {
+      await previous;
+      return await operation(connector);
+    } finally {
+      release();
+      if (this.pendingUses.get(id) === current) this.pendingUses.delete(id);
+    }
   }
 }
 

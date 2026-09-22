@@ -57,14 +57,12 @@ function queryMutationRanges(params: QueryLoadMutationPayload): readonly RangeRe
 
 function clearRegionCells(context: CommandContext, range: RangeRef): void {
   const sheet = context.workbook.getSheet(range.sheetId);
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const cell = sheet.cells.get(row, column) as (Record<string, unknown> & { __cellPatch?: unknown }) | undefined;
-      // CellPatch is the sole local-edit overlay; it must survive a source refresh.
-      if (cell?.__cellPatch) continue;
-      sheet.cells.delete(row, column);
-    }
-  }
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    // CellPatch is the sole local-edit overlay; it must survive a source refresh.
+    // Block-backed values have no persisted cells to visit or delete here.
+    if ((cell as { __cellPatch?: unknown }).__cellPatch) return;
+    sheet.cells.delete(row, column);
+  });
 }
 
 function removeCurrentBinding(context: CommandContext, sourceId: string): void {
