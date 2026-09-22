@@ -121,12 +121,27 @@ class PivotDrillDownMutationDescriptorTest {
     void removesTheDetailRegionSourceAndSheetAsOneInverseMutation() throws Exception {
         ObjectNode snapshot = snapshot();
         JsonNode added = descriptor.apply(snapshot, mutation(params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]")));
+        ((ObjectNode) added.path("sheets").get(1)).put("name", "Renamed details");
         ObjectNode removeParams = mapper.createObjectNode().put("targetSheetId", "detail")
                 .put("sourceId", "detail-source").put("regionId", "detail-region");
         JsonNode removed = new PivotDrillDownMutationDescriptor("pivot.drilldown.remove")
                 .apply(added, new OperationMutation("pivot.drilldown.remove", "detail", removeParams));
         assertEquals(1, removed.path("sheets").size());
         assertEquals(0, removed.path("dataModel").path("sources").size());
+    }
+
+    @Test
+    void rejectsInverseRemovalWhileAnotherPivotReferencesTheDetailSource() throws Exception {
+        ObjectNode snapshot = snapshot();
+        JsonNode added = descriptor.apply(snapshot, mutation(params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]")));
+        ((com.fasterxml.jackson.databind.node.ArrayNode) added.path("sheets").get(0).path("pivots"))
+                .addObject().putObject("source").put("kind", "data-source").put("dataSourceId", "detail-source");
+        ObjectNode removeParams = mapper.createObjectNode().put("targetSheetId", "detail")
+                .put("sourceId", "detail-source").put("regionId", "detail-region");
+        PivotDrillDownMutationDescriptor remove = new PivotDrillDownMutationDescriptor("pivot.drilldown.remove");
+        assertThrows(ServiceException.class, () -> remove.apply(added, new OperationMutation("pivot.drilldown.remove", "detail", removeParams)));
+        assertEquals(2, added.path("sheets").size());
+        assertEquals(1, added.path("dataModel").path("sources").size());
     }
 
     @Test

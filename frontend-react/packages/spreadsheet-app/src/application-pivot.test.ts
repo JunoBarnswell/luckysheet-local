@@ -6,6 +6,7 @@ import { createInlineJsonQuery } from './features/query';
 import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
 import { clearPivotResultCache } from './features/pivot/engine';
 import { resolveChartDataFromSources, type ChartPayload } from './features/chart';
+import { setCellPatch, writeCellPatch } from './features/data-source';
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -471,10 +472,12 @@ describe('WorkbookSession PivotTable integration', () => {
       `${region.sourceId}:field:1`,
     ]);
 
+    writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: setCellPatch(11) });
     app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
     app.refreshPivot(pivot.id);
     await waitForPivot(app, pivot.id);
     const result = app['runtime'].pivotResults[pivot.id];
+    assert.equal(result?.grandTotal?.values[0], 13);
     const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
     assert.ok(result?.sourceRowPaths.length);
@@ -483,7 +486,7 @@ describe('WorkbookSession PivotTable integration', () => {
     const detailRegion = detailSheet.dataRegions[0]!;
     assert.notEqual(detailRegion.sourceId, region.sourceId);
     const detailRows = await app['runtime'].dataContent.get(detailRegion.sourceId)!.getRows(0, 2);
-    assert.deepEqual(detailRows.value, [['A', 1], ['B', 2]]);
+    assert.deepEqual(detailRows.value, [['A', 11], ['B', 2]]);
   });
 
   it('loads DataSource Pivot field members only when a picker requests them', async () => {

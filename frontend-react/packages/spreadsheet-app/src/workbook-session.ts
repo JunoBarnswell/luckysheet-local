@@ -74,6 +74,7 @@ import {
   resolveFilterCellValue,
   SHEET_COLUMN_GROWTH_CHUNK,
   SHEET_ROW_GROWTH_CHUNK,
+  isPivotError,
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
@@ -216,6 +217,7 @@ import {
   createWorkbookCellResolver,
   encodeColumnarBlock,
   encodeSheetDataRegion,
+  readCellPatch,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -4906,6 +4908,29 @@ export class WorkbookSession {
       const loaded = await readPivotBlockSource(normalizePivotDefinitionFromCatalog(pivot), query, {
         sourceSheetId: region.sheet.id,
         sourceRowStart: region.entry.headerRow + 1,
+        resolveCellOverlays: () => {
+          const overlays: Array<{ rowIndex: number; fieldOrdinal: number; value: PivotScalar }> = [];
+          region.sheet.cells.forEachInRange(
+            region.entry.headerRow + 1,
+            region.entry.range.endRow,
+            region.entry.range.startColumn,
+            region.entry.range.endColumn,
+            (cell, row, column) => {
+              if (!readCellPatch(cell)) return;
+              const resolved = this.readResolvedCell(region.sheet, row, column);
+              const value = resolved?.formulaValue ?? resolved?.value ?? null;
+              if (!(value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value))) {
+                throw new Error(`Pivot source cell ${region.sheet.id}!${String(row)}:${String(column)} is not a scalar value`);
+              }
+              overlays.push({
+                rowIndex: row - region.entry.headerRow - 1,
+                fieldOrdinal: column - region.entry.range.startColumn,
+                value,
+              });
+            },
+          );
+          return overlays;
+        },
       });
       assertCurrentPreparation();
       if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
@@ -5327,11 +5352,11 @@ export class WorkbookSession {
     blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }>;
   }> {
     const workbook = this.runtime.model;
-    const pivot = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === request.pivotId);
+    const pivot = workbook.getSheet(request.sheetId).pivots.find((entry) => entry.id === request.pivotId);
     if (!pivot) throw new Error(`Unknown PivotTable: ${request.pivotId}`);
     const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
     const assertCurrent = (): void => {
-      const current = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === request.pivotId);
+      const current = workbook.getSheet(request.sheetId).pivots.find((entry) => entry.id === request.pivotId);
       if (this.disposed || this.runtime.model !== workbook || !current
         || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== sourceRevision) {
         throw new Error('Pivot drill-down source changed while preparing details; retry from the current result');
@@ -5408,7 +5433,7 @@ export class WorkbookSession {
     if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
     const assertCurrent = (): void => {
-      const current = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+      const current = workbook.getSheet(owner.id).pivots.find((entry) => entry.id === pivotId);
       if (this.disposed || this.runtime.model !== workbook || !current
         || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== sourceRevision) {
         throw new Error('Pivot drill-down source changed while uploading details; retry from the current result');

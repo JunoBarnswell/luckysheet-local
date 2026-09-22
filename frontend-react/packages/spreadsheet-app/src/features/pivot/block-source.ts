@@ -28,11 +28,19 @@ export interface PivotBlockSourceState {
   error?: string;
 }
 
+export interface PivotBlockSourceCellOverlay {
+  rowIndex: number;
+  fieldOrdinal: number;
+  value: PivotScalar;
+}
+
 export interface PivotBlockSourceReadOptions {
   /** Physical worksheet id used by Show Details source row paths. */
   sourceSheetId?: SheetId;
   /** Physical first data row; callers that store a header pass header row + 1. */
   sourceRowStart?: number;
+  /** Sparse canonical CellPatch values, resolved after all source blocks load. */
+  resolveCellOverlays?: () => readonly PivotBlockSourceCellOverlay[];
   /** Bounded query size; the default aligns with the block row contract. */
   chunkRowCount?: number;
   onState?: (state: PivotBlockSourceState) => void;
@@ -176,11 +184,16 @@ export async function readPivotBlockSource(
         if (values.length !== fields.length) {
           return failure('error', sourceId, `Data source row ${String(startRow + localRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`, state.blockId);
         }
-        fields.forEach((field, ordinal) => {
-          columnValues[ordinal]!.push(values[ordinal] ?? null);
-        });
+        for (let ordinal = 0; ordinal < fields.length; ordinal += 1) columnValues[ordinal]!.push(values[ordinal] ?? null);
         rowPaths.push([rowPath(sourceSheetId, sourceRowStart, startRow + localRow)]);
       }
+    }
+    for (const overlay of options.resolveCellOverlays?.() ?? []) {
+      if (!Number.isSafeInteger(overlay.rowIndex) || overlay.rowIndex < 0 || overlay.rowIndex >= queryManifest.rowCount
+        || !Number.isSafeInteger(overlay.fieldOrdinal) || overlay.fieldOrdinal < 0 || overlay.fieldOrdinal >= fields.length) {
+        throw new Error('Pivot source CellPatch overlay is outside the canonical data region');
+      }
+      columnValues[overlay.fieldOrdinal]![overlay.rowIndex] = overlay.value;
     }
     const readyState: PivotBlockSourceState = {
       status: 'ready',

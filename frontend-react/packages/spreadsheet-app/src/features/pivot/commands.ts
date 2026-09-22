@@ -18,6 +18,7 @@ import type {
   TableScalar,
 } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from '../data-source/content-query';
+import { applyCellPatch, readCellPatch, type CellPatch } from '../data-source/resolved-cell';
 import { PivotDrillDownError } from './drill-down-error';
 import { assertPivotDefinition, createPivotDrillDownSheetName } from './panel-state';
 import { buildPivotGridProjection, detectPivotCollision, getPivotOccupiedRange, getPivotRevisionKey, getPivotSourceRanges, normalizePivotDefinitionFromCatalog } from './engine';
@@ -334,22 +335,54 @@ export async function readPivotDrillDownRows(
     const region = workbook.getSheets().flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
       .find(({ entry }) => entry.sourceId === sourceId);
     if (!query || !region) throw new Error(`Pivot drill-down source ${sourceId} is unavailable`);
+    const manifest = query.manifest;
+    const canonicalSource = workbook.getDataSource(sourceId);
+    const manifestRange = manifest.sourceRange;
+    const regionRange = region.entry.range;
+    if (canonicalSource.revision !== manifest.revision || manifest.id !== sourceId || manifest.sourceSheetId !== region.sheet.id
+      || manifestRange === undefined || manifestRange.sheetId !== regionRange.sheetId
+      || manifestRange.startRow !== regionRange.startRow || manifestRange.endRow !== regionRange.endRow
+      || manifestRange.startColumn !== regionRange.startColumn || manifestRange.endColumn !== regionRange.endColumn
+      || region.entry.headerRow !== manifestRange.startRow || region.entry.revision !== manifest.revision
+      || manifest.rowCount !== manifestRange.endRow - region.entry.headerRow
+      || manifest.fields.length !== manifestRange.endColumn - manifestRange.startColumn + 1
+      || manifest.fields.length !== plan.columns.length) {
+      throw new Error(`Pivot drill-down source ${sourceId} has inconsistent manifest and sheet-region metadata`);
+    }
     const logicalRows = plan.records.map((record) => {
       const path = record.paths.get('__single-source__');
       if (!path || path.sheetId !== region.sheet.id) throw new Error('Pivot drill-down provenance does not match its data region');
       const logicalRow = path.row - region.entry.headerRow - 1;
-      if (!Number.isSafeInteger(logicalRow) || logicalRow < 0 || logicalRow >= query.manifest.rowCount) {
+      if (!Number.isSafeInteger(logicalRow) || logicalRow < 0 || logicalRow >= manifest.rowCount) {
         throw new Error(`Pivot drill-down source row is outside data source ${sourceId}`);
       }
       return logicalRow;
     });
     const selected = await readSelectedDataSourceRows(query, logicalRows);
+    if (dataContent.get(sourceId) !== query || workbook.getDataSource(sourceId).revision !== manifest.revision) {
+      throw new Error(`Pivot drill-down source ${sourceId} changed while reading details`);
+    }
+    const selectedSheetRows = new Set(plan.records.map((record) => record.paths.get('__single-source__')!.row));
+    const patches = new Map<number, Map<number, CellPatch>>();
+    region.sheet.cells.forEachInRows(selectedSheetRows, (cell, row, column) => {
+      if (column < manifestRange.startColumn || column > manifestRange.endColumn) return;
+      const patch = readCellPatch(cell);
+      if (!patch) throw new Error(`Data region ${region.entry.id} contains a non-canonical cell overlay`);
+      const rowPatches = patches.get(row) ?? new Map<number, CellPatch>();
+      rowPatches.set(column, patch);
+      patches.set(row, rowPatches);
+    });
     return {
       headers,
-      rows: logicalRows.map((row) => {
+      rows: logicalRows.map((row, index) => {
         const values = selected.get(row);
         if (!values) throw new Error(`Pivot drill-down source row ${String(row)} was not loaded`);
-        return plan.columns.map((column) => values[column.column - column.range.startColumn] ?? null);
+        const path = plan.records[index]!.paths.get('__single-source__')!;
+        return plan.columns.map((column) => {
+          const value = values[column.column - column.range.startColumn] ?? null;
+          const resolved = applyCellPatch({ value }, patches.get(path.row)?.get(column.column));
+          return drillDownScalar(sourceCellValue(resolved));
+        });
       }),
     };
   }
@@ -1010,18 +1043,23 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       id: 'pivot.drilldown.remove',
       handler: (item, context) => {
     const target = context.workbook.getSheet(item.params.targetSheetId);
-    if (!target.dataRegions.some((region) => region.id === item.params.regionId && region.sourceId === item.params.sourceId)) {
+    if (context.workbook.getSheets().length <= 1) throw new Error('A workbook must keep at least one worksheet');
+    if (target.dataRegions.length !== 1
+      || target.dataRegions[0]?.id !== item.params.regionId
+      || target.dataRegions[0]?.sourceId !== item.params.sourceId) {
       throw new Error(`Pivot drill-down detail binding is missing: ${item.params.regionId}`);
     }
     context.workbook.getDataSource(item.params.sourceId);
     if (context.workbook.getSheets().some((sheet) => sheet.id !== target.id
-      && sheet.dataRegions.some((region) => region.sourceId === item.params.sourceId))) {
+      && (sheet.dataRegions.some((region) => region.sourceId === item.params.sourceId)
+        || sheet.pivots.some((pivot) => pivot.source.kind === 'data-source' && pivot.source.dataSourceId === item.params.sourceId)))) {
       throw new Error(`Pivot drill-down data source is referenced by another sheet: ${item.params.sourceId}`);
     }
-    const regionIndex = target.dataRegions.findIndex((region) => region.id === item.params.regionId);
-    target.removeDataRegionAt(regionIndex);
-    context.workbook.removeDataSource(item.params.sourceId);
+    if ([...context.workbook.dataModel.tables.values()].some((table) => table.sourceId === item.params.sourceId)) {
+      throw new Error(`Pivot drill-down data source is referenced by a workbook table: ${item.params.sourceId}`);
+    }
     context.workbook.removeSheet(item.params.targetSheetId);
+    context.workbook.removeDataSource(item.params.sourceId);
   },
       metadata: {
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },

@@ -229,9 +229,6 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         if (sheets.size() <= 1) throw ServiceException.validation("A workbook must keep at least one worksheet");
         for (int index = 0; index < sheets.size(); index++) {
             if (sheetId.equals(sheets.get(index).path("id").asText())) {
-                if (!sheets.get(index).path("name").asText().startsWith("Drill ")) {
-                    throw ServiceException.forbidden("Only a server-created pivot drill-down sheet may be removed by this mutation");
-                }
                 ArrayNode regions = SnapshotMutationSupport.array((ObjectNode) sheets.get(index), "dataRegions");
                 ObjectNode region = SnapshotMutationSupport.requireById(regions, regionId, "Pivot drill-down data region");
                 if (!sourceId.equals(region.path("sourceId").asText()) || regions.size() != 1) {
@@ -246,6 +243,17 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
                         if (sourceId.equals(otherRegion.path("sourceId").asText())) {
                             throw ServiceException.conflict("Pivot drill-down data source is referenced by another sheet");
                         }
+                    }
+                    for (JsonNode otherPivot : SnapshotMutationSupport.array((ObjectNode) rawSheet, "pivots")) {
+                        if ("data-source".equals(otherPivot.path("source").path("kind").asText())
+                                && sourceId.equals(otherPivot.path("source").path("dataSourceId").asText())) {
+                            throw ServiceException.conflict("Pivot drill-down data source is referenced by another PivotTable");
+                        }
+                    }
+                }
+                for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
+                    if (sourceId.equals(table.path("sourceId").asText())) {
+                        throw ServiceException.conflict("Pivot drill-down data source is referenced by a workbook table");
                     }
                 }
                 SnapshotMutationSupport.removeById(sources, sourceId);
