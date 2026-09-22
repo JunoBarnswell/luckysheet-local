@@ -759,6 +759,7 @@ export interface LocalObjectInsertInput {
 }
 
 export class WorkbookSession {
+  private static readonly QUERY_BLOCK_TRANSFER_CONCURRENCY = 4;
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
   private readonly permission: PermissionService;
@@ -7311,20 +7312,45 @@ export class WorkbookSession {
         rowCount: session.rowCount,
         blockRowCount: session.blockRowCount,
       };
-      let offset = 0;
-      while (offset < metadata.rowCount) {
-        assertCurrent();
-        const block = await this.runtime.api.getServerQueryBlock(unitId, query.id, session.executionId, offset);
-        if (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== offset) throw new Error('Java backend returned an out-of-order query block');
-        if (block.rows.length !== Math.min(metadata.blockRowCount, metadata.rowCount - offset)
-          || block.hasMore !== (offset + block.rows.length < metadata.rowCount)) throw new Error('Java backend returned an invalid query block size or continuation flag');
-        const encoded = await encodeQueryLoadBlock(sourceId, revision, metadata, offset, block.rows);
-        assertCurrent();
-        blockRefs.push(encoded.ref);
-        await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
-        offset += block.rows.length;
+      const offsets = Array.from(
+        { length: Math.ceil(metadata.rowCount / metadata.blockRowCount) },
+        (_unused, index) => index * metadata.blockRowCount,
+      );
+      let nextOffset = 0;
+      let failure: unknown;
+      const transfer = async (): Promise<void> => {
+        while (failure === undefined) {
+          const index = nextOffset;
+          nextOffset += 1;
+          if (index >= offsets.length) return;
+          const offset = offsets[index]!;
+          try {
+            assertCurrent();
+            const block = await this.runtime.api.getServerQueryBlock(unitId, query.id, session.executionId, offset);
+            if (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== offset) throw new Error('Java backend returned an out-of-order query block');
+            if (block.rows.length !== Math.min(metadata.blockRowCount, metadata.rowCount - offset)
+              || block.hasMore !== (offset + block.rows.length < metadata.rowCount)) throw new Error('Java backend returned an invalid query block size or continuation flag');
+            const encoded = await encodeQueryLoadBlock(sourceId, revision, metadata, offset, block.rows);
+            assertCurrent();
+            // Record ownership before the remote write: failure cleanup must
+            // also remove a block that reached local persistence first.
+            blockRefs.push(encoded.ref);
+            await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
+            assertCurrent();
+          } catch (error) {
+            if (failure === undefined) failure = error;
+            return;
+          }
+        }
+      };
+      await Promise.all(Array.from(
+        { length: Math.min(WorkbookSession.QUERY_BLOCK_TRANSFER_CONCURRENCY, offsets.length) },
+        () => transfer(),
+      ));
+      if (failure !== undefined) throw failure;
+      if (blockRefs.length !== offsets.length) {
+        throw new Error('Java backend did not return the declared query block count');
       }
-      if (offset !== metadata.rowCount) throw new Error('Java backend did not return the declared query row count');
       assertCurrent();
       const payload = buildQueryLoadPayloadFromBlocks(this.runtime.model, query, target, metadata, blockRefs);
       if (payload.source.revision !== revision) throw new Error('Workbook data source changed while the query was loading');
