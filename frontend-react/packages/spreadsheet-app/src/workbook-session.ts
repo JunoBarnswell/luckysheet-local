@@ -84,7 +84,7 @@ import type {
 } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
-import { buildPivotGridProjection, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
+import { buildPivotGridProjection, clearPivotResultCache, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -5279,7 +5279,7 @@ export class WorkbookSession {
     this.notify(`Drill-down sheet created for ${label}`);
     this.refresh();
   }
-  private recomputePivotResult(pivotId: string): void {
+  private recomputePivotResult(pivotId: string, force = false): void {
     // A source block load publishes several loading/ready notifications while
     // one calculation is reading the same source. Keep the calculation
     // single-flight; its completion revision check below will schedule a new
@@ -5295,7 +5295,16 @@ export class WorkbookSession {
       delete this.runtime.pivotErrors[pivotId];
       return;
     }
-    const retained = getLastValidPivotResult(this.runtime.model, pivotId);
+    if (force) {
+      // An explicit refresh is a user-requested recalculation even when the
+      // current proof still matches. Drop both derived caches so the
+      // projection publishes a truthful loading state instead of silently
+      // presenting the old result while the worker runs.
+      delete this.runtime.pivotResults[pivotId];
+      clearPivotResultCache(this.runtime.model, pivotId);
+      delete this.runtime.pivotErrors[pivotId];
+    }
+    const retained = force ? undefined : getLastValidPivotResult(this.runtime.model, pivotId);
     if (pivotResultMatchesRevision(this.runtime.model, pivot, retained, this.runtime.formula)) {
       this.runtime.pivotResults[pivotId] = retained;
       delete this.runtime.pivotErrors[pivotId];
@@ -5306,7 +5315,7 @@ export class WorkbookSession {
       const currentPivot = currentOwner?.pivots.find((entry) => entry.id === pivotId);
       if (!currentPivot) return;
       if (!pivotResultMatchesRevision(this.runtime.model, currentPivot, result, this.runtime.formula)) {
-        this.recomputePivotResult(pivotId);
+        this.recomputePivotResult(pivotId, force);
         return;
       }
       this.runtime.pivotResults[pivotId] = result;
@@ -5337,6 +5346,7 @@ export class WorkbookSession {
         }
       }
     }
+    const force = trigger.kind === 'explicit' || trigger.kind === 'explicit-all';
     for (const pivotId of refreshIds) {
       const prepared = this.pendingPivotCommitResults.get(pivotId);
       const pivot = pivots.find((entry) => entry.id === pivotId);
@@ -5345,7 +5355,7 @@ export class WorkbookSession {
         this.runtime.pivotResults[pivotId] = prepared;
         delete this.runtime.pivotErrors[pivotId];
         this.invalidateSheetProjection(pivot.target.sheetId, ['content', 'formulaResults', 'dataRules']);
-      } else this.recomputePivotResult(pivotId);
+      } else this.recomputePivotResult(pivotId, force);
     }
     if (refreshIds.size > 0) {
       for (const pivot of pivots) {

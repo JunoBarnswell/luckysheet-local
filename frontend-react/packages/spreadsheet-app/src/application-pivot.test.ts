@@ -518,6 +518,26 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[onOpen.id]?.refresh.status, 'stale');
   });
 
+  it('forces an explicit refresh through a truthful loading state even when the proof is current', async () => {
+    const taskPort = new DeferredCalculatePort();
+    const app = new WorkbookSession({ pivotTaskPort: taskPort });
+    const { pivot } = seed(app);
+    await app.addPivot(pivot);
+    await waitForPivot(app, pivot.id);
+
+    taskPort.delayNextCalculate = true;
+    app.refreshPivot(pivot.id);
+    await taskPort.waitForDeferred();
+
+    assert.equal(app['runtime'].pivotResults[pivot.id], undefined);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'refreshing');
+
+    taskPort.releaseDeferred();
+    await waitForPivot(app, pivot.id);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.refresh.status, 'ready');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+  });
+
   it('discards an obsolete worker result and recalculates from the committed source revision', async () => {
     const taskPort = new DeferredCalculatePort();
     const app = new WorkbookSession({ pivotTaskPort: taskPort });
