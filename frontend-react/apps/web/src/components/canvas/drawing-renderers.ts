@@ -867,13 +867,14 @@ function drawChartText(context: CanvasRenderingContext2D, text: string, x: numbe
 
 function chartScale(value: number, axis: NonNullable<ChartLayout['valueAxis']>): number {
   const axisModel = axis.model;
+  const project = (ratio: number): number => axisModel.reverseOrder ? 1 - ratio : ratio;
   if (axisModel.scale === 'logarithmic') {
     const base = axisModel.logBase ?? 10;
     const min = Math.log(Math.max(Number.MIN_VALUE, axis.minimum)) / Math.log(base);
     const max = Math.log(Math.max(Number.MIN_VALUE, axis.maximum)) / Math.log(base);
-    return (Math.log(Math.max(Number.MIN_VALUE, value)) / Math.log(base) - min) / Math.max(Number.MIN_VALUE, max - min);
+    return project((Math.log(Math.max(Number.MIN_VALUE, value)) / Math.log(base) - min) / Math.max(Number.MIN_VALUE, max - min));
   }
-  return (value - axis.minimum) / Math.max(Number.MIN_VALUE, axis.maximum - axis.minimum);
+  return project((value - axis.minimum) / Math.max(Number.MIN_VALUE, axis.maximum - axis.minimum));
 }
 
 function drawChartMarker(context: CanvasRenderingContext2D, x: number, y: number, marker: ChartMarkerModel | undefined, color: string): void {
