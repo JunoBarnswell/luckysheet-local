@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
 import { type PivotControlConnection, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
-import { buildPivotGroupedFilterMembers } from '@react-sheets/spreadsheet-app';
+import { buildPivotGroupedFilterMembers, movePivotLayoutField, movePivotValuePlacement, removePivotLayoutPlacement, replacePivotValuePlacement, upsertPivotFilter } from '@react-sheets/spreadsheet-app';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
 import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
@@ -28,50 +28,9 @@ export interface PivotPanelProps {
 }
 
 function cloneLayout(layout: PivotLayout): PivotLayout { return structuredClone(layout); }
-function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
-  const next = cloneLayout(layout);
-  next.filters = next.filters.filter((field) => field.fieldId !== fieldId);
-  next.columns = next.columns.filter((field) => field.fieldId !== fieldId);
-  next.rows = next.rows.filter((field) => field.fieldId !== fieldId);
-  next.values = next.values.filter((field) => field.fieldId !== fieldId);
-  return next;
-}
-function removeValueField(layout: PivotLayout, valueId: string): PivotLayout {
-  const next = cloneLayout(layout);
-  next.values = next.values.filter((field) => field.valueId !== valueId);
-  return next;
-}
-function nextValueId(layout: PivotLayout, fieldId: string): string {
-  const base = `value:${fieldId}`;
-  if (!layout.values.some((field) => field.valueId === base)) return base;
-  let index = 2;
-  while (layout.values.some((field) => field.valueId === `${base}:${index}`)) index += 1;
-  return `${base}:${index}`;
-}
-function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area, index: number): PivotLayout {
-  const next = cloneLayout(layout);
-  if (area !== 'values') {
-    next.filters = next.filters.filter((entry) => entry.fieldId !== field.fieldId);
-    next.columns = next.columns.filter((entry) => entry.fieldId !== field.fieldId);
-    next.rows = next.rows.filter((entry) => entry.fieldId !== field.fieldId);
-  }
-  if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', family: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
-  else if (area === 'columns') next.columns.splice(index, 0, { fieldId: field.fieldId });
-  else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
-  else next.values.splice(index, 0, { valueId: nextValueId(next, field.fieldId), fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
-  return next;
-}
-function moveValueField(layout: PivotLayout, valueId: string, index: number): PivotLayout {
-  const next = cloneLayout(layout);
-  const currentIndex = next.values.findIndex((field) => field.valueId === valueId);
-  if (currentIndex < 0) throw new Error(`Unknown Pivot Values placement: ${valueId}`);
-  const [value] = next.values.splice(currentIndex, 1);
-  next.values.splice(Math.max(0, Math.min(index, next.values.length)), 0, value!);
-  return next;
-}
-function filterStates(layout: PivotLayout): Record<string, PivotManualFilterState> {
+function filterStates(layout: PivotLayout, scope: 'report' | 'field'): Record<string, PivotManualFilterState> {
   const result: Record<string, PivotManualFilterState> = {};
-  for (const filter of layout.filters) if (filter.kind === 'manual') result[filter.fieldId] = { mode: filter.mode, memberKeys: filter.memberKeys };
+  for (const filter of layout.filters) if (filter.kind === 'manual' && (filter.scope ?? 'report') === scope) result[filter.fieldId] = { mode: filter.mode, memberKeys: filter.memberKeys };
   return result;
 }
 function placementMap(layout: PivotLayout): ReadonlyMap<string, PivotFieldPlacement> {
@@ -122,18 +81,24 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const [draft, setDraft] = useState<PivotLayout | null>(pivot ? cloneLayout(pivot.layout) : null);
   const [dirty, setDirty] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [layoutError, setLayoutError] = useState<string>();
   const [fieldPaneLayout, setFieldPaneLayout] = useState<PivotFieldPaneLayout>(DEFAULT_PIVOT_FIELD_PANE_LAYOUT);
   const [fieldPaneSplit, setFieldPaneSplit] = useState(45);
-  useEffect(() => { setDraft(pivot ? cloneLayout(pivot.layout) : null); setDelayUpdate(pivot ? shouldDeferPivotLayoutUpdates(pivot) : false); setDirty(false); }, [pivot?.id]);
+  const pivotIdRef = useRef(pivot?.id);
+  const layoutSubmissionRef = useRef<symbol | undefined>(undefined);
+  pivotIdRef.current = pivot?.id;
+  useEffect(() => { layoutSubmissionRef.current = undefined; setDraft(pivot ? cloneLayout(pivot.layout) : null); setDelayUpdate(pivot ? shouldDeferPivotLayoutUpdates(pivot) : false); setDirty(false); setApplying(false); setLayoutError(undefined); }, [pivot?.id]);
+  useEffect(() => { if (!dirty) setDraft(pivot ? cloneLayout(pivot.layout) : null); }, [dirty, pivot?.layout]);
   const layout = delayUpdate && draft ? draft : pivot?.layout;
   const disabled = Boolean(state?.disabled || !pivot || !layout || applying);
 
-  const filters = layout?.filters.filter((field) => field.scope !== 'field').map((field) => field.fieldId) ?? [];
+  const filters = layout ? [...new Set(layout.filters.filter((field) => field.scope !== 'field').map((field) => field.fieldId))] : [];
   const columns = layout?.columns.map((field) => field.fieldId) ?? [];
   const rows = layout?.rows.map((field) => field.fieldId) ?? [];
   const values = layout?.values ?? [];
   const selected = useMemo(() => new Set([...filters, ...columns, ...rows, ...values.map((field) => field.fieldId)]), [columns, filters, rows, values]);
-  const currentFilterStates = useMemo(() => layout ? filterStates(layout) : {}, [layout]);
+  const reportFilterStates = useMemo(() => layout ? filterStates(layout, 'report') : {}, [layout]);
+  const fieldFilterStates = useMemo(() => layout ? filterStates(layout, 'field') : {}, [layout]);
   const placements = useMemo(() => layout ? placementMap(layout) : new Map<string, PivotFieldPlacement>(), [layout]);
   const showFields = fieldPaneLayout !== 'areas-only';
   const showAreas = fieldPaneLayout !== 'fields-only';
@@ -167,20 +132,37 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   if (state?.error && !pivot) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="error" description={state.error || pivotText(locale, 'error')} /></Panel>;
   if (!pivot || !layout || state?.empty || fields.length === 0) return <Panel className="h-full border-0 shadow-none"><StatePanel kind={state?.disabled ? 'disabled' : 'empty'} description={state?.emptyMessage ?? pivotText(locale, 'empty')} /></Panel>;
 
+  const submitLayout = async (next: PivotLayout): Promise<boolean> => {
+    if (layoutSubmissionRef.current) return false;
+    const submittedPivotId = pivot?.id;
+    const submission = Symbol('pivot-layout-submission');
+    layoutSubmissionRef.current = submission;
+    setLayoutError(undefined);
+    setApplying(true);
+    try {
+      if (!callbacks?.onLayoutReplace) throw new Error('Pivot layout update callback is unavailable');
+      const accepted = await callbacks.onLayoutReplace(cloneLayout(next));
+      if (accepted === false) throw new Error('Pivot layout update was rejected');
+      return pivotIdRef.current === submittedPivotId;
+    } catch (error) {
+      if (pivotIdRef.current === submittedPivotId) setLayoutError(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      if (layoutSubmissionRef.current === submission) {
+        layoutSubmissionRef.current = undefined;
+        if (pivotIdRef.current === submittedPivotId) setApplying(false);
+      }
+    }
+  };
   const applyLayout = (next: PivotLayout) => {
-    if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); }
-    else void callbacks?.onLayoutReplace(next);
+    if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); setLayoutError(undefined); }
+    else void submitLayout(next);
   };
   const applyDraft = async (): Promise<boolean> => {
     if (!draft || applying) return false;
-    setApplying(true);
-    try {
-      const accepted = await callbacks?.onLayoutReplace(draft);
-      if (accepted !== false) setDirty(false);
-      return accepted !== false;
-    } finally {
-      setApplying(false);
-    }
+    const accepted = await submitLayout(draft);
+    if (accepted && pivotIdRef.current === pivot?.id) setDirty(false);
+    return accepted;
   };
   const toggleDeferredUpdate = async (enabled: boolean) => {
     if (!enabled && dirty && !await applyDraft()) return;
@@ -191,13 +173,21 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const idsFor = (area: Area): readonly string[] => area === 'filters' ? filters : area === 'columns' ? columns : area === 'rows' ? rows : values.map((field) => field.valueId);
   const changeArea = (fieldId: string, area: Area, index: number) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
-    if (field) applyLayout(moveField(layout, field, area, index));
+    if (field) applyLayout(movePivotLayoutField(layout, field, area, index));
   };
-  const removeFromArea = (area: Area, placementId: string) => applyLayout(area === 'values' ? removeValueField(layout, placementId) : removeField(layout, placementId));
-  const moveWithinArea = (area: Area, placementId: string, index: number) => applyLayout(area === 'values' ? moveValueField(layout, placementId, index) : (() => { const field = fields.find((candidate) => candidate.fieldId === placementId); return field ? moveField(layout, field, area, index) : layout; })());
+  const removeFromArea = (area: Area, placementId: string) => applyLayout(removePivotLayoutPlacement(layout, area, placementId));
+  const moveWithinArea = (area: Area, placementId: string, index: number) => applyLayout(area === 'values' ? movePivotValuePlacement(layout, placementId, index) : (() => { const field = fields.find((candidate) => candidate.fieldId === placementId); return field ? movePivotLayoutField(layout, field, area, index) : layout; })());
   const drop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => { event.preventDefault(); const valueId = event.dataTransfer.getData('application/x-pivot-value'); if (valueId && area === 'values') { moveWithinArea(area, valueId, index ?? idsFor(area).length); return; } const fieldId = event.dataTransfer.getData('application/x-pivot-field'); if (fieldId) changeArea(fieldId, area, index ?? idsFor(area).length); };
   const toggle = (fieldId: string, checked: boolean) => {
-    if (!checked) { applyLayout(removeField(layout, fieldId)); return; }
+    if (!checked) {
+      let next = cloneLayout(layout);
+      for (const area of PIVOT_FIELD_AREAS) {
+        const ids = area === 'values' ? next.values.filter((value) => value.fieldId === fieldId).map((value) => value.valueId) : [fieldId];
+        for (const id of ids) next = removePivotLayoutPlacement(next, area, id);
+      }
+      applyLayout(next);
+      return;
+    }
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     if (!field) return;
     const area = defaultPivotFieldArea(field);
@@ -206,29 +196,27 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const toggleVisible = (fieldIds: readonly string[], checked: boolean) => {
     let next = cloneLayout(layout);
     for (const fieldId of fieldIds) {
-      next = removeField(next, fieldId);
+      for (const area of PIVOT_FIELD_AREAS) {
+        const ids = area === 'values' ? next.values.filter((value) => value.fieldId === fieldId).map((value) => value.valueId) : [fieldId];
+        for (const id of ids) next = removePivotLayoutPlacement(next, area, id);
+      }
       if (!checked) continue;
       const field = fields.find((candidate) => candidate.fieldId === fieldId);
       if (!field) continue;
       const area = defaultPivotFieldArea(field);
       const index = area === 'filters' ? next.filters.length : area === 'columns' ? next.columns.length : area === 'rows' ? next.rows.length : next.values.length;
-      next = moveField(next, field, area, index);
+      next = movePivotLayoutField(next, field, area, index);
     }
     applyLayout(next);
   };
-  const filter = (fieldId: string, nextFilter: PivotManualFilterState) => {
-    const next = cloneLayout(layout);
-    const scope = rows.includes(fieldId) || columns.includes(fieldId) ? 'field' as const : next.filters.find((entry) => entry.kind === 'manual' && entry.fieldId === fieldId)?.scope ?? 'report' as const;
-    const index = next.filters.findIndex((entry) => entry.kind === 'manual' && entry.fieldId === fieldId && (entry.scope ?? 'report') === scope);
+  const filter = (fieldId: string, nextFilter: PivotManualFilterState, scope: 'report' | 'field') => {
     const criterion = { kind: 'manual' as const, family: 'manual' as const, fieldId, scope, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] };
-    if (index >= 0) next.filters[index] = criterion;
-    else next.filters.push(criterion);
-    applyLayout(next);
+    applyLayout(upsertPivotFilter(layout, criterion));
   };
   const sort = (fieldId: string, nextSort: Parameters<NonNullable<PivotPanelCallbacks['onSortChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry) });
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
   const subtotal = (fieldId: string, nextSubtotal: Parameters<NonNullable<PivotPanelCallbacks['onSubtotalChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry) });
-  const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.valueId === value.valueId ? value : entry) });
+  const valueChange = (value: PivotValueField) => applyLayout(replacePivotValuePlacement(layout, value));
   return (
     <Panel className="flex h-full max-h-full min-h-0 flex-col overflow-hidden rounded-none border-0 bg-white shadow-none" data-testid="pivot-field-list">
       <Inline gap="sm" className="h-14 w-full shrink-0 justify-between px-4">
@@ -236,6 +224,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         <Inline gap="sm"><Box className="rounded-full border-2 border-[#a529ff] px-3 py-0.5 text-[#8b20e8]"><Text size="sm" weight="bold">AI</Text></Box>{onClose ? <Button aria-label={pivotText(locale, 'close')} icon="x" iconOnly size="sm" variant="ghost" onClick={onClose} /> : null}</Inline>
       </Inline>
       {state?.error ? <Box as="section" role="alert" className="mx-4 mb-2 shrink-0 rounded border border-red-300 bg-red-50 px-3 py-2"><Text size="xs" className="text-red-700">{state.error}</Text></Box> : null}
+      {layoutError ? <Box as="section" role="alert" className="mx-4 mb-2 shrink-0 rounded border border-red-300 bg-red-50 px-3 py-2"><Text size="xs" className="text-red-700">{layoutError}</Text></Box> : null}
       <Stack gap="sm" className="min-h-0 flex-1 overflow-hidden px-4 pb-2">
         <Inline gap="sm" className="h-9 shrink-0 justify-between border-b border-slate-100 pb-1">
           <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost" icon="chevron-down" className="justify-start px-1">{pivotText(locale, 'formatAndOptions')}</Button>}><PivotFormatOptions locale={locale} disabled={disabled} presentation={pivot.presentation} refreshPolicy={pivot.refreshPolicy} onPresentationChange={callbacks?.onPresentationChange} onDisplayOptionsChange={callbacks?.onDisplayOptionsChange} onRefreshPolicyChange={callbacks?.onRefreshPolicyChange} /></DropdownMenu>
@@ -267,7 +256,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
             <Box className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
               <Inline gap="xs" className="mb-1 h-7 shrink-0"><Text size="sm" weight="medium">{pivotText(locale, 'dragFields')}</Text><Text size="xs" tone="subtle" className="ml-auto">{pivotText(locale, 'dragOrChoose')}</Text></Inline>
               <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-[minmax(0,1fr)_minmax(0,1fr)]'} h-full min-h-0 flex-1 gap-1`}>
-                {PIVOT_FIELD_AREAS.map((area) => <PivotFieldArea key={`${activePivotId ?? pivot?.id ?? 'none'}:${area}`} locale={locale} area={area} fields={fields} baseFields={fields.filter((field) => idsFor('rows').includes(field.fieldId) || idsFor('columns').includes(field.fieldId))} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onLoadFieldValues={callbacks?.onLoadFieldValues} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + direction)} onSort={sort} onValueChange={valueChange} />)}
+                {PIVOT_FIELD_AREAS.map((area) => <PivotFieldArea key={`${activePivotId ?? pivot?.id ?? 'none'}:${area}`} locale={locale} area={area} fields={fields} baseFields={fields.filter((field) => idsFor('rows').includes(field.fieldId) || idsFor('columns').includes(field.fieldId))} fieldIds={idsFor(area)} placements={placements} filterStates={area === 'filters' ? reportFilterStates : fieldFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={(fieldId, state) => filter(fieldId, state, area === 'filters' ? 'report' : 'field')} onLoadFieldValues={callbacks?.onLoadFieldValues} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + (direction < 0 ? -1 : 2))} onSort={sort} onValueChange={valueChange} />)}
               </Box>
             </Box>
           ) : null}

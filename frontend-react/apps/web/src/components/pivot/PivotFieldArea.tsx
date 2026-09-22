@@ -117,13 +117,21 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
     const apply = () => {
       const nextUnits = dateUnits.filter((unit) => units.includes(unit));
       if (!nextUnits.length) return;
-      onGroup(field.fieldId, { kind: 'date', unit: nextUnits[0]!, units: nextUnits, ...(start === '' ? {} : { start: Number.isNaN(Number(start)) ? start : Number(start) }), ...(end === '' ? {} : { end: Number.isNaN(Number(end)) ? end : Number(end) }), startOfWeek: Number(startOfWeek) as 0 | 1 | 2 | 3 | 4 | 5 | 6 });
+      const normalizedStart = start.trim();
+      const normalizedEnd = end.trim();
+      const parsedStart = normalizedStart === '' ? undefined : new Date(normalizedStart);
+      const parsedEnd = normalizedEnd === '' ? undefined : new Date(normalizedEnd);
+      if ((parsedStart && Number.isNaN(parsedStart.getTime())) || (parsedEnd && Number.isNaN(parsedEnd.getTime()))
+        || (parsedStart && parsedEnd && parsedStart > parsedEnd)) return;
+      const weekStart = Number(startOfWeek);
+      if (!Number.isSafeInteger(weekStart) || weekStart < 0 || weekStart > 6) return;
+      onGroup(field.fieldId, { kind: 'date', unit: nextUnits[0]!, units: nextUnits, ...(normalizedStart === '' ? {} : { start: normalizedStart }), ...(normalizedEnd === '' ? {} : { end: normalizedEnd }), startOfWeek: weekStart as 0 | 1 | 2 | 3 | 4 | 5 | 6 });
     };
     return <Stack gap="xs" className="border-t border-slate-100 pt-1">
       <Text size="xs" weight="semibold">{pivotText(locale, 'groupBy')}</Text>
       <Inline gap="xs" className="flex-wrap">{dateUnits.map((unit) => <CheckToggle key={unit} label={pivotText(locale, dateUnitKeys[unit])} checked={units.includes(unit)} onChange={(event) => setUnits((currentUnits) => event.target.checked ? [...currentUnits, unit] : currentUnits.filter((candidate) => candidate !== unit))} />)}</Inline>
       <Inline gap="xs"><TextInput aria-label={pivotText(locale, 'groupStart')} placeholder={pivotText(locale, 'groupStart')} value={start} onChange={(event) => setStart(event.target.value)} /><TextInput aria-label={pivotText(locale, 'groupEnd')} placeholder={pivotText(locale, 'groupEnd')} value={end} onChange={(event) => setEnd(event.target.value)} /></Inline>
-      <Select aria-label={pivotText(locale, 'weekStarts')} sizeVariant="sm" value={startOfWeek} onChange={(event) => setStartOfWeek(event.target.value)}><option value="0">{pivotText(locale, 'sunday')}</option><option value="1">{pivotText(locale, 'monday')}</option><option value="6">{pivotText(locale, 'saturday')}</option></Select>
+      <Select aria-label={pivotText(locale, 'weekStarts')} sizeVariant="sm" value={startOfWeek} onChange={(event) => setStartOfWeek(event.target.value)}>{[0, 1, 2, 3, 4, 5, 6].map((day) => <option key={day} value={day}>{new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(2024, 0, 7 + day)))}</option>)}</Select>
       <Inline gap="xs"><Button size="xs" variant="soft" disabled={units.length === 0} onClick={apply}>{pivotText(locale, 'applyGroup')}</Button><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button></Inline>
     </Stack>;
   }
@@ -136,7 +144,8 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
       const parsedInterval = Number(interval);
       const parsedStart = start === '' ? undefined : Number(start);
       const parsedEnd = end === '' ? undefined : Number(end);
-      if (!Number.isFinite(parsedInterval) || parsedInterval <= 0 || (parsedStart !== undefined && !Number.isFinite(parsedStart)) || (parsedEnd !== undefined && !Number.isFinite(parsedEnd))) return;
+      if (!Number.isFinite(parsedInterval) || parsedInterval <= 0 || (parsedStart !== undefined && !Number.isFinite(parsedStart)) || (parsedEnd !== undefined && !Number.isFinite(parsedEnd))
+        || (parsedStart !== undefined && parsedEnd !== undefined && parsedStart > parsedEnd)) return;
       onGroup(field.fieldId, { kind: 'number', interval: parsedInterval, ...(parsedStart === undefined ? {} : { start: parsedStart }), ...(parsedEnd === undefined ? {} : { end: parsedEnd }) });
     };
     return <Stack gap="xs" className="border-t border-slate-100 pt-1">
@@ -157,8 +166,9 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
     if (selected.length < 2) return;
     const selectedSet = new Set(selected.map(pivotMemberKey));
     const retained = (manual?.groups ?? []).map((group) => ({ ...group, items: group.items.filter((item) => !selectedSet.has(pivotMemberKey(item))) })).filter((group) => group.items.length > 0);
-    const groupId = `group:${field.fieldId}:${Date.now().toString(36)}`;
-    onGroup(field.fieldId, { kind: 'manual', groups: [...retained, { groupId, name: name.trim() || pivotText(locale, 'groupOne'), items: selected }] });
+    const groupId = `group:${field.fieldId}:${crypto.randomUUID()}`;
+    const groupName = (name.trim() || pivotText(locale, 'groupOne')).slice(0, 200);
+    onGroup(field.fieldId, { kind: 'manual', groups: [...retained, { groupId, name: groupName, items: selected }] });
     setSelected([]);
   };
   return <Stack gap="xs" className="border-t border-slate-100 pt-1">
@@ -168,7 +178,7 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
       <Stack gap="xs" className="max-h-32 overflow-auto">{values.map((item) => <CheckToggle key={pivotMemberKey(item)} label={String(item.value ?? '')} checked={selected.some((candidate) => pivotMemberKeyEquals(candidate, item))} onChange={(event) => setSelected((currentItems) => event.target.checked ? [...currentItems, item] : currentItems.filter((candidate) => !pivotMemberKeyEquals(candidate, item)))} />)}</Stack>
     <TextInput aria-label={pivotText(locale, 'groupName')} value={name} onChange={(event) => setName(event.target.value)} />
     <Button size="xs" variant="soft" disabled={selected.length < 2} onClick={create}>{pivotText(locale, 'createGroup')}</Button>
-    {manual?.groups.map((group) => <Inline key={group.groupId} gap="xs"><Text size="xs" className="min-w-0 flex-1 truncate">{group.name}</Text><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: manual.groups.filter((candidate) => candidate.groupId !== group.groupId) })}>{pivotText(locale, 'ungroup')}</Button></Inline>)}
+    {manual?.groups.map((group) => <Inline key={group.groupId} gap="xs"><Text size="xs" className="min-w-0 flex-1 truncate">{group.name}</Text><Button size="xs" variant="ghost" onClick={() => { const groups = manual.groups.filter((candidate) => candidate.groupId !== group.groupId); onGroup(field.fieldId, groups.length ? { kind: 'manual', groups } : undefined); }}>{pivotText(locale, 'ungroup')}</Button></Inline>)}
     {manual ? <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button> : null}
   </Stack>;
 }

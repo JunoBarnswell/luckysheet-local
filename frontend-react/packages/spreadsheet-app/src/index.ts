@@ -234,6 +234,7 @@ export {
 } from './features/history';
 export { CollaborationSession } from './collaboration';
 export { buildPivotGroupedFilterMembers, computePivotResult, evaluatePivotTask, findPivotProjectionCellAt, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, preparePivotTaskInput, type PivotGroupedFilterMember, type PivotTaskControl, type PivotTaskEvaluationInput } from './features/pivot/engine';
+export { movePivotLayoutField, movePivotValuePlacement, removePivotLayoutPlacement, replacePivotValuePlacement, upsertPivotFilter, type PivotLayoutArea } from './features/pivot/panel-state';
 export { BrowserPivotTaskPort, InlinePivotTaskPort, createBrowserPivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
 export { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError, type PivotTaskErrorCode, type PivotTaskResult } from './features/pivot/task-protocol';
 export { createPivotSourceIndex, estimatePivotSourceIndexBytes, type PivotSourceIndex } from './features/pivot/source-index';
