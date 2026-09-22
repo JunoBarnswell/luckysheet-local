@@ -24,6 +24,15 @@ public class WorkbookDataBlockStore {
         return blocks.findById(new DataBlockEntity.Id(unitId, sourceId, blockId)).map(this::row);
     }
 
+    public Optional<DataBlockMetadata> findMetadata(String unitId, String sourceId, String blockId) {
+        return blocks.findMetadata(unitId, sourceId, blockId);
+    }
+
+    /** Copies immutable bytes inside the database so workbook copy never materializes block payloads in the JVM. */
+    public int copyToWorkbook(String sourceUnitId, String targetUnitId, String sourceId, String blockId) {
+        return blocks.copyToWorkbook(sourceUnitId, targetUnitId, sourceId, blockId);
+    }
+
     /** Acquires the canonical workbook write lock for authorization and block persistence. */
     public void lockWorkbook(String unitId) {
         workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));

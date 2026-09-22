@@ -76,6 +76,7 @@ public class WorkbookCatalogService {
     private final AuditEntityRepository audits;
     private final ShareEntityRepository shares;
     private final DataBlockEntityRepository blocks;
+    private final WorkbookDataBlockPublicationGuard dataBlockPublication;
     private final ObjectMapper mapper;
 
     public WorkbookCatalogService(
@@ -95,6 +96,7 @@ public class WorkbookCatalogService {
             AuditEntityRepository audits,
             ShareEntityRepository shares,
             DataBlockEntityRepository blocks,
+            WorkbookDataBlockPublicationGuard dataBlockPublication,
             ObjectMapper mapper
     ) {
         this.workbooks = workbooks;
@@ -113,12 +115,13 @@ public class WorkbookCatalogService {
         this.audits = audits;
         this.shares = shares;
         this.blocks = blocks;
+        this.dataBlockPublication = dataBlockPublication;
         this.mapper = mapper;
     }
 
     @Transactional
     public WorkbookSnapshotResponse create(CreateWorkbookRequest request, String actor) {
-        WorkbookEntity entity = createEntity(request, actor);
+        WorkbookEntity entity = createEntity(request, actor, null);
         return snapshotResponse(entity, request.snapshot());
     }
 
@@ -201,7 +204,7 @@ public class WorkbookCatalogService {
         JsonNode copiedSnapshot = normalizeCopiedSnapshot(sourceSnapshot.snapshot(), targetId, name);
         CreateWorkbookRequest create = new CreateWorkbookRequest(targetId, name, copiedSnapshot, targetSpaceId,
                 targetFolderId, source.getSource());
-        WorkbookEntity copied = createEntity(create, actor);
+        WorkbookEntity copied = createEntity(create, actor, unitId);
         WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
         if (sourceArtifact != null) {
             Instant now = Instant.now();
@@ -338,7 +341,7 @@ public class WorkbookCatalogService {
         ObjectNode artifactMetadata = mapper.createObjectNode().put("schema", "NativeDocumentMetadata").put("format", format);
         artifactMetadata.setAll((ObjectNode) nativeMetadata.deepCopy());
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
-                WorkbookSource.DOCUMENT_IMPORT), actor);
+                WorkbookSource.DOCUMENT_IMPORT), actor, null);
         String digest = checksum(content);
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
@@ -350,7 +353,7 @@ public class WorkbookCatalogService {
                 summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));
     }
 
-    private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor) {
+    private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor, String blockSourceUnitId) {
         if (workbooks.existsById(request.unitId())) throw ServiceException.conflict("Workbook already exists");
         WorkbookSnapshotValidator.requireCanonical(request.snapshot(), request.unitId());
         if (!request.name().trim().equals(request.snapshot().path("name").asText().trim())) {
@@ -366,7 +369,12 @@ public class WorkbookCatalogService {
                 now, now, actor, space.getSpaceId(), folderId,
                 com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE,
                 request.source(), WorkbookLifecycle.ACTIVE, null);
-        workbooks.save(entity);
+        workbooks.saveAndFlush(entity);
+        if (blockSourceUnitId == null) {
+            dataBlockPublication.requireSnapshot(request.unitId(), request.snapshot());
+        } else {
+            dataBlockPublication.copySnapshotReferences(blockSourceUnitId, request.unitId(), request.snapshot());
+        }
         acl.save(new WorkbookAclEntity(request.unitId(), actor, WorkbookAclRole.OWNER, now, now));
         checkpoints.save(new com.xc.luckysheet.server.persistence.CheckpointEntity(request.unitId(), 0, entity.getSnapshotJson(),
                 checksum(entity.getSnapshotJson().getBytes(StandardCharsets.UTF_8)), now));

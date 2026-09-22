@@ -159,7 +159,7 @@ class WorkbookIntegrityAndConflictTest {
         CoordinationProperties coordination = new CoordinationProperties(
                 false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45));
         return new WorkbookOperationService(store, access, registry, mapper,
-                new AuditRecorder(store, mapper), coordination);
+                new AuditRecorder(store, mapper), coordination, mock(WorkbookDataBlockPublicationGuard.class));
     }
 
     @Test

@@ -5,7 +5,11 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
+import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.OperationOrigin;
+import com.xc.luckysheet.server.contract.OperationEnvelope;
+import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
@@ -50,6 +54,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
     @Autowired private WorkbookDataBlockStore blocks;
     @Autowired private ObjectMapper mapper;
     @Autowired private WorkbookStore workbooks;
+    @Autowired private WorkbookOperationService operations;
 
     @Test
     void revokedEditorCannotCommitBytesReadBeforeTheWriteBoundary() throws Exception {
@@ -173,6 +178,109 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
         workbooks.insertCheckpoint(unitId, 1, history, sha256(history), Instant.now());
         commits.delete(unitId, "source", "block", "owner");
         assertTrue(blocks.find(unitId, "source", "block").isEmpty());
+    }
+
+    @Test
+    void committedSourceReferencesOnlyUploadedMetadataAndProtectsItsBytes() throws Exception {
+        String unitId = "block-publish-success";
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), "owner");
+        DataBlockRow block = row(unitId, new byte[] {1});
+        commits.commit(block, 100, 10, "owner");
+        OperationEnvelope operation = sourceOperation(unitId, block);
+        operations.commit(unitId, operation, "owner");
+        assertEquals(1, workbooks.find(unitId).orElseThrow().revision());
+        assertEquals("source", operations.readSnapshot(unitId, "owner").snapshot().path("dataModel").path("sources").get(0).path("id").asText());
+        assertReferenced(block);
+    }
+
+    @Test
+    void deletingStagingBytesBeforePublicationRejectsTheOperationAndAllowsReupload() throws Exception {
+        String unitId = "block-publish-after-delete";
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), "owner");
+        DataBlockRow block = row(unitId, new byte[] {1});
+        commits.commit(block, 100, 10, "owner");
+        OperationEnvelope operation = sourceOperation(unitId, block);
+        commits.delete(unitId, "source", "block", "owner");
+        ServiceException error = assertThrows(ServiceException.class, () -> operations.commit(unitId, operation, "owner"));
+        assertEquals("DATA_BLOCK_MISSING", error.code());
+        assertEquals(0, workbooks.find(unitId).orElseThrow().revision());
+        assertTrue(workbooks.findOperation(operation.operationId()).isEmpty());
+        commits.commit(block, 100, 10, "owner");
+        operations.commit(unitId, operation, "owner");
+        assertEquals(1, workbooks.find(unitId).orElseThrow().revision());
+    }
+
+    @Test
+    void mismatchedDescriptorsAndBlocksFromAnotherWorkbookCannotBePublished() throws Exception {
+        String unitId = "block-publish-mismatch";
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), "owner");
+        DataBlockRow block = row(unitId, new byte[] {1});
+        commits.commit(block, 100, 10, "owner");
+        for (String property : List.of("checksum", "byteLength")) {
+            OperationEnvelope operation = sourceOperation(unitId, block);
+            ObjectNode descriptor = (ObjectNode) operation.mutations().get(0).params().path("source").path("blocks").get(0);
+            if (property.equals("checksum")) descriptor.put(property, "f".repeat(64));
+            else descriptor.put(property, 2);
+            ServiceException error = assertThrows(ServiceException.class, () -> operations.commit(unitId, operation, "owner"));
+            assertEquals("DATA_BLOCK_METADATA_MISMATCH", error.code());
+        }
+        assertEquals(0, workbooks.find(unitId).orElseThrow().revision());
+        String otherUnit = "block-publish-other-workbook";
+        catalog.create(new CreateWorkbookRequest(otherUnit, "Blocks", snapshot(otherUnit)), "owner");
+        OperationEnvelope foreignReference = sourceOperation(otherUnit, row(otherUnit, block.content()));
+        ServiceException missing = assertThrows(ServiceException.class, () -> operations.commit(otherUnit, foreignReference, "owner"));
+        assertEquals("DATA_BLOCK_MISSING", missing.code());
+        assertEquals(0, workbooks.find(otherUnit).orElseThrow().revision());
+        assertArrayEquals(block.content(), blocks.find(unitId, "source", "block").orElseThrow().content());
+    }
+
+    @Test
+    void initialSnapshotCannotPublishReferencesBeforeTheirBytesExist() throws Exception {
+        String unitId = "block-create-missing";
+        DataBlockRow block = row(unitId, new byte[] {1});
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshotWithBlock(unitId, block)), "owner"));
+        assertEquals("DATA_BLOCK_MISSING", error.code());
+        assertTrue(workbooks.find(unitId).isEmpty());
+    }
+
+    @Test
+    void workbookCopyCopiesPublishedBlocksWithoutSharingTheirIdentity() throws Exception {
+        String sourceUnitId = "block-copy-source";
+        catalog.create(new CreateWorkbookRequest(sourceUnitId, "Blocks", snapshot(sourceUnitId)), "owner");
+        DataBlockRow sourceBlock = row(sourceUnitId, new byte[] {1, 2, 3});
+        commits.commit(sourceBlock, 100, 10, "owner");
+        operations.commit(sourceUnitId, sourceOperation(sourceUnitId, sourceBlock), "owner");
+
+        var copied = catalog.copy(sourceUnitId, new CopyWorkbookRequest("Blocks Copy", null, null), "owner");
+        DataBlockRow copiedBlock = blocks.find(copied.unitId(), sourceBlock.sourceId(), sourceBlock.blockId()).orElseThrow();
+
+        assertEquals(sourceBlock.checksum(), copiedBlock.checksum());
+        assertEquals(sourceBlock.byteLength(), copiedBlock.byteLength());
+        assertArrayEquals(sourceBlock.content(), copiedBlock.content());
+        assertReferenced(new DataBlockRow(copied.unitId(), copiedBlock.sourceId(), copiedBlock.blockId(), copiedBlock.checksum(),
+                copiedBlock.byteLength(), copiedBlock.content(), copiedBlock.createdAt(), copiedBlock.updatedAt()));
+    }
+
+    @Test
+    void restoreRejectsRetainedReferencesWhoseBytesAreMissing() throws Exception {
+        String unitId = "block-restore-missing";
+        catalog.create(new CreateWorkbookRequest(unitId, "Blocks", snapshot(unitId)), "owner");
+        String historical = snapshotWithBlock(unitId, row(unitId, new byte[] {1})).toString();
+        workbooks.insertCheckpoint(unitId, 1, historical, sha256(historical), Instant.now());
+        workbooks.updateWorkbook(unitId, 2, snapshot(unitId).toString(), 2, Instant.now());
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> operations.restore(unitId, new RestoreRequest(1, "Restore historical blocks"), "owner"));
+        assertEquals("DATA_BLOCK_MISSING", error.code());
+        assertEquals(2, workbooks.find(unitId).orElseThrow().revision());
+        assertTrue(workbooks.listOperations(unitId).isEmpty());
+    }
+
+    private OperationEnvelope sourceOperation(String unitId, DataBlockRow block) throws Exception {
+        ObjectNode params = mapper.createObjectNode();
+        params.set("source", snapshotWithBlock(unitId, block).path("dataModel").path("sources").get(0));
+        return new OperationEnvelope("block-publish-session", OperationEnvelope.SCHEMA, "publish-" + unitId,
+                unitId, 1, 0, List.of(new OperationMutation("dataSource.add", "sheet-1", params)), Instant.now());
     }
 
     private void assertReferenced(DataBlockRow block) {
