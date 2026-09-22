@@ -446,8 +446,16 @@ function assertPivotControlConnectionsRemainValid(workbook: WorkbookModel, curre
     const primary = findPivot(payload.pivotId);
     const primaryField = field(primary, payload.fieldId);
     if (!primary || !primaryField) throw new Error(`Pivot control ${drawing.id} references a field removed from Pivot ${payload.pivotId}`);
+    if (payload.kind === 'timeline' && primaryField.dataType !== 'date') {
+      throw new Error(`Timeline control ${drawing.id} requires a date-semantic field on Pivot ${payload.pivotId}`);
+    }
     const sourceKey = pivotSourceIdentity(primary.source);
+    const connectedPivotIds = new Set<string>();
     for (const connection of payload.connections ?? []) {
+      if (!connection.pivotId.trim() || connection.pivotId === payload.pivotId || connectedPivotIds.has(connection.pivotId)) {
+        throw new Error(`Pivot control ${drawing.id} has an invalid Report Connection: ${connection.pivotId}`);
+      }
+      connectedPivotIds.add(connection.pivotId);
       const target = findPivot(connection.pivotId);
       const targetField = target ? field(target, connection.fieldId) : undefined;
       if (!target || !targetField || connection.sourceKey !== sourceKey || pivotSourceIdentity(target.source) !== sourceKey
