@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { pivotSourceIdentity, WorkbookModel } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, pivotSourceIdentity, WorkbookModel } from '@react-sheets/core-model';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerDrawingFeature } from '../drawing';
 import { registerPivotFeature } from './index';
@@ -353,6 +353,66 @@ describe('pivot feature contract', () => {
     });
     const unmatched = workbook.getSheet('drill-left-unmatched');
     assert.deepEqual([0, 1, 2, 3].map((column) => unmatched.cells.get(1, column)?.value), ['c2', 200, null, null]);
+  });
+
+  it('drill-down uses evaluated headers and preserves formula error values', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    executePivotCreate(runtime, workbook, pivot);
+    workbook.getSheet('source-2').cells.set(0, 1, { value: 'Amount', formulaValue: 'Computed Amount' });
+    workbook.getSheet('source-2').cells.set(1, 1, { value: 10, formulaValue: { kind: 'error', code: '#DIV/0!' } });
+    runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1', pivotId: pivot.id, label: 'Errors',
+      sourceRowPaths: [{ sheetId: 'source-2', row: 1 }], targetSheetId: 'detail-errors', target: { row: 0, column: 0 },
+    });
+    assert.equal(workbook.getSheet('detail-errors').cells.get(0, 1)?.value, 'Computed Amount');
+    assert.equal(workbook.getSheet('detail-errors').cells.get(1, 1)?.value, '#DIV/0!');
+  });
+
+  it('rejects block-backed detail reads before creating or publishing a blank sheet', () => {
+    const { workbook, pivot } = sameSheetRelationalPivot();
+    assert.ok(pivot.source.kind === 'worksheet-ranges');
+    const range = pivot.source.ranges[0]!.range;
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    executePivotCreate(runtime, workbook, pivot);
+    workbook.addDataSource({
+      schema: 'DataSourceManifest', version: 1, id: 'blocks', name: 'Blocks', kind: 'chunked-table',
+      sourceSheetId: 'sheet-1', sourceRange: range, rowCount: 2, blockRowCount: 65536, revision: 0,
+      fields: [{ id: 'customer', name: 'CustomerId', ordinal: 0, type: 'text' }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' }],
+      blocks: [{ id: 'block', dataSourceId: 'blocks', startRow: 0, rowCount: 2, storageKey: 'block', checksum: 'a'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
+    });
+    const sourceSheet = workbook.getSheet('sheet-1');
+    for (const row of [1, 2]) for (const column of [0, 1]) sourceSheet.cells.delete(row, column);
+    sourceSheet.replaceDataRegions([{ id: 'region', sourceId: 'blocks', range, headerRow: 0, revision: 0 }]);
+    const before = snapshotWithStableCollectionOrder(workbook);
+    assert.throws(() => runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1', pivotId: pivot.id, label: 'Blocks',
+      sourceRowPaths: [{ sourceId: 'orders', recordId: 'orders:1', sheetId: 'sheet-1', row: 1 }],
+      targetSheetId: 'blocked-detail', target: { row: 0, column: 0 },
+    }), { code: 'UNSUPPORTED_FEATURE' });
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+    assert.equal(workbook.sheets.has('blocked-detail'), false);
+  });
+
+  it('rejects out-of-bounds drill-down anchors before creating a detail sheet', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    executePivotCreate(runtime, workbook, pivot);
+    const before = snapshotWithStableCollectionOrder(workbook);
+    for (const target of [{ row: MAX_SHEET_ROW_COUNT, column: 0 }, { row: 0, column: MAX_SHEET_COLUMN_COUNT }]) {
+      assert.throws(() => runtime.execute('pivot.drillDown', {
+        sheetId: 'sheet-1', pivotId: pivot.id, label: 'Outside',
+        sourceRowPaths: [{ sheetId: 'source-2', row: 1 }], targetSheetId: 'outside-detail', target,
+      }), /bounds/);
+      assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+    }
   });
 
   it('rejects incomplete inner-join provenance before creating a detail sheet', () => {

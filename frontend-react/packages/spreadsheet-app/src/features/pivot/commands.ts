@@ -1,5 +1,6 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy, pivotSourceIdentity } from '@react-sheets/core-model';
+import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy, pivotSourceIdentity } from '@react-sheets/core-model';
+import { PivotDrillDownError } from './drill-down-error';
 import type {
   PivotDefinition,
   PivotSource,
@@ -125,9 +126,9 @@ function pivotSourceRanges(pivot: PivotModel, workbook?: import('@react-sheets/c
   return [];
 }
 
-function pivotSourceNodes(pivot: PivotModel, workbook?: import('@react-sheets/core-model').WorkbookModel): Array<{ sourceId?: string; range: RangeRef }> {
+function pivotSourceNodes(pivot: PivotModel, workbook: WorkbookModel): Array<{ sourceId?: string; range: RangeRef }> {
   if (pivot.source.kind === 'worksheet-ranges') return pivot.source.ranges.map((sourceRange) => ({ sourceId: sourceRange.sourceId, range: structuredClone(sourceRange.range) }));
-  return pivotSourceRanges(pivot, workbook).map((range) => ({ range }));
+  return getPivotSourceRanges(workbook, pivot).map((range) => ({ range }));
 }
 
 interface DrillDownColumn {
@@ -189,10 +190,16 @@ function planPivotDrillDown(context: CommandContext, params: PivotDrillDownParam
   const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
   if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
+  if (pivot.source.kind === 'data-source' && context.workbook.getDataSource(pivot.source.dataSourceId).blocks.length > 0) {
+    throw new PivotDrillDownError();
+  }
   const nodes = pivotSourceNodes(pivot, context.workbook);
+  if (nodes.length === 0) throw new Error('Pivot drill-down source has no worksheet range');
   const sourceIds = new Set<string>();
   for (const node of nodes) {
     const sheet = context.workbook.getSheet(node.range.sheetId);
+    if (sheet.dataRegions.some(({ range }) => node.range.startRow <= range.endRow && node.range.endRow >= range.startRow
+      && node.range.startColumn <= range.endColumn && node.range.endColumn >= range.startColumn)) throw new PivotDrillDownError();
     if (node.range.startRow < 0 || node.range.endRow >= sheet.rowCount || node.range.startColumn < 0 || node.range.endColumn >= sheet.columnCount) {
       throw new Error('Pivot source range exceeds worksheet bounds');
     }
@@ -239,7 +246,11 @@ function planPivotDrillDown(context: CommandContext, params: PivotDrillDownParam
       if (!record.paths.has(rootSourceId)) throw new Error(`Pivot drill-down provenance is missing root source for record ${recordId}`);
     }
   }
-  return { columns: drillDownColumns(context, pivot), records: [...records.values()] };
+  const columns = drillDownColumns(context, pivot);
+  if (params.target.row + records.size + 1 > MAX_SHEET_ROW_COUNT || params.target.column + columns.length > MAX_SHEET_COLUMN_COUNT) {
+    throw new Error('Pivot drill-down target exceeds the new worksheet bounds');
+  }
+  return { columns, records: [...records.values()] };
 }
 
 function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDownColumn[] {
@@ -250,8 +261,8 @@ function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDown
     const { range } = node;
     const sheet = context.workbook.getSheet(range.sheetId);
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const raw = sheet.cells.get(range.startRow, column)?.value;
-      const base = raw == null || raw === '' ? `Column ${column - range.startColumn + 1}` : String(raw);
+      const raw = sourceCellValue(sheet.cells.get(range.startRow, column));
+      const base = raw == null || raw === '' ? `Column ${column - range.startColumn + 1}` : isPivotError(raw) ? raw.code : String(raw);
       let label = base;
       if (labels.has(label) && nodes.length > 1) label = `${sheet.name}.${base}`;
       let suffix = 2;

@@ -10,7 +10,10 @@ import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Deterministically materializes and removes Pivot drill-down detail sheets. */
@@ -68,33 +71,75 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         ArrayNode paths = SnapshotMutationSupport.requiredArray(params, "sourceRowPaths");
         if (paths.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Pivot drill-down has too many source rows");
         List<RangeRef> sourceRanges = PivotMutationDescriptor.sourceRanges(root, pivot);
+        ObjectNode source = (ObjectNode) pivot.get("source");
+        if ("data-source".equals(source.path("kind").asText())) {
+            ObjectNode manifest = SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"),
+                    SnapshotMutationSupport.text(source, "dataSourceId"), "Data source");
+            if (!manifest.path("blocks").isEmpty()) throw unsupportedBlocks();
+        }
         if (sourceRanges.isEmpty()) throw ServiceException.validation("Pivot drill-down source has no worksheet range");
-        List<DrillColumn> columns = columns(root, sourceRanges);
+        Map<String, SourceNode> nodes = new LinkedHashMap<>();
+        for (int index = 0; index < sourceRanges.size(); index++) {
+            String sourceId = "worksheet-ranges".equals(source.path("kind").asText())
+                    ? SnapshotMutationSupport.text((ObjectNode) source.path("ranges").get(index), "sourceId") : "__single-source__";
+            RangeRef range = sourceRanges.get(index);
+            for (JsonNode region : SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, range.sheetId()), "dataRegions")) {
+                RangeRef bounds = SnapshotMutationSupport.range(root, region.get("range"));
+                if (range.startRow() <= bounds.endRow() && range.endRow() >= bounds.startRow()
+                        && range.startColumn() <= bounds.endColumn() && range.endColumn() >= bounds.startColumn()) throw unsupportedBlocks();
+            }
+            nodes.put(sourceId, new SourceNode(sourceId, range));
+        }
+        List<DrillColumn> columns = columns(root, List.copyOf(nodes.values()));
         if (columns.isEmpty()) throw ServiceException.validation("Pivot drill-down source has no columns");
-        List<SourcePath> sourcePaths = new ArrayList<>();
+        boolean multiSource = nodes.size() > 1;
+        Set<String> optional = new HashSet<>();
+        for (JsonNode relationship : source.path("relationships")) {
+            if ("left".equals(relationship.path("join").asText())) optional.add(relationship.path("right").path("sourceId").asText());
+        }
+        List<String> roots = nodes.keySet().stream().filter(key -> !optional.contains(key)).toList();
+        if (multiSource && !optional.isEmpty() && roots.size() != 1) throw ServiceException.validation("Pivot drill-down source graph has no deterministic root");
+        Map<String, Map<String, SourcePath>> records = new LinkedHashMap<>();
         for (JsonNode raw : paths) {
             if (!raw.isObject()) throw ServiceException.validation("Pivot drill-down source path must be an object");
             ObjectNode path = (ObjectNode) raw;
-            SnapshotMutationSupport.validateKnownKeys(path, Set.of("sheetId", "row"), "Pivot drill-down source path");
+            SnapshotMutationSupport.validateKnownKeys(path, Set.of("sheetId", "row", "sourceId", "recordId"), "Pivot drill-down source path");
             String sheetId = SnapshotMutationSupport.text(path, "sheetId");
-            ObjectNode coordinate = JsonNodeFactory.instance.objectNode();
-            coordinate.set("row", path.get("row"));
-            coordinate.put("column", 0);
-            int row = SnapshotMutationSupport.index(root, sheetId, coordinate, "row");
-            sourcePaths.add(new SourcePath(sheetId, row));
+            String sourceId = path.has("sourceId") ? SnapshotMutationSupport.text(path, "sourceId") : null;
+            String recordId = path.has("recordId") ? SnapshotMutationSupport.text(path, "recordId") : null;
+            if (multiSource && (sourceId == null || recordId == null)) throw ServiceException.validation("Joined Pivot drill-down provenance requires sourceId and recordId");
+            SourceNode node = multiSource ? nodes.get(sourceId) : nodes.values().iterator().next();
+            if (node == null) throw ServiceException.validation("Pivot drill-down provenance references an unknown source: " + sourceId);
+            JsonNode rowValue = path.get("row");
+            if (rowValue == null || !rowValue.isIntegralNumber() || !rowValue.canConvertToInt()) throw ServiceException.validation("Pivot drill-down source row is invalid");
+            int row = rowValue.intValue();
+            if (!sheetId.equals(node.range().sheetId()) || row <= node.range().startRow() || row > node.range().endRow()) {
+                throw ServiceException.validation("Pivot drill-down provenance is outside its declared source range");
+            }
+            String identity = recordId == null ? sheetId + ":" + row : recordId;
+            Map<String, SourcePath> record = records.computeIfAbsent(identity, ignored -> new LinkedHashMap<>());
+            if (record.putIfAbsent(node.sourceId(), new SourcePath(sheetId, row)) != null) throw ServiceException.validation("Pivot drill-down provenance repeats a source in record " + identity);
         }
-        int rowsPerResult = Math.max(sourceRanges.size(), 1);
-        int detailRows = (int) Math.ceil(sourcePaths.size() / (double) rowsPerResult);
+        for (var record : records.entrySet()) {
+            for (String required : roots) {
+                if (!record.getValue().containsKey(required)) throw ServiceException.validation("Pivot drill-down provenance is incomplete for record " + record.getKey());
+            }
+        }
+        int detailRows = records.size();
         long targetRowCount = (long) anchor.row() + detailRows + 1L;
         long targetColumnCount = (long) anchor.column() + columns.size();
         if (targetRowCount > (long) SnapshotMutationSupport.MAX_ROW + 1L
                 || targetColumnCount > (long) SnapshotMutationSupport.MAX_COLUMN + 1L) {
             throw ServiceException.validation("Pivot drill-down target exceeds the new worksheet bounds");
         }
-        RangeRef targetRange = new RangeRef(targetSheetId, anchor.row(), anchor.row() + detailRows, anchor.column(), anchor.column() + columns.size() - 1);
         String sheetName = ("Drill " + pivotId + " " + label).substring(0, Math.min(31, ("Drill " + pivotId + " " + label).length()));
-        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, sourcePaths, targetRange, rowsPerResult,
+        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, records.values().stream().map(Map::copyOf).toList(),
                 Math.max(1_000, Math.toIntExact(targetRowCount)), Math.max(26, Math.toIntExact(targetColumnCount)));
+    }
+
+    private ServiceException unsupportedBlocks() {
+        return new ServiceException("UNSUPPORTED_FEATURE", 422,
+                "Pivot drill-down requires canonical block reads for this data source; no detail sheet was created");
     }
 
     private String targetSheetId(ObjectNode params) {
@@ -103,21 +148,24 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         return SnapshotMutationSupport.text(params, "targetSheetId");
     }
 
-    private List<DrillColumn> columns(ObjectNode root, List<RangeRef> ranges) {
+    private List<DrillColumn> columns(ObjectNode root, List<SourceNode> nodes) {
         List<DrillColumn> columns = new ArrayList<>();
         Set<String> labels = new java.util.HashSet<>();
-        for (RangeRef range : ranges) {
+        for (SourceNode node : nodes) {
+            RangeRef range = node.range();
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, range.sheetId());
             for (int column = range.startColumn(); column <= range.endColumn(); column++) {
                 JsonNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(range.startRow(), column), false);
-                String base = scalar(cell == null ? null : cell.get("value"));
+                JsonNode raw = cell == null ? null : cell.hasNonNull("formulaValue") ? cell.get("formulaValue") : cell.get("value");
+                JsonNode header = cellScalar(raw).get("value");
+                String base = header.isNull() ? null : header.asText();
                 if (base == null || base.isBlank()) base = "Column " + (column - range.startColumn() + 1);
                 String label = base;
-                if (labels.contains(label) && ranges.size() > 1) label = sheet.path("name").asText(range.sheetId()) + "." + base;
+                if (labels.contains(label) && nodes.size() > 1) label = sheet.path("name").asText(range.sheetId()) + "." + base;
                 int suffix = 2;
                 while (labels.contains(label)) label = base + " (" + suffix++ + ")";
                 labels.add(label);
-                columns.add(new DrillColumn(range, column, label));
+                columns.add(new DrillColumn(node.sourceId(), column, label));
             }
         }
         return List.copyOf(columns);
@@ -127,17 +175,16 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         for (int index = 0; index < plan.columns().size(); index++) {
             SnapshotMutationSupport.putCell(target, new SnapshotMutationSupport.CellCoordinate(plan.anchor().row(), plan.anchor().column() + index), cell(plan.columns().get(index).label()));
         }
-        int resultRows = (int) Math.ceil(plan.paths().size() / (double) plan.rowsPerResult());
-        for (int rowOffset = 0; rowOffset < resultRows; rowOffset++) {
-            List<SourcePath> paths = plan.paths().subList(rowOffset * plan.rowsPerResult(), Math.min(plan.paths().size(), (rowOffset + 1) * plan.rowsPerResult()));
+        for (int rowOffset = 0; rowOffset < plan.records().size(); rowOffset++) {
+            Map<String, SourcePath> record = plan.records().get(rowOffset);
             for (int columnOffset = 0; columnOffset < plan.columns().size(); columnOffset++) {
                 DrillColumn column = plan.columns().get(columnOffset);
-                SourcePath path = paths.stream().filter(candidate -> candidate.sheetId().equals(column.range().sheetId())).findFirst().orElse(null);
+                SourcePath path = record.get(column.sourceId());
                 JsonNode value = null;
                 if (path != null) {
                     ObjectNode sourceSheet = SnapshotMutationSupport.sheet(root, path.sheetId());
                     ObjectNode sourceCell = SnapshotMutationSupport.cell(sourceSheet, new SnapshotMutationSupport.CellCoordinate(path.row(), column.column()), false);
-                    if (sourceCell != null) value = sourceCell.has("formulaValue") ? sourceCell.get("formulaValue") : sourceCell.get("value");
+                    if (sourceCell != null) value = sourceCell.hasNonNull("formulaValue") ? sourceCell.get("formulaValue") : sourceCell.get("value");
                 }
                 SnapshotMutationSupport.putCell(target, new SnapshotMutationSupport.CellCoordinate(plan.anchor().row() + rowOffset + 1, plan.anchor().column() + columnOffset), cellScalar(value));
             }
@@ -208,7 +255,8 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot drill-down target anchor is invalid");
         JsonNode row = raw.get("row");
         JsonNode column = raw.get("column");
-        if (row == null || !row.isIntegralNumber() || row.intValue() < 0 || column == null || !column.isIntegralNumber() || column.intValue() < 0) throw ServiceException.validation("Pivot drill-down target anchor is invalid");
+        if (row == null || !row.isIntegralNumber() || !row.canConvertToInt() || row.intValue() < 0
+                || column == null || !column.isIntegralNumber() || !column.canConvertToInt() || column.intValue() < 0) throw ServiceException.validation("Pivot drill-down target anchor is invalid");
         return new SnapshotMutationSupport.CellCoordinate(row.intValue(), column.intValue());
     }
 
@@ -220,23 +268,21 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
 
     private ObjectNode cellScalar(JsonNode raw) {
         ObjectNode cell = JsonNodeFactory.instance.objectNode();
-        if (raw == null || raw.isNull() || (!raw.isTextual() && !raw.isNumber() && !raw.isBoolean())) cell.putNull("value");
+        if (raw == null || raw.isNull()) cell.putNull("value");
+        else if (raw.isObject() && "error".equals(raw.path("kind").asText()) && raw.path("code").isTextual()) cell.put("value", raw.path("code").asText());
+        else if (!raw.isTextual() && !raw.isNumber() && !raw.isBoolean()) throw new ServiceException("UNSUPPORTED_FEATURE", 422,
+                "Pivot drill-down cannot represent this source value; no detail sheet was created");
         else cell.set("value", raw.deepCopy());
         return cell;
-    }
-
-    private String scalar(JsonNode raw) {
-        if (raw == null || raw.isNull()) return null;
-        if (raw.isTextual()) return raw.asText();
-        if (raw.isNumber()) return raw.asText();
-        if (raw.isBoolean()) return Boolean.toString(raw.asBoolean());
-        return null;
     }
 
     private record SourcePath(String sheetId, int row) {
     }
 
-    private record DrillColumn(RangeRef range, int column, String label) {
+    private record SourceNode(String sourceId, RangeRef range) {
+    }
+
+    private record DrillColumn(String sourceId, int column, String label) {
     }
 
     private record DrillPlan(
@@ -245,9 +291,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
             SnapshotMutationSupport.CellCoordinate anchor,
             List<RangeRef> sourceRanges,
             List<DrillColumn> columns,
-            List<SourcePath> paths,
-            RangeRef targetRange,
-            int rowsPerResult,
+            List<Map<String, SourcePath>> records,
             int rowCount,
             int columnCount
     ) {

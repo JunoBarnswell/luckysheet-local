@@ -791,7 +791,7 @@ class MutationDescriptorRegistryTest {
         largeDrillDownParams.put("label", "Large");
         ArrayNode largePaths = largeDrillDownParams.putArray("sourceRowPaths");
         for (int index = 0; index < 1_001; index++) {
-            largePaths.addObject().put("sheetId", "sheet-1").put("row", 1);
+            largePaths.addObject().put("sheetId", "sheet-1").put("row", 1).put("recordId", "record-" + index);
         }
         largeDrillDownParams.put("targetSheetId", "detail-large");
         largeDrillDownParams.putObject("target").put("row", 0).put("column", 0);
