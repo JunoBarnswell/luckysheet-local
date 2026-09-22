@@ -338,9 +338,15 @@ function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): { categ
   const projected = buildPivotChartData(tree);
   const declared = payload.series ?? [];
   const declaredById = new Map(declared.flatMap((entry) => entry.id ? [[entry.id, entry] as const] : []));
-  const declaredByName = new Map(declared.map((entry) => [entry.name, entry] as const));
+  const declaredByName = new Map<string, ChartSeries[]>();
+  for (const entry of declared) {
+    const matches = declaredByName.get(entry.name);
+    if (matches) matches.push(entry);
+    else declaredByName.set(entry.name, [entry]);
+  }
   const series: ResolvedChartSeries[] = projected.series.map((entry) => {
-    const declaredSeries = declaredById.get(entry.id) ?? declaredByName.get(entry.name);
+    const byName = declaredByName.get(entry.name);
+    const declaredSeries = declaredById.get(entry.id) ?? (byName?.length === 1 ? byName[0] : undefined);
     const normalized = normalizeEmptyValues([...entry.values], payload.elements.emptyCells);
     const values = normalized.values;
     return {

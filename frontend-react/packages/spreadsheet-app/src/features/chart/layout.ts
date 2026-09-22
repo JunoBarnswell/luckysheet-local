@@ -19,6 +19,8 @@ export interface ChartLayoutPoint {
   value: number | null;
   xValue?: number | null;
   sizeValue?: number | null;
+  /** Exact canvas hit radius for scatter and bubble points. */
+  markerRadius?: number;
   x: number;
   y: number;
   visible: boolean;
@@ -223,7 +225,15 @@ function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefin
 function colorFor(series: ResolvedChartSeries, index: number): string { return series.color ?? DEFAULT_COLORS[index % DEFAULT_COLORS.length]!; }
 
 function seriesModelFor(payload: ChartDrawingPayload, series: ResolvedChartSeries, index: number): ChartSeriesModel | undefined {
-  return payload.series?.find((entry) => (entry.id && entry.id === series.id) || entry.name === series.name) ?? payload.series?.[index];
+  if (!payload.series) return undefined;
+  const byId = series.id ? payload.series.find((entry) => entry.id === series.id) : undefined;
+  if (byId) return byId;
+  const byName = payload.series.filter((entry) => entry.name === series.name);
+  return byName.length === 1 ? byName[0] : payload.series[index];
+}
+
+function categorySlot(index: number, count: number, axis: ChartAxisLayout): number {
+  return axis.model.reverseOrder ? count - index - 1 : index;
 }
 
 function effectiveChartType(payload: ChartDrawingPayload, series: ResolvedChartSeries): Exclude<ChartDrawingPayload['chartType'], 'combo'> {
@@ -413,8 +423,7 @@ function chartKind(payload: ChartDrawingPayload): ChartLayout['kind'] {
 function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot'], categoryAxis: ChartAxisLayout, valueAxis: ChartAxisLayout, secondaryAxis: ChartAxisLayout | undefined, barPlacements: ReadonlyMap<number, BarPlacement>): ChartLayoutSeries[] {
   const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
-  const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
-  const xAxis = isScatter ? axisBounds(payload.elements.categoryAxis ?? defaultAxis('x', 'bottom', 'value'), xValues, false) : categoryAxis;
+  const xAxis = categoryAxis;
   const result: ChartLayoutSeries[] = [];
   for (const [seriesIndex, series] of data.series.entries()) {
     const model = seriesModelFor(payload, series, seriesIndex);
@@ -426,16 +435,25 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
     const errorModel = model?.errorBars ?? series.errorBars;
     const errorValues = errorModel && ['standard-error', 'standard-deviation'].includes(errorModel.type) ? numberValues(series.values) : [];
     const errorStatistics = { count: errorValues.length, deviation: standardDeviation(errorValues) };
+    const bubbleSizes = series.sizeValues?.map(chartNumericValue).filter((value): value is number => value !== undefined).map(Math.abs) ?? [];
+    const bubbleMaximum = payload.chartType === 'bubble' ? Math.max(1, ...bubbleSizes) : 1;
     for (let index = 0; index < Math.max(categoryCount, series.values.length); index += 1) {
       const value = valueAt(series, index);
       const xValue = isScatter ? xValueAt(series, index) : null;
       const category = data.categories[index] ?? index + 1;
       const hasValue = value !== null;
-      const visible = hasValue && (series.missing?.[index] !== true);
-      const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (index + 0.5) / categoryCount;
+      const visible = hasValue && (series.missing?.[index] !== true) && (!isScatter || xValue !== null)
+        && (payload.chartType !== 'bubble' || sizeValueAt(series, index) !== null);
+      const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (categorySlot(index, categoryCount, categoryAxis) + 0.5) / categoryCount;
       const yRatio = value === null ? 0 : scale(value, axis);
       const error = errorAmount(errorModel, value ?? 0, errorStatistics, index, series.errorPlusValues, series.errorMinusValues);
-      const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(series.sizeValues ? { sizeValue: sizeValueAt(series, index) } : {}), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
+      const sizeValue = series.sizeValues ? sizeValueAt(series, index) : undefined;
+      const markerRadius = isScatter
+        ? payload.chartType === 'bubble'
+          ? Math.max(3, Math.min(24, 3 + Math.sqrt(Math.abs(sizeValue ?? 0) / bubbleMaximum) * 18))
+          : 4
+        : undefined;
+      const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(sizeValue === undefined ? {} : { sizeValue }), ...(markerRadius === undefined ? {} : { markerRadius }), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
       points.push(point);
       if (chartType === 'column' || chartType === 'bar') {
         const placement = barPlacements.get(seriesIndex);
@@ -445,9 +463,12 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
         const count = placement?.count ?? 1;
         const band = slot * 0.72 / count;
         const offset = (placement?.ordinal ?? 0) * band;
-        const startRatio = scale(Math.min(start, end), axis);
-        const endRatio = scale(Math.max(start, end), axis);
-        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + startRatio * plot.width : plot.left + index * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + index * slot + slot * 0.14 : plot.top + (1 - endRatio) * plot.height, width: chartType === 'bar' ? Math.max(1, (endRatio - startRatio) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(3, slot * 0.72) : Math.max(1, (endRatio - startRatio) * plot.height), color: colorFor(series, seriesIndex), visible });
+        const lowerRatio = scale(Math.min(start, end), axis);
+        const upperRatio = scale(Math.max(start, end), axis);
+        const barStart = Math.min(lowerRatio, upperRatio);
+        const barEnd = Math.max(lowerRatio, upperRatio);
+        const slotIndex = categorySlot(index, categoryCount, categoryAxis);
+        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + barStart * plot.width : plot.left + slotIndex * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + slotIndex * slot + slot * 0.14 : plot.top + (1 - barEnd) * plot.height, width: chartType === 'bar' ? Math.max(1, (barEnd - barStart) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(3, slot * 0.72) : Math.max(1, (barEnd - barStart) * plot.height), color: colorFor(series, seriesIndex), visible });
       }
     }
     const trendlines = (series.trendlines ?? []).map((trendline) => buildTrendline(trendline, points, axis, plot));
@@ -526,6 +547,28 @@ function stockLayouts(data: ResolvedChartData, seriesIndex: number): ChartLayout
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
 }
 
+function stockValidationError(data: ResolvedChartData, seriesIndex: number): string | undefined {
+  const series = data.series[seriesIndex];
+  const stock = series?.stockValues;
+  if (!series || !stock) return 'Stock charts require explicit High/Low/Close role bindings';
+  const count = data.categories.length;
+  const vectors = [stock.high, stock.low, stock.close, ...(stock.open ? [stock.open] : []), ...(stock.volume ? [stock.volume] : [])];
+  if (count < 1 || vectors.some((vector) => vector.length !== count)) return 'Stock role bindings must have the same point count as categories';
+  for (let index = 0; index < count; index += 1) {
+    const high = chartNumericValue(stock.high[index]);
+    const low = chartNumericValue(stock.low[index]);
+    const close = chartNumericValue(stock.close[index]);
+    const open = stock.open ? chartNumericValue(stock.open[index]) : undefined;
+    const volume = stock.volume ? chartNumericValue(stock.volume[index]) : undefined;
+    if (high === undefined || low === undefined || close === undefined || high < low
+      || close < low || close > high || (open !== undefined && (open < low || open > high))
+      || (volume !== undefined && volume < 0)) {
+      return `Stock roles are invalid at point ${String(index + 1)}`;
+    }
+  }
+  return undefined;
+}
+
 function mapColor(scaleName: ChartMapOptions['colorScale'], value: number | null, minimum: number, maximum: number, index: number): string {
   if (value === null) return '#e2e8f0';
   if (scaleName === 'category') return DEFAULT_COLORS[index % DEFAULT_COLORS.length]!;
@@ -595,7 +638,13 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   if (data.status.kind !== 'ready') return layout;
   const values = data.series.flatMap((series) => numberValues(series.values));
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
-  const categoryAxis = axisBounds(payload.elements.categoryAxis ?? defaultAxis('category', 'bottom', 'category'), Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index), false);
+  const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
+  const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
+  const categoryAxis = axisBounds(
+    payload.elements.categoryAxis ?? defaultAxis(isScatter ? 'x' : 'category', 'bottom', isScatter ? 'value' : 'category'),
+    isScatter ? xValues : Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index),
+    false,
+  );
   const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
   const barPlacements = buildBarPlacements(payload, data, categoryCount);
   const primaryValues = axisValuesForSeries(payload, data, 'primary', barPlacements);
@@ -624,6 +673,10 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'pie') {
+    if (payload.chartType === 'pie' && layout.series.filter((series) => series.visible).length !== 1) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie charts require exactly one visible series');
+      return layout;
+    }
     layout.pieSlices = pieSlices(payload, data, layout.plot);
     return layout;
   }
@@ -651,7 +704,8 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'stock') {
-    if (!data.series[specialSeriesIndex]?.stockValues) layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Stock charts require explicit High/Low/Close role bindings');
+    const error = stockValidationError(data, specialSeriesIndex);
+    if (error) layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', error);
     else layout.stockPoints = stockLayouts(data, specialSeriesIndex);
     return layout;
   }

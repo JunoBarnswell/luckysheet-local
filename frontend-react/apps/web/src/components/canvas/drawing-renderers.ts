@@ -950,13 +950,21 @@ function drawChartAxes(context: CanvasRenderingContext2D, layout: ChartLayout, c
     context.moveTo(plot.left, plot.top + plot.height);
     context.lineTo(plot.left + plot.width, plot.top + plot.height);
     context.stroke();
-    const interval = Math.max(1, categoryAxisModel?.labelInterval ?? 1);
-    const count = Math.max(1, categories.length);
-    categories.forEach((category, index) => {
-      if (index % interval !== 0) return;
-      const x = plot.left + (index + 0.5) * plot.width / count;
-      drawChartText(context, String(category ?? ''), x, plot.top + plot.height + 12, { color: '#64748b', size: 9, align: 'center' });
-    });
+    if (categoryAxisModel?.axisType === 'value' && categoryAxis) {
+      for (const tick of categoryAxis.ticks) {
+        const x = plot.left + plot.width * chartScale(tick, categoryAxis);
+        drawChartText(context, String(Math.round(tick * 100000) / 100000), x, plot.top + plot.height + 12, { color: '#64748b', size: 9, align: 'center' });
+      }
+    } else {
+      const interval = Math.max(1, categoryAxisModel?.labelInterval ?? 1);
+      const count = Math.max(1, categories.length);
+      categories.forEach((category, index) => {
+        if (index % interval !== 0) return;
+        const slot = categoryAxisModel?.reverseOrder ? count - index - 1 : index;
+        const x = plot.left + (slot + 0.5) * plot.width / count;
+        drawChartText(context, String(category ?? ''), x, plot.top + plot.height + 12, { color: '#64748b', size: 9, align: 'center' });
+      });
+    }
   }
   if (valueAxisModel.title) drawChartText(context, valueAxisModel.title, 12, plot.top + plot.height / 2, { color: '#475569', size: 10 });
   if (categoryAxisModel?.title) drawChartText(context, categoryAxisModel.title, plot.left + plot.width / 2, layout.height - 6, { color: '#475569', size: 10, align: 'center' });
@@ -1040,10 +1048,8 @@ function drawScatterSeries(context: CanvasRenderingContext2D, series: ChartLayou
     points.forEach((point, index) => { if (index === 0) context.moveTo(point.x, point.y); else if (subtype.includes('smooth')) { const previous = points[index - 1]!; const middle = (previous.x + point.x) / 2; context.quadraticCurveTo(middle, previous.y, point.x, point.y); } else context.lineTo(point.x, point.y); });
     context.stroke(); context.restore();
   }
-  const sizes = points.map((point) => Math.abs(point.sizeValue ?? 1));
-  const maxSize = Math.max(1, ...sizes);
   for (const point of points) {
-    const radius = bubble ? Math.max(3, Math.min(24, 3 + Math.sqrt(Math.abs(point.sizeValue ?? 0) / maxSize) * 18)) : 4;
+    const radius = point.markerRadius ?? (bubble ? 3 : 4);
     context.save(); context.globalAlpha = bubble ? 0.72 : 1; context.fillStyle = series.color; context.strokeStyle = series.color; context.beginPath(); context.arc(point.x, point.y, radius, 0, Math.PI * 2); context.fill(); context.stroke(); context.restore();
   }
 }
@@ -1332,12 +1338,15 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
   if (layout.kind === 'pie') {
     const centerX = layout.plot.left + layout.plot.width / 2;
     const centerY = layout.plot.top + layout.plot.height / 2;
-    const radius = Math.hypot(point.x - centerX, point.y - centerY);
-    const angle = Math.atan2(point.y - centerY, point.x - centerX);
     for (const slice of layout.pieSlices ?? []) {
+      const mid = (slice.startAngle + slice.endAngle) / 2;
+      const sliceCenterX = centerX + Math.cos(mid) * slice.explosion;
+      const sliceCenterY = centerY + Math.sin(mid) * slice.explosion;
+      const radius = Math.hypot(point.x - sliceCenterX, point.y - sliceCenterY);
+      const angle = Math.atan2(point.y - sliceCenterY, point.x - sliceCenterX);
       let normalized = angle;
       while (normalized < slice.startAngle) normalized += Math.PI * 2;
-      if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius + slice.explosion) {
+      if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius) {
         const series = layout.series[slice.seriesIndex];
         if (series?.visible) return chartPointSelection(series, slice.pointIndex);
       }
@@ -1479,7 +1488,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     if (!series.visible) continue;
     for (const chartPoint of series.points) {
       if (!chartPoint.visible) continue;
-      if (Math.hypot(point.x - chartPoint.x, point.y - chartPoint.y) <= 7) return chartPointSelection(series, chartPoint.index);
+      if (Math.hypot(point.x - chartPoint.x, point.y - chartPoint.y) <= Math.max(7, chartPoint.markerRadius ?? 0)) return chartPointSelection(series, chartPoint.index);
     }
     for (const bar of series.bars) if (bar.visible && point.x >= bar.x && point.x <= bar.x + bar.width && point.y >= bar.y && point.y <= bar.y + bar.height) return chartPointSelection(series, bar.index);
     for (const trendline of series.trendlines) {
