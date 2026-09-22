@@ -71,6 +71,11 @@ import { collectNameReferences, FormulaEngine, isFormulaError, parseFormula, typ
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 import {
+  canonicalDataSourceManifestIdentity,
+  dataSourceCellPatchIdentity,
+  resolveCanonicalDataSourceRegion,
+} from '../data-source/canonical-region';
+import {
   assertPivotSourceIndex,
   createPivotSourceIndex,
   inferPivotSourceFieldType,
@@ -271,11 +276,11 @@ function fingerprint(value: unknown): string {
 function sourceRevision(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): string {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
-    const manifest = workbook.getDataSource(source.dataSourceId);
+    const canonical = resolveCanonicalDataSourceRegion(workbook, source.dataSourceId);
     return fingerprint({
       source,
-      revision: manifest.revision,
-      blocks: manifest.blocks.map((block) => ({ id: block.id, checksum: block.checksum, revision: block.revision })),
+      manifest: canonicalDataSourceManifestIdentity(canonical.manifest),
+      cellPatches: dataSourceCellPatchIdentity(canonical),
     });
   }
   const ranges = sourceRanges(workbook, pivot, formula);
@@ -1314,7 +1319,6 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel,
         name: field.name,
         dataType: field.type,
         ordinal: field.ordinal,
-        values: [],
       })),
     };
   }

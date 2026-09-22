@@ -480,13 +480,27 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(result?.grandTotal?.values[0], 13);
     const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
-    assert.ok(result?.sourceRowPaths.length);
-    await app.drillDownPivot(pivot.id, 'All rows', result!.sourceRowPaths);
+    await app.loadPivotFieldValues(pivot.id, pivot.fieldCatalog.fields[1]!.fieldId);
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id)
+      .find((field) => field.fieldId === pivot.fieldCatalog.fields[1]!.fieldId)?.values, [11, 2]);
+    writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: setCellPatch(21) });
+    await assert.rejects(app.drillDownPivot(pivot.id, 'Stale rows', result!.sourceRowPaths), /current result/i);
+    app.refreshPivot(pivot.id);
+    await waitForPivot(app, pivot.id);
+    const refreshed = app['runtime'].pivotResults[pivot.id];
+    assert.equal(refreshed?.grandTotal?.values[0], 23);
+    await app.loadPivotFieldValues(pivot.id, pivot.fieldCatalog.fields[1]!.fieldId);
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id)
+      .find((field) => field.fieldId === pivot.fieldCatalog.fields[1]!.fieldId)?.values, [21, 2]);
+    sheet.cells.set(region.headerRow, region.range.startColumn + 1, { value: 'Edited header' });
+    assert.ok(refreshed?.sourceRowPaths.length);
+    await app.drillDownPivot(pivot.id, 'All rows', refreshed!.sourceRowPaths);
     const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const detailRegion = detailSheet.dataRegions[0]!;
     assert.notEqual(detailRegion.sourceId, region.sourceId);
+    assert.equal(detailSheet.cells.get(detailRegion.headerRow, detailRegion.range.startColumn + 1)?.value, 'Amount');
     const detailRows = await app['runtime'].dataContent.get(detailRegion.sourceId)!.getRows(0, 2);
-    assert.deepEqual(detailRows.value, [['A', 11], ['B', 2]]);
+    assert.deepEqual(detailRows.value, [['A', 21], ['B', 2]]);
   });
 
   it('loads DataSource Pivot field members only when a picker requests them', async () => {
@@ -506,7 +520,7 @@ describe('WorkbookSession PivotTable integration', () => {
 
     const pivot = app['runtime'].model.getSheets().flatMap((entry) => entry.pivots).find((entry) => entry.id === created.pivotId)!;
     const regionField = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
-    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, []);
+    assert.equal(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, undefined);
 
     await app.loadPivotFieldValues(pivot.id, regionField.fieldId);
 

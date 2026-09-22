@@ -204,8 +204,7 @@ function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldP
 export function PivotFieldArea({ area, baseFields = [], className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onLoadFieldValues, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
   const [dragActive, setDragActive] = useState(false);
-  const [loadingFieldId, setLoadingFieldId] = useState<string | null>(null);
-  const [loadedFieldIds, setLoadedFieldIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [loadingFieldIds, setLoadingFieldIds] = useState<ReadonlySet<string>>(() => new Set());
   const [fieldValueErrors, setFieldValueErrors] = useState<Record<string, string>>({});
   const items: AreaItem[] = fieldIds.map((placementId, index) => {
     const value = area === 'values' ? valueFields.find((entry) => entry.valueId === placementId) : undefined;
@@ -221,8 +220,8 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
     };
   });
   const requestFieldValues = (fieldId: string): void => {
-    if (!onLoadFieldValues || loadingFieldId === fieldId || loadedFieldIds.has(fieldId)) return;
-    setLoadingFieldId(fieldId);
+    if (!onLoadFieldValues || loadingFieldIds.has(fieldId)) return;
+    setLoadingFieldIds((current) => new Set(current).add(fieldId));
     setFieldValueErrors((current) => {
       if (!(fieldId in current)) return current;
       const next = { ...current };
@@ -230,11 +229,15 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
       return next;
     });
     void onLoadFieldValues(fieldId)
-      .then(() => setLoadedFieldIds((current) => new Set(current).add(fieldId)))
       .catch((error: unknown) => {
         setFieldValueErrors((current) => ({ ...current, [fieldId]: error instanceof Error ? error.message : String(error) }));
       })
-      .finally(() => setLoadingFieldId((current) => current === fieldId ? null : current));
+      .finally(() => setLoadingFieldIds((current) => {
+        if (!current.has(fieldId)) return current;
+        const next = new Set(current);
+        next.delete(fieldId);
+        return next;
+      }));
   };
   return (
     <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-[#bdbdbd] bg-white ${dragActive ? 'border-accent bg-blue-50/40' : ''} ${className ?? ''}`}>
@@ -263,11 +266,11 @@ export function PivotFieldArea({ area, baseFields = [], className, disabled = fa
             {area !== 'values' && onFilter && (field.values?.length || onLoadFieldValues) ? (
               <DropdownMenu
                 align="right"
-                trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} onClick={() => { if (!field.values?.length && !loadedFieldIds.has(field.fieldId)) requestFieldValues(field.fieldId); }} />}
+                trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} onClick={() => { if (field.values === undefined) requestFieldValues(field.fieldId); }} />}
               >
-                {field.values?.length || loadedFieldIds.has(field.fieldId)
+                {field.values !== undefined
                   ? <FilterOptions locale={locale} field={field} disabled={disabled} state={filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }} onFilter={onFilter} />
-                  : <Box className="min-w-52 p-2"><Text size="xs" tone={fieldValueErrors[field.fieldId] ? 'danger' : 'subtle'}>{fieldValueErrors[field.fieldId] ?? (loadingFieldId === field.fieldId ? pivotText(locale, 'loading') : pivotText(locale, 'error'))}</Text></Box>}
+                  : <Box className="min-w-52 p-2"><Text size="xs" tone={fieldValueErrors[field.fieldId] ? 'danger' : 'subtle'}>{fieldValueErrors[field.fieldId] ?? (loadingFieldIds.has(field.fieldId) ? pivotText(locale, 'loading') : pivotText(locale, 'error'))}</Text></Box>}
               </DropdownMenu>
             ) : null}
             <DropdownMenu

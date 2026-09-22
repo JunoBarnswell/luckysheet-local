@@ -218,6 +218,7 @@ import {
   encodeColumnarBlock,
   encodeSheetDataRegion,
   readCellPatch,
+  resolveCanonicalDataSourceRegion,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -626,6 +627,14 @@ class PivotTaskExecutionError extends Error {
 
 const MAX_REGISTERED_PIVOT_SOURCES = 8;
 
+function pivotFieldValueCacheKey(sourceId: string, fieldId: string): string {
+  return JSON.stringify([sourceId, fieldId]);
+}
+
+function pivotSourceRowPathKey(path: PivotSourceRowPath): string {
+  return JSON.stringify([path.sourceId ?? null, path.recordId ?? null, path.sheetId, path.row]);
+}
+
 export interface DefinedNameCommandInput {
   name: string;
   formula: string;
@@ -867,7 +876,7 @@ export class WorkbookSession {
   private readonly pivotTaskPort: PivotTaskPort;
   private readonly registeredPivotSources = new Map<string, string>();
   /** Member domains are loaded per data-source field, never as part of pivot open. */
-  private readonly pivotFieldValueCache = new Map<string, { sourceId: string; revision: number; values: PivotScalar[] }>();
+  private readonly pivotFieldValueCache = new Map<string, { sourceId: string; sourceRevision: string; values: PivotScalar[] }>();
   private readonly pivotFieldValueLoads = new Map<string, Promise<void>>();
   private readonly activePivotTasks = new Map<string, string>();
   private readonly pendingPivotCommitResults = new Map<string, import('@react-sheets/core-model').PivotResultTree>();
@@ -4901,30 +4910,42 @@ export class WorkbookSession {
     if (pivot.source.kind === 'data-source') {
       const sourceId = pivot.source.dataSourceId;
       const query = this.runtime.dataContent.get(sourceId);
-      const region = this.runtime.model.getSheets()
-        .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
-        .find(({ entry }) => entry.sourceId === sourceId);
-      if (!query || !region) throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', `PivotTable source ${sourceId} is unavailable`, 'fix-source'));
+      if (!query) throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', `PivotTable source ${sourceId} is unavailable`, 'fix-source'));
+      let canonical: ReturnType<typeof resolveCanonicalDataSourceRegion>;
+      try {
+        canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
+      } catch (error) {
+        throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', error instanceof Error ? error.message : String(error), 'fix-source', descriptor.revisions.sourceRevision));
+      }
+      const assertCurrentDataSource = (): void => {
+        assertCurrentPreparation();
+        const current = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivot.id);
+        if (!current || current.source.kind !== 'data-source' || current.source.dataSourceId !== sourceId
+          || this.runtime.dataContent.get(sourceId) !== query
+          || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== descriptor.revisions.sourceRevision) {
+          throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot data source changed while loading blocks', 'retry', descriptor.revisions.sourceRevision));
+        }
+      };
       const loaded = await readPivotBlockSource(normalizePivotDefinitionFromCatalog(pivot), query, {
-        sourceSheetId: region.sheet.id,
-        sourceRowStart: region.entry.headerRow + 1,
+        sourceSheetId: canonical.sheet.id,
+        sourceRowStart: canonical.region.headerRow + 1,
         resolveCellOverlays: () => {
           const overlays: Array<{ rowIndex: number; fieldOrdinal: number; value: PivotScalar }> = [];
-          region.sheet.cells.forEachInRange(
-            region.entry.headerRow + 1,
-            region.entry.range.endRow,
-            region.entry.range.startColumn,
-            region.entry.range.endColumn,
+          canonical.sheet.cells.forEachInRange(
+            canonical.region.headerRow + 1,
+            canonical.region.range.endRow,
+            canonical.region.range.startColumn,
+            canonical.region.range.endColumn,
             (cell, row, column) => {
               if (!readCellPatch(cell)) return;
-              const resolved = this.readResolvedCell(region.sheet, row, column);
+              const resolved = this.readResolvedCell(canonical.sheet, row, column);
               const value = resolved?.formulaValue ?? resolved?.value ?? null;
               if (!(value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value))) {
-                throw new Error(`Pivot source cell ${region.sheet.id}!${String(row)}:${String(column)} is not a scalar value`);
+                throw new Error(`Pivot source cell ${canonical.sheet.id}!${String(row)}:${String(column)} is not a scalar value`);
               }
               overlays.push({
-                rowIndex: row - region.entry.headerRow - 1,
-                fieldOrdinal: column - region.entry.range.startColumn,
+                rowIndex: row - canonical.region.headerRow - 1,
+                fieldOrdinal: column - canonical.region.range.startColumn,
                 value,
               });
             },
@@ -4932,18 +4953,19 @@ export class WorkbookSession {
           return overlays;
         },
       });
-      assertCurrentPreparation();
+      assertCurrentDataSource();
       if (loaded.status !== 'ready') throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_UNAVAILABLE', loaded.error, 'fix-source'));
       // The descriptor was captured with the reader, before awaiting blocks.
       // Never label old rows with a manifest revision installed during the read.
       if (this.registeredPivotSources.get(sourceIdentity) !== descriptor.revisions.sourceRevision) {
         const taskId = `${pivot.id}:source:${generation}`;
         const registration = await this.pivotTaskPort.submit(createPivotSourceRegisterRequest(taskId, generation, sourceIdentity, descriptor.revisions.sourceRevision, loaded.source));
-        assertCurrentPreparation();
+        assertCurrentDataSource();
         if (registration.status !== 'accepted') throw new PivotTaskExecutionError(registration.status === 'failed'
           ? registration.error
           : this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot source registration was cancelled', 'retry', descriptor.revisions.sourceRevision));
         await this.rememberRegisteredPivotSource(pivot, sourceIdentity, descriptor.revisions.sourceRevision, generation);
+        assertCurrentDataSource();
       }
       return { sourceIdentity, descriptor };
     }
@@ -5430,7 +5452,15 @@ export class WorkbookSession {
     const workbook = this.runtime.model;
     const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
-    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    if (!owner || !pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const result = this.runtime.pivotResults[pivotId];
+    if (!pivotResultMatchesRevision(workbook, pivot, result, this.runtime.formula)) {
+      throw new Error('Pivot drill-down requires a current result; refresh the PivotTable and retry');
+    }
+    const knownPaths = new Set(result.sourceRowPaths.map(pivotSourceRowPathKey));
+    if (paths.some((path) => !knownPaths.has(pivotSourceRowPathKey(path)))) {
+      throw new Error('Pivot drill-down provenance does not belong to the current result');
+    }
     const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
     const assertCurrent = (): void => {
       const current = workbook.getSheet(owner.id).pivots.find((entry) => entry.id === pivotId);
@@ -6638,39 +6668,64 @@ export class WorkbookSession {
       ? buildPivotFieldCatalog(this.runtime.model, pivot).fields
       : (fallback.length > 0 ? fallback.map((field) => structuredClone(field)) : structuredClone(pivot.fieldCatalog.fields));
     const sourceId = pivot.source.kind === 'data-source' ? pivot.source.dataSourceId : undefined;
-    const revision = sourceId === undefined ? undefined : this.runtime.dataContent.get(sourceId)?.manifest.revision;
+    const sourceRevision = sourceId === undefined ? undefined : getPivotRevisionKey(this.runtime.model, pivot, this.runtime.formula).sourceRevision;
     return fields.map((field) => {
-      const cached = sourceId !== undefined && revision !== undefined
-        ? this.pivotFieldValueCache.get(`${sourceId}:${field.fieldId}`)
+      const cached = sourceId !== undefined && sourceRevision !== undefined
+        ? this.pivotFieldValueCache.get(pivotFieldValueCacheKey(sourceId, field.fieldId))
         : undefined;
-      if (cached !== undefined && cached.revision === revision) return { ...field, values: structuredClone(cached.values) };
+      if (cached !== undefined && cached.sourceId === sourceId && cached.sourceRevision === sourceRevision) return { ...field, values: structuredClone(cached.values) };
       return field;
     });
   }
 
   /** Loads one data-source field's distinct members on demand for its picker. */
   async loadPivotFieldValues(pivotId: string, fieldId: string): Promise<void> {
-    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
-    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const workbook = this.runtime.model;
+    const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
+    const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
+    if (!owner || !pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     if (pivot.source.kind !== 'data-source') throw new Error('Pivot field values are only lazy-loaded for data-source pivots');
     const sourceId = pivot.source.dataSourceId;
     const query = this.runtime.dataContent.get(sourceId);
     if (!query) throw new Error(`Data source ${sourceId} is unavailable`);
     const field = query.getField(fieldId);
     if (!field) throw new Error(`Unknown data source field: ${fieldId}`);
-    const revision = query.manifest.revision;
-    const cacheKey = `${sourceId}:${fieldId}`;
+    const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
+    const cacheKey = pivotFieldValueCacheKey(sourceId, fieldId);
     const cached = this.pivotFieldValueCache.get(cacheKey);
-    if (cached && cached.sourceId === sourceId && cached.revision === revision) return;
-    const loadKey = `${cacheKey}:${String(revision)}`;
+    if (cached && cached.sourceId === sourceId && cached.sourceRevision === sourceRevision) return;
+    const loadKey = JSON.stringify([cacheKey, sourceRevision]);
     const existing = this.pivotFieldValueLoads.get(loadKey);
     if (existing) return existing;
     const loading = (async (): Promise<void> => {
-      const result = await query.getDistinctFieldValues(fieldId);
+      const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
+      if (field.ordinal >= canonical.manifest.fields.length) throw new Error(`Pivot field ${field.name} is outside data source ${sourceId}`);
+      const column = canonical.region.range.startColumn + field.ordinal;
+      const overlayValues = new Map<number, PivotScalar>();
+      canonical.sheet.cells.forEachInRange(canonical.region.headerRow + 1, canonical.region.range.endRow, column, column, (cell, row) => {
+        if (!readCellPatch(cell)) throw new Error(`Data region ${canonical.region.id} contains a non-canonical cell overlay`);
+        const resolved = this.readResolvedCell(canonical.sheet, row, column);
+        const value = resolved?.formulaValue ?? resolved?.value ?? null;
+        if (!(value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value))) {
+          throw new Error(`Pivot field ${field.name} contains a non-scalar overlay value`);
+        }
+        overlayValues.set(row - canonical.region.headerRow - 1, value);
+      });
+      const result = await query.getDistinctFieldValues(fieldId, undefined, (logicalRow, baseValue) => {
+        const physicalRow = canonical.manifest.rowOrder?.[logicalRow] ?? logicalRow;
+        return overlayValues.has(physicalRow) ? overlayValues.get(physicalRow)! : baseValue;
+      });
       if (result.value === undefined) throw new Error(result.state.error ?? `Data source field ${field.name} values are unavailable`);
+      const currentOwner = workbook.sheets.get(owner.id);
+      const current = currentOwner?.pivots.find((entry) => entry.id === pivotId);
+      if (this.disposed || this.runtime.model !== workbook || currentOwner !== owner
+        || this.runtime.dataContent.get(sourceId) !== query || !current
+        || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== sourceRevision) {
+        throw new Error(`Pivot field ${field.name} changed while loading values`);
+      }
       this.pivotFieldValueCache.set(cacheKey, {
         sourceId,
-        revision,
+        sourceRevision,
         values: structuredClone(result.value),
       });
       this.refresh();

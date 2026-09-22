@@ -16,6 +16,7 @@ import {
   DataSourceContentQuery,
   type DataBlockReader,
 } from './content-query';
+import { dataSourceCellPatchIdentity, resolveCanonicalDataSourceRegion } from './canonical-region';
 import {
   applyDataRegionMaterialization,
   migrateDataRegionCellPatches,
@@ -77,6 +78,31 @@ function manifest(sourceId: string, rowCount: number, blocks: DataBlockRef[]): D
   };
 }
 
+test('canonical data-source region rejects a reader with same revision but different metadata', async () => {
+  const sourceId = nextSourceId();
+  const stored = await buildBlock(sourceId, 'canonical-region-block', 0, [['A', 10], ['B', 20]]);
+  const source: DataSourceManifest = {
+    ...manifest(sourceId, 2, [stored.ref]),
+    sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+  };
+  const workbook = new WorkbookModel('canonical-region-workbook', 'Canonical region');
+  const sheet = workbook.getSheet('sheet-1');
+  workbook.addDataSource(source);
+  sheet.addDataRegion({ id: 'canonical-region', sourceId, range: structuredClone(source.sourceRange!), headerRow: 0, revision: 0 });
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  await store.put(stored.ref, stored.bytes);
+  const query = new DataSourceContentQuery(source, store);
+
+  const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
+  assert.equal(canonical.region.id, 'canonical-region');
+  writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'set', value: 11 } });
+  assert.deepEqual(dataSourceCellPatchIdentity(canonical).map(({ row, column }) => [row, column]), [[0, 1]]);
+
+  const mismatched = new DataSourceContentQuery({ ...source, name: 'Different metadata' }, store);
+  assert.throws(() => resolveCanonicalDataSourceRegion(workbook, sourceId, mismatched), /does not match/i);
+});
+
 test('content query reads blocks, publishes loading/ready, and applies block-local overlays', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
@@ -123,13 +149,19 @@ test('distinct field values stay unloaded until requested and fail closed at the
       return store.get(ref);
     },
   };
-  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+  const source = manifest(sourceId, 4, [first.ref, second.ref]);
+  source.rowOrder = [2, 0, 3, 1];
+  const query = new DataSourceContentQuery(source, reader);
 
   assert.equal(reads, 0);
   const members = await query.getDistinctFieldValues('code');
   assert.deepEqual(members.value, ['A', 'B', null]);
   assert.equal(members.state.availability, 'ready');
   assert.equal(reads, 2);
+
+  const resolved = await query.getDistinctFieldValues('code', undefined,
+    (logicalRow, baseValue) => logicalRow === 1 ? 'Patched' : baseValue);
+  assert.deepEqual(resolved.value, ['A', 'Patched', null, 'B']);
 
   const limited = await query.getDistinctFieldValues('code', 2);
   assert.equal(limited.value, undefined);

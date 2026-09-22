@@ -103,12 +103,14 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
   const stored = await block(source, 'block-1', 0, [['East', 10], ['West', 20], ['East', 30], ['North', 40]]);
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
   await store.put(stored.ref, stored.bytes);
-  const query = new DataSourceContentQuery(manifest(source, [stored.ref], 4), store);
+  const sourceManifest = manifest(source, [stored.ref], 4);
+  sourceManifest.rowOrder = [2, 0, 3, 1];
+  const query = new DataSourceContentQuery(sourceManifest, store);
   const events: string[] = [];
 
   const result = await readPivotBlockSource(pivot(source), query, {
     sourceRowStart: 1,
-    chunkRowCount: 2,
+    resolveCellOverlays: () => [{ rowIndex: 0, fieldOrdinal: 1, value: 99 }],
     onState: (state) => events.push(state.status),
   });
 
@@ -119,13 +121,13 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
     { fieldId: 'orders:field:0', name: 'Region', ordinal: 0, dataType: 'text' },
     { fieldId: 'orders:field:1', name: 'Amount', ordinal: 1, dataType: 'number' },
   ]);
-  assert.deepEqual(pivotSourceColumnValues(result.source, 0), ['East', 'West', 'East', 'North']);
-  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [10, 20, 30, 40]);
+  assert.deepEqual(pivotSourceColumnValues(result.source, 0), ['East', 'East', 'North', 'West']);
+  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [30, 99, 40, 20]);
   assert.deepEqual(Array.from({ length: result.source.rowCount }, (_, row) => pivotSourceRowPaths(result.source, row)), [
-    [{ sheetId: 'source-sheet', row: 1 }],
-    [{ sheetId: 'source-sheet', row: 2 }],
     [{ sheetId: 'source-sheet', row: 3 }],
+    [{ sheetId: 'source-sheet', row: 1 }],
     [{ sheetId: 'source-sheet', row: 4 }],
+    [{ sheetId: 'source-sheet', row: 2 }],
   ]);
   assert.deepEqual(events, ['loading', 'ready']);
 });

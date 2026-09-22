@@ -41,8 +41,6 @@ export interface PivotBlockSourceReadOptions {
   sourceRowStart?: number;
   /** Sparse canonical CellPatch values, resolved after all source blocks load. */
   resolveCellOverlays?: () => readonly PivotBlockSourceCellOverlay[];
-  /** Bounded query size; the default aligns with the block row contract. */
-  chunkRowCount?: number;
   onState?: (state: PivotBlockSourceState) => void;
 }
 
@@ -84,10 +82,6 @@ function validateOptions(options: PivotBlockSourceReadOptions): string | undefin
   if (options.sourceRowStart !== undefined
     && (!Number.isSafeInteger(options.sourceRowStart) || options.sourceRowStart < 0)) {
     return 'sourceRowStart must be a non-negative safe integer';
-  }
-  if (options.chunkRowCount !== undefined
-    && (!Number.isSafeInteger(options.chunkRowCount) || options.chunkRowCount <= 0)) {
-    return 'chunkRowCount must be a positive safe integer';
   }
   return undefined;
 }
@@ -149,7 +143,6 @@ export async function readPivotBlockSource(
     return failure('error', sourceId, 'Data source has no worksheet identity for source row paths');
   }
   const sourceRowStart = options.sourceRowStart ?? 0;
-  const chunkRowCount = options.chunkRowCount ?? 65_536;
   let fields: PivotBlockSourceField[];
   try {
     fields = canonicalFields(queryManifest.fields);
@@ -168,32 +161,28 @@ export async function readPivotBlockSource(
   try {
     const columnValues = fields.map(() => [] as PivotScalar[]);
     const rowPaths: PivotSourceRowPath[][] = [];
-    for (let startRow = 0; startRow < queryManifest.rowCount; startRow += chunkRowCount) {
-      const rowCount = Math.min(chunkRowCount, queryManifest.rowCount - startRow);
-      const result = await query.getRows(startRow, rowCount);
-      const state = stateFromQuery(result.state);
-      if (result.value === undefined) {
-        const status = state.status === 'ready' ? 'error' : state.status;
-        return failure(status, state.sourceId, state.error ?? `Data source ${sourceId} did not return rows`, state.blockId);
+    const physicalToLogical = new Map<number, number>();
+    const scanned = await query.scanRows((values, logicalRow, physicalRow) => {
+      if (values.length !== fields.length) {
+        throw new Error(`Data source row ${String(logicalRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
       }
-      if (state.status !== 'ready') {
-        return failure(state.status, state.sourceId, state.error ?? `Data source ${sourceId} is ${state.status}`, state.blockId);
-      }
-      for (let localRow = 0; localRow < result.value.length; localRow += 1) {
-        const values = result.value[localRow]!;
-        if (values.length !== fields.length) {
-          return failure('error', sourceId, `Data source row ${String(startRow + localRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`, state.blockId);
-        }
-        for (let ordinal = 0; ordinal < fields.length; ordinal += 1) columnValues[ordinal]!.push(values[ordinal] ?? null);
-        rowPaths.push([rowPath(sourceSheetId, sourceRowStart, startRow + localRow)]);
-      }
+      for (let ordinal = 0; ordinal < fields.length; ordinal += 1) columnValues[ordinal]!.push(values[ordinal] ?? null);
+      rowPaths.push([rowPath(sourceSheetId, sourceRowStart, physicalRow)]);
+      physicalToLogical.set(physicalRow, logicalRow);
+    });
+    const scanState = stateFromQuery(scanned.state);
+    if (scanned.value === undefined || scanState.status !== 'ready') {
+      const status = scanState.status === 'ready' ? 'error' : scanState.status;
+      return failure(status, scanState.sourceId, scanState.error ?? `Data source ${sourceId} did not return rows`, scanState.blockId);
     }
     for (const overlay of options.resolveCellOverlays?.() ?? []) {
       if (!Number.isSafeInteger(overlay.rowIndex) || overlay.rowIndex < 0 || overlay.rowIndex >= queryManifest.rowCount
         || !Number.isSafeInteger(overlay.fieldOrdinal) || overlay.fieldOrdinal < 0 || overlay.fieldOrdinal >= fields.length) {
         throw new Error('Pivot source CellPatch overlay is outside the canonical data region');
       }
-      columnValues[overlay.fieldOrdinal]![overlay.rowIndex] = overlay.value;
+      const logicalRow = physicalToLogical.get(overlay.rowIndex);
+      if (logicalRow === undefined) throw new Error('Pivot source CellPatch overlay has no logical data row');
+      columnValues[overlay.fieldOrdinal]![logicalRow] = overlay.value;
     }
     const readyState: PivotBlockSourceState = {
       status: 'ready',

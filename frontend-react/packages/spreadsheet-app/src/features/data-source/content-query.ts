@@ -6,6 +6,7 @@ import {
   type DataBlockAvailability,
   type DataSourceField,
   type DataSourceManifest,
+  type PivotScalar,
   type TableScalar,
 } from '@react-sheets/core-model';
 import {
@@ -282,22 +283,18 @@ export class DataSourceContentQuery {
   }
 
   /**
-   * Load one field's member domain on demand.  The manifest deliberately does
-   * not materialize distinct values for large sources; callers should invoke
-   * this only when a value picker is opened.
+   * Visit logical rows without constructing a copied row matrix. The visitor
+   * may return false to stop before loading later blocks; decoded block rows
+   * remain read-only views owned by this query.
    */
-  async getDistinctFieldValues(
-    fieldRef: DataSourceFieldRef,
-    maxValues = PIVOT_MEMBER_DISPLAY_LIMIT,
-  ): Promise<DataSourceContentResult<TableScalar[]>> {
-    const field = this.resolveField(fieldRef);
-    if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
-    if (!Number.isSafeInteger(maxValues) || maxValues <= 0) return this.errorResult('Data source distinct-value limit must be a positive safe integer');
-
-    const values: TableScalar[] = [];
-    const seen = new Set<string>();
+  async scanRows(
+    visitor: (row: readonly TableScalar[], logicalRow: number, physicalRow: number) => boolean | void,
+  ): Promise<DataSourceContentResult<boolean>> {
     let lastState = state(this.source.id, null, 'ready');
-    for (const ref of this.source.blocks) {
+    for (let logicalRow = 0; logicalRow < this.source.rowCount; logicalRow += 1) {
+      const physicalRow = this.physicalRow(logicalRow);
+      const ref = this.findBlock(physicalRow);
+      if (!ref) return this.missingResult(`No data block covers source row ${String(logicalRow)}`);
       let block: LoadedBlock;
       try {
         block = await this.loadBlock(ref);
@@ -307,18 +304,53 @@ export class DataSourceContentQuery {
         return { state: { ...current } };
       }
       lastState = state(this.source.id, ref.id, 'ready');
-      for (const row of block.rows) {
-        const value = row[field.ordinal] ?? null;
-        const key = value === null ? 'null' : `${typeof value}:${JSON.stringify(value)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        values.push(value);
-        if (values.length > maxValues) {
-          return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
-        }
+      const row = block.rows[physicalRow - ref.startRow];
+      if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(logicalRow)}`);
+      try {
+        if (visitor(row, logicalRow, physicalRow) === false) return { state: lastState, value: false };
+      } catch (error) {
+        return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
       }
     }
-    return { state: lastState, value: values };
+    return { state: lastState, value: true };
+  }
+
+  /**
+   * Load one field's member domain on demand.  The manifest deliberately does
+   * not materialize distinct values for large sources; callers should invoke
+   * this only when a value picker is opened.
+   */
+  async getDistinctFieldValues(
+    fieldRef: DataSourceFieldRef,
+    maxValues = PIVOT_MEMBER_DISPLAY_LIMIT,
+    resolveValue?: (logicalRow: number, baseValue: TableScalar) => PivotScalar,
+  ): Promise<DataSourceContentResult<PivotScalar[]>> {
+    const field = this.resolveField(fieldRef);
+    if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
+    if (!Number.isSafeInteger(maxValues) || maxValues <= 0) return this.errorResult('Data source distinct-value limit must be a positive safe integer');
+
+    const values: PivotScalar[] = [];
+    const seen = new Set<string>();
+    let overflow = false;
+    const scanned = await this.scanRows((row, logicalRow) => {
+      try {
+        const baseValue = row[field.ordinal] ?? null;
+        const value = resolveValue === undefined ? baseValue : resolveValue(logicalRow, baseValue);
+        const key = value === null ? 'null' : `${typeof value}:${JSON.stringify(value)}`;
+        if (seen.has(key)) return;
+        if (values.length >= maxValues) {
+          overflow = true;
+          return false;
+        }
+        seen.add(key);
+        values.push(value);
+      } catch (error) {
+        throw new Error(`Data source field ${field.name} overlay failed: ${errorMessage(error)}`);
+      }
+    });
+    if (scanned.value === undefined) return { state: scanned.state };
+    if (overflow) return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
+    return { state: scanned.state, value: values };
   }
 
   async getRows(

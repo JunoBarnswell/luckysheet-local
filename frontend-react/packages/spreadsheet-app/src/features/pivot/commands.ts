@@ -18,6 +18,7 @@ import type {
   TableScalar,
 } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from '../data-source/content-query';
+import { resolveCanonicalDataSourceRegion } from '../data-source/canonical-region';
 import { applyCellPatch, readCellPatch, type CellPatch } from '../data-source/resolved-cell';
 import { PivotDrillDownError } from './drill-down-error';
 import { assertPivotDefinition, createPivotDrillDownSheetName } from './panel-state';
@@ -267,6 +268,15 @@ function planPivotDrillDown(workbook: WorkbookModel, params: PivotDrillDownReque
 }
 
 function drillDownColumns(workbook: WorkbookModel, pivot: PivotModel): DrillDownColumn[] {
+  if (pivot.source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(pivot.source.dataSourceId);
+    if (!manifest.sourceRange) throw new Error(`Pivot data source ${manifest.id} has no worksheet range`);
+    return manifest.fields.map((field) => ({
+      range: structuredClone(manifest.sourceRange!),
+      column: manifest.sourceRange!.startColumn + field.ordinal,
+      label: field.name,
+    }));
+  }
   const columns: DrillDownColumn[] = [];
   const labels = new Set<string>();
   const nodes = pivotSourceNodes(pivot, workbook);
@@ -332,48 +342,41 @@ export async function readPivotDrillDownRows(
   if (pivot.source.kind === 'data-source') {
     const sourceId = pivot.source.dataSourceId;
     const query = dataContent.get(sourceId);
-    const region = workbook.getSheets().flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
-      .find(({ entry }) => entry.sourceId === sourceId);
-    if (!query || !region) throw new Error(`Pivot drill-down source ${sourceId} is unavailable`);
-    const manifest = query.manifest;
-    const canonicalSource = workbook.getDataSource(sourceId);
-    const manifestRange = manifest.sourceRange;
-    const regionRange = region.entry.range;
-    if (canonicalSource.revision !== manifest.revision || manifest.id !== sourceId || manifest.sourceSheetId !== region.sheet.id
-      || manifestRange === undefined || manifestRange.sheetId !== regionRange.sheetId
-      || manifestRange.startRow !== regionRange.startRow || manifestRange.endRow !== regionRange.endRow
-      || manifestRange.startColumn !== regionRange.startColumn || manifestRange.endColumn !== regionRange.endColumn
-      || region.entry.headerRow !== manifestRange.startRow || region.entry.revision !== manifest.revision
-      || manifest.rowCount !== manifestRange.endRow - region.entry.headerRow
-      || manifest.fields.length !== manifestRange.endColumn - manifestRange.startColumn + 1
-      || manifest.fields.length !== plan.columns.length) {
-      throw new Error(`Pivot drill-down source ${sourceId} has inconsistent manifest and sheet-region metadata`);
-    }
+    if (!query) throw new Error(`Pivot drill-down source ${sourceId} is unavailable`);
+    const sourceRevision = getPivotRevisionKey(workbook, pivot).sourceRevision;
+    const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
+    const { manifest, sheet: sourceSheet, region } = canonical;
+    const manifestRange = manifest.sourceRange!;
+    const logicalRowsByPhysical = manifest.rowOrder === undefined
+      ? undefined
+      : new Map(manifest.rowOrder.map((physicalRow, logicalRow) => [physicalRow, logicalRow]));
+    if (manifest.fields.length !== plan.columns.length) throw new Error(`Pivot drill-down source ${sourceId} field count changed`);
     const logicalRows = plan.records.map((record) => {
       const path = record.paths.get('__single-source__');
-      if (!path || path.sheetId !== region.sheet.id) throw new Error('Pivot drill-down provenance does not match its data region');
-      const logicalRow = path.row - region.entry.headerRow - 1;
+      if (!path || path.sheetId !== sourceSheet.id) throw new Error('Pivot drill-down provenance does not match its data region');
+      const physicalRow = path.row - region.headerRow - 1;
+      const logicalRow = logicalRowsByPhysical?.get(physicalRow) ?? physicalRow;
       if (!Number.isSafeInteger(logicalRow) || logicalRow < 0 || logicalRow >= manifest.rowCount) {
         throw new Error(`Pivot drill-down source row is outside data source ${sourceId}`);
       }
       return logicalRow;
     });
     const selected = await readSelectedDataSourceRows(query, logicalRows);
-    if (dataContent.get(sourceId) !== query || workbook.getDataSource(sourceId).revision !== manifest.revision) {
+    if (dataContent.get(sourceId) !== query || getPivotRevisionKey(workbook, pivot).sourceRevision !== sourceRevision) {
       throw new Error(`Pivot drill-down source ${sourceId} changed while reading details`);
     }
     const selectedSheetRows = new Set(plan.records.map((record) => record.paths.get('__single-source__')!.row));
     const patches = new Map<number, Map<number, CellPatch>>();
-    region.sheet.cells.forEachInRows(selectedSheetRows, (cell, row, column) => {
+    sourceSheet.cells.forEachInRows(selectedSheetRows, (cell, row, column) => {
       if (column < manifestRange.startColumn || column > manifestRange.endColumn) return;
       const patch = readCellPatch(cell);
-      if (!patch) throw new Error(`Data region ${region.entry.id} contains a non-canonical cell overlay`);
+      if (!patch) throw new Error(`Data region ${region.id} contains a non-canonical cell overlay`);
       const rowPatches = patches.get(row) ?? new Map<number, CellPatch>();
       rowPatches.set(column, patch);
       patches.set(row, rowPatches);
     });
     return {
-      headers,
+      headers: manifest.fields.map((field) => field.name),
       rows: logicalRows.map((row, index) => {
         const values = selected.get(row);
         if (!values) throw new Error(`Pivot drill-down source row ${String(row)} was not loaded`);
