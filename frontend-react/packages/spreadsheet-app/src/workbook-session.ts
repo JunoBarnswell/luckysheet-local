@@ -17,7 +17,6 @@ import type {
   EquationDrawingPayload,
   ChartBindings,
   ChartDrawingPayload,
-  ChartSeriesModel,
   ConnectorDrawingPayload,
   DrawingConnectorType,
   ConditionalFormatRule,
@@ -65,6 +64,7 @@ import type {
 } from '@react-sheets/core-model';
 import {
   createDefaultTextBoxTextFrame,
+  buildExplicitChartSeries,
   chartStackingForSubtype,
   defaultChartSubtype,
   DEFAULT_DATA_BLOCK_ROW_COUNT,
@@ -677,46 +677,6 @@ function clearPreservedFilterChildren(value: unknown): unknown {
   const next = { ...record };
   delete next.filterChildren;
   return Object.keys(next).length > 0 ? next : undefined;
-}
-
-function explicitChartSeries(type: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'], range: RangeRef): ChartSeriesModel[] | undefined {
-  if (range.endRow <= range.startRow) throw new Error('INVALID_CHART_SOURCE: 图表数据区域必须包含表头和至少一行数据');
-  const dataStart = range.startColumn + 1;
-  const width = range.endColumn - range.startColumn;
-  const seriesCount = Math.max(1, width);
-  const dataRows = { ...range, startRow: range.startRow + 1 };
-  if (type === 'scatter' || type === 'bubble') {
-    const requiredColumns = type === 'bubble' ? 3 : 2;
-    if (width < requiredColumns) throw new Error(`INVALID_CHART_SOURCE: ${type} chart requires a category column plus ${requiredColumns} data columns`);
-    if (width % requiredColumns !== 0) throw new Error(`INVALID_CHART_SOURCE: ${type} chart data columns must form complete groups of ${requiredColumns}`);
-    const pairCount = type === 'bubble' ? Math.floor(width / 3) : Math.floor(width / 2);
-    return Array.from({ length: Math.max(1, pairCount) }, (_, index) => {
-      const offset = dataStart + index * (type === 'bubble' ? 3 : 2);
-      const xRange = { ...dataRows, startColumn: offset, endColumn: offset };
-      const yRange = { ...dataRows, startColumn: offset + 1, endColumn: offset + 1 };
-      const sizeRange = type === 'bubble' ? { ...dataRows, startColumn: offset + 2, endColumn: offset + 2 } : undefined;
-      return { id: `series:${index + 1}`, name: `Series ${index + 1}`, range: yRange, xRange, yRange, ...(sizeRange ? { sizeRange } : {}), chartType: type, subtype };
-    });
-  }
-  if (type === 'stock') {
-    const requiredColumns = subtype.includes('volume') ? subtype.includes('open') ? 5 : 4 : subtype.includes('open') ? 4 : 3;
-    if (width < requiredColumns) throw new Error(`INVALID_CHART_SOURCE: ${subtype} stock chart requires a category column plus ${requiredColumns} role columns`);
-    const roles: NonNullable<ChartSeriesModel['stockRoles']> = {
-      high: { ...dataRows, startColumn: dataStart, endColumn: dataStart },
-      low: { ...dataRows, startColumn: dataStart + 1, endColumn: dataStart + 1 },
-      close: { ...dataRows, startColumn: dataStart + 2, endColumn: dataStart + 2 },
-      ...(subtype.includes('open') ? { open: { ...dataRows, startColumn: dataStart, endColumn: dataStart } } : {}),
-      ...(subtype.includes('volume') ? { volume: { ...dataRows, startColumn: dataStart + (subtype.includes('open') ? 4 : 3), endColumn: dataStart + (subtype.includes('open') ? 4 : 3) } } : {}),
-    };
-    if (subtype.includes('open')) { roles.high = { ...dataRows, startColumn: dataStart + 1, endColumn: dataStart + 1 }; roles.low = { ...dataRows, startColumn: dataStart + 2, endColumn: dataStart + 2 }; roles.close = { ...dataRows, startColumn: dataStart + 3, endColumn: dataStart + 3 }; }
-    return [{ id: 'series:1', name: 'Stock', range: roles.close, stockRoles: roles, chartType: type, subtype }];
-  }
-  if (type === 'combo') {
-    if (width < 1) throw new Error('INVALID_CHART_SOURCE: combo chart requires a category column and at least one value column');
-    const comboTypes: Array<Exclude<ChartDrawingPayload['chartType'], 'combo'>> = subtype === 'stacked-area-clustered-column' ? ['area', 'column'] : subtype === 'clustered-column-line' || subtype === 'clustered-column-line-secondary' ? ['column', 'line'] : ['column'];
-    return Array.from({ length: seriesCount }, (_, index) => ({ id: `series:${index + 1}`, name: `Series ${index + 1}`, range: { ...dataRows, startColumn: dataStart + index, endColumn: dataStart + index }, chartType: comboTypes[index % comboTypes.length]!, axis: subtype === 'clustered-column-line-secondary' && index % comboTypes.length === 1 ? 'secondary' : 'primary' }));
-  }
-  return undefined;
 }
 
 const LOCAL_ICON_REGISTRY: Readonly<Record<string, Pick<IconDrawingPayload, 'svgPath' | 'viewBox' | 'accessibilityLabel'>>> = {
@@ -4781,7 +4741,7 @@ export class WorkbookSession {
       subtype,
       source: { kind: 'worksheet-ranges', ranges: [{ ...range, sheetId: this.activeSheetId }] },
       ...(chartStackingForSubtype(subtype) ? { stacked: chartStackingForSubtype(subtype) } : {}),
-      series: explicitChartSeries(type, subtype, { ...range, sheetId: this.activeSheetId }),
+      series: buildExplicitChartSeries(type, subtype, { ...range, sheetId: this.activeSheetId }),
       elements: {
         title: 'Chart',
         legend: { visible: true, position: 'bottom' },
@@ -4820,7 +4780,7 @@ export class WorkbookSession {
       chartType: type,
       subtype,
       source: { kind: 'worksheet-ranges', ranges: [structuredClone(sourceRange)] },
-      series: series ? structuredClone(series) : explicitChartSeries(type, subtype, structuredClone(sourceRange)),
+      series: series ? structuredClone(series) : buildExplicitChartSeries(type, subtype, structuredClone(sourceRange)),
       ...(effectiveStacking ? { stacked: effectiveStacking } : {}),
       elements: {
         title,

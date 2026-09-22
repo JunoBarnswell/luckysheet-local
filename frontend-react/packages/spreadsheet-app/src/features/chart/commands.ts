@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, resolveWorksheetChartRanges, retargetChartPayload, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -347,12 +347,34 @@ function validateChartSemantics(payload: ChartPayload): void {
   if (payload.chartType !== 'combo' && payload.series?.some((series) => series.chartType && series.chartType !== payload.chartType)) {
     throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} chart cannot contain a different series chart type`);
   }
+  if (payload.mapOptions && payload.chartType !== 'map') throw new Error('INVALID_CHART_SOURCE: Map options require a map chart');
+  if (payload.histogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error('INVALID_CHART_SOURCE: Histogram options require a histogram or pareto chart');
+  if (payload.boxWhiskerOptions && payload.chartType !== 'box-whisker') throw new Error('INVALID_CHART_SOURCE: Box-whisker options require a box-whisker chart');
+  if (payload.waterfallOptions && payload.chartType !== 'waterfall') throw new Error('INVALID_CHART_SOURCE: Waterfall options require a waterfall chart');
   for (const series of payload.series ?? []) {
     const seriesType = series.chartType ?? payload.chartType;
-    if (seriesType === 'stock' && !series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');
+    if (seriesType === 'stock') {
+      const stockSubtype = series.subtype ?? payload.subtype;
+      if (!series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');
+      if (stockSubtype.includes('open') !== Boolean(series.stockRoles.open)) throw new Error(`INVALID_CHART_SOURCE: ${stockSubtype} Open role binding does not match its subtype`);
+      if (stockSubtype.includes('volume') !== Boolean(series.stockRoles.volume)) throw new Error(`INVALID_CHART_SOURCE: ${stockSubtype} Volume role binding does not match its subtype`);
+    }
     if ((seriesType === 'scatter' || seriesType === 'bubble') && (!series.xRange || !series.yRange)) throw new Error(`INVALID_CHART_SOURCE: ${seriesType} charts require explicit X/Y range bindings`);
     if (seriesType === 'bubble' && !series.sizeRange) throw new Error('INVALID_CHART_SOURCE: Bubble charts require an independent Size range binding');
     if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
+    if ((series.errorBars?.type === 'fixed' || series.errorBars?.type === 'percentage') && (!Number.isFinite(series.errorBars.value) || series.errorBars.value! < 0)) {
+      throw new Error('INVALID_CHART_SOURCE: Fixed and percentage error bars require a non-negative finite value');
+    }
+    if (series.trendlines?.length && !chartSeriesSupportsTrendlines(seriesType)) throw new Error(`UNSUPPORTED_FEATURE: ${seriesType} chart series do not support trendlines`);
+    if (series.errorBars && !chartSeriesSupportsErrorBars(seriesType)) throw new Error(`UNSUPPORTED_FEATURE: ${seriesType} chart series do not support error bars`);
+  }
+  for (const axis of [payload.elements.categoryAxis, payload.elements.valueAxis, payload.elements.secondaryCategoryAxis, payload.elements.secondaryValueAxis]) {
+    if (!axis) continue;
+    if ([axis.minimum, axis.maximum].some((value) => value !== undefined && !Number.isFinite(value))) throw new Error('INVALID_CHART_SOURCE: Axis bounds must be finite');
+    if (axis.minimum !== undefined && axis.maximum !== undefined && axis.minimum >= axis.maximum) throw new Error('INVALID_CHART_SOURCE: Axis minimum must be less than maximum');
+    if (axis.scale === 'logarithmic' && ((axis.minimum !== undefined && axis.minimum <= 0) || (axis.maximum !== undefined && axis.maximum <= 0))) {
+      throw new Error('INVALID_CHART_SOURCE: Logarithmic axis bounds must be positive');
+    }
   }
 }
 
@@ -458,9 +480,7 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   commandIds.push('chart.update');
   runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     if (!isChartSubtypeForType(input.chartType, input.subtype)) throw new Error(`Chart subtype ${input.subtype} does not belong to ${input.chartType}`);
-    const next = { ...payload, chartType: input.chartType, subtype: input.subtype, stacked: input.stacked ?? chartStackingForSubtype(input.subtype) };
-    if (next.stacked === undefined) delete next.stacked;
-    return next;
+    return retargetChartPayload(payload, input.chartType, input.subtype, input.stacked);
   }) });
   commandIds.push('chart.setType');
   runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, legend: { visible: true, position: input.legendPosition } } })) });
