@@ -158,8 +158,9 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             throw ServiceException.validation("Data source manifest schema is invalid");
         }
         String sourceId = identity(SnapshotMutationSupport.text(source, "id"), "Data source id");
-        if (SnapshotMutationSupport.text(source, "name").length() > 200) {
-            throw ServiceException.validation("Data source name is too long");
+        String sourceName = SnapshotMutationSupport.text(source, "name");
+        if (sourceName.isBlank() || sourceName.length() > 200) {
+            throw ServiceException.validation("Data source name is invalid");
         }
         String kind = SnapshotMutationSupport.text(source, "kind");
         if (!SOURCE_KINDS.contains(kind)) throw ServiceException.validation("Data source kind is invalid");
@@ -189,6 +190,13 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         }
 
         validateFields(source);
+        if (sourceRange != null) {
+            long fieldCount = source.withArray("fields").size();
+            if (sourceRange.endRow() - sourceRange.startRow() != rowCount
+                    || sourceRange.endColumn() - sourceRange.startColumn() + 1 != fieldCount) {
+                throw ServiceException.validation("Data source range dimensions do not match its rows and fields");
+            }
+        }
         validateSortState(source);
         validateRowOrder(source, rowCount);
         validateBlocks(source, sourceId, rowCount);
@@ -239,7 +247,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     private void validateFields(ObjectNode source) {
         ArrayNode fields = SnapshotMutationSupport.requiredArray(source, "fields");
-        if (fields.size() > MAX_FIELDS) throw ServiceException.validation("Data source has too many fields");
+        if (fields.isEmpty() || fields.size() > MAX_FIELDS) throw ServiceException.validation("Data source must contain between 1 and " + MAX_FIELDS + " fields");
         Set<String> ids = new HashSet<>();
         for (int index = 0; index < fields.size(); index++) {
             JsonNode raw = fields.get(index);
@@ -250,7 +258,8 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             if (!ids.add(fieldId)) throw ServiceException.validation("Duplicate data source field: " + fieldId);
             if (field.path("ordinal").asInt(-1) != index) throw ServiceException.validation("Data source fields must use contiguous ordinals");
             if (!FIELD_TYPES.contains(SnapshotMutationSupport.text(field, "type"))) throw ServiceException.validation("Data source field type is invalid");
-            if (SnapshotMutationSupport.text(field, "name").length() > 200) throw ServiceException.validation("Data source field name is too long");
+            String fieldName = SnapshotMutationSupport.text(field, "name");
+            if (fieldName.isBlank() || fieldName.length() > 200) throw ServiceException.validation("Data source field name is invalid");
         }
     }
 
@@ -258,6 +267,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         ArrayNode blocks = SnapshotMutationSupport.requiredArray(source, "blocks");
         if (blocks.size() > MAX_BLOCKS) throw ServiceException.validation("Data source has too many blocks");
         Set<String> ids = new HashSet<>();
+        Set<String> storageKeys = new HashSet<>();
         List<BlockRange> ranges = new ArrayList<>();
         for (JsonNode raw : blocks) {
             if (raw == null || !raw.isObject()) throw ServiceException.validation("Data block must be an object");
@@ -270,13 +280,14 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             if (!sourceId.equals(SnapshotMutationSupport.text(block, "dataSourceId"))) throw ServiceException.validation("Data block belongs to another data source");
             long startRow = nonNegative(block, "startRow");
             long blockRows = nonNegative(block, "rowCount");
-            if (blockRows < 1 || startRow + blockRows > rowCount) throw ServiceException.validation("Data block range is invalid: " + blockId);
+            if (blockRows < 1 || blockRows > DATA_BLOCK_ROW_COUNT || startRow + blockRows > rowCount) throw ServiceException.validation("Data block range is invalid: " + blockId);
             if (!"columnar-v1".equals(SnapshotMutationSupport.text(block, "encoding"))) throw ServiceException.validation("Data block encoding is invalid");
             if (!SHA256.matcher(SnapshotMutationSupport.text(block, "checksum")).matches()) throw ServiceException.validation("Data block checksum is invalid: " + blockId);
             if (nonNegative(block, "byteLength") < 1) throw ServiceException.validation("Data block byteLength must be positive: " + blockId);
             nonNegative(block, "revision");
             if (block.path("revision").longValue() != source.path("revision").longValue()) throw ServiceException.validation("Data block revision does not match source revision: " + blockId);
-            if (SnapshotMutationSupport.text(block, "storageKey").length() > 500) throw ServiceException.validation("Data block storageKey is too long");
+            String storageKey = SnapshotMutationSupport.text(block, "storageKey");
+            if (storageKey.isBlank() || storageKey.length() > 500 || !storageKeys.add(storageKey)) throw ServiceException.validation("Data block storageKey is invalid or duplicated");
             ranges.add(new BlockRange(startRow, startRow + blockRows, blockId));
         }
         ranges.sort(Comparator.comparingLong(BlockRange::start));

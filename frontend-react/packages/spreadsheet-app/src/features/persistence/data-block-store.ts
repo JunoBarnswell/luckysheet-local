@@ -58,10 +58,11 @@ export class LocalDataBlockStore {
       updatedAt: new Date().toISOString(),
     };
     await assertRecord(record);
-    return this.coordinator.transaction((transaction) => {
+    return this.coordinator.transaction(async (transaction) => {
       const key = memoryKey(record.sourceId, record.blockId);
       const existing = transaction.get<DataBlockRecord>('dataBlocks', key);
       if (existing) {
+        await assertRecord(existing);
         if (existing.checksum !== checksum || existing.bytes.byteLength !== bytes.byteLength) {
           throw new WorkspaceStorageError({
             code: 'STORAGE_REVISION_CONFLICT', operation: 'data-block-put',
@@ -76,13 +77,14 @@ export class LocalDataBlockStore {
     });
   }
 
-  async get(ref: Pick<DataBlockRef, 'dataSourceId' | 'id' | 'checksum'>): Promise<DataBlockRecord | null> {
+  async get(ref: Pick<DataBlockRef, 'dataSourceId' | 'id' | 'checksum'> & Partial<Pick<DataBlockRef, 'byteLength'>>): Promise<DataBlockRecord | null> {
     return this.coordinator.read(async (transaction) => {
       const sourceId = storageSourceId(this.unitId, ref.dataSourceId);
       const record = transaction.get<DataBlockRecord>('dataBlocks', memoryKey(sourceId, ref.id));
       if (!record) return null;
       await assertRecord(record);
       if (record.checksum !== ref.checksum) throw new Error(`Data block manifest checksum mismatch: ${ref.id}`);
+      if (ref.byteLength !== undefined && record.bytes.byteLength !== ref.byteLength) throw new Error(`Data block manifest byteLength mismatch: ${ref.id}`);
       return cloneRecord(record);
     });
   }

@@ -56,6 +56,8 @@ interface LoadedBlock {
   rows: TableScalar[][];
 }
 
+const MAX_CONCURRENT_BLOCK_READS = 4;
+
 class ContentQueryFailure extends Error {
   constructor(
     readonly availability: Extract<DataBlockAvailability, 'missing' | 'error'>,
@@ -235,14 +237,28 @@ export class DataSourceContentQuery {
   prefetchRows(startRow: number, rowCount: number): void {
     const error = this.validateRange(startRow, rowCount);
     if (error || rowCount === 0) return;
-    const scheduled = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(this.physicalRow(row));
-      if (ref && !scheduled.has(ref.id)) {
-        scheduled.add(ref.id);
-        if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    const refs: DataBlockRef[] = [];
+    if (this.source.rowOrder === undefined) {
+      const first = this.findBlock(startRow);
+      const last = this.findBlock(startRow + rowCount - 1);
+      if (!first || !last) return;
+      const firstIndex = this.source.blocks.indexOf(first);
+      const lastIndex = this.source.blocks.indexOf(last);
+      for (let index = firstIndex; index <= lastIndex; index += 1) {
+        const ref = this.source.blocks[index]!;
+        if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+      }
+    } else {
+      const scheduled = new Set<string>();
+      for (let row = startRow; row < startRow + rowCount; row += 1) {
+        const ref = this.findBlock(this.physicalRow(row));
+        if (ref && !scheduled.has(ref.id)) {
+          scheduled.add(ref.id);
+          if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+        }
       }
     }
+    if (refs.length > 0) void this.loadBlockSet(refs).catch(() => undefined);
   }
 
   /**
@@ -251,12 +267,16 @@ export class DataSourceContentQuery {
    * block projection to be readable, but do not need a second full row matrix.
    */
   async ensureAllBlocksLoaded(): Promise<DataSourceContentLoadState> {
-    const settled = await Promise.allSettled(this.source.blocks.map((ref) => this.loadBlock(ref)));
-    const failedIndex = settled.findIndex((result) => result.status === 'rejected');
-    if (failedIndex >= 0) {
-      const ref = this.source.blocks[failedIndex]!;
-      const failure = settled[failedIndex] as PromiseRejectedResult;
-      return this.loadStates.get(ref.id) ?? state(this.source.id, ref.id, 'error', errorMessage(failure.reason));
+    try {
+      await this.loadBlockSet(this.source.blocks);
+    } catch (error) {
+      const failed = this.source.blocks.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      return failed === undefined
+        ? state(this.source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
     }
     const last = this.source.blocks[this.source.blocks.length - 1];
     return state(this.source.id, last?.id ?? null, 'ready');
@@ -406,21 +426,18 @@ export class DataSourceContentQuery {
       }
     }
 
-    const loaded = new Map<string, LoadedBlock>();
-    const outcomes = await Promise.all(refs.map(async (ref) => {
-      try {
-        return { ref, block: await this.loadBlock(ref) } as const;
-      } catch (error) {
-        return { ref, error } as const;
-      }
-    }));
-    for (const outcome of outcomes) {
-      if ('error' in outcome) {
-        const current = this.loadStates.get(outcome.ref.id)
-          ?? state(this.source.id, outcome.ref.id, 'error', errorMessage(outcome.error));
-        return { state: { ...current } };
-      }
-      loaded.set(outcome.ref.id, outcome.block);
+    let loaded: Map<string, LoadedBlock>;
+    try {
+      loaded = await this.loadBlockSet(refs);
+    } catch (error) {
+      const failed = refs.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      const current = failed === undefined
+        ? state(this.source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
+      return { state: { ...current } };
     }
 
     const rows: TableScalar[][] = [];
@@ -476,6 +493,28 @@ export class DataSourceContentQuery {
       }
     }
     return undefined;
+  }
+
+  private async loadBlockSet(refs: readonly DataBlockRef[]): Promise<Map<string, LoadedBlock>> {
+    const loaded = new Map<string, LoadedBlock>();
+    let nextIndex = 0;
+    let failure: unknown;
+    const worker = async (): Promise<void> => {
+      while (failure === undefined) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= refs.length) return;
+        const ref = refs[index]!;
+        try {
+          loaded.set(ref.id, await this.loadBlock(ref));
+        } catch (error) {
+          failure = error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_BLOCK_READS, refs.length) }, () => worker()));
+    if (failure !== undefined) throw failure;
+    return loaded;
   }
 
   private async loadBlock(ref: DataBlockRef): Promise<LoadedBlock> {

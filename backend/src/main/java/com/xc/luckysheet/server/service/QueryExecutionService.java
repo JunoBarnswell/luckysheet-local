@@ -185,16 +185,19 @@ public class QueryExecutionService {
         try {
             QueryTable table = future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
             purgeExpiredBlockSessions();
-            if (blockSessions.size() >= MAX_BLOCK_SESSIONS) throw ServiceException.unavailable("Too many query block sessions are active");
             String executionId = UUID.randomUUID().toString();
             long duration = Duration.between(started, Instant.now()).toMillis();
-            blockSessions.put(executionId, new BlockQuery(
-                    unitId,
-                    request.queryId(),
-                    actor,
-                    table,
-                    Instant.now().plus(properties.timeout().multipliedBy(3))
-            ));
+            synchronized (blockSessions) {
+                purgeExpiredBlockSessions();
+                if (blockSessions.size() >= MAX_BLOCK_SESSIONS) throw ServiceException.unavailable("Too many query block sessions are active");
+                blockSessions.put(executionId, new BlockQuery(
+                        unitId,
+                        request.queryId(),
+                        actor,
+                        table,
+                        Instant.now().plus(properties.timeout().multipliedBy(3))
+                ));
+            }
             audit.accepted(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", null, mapper.createObjectNode()
                     .put("connectorId", request.connectorId())
                     .put("sourceRef", request.sourceRef())
@@ -231,9 +234,12 @@ public class QueryExecutionService {
 
     public QueryBlockResponse readBlock(String unitId, String queryId, String executionId, long offset, String actor) {
         BlockQuery session = requireBlockSession(unitId, queryId, executionId, actor);
-        if (offset < 0 || offset > session.table().rows.size() || offset % properties.blockRowCount() != 0) {
+        if (offset < 0 || offset > session.table().rows.size()
+                || (offset == session.table().rows.size() && !session.table().rows.isEmpty())
+                || offset % properties.blockRowCount() != 0) {
             throw ServiceException.validation("Query block offset is invalid");
         }
+        renewBlockSession(executionId, session);
         int start = Math.toIntExact(offset);
         int end = Math.min(start + properties.blockRowCount(), session.table().rows.size());
         List<List<JsonNode>> rows = session.table().rows.subList(start, end);
@@ -777,8 +783,18 @@ public class QueryExecutionService {
     private String nullToEmpty(String value) { return value == null ? "" : value; }
 
     private void checkSize(QueryTable table, boolean enforceResponseLimit) {
+        if (table.columns.isEmpty()) throw QueryFailure.validation("Query must return at least one column");
         if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         if (table.rows.size() > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
+        Set<String> names = new HashSet<>();
+        for (String column : table.columns) {
+            if (column == null || column.isBlank() || column.length() > 200 || !names.add(column)) {
+                throw QueryFailure.validation("Query column names must be non-empty, unique, and at most 200 characters");
+            }
+        }
+        for (List<JsonNode> row : table.rows) {
+            if (row.size() != table.columns.size()) throw QueryFailure.validation("Query row width does not match columns");
+        }
         if (!enforceResponseLimit) return;
         try {
             if (mapper.writeValueAsBytes(Map.of("columns", table.columns, "rows", table.rows)).length > properties.maxResponseBytes()) {
@@ -827,6 +843,16 @@ public class QueryExecutionService {
         }
         lifecycle.requireActive(unitId);
         return session;
+    }
+
+    private void renewBlockSession(String executionId, BlockQuery session) {
+        BlockQuery renewed = new BlockQuery(
+                session.unitId(), session.queryId(), session.actor(), session.table(),
+                Instant.now().plus(properties.timeout().multipliedBy(3))
+        );
+        if (!blockSessions.replace(executionId, session, renewed)) {
+            throw ServiceException.notFound("Query block session is no longer active");
+        }
     }
 
     private void purgeExpiredBlockSessions() {

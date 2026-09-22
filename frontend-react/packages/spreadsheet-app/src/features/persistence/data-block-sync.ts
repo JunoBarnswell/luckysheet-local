@@ -23,7 +23,7 @@ export class DataBlockSynchronizer {
     await this.local.put(ref, bytes);
     if (!this.options.isRemoteAvailable()) return;
     const metadata = await this.api.putDataBlock(this.options.unitId(), ref.dataSourceId, ref.id, ref.checksum, bytes);
-    if (metadata.checksum !== ref.checksum || metadata.byteLength !== ref.byteLength) {
+    if (metadata.sourceId !== ref.dataSourceId || metadata.blockId !== ref.id || metadata.checksum !== ref.checksum || metadata.byteLength !== ref.byteLength) {
       throw new Error(`Remote data block acknowledgement mismatched manifest: ${ref.id}`);
     }
   }
@@ -33,7 +33,7 @@ export class DataBlockSynchronizer {
     if (local) return local.bytes;
     if (!this.options.isRemoteAvailable()) throw new Error(`Data block is unavailable offline: ${ref.id}`);
     const remote = await this.api.getDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
-    if (remote.checksum !== ref.checksum) throw new Error(`Remote data block checksum mismatched manifest: ${ref.id}`);
+    if (remote.checksum !== ref.checksum || remote.byteLength !== ref.byteLength || remote.bytes.byteLength !== ref.byteLength) throw new Error(`Remote data block descriptor mismatched manifest: ${ref.id}`);
     await this.local.put(ref, remote.bytes);
     return remote.bytes;
   }

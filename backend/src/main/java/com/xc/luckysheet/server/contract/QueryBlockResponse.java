@@ -14,6 +14,9 @@ public record QueryBlockResponse(
         @JsonProperty("hasMore") boolean hasMore
 ) {
     public QueryBlockResponse {
+        if (queryId == null || queryId.isBlank() || executionId == null || executionId.isBlank() || offset < 0 || rows == null) {
+            throw new IllegalArgumentException("Query block response metadata is invalid");
+        }
         rows = rows.stream().map(row -> row.stream().<JsonNode>map(value -> value == null ? null : value.deepCopy()).toList()).toList();
     }
 }
