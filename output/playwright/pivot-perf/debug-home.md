@@ -1,0 +1,12 @@
+- main [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - heading "登录 React Sheets" [level=1] [ref=e7]
+      - paragraph [ref=e8]: 使用此服务器的账号打开和协作编辑工作簿。
+    - generic [ref=e9]:
+      - text: 用户名
+      - textbox "用户名" [ref=e11]
+    - generic [ref=e12]:
+      - text: 密码
+      - textbox "密码" [ref=e14]
+    - button "登录" [ref=e15] [cursor=pointer]
