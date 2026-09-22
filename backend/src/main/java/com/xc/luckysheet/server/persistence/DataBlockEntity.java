@@ -55,13 +55,6 @@ public class DataBlockEntity {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
-    public void update(String checksum, int byteLength, byte[] content, Instant updatedAt) {
-        this.checksum = checksum;
-        this.byteLength = byteLength;
-        this.content = content;
-        this.updatedAt = updatedAt;
-    }
-
     @Embeddable
     public static class Id implements Serializable {
         @Column(name = "unit_id", nullable = false, length = 200)

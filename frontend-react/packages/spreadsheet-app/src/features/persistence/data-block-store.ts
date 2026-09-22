@@ -1,6 +1,6 @@
 import type { DataBlockRef } from '@react-sheets/core-model';
 import { computeBinaryChecksum } from './checksum';
-import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
+import { memoryKey, WorkspaceStorageError, type WorkspaceMemoryCoordinator } from './memory';
 
 export interface DataBlockRecord {
   schema: 'DataBlockRecord';
@@ -40,6 +40,13 @@ export class LocalDataBlockStore {
   ) {}
 
   async put(ref: DataBlockRef, bytes: ArrayBuffer): Promise<DataBlockRecord> {
+    if (bytes.byteLength !== ref.byteLength) {
+      throw new WorkspaceStorageError({
+        code: 'STORAGE_SCHEMA_INVALID', operation: 'data-block-put',
+        message: `Data block length does not match manifest: ${ref.id}`,
+        recovery: 'Read the bytes matching the canonical block descriptor before writing.',
+      });
+    }
     const checksum = await computeBinaryChecksum(bytes);
     if (checksum !== ref.checksum) throw new Error(`Data block checksum does not match manifest: ${ref.id}`);
     const record: DataBlockRecord = {
@@ -52,7 +59,19 @@ export class LocalDataBlockStore {
     };
     await assertRecord(record);
     return this.coordinator.transaction((transaction) => {
-      transaction.set('dataBlocks', memoryKey(record.sourceId, record.blockId), cloneRecord(record));
+      const key = memoryKey(record.sourceId, record.blockId);
+      const existing = transaction.get<DataBlockRecord>('dataBlocks', key);
+      if (existing) {
+        if (existing.checksum !== checksum || existing.bytes.byteLength !== bytes.byteLength) {
+          throw new WorkspaceStorageError({
+            code: 'STORAGE_REVISION_CONFLICT', operation: 'data-block-put',
+            message: `Data block is immutable: ${ref.dataSourceId}/${ref.id}`,
+            recovery: 'Upload changed content using a new block id.',
+          });
+        }
+        return cloneRecord(existing);
+      }
+      transaction.set('dataBlocks', key, cloneRecord(record));
       return cloneRecord(record);
     });
   }

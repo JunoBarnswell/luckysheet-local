@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * ORM-backed persistence boundary for workbook state.
@@ -217,6 +218,16 @@ public class WorkbookStore {
     public List<OperationRow> listOperationsBefore(String unitId, long beforeRevision, int limit) {
         return operations.findByUnitIdAndRevisionLessThanOrderByRevisionDesc(unitId, beforeRevision,
                 PageRequest.of(0, limit)).stream().map(this::operationRow).toList();
+    }
+
+    /** Caller owns the workbook write transaction; scalar projections avoid retaining history entities in the persistence context. */
+    public void forEachRetainedHistoryDocument(String unitId, Consumer<String> inspect) {
+        try (var snapshots = checkpoints.streamSnapshotJsonByUnitId(unitId)) {
+            snapshots.forEach(inspect);
+        }
+        try (var envelopes = operations.streamEnvelopeJsonByUnitId(unitId)) {
+            envelopes.forEach(inspect);
+        }
     }
 
     @Transactional

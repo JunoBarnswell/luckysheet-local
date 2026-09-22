@@ -33,20 +33,20 @@ public class WorkbookDataBlockStore {
      * Persists under a caller-owned workbook write lock. Write callers receive
      * metadata only; binary content is exposed exclusively by {@link #find}.
      */
-    public DataBlockMetadata upsertWithinQuota(DataBlockRow row, long maximumBytes, long maximumBlocks) {
+    public DataBlockMetadata insertWithinQuota(DataBlockRow row, long maximumBytes, long maximumBlocks) {
         Optional<DataBlockEntity> existing = blocks.findById(new DataBlockEntity.Id(row.unitId(), row.sourceId(), row.blockId()));
-        boolean isNew = existing.isEmpty();
-        if (!isNew && entityMatches(existing.get(), row)) {
-            return metadata(existing.get());
+        if (existing.isPresent()) {
+            if (entityMatches(existing.get(), row)) return metadata(existing.get());
+            throw new ServiceException("DATA_BLOCK_IMMUTABLE", 409,
+                    "Data block " + row.sourceId() + "/" + row.blockId() + " already contains different bytes; upload using a new block id");
         }
-        DataBlockEntity entity = existing.orElseGet(() -> new DataBlockEntity(row.unitId(), row.sourceId(), row.blockId(), row.checksum(),
-                row.byteLength(), row.content().clone(), row.createdAt(), row.updatedAt()));
-        long resultingBytes = blocks.totalBytesByUnitId(row.unitId()) - (isNew ? 0 : entity.getByteLength()) + row.byteLength();
-        long resultingBlocks = blocks.countByIdUnitId(row.unitId()) + (isNew ? 1 : 0);
+        long resultingBytes = blocks.totalBytesByUnitId(row.unitId()) + row.byteLength();
+        long resultingBlocks = blocks.countByIdUnitId(row.unitId()) + 1;
         if (resultingBytes > maximumBytes || resultingBlocks > maximumBlocks) {
             throw ServiceException.validation("Workbook data block quota exceeded");
         }
-        entity.update(row.checksum(), row.byteLength(), row.content().clone(), row.updatedAt());
+        DataBlockEntity entity = new DataBlockEntity(row.unitId(), row.sourceId(), row.blockId(), row.checksum(),
+                row.byteLength(), row.content().clone(), row.createdAt(), row.updatedAt());
         blocks.save(entity);
         return metadata(entity);
     }

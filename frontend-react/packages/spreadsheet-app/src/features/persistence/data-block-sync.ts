@@ -39,7 +39,7 @@ export class DataBlockSynchronizer {
   }
 
   async remove(ref: DataBlockRef): Promise<void> {
-    await this.local.remove(ref.dataSourceId, ref.id);
     if (this.options.isRemoteAvailable()) await this.api.deleteDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
+    await this.local.remove(ref.dataSourceId, ref.id);
   }
 }

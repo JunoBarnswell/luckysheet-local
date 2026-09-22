@@ -30,7 +30,7 @@ class WorkbookDataBlockStoreTest {
         Instant now = Instant.now();
 
         store.lockWorkbook("unit");
-        assertThrows(ServiceException.class, () -> store.upsertWithinQuota(
+        assertThrows(ServiceException.class, () -> store.insertWithinQuota(
                 new DataBlockRow("unit", "source", "block", "checksum", 11, new byte[11], now, now), 100, 10));
 
         verify(workbooks).findForUpdate("unit");
@@ -51,7 +51,7 @@ class WorkbookDataBlockStoreTest {
         when(blocks.findById(id)).thenReturn(Optional.of(entity));
         WorkbookDataBlockStore store = new WorkbookDataBlockStore(blocks, workbooks);
 
-        var metadata = store.upsertWithinQuota(new DataBlockRow("unit", "source", "block", "checksum", 4, new byte[] {1, 2, 3, 4}, now, now), 1, 1);
+        var metadata = store.insertWithinQuota(new DataBlockRow("unit", "source", "block", "checksum", 4, new byte[] {1, 2, 3, 4}, now, now), 1, 1);
 
         assertEquals("block", metadata.blockId());
         verify(entity, never()).getContent();
