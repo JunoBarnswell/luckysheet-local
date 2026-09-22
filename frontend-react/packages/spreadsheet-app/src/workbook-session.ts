@@ -7123,10 +7123,35 @@ export class WorkbookSession {
     const previousDefinition = workbook.queryDefinitions.get(query.id);
     const definition = { ...structuredClone(query), lastTarget: structuredClone(target) };
     const resolvedTarget = definition.lastTarget;
+    const targetIdentity = (): string => {
+      if (resolvedTarget.kind === 'workbook-table') {
+        return JSON.stringify(resolvedTarget.tableId ? workbook.dataModel.tables.get(resolvedTarget.tableId) ?? null : null);
+      }
+      if (resolvedTarget.kind === 'sheet-table') {
+        const sheet = resolvedTarget.sheetId ? workbook.getSheets().find((candidate) => candidate.id === resolvedTarget.sheetId) : undefined;
+        return JSON.stringify(sheet?.sheetTables.find((table) => table.id === resolvedTarget.tableId) ?? null);
+      }
+      if (resolvedTarget.kind === 'pivot-source') {
+        const owner = workbook.getSheets().map((sheet) => ({ sheetId: sheet.id, pivot: sheet.pivots.find((pivot) => pivot.id === resolvedTarget.pivotId) }))
+          .find((entry) => entry.pivot !== undefined);
+        return JSON.stringify(owner ?? null);
+      }
+      const sheet = resolvedTarget.sheetId ? workbook.getSheets().find((candidate) => candidate.id === resolvedTarget.sheetId) : undefined;
+      return JSON.stringify(sheet ? {
+        id: sheet.id,
+        rowCount: sheet.rowCount,
+        columnCount: sheet.columnCount,
+        cellRevision: sheet.cells.revision,
+        dataRegions: sheet.dataRegions,
+        sheetTables: sheet.sheetTables,
+      } : null);
+    };
+    const previousTargetIdentity = targetIdentity();
     const assertCurrent = (): void => {
       if (this.disposed || this.runtime.model !== workbook) throw new QueryLoadError('QUERY_LOAD_CANCELLED', query.id, 'The workbook session changed; load again in the current session');
       if (workbook.dataModel.sources.get(sourceId) !== previousSource) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The data source changed while loading; refresh from the current source');
       if (workbook.queryDefinitions.get(query.id) !== previousDefinition) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The query definition changed while loading; review the current definition before refreshing');
+      if (targetIdentity() !== previousTargetIdentity) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The query target changed while loading; review the current target before refreshing');
     };
     const blockRefs: DataBlockRef[] = [];
     let committed = false;

@@ -10,7 +10,7 @@ import type {
   WorkbookModel,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
-import { DEFAULT_DATA_BLOCK_ROW_COUNT, PIVOT_DAY_MS, pivotTimelineInstant } from '@react-sheets/core-model';
+import { DEFAULT_DATA_BLOCK_ROW_COUNT, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, PIVOT_DAY_MS, pivotTimelineInstant } from '@react-sheets/core-model';
 import {
   COLUMNAR_BLOCK_ENCODING,
   computeColumnarBlockChecksum,
@@ -176,6 +176,7 @@ export function validateQueryDefinition(query: QueryDefinition): void {
   if (!query || typeof query !== 'object') throw new Error('Query definition is required');
   if (typeof query.id !== 'string' || !query.id.trim()) throw new Error('Query id is required');
   if (typeof query.name !== 'string' || !query.name.trim()) throw new Error('Query name is required');
+  if (query.name.length > 200) throw new Error(`Query ${query.id} name is too long`);
   if (typeof query.connectorId !== 'string' || !query.connectorId.trim()) throw new Error('Query connectorId is required');
   if (!query.connectorConfig || typeof query.connectorConfig !== 'object' || Array.isArray(query.connectorConfig)) throw new Error(`Query ${query.id} has invalid connector configuration`);
   if (!Array.isArray(query.steps)) throw new Error(`Query ${query.id} steps must be an array`);
@@ -216,30 +217,44 @@ function sourceRangeForPivot(pivot: import('@react-sheets/core-model').PivotMode
   return structuredClone(pivot.source.range);
 }
 
-function inferDataSourceFieldType(values: readonly TableScalar[]): DataSourceFieldType {
-  if (values.every((value) => value === null || typeof value === 'number')) return 'number';
-  if (values.every((value) => value === null || typeof value === 'boolean')) return 'boolean';
-  const present = values.filter((value) => value !== null && value !== '');
-  const dateLike = present.length > 0 && present.every((value) => typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value)
-    && pivotTimelineInstant(value) !== undefined);
-  if (dateLike) return 'date';
-  if (values.every((value) => value === null || typeof value === 'string')) return 'text';
-  return 'mixed';
+function inferQueryFields(sourceId: string, columns: readonly string[], rows: readonly (readonly TableScalar[])[]): DataSourceField[] {
+  const states = columns.map(() => ({ number: true, boolean: true, string: true, date: true, present: false }));
+  for (const row of rows) {
+    for (let ordinal = 0; ordinal < columns.length; ordinal += 1) {
+      const value = row[ordinal] ?? null;
+      const state = states[ordinal]!;
+      if (value === null) continue;
+      state.number &&= typeof value === 'number';
+      state.boolean &&= typeof value === 'boolean';
+      state.string &&= typeof value === 'string';
+      if (value !== '') {
+        state.present = true;
+        state.date &&= typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value) && pivotTimelineInstant(value) !== undefined;
+      }
+    }
+  }
+  return columns.map((name, ordinal) => {
+    const state = states[ordinal]!;
+    const type: DataSourceFieldType = state.number ? 'number' : state.boolean ? 'boolean'
+      : state.present && state.date ? 'date' : state.string ? 'text' : 'mixed';
+    return { id: `${sourceId}:field:${ordinal}`, name, ordinal, type };
+  });
 }
 
 function normalizeQueryRowsForDataSource(
   rows: readonly (readonly TableScalar[])[],
   fields: readonly DataSourceField[],
-): TableScalar[][] {
+  rowOffset = 0,
+): readonly (readonly TableScalar[])[] {
+  if (!fields.some((field) => field.type === 'date')) return rows;
   const excelEpoch = Date.UTC(1899, 11, 30);
   return rows.map((row, rowIndex) => row.map((value, ordinal) => {
     if (fields[ordinal]?.type !== 'date') return value;
     if (value === null || value === '') return null;
     if (typeof value === 'number') return value;
-    if (typeof value !== 'string') throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} cannot be encoded`);
+    if (typeof value !== 'string') throw new Error(`Query date field ${String(ordinal)} row ${String(rowOffset + rowIndex)} cannot be encoded`);
     const instant = pivotTimelineInstant(value);
-    if (instant === undefined) throw new Error(`Query date field ${String(ordinal)} row ${String(rowIndex)} is invalid`);
+    if (instant === undefined) throw new Error(`Query date field ${String(ordinal)} row ${String(rowOffset + rowIndex)} is invalid`);
     return (instant - excelEpoch) / PIVOT_DAY_MS;
   }));
 }
@@ -256,21 +271,31 @@ function columnarField(sourceId: string, name: string, ordinal: number, type: Da
 }
 
 function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, columns: readonly string[], rowCount: number): RangeRef {
+  const checkedRange = (sheetId: string, startRow: number, startColumn: number): RangeRef => {
+    workbook.getSheet(sheetId);
+    const endRow = startRow + rowCount;
+    const endColumn = startColumn + columns.length - 1;
+    if (!Number.isSafeInteger(startRow) || !Number.isSafeInteger(startColumn) || startRow < 0 || startColumn < 0
+      || !Number.isSafeInteger(endRow) || !Number.isSafeInteger(endColumn)
+      || endRow >= MAX_SHEET_ROW_COUNT || endColumn >= MAX_SHEET_COLUMN_COUNT) {
+      throw new Error('Query result exceeds worksheet bounds');
+    }
+    return { sheetId, startRow, endRow, startColumn, endColumn };
+  };
   if (target.kind === 'range') {
     if (!target.sheetId || !target.range) throw new Error('Range query target requires sheetId and range');
     if (![target.range.startRow, target.range.startColumn].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error('Range query target start is invalid');
-    const width = Math.max(columns.length, 1);
-    return { sheetId: target.sheetId, startRow: target.range.startRow, endRow: target.range.startRow + rowCount, startColumn: target.range.startColumn, endColumn: target.range.startColumn + width - 1 };
+    return checkedRange(target.sheetId, target.range.startRow, target.range.startColumn);
   }
   if (target.kind === 'sheet-table') {
     if (!target.sheetId || !target.tableId) throw new Error('Sheet-table query target requires sheetId and tableId');
     const table = workbook.getSheet(target.sheetId).sheetTables.find((entry) => entry.id === target.tableId);
     if (!table) throw new Error(`Unknown sheet table: ${target.tableId}`);
     if (!table.hasHeaderRow) throw new Error(`Sheet table ${table.name} has no header row for a canonical data region`);
-    if (columns.length > table.columns.length) throw new Error(`Query result has too many columns for table ${table.name}`);
+    if (columns.length !== table.columns.length) throw new Error(`Query result columns must exactly match table ${table.name}`);
     const capacity = table.range.endRow - table.range.startRow - (table.hasTotalRow ? 1 : 0);
     if (rowCount > capacity) throw new Error(`Query result has too many rows for table ${table.name}`);
-    return { ...structuredClone(table.range), endRow: Math.min(table.range.endRow - (table.hasTotalRow ? 1 : 0), table.range.startRow + rowCount) };
+    return checkedRange(target.sheetId, table.range.startRow, table.range.startColumn);
   }
   if (target.kind === 'pivot-source') {
     if (!target.pivotId) throw new Error('Pivot-source query target requires pivotId');
@@ -283,9 +308,9 @@ function targetRangeForQuery(workbook: WorkbookModel, target: LoadTarget, column
     const startColumn = target.range?.startColumn ?? fallback!.startColumn;
     const capacityRows = target.range?.endRow === undefined ? fallback ? fallback.endRow - fallback.startRow : undefined : target.range.endRow - startRow;
     const capacityColumns = target.range?.endColumn === undefined ? fallback ? fallback.endColumn - fallback.startColumn + 1 : undefined : target.range.endColumn - startColumn + 1;
-    if (capacityRows !== undefined && rowCount > capacityRows) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
-    if (capacityColumns !== undefined && columns.length > capacityColumns) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
-    return { sheetId, startRow, endRow: startRow + rowCount, startColumn, endColumn: startColumn + Math.max(columns.length, 1) - 1 };
+    if (capacityRows !== undefined && (capacityRows < 0 || rowCount > capacityRows)) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
+    if (capacityColumns !== undefined && (capacityColumns < 1 || columns.length > capacityColumns)) throw new Error(`Query result does not fit pivot ${target.pivotId} source range`);
+    return checkedRange(sheetId, startRow, startColumn);
   }
   throw new Error(`Query target ${target.kind} does not project to a worksheet region`);
 }
@@ -305,6 +330,7 @@ export interface PreparedQueryLoadBlock {
 export function validateQueryBlockLoadMetadata(metadata: QueryBlockLoadMetadata): void {
   if (!metadata || !Array.isArray(metadata.columns) || metadata.columns.length === 0) throw new Error('Query block metadata must contain columns');
   if (metadata.columns.some((column) => typeof column !== 'string' || !column.trim())) throw new Error('Query block columns must be non-empty strings');
+  if (metadata.columns.length > MAX_SHEET_COLUMN_COUNT || metadata.columns.some((column) => column.length > 200)) throw new Error('Query block columns exceed data-source limits');
   if (new Set(metadata.columns).size !== metadata.columns.length) throw new Error('Query block columns must be unique');
   if (!Array.isArray(metadata.columnTypes) || metadata.columnTypes.length !== metadata.columns.length) throw new Error('Query block column types do not match columns');
   const types = new Set<DataSourceFieldType>(['text', 'number', 'boolean', 'date', 'mixed']);
@@ -366,9 +392,13 @@ export function buildQueryLoadPayloadFromBlocks(
   const sourceId = querySourceId(query.id);
   const revision = (workbook.dataModel.sources.get(sourceId)?.revision ?? -1) + 1;
   const ordered = [...blocks].sort((left, right) => left.startRow - right.startRow);
+  const blockIds = new Set<string>();
   let covered = 0;
   for (const block of ordered) {
-    if (block.dataSourceId !== sourceId || block.revision !== revision || block.startRow !== covered || block.rowCount < 1 || block.rowCount > metadata.blockRowCount) {
+    if (!blockIds.add(block.id) || block.dataSourceId !== sourceId || block.revision !== revision || block.startRow !== covered
+      || block.rowCount < 1 || block.rowCount > metadata.blockRowCount || block.encoding !== COLUMNAR_BLOCK_ENCODING
+      || !/^[A-Fa-f0-9]{64}$/.test(block.checksum) || !Number.isSafeInteger(block.byteLength) || block.byteLength < 1
+      || !block.storageKey.trim() || block.startRow + block.rowCount > metadata.rowCount) {
       throw new Error(`Query block coverage is invalid: ${block.id}`);
     }
     covered += block.rowCount;
@@ -427,11 +457,11 @@ export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: Qu
   const sourceId = querySourceId(query.id);
   const previousSource = workbook.dataModel.sources.get(sourceId);
   const revision = (previousSource?.revision ?? -1) + 1;
-  const fields = result.columns.map((name, ordinal) => ({ id: `${sourceId}:field:${ordinal}`, name, ordinal, type: inferDataSourceFieldType(result.rows.map((row) => row[ordinal] ?? null)) }));
-  const normalizedRows = normalizeQueryRowsForDataSource(result.rows, fields);
+  const fields = inferQueryFields(sourceId, result.columns, result.rows);
   const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
-  for (let startRow = 0; startRow < normalizedRows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
-    const rows = normalizedRows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
+  for (let startRow = 0; startRow < result.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
+    const sourceRows = result.rows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
+    const rows = normalizeQueryRowsForDataSource(sourceRows, fields, startRow);
     const blockPayload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
     const blockId = `query-block:${crypto.randomUUID()}`;
     blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
