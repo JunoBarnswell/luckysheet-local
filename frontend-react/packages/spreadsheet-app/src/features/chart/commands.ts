@@ -334,6 +334,9 @@ function isChartPayload(value: unknown): value is ChartPayload {
 function validateChartSemantics(payload: ChartPayload): void {
   if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${payload.chartId} has no editable canonical owner`);
+  if (['scatter', 'bubble', 'stock'].includes(payload.chartType) && !payload.series?.length) {
+    throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} charts require explicit role-bound series`);
+  }
   if (payload.chartType === 'combo') {
     if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
     for (const series of payload.series) {

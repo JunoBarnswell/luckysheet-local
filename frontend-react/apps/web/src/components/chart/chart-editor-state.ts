@@ -88,6 +88,15 @@ export function chartPayloadFromDraft(draft: ChartEditorDraft, sheetId: string):
     }
     return series;
   });
+  if (['scatter', 'bubble', 'stock'].includes(payload.chartType) && !payload.series?.length) {
+    throw new Error(`${payload.chartType} 图表必须先生成可编辑系列并设置完整的数据角色`);
+  }
+  for (const [index, series] of (payload.series ?? []).entries()) {
+    const seriesType = series.chartType ?? payload.chartType;
+    if ((seriesType === 'scatter' || seriesType === 'bubble') && (!series.xRange || !series.yRange)) throw new Error(`系列 ${index + 1} 必须设置 X 与 Y 范围`);
+    if (seriesType === 'bubble' && !series.sizeRange) throw new Error(`系列 ${index + 1} 必须设置气泡大小范围`);
+    if (seriesType === 'stock' && !series.stockRoles) throw new Error(`系列 ${index + 1} 必须设置股票图角色范围`);
+  }
   for (const axis of [payload.elements.valueAxis, payload.elements.secondaryValueAxis, payload.elements.categoryAxis]) {
     if (!axis) continue;
     if ([axis.minimum, axis.maximum].some(value => value !== undefined && !Number.isFinite(value))) throw new Error('坐标轴边界必须是有限数字');

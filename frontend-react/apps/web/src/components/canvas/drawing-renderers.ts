@@ -87,20 +87,37 @@ function getChartSeries(
         status: { kind: 'invalid', code: 'INVALID_CHART_SOURCE', message: projection.message ?? `Analysis chart binding is unavailable: ${payload.chartId}` },
       };
     }
-    const categories = [...new Set(chart.points.map((point) => analysisValueKey(point.category)))].map((key) => chart.points.find((point) => analysisValueKey(point.category) === key)?.category ?? null);
-    const seriesKeys = chart.seriesFieldId
-      ? [...new Set(chart.points.map((point) => analysisValueKey(point.series ?? null)))]
-      : ['__single__'];
+    const categoryByKey = new Map<string, import('@react-sheets/spreadsheet-app').AnalysisCellValue>();
+    const seriesKeys: string[] = [];
+    const seriesNames = new Map<string, string>();
+    const sumsBySeries = new Map<string, Map<string, number>>();
+    const numericCategoriesBySeries = new Map<string, Set<string>>();
+    for (const point of chart.points) {
+      const categoryKey = analysisValueKey(point.category);
+      if (!categoryByKey.has(categoryKey)) categoryByKey.set(categoryKey, point.category);
+      const seriesKey = chart.seriesFieldId ? analysisValueKey(point.series ?? null) : '__single__';
+      if (!sumsBySeries.has(seriesKey)) {
+        seriesKeys.push(seriesKey);
+        sumsBySeries.set(seriesKey, new Map());
+        numericCategoriesBySeries.set(seriesKey, new Set());
+        seriesNames.set(seriesKey, chart.seriesFieldId ? String(point.series ?? `Series ${seriesKeys.length}`) : 'Value');
+      }
+      if (point.value !== null && Number.isFinite(point.value)) {
+        const sums = sumsBySeries.get(seriesKey)!;
+        sums.set(categoryKey, (sums.get(categoryKey) ?? 0) + point.value);
+        numericCategoriesBySeries.get(seriesKey)!.add(categoryKey);
+      }
+    }
+    if (!seriesKeys.length) seriesKeys.push('__single__');
+    const categoryEntries = [...categoryByKey.entries()];
+    const categories = categoryEntries.map(([, category]) => category);
     const series = seriesKeys.map((seriesKey, seriesIndex) => {
-      const points = chart.points.filter((point) => !chart.seriesFieldId || analysisValueKey(point.series ?? null) === seriesKey);
-      const values = categories.map((category) => {
-        const matching = points.filter((point) => analysisValueKey(point.category) === analysisValueKey(category));
-        const numeric = matching.map((point) => point.value).filter((value): value is number => value !== null && Number.isFinite(value));
-        return numeric.length > 0 ? numeric.reduce((sum, value) => sum + value, 0) : null;
-      });
+      const sums = sumsBySeries.get(seriesKey);
+      const numericCategories = numericCategoriesBySeries.get(seriesKey);
+      const values = categoryEntries.map(([categoryKey]) => numericCategories?.has(categoryKey) ? sums?.get(categoryKey) ?? 0 : null);
       return {
         id: `${payload.chartId}:analysis:${seriesIndex}`,
-        name: chart.seriesFieldId ? String(points[0]?.series ?? `Series ${seriesIndex + 1}`) : 'Value',
+        name: seriesNames.get(seriesKey) ?? (chart.seriesFieldId ? `Series ${seriesIndex + 1}` : 'Value'),
         values,
         missing: values.map((value) => value === null),
         axis: 'primary' as const,
@@ -1042,7 +1059,15 @@ function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDr
     if (labels.showValue !== false) parts.push(String(point.value));
     if (labels.showPercentage) parts.push(`${Math.round(Math.abs(point.value) * 100) / 100}%`);
     if (!parts.length) parts.push(String(point.value));
-    const position = labels.position === 'inside-base' ? { x: point.x, y: point.y + 10 } : labels.position === 'below' ? { x: point.x, y: point.y + 14 } : { x: point.x, y: point.y - 10 };
+    const bar = series.bars.find((candidate) => candidate.index === point.index);
+    const anchor = bar
+      ? series.chartType === 'bar'
+        ? { x: bar.x + bar.width, y: bar.y + bar.height / 2 }
+        : { x: bar.x + bar.width / 2, y: bar.y }
+      : { x: point.x, y: point.y };
+    const position = labels.position === 'inside-base'
+      ? bar && series.chartType === 'bar' ? { x: bar.x + 4, y: anchor.y } : { x: anchor.x, y: bar ? bar.y + bar.height - 4 : anchor.y + 10 }
+      : labels.position === 'below' ? { x: anchor.x, y: anchor.y + 14 } : { x: anchor.x, y: anchor.y - 10 };
     drawChartText(context, parts.join(labels.separator ?? ', '), position.x, position.y, { color: '#334155', size: 9, align: 'center' });
   }
 }
@@ -1212,14 +1237,14 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
     return;
   }
   if (layout.kind === 'treemap') {
-    const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => ({ value: Math.max(0, point.value ?? 0), label: String(point.category), color: series.color })));
+    const values = layout.series.flatMap((series) => series.visible ? series.points.filter((point) => point.visible).map((point) => ({ value: Math.max(0, point.value ?? 0), label: String(point.category), color: series.color })) : []);
     const total = values.reduce((sum, entry) => sum + entry.value, 0) || 1;
     let x = plot.left;
     for (const [index, entry] of values.entries()) { const width = plot.width * entry.value / total; context.fillStyle = entry.color ?? '#2563eb'; context.fillRect(x, plot.top, Math.max(1, width - 1), plot.height); drawChartText(context, entry.label, x + width / 2, plot.top + plot.height / 2, { color: '#fff', size: 9, align: 'center' }); x += width; void index; }
     return;
   }
   if (layout.kind === 'sunburst') {
-    const values = layout.series.flatMap((series) => series.points.filter((point) => point.visible).map((point) => Math.max(0, point.value ?? 0)));
+    const values = layout.series.flatMap((series) => series.visible ? series.points.filter((point) => point.visible).map((point) => Math.max(0, point.value ?? 0)) : []);
     const total = values.reduce((sum, value) => sum + value, 0) || 1;
     const centerX = plot.left + plot.width / 2;
     const centerY = plot.top + plot.height / 2;
@@ -1278,8 +1303,24 @@ function drawChartLayoutOnCanvas(options: { context: CanvasRenderingContext2D; p
   context.restore();
 }
 
+function pointInPolygon(point: { x: number; y: number }, polygon: readonly { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index]!;
+    const previousPoint = polygon[previous]!;
+    if ((currentPoint.y > point.y) !== (previousPoint.y > point.y)
+      && point.x < (previousPoint.x - currentPoint.x) * (point.y - currentPoint.y) / (previousPoint.y - currentPoint.y) + currentPoint.x) inside = !inside;
+  }
+  return inside;
+}
+
+function chartPointSelection(series: ChartLayout['series'][number], pointIndex: number, includeCategory = true): { action: string; data: unknown } {
+  return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex, ...(includeCategory ? { category: series.points[pointIndex]?.category ?? null } : {}) } };
+}
+
 function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, dataTableVisible = false): { action: string; data: unknown } | null {
-  if (layout.title && point.y <= layout.title.y + 18) return { action: 'chart.select-element', data: { kind: 'title' } };
+  if (layout.title && point.x >= layout.title.x - 4 && point.x <= layout.title.x + Math.max(40, layout.title.text.length * 9)
+    && point.y >= layout.title.y - 14 && point.y <= layout.title.y + 6) return { action: 'chart.select-element', data: { kind: 'title' } };
   if (layout.legend.visible) {
     const legendBand = layout.legend.position === 'bottom' ? { left: 0, top: layout.height - 30, right: layout.width, bottom: layout.height }
       : layout.legend.position === 'top' || layout.legend.position === 'top-right' ? { left: 0, top: 0, right: layout.width, bottom: 34 }
@@ -1298,16 +1339,149 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
       while (normalized < slice.startAngle) normalized += Math.PI * 2;
       if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius + slice.explosion) {
         const series = layout.series[slice.seriesIndex];
-        if (series) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: slice.pointIndex } };
+        if (series?.visible) return chartPointSelection(series, slice.pointIndex);
       }
     }
   }
-  for (const series of layout.series) {
+  if (layout.kind === 'histogram') {
+    const bins = layout.histogramBins ?? [];
+    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
+    const width = layout.plot.width / Math.max(1, bins.length);
+    for (const [index, bin] of bins.entries()) {
+      const height = bin.count / maximum * layout.plot.height;
+      if (point.x >= layout.plot.left + index * width && point.x <= layout.plot.left + (index + 1) * width
+        && point.y >= layout.plot.top + layout.plot.height - height && point.y <= layout.plot.top + layout.plot.height) {
+        const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
+        if (series?.visible) return chartPointSelection(series, index, false);
+      }
+    }
+  }
+  if (layout.kind === 'box-whisker') {
+    const boxes = layout.boxes ?? [];
+    const slot = layout.plot.width / Math.max(1, boxes.length);
+    const index = Math.floor((point.x - layout.plot.left) / slot);
+    const box = boxes[index];
+    const series = box ? layout.series[box.seriesIndex] : undefined;
+    if (series && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
+  }
+  if (layout.kind === 'waterfall') {
+    const bars = layout.waterfallBars ?? [];
+    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
+    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
+    const span = Math.max(1, maximum - minimum);
+    const slot = layout.plot.width / Math.max(1, bars.length);
+    for (const bar of bars) {
+      const left = layout.plot.left + bar.index * slot + slot * 0.16;
+      const top = layout.plot.top + layout.plot.height * (1 - (bar.end - minimum) / span);
+      const bottom = layout.plot.top + layout.plot.height * (1 - (bar.start - minimum) / span);
+      if (point.x >= left && point.x <= left + slot * 0.68 && point.y >= Math.min(top, bottom) && point.y <= Math.max(top, bottom)) {
+        const series = layout.series[bar.seriesIndex];
+        if (series?.visible) return chartPointSelection(series, bar.index);
+      }
+    }
+  }
+  if (layout.kind === 'funnel') {
+    const stages = layout.funnelStages ?? [];
+    const maximum = Math.max(1, ...stages.map((stage) => stage.value));
+    const band = layout.plot.height / Math.max(1, stages.length);
+    for (const stage of stages) {
+      const current = layout.plot.width * stage.value / maximum;
+      const next = layout.plot.width * stage.nextValue / maximum;
+      const center = layout.plot.left + layout.plot.width / 2;
+      const polygon = [
+        { x: center - current / 2, y: layout.plot.top + stage.index * band },
+        { x: center + current / 2, y: layout.plot.top + stage.index * band },
+        { x: center + next / 2, y: layout.plot.top + (stage.index + 1) * band },
+        { x: center - next / 2, y: layout.plot.top + (stage.index + 1) * band },
+      ];
+      if (pointInPolygon(point, polygon)) {
+        const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
+        if (series?.visible) return chartPointSelection(series, stage.index);
+      }
+    }
+  }
+  if (layout.kind === 'stock') {
+    const points = layout.stockPoints ?? [];
+    const values = points.flatMap((entry) => [entry.high, entry.low, entry.close, entry.open ?? entry.close]);
+    const minimum = Math.min(...values, 0);
+    const maximum = Math.max(...values, 1);
+    const span = Math.max(1, maximum - minimum);
+    const slot = layout.plot.width / Math.max(1, points.length);
+    for (const entry of points) {
+      const x = layout.plot.left + (entry.index + 0.5) * slot;
+      const high = layout.plot.top + layout.plot.height * (1 - (entry.high - minimum) / span);
+      const low = layout.plot.top + layout.plot.height * (1 - (entry.low - minimum) / span);
+      if (Math.abs(point.x - x) <= Math.max(4, slot * 0.24) && point.y >= high - 3 && point.y <= low + 3) {
+        const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
+        if (series?.visible) return chartPointSelection(series, entry.index);
+      }
+    }
+  }
+  if (layout.kind === 'surface') {
+    const cells = layout.surfaceCells ?? [];
+    const rows = Math.max(1, ...cells.map((cell) => cell.row + 1));
+    const columns = Math.max(1, ...cells.map((cell) => cell.column + 1));
+    const row = Math.floor((point.y - layout.plot.top) * rows / layout.plot.height);
+    const column = Math.floor((point.x - layout.plot.left) * columns / layout.plot.width);
+    const cell = cells.find((candidate) => candidate.row === row && candidate.column === column);
+    const series = cell ? layout.series[cell.seriesIndex] : undefined;
+    if (series && cell) return chartPointSelection(series, cell.column);
+  }
+  if (layout.kind === 'radar' && layout.radar) {
+    const centerX = layout.plot.left + layout.plot.width / 2;
+    const centerY = layout.plot.top + layout.plot.height / 2;
+    const radius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
+    for (const entry of layout.radar.points) {
+      for (const [index, value] of entry.values.entries()) {
+        const angle = -Math.PI / 2 + Math.PI * 2 * index / layout.radar.count;
+        const target = { x: centerX + Math.cos(angle) * radius * Math.abs(value) / layout.radar.maximum, y: centerY + Math.sin(angle) * radius * Math.abs(value) / layout.radar.maximum };
+        if (Math.hypot(point.x - target.x, point.y - target.y) <= 7) {
+          const series = layout.series[entry.seriesIndex];
+          if (series) return chartPointSelection(series, index);
+        }
+      }
+    }
+  }
+  if (layout.kind === 'map') {
+    for (const feature of layout.mapFeatures ?? []) {
+      if (feature.categoryIndex < 0 || !feature.polygons.some((polygon) => pointInPolygon(point, polygon))) continue;
+      const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
+      if (series?.visible) return chartPointSelection(series, feature.categoryIndex);
+    }
+  }
+  if (layout.kind === 'treemap') {
+    const entries = layout.series.flatMap((series) => series.visible ? series.points.filter((candidate) => candidate.visible).map((candidate) => ({ series, point: candidate, value: Math.max(0, candidate.value ?? 0) })) : []);
+    const total = entries.reduce((sum, entry) => sum + entry.value, 0) || 1;
+    let left = layout.plot.left;
+    for (const entry of entries) {
+      const width = layout.plot.width * entry.value / total;
+      if (point.x >= left && point.x <= left + width && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return chartPointSelection(entry.series, entry.point.index);
+      left += width;
+    }
+  }
+  if (layout.kind === 'sunburst') {
+    const entries = layout.series.flatMap((series) => series.visible ? series.points.filter((candidate) => candidate.visible).map((candidate) => ({ series, point: candidate, value: Math.max(0, candidate.value ?? 0) })) : []);
+    const total = entries.reduce((sum, entry) => sum + entry.value, 0) || 1;
+    const centerX = layout.plot.left + layout.plot.width / 2;
+    const centerY = layout.plot.top + layout.plot.height / 2;
+    const radius = Math.hypot(point.x - centerX, point.y - centerY);
+    const maximumRadius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
+    let angle = Math.atan2(point.y - centerY, point.x - centerX);
+    while (angle < -Math.PI / 2) angle += Math.PI * 2;
+    let start = -Math.PI / 2;
+    for (const entry of entries) {
+      const end = start + entry.value / total * Math.PI * 2;
+      if (radius >= maximumRadius * 0.42 && radius <= maximumRadius && angle >= start && angle <= end) return chartPointSelection(entry.series, entry.point.index);
+      start = end;
+    }
+  }
+  if (layout.kind === 'cartesian') for (const series of layout.series) {
+    if (!series.visible) continue;
     for (const chartPoint of series.points) {
       if (!chartPoint.visible) continue;
-      if (Math.hypot(point.x - chartPoint.x, point.y - chartPoint.y) <= 7) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: chartPoint.index } };
+      if (Math.hypot(point.x - chartPoint.x, point.y - chartPoint.y) <= 7) return chartPointSelection(series, chartPoint.index);
     }
-    for (const bar of series.bars) if (bar.visible && point.x >= bar.x && point.x <= bar.x + bar.width && point.y >= bar.y && point.y <= bar.y + bar.height) return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex: bar.index } };
+    for (const bar of series.bars) if (bar.visible && point.x >= bar.x && point.x <= bar.x + bar.width && point.y >= bar.y && point.y <= bar.y + bar.height) return chartPointSelection(series, bar.index);
     for (const trendline of series.trendlines) {
       for (let index = 1; index < trendline.points.length; index += 1) {
         const start = trendline.points[index - 1]!;
@@ -1321,8 +1495,8 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     }
     if (series.points.some((candidate) => candidate.visible && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 10)) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
   }
-  if (layout.valueAxis && point.x >= layout.plot.left - 12 && point.x <= layout.plot.left + 12 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'axis' } };
-  if (layout.categoryAxis && point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.kind === 'cartesian' && layout.valueAxis && point.x >= layout.plot.left - 12 && point.x <= layout.plot.left + 12 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.kind === 'cartesian' && layout.categoryAxis && point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width) return { action: 'chart.select-element', data: { kind: 'axis' } };
   if (point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'plot-area' } };
   return { action: 'chart.select-element', data: { kind: 'chart-area' } };
 }

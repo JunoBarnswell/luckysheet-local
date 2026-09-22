@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CheckToggle, FileButton, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
@@ -54,11 +54,12 @@ const elementLabels: Record<ChartElementSelection['kind'], string> = {
 };
 
 export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], selectedChartElement = null, defaultRange, readCellValue, onInsertChart, onCommand, onClose }: ChartPanelProps) {
+  const selectedDrawingIdSet = useMemo(() => new Set(selectedDrawingIds), [selectedDrawingIds]);
   const entries = drawings.flatMap(drawing => {
     const payload = drawingPayloads.get(drawing.payloadId);
     return drawing.kind === 'chart' && payload?.kind === 'chart' ? [{ drawing, payload }] : [];
   });
-  const current = entries.find(entry => selectedDrawingIds.includes(entry.drawing.id))?.payload;
+  const current = entries.find(entry => selectedDrawingIdSet.has(entry.drawing.id))?.payload;
   // Editor drafts never become a second workbook state. Only chart.update writes canonical data.
   const [drafts, setDrafts] = useState<Record<string, ChartEditorDraft>>({});
   const [applied, setApplied] = useState<Record<string, ChartDrawingPayload>>({});
@@ -68,8 +69,25 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   const [createRange, setCreateRange] = useState(defaultRange ?? '');
   const [message, setMessage] = useState<string | null>(null);
   const id = current?.chartId;
+  const selectedChartIdRef = useRef(id);
+  selectedChartIdRef.current = id;
+  const previousDefaultRangeRef = useRef(defaultRange ?? '');
+  useEffect(() => {
+    if (id) return;
+    const nextDefault = defaultRange ?? '';
+    setCreateRange(value => !value.trim() || value === previousDefaultRangeRef.current ? nextDefault : value);
+    previousDefaultRangeRef.current = nextDefault;
+  }, [defaultRange, id]);
+  const chartIdsKey = entries.map((entry) => entry.payload.chartId).join('\u0000');
+  useEffect(() => {
+    const liveIds = new Set(chartIdsKey ? chartIdsKey.split('\u0000') : []);
+    setDrafts(all => Object.fromEntries(Object.entries(all).filter(([chartId]) => liveIds.has(chartId))));
+    setApplied(all => Object.fromEntries(Object.entries(all).filter(([chartId]) => liveIds.has(chartId))));
+  }, [chartIdsKey]);
   const submitted = id ? applied[id] : undefined;
-  const submittedApplied = current && submitted && JSON.stringify(current) === JSON.stringify(submitted);
+  const currentFingerprint = useMemo(() => current ? JSON.stringify(current) : '', [current]);
+  const submittedFingerprint = useMemo(() => submitted ? JSON.stringify(submitted) : '', [submitted]);
+  const submittedApplied = Boolean(current && submitted && currentFingerprint === submittedFingerprint);
   useEffect(() => {
     if (!id || !submittedApplied) return;
     setDrafts(all => { const next = { ...all }; delete next[id]; return next; });
@@ -78,7 +96,8 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   const storedDraft = id && !submittedApplied ? drafts[id] : undefined;
   const draft = current ? storedDraft ?? chartEditorDraft(current) : undefined;
   const payload = draft?.value;
-  const conflict = Boolean(storedDraft && current && JSON.stringify(storedDraft.base) !== JSON.stringify(current));
+  const storedBaseFingerprint = useMemo(() => storedDraft ? JSON.stringify(storedDraft.base) : '', [storedDraft]);
+  const conflict = Boolean(storedDraft && current && storedBaseFingerprint !== currentFingerprint);
   const preserved = current?.nativeIdentity?.status === 'preserved-native';
   let validationError: string | null = null;
   let candidate: ChartDrawingPayload | undefined;
@@ -86,10 +105,14 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
     try { candidate = chartPayloadFromDraft(draft, sheetId); }
     catch (error) { validationError = error instanceof Error ? error.message : '图表输入无效'; }
   }
-  const dirty = Boolean(storedDraft && (!candidate || JSON.stringify(candidate) !== JSON.stringify(current)));
+  const candidateFingerprint = useMemo(() => candidate ? JSON.stringify(candidate) : '', [candidate]);
+  const dirty = Boolean(storedDraft && (!candidate || candidateFingerprint !== currentFingerprint));
   const edit = (change: (value: ChartEditorDraft) => ChartEditorDraft) => {
-    if (!id || !draft) return;
-    setDrafts(all => ({ ...all, [id]: change(structuredClone(draft)) }));
+    if (!id || !current) return;
+    setDrafts(all => {
+      const latest = all[id] ?? chartEditorDraft(current);
+      return { ...all, [id]: change(structuredClone(latest)) };
+    });
     setApplied(all => { const next = { ...all }; delete next[id]; return next; });
     setMessage(null);
   };
@@ -133,10 +156,12 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
             <Text size="xs" tone="muted">地图只读取工作簿内已校验的 GeoJSON，不访问外部地图服务。</Text>
             {payload.mapOptions?.resource ? <Inline className="items-center justify-between rounded-md bg-slate-100 px-2 py-1.5" gap="xs"><Text size="xs">{payload.mapOptions.resource.resourceId} · {payload.mapOptions.resource.features.length} 个区域</Text><Button size="xs" variant="ghost" onClick={() => updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource: undefined } })}>移除</Button></Inline> : <Text size="xs" tone="muted">尚未导入 GeoJSON。没有资源时地图会明确显示不可用。</Text>}
             <FileButton accept=".geojson,application/geo+json,.json" icon="chart" size="sm" variant="secondary" onFile={(file) => {
+              const targetChartId = id;
               void file.text().then((text) => parseGeoJsonMapResource(text, file.name)).then((resource) => {
-                updatePayload({ mapOptions: { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource } });
+                if (!targetChartId || selectedChartIdRef.current !== targetChartId) return;
+                edit(value => ({ ...value, value: { ...value.value, mapOptions: { ...(value.value.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resource } } }));
                 setMessage(null);
-              }).catch((error) => setMessage(error instanceof Error ? error.message : 'GeoJSON 地图资源无效'));
+              }).catch((error) => { if (selectedChartIdRef.current === targetChartId) setMessage(error instanceof Error ? error.message : 'GeoJSON 地图资源无效'); });
             }}>导入 GeoJSON</FileButton>
           </Group> : null}
           {payload.source.kind === 'worksheet-ranges' || payload.source.kind === 'report-range' ? <Field label="数据区域（多个区域用分号分隔）"><TextInput aria-label="图表数据区域" value={draft.sourceRanges} onChange={event => edit(value => ({ ...value, sourceRanges: event.target.value }))} /></Field> : <Text size="xs" tone="muted">数据绑定：{payload.source.kind === 'pivot' ? '透视结果' : 'Table'}，请在对应数据源中调整范围。</Text>}
@@ -165,7 +190,10 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
         </Group>
         <Group title="图例与标签" open={selectedChartElement?.kind === 'legend' || selectedChartElement?.kind === 'data-label'}>
           <Field label="图例位置"><Select aria-label="图例位置" value={payload.elements.legend?.visible ? payload.elements.legend.position : 'none'} onChange={event => updateElements({ legend: { ...payload.elements.legend, visible: event.target.value !== 'none', position: event.target.value === 'none' ? 'bottom' : event.target.value as NonNullable<ChartDrawingPayload['elements']['legend']>['position'] } })}><option value="none">隐藏</option><option value="top">上方</option><option value="bottom">下方</option><option value="left">左侧</option><option value="right">右侧</option><option value="top-right">右上方</option></Select></Field>
-          {(['visible', 'showValue', 'showCategoryName', 'showSeriesName', 'showPercentage'] as const).map((key, index) => <CheckToggle key={key} label={['显示数据标签', '显示数值', '显示分类', '显示系列名称', '显示百分比'][index]!} checked={payload.elements.dataLabels?.[key] === true} onChange={event => updateElements({ dataLabels: { visible: false, ...payload.elements.dataLabels, [key]: event.currentTarget.checked } })} />)}
+          {(['visible', 'showValue', 'showCategoryName', 'showSeriesName', 'showPercentage'] as const).map((key, index) => <CheckToggle key={key} label={['显示数据标签', '显示数值', '显示分类', '显示系列名称', '显示百分比'][index]!} checked={payload.elements.dataLabels?.[key] === true} onChange={event => {
+            const checked = event.currentTarget.checked;
+            updateElements({ dataLabels: { ...payload.elements.dataLabels, visible: key === 'visible' ? checked : checked ? true : payload.elements.dataLabels?.visible ?? false, [key]: checked } });
+          }} />)}
           <TextInput aria-label="数据标签数字格式" placeholder="数字格式，例如 0.00" value={payload.elements.dataLabels?.numberFormat ?? ''} onChange={event => updateElements({ dataLabels: { visible: true, ...payload.elements.dataLabels, numberFormat: event.target.value || undefined } })} />
           <CheckToggle label="显示图表数据表" checked={payload.elements.dataTable?.visible === true} onChange={event => updateElements({ dataTable: { ...payload.elements.dataTable, visible: event.currentTarget.checked } })} />
         </Group>
