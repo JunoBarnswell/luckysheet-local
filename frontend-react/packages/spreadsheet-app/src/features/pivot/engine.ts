@@ -52,6 +52,8 @@ import {
   createPivotMemberKey,
   formatPivotMember,
   isPivotError,
+  isPivotSlicerDrawingPayload,
+  isPivotTimelineDrawingPayload,
   normalizePivotTimelinePeriod,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
@@ -62,6 +64,7 @@ import {
   PIVOT_MEMBER_DISPLAY_LIMIT,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
+  pivotSourceIdentity,
   pivotScalarFromMemberKey,
   parsePivotCalculatedItemFormula,
 } from '@react-sheets/core-model';
@@ -2407,17 +2410,41 @@ export interface PivotTaskControl {
 }
 
 export function collectPivotTaskControls(workbook: WorkbookModel, pivot: PivotModel): PivotTaskControl[] {
+  const drawingIds = new Set<string>();
   return workbook.getSheets().flatMap((sheet) => sheet.drawings.flatMap((drawing) => {
     if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') return [];
-    const payload = sheet.drawingPayloads.get(drawing.payloadId);
-    if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return [];
-    if (payload.pivotId === pivot.id) return [{ drawingId: drawing.id, payload, fieldId: payload.fieldId }];
+    const rawPayload = sheet.drawingPayloads.get(drawing.payloadId);
+    const payload = drawing.kind === 'slicer'
+      ? (isPivotSlicerDrawingPayload(rawPayload) ? rawPayload : undefined)
+      : (isPivotTimelineDrawingPayload(rawPayload) ? rawPayload : undefined);
+    if (!payload) {
+      throw new Error(`Pivot control drawing/payload mismatch: ${drawing.id}`);
+    }
+    let fieldId: string | undefined;
+    if (payload.pivotId === pivot.id) fieldId = payload.fieldId;
     const connection = payload.connections?.find((candidate) => candidate.pivotId === pivot.id);
-    return connection ? [{ drawingId: drawing.id, payload, fieldId: connection.fieldId }] : [];
+    if (fieldId === undefined && connection) {
+      if (connection.sourceKey !== pivotSourceIdentity(pivot.source)) throw new Error(`Pivot control connection is stale: ${drawing.id}`);
+      fieldId = connection.fieldId;
+    }
+    if (fieldId === undefined) return [];
+    const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === fieldId);
+    if (!field || (payload.kind === 'timeline' && field.dataType !== 'date')) throw new Error(`Pivot control field is invalid: ${drawing.id}`);
+    if (payload.pivotId !== pivot.id) {
+      const primary = workbook.getSheets().flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === payload.pivotId);
+      const primaryField = primary?.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId);
+      if (!primary || pivotSourceIdentity(primary.source) !== pivotSourceIdentity(pivot.source) || !primaryField
+        || primaryField.ordinal !== field.ordinal || primaryField.name !== field.name || primaryField.dataType !== field.dataType) {
+        throw new Error(`Pivot control connection field is stale: ${drawing.id}`);
+      }
+    }
+    if (!drawingIds.add(drawing.id)) throw new Error(`Duplicate Pivot control drawing id: ${drawing.id}`);
+    return [{ drawingId: drawing.id, payload, fieldId }];
   }));
 }
 
 function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, fieldId: string, bounds: PivotTimelinePeriodBounds): boolean {
+  if (bounds.start === undefined && bounds.endExclusive === undefined) return true;
   const raw = sourceRowValue(row, fieldId);
   if (raw == null || raw === '') return false;
   const instant = pivotTimelineInstant(raw);
@@ -2544,6 +2571,7 @@ function slicerItemProjection(
   rows: SourceRow[],
   drawingId: string,
   payload: PivotSlicerDrawingPayload,
+  fieldId: string,
   collator: Intl.Collator,
   calculatedFields: CalculatedFieldEvaluator,
   controlMatcher: PivotControlMatcher,
@@ -2551,8 +2579,8 @@ function slicerItemProjection(
   aggregates: PivotAggregatePlanner,
   precomputedAvailableRows?: SourceRow[],
 ): PivotSlicerItemProjection[] {
-  const fieldValues = indexedSlicerMembers(rows, payload.fieldId)
-    ?? rows.map((row) => sourceRowValue(row, payload.fieldId));
+  const fieldValues = indexedSlicerMembers(rows, fieldId)
+    ?? rows.map((row) => sourceRowValue(row, fieldId));
   const members = new Map<string, PivotSlicerItemProjection>();
   for (const value of fieldValues) {
     const key = createPivotMemberKey(value);
@@ -2569,14 +2597,15 @@ function slicerItemProjection(
     definition,
     aggregates,
   );
-  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, payload.fieldId)))));
+  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, fieldId)))));
   const selectedMembers = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
   for (const item of members.values()) {
     item.hasData = available.has(pivotMemberKey(item.key));
     const included = selectedMembers.has(pivotMemberKey(item.key));
     item.selected = payload.filter.mode === 'all' || (payload.filter.mode === 'include' ? included : !included);
   }
-  const sorted = [...members.values()].sort((left, right) => collator.compare(left.label, right.label));
+  const sorted = [...members.values()].filter((item) => payload.settings.showNoDataItems || item.hasData)
+    .sort((left, right) => collator.compare(left.label, right.label));
   if (payload.settings.sort === 'descending') sorted.reverse();
   if (payload.settings.noDataItemsLast) sorted.sort((left, right) => Number(right.hasData) - Number(left.hasData));
   return sorted.length > PIVOT_MEMBER_DISPLAY_LIMIT ? sorted.slice(0, PIVOT_MEMBER_DISPLAY_LIMIT) : sorted;
@@ -2964,7 +2993,7 @@ function computePivotResultFromTable(
   for (const control of controls) {
     if (control.payload.kind !== 'slicer') continue;
     const availableRows = controlMatcher.unrestricted.has(control.drawingId) ? filtered : undefined;
-    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
+    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, control.fieldId, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields, definition.layout);

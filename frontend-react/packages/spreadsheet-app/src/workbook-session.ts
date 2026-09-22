@@ -208,6 +208,7 @@ import {
   buildPivotSlicerDrawing,
   buildPivotTimelineDrawing,
   compatiblePivotControlConnections,
+  findPivotControlRecord,
   listPivotControlsForPivot,
   type PivotControlRecord,
 } from './features/pivot-controls';
@@ -5320,8 +5321,17 @@ export class WorkbookSession {
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
     if (!pivot) return [];
-    return listPivotControlsForPivot(this.runtime.model.getSheet(pivot.target.sheetId), pivotId)
+    return this.runtime.model.getSheets().flatMap((sheet) => listPivotControlsForPivot(sheet, pivotId))
       .map((record) => ({ drawing: structuredClone(record.drawing), payload: structuredClone(record.payload) }));
+  }
+
+  private pivotControlOwner(drawingId: string): { sheet: WorksheetModel; record: PivotControlRecord } {
+    const matches = this.runtime.model.getSheets().flatMap((sheet) => {
+      const record = findPivotControlRecord(sheet, drawingId);
+      return record ? [{ sheet, record }] : [];
+    });
+    if (matches.length !== 1) throw new Error(`Pivot control ${drawingId} must have exactly one worksheet owner`);
+    return matches[0]!;
   }
 
   listCompatiblePivotControlConnections(pivotId: string, fieldId: string, kind: 'slicer' | 'timeline'): readonly PivotControlConnection[] {
@@ -5329,7 +5339,7 @@ export class WorkbookSession {
   }
 
   setPivotControlConnections(drawingId: string, connections: readonly PivotControlConnection[]): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.connections.set', { sheetId: sheet.id, drawingId, connections: structuredClone(connections) });
     this.refresh();
   }
@@ -5376,46 +5386,44 @@ export class WorkbookSession {
   }
 
   removePivotControl(drawingId: string): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
-    if (!drawing) return;
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('drawing.remove', { sheetId: sheet.id, drawingId });
     this.refresh();
   }
 
   setPivotSlicerFilter(drawingId: string, mode: 'all' | 'include' | 'exclude', memberKeys: readonly PivotMemberKey[]): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.slicer.filter.set', { sheetId: sheet.id, drawingId, filter: { mode, memberKeys: [...memberKeys] } });
     this.refresh();
   }
 
   setPivotTimelinePeriod(drawingId: string, start?: string, end?: string): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.period.set', { sheetId: sheet.id, drawingId, period: { ...(start ? { start } : {}), ...(end ? { end } : {}) } });
     this.refresh();
   }
   setPivotTimelineLevel(drawingId: string, level: import('@react-sheets/core-model').PivotTimelineLevel): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.level.set', { sheetId: sheet.id, drawingId, level });
     this.refresh();
   }
   setPivotTimelineWindow(drawingId: string, scrollPosition: string): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, scrollPosition });
     this.refresh();
   }
   setPivotTimelineDisplay(drawingId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.display.set', { sheetId: sheet.id, drawingId, ...display });
     this.refresh();
   }
   setPivotTimelineCaption(drawingId: string, caption: string): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.caption.set', { sheetId: sheet.id, drawingId, caption });
     this.refresh();
   }
   setPivotTimelineStyle(drawingId: string, styleName: string): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const { sheet } = this.pivotControlOwner(drawingId);
     this.runCommand('pivot.control.timeline.style.set', { sheetId: sheet.id, drawingId, styleName });
     this.refresh();
   }
