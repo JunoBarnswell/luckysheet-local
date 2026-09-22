@@ -2,7 +2,9 @@ import { pivotSourceIndexTransferables, type PivotSourceIndex } from './source-i
 import { PivotTaskEvaluator } from './task-worker-entry';
 import {
   assertPivotTaskResult,
+  assertPivotTaskResultForRequest,
   createPivotTaskCancelRequest,
+  createPivotSourceReleaseRequest,
   PIVOT_TASK_PROTOCOL,
   PIVOT_TASK_VERSION,
   pivotTaskFailure,
@@ -50,7 +52,10 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
         const current = this.pending.get(request.taskId);
         if (!current) return;
         this.pending.delete(request.taskId);
-        try { this.worker.postMessage(createPivotTaskCancelRequest(request.taskId, request.generation)); } catch { /* caller receives timeout below */ }
+        try {
+          this.worker.postMessage(createPivotTaskCancelRequest(request.taskId, request.generation));
+          this.releaseCancelledRegistration(current.request);
+        } catch { /* caller receives timeout below */ }
         resolve(failedResult(request, 'PIVOT_TASK_TIMEOUT', `Pivot task exceeded ${String(this.timeoutMs)} ms`));
       }, this.timeoutMs);
       this.pending.set(request.taskId, { request, resolve, timeout });
@@ -77,7 +82,10 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
     if (!pending) return;
     this.pending.delete(taskId);
     clearTimeout(pending.timeout);
-    try { this.worker.postMessage(createPivotTaskCancelRequest(taskId, pending.request.generation)); } catch { /* stale worker results remain ignored */ }
+    try {
+      this.worker.postMessage(createPivotTaskCancelRequest(taskId, pending.request.generation));
+      this.releaseCancelledRegistration(pending.request);
+    } catch { /* stale worker results remain ignored */ }
     pending.resolve({ protocol: PIVOT_TASK_PROTOCOL, version: PIVOT_TASK_VERSION, taskId, generation: pending.request.generation, status: 'cancelled' });
   }
 
@@ -93,19 +101,15 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
 
   private readonly handleMessage = (event: { readonly data?: unknown }): void => {
     let result: PivotTaskResult;
-    try {
-      assertPivotTaskResult(event.data);
-      result = event.data;
-    } catch {
-      this.failAll('PIVOT_TASK_PROTOCOL_ERROR', 'Pivot worker returned an invalid result');
-      return;
-    }
+    try { assertPivotTaskResult(event.data); result = event.data; } catch { return; }
     const pending = this.pending.get(result.taskId);
     if (!pending) return;
     this.pending.delete(result.taskId);
     clearTimeout(pending.timeout);
-    if (result.generation !== pending.request.generation) {
-      pending.resolve(failedResult(pending.request, 'PIVOT_TASK_REVISION_MISMATCH', 'Pivot worker returned a mismatched generation'));
+    try {
+      assertPivotTaskResultForRequest(result, pending.request);
+    } catch (error) {
+      pending.resolve(failedResult(pending.request, 'PIVOT_TASK_PROTOCOL_ERROR', error instanceof Error ? error.message : 'Pivot worker returned an invalid result'));
       return;
     }
     pending.resolve(result);
@@ -113,7 +117,21 @@ export class BrowserPivotTaskPort implements PivotTaskPort {
 
   private readonly handleFailure = (event: { readonly message?: string }): void => {
     this.failAll('PIVOT_TASK_FAILED', event.message ?? 'Pivot worker failed');
+    this.dispose();
   };
+
+  /** A timed-out or cancelled registration may still be queued in the Worker. */
+  private releaseCancelledRegistration(request: Exclude<PivotTaskRequest, { kind: 'cancel' }>): void {
+    if (request.kind !== 'source-register') return;
+    try {
+      this.worker.postMessage(createPivotSourceReleaseRequest(
+        `${request.taskId}:cancelled-release`,
+        request.generation,
+        request.sourceIdentity,
+        request.sourceRevision,
+      ));
+    } catch { /* the original cancellation remains authoritative */ }
+  }
 
   private failAll(code: PivotTaskErrorCode, message: string): void {
     for (const pending of this.pending.values()) {
@@ -162,10 +180,17 @@ export class InlinePivotTaskPort implements PivotTaskPort {
 
   submit(request: Exclude<PivotTaskRequest, { kind: 'cancel' }>): Promise<PivotTaskResult> {
     if (this.disposed) return Promise.resolve(failedResult(request, 'PIVOT_TASK_FAILED', 'Inline Pivot task port has been disposed'));
+    if (this.pending.has(request.taskId)) return Promise.resolve(failedResult(request, 'PIVOT_TASK_PROTOCOL_ERROR', `Pivot task already exists: ${request.taskId}`));
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(request.taskId)) return;
-        resolve(this.evaluator.consume(request));
+        const result = this.evaluator.consume(request);
+        try {
+          assertPivotTaskResultForRequest(result, request);
+          resolve(result);
+        } catch (error) {
+          resolve(failedResult(request, 'PIVOT_TASK_PROTOCOL_ERROR', error instanceof Error ? error.message : 'Inline Pivot evaluator returned an invalid result'));
+        }
       }, 0);
       this.pending.set(request.taskId, { request, resolve, timer });
     });

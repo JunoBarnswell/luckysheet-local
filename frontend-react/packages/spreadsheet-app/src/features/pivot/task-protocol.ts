@@ -131,11 +131,29 @@ export function assertPivotTaskRequest(value: unknown): asserts value is PivotTa
     || !['source-register', 'source-release', 'calculate', 'cancel'].includes(String(value.kind))) {
     throw new Error('Pivot task request protocol is invalid');
   }
+  if (value.kind !== 'cancel') {
+    if (typeof value.sourceIdentity !== 'string' || value.sourceIdentity.length === 0) {
+      throw new Error('Pivot task source identity is invalid');
+    }
+  }
+  if (value.kind === 'source-register' || value.kind === 'source-release') {
+    if (typeof value.sourceRevision !== 'string' || value.sourceRevision.length === 0) {
+      throw new Error('Pivot source revision is invalid');
+    }
+  }
+  if (value.kind === 'source-register' && !isRecord(value.source)) {
+    throw new Error('Pivot source registration is invalid');
+  }
   if (value.kind === 'calculate') {
     if (!isRecord(value.targetBounds)
       || !Number.isSafeInteger(value.targetBounds.rowCount) || Number(value.targetBounds.rowCount) <= 0
       || !Number.isSafeInteger(value.targetBounds.columnCount) || Number(value.targetBounds.columnCount) <= 0) {
       throw new Error('Pivot task target bounds are invalid');
+    }
+    if (!isRecord(value.definition) || typeof value.definition.id !== 'string' || value.definition.id.length === 0
+      || !isRecord(value.revisions) || typeof value.revisions.sourceRevision !== 'string' || value.revisions.sourceRevision.length === 0
+      || !Array.isArray(value.controls)) {
+      throw new Error('Pivot calculation payload is invalid');
     }
   }
 }
@@ -146,6 +164,58 @@ export function assertPivotTaskResult(value: unknown): asserts value is PivotTas
     || !Number.isSafeInteger(value.generation) || Number(value.generation) < 0
     || !['accepted', 'completed', 'cancelled', 'failed'].includes(String(value.status))) {
     throw new Error('Pivot task result protocol is invalid');
+  }
+  if ((value.status === 'accepted' || value.status === 'completed')
+    && (typeof value.sourceIdentity !== 'string' || value.sourceIdentity.length === 0
+      || typeof value.sourceRevision !== 'string' || value.sourceRevision.length === 0)) {
+    throw new Error('Pivot task result source identity is invalid');
+  }
+  if (value.status === 'failed') {
+    if (!isRecord(value.error) || typeof value.error.code !== 'string' || typeof value.error.message !== 'string'
+      || typeof value.error.pivotId !== 'string' || typeof value.error.sourceIdentity !== 'string'
+      || typeof value.error.sourceRevision !== 'string' || typeof value.error.recovery !== 'string') {
+      throw new Error('Pivot task failure is invalid');
+    }
+  }
+}
+
+/**
+ * A worker reply is only useful when it is the reply to the exact request
+ * which is pending.  Checking the envelope alone lets an accepted source
+ * registration masquerade as a completed calculation (or vice versa), and
+ * lets an unrelated source identity poison the session cache.
+ */
+export function assertPivotTaskResultForRequest(
+  value: unknown,
+  request: Exclude<PivotTaskRequest, { kind: 'cancel' }>,
+): asserts value is PivotTaskResult {
+  assertPivotTaskResult(value);
+  if (value.taskId !== request.taskId || value.generation !== request.generation) {
+    throw new Error('Pivot worker result does not match the pending task');
+  }
+  const expectedSourceIdentity = request.sourceIdentity;
+  const expectedSourceRevision = request.kind === 'calculate' ? request.revisions.sourceRevision : request.sourceRevision;
+  if (value.status === 'accepted') {
+    if (request.kind === 'calculate') throw new Error('Pivot calculation cannot return an accepted result');
+    if (value.sourceIdentity !== expectedSourceIdentity || value.sourceRevision !== expectedSourceRevision) {
+      throw new Error('Pivot worker accepted an unexpected source revision');
+    }
+    return;
+  }
+  if (value.status === 'completed') {
+    if (request.kind !== 'calculate') throw new Error('Pivot source operation cannot return a completed result');
+    if (value.sourceIdentity !== expectedSourceIdentity || value.sourceRevision !== expectedSourceRevision) {
+      throw new Error('Pivot worker completed an unexpected source revision');
+    }
+    return;
+  }
+  if (value.status === 'failed') {
+    if (value.error.sourceIdentity !== expectedSourceIdentity || value.error.sourceRevision !== expectedSourceRevision) {
+      throw new Error('Pivot worker failure does not identify the pending source revision');
+    }
+    if (request.kind === 'calculate' && value.error.pivotId !== request.definition.id) {
+      throw new Error('Pivot worker failure does not identify the pending PivotTable');
+    }
   }
 }
 

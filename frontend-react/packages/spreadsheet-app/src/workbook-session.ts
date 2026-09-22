@@ -847,6 +847,8 @@ export class WorkbookSession {
   private readonly pivotTaskGeneration = new Map<string, number>();
   private readonly pivotTaskPort: PivotTaskPort;
   private readonly registeredPivotSources = new Map<string, string>();
+  /** The candidate source, rather than the persisted PivotTable source, owns eviction protection. */
+  private readonly activePivotSourceIdentities = new Map<string, string>();
   /** Member domains are loaded per data-source field, never as part of pivot open. */
   private readonly pivotFieldValueCache = new Map<string, { sourceId: string; sourceRevision: string; values: PivotScalar[] }>();
   private readonly pivotFieldValueLoads = new Map<string, Promise<void>>();
@@ -1069,6 +1071,7 @@ export class WorkbookSession {
       if (needsPivotRehydrate) {
         for (const taskId of this.activePivotTasks.values()) this.pivotTaskPort.cancel(taskId);
         this.activePivotTasks.clear();
+        this.activePivotSourceIdentities.clear();
         this.registeredPivotSources.clear();
         this.pivotFieldValueCache.clear();
         this.pivotFieldValueLoads.clear();
@@ -1233,6 +1236,7 @@ export class WorkbookSession {
     this.assetUrls.clear();
     this.pivotTaskPort.dispose();
     this.activePivotTasks.clear();
+    this.activePivotSourceIdentities.clear();
     this.registeredPivotSources.clear();
     this.pivotFieldValueCache.clear();
     this.pivotFieldValueLoads.clear();
@@ -4913,25 +4917,49 @@ export class WorkbookSession {
     return { code, message, pivotId: pivot.id, sourceIdentity: `${this.runtime.model.unitId}:${pivotSourceIdentity(pivot.source)}`, sourceRevision, recovery };
   }
 
+  private pivotSourceReleaseError(
+    pivot: PivotModel,
+    sourceIdentity: string,
+    sourceRevision: string,
+    result: Exclude<Awaited<ReturnType<PivotTaskPort['submit']>>, { status: 'accepted' }>,
+    action: 'release' | 'eviction',
+  ): PivotTaskExecutionError {
+    const fallback = this.pivotTaskError(
+      pivot,
+      'PIVOT_TASK_CANCELLED',
+      `Pivot source ${action} was cancelled`,
+      'retry',
+      sourceRevision,
+    );
+    const error = result.status === 'failed' ? result.error : fallback;
+    return new PivotTaskExecutionError({ ...error, pivotId: pivot.id, sourceIdentity, sourceRevision });
+  }
+
   private async rememberRegisteredPivotSource(pivot: PivotModel, sourceIdentity: string, sourceRevision: string, generation: number): Promise<void> {
     this.registeredPivotSources.delete(sourceIdentity);
     this.registeredPivotSources.set(sourceIdentity, sourceRevision);
     if (this.registeredPivotSources.size <= MAX_REGISTERED_PIVOT_SOURCES) return;
-    // A Pivot merely existing on another sheet must not pin its source. Only
-    // in-flight calculations need protection while the bounded cache evicts.
-    const active = new Set(this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots
-      .filter((entry) => this.activePivotTasks.has(entry.id))
-      .map((entry) => `${this.runtime.model.unitId}:${pivotSourceIdentity(entry.source)}`)));
+    // A pending pivot.update can be calculating a source that does not exist
+    // in WorkbookModel yet. Its candidate source, not the old model source,
+    // owns the eviction protection.
+    const active = new Set(this.activePivotSourceIdentities.values());
     const evict = [...this.registeredPivotSources.keys()].find((identity) => identity !== sourceIdentity && !active.has(identity));
     if (!evict) {
+      const released = await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-release:${generation}`, generation, sourceIdentity, sourceRevision));
+      if (released.status !== 'accepted') throw this.pivotSourceReleaseError(pivot, sourceIdentity, sourceRevision, released, 'release');
       this.registeredPivotSources.delete(sourceIdentity);
-      await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-release:${generation}`, generation, sourceIdentity, sourceRevision));
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_SOURCE_INVALID', `Pivot source cache exceeds ${String(MAX_REGISTERED_PIVOT_SOURCES)} active sources`, 'fix-source', sourceRevision));
     }
     const evictRevision = this.registeredPivotSources.get(evict)!;
-    this.registeredPivotSources.delete(evict);
     const released = await this.pivotTaskPort.submit(createPivotSourceReleaseRequest(`${pivot.id}:source-evict:${generation}`, generation, evict, evictRevision));
-    if (released.status === 'failed') throw new PivotTaskExecutionError(released.error);
+    if (released.status !== 'accepted') throw this.pivotSourceReleaseError(pivot, evict, evictRevision, released, 'eviction');
+    this.registeredPivotSources.delete(evict);
+  }
+
+  private completeActivePivotTask(pivotId: string, taskId: string): void {
+    if (this.activePivotTasks.get(pivotId) !== taskId) return;
+    this.activePivotTasks.delete(pivotId);
+    this.activePivotSourceIdentities.delete(pivotId);
   }
 
   private async prepareRegisteredPivotTask(pivot: PivotModel, generation: number) {
@@ -5030,22 +5058,23 @@ export class WorkbookSession {
     if (previousTaskId) this.pivotTaskPort.cancel(previousTaskId);
     const taskId = `${pivot.id}:calculate:${generation}`;
     this.activePivotTasks.set(pivot.id, taskId);
+    this.activePivotSourceIdentities.set(pivot.id, `${workbook.unitId}:${pivotSourceIdentity(pivot.source)}`);
     delete this.runtime.pivotErrors[pivot.id];
     this.refresh();
     let prepared: Awaited<ReturnType<WorkbookSession['prepareRegisteredPivotTask']>>;
     try {
       prepared = await this.prepareRegisteredPivotTask(pivot, generation);
     } catch (error) {
-      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+      this.completeActivePivotTask(pivot.id, taskId);
       throw error;
     }
     const { sourceIdentity, descriptor } = prepared;
     if (this.disposed || this.runtime.model !== workbook || this.pivotTaskGeneration.get(pivot.id) !== generation) {
-      if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+      this.completeActivePivotTask(pivot.id, taskId);
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was superseded by a newer generation', 'retry', descriptor.revisions.sourceRevision));
     }
     const task = await this.pivotTaskPort.submit(createPivotCalculateRequest(taskId, generation, sourceIdentity, descriptor.definition, descriptor.controls, descriptor.revisions, descriptor.targetBounds));
-    if (this.activePivotTasks.get(pivot.id) === taskId) this.activePivotTasks.delete(pivot.id);
+    this.completeActivePivotTask(pivot.id, taskId);
     if (this.disposed || this.runtime.model !== workbook || this.pivotTaskGeneration.get(pivot.id) !== generation || task.status === 'cancelled') {
       throw new PivotTaskExecutionError(this.pivotTaskError(pivot, 'PIVOT_TASK_CANCELLED', 'Pivot task was cancelled', 'retry', descriptor.revisions.sourceRevision));
     }
@@ -5564,6 +5593,7 @@ export class WorkbookSession {
       const taskId = this.activePivotTasks.get(pivotId);
       if (taskId) this.pivotTaskPort.cancel(taskId);
       this.activePivotTasks.delete(pivotId);
+      this.activePivotSourceIdentities.delete(pivotId);
       delete this.runtime.pivotResults[pivotId];
       delete this.runtime.pivotErrors[pivotId];
       return;
