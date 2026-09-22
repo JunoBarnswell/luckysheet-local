@@ -1,0 +1,115 @@
+- generic [ref=e16]:
+  - generic [ref=e17]:
+    - text: Pivot Performance Admin
+    - button "用户管理" [ref=e18] [cursor=pointer]
+  - main [ref=e19]:
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - button "返回工作簿中心" [ref=e22] [cursor=pointer]
+        - generic [ref=e26]: 云表格
+        - separator [ref=e27]
+        - generic [ref=e28]: 已保存到服务器
+      - generic [ref=e33]:
+        - button "帮助" [ref=e34] [cursor=pointer]
+        - button "设置" [ref=e38] [cursor=pointer]
+        - separator [ref=e42]
+    - generic [ref=e50]:
+      - navigation "工作簿导航" [ref=e52]:
+        - generic [ref=e53]:
+          - button "开始" [ref=e54] [cursor=pointer]
+          - button "新建" [ref=e59] [cursor=pointer]
+          - button "打开" [ref=e64] [cursor=pointer]
+          - button "最近" [ref=e67] [cursor=pointer]
+          - button "共享" [ref=e71] [cursor=pointer]
+        - separator [ref=e77]
+        - generic [ref=e78]:
+          - button "信息" [disabled] [ref=e79]
+          - button "保存" [disabled] [ref=e82]
+          - button "导入" [ref=e86] [cursor=pointer]
+          - button "导出" [disabled] [ref=e89]
+        - separator [ref=e92]
+        - generic [ref=e93]:
+          - button "回收站" [ref=e94] [cursor=pointer]
+          - button "关闭" [disabled] [ref=e99]
+        - generic [ref=e102]:
+          - separator [ref=e103]
+          - button "选项" [ref=e104] [cursor=pointer]
+      - generic [ref=e111]:
+        - heading "早上好" [level=1] [ref=e112]
+        - generic [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]: 新建
+            - button "更多模板" [ref=e119] [cursor=pointer]
+          - generic [ref=e122]:
+            - button "空白工作簿" [ref=e123] [cursor=pointer]:
+              - generic [ref=e139]:
+                - generic [ref=e140]: 空白工作簿
+                - generic [ref=e141]: 从空白表格开始
+            - button "从模板创建" [ref=e145] [cursor=pointer]:
+              - generic [ref=e159]:
+                - generic [ref=e160]: 从模板创建
+                - generic [ref=e161]: 浏览更多模板
+            - button "打开 / 导入原生文档" [ref=e162] [cursor=pointer]:
+              - generic [ref=e175]:
+                - generic [ref=e176]: 打开 / 导入原生文档
+                - generic [ref=e177]: 从原生文档协议开始
+            - button "数据透视表模板" [ref=e178] [cursor=pointer]:
+              - generic [ref=e185]:
+                - generic [ref=e186]: 数据透视表模板
+                - generic [ref=e187]: 快速分析业务数据
+            - button "项目计划模板" [ref=e188] [cursor=pointer]:
+              - generic [ref=e200]:
+                - generic [ref=e201]: 项目计划模板
+                - generic [ref=e202]: 规划项目进度与任务
+            - button "预算模板" [ref=e203] [cursor=pointer]:
+              - generic [ref=e210]:
+                - generic [ref=e211]: 预算模板
+                - generic [ref=e212]: 管理收支与预算
+            - button "Designer Demo" [ref=e213] [cursor=pointer]:
+              - generic [ref=e244]:
+                - generic [ref=e245]: Designer Demo
+                - generic [ref=e246]: SpreadJS Designer 视觉验收
+        - generic [ref=e247]:
+          - generic [ref=e248]: 工作簿由服务器持久保存；仅在服务器确认提交后显示已保存。断线时暂停编辑并保留待确认操作。
+          - button "了解更多" [ref=e253] [cursor=pointer]
+        - generic [ref=e256]:
+          - generic [ref=e258]:
+            - button "新建工作簿" [ref=e259] [cursor=pointer]
+            - button "上传导入" [ref=e262] [cursor=pointer]
+            - button "导出当前工作簿" [disabled] [ref=e265]
+            - button "同步到服务端" [disabled] [ref=e268]
+            - button "移动" [disabled] [ref=e272]
+          - generic [ref=e275]:
+            - tablist "工作簿分类" [ref=e277]:
+              - tab "最近" [selected] [ref=e278] [cursor=pointer]
+              - tab "我的云文档" [ref=e279] [cursor=pointer]
+              - tab "与我共享" [ref=e280] [cursor=pointer]
+            - generic [ref=e282]:
+              - textbox "搜索文件、位置或人员" [ref=e284]
+              - button "筛选" [ref=e285] [cursor=pointer]
+              - button "切换卡片视图" [ref=e287] [cursor=pointer]
+          - table [ref=e292]:
+            - rowgroup [ref=e293]:
+              - row [ref=e294]:
+                - columnheader [ref=e295]:
+                  - checkbox "全选" [ref=e296]
+                - columnheader "名称" [ref=e297]
+                - columnheader "位置" [ref=e298]
+                - columnheader "修改时间" [ref=e299]
+                - columnheader "状态" [ref=e303]
+                - columnheader [ref=e304]
+            - rowgroup [ref=e305]:
+              - row [ref=e306]:
+                - cell [ref=e307]:
+                  - checkbox "选择 wb-030479ee-1137-4ce6-82cf-ceaffde60d49" [ref=e308]
+                - cell "Pivot Perf 50k 为 Pivot Perf 50k 添加星标" [ref=e309]:
+                  - generic [ref=e310]:
+                    - generic [ref=e317]: Pivot Perf 50k
+                    - button "为 Pivot Perf 50k 添加星标" [ref=e318] [cursor=pointer]
+                - cell "我的云文档" [ref=e321]
+                - cell "9/21 18:40" [ref=e322]
+                - cell "已同步" [ref=e323]
+                - cell [ref=e329]:
+                  - button "打开 Pivot Perf 50k 的更多操作" [ref=e332] [cursor=pointer]
+          - generic [ref=e337]: 共 1 项
+    - generic [ref=e339]: 当前用户：Pivot Performance Admin
