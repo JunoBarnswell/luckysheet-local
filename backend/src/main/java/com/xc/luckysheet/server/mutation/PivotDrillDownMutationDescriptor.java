@@ -177,6 +177,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
 
     private ObjectNode createSheet(String id, String name, int rowCount, int columnCount) {
         ObjectNode sheet = JsonNodeFactory.instance.objectNode();
+        sheet.put("kind", "worksheet");
         sheet.put("id", id);
         sheet.put("name", name);
         sheet.put("rowCount", rowCount);

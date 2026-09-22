@@ -798,6 +798,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation largeDrillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", largeDrillDownParams);
         current = registry.prepare(current, largeDrillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, largeDrillDown);
         JsonNode largeDetail = current.path("sheets").get(2);
+        assertEquals("worksheet", largeDetail.path("kind").asText());
         assertEquals("detail-large", largeDetail.path("id").asText());
         assertEquals(1_002, largeDetail.path("rowCount").asInt());
         assertEquals(26, largeDetail.path("columnCount").asInt());
