@@ -303,27 +303,15 @@ function drillDownScalar(value: PivotScalar): TableScalar {
 
 async function readSelectedDataSourceRows(
   query: DataSourceContentQuery,
-  rows: readonly number[],
+  physicalRows: readonly number[],
 ): Promise<Map<number, TableScalar[]>> {
   const revision = query.manifest.revision;
-  const selected = [...new Set(rows)].sort((left, right) => left - right);
-  const values = new Map<number, TableScalar[]>();
-  for (let index = 0; index < selected.length;) {
-    const start = selected[index]!;
-    let end = start;
-    while (index + 1 < selected.length && selected[index + 1] === end + 1 && end - start + 1 < 65_536) {
-      index += 1;
-      end = selected[index]!;
-    }
-    const result = await query.getRows(start, end - start + 1);
-    if (query.manifest.revision !== revision) throw new Error('Pivot drill-down source changed while reading details');
-    if (result.state.availability !== 'ready' || result.value === undefined) {
-      throw new Error(result.state.error ?? `Pivot drill-down source rows ${String(start)}-${String(end)} are unavailable`);
-    }
-    result.value.forEach((row, offset) => values.set(start + offset, [...row]));
-    index += 1;
+  const result = await query.getRowsByPhysicalRow(physicalRows);
+  if (query.manifest.revision !== revision) throw new Error('Pivot drill-down source changed while reading details');
+  if (result.state.availability !== 'ready' || result.value === undefined) {
+    throw new Error(result.state.error ?? 'Pivot drill-down source rows are unavailable');
   }
-  return values;
+  return result.value;
 }
 
 /**
@@ -348,16 +336,16 @@ export async function readPivotDrillDownRows(
     const { manifest, sheet: sourceSheet, region } = canonical;
     const manifestRange = manifest.sourceRange!;
     if (manifest.fields.length !== plan.columns.length) throw new Error(`Pivot drill-down source ${sourceId} field count changed`);
-    const logicalRows = plan.records.map((record) => {
+    const physicalRows = plan.records.map((record) => {
       const path = record.paths.get('__single-source__');
       if (!path || path.sheetId !== sourceSheet.id) throw new Error('Pivot drill-down provenance does not match its data region');
-      const logicalRow = path.row - region.headerRow - 1;
-      if (!Number.isSafeInteger(logicalRow) || logicalRow < 0 || logicalRow >= manifest.rowCount) {
+      const physicalRow = path.row - region.headerRow - 1;
+      if (!Number.isSafeInteger(physicalRow) || physicalRow < 0 || physicalRow >= manifest.rowCount) {
         throw new Error(`Pivot drill-down source row is outside data source ${sourceId}`);
       }
-      return logicalRow;
+      return physicalRow;
     });
-    const selected = await readSelectedDataSourceRows(query, logicalRows);
+    const selected = await readSelectedDataSourceRows(query, physicalRows);
     if (dataContent.get(sourceId) !== query || getPivotRevisionKey(workbook, pivot).sourceRevision !== sourceRevision) {
       throw new Error(`Pivot drill-down source ${sourceId} changed while reading details`);
     }
@@ -373,7 +361,7 @@ export async function readPivotDrillDownRows(
     });
     return {
       headers: manifest.fields.map((field) => field.name),
-      rows: logicalRows.map((row, index) => {
+      rows: physicalRows.map((row, index) => {
         const values = selected.get(row);
         if (!values) throw new Error(`Pivot drill-down source row ${String(row)} was not loaded`);
         const path = plan.records[index]!.paths.get('__single-source__')!;

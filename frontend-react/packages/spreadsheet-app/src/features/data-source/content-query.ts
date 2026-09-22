@@ -165,16 +165,18 @@ export class DataSourceContentQuery {
   /** Preserve decoded immutable blocks when only logical source metadata changed. */
   rebindManifest(manifest: DataSourceManifest): boolean {
     const normalized = normalizeDataSourceManifest(structuredClone(manifest));
+    // This identity owns decoded bytes only. Projection metadata, revision,
+    // virtual sort order and display naming can change without invalidating a
+    // verified immutable block, so retaining the cache is both safe and
+    // necessary for lazy multi-sheet navigation.
     const contentIdentity = (source: DataSourceManifest): string => JSON.stringify({
       id: source.id,
-      kind: source.kind,
-      sourceSheetId: source.sourceSheetId,
-      sourceRange: source.sourceRange,
       rowCount: source.rowCount,
       fields: source.fields,
       blockRowCount: source.blockRowCount,
-      blocks: source.blocks,
-      revision: source.revision,
+      blocks: source.blocks.map(({ id, dataSourceId, startRow, rowCount, checksum, byteLength, encoding }) => ({
+        id, dataSourceId, startRow, rowCount, checksum, byteLength, encoding,
+      })),
     });
     if (contentIdentity(normalized) !== contentIdentity(this.source)) return false;
     this.source = normalized;
@@ -195,6 +197,12 @@ export class DataSourceContentQuery {
 
   getLoadStates(): DataSourceContentLoadState[] {
     return [...this.loadStates.values()].map((current) => ({ ...current }));
+  }
+
+  /** Resolve the immutable block row behind a logical (possibly sorted) row. */
+  getPhysicalRow(logicalRow: number): number | undefined {
+    if (!isSafeRowIndex(logicalRow) || logicalRow >= this.source.rowCount) return undefined;
+    return this.physicalRow(logicalRow);
   }
 
   subscribe(listener: DataSourceContentStateListener): () => void {
@@ -337,27 +345,51 @@ export class DataSourceContentQuery {
   async scanRows(
     visitor: (row: readonly TableScalar[], logicalRow: number) => boolean | void,
   ): Promise<DataSourceContentResult<boolean>> {
-    let lastState = state(this.source.id, null, 'ready');
-    for (let logicalRow = 0; logicalRow < this.source.rowCount; logicalRow += 1) {
-      const physicalRow = this.physicalRow(logicalRow);
-      const ref = this.findBlock(physicalRow);
+    const source = this.source;
+    let lastState = state(source.id, null, 'ready');
+    const visit = (row: readonly TableScalar[], logicalRow: number): DataSourceContentResult<boolean> | undefined => {
+      try {
+        return visitor(row, logicalRow) === false ? { state: lastState, value: false } : undefined;
+      } catch (error) {
+        return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
+      }
+    };
+    if (source.rowOrder === undefined) {
+      let logicalRow = 0;
+      for (const ref of source.blocks) {
+        let block: LoadedBlock;
+        try {
+          block = await this.loadBlock(ref);
+        } catch (error) {
+          const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
+          return { state: { ...current } };
+        }
+        if (this.source !== source) return this.errorResult('Data source changed while rows were scanning');
+        lastState = state(source.id, ref.id, 'ready');
+        for (const row of block.rows) {
+          const result = visit(row, logicalRow++);
+          if (result !== undefined) return result;
+        }
+      }
+      return { state: lastState, value: true };
+    }
+    for (let logicalRow = 0; logicalRow < source.rowCount; logicalRow += 1) {
+      const physicalRow = this.physicalRowFor(source, logicalRow);
+      const ref = this.findBlockIn(source, physicalRow);
       if (!ref) return this.missingResult(`No data block covers source row ${String(logicalRow)}`);
       let block: LoadedBlock;
       try {
         block = await this.loadBlock(ref);
       } catch (error) {
-        const current = this.loadStates.get(ref.id)
-          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
+        const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
         return { state: { ...current } };
       }
-      lastState = state(this.source.id, ref.id, 'ready');
+      if (this.source !== source) return this.errorResult('Data source changed while rows were scanning');
+      lastState = state(source.id, ref.id, 'ready');
       const row = block.rows[physicalRow - ref.startRow];
       if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(logicalRow)}`);
-      try {
-        if (visitor(row, logicalRow) === false) return { state: lastState, value: false };
-      } catch (error) {
-        return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
-      }
+      const result = visit(row, logicalRow);
+      if (result !== undefined) return result;
     }
     return { state: lastState, value: true };
   }
@@ -413,17 +445,10 @@ export class DataSourceContentQuery {
       };
     }
 
-    const refs: DataBlockRef[] = [];
-    const seen = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(this.physicalRow(row));
-      if (ref === undefined) {
-        return this.missingResult(`No data block covers source row ${String(row)}`);
-      }
-      if (!seen.has(ref.id)) {
-        seen.add(ref.id);
-        refs.push(ref);
-      }
+    const source = this.source;
+    const refs = this.blockRefsForLogicalRange(source, startRow, rowCount);
+    if (refs === undefined) {
+      return this.missingResult(`No data block covers source rows ${String(startRow)}-${String(startRow + rowCount - 1)}`);
     }
 
     let loaded: Map<string, LoadedBlock>;
@@ -439,11 +464,15 @@ export class DataSourceContentQuery {
         : this.loadStates.get(failed.id)!;
       return { state: { ...current } };
     }
+    if (this.source !== source) return this.errorResult('Data source changed while rows were loading');
 
     const rows: TableScalar[][] = [];
     for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const physicalRow = this.physicalRow(row);
-      const ref = this.findBlock(physicalRow)!;
+      const physicalRow = this.physicalRowFor(source, row);
+      const ref = this.findBlockIn(source, physicalRow);
+      if (ref === undefined) {
+        return this.missingResult(`No data block covers source row ${String(row)}`);
+      }
       const block = loaded.get(ref.id)!;
       const localRow = physicalRow - ref.startRow;
       const values = block.rows[localRow];
@@ -456,6 +485,53 @@ export class DataSourceContentQuery {
       state: state(this.source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'),
       value: rows,
     };
+  }
+
+  /**
+   * Resolve an explicit set of immutable physical rows without converting
+   * them through the current virtual sort order. Pivot drill-down provenance
+   * is physical, so this preserves the selected source records after sorting.
+   */
+  async getRowsByPhysicalRow(physicalRows: readonly number[]): Promise<DataSourceContentResult<Map<number, TableScalar[]>>> {
+    const source = this.source;
+    const selected = [...new Set(physicalRows)];
+    for (const physicalRow of selected) {
+      if (!isSafeRowIndex(physicalRow) || physicalRow >= source.rowCount) {
+        return this.errorResult(`Data source physical row is outside range: ${String(physicalRow)}`);
+      }
+    }
+    const refs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (const physicalRow of selected) {
+      const ref = this.findBlockIn(source, physicalRow);
+      if (!ref) return this.missingResult(`No data block covers source physical row ${String(physicalRow)}`);
+      if (!seen.has(ref.id)) {
+        seen.add(ref.id);
+        refs.push(ref);
+      }
+    }
+    let loaded: Map<string, LoadedBlock>;
+    try {
+      loaded = await this.loadBlockSet(refs);
+    } catch (error) {
+      const failed = refs.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      const current = failed === undefined
+        ? state(source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
+      return { state: { ...current } };
+    }
+    if (this.source !== source) return this.errorResult('Data source changed while physical rows were loading');
+    const rows = new Map<number, TableScalar[]>();
+    for (const physicalRow of selected) {
+      const ref = this.findBlockIn(source, physicalRow)!;
+      const values = loaded.get(ref.id)?.rows[physicalRow - ref.startRow];
+      if (!values) return this.errorResult(`Data block ${ref.id} does not contain source physical row ${String(physicalRow)}`);
+      rows.set(physicalRow, [...values]);
+    }
+    return { state: state(source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'), value: rows };
   }
 
   private resolveField(fieldRef: DataSourceFieldRef): DataSourceField | undefined {
@@ -475,15 +551,45 @@ export class DataSourceContentQuery {
   }
 
   private physicalRow(logicalRow: number): number {
-    return this.source.rowOrder?.[logicalRow] ?? logicalRow;
+    return this.physicalRowFor(this.source, logicalRow);
+  }
+
+  private physicalRowFor(source: DataSourceManifest, logicalRow: number): number {
+    return source.rowOrder?.[logicalRow] ?? logicalRow;
+  }
+
+  private blockRefsForLogicalRange(source: DataSourceManifest, startRow: number, rowCount: number): DataBlockRef[] | undefined {
+    if (source.rowOrder === undefined) {
+      const first = this.findBlockIn(source, startRow);
+      const last = this.findBlockIn(source, startRow + rowCount - 1);
+      if (!first || !last) return undefined;
+      const firstIndex = source.blocks.indexOf(first);
+      const lastIndex = source.blocks.indexOf(last);
+      return source.blocks.slice(firstIndex, lastIndex + 1);
+    }
+    const refs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const ref = this.findBlockIn(source, this.physicalRowFor(source, row));
+      if (!ref) return undefined;
+      if (!seen.has(ref.id)) {
+        seen.add(ref.id);
+        refs.push(ref);
+      }
+    }
+    return refs;
   }
 
   private findBlock(rowIndex: number): DataBlockRef | undefined {
+    return this.findBlockIn(this.source, rowIndex);
+  }
+
+  private findBlockIn(source: DataSourceManifest, rowIndex: number): DataBlockRef | undefined {
     let low = 0;
-    let high = this.source.blocks.length - 1;
+    let high = source.blocks.length - 1;
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
-      const block = this.source.blocks[middle]!;
+      const block = source.blocks[middle]!;
       if (rowIndex < block.startRow) {
         high = middle - 1;
       } else if (rowIndex >= block.startRow + block.rowCount) {
