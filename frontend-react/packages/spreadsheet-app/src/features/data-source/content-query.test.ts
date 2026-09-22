@@ -248,6 +248,48 @@ test('missing blocks return an explicit missing state and remain retryable', asy
   assert.equal(query.getLoadState(block.ref.id)?.availability, 'missing');
 });
 
+test('render reads retain failures until an explicit read retries the block', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const block = await buildBlock(sourceId, 'retry-block', 0, [['A', 1]]);
+  let reads = 0;
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), {
+    get: async (ref) => { reads += 1; return store.get(ref); },
+  });
+  assert.equal((await query.getRowValues(0)).state.availability, 'missing');
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(query.peekCellValue(0, 0).state.availability, 'missing');
+    query.prefetchRows(0, 1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(reads, 1);
+  await store.put(block.ref, block.bytes);
+  assert.deepEqual((await query.getRowValues(0)).value, ['A', 1]);
+  assert.equal(reads, 2);
+  assert.equal(query.peekCellValue(0, 1).value, 1);
+});
+
+test('a loading subscriber can reenter the reader without starting another request', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const block = await buildBlock(sourceId, 'reentrant-block', 0, [['A', 1]]);
+  await store.put(block.ref, block.bytes);
+  let reads = 0;
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), {
+    get: async (ref) => { reads += 1; return store.get(ref); },
+  });
+  let nested: ReturnType<DataSourceContentQuery['getRowValues']> | undefined;
+  const unsubscribe = query.subscribe((state) => {
+    if (state.availability === 'loading') nested = query.getRowValues(0);
+  });
+  try {
+    assert.deepEqual((await query.getRowValues(0)).value, ['A', 1]);
+    assert.ok(nested);
+    assert.deepEqual((await nested).value, ['A', 1]);
+    assert.equal(reads, 1);
+  } finally { unsubscribe(); }
+});
+
 test('invalid stored byte length and uncovered rows return explicit errors without empty data', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());

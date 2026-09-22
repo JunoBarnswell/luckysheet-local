@@ -30,9 +30,9 @@ function fixture() {
 it('selects only canonical policy targets for open, source, and explicit refreshes', () => {
   const { workbook, pivots, sourceMutation, unrelatedMutation } = fixture();
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'open' }), ['open-2']);
-  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'open', sheetId: 'sheet-1' }), ['open-2']);
+  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'open', sheetIds: new Set(['sheet-1']) }), ['open-2']);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [sourceMutation] }), ['change-3']);
-  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [sourceMutation], sheetId: 'sheet-2' }), []);
+  assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [sourceMutation], sheetIds: new Set(['sheet-2']) }), []);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [unrelatedMutation] }), []);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'explicit', pivotId: 'manual-1' }), ['manual-1']);
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'explicit', pivotId: 'missing' }), []);
@@ -43,4 +43,22 @@ it('does not treat policy metadata or Pivot mutations as source changes', () => 
   const { workbook, pivots, sourceMutation } = fixture();
   const pivotMutation = { ...sourceMutation, id: 'pivot.update', affectedRanges: [{ ...sourceMutation.affectedRanges[0]! }] };
   assert.deepEqual(pivotIdsToRefresh(workbook, pivots, { kind: 'source-change', mutations: [pivotMutation] }), []);
+});
+
+it('refreshes a visible data-source dependency by identity even without worksheet ranges', () => {
+  const { workbook, pivots, sourceMutation } = fixture();
+  const pivot = { ...pivots[2]!, source: { kind: 'data-source' as const, dataSourceId: 'query:source' } };
+  const mutation: MutationInfo = {
+    ...sourceMutation, id: 'query.load.workbook-table',
+    params: { sourceId: 'query:source' }, affectedRanges: [],
+  };
+  assert.deepEqual(pivotIdsToRefresh(workbook, [pivot], {
+    kind: 'source-change', mutations: [mutation], sheetIds: new Set(['dashboard', pivot.target.sheetId]),
+  }), [pivot.id]);
+  assert.deepEqual(pivotIdsToRefresh(workbook, [pivot], {
+    kind: 'source-change', mutations: [mutation], sheetIds: new Set(['dashboard']),
+  }), []);
+  assert.deepEqual(pivotIdsToRefresh(workbook, [pivot], {
+    kind: 'source-change', mutations: [{ ...mutation, params: { sourceId: 'query:other' } }],
+  }), []);
 });

@@ -203,7 +203,9 @@ export class DataSourceContentQuery {
       return { state: state(this.source.id, ref.id, 'ready'), value: row[field.ordinal] ?? null };
     }
     const current = this.loadStates.get(ref.id);
-    if (!this.loadPromises.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    // Render reads expose a terminal failure until an explicit asynchronous
+    // read retries it. A repaint must not restart a failed network request.
+    if (current === undefined && !this.loadPromises.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
     return { state: current ?? state(this.source.id, ref.id, 'loading') };
   }
 
@@ -215,7 +217,7 @@ export class DataSourceContentQuery {
       const ref = this.findBlock(this.physicalRow(row));
       if (ref && !scheduled.has(ref.id)) {
         scheduled.add(ref.id);
-        if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+        if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
       }
     }
   }
@@ -423,8 +425,7 @@ export class DataSourceContentQuery {
     const existing = this.loadPromises.get(ref.id);
     if (existing !== undefined) return existing;
 
-    this.publishState(state(this.source.id, ref.id, 'loading'));
-    const promise = this.readBlock(ref).then((block) => {
+    const promise = Promise.resolve().then(() => this.readBlock(ref)).then((block) => {
       this.loadedBlocks.set(ref.id, block);
       this.publishState(state(this.source.id, ref.id, 'ready'));
       return block;
@@ -435,9 +436,12 @@ export class DataSourceContentQuery {
       this.publishState(state(this.source.id, ref.id, failure.availability, failure.message));
       throw failure;
     }).finally(() => {
-      if (!this.loadedBlocks.has(ref.id)) this.loadPromises.delete(ref.id);
+      this.loadPromises.delete(ref.id);
     });
     this.loadPromises.set(ref.id, promise);
+    // Subscribers may synchronously read again. Register the flight before
+    // notifying them so every reader shares this request, including retries.
+    this.publishState(state(this.source.id, ref.id, 'loading'));
     return promise;
   }
 

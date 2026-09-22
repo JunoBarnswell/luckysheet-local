@@ -4,6 +4,27 @@ import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 
 describe('WorkbookSession query integration', () => {
+  it('refreshes one query without discarding another sheet data source reader', async () => {
+    const app = new WorkbookSession();
+    try {
+      const firstSheetId = app.getActiveSheetId();
+      await app.loadQuery(createInlineJsonQuery('cache-first', 'First', [{ Value: 1 }]));
+      const firstReader = app['runtime'].dataContent.get('query:cache-first')!;
+      assert.equal((await firstReader.getCellValue(0, 0)).value, 1);
+      app.runCommand('sheet.add', { id: 'cache-second-sheet', name: 'Second' });
+      await app.loadQuery(createInlineJsonQuery('cache-second', 'Second', [{ Value: 2 }]), {
+        kind: 'range', sheetId: 'cache-second-sheet', range: { startRow: 0, startColumn: 0 },
+      });
+      const secondReader = app['runtime'].dataContent.get('query:cache-second')!;
+      assert.equal((await secondReader.getCellValue(0, 0)).value, 2);
+      app.selectSheet(firstSheetId);
+      await app.refreshQuery('cache-first');
+      assert.notEqual(app['runtime'].dataContent.get('query:cache-first'), firstReader);
+      assert.equal(app['runtime'].dataContent.get('query:cache-second'), secondReader);
+      assert.equal(secondReader.peekCellValue(0, 0).value, 2);
+    } finally { app.dispose(); }
+  });
+
   it('loads inline json queries into the active sheet', async () => {
     const app = new WorkbookSession();
     const query = createInlineJsonQuery('demo-query', 'Demo', [

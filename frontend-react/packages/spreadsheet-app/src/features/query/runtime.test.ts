@@ -98,6 +98,34 @@ describe('query runtime', () => {
     assert.throws(() => new QueryStepPipeline([{ id: 'custom', kind: 'custom', name: 'Custom', config: {}, enabled: true }]).applySteps({ columns: ['A'], rows: [[1]] }), /not implemented/i);
   });
 
+  it('aggregates large groups without spreading rows into function arguments', () => {
+    const count = 200_000;
+    const result = new QueryStepPipeline([{
+      id: 'large-group', kind: 'group-by', name: 'Large group', enabled: true,
+      config: { by: ['Key'], aggregations: [
+        { column: 'Value', function: 'min', as: 'Minimum' },
+        { column: 'Value', function: 'max', as: 'Maximum' },
+        { column: 'Value', function: 'count', as: 'Count' },
+      ] },
+    }]).applySteps({ columns: ['Key', 'Value'], rows: Array.from({ length: count }, (_, index) => ['group', index]) });
+    assert.deepEqual(result.rows, [['group', 0, count - 1, count]]);
+  });
+
+  it('preserves duplicate-key join order and sparse Pivot aggregation semantics', () => {
+    const joined = new QueryStepPipeline([{
+      id: 'duplicate-join', kind: 'join', name: 'Join', enabled: true,
+      config: { on: ['Key'], right: { columns: ['Key', 'Value'], rows: [['A', 2], ['A', 3], ['B', 4]] } },
+    }]).applySteps({ columns: ['Key'], rows: [['A'], ['B']] });
+    assert.deepEqual(joined.rows, [['A', 'A', 2], ['A', 'A', 3], ['B', 'B', 4]]);
+    const pivot = new QueryStepPipeline([{
+      id: 'sparse-pivot', kind: 'pivot', name: 'Pivot', enabled: true,
+      config: { rows: ['Key'], columns: ['Quarter'], values: ['Value'], aggregation: 'average' },
+    }]).applySteps({ columns: ['Key', 'Quarter', 'Value'], rows: [
+      ['A', 'Q2', 2], ['A', 'Q2', 4], ['B', 'Q1', 10], ['A', 'Q1', null],
+    ] });
+    assert.deepEqual(pivot, { columns: ['Key', 'Q2 · Value', 'Q1 · Value'], rows: [['A', 3, null], ['B', null, 10]] });
+  });
+
   it('executes json connector queries with pipeline filters', async () => {
     const connectors = createDefaultConnectorRegistry();
     const query = createInlineJsonQuery('q-1', 'Sales', [

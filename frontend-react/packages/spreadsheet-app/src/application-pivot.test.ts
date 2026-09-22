@@ -4,6 +4,8 @@ import { createPivotMemberKey, type PivotModel } from '@react-sheets/core-model'
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
+import { clearPivotResultCache } from './features/pivot/engine';
+import { resolveChartDataFromSources, type ChartPayload } from './features/chart';
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -69,6 +71,41 @@ async function waitForPivotResult(app: WorkbookSession, pivotId: string): Promis
   }
   throw new Error(`Pivot result did not become available: ${pivotId}`);
 }
+
+it('loads and refreshes a cross-sheet PivotChart dependency without projecting unrelated sheets', async () => {
+  const app = new WorkbookSession();
+  try {
+    const { sheetId, pivot } = seed(app);
+    await app.addPivot(pivot);
+    app.runCommand('sheet.add', { id: 'dashboard', name: 'Dashboard' });
+    app.runCommand('sheet.add', { id: 'unrelated', name: 'Unrelated' });
+    app.selectSheet('dashboard');
+    delete app['runtime'].pivotResults[pivot.id];
+    clearPivotResultCache(app['runtime'].model, pivot.id);
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'dashboard-chart', chartType: 'combo', subtype: 'custom-combo',
+      source: { kind: 'pivot', pivotId: pivot.id }, elements: {},
+    };
+    app.runCommand('chart.insert', {
+      sheetId: 'dashboard', payload,
+      drawing: {
+        id: 'dashboard-drawing', sheetId: 'dashboard', kind: 'chart', payloadId: payload.chartId,
+        anchor: { kind: 'absolute' }, transform: { x: 40, y: 50, width: 360, height: 240, rotation: 0 }, zIndex: 1,
+      },
+    });
+    await waitForPivotResult(app, pivot.id);
+    let snapshot = app.getUiSnapshot();
+    assert.deepEqual(new Set(snapshot.projectionSheets.map((sheet) => sheet.id)), new Set([sheetId, 'dashboard']));
+    assert.equal(snapshot.projectionSheets.find((sheet) => sheet.id === sheetId)?.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 40 } });
+    await waitForPivot(app, pivot.id);
+    snapshot = app.getUiSnapshot();
+    const results = snapshot.projectionSheets.find((sheet) => sheet.id === sheetId)!.pivotResults;
+    assert.equal(results[pivot.id]?.grandTotal?.values[0], 60);
+    assert.equal(resolveChartDataFromSources(payload, () => undefined, results).status.kind, 'ready');
+    assert.equal(resolveChartDataFromSources({ ...payload, source: { kind: 'pivot', pivotId: 'missing' } }, () => undefined, results).status.kind, 'invalid');
+  } finally { app.dispose(); }
+});
 
 class DeferredCalculatePort implements PivotTaskPort {
   private readonly inner = new InlinePivotTaskPort();

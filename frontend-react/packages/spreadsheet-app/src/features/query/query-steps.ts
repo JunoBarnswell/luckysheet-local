@@ -281,12 +281,25 @@ function aggregationSpecs(config: Record<string, unknown>, input: Table, stepId:
 }
 
 function aggregate(values: Scalar[], fn: AggregateSpec['fn']): Scalar {
-  if (fn === 'count') return values.filter((value) => value !== null).length;
-  const numeric = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  if (fn === 'sum') return numeric.reduce((total, value) => total + value, 0);
-  if (fn === 'average') return numeric.length === 0 ? null : numeric.reduce((total, value) => total + value, 0) / numeric.length;
-  if (numeric.length === 0) return null;
-  return fn === 'min' ? Math.min(...numeric) : Math.max(...numeric);
+  let count = 0;
+  let total = 0;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const value of values) {
+    if (fn === 'count') {
+      if (value !== null) count += 1;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      count += 1;
+      total += value;
+      minimum = Math.min(minimum, value);
+      maximum = Math.max(maximum, value);
+    }
+  }
+  if (fn === 'count') return count;
+  if (fn === 'sum') return total;
+  if (count === 0) return null;
+  if (fn === 'average') return total / count;
+  return fn === 'min' ? minimum : maximum;
 }
 
 function groupTable(input: Table, config: Record<string, unknown>, stepId: string): Table {
@@ -343,7 +356,12 @@ function joinTable(input: Table, config: Record<string, unknown>, stepId: string
   const rightIndices = rightOn.map((name) => columnIndex(right.columns, name, stepId));
   const rightKey = (row: Scalar[]) => JSON.stringify(rightIndices.map((index) => row[index] ?? null));
   const index = new Map<string, Scalar[][]>();
-  for (const row of right.rows) index.set(rightKey(row), [...(index.get(rightKey(row)) ?? []), row]);
+  for (const row of right.rows) {
+    const key = rightKey(row);
+    const bucket = index.get(key);
+    if (bucket) bucket.push(row);
+    else index.set(key, [row]);
+  }
   const type = config.type === 'left' || config.type === 'full' ? config.type : 'inner';
   const rightColumns = right.columns.map((column) => input.columns.includes(column) ? `${column}_right` : column);
   const rows: Scalar[][] = [];
@@ -374,10 +392,19 @@ function pivotTable(input: Table, config: Record<string, unknown>, stepId: strin
   const fn = String(config.aggregation ?? 'sum') as AggregateSpec['fn'];
   if (!AGGREGATIONS.has(fn)) throw new Error(`Query step "${stepId}" has unsupported pivot aggregation "${fn}"`);
   const columnKeys = [...new Set(input.rows.map((row) => JSON.stringify(colIndices.map((index) => row[index] ?? null))))];
-  const groups = new Map<string, Scalar[][]>();
+  const groups = new Map<string, { key: Scalar[]; columns: Map<string, Scalar[][]> }>();
   for (const row of input.rows) {
-    const key = JSON.stringify(rowIndices.map((index) => row[index] ?? null));
-    groups.set(key, [...(groups.get(key) ?? []), row]);
+    const key = rowIndices.map((index) => row[index] ?? null);
+    const serialized = JSON.stringify(key);
+    let group = groups.get(serialized);
+    if (!group) {
+      group = { key, columns: new Map() };
+      groups.set(serialized, group);
+    }
+    const columnKey = JSON.stringify(colIndices.map((index) => row[index] ?? null));
+    const bucket = group.columns.get(columnKey);
+    if (bucket) bucket.push(row);
+    else group.columns.set(columnKey, [row]);
   }
   const columns = [...rowFields];
   for (const columnKey of columnKeys) {
@@ -385,10 +412,9 @@ function pivotTable(input: Table, config: Record<string, unknown>, stepId: strin
     for (const valueField of valueFields) columns.push(`${values.join(' / ')} · ${valueField}`);
   }
   const rows = [...groups.values()].map((group) => {
-    const first = group[0]!;
-    const output: Scalar[] = rowIndices.map((index) => first[index] ?? null);
+    const output: Scalar[] = [...group.key];
     for (const columnKey of columnKeys) {
-      const matches = group.filter((row) => JSON.stringify(colIndices.map((index) => row[index] ?? null)) === columnKey);
+      const matches = group.columns.get(columnKey) ?? [];
       for (const valueIndex of valueIndices) output.push(aggregate(matches.map((row) => row[valueIndex] ?? null), fn));
     }
     return output;
