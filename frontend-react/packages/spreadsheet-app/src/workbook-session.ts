@@ -22,6 +22,7 @@ import type {
   DrawingConnectorType,
   ConditionalFormatRule,
   DataBlockRef,
+  DataSourceFieldType,
   DataSourceManifest,
   DefinedNameModel,
   DataValidationRule,
@@ -60,11 +61,13 @@ import type {
   HyperlinkTarget,
   AssetRef,
   AnalysisViewDefinition,
+  TableScalar,
 } from '@react-sheets/core-model';
 import {
   createDefaultTextBoxTextFrame,
   chartStackingForSubtype,
   defaultChartSubtype,
+  DEFAULT_DATA_BLOCK_ROW_COUNT,
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
   protectionResolver,
@@ -193,7 +196,10 @@ import {
   createPivotSourceRegisterRequest,
   createPivotSourceReleaseRequest,
   InlinePivotTaskPort,
+  readPivotDrillDownRows,
   readPivotBlockSource,
+  type PivotDrillDownDetail,
+  type PivotDrillDownRequest,
   type PivotTaskError,
   type PivotTaskPort,
 } from './features/pivot';
@@ -206,7 +212,9 @@ import {
 } from './features/pivot-controls';
 import {
   prepareDataRegionMaterialization,
+  computeColumnarBlockChecksum,
   createWorkbookCellResolver,
+  encodeColumnarBlock,
   encodeSheetDataRegion,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
@@ -740,6 +748,21 @@ function equationTokens(expression: string): EquationDrawingPayload['tokens'] {
   }
   if (tokens.length === 0) throw new Error('LOCAL_EQUATION_INVALID: expression is empty');
   return tokens;
+}
+
+function drillDownFieldType(rows: readonly (readonly TableScalar[])[], ordinal: number): DataSourceFieldType {
+  let resolved: DataSourceFieldType | undefined;
+  for (const row of rows) {
+    const value = row[ordinal] ?? null;
+    if (value === null) continue;
+    const next: DataSourceFieldType = typeof value === 'string' ? 'text'
+      : typeof value === 'number' ? 'number'
+        : typeof value === 'boolean' ? 'boolean'
+          : 'mixed';
+    if (resolved !== undefined && resolved !== next) return 'mixed';
+    resolved = next;
+  }
+  return resolved ?? 'mixed';
 }
 
 export interface LocalObjectInsertInput {
@@ -5299,20 +5322,130 @@ export class WorkbookSession {
     delete this.runtime.pivotErrors[id];
     this.refresh();
   }
-  drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
+  private async preparePivotDrillDownDetail(request: PivotDrillDownRequest): Promise<{
+    detail: PivotDrillDownDetail;
+    blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }>;
+  }> {
+    const workbook = this.runtime.model;
+    const pivot = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === request.pivotId);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${request.pivotId}`);
+    const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
+    const assertCurrent = (): void => {
+      const current = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === request.pivotId);
+      if (this.disposed || this.runtime.model !== workbook || !current
+        || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== sourceRevision) {
+        throw new Error('Pivot drill-down source changed while preparing details; retry from the current result');
+      }
+    };
+    const resolved = await readPivotDrillDownRows(workbook, request, this.runtime.dataContent);
+    assertCurrent();
+    if (resolved.rows.length === 0 || resolved.headers.length === 0) throw new Error('Pivot drill-down has no detail rows or columns');
+    const sourceId = `pivot-drilldown:${crypto.randomUUID()}`;
+    const fields = resolved.headers.map((name, ordinal) => ({
+      id: `${sourceId}:field:${String(ordinal)}`,
+      name,
+      ordinal,
+      type: drillDownFieldType(resolved.rows, ordinal),
+    }));
+    const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
+    for (let startRow = 0; startRow < resolved.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
+      const rows = resolved.rows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
+      const payload = await encodeColumnarBlock({ fields, rows });
+      assertCurrent();
+      const blockId = `pivot-drilldown-block:${crypto.randomUUID()}`;
+      blocks.push({
+        ref: {
+          id: blockId,
+          dataSourceId: sourceId,
+          startRow,
+          rowCount: rows.length,
+          storageKey: `data-source/${sourceId}/revision-0/${blockId}`,
+          checksum: await computeColumnarBlockChecksum(payload),
+          byteLength: payload.byteLength,
+          encoding: 'columnar-v1',
+          revision: 0,
+        },
+        payload,
+      });
+      assertCurrent();
+    }
+    const range: RangeRef = {
+      sheetId: request.targetSheetId,
+      startRow: request.target.row,
+      endRow: request.target.row + resolved.rows.length,
+      startColumn: request.target.column,
+      endColumn: request.target.column + resolved.headers.length - 1,
+    };
+    const source: DataSourceManifest = {
+      schema: 'DataSourceManifest',
+      version: 1,
+      id: sourceId,
+      name: (`Pivot details ${request.label}`.trim() || 'Pivot details').slice(0, 200),
+      kind: 'chunked-table',
+      sourceSheetId: request.targetSheetId,
+      sourceRange: structuredClone(range),
+      rowCount: resolved.rows.length,
+      fields,
+      blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT,
+      blocks: blocks.map((block) => structuredClone(block.ref)),
+      revision: 0,
+    };
+    return {
+      detail: {
+        source,
+        region: { id: `${sourceId}:region`, sourceId, range, headerRow: request.target.row, revision: 0 },
+        headers: [...resolved.headers],
+      },
+      blocks,
+    };
+  }
+
+  async drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): Promise<void> {
     if (paths.length === 0) return;
+    const workbook = this.runtime.model;
+    const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
+    const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const sourceRevision = getPivotRevisionKey(workbook, pivot, this.runtime.formula).sourceRevision;
+    const assertCurrent = (): void => {
+      const current = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+      if (this.disposed || this.runtime.model !== workbook || !current
+        || getPivotRevisionKey(workbook, current, this.runtime.formula).sourceRevision !== sourceRevision) {
+        throw new Error('Pivot drill-down source changed while uploading details; retry from the current result');
+      }
+    };
     const targetSheetId = this.allocateSheetId();
-    this.runCommand('pivot.drillDown', {
-      sheetId: this.activeSheetId,
+    const request: PivotDrillDownRequest = {
+      sheetId: owner.id,
       pivotId,
       label,
       sourceRowPaths: paths.map((path) => structuredClone(path)),
       targetSheetId,
       target: { row: 0, column: 0 },
-    });
-    this.selectSheet(targetSheetId);
-    this.notify(`Drill-down sheet created for ${label}`);
-    this.refresh();
+    };
+    const staged: DataBlockRef[] = [];
+    let committed = false;
+    try {
+      const prepared = await this.preparePivotDrillDownDetail(request);
+      for (const block of prepared.blocks) {
+        staged.push(block.ref);
+        await this.runtime.dataBlocks.put(block.ref, block.payload);
+        assertCurrent();
+      }
+      assertCurrent();
+      this.runCommand('pivot.drillDown', { ...request, detail: prepared.detail });
+      committed = true;
+      this.selectSheet(targetSheetId);
+      this.notify(`Drill-down sheet created for ${label}`);
+      this.refresh();
+    } catch (error) {
+      if (!committed) {
+        const cleanup = await Promise.allSettled(staged.map((block) => this.runtime.dataBlocks.remove(block)));
+        const failures = cleanup.flatMap((entry) => entry.status === 'rejected' ? [entry.reason] : []);
+        if (failures.length > 0) throw new AggregateError([error, ...failures], 'Pivot drill-down failed; some staged blocks could not be removed');
+      }
+      throw error;
+    }
   }
   private recomputePivotResult(pivotId: string, force = false): void {
     // A source block load publishes several loading/ready notifications while
@@ -6562,8 +6695,12 @@ export class WorkbookSession {
     return Promise.resolve();
   }
 
-  showPivotDetails(pivotId: string, paths: readonly PivotSourceRowPath[], label = 'Details'): void {
-    this.drillDownPivot(pivotId, label, paths);
+  async showPivotDetails(pivotId: string, paths: readonly PivotSourceRowPath[], label = 'Details'): Promise<void> {
+    try {
+      await this.drillDownPivot(pivotId, label, paths);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Pivot drill-down failed');
+    }
   }
 
   getValidationForPrimary(): DataValidationRule | undefined {

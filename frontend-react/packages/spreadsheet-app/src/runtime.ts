@@ -634,7 +634,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
         || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'
         || mutation.id === 'query.load.range' || mutation.id === 'query.load.sheet-table'
-        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table') {
+        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table'
+        || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {

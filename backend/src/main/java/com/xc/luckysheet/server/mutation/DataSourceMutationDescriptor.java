@@ -2,6 +2,7 @@ package com.xc.luckysheet.server.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
@@ -45,6 +46,13 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     static ObjectNode validateQuerySource(ObjectNode root, String mutationSheetId, ObjectNode source) {
         String sourceSheetId = optionalIdentity(source, "sourceSheetId");
         return new DataSourceMutationDescriptor("dataSource.add").validateSource(root, sourceSheetId == null ? mutationSheetId : sourceSheetId, source);
+    }
+
+    /** Shared by atomic composite mutations that create their target sheet and source together. */
+    static ObjectNode validateCompositeRegion(ObjectNode root, String sheetId, ObjectNode region) {
+        ObjectNode params = JsonNodeFactory.instance.objectNode();
+        params.set("region", region);
+        return new DataSourceMutationDescriptor("dataRegion.add").validateRegion(root, sheetId, params);
     }
 
     @Override

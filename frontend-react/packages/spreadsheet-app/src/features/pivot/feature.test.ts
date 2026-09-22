@@ -9,7 +9,7 @@ import { buildPivotModel } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './engine';
 import { buildPivotWriteback } from './writeback';
-import { buildPivotCalculationProof } from './commands';
+import { buildPivotCalculationProof, readPivotDrillDownRows, type PivotDrillDownRequest } from './commands';
 import { clearPivotFilterFamily, clearPivotFiltersForField, setPivotColumnGrandTotals, setPivotRowGrandTotals, upsertPivotFilter } from './panel-state';
 
 function seedCrossSheetWorkbook(): WorkbookModel {
@@ -102,6 +102,33 @@ function executePivotCreate(runtime: CommandRuntime, workbook: WorkbookModel, pi
     destination: { kind: 'existing-sheet', sheetId: canonical.target.sheetId },
     calculationProof: buildPivotCalculationProof(workbook, canonical, result),
   });
+}
+
+async function executeDrillDown(runtime: CommandRuntime, workbook: WorkbookModel, request: PivotDrillDownRequest) {
+  const resolved = await readPivotDrillDownRows(workbook, request, new Map());
+  const sourceId = `detail:${request.targetSheetId}`;
+  const range = {
+    sheetId: request.targetSheetId,
+    startRow: request.target.row,
+    endRow: request.target.row + resolved.rows.length,
+    startColumn: request.target.column,
+    endColumn: request.target.column + resolved.headers.length - 1,
+  };
+  runtime.execute('pivot.drillDown', {
+    ...request,
+    detail: {
+      source: {
+        schema: 'DataSourceManifest', version: 1, id: sourceId, name: request.label || 'Details', kind: 'chunked-table',
+        sourceSheetId: request.targetSheetId, sourceRange: range, rowCount: resolved.rows.length, blockRowCount: 65_536, revision: 0,
+        fields: resolved.headers.map((name, ordinal) => ({ id: `${sourceId}:field:${ordinal}`, name, ordinal, type: 'mixed' as const })),
+        blocks: [{ id: `${sourceId}:block`, dataSourceId: sourceId, startRow: 0, rowCount: resolved.rows.length,
+          storageKey: `${sourceId}:block`, checksum: 'a'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
+      },
+      region: { id: `${sourceId}:region`, sourceId, range, headerRow: request.target.row, revision: 0 },
+      headers: resolved.headers,
+    },
+  });
+  return resolved;
 }
 
 describe('pivot feature contract', () => {
@@ -204,14 +231,14 @@ describe('pivot feature contract', () => {
     assert.equal(sourceRange?.sheetId, 'source-2');
   });
 
-  it('drill-down creates a pure detail sheet and removes it through undo', () => {
+  it('drill-down creates a block-backed detail sheet and removes it through undo', async () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = pivotDefinition();
     assert.ok(pivot);
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
     executePivotCreate(runtime, workbook, pivot);
-    runtime.execute('pivot.drillDown', {
+    const resolved = await executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
       label: 'East',
@@ -220,12 +247,12 @@ describe('pivot feature contract', () => {
       target: { row: 0, column: 0 },
     });
     assert.equal(workbook.getSheet('drill-1').cells.get(0, 0)?.value, 'Region');
-    assert.equal(workbook.getSheet('drill-1').cells.get(1, 0)?.value, 'East');
-    assert.equal(workbook.getSheet('drill-1').cells.get(1, 1)?.value, 10);
+    assert.deepEqual(resolved.rows, [['East', 10]]);
+    assert.equal(workbook.getSheet('drill-1').dataRegions.length, 1);
     assert.equal(runtime.undo(), true);
     assert.equal(workbook.sheets.has('drill-1'), false);
     assert.equal(runtime.redo(), true);
-    assert.equal(workbook.getSheet('drill-1').cells.get(1, 1)?.value, 10);
+    assert.equal(workbook.getSheet('drill-1').dataRegions.length, 1);
   });
 
   it('removes PivotChart and Pivot controls as one atomic reversible lifecycle transaction', () => {
@@ -319,7 +346,7 @@ describe('pivot feature contract', () => {
     assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get(connected.drawing.payloadId) as { connections?: unknown[] })?.connections, undefined);
   });
 
-  it('drill-down resolves same-sheet joined rows by sourceId and recordId', () => {
+  it('drill-down resolves same-sheet joined rows by sourceId and recordId', async () => {
     const { workbook, pivot } = sameSheetRelationalPivot();
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
@@ -331,7 +358,7 @@ describe('pivot feature contract', () => {
       ['orders', 1, 'orders:1'],
       ['customers', 2, 'orders:1'],
     ]);
-    runtime.execute('pivot.drillDown', {
+    const matched = await executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
       label: 'East',
@@ -339,11 +366,10 @@ describe('pivot feature contract', () => {
       targetSheetId: 'drill-same-sheet',
       target: { row: 0, column: 0 },
     });
-    const detail = workbook.getSheet('drill-same-sheet');
-    assert.deepEqual([0, 1, 2, 3].map((column) => detail.cells.get(1, column)?.value), ['c1', 100, 'c1', 'East']);
+    assert.deepEqual(matched.rows[0], ['c1', 100, 'c1', 'East']);
     assert.equal(runtime.undo(), true);
     assert.equal(workbook.sheets.has('drill-same-sheet'), false);
-    runtime.execute('pivot.drillDown', {
+    const left = await executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
       label: 'left-unmatched',
@@ -351,11 +377,10 @@ describe('pivot feature contract', () => {
       targetSheetId: 'drill-left-unmatched',
       target: { row: 0, column: 0 },
     });
-    const unmatched = workbook.getSheet('drill-left-unmatched');
-    assert.deepEqual([0, 1, 2, 3].map((column) => unmatched.cells.get(1, column)?.value), ['c2', 200, null, null]);
+    assert.deepEqual(left.rows[0], ['c2', 200, null, null]);
   });
 
-  it('drill-down uses evaluated headers and preserves formula error values', () => {
+  it('drill-down uses evaluated headers and preserves formula error values', async () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = pivotDefinition();
     assert.ok(pivot);
@@ -364,15 +389,15 @@ describe('pivot feature contract', () => {
     executePivotCreate(runtime, workbook, pivot);
     workbook.getSheet('source-2').cells.set(0, 1, { value: 'Amount', formulaValue: 'Computed Amount' });
     workbook.getSheet('source-2').cells.set(1, 1, { value: 10, formulaValue: { kind: 'error', code: '#DIV/0!' } });
-    runtime.execute('pivot.drillDown', {
+    const resolved = await executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1', pivotId: pivot.id, label: 'Errors',
       sourceRowPaths: [{ sheetId: 'source-2', row: 1 }], targetSheetId: 'detail-errors', target: { row: 0, column: 0 },
     });
     assert.equal(workbook.getSheet('detail-errors').cells.get(0, 1)?.value, 'Computed Amount');
-    assert.equal(workbook.getSheet('detail-errors').cells.get(1, 1)?.value, '#DIV/0!');
+    assert.equal(resolved.rows[0]?.[1], '#DIV/0!');
   });
 
-  it('rejects block-backed detail reads before creating or publishing a blank sheet', () => {
+  it('rejects worksheet-range detail reads that overlap a block region before publishing a blank sheet', async () => {
     const { workbook, pivot } = sameSheetRelationalPivot();
     assert.ok(pivot.source.kind === 'worksheet-ranges');
     const range = pivot.source.ranges[0]!.range;
@@ -389,7 +414,7 @@ describe('pivot feature contract', () => {
     for (const row of [1, 2]) for (const column of [0, 1]) sourceSheet.cells.delete(row, column);
     sourceSheet.replaceDataRegions([{ id: 'region', sourceId: 'blocks', range, headerRow: 0, revision: 0 }]);
     const before = snapshotWithStableCollectionOrder(workbook);
-    assert.throws(() => runtime.execute('pivot.drillDown', {
+    await assert.rejects(() => executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1', pivotId: pivot.id, label: 'Blocks',
       sourceRowPaths: [{ sourceId: 'orders', recordId: 'orders:1', sheetId: 'sheet-1', row: 1 }],
       targetSheetId: 'blocked-detail', target: { row: 0, column: 0 },
@@ -398,7 +423,7 @@ describe('pivot feature contract', () => {
     assert.equal(workbook.sheets.has('blocked-detail'), false);
   });
 
-  it('rejects out-of-bounds drill-down anchors before creating a detail sheet', () => {
+  it('rejects out-of-bounds drill-down anchors before creating a detail sheet', async () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = pivotDefinition();
     assert.ok(pivot);
@@ -407,7 +432,7 @@ describe('pivot feature contract', () => {
     executePivotCreate(runtime, workbook, pivot);
     const before = snapshotWithStableCollectionOrder(workbook);
     for (const target of [{ row: MAX_SHEET_ROW_COUNT, column: 0 }, { row: 0, column: MAX_SHEET_COLUMN_COUNT }]) {
-      assert.throws(() => runtime.execute('pivot.drillDown', {
+      await assert.rejects(() => executeDrillDown(runtime, workbook, {
         sheetId: 'sheet-1', pivotId: pivot.id, label: 'Outside',
         sourceRowPaths: [{ sheetId: 'source-2', row: 1 }], targetSheetId: 'outside-detail', target,
       }), /bounds/);
@@ -415,14 +440,14 @@ describe('pivot feature contract', () => {
     }
   });
 
-  it('rejects incomplete inner-join provenance before creating a detail sheet', () => {
+  it('rejects incomplete inner-join provenance before creating a detail sheet', async () => {
     const { workbook, pivot } = sameSheetRelationalPivot();
     assert.ok(pivot.source.kind === 'worksheet-ranges');
     pivot.source.relationships[0]!.join = 'inner';
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
     executePivotCreate(runtime, workbook, pivot);
-    assert.throws(() => runtime.execute('pivot.drillDown', {
+    await assert.rejects(() => executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
       label: 'incomplete',

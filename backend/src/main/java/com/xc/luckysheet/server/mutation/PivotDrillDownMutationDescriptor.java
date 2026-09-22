@@ -18,8 +18,8 @@ import java.util.Set;
 
 /** Deterministically materializes and removes Pivot drill-down detail sheets. */
 final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescriptor {
-    private static final Set<String> ADD_KEYS = Set.of("sheetId", "pivotId", "label", "sourceRowPaths", "targetSheetId", "target");
-    private static final Set<String> REMOVE_KEYS = Set.of("sheetId", "targetSheetId");
+    private static final Set<String> ADD_KEYS = Set.of("sheetId", "pivotId", "label", "sourceRowPaths", "targetSheetId", "target", "detail");
+    private static final Set<String> REMOVE_KEYS = Set.of("sheetId", "targetSheetId", "sourceId", "regionId");
     static final Set<String> IDS = Set.of("pivot.drilldown.add", "pivot.drilldown.remove");
 
     PivotDrillDownMutationDescriptor(String id) {
@@ -48,14 +48,16 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         ObjectNode root = PivotMutationDescriptor.canonicalSnapshot(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         if (id().equals("pivot.drilldown.remove")) {
-            remove(root, targetSheetId(params));
+            remove(root, params);
             return root;
         }
         DrillPlan plan = plan(root, mutation.sheetId(), params);
         if (sheetExists(root, plan.targetSheetId())) throw ServiceException.conflict("Pivot drill-down target already exists: " + plan.targetSheetId());
         ObjectNode target = createSheet(plan.targetSheetId(), plan.sheetName(), plan.rowCount(), plan.columnCount());
-        writePlan(root, target, plan);
+        writePlan(target, plan);
         SnapshotMutationSupport.sheets(root).add(target);
+        SnapshotMutationSupport.dataModelArray(root, "sources").add(plan.detail().source().deepCopy());
+        SnapshotMutationSupport.array(target, "dataRegions").add(plan.detail().region().deepCopy());
         return root;
     }
 
@@ -69,25 +71,16 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         String targetSheetId = SnapshotMutationSupport.text(params, "targetSheetId");
         SnapshotMutationSupport.CellCoordinate anchor = coordinate(params.get("target"));
         ArrayNode paths = SnapshotMutationSupport.requiredArray(params, "sourceRowPaths");
+        if (paths.isEmpty()) throw ServiceException.validation("Pivot drill-down requires at least one source row");
         if (paths.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Pivot drill-down has too many source rows");
         List<RangeRef> sourceRanges = PivotMutationDescriptor.sourceRanges(root, pivot);
         ObjectNode source = (ObjectNode) pivot.get("source");
-        if ("data-source".equals(source.path("kind").asText())) {
-            ObjectNode manifest = SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"),
-                    SnapshotMutationSupport.text(source, "dataSourceId"), "Data source");
-            if (!manifest.path("blocks").isEmpty()) throw unsupportedBlocks();
-        }
         if (sourceRanges.isEmpty()) throw ServiceException.validation("Pivot drill-down source has no worksheet range");
         Map<String, SourceNode> nodes = new LinkedHashMap<>();
         for (int index = 0; index < sourceRanges.size(); index++) {
             String sourceId = "worksheet-ranges".equals(source.path("kind").asText())
                     ? SnapshotMutationSupport.text((ObjectNode) source.path("ranges").get(index), "sourceId") : "__single-source__";
             RangeRef range = sourceRanges.get(index);
-            for (JsonNode region : SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, range.sheetId()), "dataRegions")) {
-                RangeRef bounds = SnapshotMutationSupport.range(root, region.get("range"));
-                if (range.startRow() <= bounds.endRow() && range.endRow() >= bounds.startRow()
-                        && range.startColumn() <= bounds.endColumn() && range.endColumn() >= bounds.startColumn()) throw unsupportedBlocks();
-            }
             nodes.put(sourceId, new SourceNode(sourceId, range));
         }
         List<DrillColumn> columns = columns(root, List.copyOf(nodes.values()));
@@ -133,13 +126,63 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
             throw ServiceException.validation("Pivot drill-down target exceeds the new worksheet bounds");
         }
         String sheetName = ("Drill " + pivotId + " " + label).substring(0, Math.min(31, ("Drill " + pivotId + " " + label).length()));
-        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, records.values().stream().map(Map::copyOf).toList(),
-                Math.max(1_000, Math.toIntExact(targetRowCount)), Math.max(26, Math.toIntExact(targetColumnCount)));
+        int rowCount = Math.max(1_000, Math.toIntExact(targetRowCount));
+        int columnCount = Math.max(26, Math.toIntExact(targetColumnCount));
+        MaterializedDetail detail = detail(root, params, targetSheetId, sheetName, anchor, columns, detailRows, rowCount, columnCount);
+        return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, records.values().stream().map(Map::copyOf).toList(), detail,
+                rowCount, columnCount);
     }
 
-    private ServiceException unsupportedBlocks() {
-        return new ServiceException("UNSUPPORTED_FEATURE", 422,
-                "Pivot drill-down requires canonical block reads for this data source; no detail sheet was created");
+    private MaterializedDetail detail(ObjectNode root, ObjectNode params, String targetSheetId, String sheetName,
+                                      SnapshotMutationSupport.CellCoordinate anchor, List<DrillColumn> columns,
+                                      int detailRows, int rowCount, int columnCount) {
+        JsonNode raw = params.get("detail");
+        if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot drill-down detail is required");
+        ObjectNode detail = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(detail, Set.of("source", "region", "headers"), "Pivot drill-down detail");
+        if (!detail.path("source").isObject() || !detail.path("region").isObject()) throw ServiceException.validation("Pivot drill-down source and region are required");
+        ObjectNode source = (ObjectNode) detail.path("source");
+        ObjectNode region = (ObjectNode) detail.path("region");
+        ArrayNode headers = SnapshotMutationSupport.requiredArray(detail, "headers");
+        if (headers.size() != columns.size()) throw ServiceException.validation("Pivot drill-down materialized columns do not match source columns");
+        List<String> values = new ArrayList<>(headers.size());
+        for (int index = 0; index < headers.size(); index++) {
+            JsonNode header = headers.get(index);
+            if (!header.isTextual() || !header.asText().equals(columns.get(index).label())) {
+                throw ServiceException.validation("Pivot drill-down materialized header does not match source column");
+            }
+            values.add(header.asText());
+        }
+        ObjectNode validationRoot = root.deepCopy();
+        ObjectNode validationSheet = createSheet(targetSheetId, sheetName, rowCount, columnCount);
+        SnapshotMutationSupport.sheets(validationRoot).add(validationSheet);
+        ObjectNode validatedSource = DataSourceMutationDescriptor.validateQuerySource(validationRoot, targetSheetId, source);
+        if (SnapshotMutationSupport.findById(SnapshotMutationSupport.dataModelArray(root, "sources"), validatedSource.path("id").asText()) != null) {
+            throw ServiceException.conflict("Pivot drill-down data source already exists: " + validatedSource.path("id").asText());
+        }
+        SnapshotMutationSupport.dataModelArray(validationRoot, "sources").add(validatedSource.deepCopy());
+        ObjectNode validatedRegion = DataSourceMutationDescriptor.validateCompositeRegion(validationRoot, targetSheetId, region);
+        RangeRef sourceRange = SnapshotMutationSupport.range(validationRoot, validatedSource.get("sourceRange"));
+        RangeRef regionRange = SnapshotMutationSupport.range(validationRoot, validatedRegion.get("range"));
+        int expectedEndRow = anchor.row() + detailRows;
+        int expectedEndColumn = anchor.column() + columns.size() - 1;
+        if (!"chunked-table".equals(validatedSource.path("kind").asText())
+                || validatedSource.path("rowCount").asLong(-1) != detailRows
+                || validatedSource.path("fields").size() != columns.size()
+                || !validatedSource.path("id").asText().equals(validatedRegion.path("sourceId").asText())
+                || validatedSource.path("revision").asLong(-1) != validatedRegion.path("revision").asLong(-2)
+                || !targetSheetId.equals(sourceRange.sheetId()) || !targetSheetId.equals(regionRange.sheetId())
+                || sourceRange.startRow() != anchor.row() || sourceRange.endRow() != expectedEndRow
+                || sourceRange.startColumn() != anchor.column() || sourceRange.endColumn() != expectedEndColumn
+                || !sourceRange.equals(regionRange) || validatedRegion.path("headerRow").asInt(-1) != anchor.row()) {
+            throw ServiceException.validation("Pivot drill-down detail source does not match its target or provenance");
+        }
+        for (int index = 0; index < columns.size(); index++) {
+            if (!values.get(index).equals(validatedSource.path("fields").get(index).path("name").asText())) {
+                throw ServiceException.validation("Pivot drill-down field name does not match its source column");
+            }
+        }
+        return new MaterializedDetail(validatedSource.deepCopy(), validatedRegion.deepCopy(), List.copyOf(values));
     }
 
     private String targetSheetId(ObjectNode params) {
@@ -171,27 +214,17 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         return List.copyOf(columns);
     }
 
-    private void writePlan(ObjectNode root, ObjectNode target, DrillPlan plan) {
-        for (int index = 0; index < plan.columns().size(); index++) {
-            SnapshotMutationSupport.putCell(target, new SnapshotMutationSupport.CellCoordinate(plan.anchor().row(), plan.anchor().column() + index), cell(plan.columns().get(index).label()));
-        }
-        for (int rowOffset = 0; rowOffset < plan.records().size(); rowOffset++) {
-            Map<String, SourcePath> record = plan.records().get(rowOffset);
-            for (int columnOffset = 0; columnOffset < plan.columns().size(); columnOffset++) {
-                DrillColumn column = plan.columns().get(columnOffset);
-                SourcePath path = record.get(column.sourceId());
-                JsonNode value = null;
-                if (path != null) {
-                    ObjectNode sourceSheet = SnapshotMutationSupport.sheet(root, path.sheetId());
-                    ObjectNode sourceCell = SnapshotMutationSupport.cell(sourceSheet, new SnapshotMutationSupport.CellCoordinate(path.row(), column.column()), false);
-                    if (sourceCell != null) value = sourceCell.hasNonNull("formulaValue") ? sourceCell.get("formulaValue") : sourceCell.get("value");
-                }
-                SnapshotMutationSupport.putCell(target, new SnapshotMutationSupport.CellCoordinate(plan.anchor().row() + rowOffset + 1, plan.anchor().column() + columnOffset), cellScalar(value));
-            }
+    private void writePlan(ObjectNode target, DrillPlan plan) {
+        for (int index = 0; index < plan.detail().headers().size(); index++) {
+            SnapshotMutationSupport.putCell(target, new SnapshotMutationSupport.CellCoordinate(plan.anchor().row(), plan.anchor().column() + index), cell(plan.detail().headers().get(index)));
         }
     }
 
-    private void remove(ObjectNode root, String sheetId) {
+    private void remove(ObjectNode root, ObjectNode params) {
+        SnapshotMutationSupport.validateKnownKeys(params, REMOVE_KEYS, "pivot.drilldown.remove params");
+        String sheetId = SnapshotMutationSupport.text(params, "targetSheetId");
+        String sourceId = SnapshotMutationSupport.text(params, "sourceId");
+        String regionId = SnapshotMutationSupport.text(params, "regionId");
         ArrayNode sheets = SnapshotMutationSupport.sheets(root);
         if (sheets.size() <= 1) throw ServiceException.validation("A workbook must keep at least one worksheet");
         for (int index = 0; index < sheets.size(); index++) {
@@ -199,6 +232,23 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
                 if (!sheets.get(index).path("name").asText().startsWith("Drill ")) {
                     throw ServiceException.forbidden("Only a server-created pivot drill-down sheet may be removed by this mutation");
                 }
+                ArrayNode regions = SnapshotMutationSupport.array((ObjectNode) sheets.get(index), "dataRegions");
+                ObjectNode region = SnapshotMutationSupport.requireById(regions, regionId, "Pivot drill-down data region");
+                if (!sourceId.equals(region.path("sourceId").asText()) || regions.size() != 1) {
+                    throw ServiceException.conflict("Pivot drill-down sheet contains a different data binding");
+                }
+                SnapshotMutationSupport.removeById(regions, regionId);
+                ArrayNode sources = SnapshotMutationSupport.dataModelArray(root, "sources");
+                SnapshotMutationSupport.requireById(sources, sourceId, "Pivot drill-down data source");
+                for (JsonNode rawSheet : sheets) {
+                    if (!rawSheet.isObject() || sheetId.equals(rawSheet.path("id").asText())) continue;
+                    for (JsonNode otherRegion : SnapshotMutationSupport.array((ObjectNode) rawSheet, "dataRegions")) {
+                        if (sourceId.equals(otherRegion.path("sourceId").asText())) {
+                            throw ServiceException.conflict("Pivot drill-down data source is referenced by another sheet");
+                        }
+                    }
+                }
+                SnapshotMutationSupport.removeById(sources, sourceId);
                 sheets.remove(index);
                 removeScopedState(root, sheetId);
                 return;
@@ -234,7 +284,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         sheet.putObject("pane").put("kind", "none");
         sheet.put("defaultRowHeightPx", 20);
         sheet.put("defaultColumnWidthPx", 64);
-        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
+        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "dataRegions", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
         ObjectNode review = sheet.putObject("review");
         review.putObject("notesByCell");
         review.putObject("notesById");
@@ -271,7 +321,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         if (raw == null || raw.isNull()) cell.putNull("value");
         else if (raw.isObject() && "error".equals(raw.path("kind").asText()) && raw.path("code").isTextual()) cell.put("value", raw.path("code").asText());
         else if (!raw.isTextual() && !raw.isNumber() && !raw.isBoolean()) throw new ServiceException("UNSUPPORTED_FEATURE", 422,
-                "Pivot drill-down cannot represent this source value; no detail sheet was created");
+                "Pivot drill-down cannot represent this source header; no detail sheet was created");
         else cell.set("value", raw.deepCopy());
         return cell;
     }
@@ -285,6 +335,9 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
     private record DrillColumn(String sourceId, int column, String label) {
     }
 
+    private record MaterializedDetail(ObjectNode source, ObjectNode region, List<String> headers) {
+    }
+
     private record DrillPlan(
             String targetSheetId,
             String sheetName,
@@ -292,6 +345,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
             List<RangeRef> sourceRanges,
             List<DrillColumn> columns,
             List<Map<String, SourcePath>> records,
+            MaterializedDetail detail,
             int rowCount,
             int columnCount
     ) {

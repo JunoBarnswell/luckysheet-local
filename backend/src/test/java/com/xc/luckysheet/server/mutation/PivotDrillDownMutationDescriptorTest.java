@@ -25,13 +25,10 @@ class PivotDrillDownMutationDescriptorTest {
                 """);
         JsonNode result = descriptor.apply(snapshot, mutation(params));
         JsonNode cells = result.path("sheets").get(1).path("cells");
-        assertEquals("c1", cells.path("1").path("0").path("value").asText());
-        assertEquals(100, cells.path("1").path("1").path("value").asInt());
-        assertEquals("c1", cells.path("1").path("2").path("value").asText());
-        assertEquals("East", cells.path("1").path("3").path("value").asText());
-        assertEquals("c2", cells.path("2").path("0").path("value").asText());
-        assertTrue(cells.path("2").path("2").path("value").isNull());
-        assertTrue(cells.path("2").path("3").path("value").isNull());
+        assertEquals("CustomerId", cells.path("0").path("0").path("value").asText());
+        assertTrue(cells.path("1").isMissingNode());
+        assertEquals(2, result.path("dataModel").path("sources").get(0).path("rowCount").asInt());
+        assertEquals("detail-source", result.path("sheets").get(1).path("dataRegions").get(0).path("sourceId").asText());
         assertEquals(1, snapshot.path("sheets").size());
     }
 
@@ -73,7 +70,7 @@ class PivotDrillDownMutationDescriptorTest {
     }
 
     @Test
-    void blockBackedWorksheetRangesRejectInsteadOfProducingBlankDetails() throws Exception {
+    void blockBackedWorksheetRangesPublishThePreparedDetailSourceInsteadOfBlankCells() throws Exception {
         ObjectNode snapshot = snapshot();
         ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
         JsonNode sourceRange = sheet.path("pivots").get(0).path("source").path("ranges").get(0).path("range").deepCopy();
@@ -94,29 +91,52 @@ class PivotDrillDownMutationDescriptorTest {
         ObjectNode region = sheet.putArray("dataRegions").addObject();
         region.put("id", "region").put("sourceId", "blocks").put("headerRow", 0).put("revision", 0);
         region.set("range", sourceRange.deepCopy());
-        OperationMutation mutation = mutation(params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]"));
-        ServiceException error = assertThrows(ServiceException.class, () -> descriptor.apply(snapshot, mutation));
-        assertEquals("UNSUPPORTED_FEATURE", error.code());
-        assertEquals(1, snapshot.path("sheets").size());
-        ((ObjectNode) sheet.path("pivots").get(0)).putObject("source").put("kind", "data-source").put("dataSourceId", "blocks");
-        ServiceException directSourceError = assertThrows(ServiceException.class, () -> descriptor.apply(snapshot, mutation));
-        assertEquals("UNSUPPORTED_FEATURE", directSourceError.code());
+        ObjectNode params = params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]");
+        OperationMutation mutation = mutation(params);
+        JsonNode result = descriptor.apply(snapshot, mutation);
+        assertEquals(2, result.path("sheets").size());
+        assertEquals("detail-source", result.path("sheets").get(1).path("dataRegions").get(0).path("sourceId").asText());
+        assertTrue(result.path("sheets").get(1).path("cells").path("1").isMissingNode());
     }
 
     @Test
-    void preservesFormulaErrorsAndRejectsOtherStructuredSourceValues() throws Exception {
+    void usesEvaluatedHeadersWithoutReadingDetailValuesFromSparseCells() throws Exception {
         ObjectNode snapshot = snapshot();
         ObjectNode cell = (ObjectNode) snapshot.path("sheets").get(0).path("cells").path("1").path("1");
         ((ObjectNode) snapshot.path("sheets").get(0).path("cells").path("0").path("1")).put("formulaValue", "Computed Amount");
         cell.putObject("formulaValue").put("kind", "error").put("code", "#DIV/0!");
-        OperationMutation mutation = mutation(params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]"));
+        ObjectNode params = params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]");
+        ((ObjectNode) params.path("detail").path("source").path("fields").get(1)).put("name", "Computed Amount");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) params.path("detail").path("headers")).set(1, mapper.getNodeFactory().textNode("Computed Amount"));
+        OperationMutation mutation = mutation(params);
         JsonNode result = descriptor.apply(snapshot, mutation);
         assertEquals("Computed Amount", result.path("sheets").get(1).path("cells").path("0").path("1").path("value").asText());
-        assertEquals("#DIV/0!", result.path("sheets").get(1).path("cells").path("1").path("1").path("value").asText());
+        assertTrue(result.path("sheets").get(1).path("cells").path("1").isMissingNode());
         cell.putObject("formulaValue").put("unexpected", true);
-        ServiceException error = assertThrows(ServiceException.class, () -> descriptor.apply(snapshot, mutation));
-        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        JsonNode repeated = descriptor.apply(snapshot, mutation);
+        assertEquals(2, repeated.path("sheets").size());
+    }
+
+    @Test
+    void removesTheDetailRegionSourceAndSheetAsOneInverseMutation() throws Exception {
+        ObjectNode snapshot = snapshot();
+        JsonNode added = descriptor.apply(snapshot, mutation(params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]")));
+        ObjectNode removeParams = mapper.createObjectNode().put("targetSheetId", "detail")
+                .put("sourceId", "detail-source").put("regionId", "detail-region");
+        JsonNode removed = new PivotDrillDownMutationDescriptor("pivot.drilldown.remove")
+                .apply(added, new OperationMutation("pivot.drilldown.remove", "detail", removeParams));
+        assertEquals(1, removed.path("sheets").size());
+        assertEquals(0, removed.path("dataModel").path("sources").size());
+    }
+
+    @Test
+    void rejectsMaterializedMetadataThatDoesNotMatchSourceColumns() throws Exception {
+        ObjectNode snapshot = snapshot();
+        ObjectNode params = params("[{\"sourceId\":\"orders\",\"recordId\":\"a\",\"sheetId\":\"sheet-1\",\"row\":1}]");
+        ((ObjectNode) params.path("detail").path("source").path("fields").get(0)).put("name", "Forged");
+        assertThrows(ServiceException.class, () -> descriptor.apply(snapshot, mutation(params)));
         assertEquals(1, snapshot.path("sheets").size());
+        assertEquals(0, snapshot.path("dataModel").path("sources").size());
     }
 
     private OperationMutation mutation(ObjectNode params) {
@@ -126,14 +146,34 @@ class PivotDrillDownMutationDescriptorTest {
     private ObjectNode params(String paths) throws Exception {
         ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1").put("pivotId", "pivot")
                 .put("label", "Details").put("targetSheetId", "detail");
-        params.set("sourceRowPaths", mapper.readTree(paths));
+        JsonNode sourcePaths = mapper.readTree(paths);
+        params.set("sourceRowPaths", sourcePaths);
         params.putObject("target").put("row", 0).put("column", 0);
+        java.util.Set<String> records = new java.util.LinkedHashSet<>();
+        for (JsonNode path : sourcePaths) records.add(path.has("recordId") ? path.path("recordId").asText() : path.path("sheetId").asText() + ":" + path.path("row").asText());
+        int rowCount = records.size();
+        ObjectNode detail = params.putObject("detail");
+        ObjectNode source = detail.putObject("source");
+        source.put("schema", "DataSourceManifest").put("version", 1).put("id", "detail-source").put("name", "Details")
+                .put("kind", "chunked-table").put("sourceSheetId", "detail").put("rowCount", rowCount).put("blockRowCount", 65536).put("revision", 0);
+        source.putObject("sourceRange").put("sheetId", "detail").put("startRow", 0).put("endRow", rowCount).put("startColumn", 0).put("endColumn", 3);
+        var fields = source.putArray("fields");
+        String[] headers = {"CustomerId", "Amount", "Sheet1.CustomerId", "Region"};
+        for (int index = 0; index < headers.length; index++) fields.addObject().put("id", "detail-field-" + index).put("name", headers[index]).put("ordinal", index).put("type", "mixed");
+        source.putArray("blocks").addObject().put("id", "detail-block").put("dataSourceId", "detail-source")
+                .put("startRow", 0).put("rowCount", rowCount).put("storageKey", "detail-block").put("checksum", "b".repeat(64))
+                .put("byteLength", 1).put("encoding", "columnar-v1").put("revision", 0);
+        ObjectNode region = detail.putObject("region");
+        region.put("id", "detail-region").put("sourceId", "detail-source").put("headerRow", 0).put("revision", 0);
+        region.putObject("range").put("sheetId", "detail").put("startRow", 0).put("endRow", rowCount).put("startColumn", 0).put("endColumn", 3);
+        var detailHeaders = detail.putArray("headers");
+        for (String header : headers) detailHeaders.add(header);
         return params;
     }
 
     private ObjectNode snapshot() throws Exception {
         return (ObjectNode) mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,
                   "cells":{"0":{"0":{"value":"CustomerId"},"1":{"value":"Amount"},"4":{"value":"CustomerId"},"5":{"value":"Region"}},
                     "1":{"0":{"value":"c1"},"1":{"value":100},"4":{"value":"c2"},"5":{"value":"West"}},
                     "2":{"0":{"value":"c2"},"1":{"value":200},"4":{"value":"c1"},"5":{"value":"East"}}},

@@ -288,8 +288,10 @@ describe('WorkbookSession PivotTable integration', () => {
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-drill';
     await app.addPivot(pivot);
+    app.runCommand('sheet.add', { id: 'other-sheet', name: 'Other' });
+    app.selectSheet('other-sheet');
     const beforeCount = app.getUiSnapshot().sheets.length;
-    app.drillDownPivot(pivot.id, 'East', [{ sheetId, row: 1 }]);
+    await app.drillDownPivot(pivot.id, 'East', [{ sheetId, row: 1 }]);
     const snapshot = app.getUiSnapshot();
     assert.equal(snapshot.sheets.length, beforeCount + 1);
     assert.notEqual(snapshot.activeSheetId, sheetId);
@@ -312,12 +314,14 @@ describe('WorkbookSession PivotTable integration', () => {
     if (added.status === 'rejected') throw new Error(added.error.message);
     assert.equal(added.status, 'created');
 
-    app.drillDownPivot(pivot.id, 'Large', Array.from({ length: 1_200 }, (_, index) => ({ sheetId, row: index + 1 })));
+    await app.drillDownPivot(pivot.id, 'Large', Array.from({ length: 1_200 }, (_, index) => ({ sheetId, row: index + 1 })));
 
     const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(detailSheet.rowCount, 1_201);
     assert.equal(detailSheet.columnCount, 26);
-    assert.equal(detailSheet.cells.get(1_200, 0)?.value, 'East');
+    const detailRegion = detailSheet.dataRegions[0]!;
+    const detailQuery = app['runtime'].dataContent.get(detailRegion.sourceId)!;
+    assert.deepEqual((await detailQuery.getRows(1_199, 1)).value?.[0], ['East', 1_200]);
   });
 
   it('creates a slicer drawing and refreshes a derived result without persisted refresh state', async () => {
@@ -473,6 +477,13 @@ describe('WorkbookSession PivotTable integration', () => {
     const result = app['runtime'].pivotResults[pivot.id];
     const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
+    assert.ok(result?.sourceRowPaths.length);
+    await app.drillDownPivot(pivot.id, 'All rows', result!.sourceRowPaths);
+    const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    const detailRegion = detailSheet.dataRegions[0]!;
+    assert.notEqual(detailRegion.sourceId, region.sourceId);
+    const detailRows = await app['runtime'].dataContent.get(detailRegion.sourceId)!.getRows(0, 2);
+    assert.deepEqual(detailRows.value, [['A', 1], ['B', 2]]);
   });
 
   it('loads DataSource Pivot field members only when a picker requests them', async () => {
