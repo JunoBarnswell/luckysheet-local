@@ -4,6 +4,9 @@ import { createPivotMemberKey, type PivotModel } from '@react-sheets/core-model'
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
+import { clearPivotResultCache } from './features/pivot/engine';
+import { resolveChartDataFromSources, type ChartPayload } from './features/chart';
+import { setCellPatch, writeCellPatch } from './features/data-source';
 
 function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
   const sheetId = app.getActiveSheetId();
@@ -69,6 +72,41 @@ async function waitForPivotResult(app: WorkbookSession, pivotId: string): Promis
   }
   throw new Error(`Pivot result did not become available: ${pivotId}`);
 }
+
+it('loads and refreshes a cross-sheet PivotChart dependency without projecting unrelated sheets', async () => {
+  const app = new WorkbookSession();
+  try {
+    const { sheetId, pivot } = seed(app);
+    await app.addPivot(pivot);
+    app.runCommand('sheet.add', { id: 'dashboard', name: 'Dashboard' });
+    app.runCommand('sheet.add', { id: 'unrelated', name: 'Unrelated' });
+    app.selectSheet('dashboard');
+    delete app['runtime'].pivotResults[pivot.id];
+    clearPivotResultCache(app['runtime'].model, pivot.id);
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'dashboard-chart', chartType: 'combo', subtype: 'custom-combo',
+      source: { kind: 'pivot', pivotId: pivot.id }, elements: {},
+    };
+    app.runCommand('chart.insert', {
+      sheetId: 'dashboard', payload,
+      drawing: {
+        id: 'dashboard-drawing', sheetId: 'dashboard', kind: 'chart', payloadId: payload.chartId,
+        anchor: { kind: 'absolute' }, transform: { x: 40, y: 50, width: 360, height: 240, rotation: 0 }, zIndex: 1,
+      },
+    });
+    await waitForPivotResult(app, pivot.id);
+    let snapshot = app.getUiSnapshot();
+    assert.deepEqual(new Set(snapshot.projectionSheets.map((sheet) => sheet.id)), new Set([sheetId, 'dashboard']));
+    assert.equal(snapshot.projectionSheets.find((sheet) => sheet.id === sheetId)?.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 40 } });
+    await waitForPivot(app, pivot.id);
+    snapshot = app.getUiSnapshot();
+    const results = snapshot.projectionSheets.find((sheet) => sheet.id === sheetId)!.pivotResults;
+    assert.equal(results[pivot.id]?.grandTotal?.values[0], 60);
+    assert.equal(resolveChartDataFromSources(payload, () => undefined, results).status.kind, 'ready');
+    assert.equal(resolveChartDataFromSources({ ...payload, source: { kind: 'pivot', pivotId: 'missing' } }, () => undefined, results).status.kind, 'invalid');
+  } finally { app.dispose(); }
+});
 
 class DeferredCalculatePort implements PivotTaskPort {
   private readonly inner = new InlinePivotTaskPort();
@@ -251,8 +289,10 @@ describe('WorkbookSession PivotTable integration', () => {
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-drill';
     await app.addPivot(pivot);
+    app.runCommand('sheet.add', { id: 'other-sheet', name: 'Other' });
+    app.selectSheet('other-sheet');
     const beforeCount = app.getUiSnapshot().sheets.length;
-    app.drillDownPivot(pivot.id, 'East', [{ sheetId, row: 1 }]);
+    await app.drillDownPivot(pivot.id, 'East', [{ sheetId, row: 1 }]);
     const snapshot = app.getUiSnapshot();
     assert.equal(snapshot.sheets.length, beforeCount + 1);
     assert.notEqual(snapshot.activeSheetId, sheetId);
@@ -275,12 +315,14 @@ describe('WorkbookSession PivotTable integration', () => {
     if (added.status === 'rejected') throw new Error(added.error.message);
     assert.equal(added.status, 'created');
 
-    app.drillDownPivot(pivot.id, 'Large', Array.from({ length: 1_200 }, (_, index) => ({ sheetId, row: index + 1 })));
+    await app.drillDownPivot(pivot.id, 'Large', Array.from({ length: 1_200 }, (_, index) => ({ sheetId, row: index + 1 })));
 
     const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(detailSheet.rowCount, 1_201);
     assert.equal(detailSheet.columnCount, 26);
-    assert.equal(detailSheet.cells.get(1_200, 0)?.value, 'East');
+    const detailRegion = detailSheet.dataRegions[0]!;
+    const detailQuery = app['runtime'].dataContent.get(detailRegion.sourceId)!;
+    assert.deepEqual((await detailQuery.getRows(1_199, 1)).value?.[0], ['East', 1_200]);
   });
 
   it('creates a slicer drawing and refreshes a derived result without persisted refresh state', async () => {
@@ -430,12 +472,35 @@ describe('WorkbookSession PivotTable integration', () => {
       `${region.sourceId}:field:1`,
     ]);
 
+    writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: setCellPatch(11) });
     app.createPivotSlicerControl(pivot.id, pivot.fieldCatalog.fields[0]!.fieldId);
     app.refreshPivot(pivot.id);
     await waitForPivot(app, pivot.id);
     const result = app['runtime'].pivotResults[pivot.id];
+    assert.equal(result?.grandTotal?.values[0], 13);
     const slicer = Object.values(result?.slicerItems ?? {})[0] ?? [];
     assert.deepEqual(slicer.map((item) => item.label), ['A', 'B']);
+    await app.loadPivotFieldValues(pivot.id, pivot.fieldCatalog.fields[1]!.fieldId);
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id)
+      .find((field) => field.fieldId === pivot.fieldCatalog.fields[1]!.fieldId)?.values, [11, 2]);
+    writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: setCellPatch(21) });
+    await assert.rejects(app.drillDownPivot(pivot.id, 'Stale rows', result!.sourceRowPaths), /current result/i);
+    app.refreshPivot(pivot.id);
+    await waitForPivot(app, pivot.id);
+    const refreshed = app['runtime'].pivotResults[pivot.id];
+    assert.equal(refreshed?.grandTotal?.values[0], 23);
+    await app.loadPivotFieldValues(pivot.id, pivot.fieldCatalog.fields[1]!.fieldId);
+    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id)
+      .find((field) => field.fieldId === pivot.fieldCatalog.fields[1]!.fieldId)?.values, [21, 2]);
+    sheet.cells.set(region.headerRow, region.range.startColumn + 1, { value: 'Edited header' });
+    assert.ok(refreshed?.sourceRowPaths.length);
+    await app.drillDownPivot(pivot.id, 'All rows', refreshed!.sourceRowPaths);
+    const detailSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    const detailRegion = detailSheet.dataRegions[0]!;
+    assert.notEqual(detailRegion.sourceId, region.sourceId);
+    assert.equal(detailSheet.cells.get(detailRegion.headerRow, detailRegion.range.startColumn + 1)?.value, 'Amount');
+    const detailRows = await app['runtime'].dataContent.get(detailRegion.sourceId)!.getRows(0, 2);
+    assert.deepEqual(detailRows.value, [['A', 21], ['B', 2]]);
   });
 
   it('loads DataSource Pivot field members only when a picker requests them', async () => {
@@ -455,7 +520,7 @@ describe('WorkbookSession PivotTable integration', () => {
 
     const pivot = app['runtime'].model.getSheets().flatMap((entry) => entry.pivots).find((entry) => entry.id === created.pivotId)!;
     const regionField = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
-    assert.deepEqual(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, []);
+    assert.equal(app.getPivotFieldCatalogForPivot(pivot.id).find((field) => field.fieldId === regionField.fieldId)?.values, undefined);
 
     await app.loadPivotFieldValues(pivot.id, regionField.fieldId);
 

@@ -38,7 +38,8 @@ class WorkbookOperationServiceTest {
                 false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)
         );
         WorkbookOperationService service = new WorkbookOperationService(
-                store, access, new MutationDescriptorRegistry(), mapper, audit, coordination
+                store, access, new MutationDescriptorRegistry(), mapper, audit, coordination,
+                mock(WorkbookDataBlockPublicationGuard.class)
         );
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
@@ -77,7 +78,8 @@ class WorkbookOperationServiceTest {
                 new MutationDescriptorRegistry(),
                 mapper,
                 new AuditRecorder(store, mapper),
-                new CoordinationProperties(false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45))
+                new CoordinationProperties(false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)),
+                mock(WorkbookDataBlockPublicationGuard.class)
         );
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,

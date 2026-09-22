@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { resolveWorksheetChartRanges, chartStackingForSubtype, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, resolveWorksheetChartRanges, retargetChartPayload, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -146,10 +146,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isRange(value: unknown): value is RangeRef {
   if (!isRecord(value)) return false;
   return typeof value.sheetId === 'string'
-    && Number.isInteger(value.startRow) && Number.isInteger(value.endRow)
-    && Number.isInteger(value.startColumn) && Number.isInteger(value.endColumn)
-    && (value.startRow as number) >= 0 && (value.endRow as number) >= (value.startRow as number)
-    && (value.startColumn as number) >= 0 && (value.endColumn as number) >= (value.startColumn as number);
+    && value.sheetId.trim().length > 0
+    && [value.startRow, value.endRow, value.startColumn, value.endColumn].every(Number.isSafeInteger)
+    && (value.startRow as number) >= 0 && (value.endRow as number) >= (value.startRow as number) && (value.endRow as number) < MAX_SHEET_ROW_COUNT
+    && (value.startColumn as number) >= 0 && (value.endColumn as number) >= (value.startColumn as number) && (value.endColumn as number) < MAX_SHEET_COLUMN_COUNT;
 }
 
 const CHART_TYPES: readonly ChartType[] = [
@@ -176,20 +176,20 @@ function isAxis(value: unknown): value is ChartAxis {
     && ['top', 'bottom', 'left', 'right'].includes(String(value.position))
     && (value.scale === undefined || value.scale === 'linear' || value.scale === 'logarithmic')
     && (value.visible === undefined || typeof value.visible === 'boolean')
-    && (value.minimum === undefined || typeof value.minimum === 'number')
-    && (value.maximum === undefined || typeof value.maximum === 'number')
-    && (value.majorUnit === undefined || typeof value.majorUnit === 'number')
-    && (value.minorUnit === undefined || typeof value.minorUnit === 'number')
+    && (value.minimum === undefined || typeof value.minimum === 'number' && Number.isFinite(value.minimum))
+    && (value.maximum === undefined || typeof value.maximum === 'number' && Number.isFinite(value.maximum))
+    && (value.majorUnit === undefined || typeof value.majorUnit === 'number' && Number.isFinite(value.majorUnit) && value.majorUnit > 0)
+    && (value.minorUnit === undefined || typeof value.minorUnit === 'number' && Number.isFinite(value.minorUnit) && value.minorUnit > 0)
     && (value.axisType === undefined || ['category', 'value', 'date'].includes(String(value.axisType)))
-    && (value.logBase === undefined || (typeof value.logBase === 'number' && value.logBase > 1))
+    && (value.logBase === undefined || (typeof value.logBase === 'number' && Number.isFinite(value.logBase) && value.logBase > 1))
     && (value.automaticMinimum === undefined || typeof value.automaticMinimum === 'boolean')
     && (value.automaticMaximum === undefined || typeof value.automaticMaximum === 'boolean')
     && (value.reverseOrder === undefined || typeof value.reverseOrder === 'boolean')
     && (value.crosses === undefined || ['automatic', 'value', 'maximum'].includes(String(value.crosses)))
     && (value.crossBetween === undefined || ['mid-category', 'between'].includes(String(value.crossBetween)))
-    && (value.labelAngle === undefined || typeof value.labelAngle === 'number')
-    && (value.labelInterval === undefined || Number.isSafeInteger(value.labelInterval))
-    && (value.markInterval === undefined || Number.isSafeInteger(value.markInterval))
+    && (value.labelAngle === undefined || typeof value.labelAngle === 'number' && Number.isFinite(value.labelAngle))
+    && (value.labelInterval === undefined || Number.isSafeInteger(value.labelInterval) && Number(value.labelInterval) > 0)
+    && (value.markInterval === undefined || Number.isSafeInteger(value.markInterval) && Number(value.markInterval) > 0)
     && (value.displayUnits === undefined || ['none', 'hundreds', 'thousands', 'ten-thousands', 'millions', 'billions', 'trillions'].includes(String(value.displayUnits)))
     && (value.majorGridlines === undefined || isGridlines(value.majorGridlines))
     && (value.minorGridlines === undefined || isGridlines(value.minorGridlines));
@@ -198,7 +198,7 @@ function isAxis(value: unknown): value is ChartAxis {
 function isGridlines(value: unknown): boolean {
   return isRecord(value)
     && typeof value.visible === 'boolean'
-    && (value.width === undefined || typeof value.width === 'number')
+    && (value.width === undefined || typeof value.width === 'number' && Number.isFinite(value.width) && value.width > 0)
     && (value.dash === undefined || ['solid', 'dash', 'dot'].includes(String(value.dash)));
 }
 
@@ -288,7 +288,8 @@ function isNativeIdentity(value: unknown): boolean {
 function isSeries(value: unknown): value is ChartSeries {
   if (!isRecord(value)) return false;
   const series = value as Record<string, unknown>;
-  return typeof value.name === 'string'
+  return typeof value.name === 'string' && value.name.trim().length > 0 && value.name.length <= 200
+    && (series.id === undefined || typeof series.id === 'string' && series.id.trim().length > 0 && series.id.length <= 200)
     && isRange(series.range)
     && (series.xRange === undefined || isRange(series.xRange))
     && (series.yRange === undefined || isRange(series.yRange))
@@ -304,8 +305,8 @@ function isSeries(value: unknown): value is ChartSeries {
     && (series.errorBars === undefined || isErrorBars(series.errorBars))
     && (series.pointOverrides === undefined || isRecord(series.pointOverrides))
     && (series.visible === undefined || typeof series.visible === 'boolean')
-    && (series.gapWidth === undefined || typeof series.gapWidth === 'number')
-    && (series.overlap === undefined || typeof series.overlap === 'number')
+    && (series.gapWidth === undefined || typeof series.gapWidth === 'number' && Number.isFinite(series.gapWidth) && series.gapWidth >= 0 && series.gapWidth <= 500)
+    && (series.overlap === undefined || typeof series.overlap === 'number' && Number.isFinite(series.overlap) && series.overlap >= -100 && series.overlap <= 100)
     && (series.invertIfNegative === undefined || typeof series.invertIfNegative === 'boolean')
     && (series.stockRoles === undefined || isStockRoles(series.stockRoles));
 }
@@ -334,6 +335,9 @@ function isChartPayload(value: unknown): value is ChartPayload {
 function validateChartSemantics(payload: ChartPayload): void {
   if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   if (payload.nativeIdentity?.status === 'preserved-native') throw new Error(`UNSUPPORTED_FEATURE: Preserved-native chart ${payload.chartId} has no editable canonical owner`);
+  if (['scatter', 'bubble', 'stock'].includes(payload.chartType) && !payload.series?.length) {
+    throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} charts require explicit role-bound series`);
+  }
   if (payload.chartType === 'combo') {
     if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
     for (const series of payload.series) {
@@ -344,12 +348,41 @@ function validateChartSemantics(payload: ChartPayload): void {
   if (payload.chartType !== 'combo' && payload.series?.some((series) => series.chartType && series.chartType !== payload.chartType)) {
     throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} chart cannot contain a different series chart type`);
   }
+  if (payload.mapOptions && payload.chartType !== 'map') throw new Error('INVALID_CHART_SOURCE: Map options require a map chart');
+  if (payload.histogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error('INVALID_CHART_SOURCE: Histogram options require a histogram or pareto chart');
+  if (payload.boxWhiskerOptions && payload.chartType !== 'box-whisker') throw new Error('INVALID_CHART_SOURCE: Box-whisker options require a box-whisker chart');
+  if (payload.waterfallOptions && payload.chartType !== 'waterfall') throw new Error('INVALID_CHART_SOURCE: Waterfall options require a waterfall chart');
+  const seriesIds = new Set<string>();
+  const unnamedSeriesNames = new Set<string>();
   for (const series of payload.series ?? []) {
+    if (series.id !== undefined && !seriesIds.add(series.id)) throw new Error(`INVALID_CHART_SOURCE: Duplicate chart series id ${series.id}`);
+    if (series.id === undefined && !unnamedSeriesNames.add(series.name)) throw new Error(`INVALID_CHART_SOURCE: Duplicate chart series name without an id: ${series.name}`);
     const seriesType = series.chartType ?? payload.chartType;
-    if (seriesType === 'stock' && !series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');
+    if (seriesType === 'stock') {
+      const stockSubtype = series.subtype ?? payload.subtype;
+      if (!series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');
+      if (stockSubtype.includes('open') !== Boolean(series.stockRoles.open)) throw new Error(`INVALID_CHART_SOURCE: ${stockSubtype} Open role binding does not match its subtype`);
+      if (stockSubtype.includes('volume') !== Boolean(series.stockRoles.volume)) throw new Error(`INVALID_CHART_SOURCE: ${stockSubtype} Volume role binding does not match its subtype`);
+    }
     if ((seriesType === 'scatter' || seriesType === 'bubble') && (!series.xRange || !series.yRange)) throw new Error(`INVALID_CHART_SOURCE: ${seriesType} charts require explicit X/Y range bindings`);
     if (seriesType === 'bubble' && !series.sizeRange) throw new Error('INVALID_CHART_SOURCE: Bubble charts require an independent Size range binding');
     if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) throw new Error('INVALID_CHART_SOURCE: Custom error bars require explicit plus and minus ranges');
+    if (series.errorBars?.type === 'custom' && ((series.errorBars.plusValue !== undefined && series.errorBars.plusValue < 0) || (series.errorBars.minusValue !== undefined && series.errorBars.minusValue < 0))) {
+      throw new Error('INVALID_CHART_SOURCE: Custom error bar values must be non-negative');
+    }
+    if ((series.errorBars?.type === 'fixed' || series.errorBars?.type === 'percentage') && (!Number.isFinite(series.errorBars.value) || series.errorBars.value! < 0)) {
+      throw new Error('INVALID_CHART_SOURCE: Fixed and percentage error bars require a non-negative finite value');
+    }
+    if (series.trendlines?.length && !chartSeriesSupportsTrendlines(seriesType)) throw new Error(`UNSUPPORTED_FEATURE: ${seriesType} chart series do not support trendlines`);
+    if (series.errorBars && !chartSeriesSupportsErrorBars(seriesType)) throw new Error(`UNSUPPORTED_FEATURE: ${seriesType} chart series do not support error bars`);
+  }
+  for (const axis of [payload.elements.categoryAxis, payload.elements.valueAxis, payload.elements.secondaryCategoryAxis, payload.elements.secondaryValueAxis]) {
+    if (!axis) continue;
+    if ([axis.minimum, axis.maximum].some((value) => value !== undefined && !Number.isFinite(value))) throw new Error('INVALID_CHART_SOURCE: Axis bounds must be finite');
+    if (axis.minimum !== undefined && axis.maximum !== undefined && axis.minimum >= axis.maximum) throw new Error('INVALID_CHART_SOURCE: Axis minimum must be less than maximum');
+    if (axis.scale === 'logarithmic' && ((axis.minimum !== undefined && axis.minimum <= 0) || (axis.maximum !== undefined && axis.maximum <= 0))) {
+      throw new Error('INVALID_CHART_SOURCE: Logarithmic axis bounds must be positive');
+    }
   }
 }
 
@@ -455,22 +488,20 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   commandIds.push('chart.update');
   runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     if (!isChartSubtypeForType(input.chartType, input.subtype)) throw new Error(`Chart subtype ${input.subtype} does not belong to ${input.chartType}`);
-    const next = { ...payload, chartType: input.chartType, subtype: input.subtype, stacked: input.stacked ?? chartStackingForSubtype(input.subtype) };
-    if (next.stacked === undefined) delete next.stacked;
-    return next;
+    return retargetChartPayload(payload, input.chartType, input.subtype, input.stacked);
   }) });
   commandIds.push('chart.setType');
   runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, legend: { visible: true, position: input.legendPosition } } })) });
   commandIds.push('chart.setLegend');
   runtime.registry.registerCommand<ChartSetDataLabelsParams>({ id: 'chart.setDataLabels', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, dataLabels: { ...(payload.elements.dataLabels ?? { visible: false }), visible: input.showDataLabels } } })) });
   commandIds.push('chart.setDataLabels');
-  runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, source: structuredClone(input.source), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
+  runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, source: structuredClone(input.source), ...(input.series === undefined ? { series: undefined } : { series: structuredClone(input.series) }), ...(input.categoryRange === undefined ? { categoryRange: undefined } : { categoryRange: structuredClone(input.categoryRange) }) })) });
   commandIds.push('chart.setSeries');
   runtime.registry.registerCommand<ChartSelectDataParams>({ id: 'chart.selectData', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({
     ...payload,
     source: structuredClone(input.source),
-    series: input.series ? structuredClone(input.series) : payload.series,
-    categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange,
+    ...(input.series === undefined ? { series: undefined } : { series: structuredClone(input.series) }),
+    ...(input.categoryRange === undefined ? { categoryRange: undefined } : { categoryRange: structuredClone(input.categoryRange) }),
     ...(input.switchRowColumn === undefined ? {} : { dataOrientation: input.switchRowColumn ? payload.dataOrientation === 'rows' ? 'columns' : 'rows' : payload.dataOrientation ?? 'columns' }),
   })) });
   commandIds.push('chart.selectData');
@@ -491,7 +522,10 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<ChartSeriesRemoveParams>({ id: 'chart.series.remove', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
     const series = payload.series ?? [];
     if (!series.some((entry) => entry.id === input.seriesId)) throw new Error(`Unknown chart series: ${input.seriesId}`);
-    if (series.length <= 1) throw new Error('INVALID_CHART_SOURCE: A chart must retain at least one series');
+    if (series.length === 1) {
+      if (['scatter', 'bubble', 'stock', 'combo'].includes(payload.chartType)) throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} charts require explicit series`);
+      return { ...payload, series: undefined };
+    }
     return { ...payload, series: series.filter((entry) => entry.id !== input.seriesId) };
   }) });
   commandIds.push('chart.series.remove');

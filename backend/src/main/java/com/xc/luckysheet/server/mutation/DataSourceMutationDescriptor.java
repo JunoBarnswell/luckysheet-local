@@ -2,6 +2,7 @@ package com.xc.luckysheet.server.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
@@ -45,6 +46,13 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     static ObjectNode validateQuerySource(ObjectNode root, String mutationSheetId, ObjectNode source) {
         String sourceSheetId = optionalIdentity(source, "sourceSheetId");
         return new DataSourceMutationDescriptor("dataSource.add").validateSource(root, sourceSheetId == null ? mutationSheetId : sourceSheetId, source);
+    }
+
+    /** Shared by atomic composite mutations that create their target sheet and source together. */
+    static ObjectNode validateCompositeRegion(ObjectNode root, String sheetId, ObjectNode region) {
+        ObjectNode params = JsonNodeFactory.instance.objectNode();
+        params.set("region", region);
+        return new DataSourceMutationDescriptor("dataRegion.add").validateRegion(root, sheetId, params);
     }
 
     @Override
@@ -144,14 +152,15 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private ObjectNode validateSource(ObjectNode root, String mutationSheetId, ObjectNode source) {
         SnapshotMutationSupport.validateKnownKeys(source, Set.of(
                 "schema", "version", "id", "name", "kind", "sourceSheetId", "sourceRange",
-                "rowCount", "fields", "blockRowCount", "blocks", "rowOrder", "revision"
+                "rowCount", "fields", "blockRowCount", "blocks", "rowOrder", "sortState", "revision"
         ), "Data source manifest");
         if (!"DataSourceManifest".equals(source.path("schema").asText()) || source.path("version").asInt(-1) != 1) {
             throw ServiceException.validation("Data source manifest schema is invalid");
         }
         String sourceId = identity(SnapshotMutationSupport.text(source, "id"), "Data source id");
-        if (SnapshotMutationSupport.text(source, "name").length() > 200) {
-            throw ServiceException.validation("Data source name is too long");
+        String sourceName = SnapshotMutationSupport.text(source, "name");
+        if (sourceName.isBlank() || sourceName.length() > 200) {
+            throw ServiceException.validation("Data source name is invalid");
         }
         String kind = SnapshotMutationSupport.text(source, "kind");
         if (!SOURCE_KINDS.contains(kind)) throw ServiceException.validation("Data source kind is invalid");
@@ -181,9 +190,41 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         }
 
         validateFields(source);
+        if (sourceRange != null) {
+            long fieldCount = source.withArray("fields").size();
+            if (sourceRange.endRow() - sourceRange.startRow() != rowCount
+                    || sourceRange.endColumn() - sourceRange.startColumn() + 1 != fieldCount) {
+                throw ServiceException.validation("Data source range dimensions do not match its rows and fields");
+            }
+        }
+        validateSortState(source);
         validateRowOrder(source, rowCount);
         validateBlocks(source, sourceId, rowCount);
         return source;
+    }
+
+    private void validateSortState(ObjectNode source) {
+        JsonNode raw = source.get("sortState");
+        if (raw == null) return;
+        if (!raw.isObject()) throw ServiceException.validation("Data source sortState must be an object");
+        ObjectNode sortState = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(sortState, Set.of("criteria"), "Data source sortState");
+        JsonNode criteria = sortState.get("criteria");
+        if (criteria == null || !criteria.isArray() || criteria.isEmpty()) {
+            throw ServiceException.validation("Data source sortState requires criteria");
+        }
+        Set<String> fieldIds = new HashSet<>();
+        for (JsonNode field : source.withArray("fields")) fieldIds.add(field.path("id").asText());
+        Set<String> sortedFieldIds = new HashSet<>();
+        for (JsonNode rawCriterion : criteria) {
+            if (!rawCriterion.isObject()) throw ServiceException.validation("Data source sort criterion must be an object");
+            ObjectNode criterion = (ObjectNode) rawCriterion;
+            SnapshotMutationSupport.validateKnownKeys(criterion, Set.of("fieldId", "ascending"), "Data source sort criterion");
+            String fieldId = criterion.path("fieldId").asText("");
+            if (!fieldIds.contains(fieldId) || !sortedFieldIds.add(fieldId) || !criterion.path("ascending").isBoolean()) {
+                throw ServiceException.validation("Data source sortState criteria are invalid");
+            }
+        }
     }
 
     private void validateRowOrder(ObjectNode source, long rowCount) {
@@ -206,7 +247,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     private void validateFields(ObjectNode source) {
         ArrayNode fields = SnapshotMutationSupport.requiredArray(source, "fields");
-        if (fields.size() > MAX_FIELDS) throw ServiceException.validation("Data source has too many fields");
+        if (fields.isEmpty() || fields.size() > MAX_FIELDS) throw ServiceException.validation("Data source must contain between 1 and " + MAX_FIELDS + " fields");
         Set<String> ids = new HashSet<>();
         for (int index = 0; index < fields.size(); index++) {
             JsonNode raw = fields.get(index);
@@ -217,7 +258,8 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             if (!ids.add(fieldId)) throw ServiceException.validation("Duplicate data source field: " + fieldId);
             if (field.path("ordinal").asInt(-1) != index) throw ServiceException.validation("Data source fields must use contiguous ordinals");
             if (!FIELD_TYPES.contains(SnapshotMutationSupport.text(field, "type"))) throw ServiceException.validation("Data source field type is invalid");
-            if (SnapshotMutationSupport.text(field, "name").length() > 200) throw ServiceException.validation("Data source field name is too long");
+            String fieldName = SnapshotMutationSupport.text(field, "name");
+            if (fieldName.isBlank() || fieldName.length() > 200) throw ServiceException.validation("Data source field name is invalid");
         }
     }
 
@@ -225,6 +267,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         ArrayNode blocks = SnapshotMutationSupport.requiredArray(source, "blocks");
         if (blocks.size() > MAX_BLOCKS) throw ServiceException.validation("Data source has too many blocks");
         Set<String> ids = new HashSet<>();
+        Set<String> storageKeys = new HashSet<>();
         List<BlockRange> ranges = new ArrayList<>();
         for (JsonNode raw : blocks) {
             if (raw == null || !raw.isObject()) throw ServiceException.validation("Data block must be an object");
@@ -237,13 +280,14 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
             if (!sourceId.equals(SnapshotMutationSupport.text(block, "dataSourceId"))) throw ServiceException.validation("Data block belongs to another data source");
             long startRow = nonNegative(block, "startRow");
             long blockRows = nonNegative(block, "rowCount");
-            if (blockRows < 1 || startRow + blockRows > rowCount) throw ServiceException.validation("Data block range is invalid: " + blockId);
+            if (blockRows < 1 || blockRows > DATA_BLOCK_ROW_COUNT || startRow + blockRows > rowCount) throw ServiceException.validation("Data block range is invalid: " + blockId);
             if (!"columnar-v1".equals(SnapshotMutationSupport.text(block, "encoding"))) throw ServiceException.validation("Data block encoding is invalid");
             if (!SHA256.matcher(SnapshotMutationSupport.text(block, "checksum")).matches()) throw ServiceException.validation("Data block checksum is invalid: " + blockId);
             if (nonNegative(block, "byteLength") < 1) throw ServiceException.validation("Data block byteLength must be positive: " + blockId);
             nonNegative(block, "revision");
             if (block.path("revision").longValue() != source.path("revision").longValue()) throw ServiceException.validation("Data block revision does not match source revision: " + blockId);
-            if (SnapshotMutationSupport.text(block, "storageKey").length() > 500) throw ServiceException.validation("Data block storageKey is too long");
+            String storageKey = SnapshotMutationSupport.text(block, "storageKey");
+            if (storageKey.isBlank() || storageKey.length() > 500 || !storageKeys.add(storageKey)) throw ServiceException.validation("Data block storageKey is invalid or duplicated");
             ranges.add(new BlockRange(startRow, startRow + blockRows, blockId));
         }
         ranges.sort(Comparator.comparingLong(BlockRange::start));

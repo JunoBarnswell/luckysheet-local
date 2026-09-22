@@ -24,6 +24,120 @@ export interface PivotPanelState {
   resultTreeSchema: string;
 }
 
+export type PivotLayoutArea = 'filters' | 'columns' | 'rows' | 'values';
+
+function boundedInsertIndex(index: number, length: number): number {
+  if (!Number.isSafeInteger(index)) throw new Error('Pivot field insertion index is invalid');
+  return Math.max(0, Math.min(index, length));
+}
+
+function rescopePivotFieldFilters(layout: PivotLayout, fieldId: string, from: 'report' | 'field', to: 'report' | 'field'): PivotFilter[] {
+  const filters = layout.filters.map((filter) => filter.fieldId === fieldId && (filter.scope ?? 'report') === from
+    ? { ...filter, scope: to }
+    : structuredClone(filter)) as PivotFilter[];
+  const identities = new Set<string>();
+  const fieldScopes = new Set<string>();
+  for (const filter of filters) {
+    const identity = pivotFilterIdentity(filter);
+    if (identities.has(identity)) throw new Error(`Pivot field move would merge duplicate filter family: ${identity}`);
+    identities.add(identity);
+    const fieldScope = `${filter.fieldId}|${filter.scope ?? 'report'}`;
+    if (!allowsMultiplePivotFilters(layout) && fieldScopes.has(fieldScope)) {
+      throw new Error(`Pivot field move would create multiple filters while multiple filters are disabled: ${fieldScope}`);
+    }
+    fieldScopes.add(fieldScope);
+  }
+  return filters;
+}
+
+function reorderPivotReportFilterField(filters: PivotFilter[], fieldId: string, index: number): PivotFilter[] {
+  const grouped = new Map<string, PivotFilter[]>();
+  const order: string[] = [];
+  for (const filter of filters) {
+    if ((filter.scope ?? 'report') !== 'report') continue;
+    const existing = grouped.get(filter.fieldId);
+    if (existing) existing.push(filter);
+    else {
+      grouped.set(filter.fieldId, [filter]);
+      order.push(filter.fieldId);
+    }
+  }
+  const previousIndex = order.indexOf(fieldId);
+  if (previousIndex < 0) throw new Error(`Pivot Filters placement is missing: ${fieldId}`);
+  order.splice(previousIndex, 1);
+  const adjustedIndex = previousIndex < index ? index - 1 : index;
+  order.splice(boundedInsertIndex(adjustedIndex, order.length), 0, fieldId);
+  const orderedReports = order.flatMap((id) => grouped.get(id)!);
+  let reportIndex = 0;
+  return filters.map((filter) => (filter.scope ?? 'report') === 'report' ? orderedReports[reportIndex++]! : filter);
+}
+
+export function movePivotLayoutField(layout: PivotLayout, field: PivotFieldDefinition, area: PivotLayoutArea, index: number): PivotLayout {
+  const next = structuredClone(layout);
+  if (area === 'values') {
+    const base = `value:${field.fieldId}`;
+    let valueId = base;
+    for (let suffix = 2; next.values.some((value) => value.valueId === valueId); suffix += 1) valueId = `${base}:${suffix}`;
+    next.values.splice(boundedInsertIndex(index, next.values.length), 0, { valueId, fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
+    return next;
+  }
+  const existingRow = next.rows.find((placement) => placement.fieldId === field.fieldId);
+  const existingColumn = next.columns.find((placement) => placement.fieldId === field.fieldId);
+  const placement = structuredClone(existingRow ?? existingColumn ?? { fieldId: field.fieldId });
+  const previousIndex = area === 'rows'
+    ? next.rows.findIndex((candidate) => candidate.fieldId === field.fieldId)
+    : area === 'columns' ? next.columns.findIndex((candidate) => candidate.fieldId === field.fieldId) : -1;
+  next.rows = next.rows.filter((candidate) => candidate.fieldId !== field.fieldId);
+  next.columns = next.columns.filter((candidate) => candidate.fieldId !== field.fieldId);
+  if (area === 'filters') {
+    next.filters = rescopePivotFieldFilters(next, field.fieldId, 'field', 'report');
+    if (!next.filters.some((filter) => filter.fieldId === field.fieldId && (filter.scope ?? 'report') === 'report')) {
+      next.filters.push({ kind: 'manual', family: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
+    }
+    next.filters = reorderPivotReportFilterField(next.filters, field.fieldId, index);
+    return next;
+  }
+  if (!existingRow && !existingColumn) next.filters = rescopePivotFieldFilters(next, field.fieldId, 'report', 'field');
+  const target = area === 'rows' ? next.rows : next.columns;
+  const adjustedIndex = previousIndex >= 0 && previousIndex < index ? index - 1 : index;
+  const targetIndex = boundedInsertIndex(adjustedIndex, target.length);
+  target.splice(targetIndex, 0, placement);
+  return next;
+}
+
+export function movePivotValuePlacement(layout: PivotLayout, valueId: string, index: number): PivotLayout {
+  const next = structuredClone(layout);
+  const currentIndex = next.values.findIndex((value) => value.valueId === valueId);
+  if (currentIndex < 0) throw new Error(`Unknown Pivot Values placement: ${valueId}`);
+  const [value] = next.values.splice(currentIndex, 1);
+  const adjustedIndex = currentIndex < index ? index - 1 : index;
+  const targetIndex = boundedInsertIndex(adjustedIndex, next.values.length);
+  next.values.splice(targetIndex, 0, value!);
+  return next;
+}
+
+export function removePivotLayoutPlacement(layout: PivotLayout, area: PivotLayoutArea, placementId: string): PivotLayout {
+  const next = structuredClone(layout);
+  if (area === 'values') {
+    if (!next.values.some((value) => value.valueId === placementId)) throw new Error(`Unknown Pivot Values placement: ${placementId}`);
+    next.values = next.values.filter((value) => value.valueId !== placementId);
+    next.filters = next.filters.filter((filter) => !(filter.kind === 'top-items' || (filter.kind === 'condition' && filter.family === 'value')) || filter.valueId !== placementId);
+  } else if (area === 'filters') {
+    next.filters = next.filters.filter((filter) => filter.fieldId !== placementId || (filter.scope ?? 'report') === 'field');
+  } else {
+    next[area] = next[area].filter((placement) => placement.fieldId !== placementId);
+    const remainsOnAxis = next.rows.some((placement) => placement.fieldId === placementId)
+      || next.columns.some((placement) => placement.fieldId === placementId);
+    if (!remainsOnAxis) next.filters = next.filters.filter((filter) => filter.fieldId !== placementId || (filter.scope ?? 'report') !== 'field');
+  }
+  return next;
+}
+
+export function replacePivotValuePlacement(layout: PivotLayout, value: PivotValueField): PivotLayout {
+  if (!layout.values.some((candidate) => candidate.valueId === value.valueId)) throw new Error(`Unknown Pivot Values placement: ${value.valueId}`);
+  return { ...structuredClone(layout), values: layout.values.map((candidate) => candidate.valueId === value.valueId ? structuredClone(value) : candidate) };
+}
+
 function hasPivotHeaderData(workbook: WorkbookModel, pivot: PivotModel): boolean {
   return getPivotSourceRanges(workbook, pivot).some((range) => {
     const sheet = workbook.getSheet(range.sheetId);

@@ -1318,6 +1318,7 @@ describe('native PivotGridProjection contract', () => {
       name: 'Block Source',
       kind: 'chunked-table',
       sourceSheetId: 'sheet-1',
+      sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
       rowCount: 2,
       fields: [
         { id: 'region', name: 'Region', ordinal: 0, type: 'text' },
@@ -1329,6 +1330,13 @@ describe('native PivotGridProjection contract', () => {
         storageKey: 'source-block-0', checksum: 'c'.repeat(64), byteLength: 1,
         encoding: 'columnar-v1', revision: 1,
       }],
+      revision: 1,
+    });
+    workbook.getSheet('sheet-1').addDataRegion({
+      id: 'source-block-region',
+      sourceId: 'source-block',
+      range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+      headerRow: 0,
       revision: 1,
     });
     const pivot = {

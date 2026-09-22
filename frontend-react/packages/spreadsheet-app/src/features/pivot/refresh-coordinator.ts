@@ -3,12 +3,12 @@ import type { PivotModel, RangeRef, WorkbookModel } from '@react-sheets/core-mod
 import { getPivotSourceRanges } from './engine';
 
 export type PivotRefreshTrigger =
-  | { kind: 'open'; sheetId?: string }
+  | { kind: 'open'; sheetIds?: ReadonlySet<string> }
   | { kind: 'explicit'; pivotId: string }
   | { kind: 'explicit-all' }
   | { kind: 'layout-change'; pivotId: string }
-  | { kind: 'source-change'; mutations: readonly MutationInfo[]; sheetId?: string }
-  | { kind: 'source-content-change'; sourceId: string; sheetId?: string }
+  | { kind: 'source-change'; mutations: readonly MutationInfo[]; sheetIds?: ReadonlySet<string> }
+  | { kind: 'source-content-change'; sourceId: string; sheetIds?: ReadonlySet<string> }
   | {
     kind: 'control-change';
     drawings: readonly { sheetId: string; drawingId: string }[];
@@ -26,6 +26,11 @@ function intersects(left: RangeRef, right: RangeRef): boolean {
 
 function dependsOnMutation(workbook: WorkbookModel, pivot: PivotModel, mutation: MutationInfo): boolean {
   if (mutation.id.startsWith('pivot.') || mutation.id.startsWith('drawing.')) return false;
+  if (pivot.source.kind === 'data-source'
+    && (mutation.id.startsWith('dataSource.') || mutation.id.startsWith('query.load.'))) {
+    const params = mutation.params as { sourceId?: string; source?: { id?: string } };
+    if ((params.sourceId ?? params.source?.id) === pivot.source.dataSourceId) return true;
+  }
   try {
     return getPivotSourceRanges(workbook, pivot).some((sourceRange) =>
       mutation.affectedRanges.some((affectedRange) => intersects(sourceRange, affectedRange)));
@@ -54,7 +59,7 @@ export function pivotIdsToRefresh(
   pivots: readonly PivotModel[],
   trigger: PivotRefreshTrigger,
 ): string[] {
-  const targetSheetMatches = (pivot: PivotModel, sheetId?: string): boolean => !sheetId || pivot.target.sheetId === sheetId;
+  const targetSheetMatches = (pivot: PivotModel, sheetIds?: ReadonlySet<string>): boolean => !sheetIds || sheetIds.has(pivot.target.sheetId);
   switch (trigger.kind) {
     case 'explicit':
       return pivots.some((pivot) => pivot.id === trigger.pivotId) ? [trigger.pivotId] : [];
@@ -64,18 +69,18 @@ export function pivotIdsToRefresh(
       return pivots.some((pivot) => pivot.id === trigger.pivotId) ? [trigger.pivotId] : [];
     case 'open':
       return pivots
-        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetIds))
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-open')
         .map((pivot) => pivot.id);
     case 'source-change':
       return pivots
-        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetIds))
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-change')
         .filter((pivot) => trigger.mutations.some((mutation) => dependsOnMutation(workbook, pivot, mutation)))
         .map((pivot) => pivot.id);
     case 'source-content-change':
       return pivots
-        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetId))
+        .filter((pivot) => targetSheetMatches(pivot, trigger.sheetIds))
         .filter((pivot) => pivot.refreshPolicy.mode === 'on-change')
         .filter((pivot) => pivot.source.kind === 'data-source' && pivot.source.dataSourceId === trigger.sourceId)
         .map((pivot) => pivot.id);

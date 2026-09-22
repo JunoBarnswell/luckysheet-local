@@ -480,6 +480,8 @@ export {
   defaultChartSubtype,
   isChartSubtypeForType,
   chartStackingForSubtype,
+  chartSeriesSupportsErrorBars,
+  chartSeriesSupportsTrendlines,
 } from './domain';
 export { DEFAULT_WORKSHEET_SNAP_SETTINGS } from './domain';
 export {
@@ -544,7 +546,7 @@ export {
 
 import { canonicalizePivotDefinition, type PivotModel } from './pivot';
 export * from './pivot';
-export { resolveWorksheetChartRanges, validateChartVector } from './chart-range-bindings';
+export { buildExplicitChartSeries, resolveWorksheetChartRanges, retargetChartPayload, validateChartVector } from './chart-range-bindings';
 import type { AnalysisViewDefinition, GanttSheetDefinition, ReportSheetDefinition, TableSheetDefinition, WorkbookDataModel, WorkbookTableModel } from './data-model';
 import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
 export * from './data-model';

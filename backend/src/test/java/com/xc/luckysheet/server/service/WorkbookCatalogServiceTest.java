@@ -58,7 +58,8 @@ class WorkbookCatalogServiceTest {
         WorkbookCatalogService service = new WorkbookCatalogService(workbooks, acl, states, artifacts, spaces, folders,
                 members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
                 mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
-                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class), mapper);
+                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class),
+                mock(WorkbookDataBlockPublicationGuard.class), mapper);
 
         byte[] content = "xlsx-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(content));
@@ -116,12 +117,13 @@ class WorkbookCatalogServiceTest {
         WorkbookCatalogService service = new WorkbookCatalogService(workbooks, acl, states, artifacts, spaces, folders,
                 members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
                 mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
-                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class), mapper);
+                mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class),
+                mock(WorkbookDataBlockPublicationGuard.class), mapper);
 
         service.copy("source-1", new CopyWorkbookRequest("Copied", null, null), "actor");
 
         var capture = org.mockito.ArgumentCaptor.forClass(com.xc.luckysheet.server.persistence.WorkbookEntity.class);
-        verify(workbooks).save(capture.capture());
+        verify(workbooks).saveAndFlush(capture.capture());
         JsonNode copied = mapper.readTree(capture.getValue().getSnapshotJson());
         assertEquals(capture.getValue().getUnitId(), copied.path("unitId").asText());
         assertEquals("Copied", copied.path("name").asText());

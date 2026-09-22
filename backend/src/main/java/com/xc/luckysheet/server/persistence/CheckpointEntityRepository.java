@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
+import java.util.stream.Stream;
 
 public interface CheckpointEntityRepository extends JpaRepository<CheckpointEntity, CheckpointEntity.Id> {
     @Query("select c from CheckpointEntity c where c.id.unitId = :unitId and c.id.revision = :revision")
@@ -15,4 +16,7 @@ public interface CheckpointEntityRepository extends JpaRepository<CheckpointEnti
     java.util.List<CheckpointEntity> findLatestAtOrBefore(@Param("unitId") String unitId, @Param("revision") long revision, Pageable pageable);
 
     void deleteByIdUnitId(String unitId);
+
+    @Query("select c.snapshotJson from CheckpointEntity c where c.id.unitId = :unitId")
+    Stream<String> streamSnapshotJsonByUnitId(@Param("unitId") String unitId);
 }

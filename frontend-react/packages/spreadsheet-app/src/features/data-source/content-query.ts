@@ -6,10 +6,11 @@ import {
   type DataBlockAvailability,
   type DataSourceField,
   type DataSourceManifest,
+  type PivotScalar,
   type TableScalar,
 } from '@react-sheets/core-model';
 import {
-  decodeColumnarBlock,
+  decodeOwnedColumnarBlock,
   validateSparseCellOverlay,
   type SparseCellOverlay,
 } from './codec';
@@ -54,6 +55,8 @@ interface LoadedBlock {
   ref: DataBlockRef;
   rows: TableScalar[][];
 }
+
+const MAX_CONCURRENT_BLOCK_READS = 4;
 
 class ContentQueryFailure extends Error {
   constructor(
@@ -107,7 +110,7 @@ function isSafeRowIndex(value: number): boolean {
  * sparse edits are applied only to the returned projection.
  */
 export class DataSourceContentQuery {
-  private readonly source: DataSourceManifest;
+  private source: DataSourceManifest;
   private readonly store: DataBlockReader;
   private readonly overlays: ReadonlyMap<string, SparseCellOverlay>;
   private readonly loadStates = new Map<string, DataSourceContentLoadState>();
@@ -153,7 +156,31 @@ export class DataSourceContentQuery {
       fields: this.source.fields.map(cloneField),
       blocks: this.source.blocks.map((block) => ({ ...block })),
       ...(this.source.rowOrder === undefined ? {} : { rowOrder: [...this.source.rowOrder] }),
+      ...(this.source.sortState === undefined ? {} : {
+        sortState: { criteria: this.source.sortState.criteria.map((criterion) => ({ ...criterion })) },
+      }),
     };
+  }
+
+  /** Preserve decoded immutable blocks when only logical source metadata changed. */
+  rebindManifest(manifest: DataSourceManifest): boolean {
+    const normalized = normalizeDataSourceManifest(structuredClone(manifest));
+    // This identity owns decoded bytes only. Projection metadata, revision,
+    // virtual sort order and display naming can change without invalidating a
+    // verified immutable block, so retaining the cache is both safe and
+    // necessary for lazy multi-sheet navigation.
+    const contentIdentity = (source: DataSourceManifest): string => JSON.stringify({
+      id: source.id,
+      rowCount: source.rowCount,
+      fields: source.fields,
+      blockRowCount: source.blockRowCount,
+      blocks: source.blocks.map(({ id, dataSourceId, startRow, rowCount, checksum, byteLength, encoding }) => ({
+        id, dataSourceId, startRow, rowCount, checksum, byteLength, encoding,
+      })),
+    });
+    if (contentIdentity(normalized) !== contentIdentity(this.source)) return false;
+    this.source = normalized;
+    return true;
   }
 
   getField(fieldRef: DataSourceFieldRef): DataSourceField | undefined {
@@ -170,6 +197,12 @@ export class DataSourceContentQuery {
 
   getLoadStates(): DataSourceContentLoadState[] {
     return [...this.loadStates.values()].map((current) => ({ ...current }));
+  }
+
+  /** Resolve the immutable block row behind a logical (possibly sorted) row. */
+  getPhysicalRow(logicalRow: number): number | undefined {
+    if (!isSafeRowIndex(logicalRow) || logicalRow >= this.source.rowCount) return undefined;
+    return this.physicalRow(logicalRow);
   }
 
   subscribe(listener: DataSourceContentStateListener): () => void {
@@ -203,21 +236,37 @@ export class DataSourceContentQuery {
       return { state: state(this.source.id, ref.id, 'ready'), value: row[field.ordinal] ?? null };
     }
     const current = this.loadStates.get(ref.id);
-    if (!this.loadPromises.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    // Render reads expose a terminal failure until an explicit asynchronous
+    // read retries it. A repaint must not restart a failed network request.
+    if (current === undefined && !this.loadPromises.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
     return { state: current ?? state(this.source.id, ref.id, 'loading') };
   }
 
   prefetchRows(startRow: number, rowCount: number): void {
     const error = this.validateRange(startRow, rowCount);
     if (error || rowCount === 0) return;
-    const scheduled = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(this.physicalRow(row));
-      if (ref && !scheduled.has(ref.id)) {
-        scheduled.add(ref.id);
-        if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    const refs: DataBlockRef[] = [];
+    if (this.source.rowOrder === undefined) {
+      const first = this.findBlock(startRow);
+      const last = this.findBlock(startRow + rowCount - 1);
+      if (!first || !last) return;
+      const firstIndex = this.source.blocks.indexOf(first);
+      const lastIndex = this.source.blocks.indexOf(last);
+      for (let index = firstIndex; index <= lastIndex; index += 1) {
+        const ref = this.source.blocks[index]!;
+        if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+      }
+    } else {
+      const scheduled = new Set<string>();
+      for (let row = startRow; row < startRow + rowCount; row += 1) {
+        const ref = this.findBlock(this.physicalRow(row));
+        if (ref && !scheduled.has(ref.id)) {
+          scheduled.add(ref.id);
+          if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+        }
       }
     }
+    if (refs.length > 0) void this.loadBlockSet(refs).catch(() => undefined);
   }
 
   /**
@@ -226,17 +275,26 @@ export class DataSourceContentQuery {
    * block projection to be readable, but do not need a second full row matrix.
    */
   async ensureAllBlocksLoaded(): Promise<DataSourceContentLoadState> {
-    let lastState = state(this.source.id, null, 'ready');
-    for (const ref of this.source.blocks) {
-      try {
-        await this.loadBlock(ref);
-      } catch (error) {
-        return this.loadStates.get(ref.id)
-          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
-      }
-      lastState = state(this.source.id, ref.id, 'ready');
+    try {
+      await this.loadBlockSet(this.source.blocks);
+    } catch (error) {
+      const failed = this.source.blocks.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      return failed === undefined
+        ? state(this.source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
     }
-    return lastState;
+    const last = this.source.blocks[this.source.blocks.length - 1];
+    return state(this.source.id, last?.id ?? null, 'ready');
+  }
+
+  /** Read a physical row after ensureAllBlocksLoaded without allocating a flat row matrix. */
+  getLoadedPhysicalRow(physicalRow: number): readonly TableScalar[] | undefined {
+    if (!isSafeRowIndex(physicalRow) || physicalRow >= this.source.rowCount) return undefined;
+    const ref = this.findBlock(physicalRow);
+    return ref === undefined ? undefined : this.loadedBlocks.get(ref.id)?.rows[physicalRow - ref.startRow];
   }
 
   /**
@@ -280,6 +338,63 @@ export class DataSourceContentQuery {
   }
 
   /**
+   * Visit logical rows without constructing a copied row matrix. The visitor
+   * may return false to stop before loading later blocks; decoded block rows
+   * remain read-only views owned by this query.
+   */
+  async scanRows(
+    visitor: (row: readonly TableScalar[], logicalRow: number) => boolean | void,
+  ): Promise<DataSourceContentResult<boolean>> {
+    const source = this.source;
+    let lastState = state(source.id, null, 'ready');
+    const visit = (row: readonly TableScalar[], logicalRow: number): DataSourceContentResult<boolean> | undefined => {
+      try {
+        return visitor(row, logicalRow) === false ? { state: lastState, value: false } : undefined;
+      } catch (error) {
+        return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
+      }
+    };
+    if (source.rowOrder === undefined) {
+      let logicalRow = 0;
+      for (const ref of source.blocks) {
+        let block: LoadedBlock;
+        try {
+          block = await this.loadBlock(ref);
+        } catch (error) {
+          const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
+          return { state: { ...current } };
+        }
+        if (this.source !== source) return this.errorResult('Data source changed while rows were scanning');
+        lastState = state(source.id, ref.id, 'ready');
+        for (const row of block.rows) {
+          const result = visit(row, logicalRow++);
+          if (result !== undefined) return result;
+        }
+      }
+      return { state: lastState, value: true };
+    }
+    for (let logicalRow = 0; logicalRow < source.rowCount; logicalRow += 1) {
+      const physicalRow = this.physicalRowFor(source, logicalRow);
+      const ref = this.findBlockIn(source, physicalRow);
+      if (!ref) return this.missingResult(`No data block covers source row ${String(logicalRow)}`);
+      let block: LoadedBlock;
+      try {
+        block = await this.loadBlock(ref);
+      } catch (error) {
+        const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
+        return { state: { ...current } };
+      }
+      if (this.source !== source) return this.errorResult('Data source changed while rows were scanning');
+      lastState = state(source.id, ref.id, 'ready');
+      const row = block.rows[physicalRow - ref.startRow];
+      if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(logicalRow)}`);
+      const result = visit(row, logicalRow);
+      if (result !== undefined) return result;
+    }
+    return { state: lastState, value: true };
+  }
+
+  /**
    * Load one field's member domain on demand.  The manifest deliberately does
    * not materialize distinct values for large sources; callers should invoke
    * this only when a value picker is opened.
@@ -287,36 +402,34 @@ export class DataSourceContentQuery {
   async getDistinctFieldValues(
     fieldRef: DataSourceFieldRef,
     maxValues = PIVOT_MEMBER_DISPLAY_LIMIT,
-  ): Promise<DataSourceContentResult<TableScalar[]>> {
+    resolveValue?: (logicalRow: number, baseValue: TableScalar) => PivotScalar,
+  ): Promise<DataSourceContentResult<PivotScalar[]>> {
     const field = this.resolveField(fieldRef);
     if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
     if (!Number.isSafeInteger(maxValues) || maxValues <= 0) return this.errorResult('Data source distinct-value limit must be a positive safe integer');
 
-    const values: TableScalar[] = [];
+    const values: PivotScalar[] = [];
     const seen = new Set<string>();
-    let lastState = state(this.source.id, null, 'ready');
-    for (const ref of this.source.blocks) {
-      let block: LoadedBlock;
+    let overflow = false;
+    const scanned = await this.scanRows((row, logicalRow) => {
       try {
-        block = await this.loadBlock(ref);
-      } catch (error) {
-        const current = this.loadStates.get(ref.id)
-          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
-        return { state: { ...current } };
-      }
-      lastState = state(this.source.id, ref.id, 'ready');
-      for (const row of block.rows) {
-        const value = row[field.ordinal] ?? null;
+        const baseValue = row[field.ordinal] ?? null;
+        const value = resolveValue === undefined ? baseValue : resolveValue(logicalRow, baseValue);
         const key = value === null ? 'null' : `${typeof value}:${JSON.stringify(value)}`;
-        if (seen.has(key)) continue;
+        if (seen.has(key)) return;
+        if (values.length >= maxValues) {
+          overflow = true;
+          return false;
+        }
         seen.add(key);
         values.push(value);
-        if (values.length > maxValues) {
-          return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
-        }
+      } catch (error) {
+        throw new Error(`Data source field ${field.name} overlay failed: ${errorMessage(error)}`);
       }
-    }
-    return { state: lastState, value: values };
+    });
+    if (scanned.value === undefined) return { state: scanned.state };
+    if (overflow) return this.errorResult(`Data source field ${field.name} exceeds the ${String(maxValues)} distinct-value limit`);
+    return { state: scanned.state, value: values };
   }
 
   async getRows(
@@ -332,40 +445,34 @@ export class DataSourceContentQuery {
       };
     }
 
-    const refs: DataBlockRef[] = [];
-    const seen = new Set<string>();
-    for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const ref = this.findBlock(this.physicalRow(row));
-      if (ref === undefined) {
-        return this.missingResult(`No data block covers source row ${String(row)}`);
-      }
-      if (!seen.has(ref.id)) {
-        seen.add(ref.id);
-        refs.push(ref);
-      }
+    const source = this.source;
+    const refs = this.blockRefsForLogicalRange(source, startRow, rowCount);
+    if (refs === undefined) {
+      return this.missingResult(`No data block covers source rows ${String(startRow)}-${String(startRow + rowCount - 1)}`);
     }
 
-    const loaded = new Map<string, LoadedBlock>();
-    const outcomes = await Promise.all(refs.map(async (ref) => {
-      try {
-        return { ref, block: await this.loadBlock(ref) } as const;
-      } catch (error) {
-        return { ref, error } as const;
-      }
-    }));
-    for (const outcome of outcomes) {
-      if ('error' in outcome) {
-        const current = this.loadStates.get(outcome.ref.id)
-          ?? state(this.source.id, outcome.ref.id, 'error', errorMessage(outcome.error));
-        return { state: { ...current } };
-      }
-      loaded.set(outcome.ref.id, outcome.block);
+    let loaded: Map<string, LoadedBlock>;
+    try {
+      loaded = await this.loadBlockSet(refs);
+    } catch (error) {
+      const failed = refs.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      const current = failed === undefined
+        ? state(this.source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
+      return { state: { ...current } };
     }
+    if (this.source !== source) return this.errorResult('Data source changed while rows were loading');
 
     const rows: TableScalar[][] = [];
     for (let row = startRow; row < startRow + rowCount; row += 1) {
-      const physicalRow = this.physicalRow(row);
-      const ref = this.findBlock(physicalRow)!;
+      const physicalRow = this.physicalRowFor(source, row);
+      const ref = this.findBlockIn(source, physicalRow);
+      if (ref === undefined) {
+        return this.missingResult(`No data block covers source row ${String(row)}`);
+      }
       const block = loaded.get(ref.id)!;
       const localRow = physicalRow - ref.startRow;
       const values = block.rows[localRow];
@@ -378,6 +485,53 @@ export class DataSourceContentQuery {
       state: state(this.source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'),
       value: rows,
     };
+  }
+
+  /**
+   * Resolve an explicit set of immutable physical rows without converting
+   * them through the current virtual sort order. Pivot drill-down provenance
+   * is physical, so this preserves the selected source records after sorting.
+   */
+  async getRowsByPhysicalRow(physicalRows: readonly number[]): Promise<DataSourceContentResult<Map<number, TableScalar[]>>> {
+    const source = this.source;
+    const selected = [...new Set(physicalRows)];
+    for (const physicalRow of selected) {
+      if (!isSafeRowIndex(physicalRow) || physicalRow >= source.rowCount) {
+        return this.errorResult(`Data source physical row is outside range: ${String(physicalRow)}`);
+      }
+    }
+    const refs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (const physicalRow of selected) {
+      const ref = this.findBlockIn(source, physicalRow);
+      if (!ref) return this.missingResult(`No data block covers source physical row ${String(physicalRow)}`);
+      if (!seen.has(ref.id)) {
+        seen.add(ref.id);
+        refs.push(ref);
+      }
+    }
+    let loaded: Map<string, LoadedBlock>;
+    try {
+      loaded = await this.loadBlockSet(refs);
+    } catch (error) {
+      const failed = refs.find((ref) => {
+        const availability = this.loadStates.get(ref.id)?.availability;
+        return availability === 'missing' || availability === 'error';
+      });
+      const current = failed === undefined
+        ? state(source.id, null, 'error', errorMessage(error))
+        : this.loadStates.get(failed.id)!;
+      return { state: { ...current } };
+    }
+    if (this.source !== source) return this.errorResult('Data source changed while physical rows were loading');
+    const rows = new Map<number, TableScalar[]>();
+    for (const physicalRow of selected) {
+      const ref = this.findBlockIn(source, physicalRow)!;
+      const values = loaded.get(ref.id)?.rows[physicalRow - ref.startRow];
+      if (!values) return this.errorResult(`Data block ${ref.id} does not contain source physical row ${String(physicalRow)}`);
+      rows.set(physicalRow, [...values]);
+    }
+    return { state: state(source.id, refs.length === 1 ? refs[0]!.id : null, 'ready'), value: rows };
   }
 
   private resolveField(fieldRef: DataSourceFieldRef): DataSourceField | undefined {
@@ -397,15 +551,45 @@ export class DataSourceContentQuery {
   }
 
   private physicalRow(logicalRow: number): number {
-    return this.source.rowOrder?.[logicalRow] ?? logicalRow;
+    return this.physicalRowFor(this.source, logicalRow);
+  }
+
+  private physicalRowFor(source: DataSourceManifest, logicalRow: number): number {
+    return source.rowOrder?.[logicalRow] ?? logicalRow;
+  }
+
+  private blockRefsForLogicalRange(source: DataSourceManifest, startRow: number, rowCount: number): DataBlockRef[] | undefined {
+    if (source.rowOrder === undefined) {
+      const first = this.findBlockIn(source, startRow);
+      const last = this.findBlockIn(source, startRow + rowCount - 1);
+      if (!first || !last) return undefined;
+      const firstIndex = source.blocks.indexOf(first);
+      const lastIndex = source.blocks.indexOf(last);
+      return source.blocks.slice(firstIndex, lastIndex + 1);
+    }
+    const refs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const ref = this.findBlockIn(source, this.physicalRowFor(source, row));
+      if (!ref) return undefined;
+      if (!seen.has(ref.id)) {
+        seen.add(ref.id);
+        refs.push(ref);
+      }
+    }
+    return refs;
   }
 
   private findBlock(rowIndex: number): DataBlockRef | undefined {
+    return this.findBlockIn(this.source, rowIndex);
+  }
+
+  private findBlockIn(source: DataSourceManifest, rowIndex: number): DataBlockRef | undefined {
     let low = 0;
-    let high = this.source.blocks.length - 1;
+    let high = source.blocks.length - 1;
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
-      const block = this.source.blocks[middle]!;
+      const block = source.blocks[middle]!;
       if (rowIndex < block.startRow) {
         high = middle - 1;
       } else if (rowIndex >= block.startRow + block.rowCount) {
@@ -417,14 +601,35 @@ export class DataSourceContentQuery {
     return undefined;
   }
 
+  private async loadBlockSet(refs: readonly DataBlockRef[]): Promise<Map<string, LoadedBlock>> {
+    const loaded = new Map<string, LoadedBlock>();
+    let nextIndex = 0;
+    let failure: unknown;
+    const worker = async (): Promise<void> => {
+      while (failure === undefined) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= refs.length) return;
+        const ref = refs[index]!;
+        try {
+          loaded.set(ref.id, await this.loadBlock(ref));
+        } catch (error) {
+          failure = error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_BLOCK_READS, refs.length) }, () => worker()));
+    if (failure !== undefined) throw failure;
+    return loaded;
+  }
+
   private async loadBlock(ref: DataBlockRef): Promise<LoadedBlock> {
     const cached = this.loadedBlocks.get(ref.id);
     if (cached !== undefined) return cached;
     const existing = this.loadPromises.get(ref.id);
     if (existing !== undefined) return existing;
 
-    this.publishState(state(this.source.id, ref.id, 'loading'));
-    const promise = this.readBlock(ref).then((block) => {
+    const promise = Promise.resolve().then(() => this.readBlock(ref)).then((block) => {
       this.loadedBlocks.set(ref.id, block);
       this.publishState(state(this.source.id, ref.id, 'ready'));
       return block;
@@ -435,9 +640,12 @@ export class DataSourceContentQuery {
       this.publishState(state(this.source.id, ref.id, failure.availability, failure.message));
       throw failure;
     }).finally(() => {
-      if (!this.loadedBlocks.has(ref.id)) this.loadPromises.delete(ref.id);
+      this.loadPromises.delete(ref.id);
     });
     this.loadPromises.set(ref.id, promise);
+    // Subscribers may synchronously read again. Register the flight before
+    // notifying them so every reader shares this request, including retries.
+    this.publishState(state(this.source.id, ref.id, 'loading'));
     return promise;
   }
 
@@ -464,12 +672,12 @@ export class DataSourceContentQuery {
       throw new ContentQueryFailure('error', `Data block ${ref.id} byteLength does not match the manifest`);
     }
     try {
-      const decoded = await decodeColumnarBlock(record.bytes, {
+      const decoded = await decodeOwnedColumnarBlock(record.bytes, {
         expectedRowCount: ref.rowCount,
         expectedFields: this.source.fields,
         expectedChecksum: ref.checksum,
       });
-      const rows = cloneRows(decoded.rows);
+      const rows = decoded.rows;
       const overlay = this.overlays.get(ref.id);
       if (overlay !== undefined) {
         for (const cell of overlay.cells) rows[cell.row]![cell.column] = cell.value;

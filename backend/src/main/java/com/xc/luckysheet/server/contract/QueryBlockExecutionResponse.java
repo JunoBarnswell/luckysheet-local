@@ -22,6 +22,13 @@ public record QueryBlockExecutionResponse(
     public QueryBlockExecutionResponse {
         columns = List.copyOf(columns);
         columnTypes = List.copyOf(columnTypes);
-        if (columns.size() != columnTypes.size()) throw new IllegalArgumentException("Query block column metadata is inconsistent");
+        if (queryId == null || queryId.isBlank() || executionId == null || executionId.isBlank()
+                || connectorId == null || connectorId.isBlank() || sourceRef == null || sourceRef.isBlank()) {
+            throw new IllegalArgumentException("Query block execution identity is invalid");
+        }
+        if (columns.isEmpty() || columns.size() != columnTypes.size() || rowCount < 0 || blockRowCount < 1
+                || sourceRevision < 0 || executedAt == null || durationMs < 0) {
+            throw new IllegalArgumentException("Query block execution metadata is inconsistent");
+        }
     }
 }

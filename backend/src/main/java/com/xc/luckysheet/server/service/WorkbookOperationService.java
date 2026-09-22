@@ -52,6 +52,7 @@ public class WorkbookOperationService {
     private final ObjectMapper mapper;
     private final AuditRecorder auditRecorder;
     private final CoordinationProperties coordination;
+    private final WorkbookDataBlockPublicationGuard dataBlockPublication;
     /**
      * H2 runs the browser service as one JVM.  Keep commit, checkpoint and
      * restore writes for one workbook in one local critical section so a
@@ -66,7 +67,8 @@ public class WorkbookOperationService {
             MutationDescriptorRegistry registry,
             ObjectMapper mapper,
             AuditRecorder auditRecorder,
-            CoordinationProperties coordination
+            CoordinationProperties coordination,
+            WorkbookDataBlockPublicationGuard dataBlockPublication
     ) {
         this.store = store;
         this.access = access;
@@ -74,6 +76,7 @@ public class WorkbookOperationService {
         this.mapper = mapper;
         this.auditRecorder = auditRecorder;
         this.coordination = coordination;
+        this.dataBlockPublication = dataBlockPublication;
     }
 
     public CommitResult operationResult(String unitId, String operationId, String actor) {
@@ -147,7 +150,9 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         for (OperationMutation mutation : operation.mutations()) {
             MutationPreparation prepared = registry.prepare(next, mutation, actorRole);
-            next = prepared.descriptor().apply(next, mutation);
+            JsonNode candidate = prepared.descriptor().apply(next, mutation);
+            dataBlockPublication.requireNewReferences(routeUnitId, next, candidate);
+            next = candidate;
             committedMutations.add(CommittedOperationMutation.from(mutation, prepared.affectedRanges()));
         }
 
@@ -257,6 +262,7 @@ public class WorkbookOperationService {
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
             JsonNode target = snapshotAtRevision(row, request.targetRevision());
             WorkbookSnapshotValidator.requireCanonical(target, unitId);
+            dataBlockPublication.requireSnapshot(unitId, target);
             registry.require("workbook.restore", true);
             long revision = row.revision() + 1;
             Instant now = Instant.now();

@@ -14,7 +14,10 @@ import type {
 import {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  isPivotControlFilter,
+  isPivotControlStyle,
   normalizePivotTimelinePeriod,
+  pivotMemberKey,
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
 
@@ -53,19 +56,32 @@ export function createPivotSlicerSettings(overrides: Partial<PivotSlicerSettings
   const settings = { ...DEFAULT_PIVOT_SLICER_SETTINGS, ...structuredClone(overrides) };
   if (!Number.isSafeInteger(settings.columnCount) || settings.columnCount < 1 || settings.columnCount > 32) throw new Error('Pivot Slicer column count must be between 1 and 32');
   if (!Number.isFinite(settings.itemHeight) || settings.itemHeight < 16 || settings.itemHeight > 96) throw new Error('Pivot Slicer item height must be between 16 and 96');
-  if (!settings.caption.trim()) throw new Error('Pivot Slicer caption must not be empty');
+  if (typeof settings.caption !== 'string' || !settings.caption.trim() || settings.caption.length > 200) throw new Error('Pivot Slicer caption must contain at most 200 characters');
+  if (typeof settings.showHeader !== 'boolean' || typeof settings.multiSelect !== 'boolean'
+    || !['ascending', 'descending'].includes(settings.sort)
+    || typeof settings.showNoDataItems !== 'boolean' || typeof settings.noDataItemsLast !== 'boolean' || typeof settings.showNoDataStyle !== 'boolean') {
+    throw new Error('Pivot Slicer settings are invalid');
+  }
   return settings;
 }
 
 export function createPivotControlStyle(overrides: Partial<PivotControlStyle> = {}): PivotControlStyle {
-  return { ...DEFAULT_PIVOT_CONTROL_STYLE, ...structuredClone(overrides) };
+  const style = { ...DEFAULT_PIVOT_CONTROL_STYLE, ...structuredClone(overrides) };
+  if (!isPivotControlStyle(style) || !style.fill.trim() || !style.border.trim() || !style.textColor.trim() || !style.accentColor.trim()
+    || (style.selectedFill !== undefined && !style.selectedFill.trim()) || (style.fontSize !== undefined && style.fontSize > 256)) {
+    throw new Error('Pivot control style is invalid');
+  }
+  return style;
 }
 
 export function createPivotControlFilter(overrides: Partial<PivotControlFilter> = {}): PivotControlFilter {
-  return {
+  const filter: PivotControlFilter = {
     mode: overrides.mode ?? 'all',
     memberKeys: structuredClone(overrides.memberKeys ?? []),
   };
+  if (!isPivotControlFilter(filter)) throw new Error('Pivot control filter is invalid');
+  const unique = new Map(filter.memberKeys.map((member) => [pivotMemberKey(member), member]));
+  return filter.mode === 'all' ? { mode: 'all', memberKeys: [] } : { ...filter, memberKeys: [...unique.values()] };
 }
 
 export function createPivotTimelinePeriod(overrides: PivotTimelinePeriod = {}): PivotTimelinePeriod {

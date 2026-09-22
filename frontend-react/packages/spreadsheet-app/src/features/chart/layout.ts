@@ -19,6 +19,8 @@ export interface ChartLayoutPoint {
   value: number | null;
   xValue?: number | null;
   sizeValue?: number | null;
+  /** Exact canvas hit radius for scatter and bubble points. */
+  markerRadius?: number;
   x: number;
   y: number;
   visible: boolean;
@@ -100,6 +102,7 @@ export interface ChartBoxLayout {
 }
 
 export interface ChartWaterfallBarLayout {
+  seriesIndex: number;
   index: number;
   start: number;
   end: number;
@@ -110,6 +113,7 @@ export interface ChartWaterfallBarLayout {
 export interface ChartMapFeatureLayout {
   id: string;
   label: string;
+  categoryIndex: number;
   value: number | null;
   color: string;
   polygons: Array<Array<{ x: number; y: number }>>;
@@ -126,6 +130,7 @@ export interface ChartLayout {
   valueAxis?: ChartAxisLayout;
   secondaryValueAxis?: ChartAxisLayout;
   series: ChartLayoutSeries[];
+  specialSeriesIndex?: number;
   kind: 'cartesian' | 'pie' | 'treemap' | 'sunburst' | 'histogram' | 'box-whisker' | 'waterfall' | 'funnel' | 'stock' | 'surface' | 'radar' | 'map';
   pieSlices?: ChartPieSliceLayout[];
   histogramBins?: ChartHistogramBinLayout[];
@@ -134,7 +139,7 @@ export interface ChartLayout {
   waterfallBars?: ChartWaterfallBarLayout[];
   funnelStages?: Array<{ index: number; value: number; nextValue: number; label: string; color: string }>;
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
-  surfaceCells?: Array<{ row: number; column: number; value: number; color: string }>;
+  surfaceCells?: Array<{ row: number; column: number; seriesIndex: number; value: number; color: string }>;
   radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; color: string }> };
   map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
   mapFeatures?: ChartMapFeatureLayout[];
@@ -154,8 +159,8 @@ function axisBounds(model: ChartAxisModel, values: readonly number[], percent = 
   const finite = values.filter(Number.isFinite);
   const dataMinimum = finite.length ? finite.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
   const dataMaximum = finite.length ? finite.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 1;
-  let minimum = model.minimum ?? (percent ? 0 : Math.min(0, dataMinimum));
-  let maximum = model.maximum ?? (percent ? 100 : dataMaximum);
+  let minimum = model.minimum ?? (percent ? dataMinimum < 0 ? -100 : 0 : Math.min(0, dataMinimum));
+  let maximum = model.maximum ?? (percent ? dataMaximum > 0 ? 100 : 0 : dataMaximum);
   if (model.minimum === undefined && !percent && minimum === maximum) minimum -= 1;
   if (model.maximum === undefined && !percent) {
     const span = Math.max(1, maximum - minimum);
@@ -220,7 +225,94 @@ function errorAmount(model: NonNullable<ChartSeriesModel['errorBars']> | undefin
 function colorFor(series: ResolvedChartSeries, index: number): string { return series.color ?? DEFAULT_COLORS[index % DEFAULT_COLORS.length]!; }
 
 function seriesModelFor(payload: ChartDrawingPayload, series: ResolvedChartSeries, index: number): ChartSeriesModel | undefined {
-  return payload.series?.find((entry) => (entry.id && entry.id === series.id) || entry.name === series.name) ?? payload.series?.[index];
+  if (!payload.series) return undefined;
+  const byId = series.id ? payload.series.find((entry) => entry.id === series.id) : undefined;
+  if (byId) return byId;
+  const byName = payload.series.filter((entry) => entry.name === series.name);
+  return byName.length === 1 ? byName[0] : payload.series[index];
+}
+
+function categorySlot(index: number, count: number, axis: ChartAxisLayout): number {
+  return axis.model.reverseOrder ? count - index - 1 : index;
+}
+
+function effectiveChartType(payload: ChartDrawingPayload, series: ResolvedChartSeries): Exclude<ChartDrawingPayload['chartType'], 'combo'> {
+  return series.chartType ?? (payload.chartType === 'combo' ? 'column' : payload.chartType);
+}
+
+function effectiveStack(payload: ChartDrawingPayload, series: ResolvedChartSeries, model: ChartSeriesModel | undefined): 'none' | 'stacked' | 'percent' {
+  const subtype = series.subtype ?? model?.subtype ?? payload.subtype;
+  return payload.stacked ?? (subtype && ['stacked', 'percent-stacked', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'stacked-markers', 'percent-stacked-markers'].includes(subtype)
+    ? subtype.includes('percent') ? 'percent' : 'stacked'
+    : 'none');
+}
+
+interface BarPlacement {
+  ordinal: number;
+  count: number;
+  starts: number[];
+  ends: number[];
+}
+
+function buildBarPlacements(payload: ChartDrawingPayload, data: ResolvedChartData, categoryCount: number): Map<number, BarPlacement> {
+  const groups = new Map<string, number[]>();
+  for (const [seriesIndex, series] of data.series.entries()) {
+    const model = seriesModelFor(payload, series, seriesIndex);
+    const chartType = effectiveChartType(payload, series);
+    if ((chartType !== 'column' && chartType !== 'bar') || model?.visible === false) continue;
+    const stack = effectiveStack(payload, series, model);
+    const key = `${series.axis}:${chartType}:${stack}`;
+    const group = groups.get(key);
+    if (group) group.push(seriesIndex);
+    else groups.set(key, [seriesIndex]);
+  }
+  const placements = new Map<number, BarPlacement>();
+  for (const [key, seriesIndexes] of groups) {
+    const stack = key.endsWith(':percent') ? 'percent' : key.endsWith(':stacked') ? 'stacked' : 'none';
+    const positiveTotals = Array.from({ length: categoryCount }, () => 0);
+    const negativeTotals = Array.from({ length: categoryCount }, () => 0);
+    if (stack === 'percent') {
+      for (const seriesIndex of seriesIndexes) {
+        for (let index = 0; index < categoryCount; index += 1) {
+          const value = valueAt(data.series[seriesIndex]!, index) ?? 0;
+          if (value >= 0) positiveTotals[index] = positiveTotals[index]! + value;
+          else negativeTotals[index] = negativeTotals[index]! + Math.abs(value);
+        }
+      }
+    }
+    const positiveRunning = Array.from({ length: categoryCount }, () => 0);
+    const negativeRunning = Array.from({ length: categoryCount }, () => 0);
+    for (const [ordinal, seriesIndex] of seriesIndexes.entries()) {
+      const starts: number[] = [];
+      const ends: number[] = [];
+      for (let index = 0; index < categoryCount; index += 1) {
+        const raw = valueAt(data.series[seriesIndex]!, index) ?? 0;
+        const value = stack === 'percent'
+          ? raw / Math.max(Number.EPSILON, raw >= 0 ? positiveTotals[index]! : negativeTotals[index]!) * 100
+          : raw;
+        const running = raw >= 0 ? positiveRunning : negativeRunning;
+        starts.push(stack === 'none' ? 0 : running[index]!);
+        ends.push(stack === 'none' ? value : running[index]! + value);
+        if (stack !== 'none') running[index] = running[index]! + value;
+      }
+      placements.set(seriesIndex, { ordinal, count: stack === 'none' ? seriesIndexes.length : 1, starts, ends });
+    }
+  }
+  return placements;
+}
+
+function axisValuesForSeries(payload: ChartDrawingPayload, data: ResolvedChartData, axis: 'primary' | 'secondary', placements: ReadonlyMap<number, BarPlacement>): number[] {
+  const values: number[] = [];
+  for (const [seriesIndex, series] of data.series.entries()) {
+    if (series.axis !== axis || seriesModelFor(payload, series, seriesIndex)?.visible === false) continue;
+    const placement = placements.get(seriesIndex);
+    if (placement) {
+      values.push(...placement.starts, ...placement.ends);
+    } else {
+      values.push(...numberValues(series.values));
+    }
+  }
+  return values;
 }
 
 function linearRegression(points: Array<{ x: number; y: number }>): { slope: number; intercept: number } {
@@ -328,15 +420,14 @@ function chartKind(payload: ChartDrawingPayload): ChartLayout['kind'] {
   return 'cartesian';
 }
 
-function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot'], categoryAxis: ChartAxisLayout, valueAxis: ChartAxisLayout, secondaryAxis: ChartAxisLayout | undefined): ChartLayoutSeries[] {
+function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot'], categoryAxis: ChartAxisLayout, valueAxis: ChartAxisLayout, secondaryAxis: ChartAxisLayout | undefined, barPlacements: ReadonlyMap<number, BarPlacement>): ChartLayoutSeries[] {
   const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
-  const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
-  const xAxis = isScatter ? axisBounds(payload.elements.categoryAxis ?? defaultAxis('x', 'bottom', 'value'), xValues, false) : categoryAxis;
+  const xAxis = categoryAxis;
   const result: ChartLayoutSeries[] = [];
   for (const [seriesIndex, series] of data.series.entries()) {
     const model = seriesModelFor(payload, series, seriesIndex);
-    const chartType = series.chartType ?? (payload.chartType === 'combo' ? 'column' : payload.chartType);
+    const chartType = effectiveChartType(payload, series);
     const axis = series.axis === 'secondary' ? secondaryAxis ?? valueAxis : valueAxis;
     const points: ChartLayoutPoint[] = [];
     const bars: ChartLayoutBar[] = [];
@@ -344,29 +435,40 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
     const errorModel = model?.errorBars ?? series.errorBars;
     const errorValues = errorModel && ['standard-error', 'standard-deviation'].includes(errorModel.type) ? numberValues(series.values) : [];
     const errorStatistics = { count: errorValues.length, deviation: standardDeviation(errorValues) };
+    const bubbleSizes = series.sizeValues?.map(chartNumericValue).filter((value): value is number => value !== undefined).map(Math.abs) ?? [];
+    const bubbleMaximum = payload.chartType === 'bubble' ? Math.max(1, ...bubbleSizes) : 1;
     for (let index = 0; index < Math.max(categoryCount, series.values.length); index += 1) {
       const value = valueAt(series, index);
       const xValue = isScatter ? xValueAt(series, index) : null;
       const category = data.categories[index] ?? index + 1;
       const hasValue = value !== null;
-      const visible = hasValue && (series.missing?.[index] !== true);
-      const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (index + 0.5) / categoryCount;
+      const visible = hasValue && (series.missing?.[index] !== true) && (!isScatter || xValue !== null)
+        && (payload.chartType !== 'bubble' || sizeValueAt(series, index) !== null);
+      const xRatio = isScatter ? (xValue === null ? 0 : scale(xValue, xAxis)) : (categorySlot(index, categoryCount, categoryAxis) + 0.5) / categoryCount;
       const yRatio = value === null ? 0 : scale(value, axis);
       const error = errorAmount(errorModel, value ?? 0, errorStatistics, index, series.errorPlusValues, series.errorMinusValues);
-      const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(series.sizeValues ? { sizeValue: sizeValueAt(series, index) } : {}), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
+      const sizeValue = series.sizeValues ? sizeValueAt(series, index) : undefined;
+      const markerRadius = isScatter
+        ? payload.chartType === 'bubble'
+          ? Math.max(3, Math.min(24, 3 + Math.sqrt(Math.abs(sizeValue ?? 0) / bubbleMaximum) * 18))
+          : 4
+        : undefined;
+      const point = { index, category, value, ...(isScatter ? { xValue } : {}), ...(sizeValue === undefined ? {} : { sizeValue }), ...(markerRadius === undefined ? {} : { markerRadius }), x: plot.left + xRatio * plot.width, y: plot.top + (1 - yRatio) * plot.height, visible, ...(error.plus ? { errorPlus: error.plus } : {}), ...(error.minus ? { errorMinus: error.minus } : {}) };
       points.push(point);
       if (chartType === 'column' || chartType === 'bar') {
-        const stack = payload.stacked ?? (subtype && ['stacked', 'percent-stacked', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'stacked-markers', 'percent-stacked-markers'].includes(subtype) ? subtype.includes('percent') ? 'percent' : 'stacked' : 'none');
-        const values = data.series.map((entry) => valueAt(entry, index) ?? 0);
-        const start = stack === 'none' ? 0 : stack === 'percent' ? values.slice(0, seriesIndex).reduce((sum, current) => sum + current, 0) / Math.max(1, values.reduce((sum, current) => sum + Math.abs(current), 0)) * 100 : values.slice(0, seriesIndex).reduce((sum, current) => sum + current, 0);
-        const end = stack === 'none' ? value ?? 0 : stack === 'percent' ? start + (value ?? 0) / Math.max(1, values.reduce((sum, current) => sum + Math.abs(current), 0)) * 100 : start + (value ?? 0);
+        const placement = barPlacements.get(seriesIndex);
+        const start = placement?.starts[index] ?? 0;
+        const end = placement?.ends[index] ?? (value ?? 0);
         const slot = (chartType === 'bar' ? plot.height : plot.width) / categoryCount;
-        const count = stack === 'none' ? Math.max(1, data.series.length) : 1;
+        const count = placement?.count ?? 1;
         const band = slot * 0.72 / count;
-        const offset = stack === 'none' ? seriesIndex * band : 0;
-        const startRatio = scale(Math.min(start, end), axis);
-        const endRatio = scale(Math.max(start, end), axis);
-        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + startRatio * plot.width : plot.left + index * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + index * slot + slot * 0.14 : plot.top + (1 - endRatio) * plot.height, width: chartType === 'bar' ? Math.max(1, (endRatio - startRatio) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(3, slot * 0.72) : Math.max(1, (endRatio - startRatio) * plot.height), color: colorFor(series, seriesIndex), visible });
+        const offset = (placement?.ordinal ?? 0) * band;
+        const lowerRatio = scale(Math.min(start, end), axis);
+        const upperRatio = scale(Math.max(start, end), axis);
+        const barStart = Math.min(lowerRatio, upperRatio);
+        const barEnd = Math.max(lowerRatio, upperRatio);
+        const slotIndex = categorySlot(index, categoryCount, categoryAxis);
+        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + barStart * plot.width : plot.left + slotIndex * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + slotIndex * slot + slot * 0.14 : plot.top + (1 - barEnd) * plot.height, width: chartType === 'bar' ? Math.max(1, (barEnd - barStart) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(3, slot * 0.72) : Math.max(1, (barEnd - barStart) * plot.height), color: colorFor(series, seriesIndex), visible });
       }
     }
     const trendlines = (series.trendlines ?? []).map((trendline) => buildTrendline(trendline, points, axis, plot));
@@ -377,11 +479,13 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
 
 function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): ChartPieSliceLayout[] {
   const slices: ChartPieSliceLayout[] = [];
-  const ringCount = payload.chartType === 'doughnut' ? Math.max(1, data.series.length) : 1;
+  const visibleSeriesIndexes = data.series.flatMap((series, seriesIndex) => seriesModelFor(payload, series, seriesIndex)?.visible === false ? [] : [seriesIndex]);
+  const ringCount = payload.chartType === 'doughnut' ? Math.max(1, visibleSeriesIndexes.length) : 1;
   const maxRadius = Math.min(plot.width, plot.height) * 0.43;
   const hole = payload.chartType === 'doughnut' ? 0.55 : 0;
-  for (let seriesIndex = 0; seriesIndex < ringCount; seriesIndex += 1) {
-    const series = data.series[seriesIndex] ?? data.series[0];
+  for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
+    const seriesIndex = visibleSeriesIndexes[ringIndex] ?? visibleSeriesIndexes[0];
+    const series = seriesIndex === undefined ? undefined : data.series[seriesIndex];
     if (!series) continue;
     const values = series.values.map(chartNumericValue).map((value) => Math.max(0, value ?? 0));
     const total = values.reduce((sum, value) => sum + value, 0);
@@ -390,7 +494,7 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
     let angle = -Math.PI / 2 + ((payload.subtype === 'exploded-pie' || payload.subtype === 'exploded-three-dimensional-pie' || payload.subtype === 'exploded-doughnut') ? Math.PI / 18 : 0);
     for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
       const sweep = values[pointIndex]! / total * Math.PI * 2;
-      slices.push({ seriesIndex, pointIndex, value: values[pointIndex]!, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * seriesIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (seriesIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
+      slices.push({ seriesIndex, pointIndex, value: values[pointIndex]!, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
       angle += sweep;
     }
   }
@@ -399,7 +503,8 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
 
 function boxLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, colors: string[]): ChartBoxLayout[] {
   const options: ChartBoxWhiskerOptions = payload.boxWhiskerOptions ?? { quartile: 'exclusive-median', showOutlierPoints: true };
-  return data.series.map((series, seriesIndex) => {
+  return data.series.flatMap((series, seriesIndex) => {
+    if (seriesModelFor(payload, series, seriesIndex)?.visible === false) return [];
     const values = numberValues(series.values).sort((left, right) => left - right);
     const q1 = quartile(values, 0.25, options.quartile === 'inclusive-median');
     const median = quartile(values, 0.5, options.quartile === 'inclusive-median');
@@ -408,12 +513,12 @@ function boxLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, color
     const lowerFence = q1 - 1.5 * iqr;
     const upperFence = q3 + 1.5 * iqr;
     const inliers = values.filter((value) => value >= lowerFence && value <= upperFence);
-    return { seriesIndex, minimum: values[0] ?? 0, lowerWhisker: inliers[0] ?? values[0] ?? 0, q1, median, q3, upperWhisker: inliers.at(-1) ?? values.at(-1) ?? 0, maximum: values.at(-1) ?? 0, mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0, outliers: options.showOutlierPoints === false ? [] : values.filter((value) => value < lowerFence || value > upperFence), color: colors[seriesIndex % colors.length]! };
+    return [{ seriesIndex, minimum: values[0] ?? 0, lowerWhisker: inliers[0] ?? values[0] ?? 0, q1, median, q3, upperWhisker: inliers.at(-1) ?? values.at(-1) ?? 0, maximum: values.at(-1) ?? 0, mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0, outliers: options.showOutlierPoints === false ? [] : values.filter((value) => value < lowerFence || value > upperFence), color: colors[seriesIndex % colors.length]! }];
   });
 }
 
-function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData): ChartWaterfallBarLayout[] {
-  const values = data.series[0]?.values.map(chartNumericValue).map((value) => value ?? 0) ?? [];
+function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, seriesIndex: number): ChartWaterfallBarLayout[] {
+  const values = data.series[seriesIndex]?.values.map(chartNumericValue).map((value) => value ?? 0) ?? [];
   const options: ChartWaterfallOptions = payload.waterfallOptions ?? { connectorLines: true };
   const totals = new Set(options.totalPointIndexes ?? []);
   let running = 0;
@@ -422,12 +527,12 @@ function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData)
     const start = total ? 0 : running;
     const end = total ? value : running + value;
     running = total ? value : end;
-    return { index, start: Math.min(start, end), end: Math.max(start, end), total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444' };
+    return { seriesIndex, index, start: Math.min(start, end), end: Math.max(start, end), total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444' };
   });
 }
 
-function stockLayouts(data: ResolvedChartData): ChartLayout['stockPoints'] {
-  const series = data.series[0];
+function stockLayouts(data: ResolvedChartData, seriesIndex: number): ChartLayout['stockPoints'] {
+  const series = data.series[seriesIndex];
   if (!series?.stockValues) return undefined;
   const stock = series.stockValues;
   const count = Math.max(stock.high.length, stock.low.length, stock.close.length);
@@ -442,6 +547,28 @@ function stockLayouts(data: ResolvedChartData): ChartLayout['stockPoints'] {
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
 }
 
+function stockValidationError(data: ResolvedChartData, seriesIndex: number): string | undefined {
+  const series = data.series[seriesIndex];
+  const stock = series?.stockValues;
+  if (!series || !stock) return 'Stock charts require explicit High/Low/Close role bindings';
+  const count = data.categories.length;
+  const vectors = [stock.high, stock.low, stock.close, ...(stock.open ? [stock.open] : []), ...(stock.volume ? [stock.volume] : [])];
+  if (count < 1 || vectors.some((vector) => vector.length !== count)) return 'Stock role bindings must have the same point count as categories';
+  for (let index = 0; index < count; index += 1) {
+    const high = chartNumericValue(stock.high[index]);
+    const low = chartNumericValue(stock.low[index]);
+    const close = chartNumericValue(stock.close[index]);
+    const open = stock.open ? chartNumericValue(stock.open[index]) : undefined;
+    const volume = stock.volume ? chartNumericValue(stock.volume[index]) : undefined;
+    if (high === undefined || low === undefined || close === undefined || high < low
+      || close < low || close > high || (open !== undefined && (open < low || open > high))
+      || (volume !== undefined && volume < 0)) {
+      return `Stock roles are invalid at point ${String(index + 1)}`;
+    }
+  }
+  return undefined;
+}
+
 function mapColor(scaleName: ChartMapOptions['colorScale'], value: number | null, minimum: number, maximum: number, index: number): string {
   if (value === null) return '#e2e8f0';
   if (scaleName === 'category') return DEFAULT_COLORS[index % DEFAULT_COLORS.length]!;
@@ -453,7 +580,7 @@ function mapColor(scaleName: ChartMapOptions['colorScale'], value: number | null
   return `rgb(${channels[0]},${channels[1]},${channels[2]})`;
 }
 
-function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): { resource: ChartMapResource; features: ChartMapFeatureLayout[] } | ChartDataStatus {
+function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot'], seriesIndex: number): { resource: ChartMapResource; features: ChartMapFeatureLayout[] } | ChartDataStatus {
   const options: ChartMapOptions = payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' };
   const resource = options.resource;
   if (!resource || resource.features.length === 0) return statusError('unsupported', 'UNSUPPORTED_FEATURE', 'UNSUPPORTED_FEATURE: map requires a validated offline GeoJSON resource');
@@ -476,13 +603,16 @@ function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
   }
   const longitudeSpan = Math.max(Number.EPSILON, maximumLongitude - minimumLongitude);
   const latitudeSpan = Math.max(Number.EPSILON, maximumLatitude - minimumLatitude);
-  const firstSeries = data.series[0];
-  const categoryKeys = data.categories.map((category) => String(category ?? '').trim().toLowerCase());
-  const values = resource.features.map((feature) => {
-    const key = feature.id.trim().toLowerCase();
-    const label = feature.label.trim().toLowerCase();
-    const index = categoryKeys.findIndex((candidate) => candidate === key || candidate === label);
-    return index < 0 ? null : chartNumericValue(firstSeries?.values[index]);
+  const firstSeries = data.series[seriesIndex];
+  const categoryIndexByKey = new Map<string, number>();
+  data.categories.forEach((category, index) => {
+    const key = String(category ?? '').trim().toLowerCase();
+    if (!categoryIndexByKey.has(key)) categoryIndexByKey.set(key, index);
+  });
+  const categoryIndexes = resource.features.map((feature) => categoryIndexByKey.get(feature.id.trim().toLowerCase()) ?? categoryIndexByKey.get(feature.label.trim().toLowerCase()) ?? -1);
+  const values = resource.features.map((_feature, featureIndex) => {
+    const categoryIndex = categoryIndexes[featureIndex] ?? -1;
+    return categoryIndex < 0 ? null : chartNumericValue(firstSeries?.values[categoryIndex]);
   });
   const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
   const minimum = finite.length ? Math.min(...finite) : 0;
@@ -490,6 +620,7 @@ function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
   const features = resource.features.map((feature, index) => ({
     id: feature.id,
     label: feature.label,
+    categoryIndex: categoryIndexes[index] ?? -1,
     value: values[index] ?? null,
     color: mapColor(options.colorScale, values[index] ?? null, minimum, maximum, index),
     polygons: feature.polygons.map((polygon) => polygon.map(([longitude, latitude]) => ({
@@ -507,17 +638,31 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   if (data.status.kind !== 'ready') return layout;
   const values = data.series.flatMap((series) => numberValues(series.values));
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
-  const categoryAxis = axisBounds(payload.elements.categoryAxis ?? defaultAxis('category', 'bottom', 'category'), Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index), false);
-  const primaryValues = data.series.filter((series) => series.axis !== 'secondary').flatMap((series) => numberValues(series.values));
-  const secondaryValues = data.series.filter((series) => series.axis === 'secondary').flatMap((series) => numberValues(series.values));
+  const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
+  const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
+  const categoryAxis = axisBounds(
+    payload.elements.categoryAxis ?? defaultAxis(isScatter ? 'x' : 'category', 'bottom', isScatter ? 'value' : 'category'),
+    isScatter ? xValues : Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index),
+    false,
+  );
+  const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
+  const barPlacements = buildBarPlacements(payload, data, categoryCount);
+  const primaryValues = axisValuesForSeries(payload, data, 'primary', barPlacements);
+  const secondaryValues = axisValuesForSeries(payload, data, 'secondary', barPlacements);
   const valueAxis = axisBounds(payload.elements.valueAxis ?? defaultAxis('value', 'left', 'value'), primaryValues.length ? primaryValues : values, percent);
   const secondaryAxis = secondaryValues.length ? axisBounds(payload.elements.secondaryValueAxis ?? defaultAxis('secondary-value', 'right', 'value'), secondaryValues, false) : undefined;
   layout.categoryAxis = categoryAxis;
   layout.valueAxis = valueAxis;
   layout.secondaryValueAxis = secondaryAxis;
-  layout.series = createSeriesLayouts(payload, data, layout.plot, categoryAxis, valueAxis, secondaryAxis);
+  layout.series = createSeriesLayouts(payload, data, layout.plot, categoryAxis, valueAxis, secondaryAxis, barPlacements);
+  const specialSeriesIndex = layout.series.findIndex((series) => series.visible);
+  layout.specialSeriesIndex = specialSeriesIndex;
+  if (specialSeriesIndex < 0) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: chart has no visible series');
+    return layout;
+  }
   if (kind === 'map') {
-    const map = mapLayouts(payload, data, layout.plot);
+    const map = mapLayouts(payload, data, layout.plot, specialSeriesIndex);
     if ('kind' in map) {
       layout.status = map;
       layout.map = { ...(payload.mapOptions ?? { geography: 'country-region', mapArea: 'automatic', labelLevel: 'best-fit', colorScale: 'sequential' }), resolved: false, reason: map.message ?? 'Map resource is unavailable' };
@@ -528,11 +673,15 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'pie') {
+    if (payload.chartType === 'pie' && layout.series.filter((series) => series.visible).length !== 1) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie charts require exactly one visible series');
+      return layout;
+    }
     layout.pieSlices = pieSlices(payload, data, layout.plot);
     return layout;
   }
   if (kind === 'histogram') {
-    const bins = histogram(numberValues(data.series[0]?.values ?? []), payload.histogramOptions);
+    const bins = histogram(numberValues(data.series[specialSeriesIndex]?.values ?? []), payload.histogramOptions);
     layout.histogramBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => right.count - left.count) : bins;
     if (payload.chartType === 'pareto') {
       let cumulative = 0;
@@ -546,30 +695,38 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'waterfall') {
-    layout.waterfallBars = waterfallLayouts(payload, data);
+    layout.waterfallBars = waterfallLayouts(payload, data, specialSeriesIndex);
     return layout;
   }
   if (kind === 'funnel') {
-    const valuesForFunnel = data.series[0]?.values.map(chartNumericValue).map((value) => Math.abs(value ?? 0)) ?? [];
+    const valuesForFunnel = data.series[specialSeriesIndex]?.values.map(chartNumericValue).map((value) => Math.abs(value ?? 0)) ?? [];
     layout.funnelStages = valuesForFunnel.map((value, index) => ({ index, value, nextValue: valuesForFunnel[index + 1] ?? value, label: String(data.categories[index] ?? index + 1), color: DEFAULT_COLORS[index % DEFAULT_COLORS.length]! }));
     return layout;
   }
   if (kind === 'stock') {
-    if (!data.series[0]?.stockValues) layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Stock charts require explicit High/Low/Close role bindings');
-    else layout.stockPoints = stockLayouts(data);
+    const error = stockValidationError(data, specialSeriesIndex);
+    if (error) layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', error);
+    else layout.stockPoints = stockLayouts(data, specialSeriesIndex);
     return layout;
   }
   if (kind === 'surface') {
-    const all = data.series.flatMap((series) => numberValues(series.values));
+    const all = data.series.flatMap((series, seriesIndex) => layout.series[seriesIndex]?.visible === false ? [] : numberValues(series.values));
     const min = all.reduce((value, next) => Math.min(value, next), 0);
     const max = all.reduce((value, next) => Math.max(value, next), 1);
     const span = Math.max(Number.EPSILON, max - min);
-    layout.surfaceCells = data.series.flatMap((series, row) => series.values.map(chartNumericValue).map((value, column) => ({ row, column, value: value ?? 0, color: `rgb(${Math.round(37 + 202 * ((value ?? min) - min) / span)},${Math.round(99 + 100 * (1 - ((value ?? min) - min) / span))},${Math.round(235 - 167 * ((value ?? min) - min) / span)})` })));
+    let visibleRow = 0;
+    layout.surfaceCells = data.series.flatMap((series, seriesIndex) => {
+      if (layout.series[seriesIndex]?.visible === false) return [];
+      const row = visibleRow++;
+      return series.values.map(chartNumericValue).map((value, column) => ({ row, column, seriesIndex, value: value ?? 0, color: `rgb(${Math.round(37 + 202 * ((value ?? min) - min) / span)},${Math.round(99 + 100 * (1 - ((value ?? min) - min) / span))},${Math.round(235 - 167 * ((value ?? min) - min) / span)})` }));
+    });
     return layout;
   }
   if (kind === 'radar') {
-    const count = Math.max(3, data.categories.length, ...data.series.map((series) => series.values.length));
-    layout.radar = { count, maximum: values.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: data.series.map((series, seriesIndex) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
+    const visibleSeries = data.series.flatMap((series, seriesIndex) => layout.series[seriesIndex]?.visible === false ? [] : [{ series, seriesIndex }]);
+    const count = Math.max(3, data.categories.length, ...visibleSeries.map(({ series }) => series.values.length));
+    const radarValues = visibleSeries.flatMap(({ series }) => numberValues(series.values));
+    layout.radar = { count, maximum: radarValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: visibleSeries.map(({ series, seriesIndex }) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
     return layout;
   }
   if (payload.chartType === 'scatter' || payload.chartType === 'bubble') {

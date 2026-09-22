@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import type {
-  PivotAggregateFunction,
   PivotFilter,
   PivotFilterFamily,
   PivotFieldDefinition,
@@ -20,6 +19,9 @@ import {
   type UiSnapshot,
   type WorkbookSession,
   richTextSelectionHasFlag,
+  movePivotLayoutField,
+  removePivotLayoutPlacement,
+  replacePivotValuePlacement,
 } from "@react-sheets/spreadsheet-app";
 import type { RibbonPivotActions } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
@@ -137,15 +139,6 @@ function createWebId(prefix: string): string {
 
 function cloneLayout(layout: PivotLayout): PivotLayout {
   return structuredClone(layout);
-}
-
-function removePivotField(layout: PivotLayout, fieldId: string): PivotLayout {
-  const next = cloneLayout(layout);
-  next.filters = next.filters.filter((filter) => filter.fieldId !== fieldId);
-  next.rows = next.rows.filter((field) => field.fieldId !== fieldId);
-  next.columns = next.columns.filter((field) => field.fieldId !== fieldId);
-  next.values = next.values.filter((value) => value.fieldId !== fieldId);
-  return next;
 }
 
 /**
@@ -299,35 +292,16 @@ export function useEditorCommandController({
       : undefined,
     onFieldAreaChange: (fieldId, area, index) => {
       if (!activePivot) return;
-      const next = area === "values" ? cloneLayout(activePivot.layout) : removePivotField(activePivot.layout, fieldId);
-      if (area === "values") {
-        const field = pivotFields.find((entry) => entry.fieldId === fieldId);
-        const summarizeBy: PivotAggregateFunction = field?.dataType === "number" ? "sum" : "count";
-        const baseValueId = `value:${fieldId}`;
-        let valueId = baseValueId;
-        let suffix = 2;
-        while (next.values.some((value) => value.valueId === valueId)) valueId = `${baseValueId}:${suffix++}`;
-        next.values.splice(Math.max(0, index), 0, { valueId, fieldId, summarizeBy });
-      } else if (area === "filters") next.filters.splice(Math.max(0, index), 0, { kind: "manual", family: "manual", fieldId, scope: 'report', mode: "all", memberKeys: [] });
-      else next[area].splice(Math.max(0, index), 0, { fieldId });
-      updatePivotLayout(next);
+      const field = pivotFields.find((entry) => entry.fieldId === fieldId);
+      if (field) updatePivotLayout(movePivotLayoutField(activePivot.layout, field, area, index));
     },
     onRemoveField: (placementId, area) => {
       if (!activePivot) return;
-      const next = cloneLayout(activePivot.layout);
-      if (area === "values") next.values = next.values.filter((value) => value.valueId !== placementId);
-      else if (area === "filters") next.filters = next.filters.filter((filter) => filter.fieldId !== placementId);
-      else next[area] = next[area].filter((field) => field.fieldId !== placementId);
-      updatePivotLayout(next);
+      updatePivotLayout(removePivotLayoutPlacement(activePivot.layout, area, placementId));
     },
     onValueChange: (value) => {
       if (!activePivot) return;
-      const next = cloneLayout(activePivot.layout);
-      const index = next.values.findIndex((entry) => entry.fieldId === value.fieldId);
-      if (index >= 0) {
-        next.values[index] = structuredClone(value);
-        updatePivotLayout(next);
-      }
+      updatePivotLayout(replacePivotValuePlacement(activePivot.layout, value));
     },
     onCalculatedFieldsChange: (fields) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), calculatedFields: fields.map((field) => ({ ...field })) }); },
     onCalculatedItemsChange: (items) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), calculatedItems: items.map((item) => ({ ...item })) }); },

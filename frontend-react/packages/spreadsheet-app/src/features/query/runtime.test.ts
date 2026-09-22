@@ -98,6 +98,66 @@ describe('query runtime', () => {
     assert.throws(() => new QueryStepPipeline([{ id: 'custom', kind: 'custom', name: 'Custom', config: {}, enabled: true }]).applySteps({ columns: ['A'], rows: [[1]] }), /not implemented/i);
   });
 
+  it('aggregates large groups without spreading rows into function arguments', () => {
+    const count = 200_000;
+    const result = new QueryStepPipeline([{
+      id: 'large-group', kind: 'group-by', name: 'Large group', enabled: true,
+      config: { by: ['Key'], aggregations: [
+        { column: 'Value', function: 'min', as: 'Minimum' },
+        { column: 'Value', function: 'max', as: 'Maximum' },
+        { column: 'Value', function: 'count', as: 'Count' },
+      ] },
+    }]).applySteps({ columns: ['Key', 'Value'], rows: Array.from({ length: count }, (_, index) => ['group', index]) });
+    assert.deepEqual(result.rows, [['group', 0, count - 1, count]]);
+  });
+
+  it('preserves duplicate-key join order and sparse Pivot aggregation semantics', () => {
+    const joined = new QueryStepPipeline([{
+      id: 'duplicate-join', kind: 'join', name: 'Join', enabled: true,
+      config: { on: ['Key'], right: { columns: ['Key', 'Value'], rows: [['A', 2], ['A', 3], ['B', 4]] } },
+    }]).applySteps({ columns: ['Key'], rows: [['A'], ['B']] });
+    assert.deepEqual(joined.rows, [['A', 'A', 2], ['A', 'A', 3], ['B', 'B', 4]]);
+    const pivot = new QueryStepPipeline([{
+      id: 'sparse-pivot', kind: 'pivot', name: 'Pivot', enabled: true,
+      config: { rows: ['Key'], columns: ['Quarter'], values: ['Value'], aggregation: 'average' },
+    }]).applySteps({ columns: ['Key', 'Quarter', 'Value'], rows: [
+      ['A', 'Q2', 2], ['A', 'Q2', 4], ['B', 'Q1', 10], ['A', 'Q1', null],
+    ] });
+    assert.deepEqual(pivot, { columns: ['Key', 'Q2 · Value', 'Q1 · Value'], rows: [['A', 3, null], ['B', null, 10]] });
+  });
+
+  it('isolates concurrent queries sharing one connector and releases it after rejection', async () => {
+    const connectors = createDefaultConnectorRegistry();
+    const first = createInlineJsonQuery('concurrent-first', 'First', [{ Value: 1 }]);
+    const second = createInlineJsonQuery('concurrent-second', 'Second', [{ Value: 2 }]);
+    const results = await Promise.all([executeQueryDefinition(connectors, first), executeQueryDefinition(connectors, second)]);
+    assert.deepEqual(results.map((result) => result.rows), [[[1]], [[2]]]);
+    const rejected = executeQueryDefinition(connectors, { ...first, connectorConfig: { text: 'invalid-json' } });
+    const next = executeQueryDefinition(connectors, second);
+    await assert.rejects(rejected);
+    assert.deepEqual((await next).rows, [[2]]);
+  });
+
+  it('gives each staged load unique block identities even for the same query revision', async () => {
+    const workbook = new WorkbookModel('query-block-isolation', 'Block isolation');
+    const query = createInlineJsonQuery('same-revision', 'Same revision', [{ Value: 1 }]);
+    const target = { kind: 'range' as const, sheetId: 'sheet-1', range: { startRow: 0, startColumn: 0 } };
+    const result = { columns: ['Value'], rows: [[1]], rowCount: 1 };
+    const [first, second] = await Promise.all([
+      prepareQueryLoadPayload(workbook, query, target, result),
+      prepareQueryLoadPayload(workbook, query, target, result),
+    ]);
+    assert.equal(first.payload.source.revision, second.payload.source.revision);
+    assert.equal(first.blocks[0]!.ref.checksum, second.blocks[0]!.ref.checksum);
+    assert.notEqual(first.blocks[0]!.ref.id, second.blocks[0]!.ref.id);
+    assert.notEqual(first.blocks[0]!.ref.storageKey, second.blocks[0]!.ref.storageKey);
+    const metadata = { columns: ['Value'], columnTypes: ['number' as const], rowCount: 1, blockRowCount: 65_536 };
+    const serverFirst = await encodeQueryLoadBlock('query:same-revision', 0, metadata, 0, [[1]]);
+    const serverSecond = await encodeQueryLoadBlock('query:same-revision', 0, metadata, 0, [[1]]);
+    assert.notEqual(serverFirst.ref.id, serverSecond.ref.id);
+    assert.equal(serverFirst.ref.id.length <= 200, true);
+  });
+
   it('executes json connector queries with pipeline filters', async () => {
     const connectors = createDefaultConnectorRegistry();
     const query = createInlineJsonQuery('q-1', 'Sales', [

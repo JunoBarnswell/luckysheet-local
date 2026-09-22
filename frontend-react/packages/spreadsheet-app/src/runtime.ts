@@ -1,6 +1,6 @@
 import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, type DataSourceManifest } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
@@ -98,7 +98,7 @@ export interface SpreadsheetRuntime {
   dataBlocks: DataBlockSynchronizer;
   assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
-  dataContentDetachers: Array<() => void>;
+  dataContentSubscriptions: Map<string, { manifest: DataSourceManifest; unsubscribe: () => void }>;
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
@@ -221,7 +221,7 @@ export function createSpreadsheetRuntime(options: {
     dataBlocks,
     assetStore,
     dataContent: new Map(),
-    dataContentDetachers: [],
+    dataContentSubscriptions: new Map(),
     workspaceRecord: null,
     localRevision: 0,
     localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
@@ -634,7 +634,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
         || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'
         || mutation.id === 'query.load.range' || mutation.id === 'query.load.sheet-table'
-        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table') {
+        || mutation.id === 'query.load.pivot-source' || mutation.id === 'query.load.workbook-table'
+        || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
@@ -852,10 +853,22 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
 }
 
 function initializeDataContent(runtime: SpreadsheetRuntime): void {
-  for (const detach of runtime.dataContentDetachers) detach();
-  runtime.dataContentDetachers = [];
-  runtime.dataContent.clear();
+  // Canonical mutations replace the affected manifest object. Keep readers
+  // and decoded blocks for every unchanged source, including inactive sheets.
+  for (const [sourceId, subscription] of runtime.dataContentSubscriptions) {
+    const current = runtime.model.dataModel.sources.get(sourceId);
+    if (current === subscription.manifest) continue;
+    const query = runtime.dataContent.get(sourceId);
+    if (current !== undefined && query?.rebindManifest(current)) {
+      subscription.manifest = current;
+      continue;
+    }
+    subscription.unsubscribe();
+    runtime.dataContentSubscriptions.delete(sourceId);
+    runtime.dataContent.delete(sourceId);
+  }
   for (const manifest of runtime.model.dataModel.sources.values()) {
+    if (runtime.dataContent.has(manifest.id)) continue;
     const query = new DataSourceContentQuery(manifest, {
       get: async (reference) => {
         const ref = manifest.blocks.find((block) => block.id === reference.id && block.dataSourceId === reference.dataSourceId && block.checksum === reference.checksum);
@@ -873,12 +886,12 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
       // loading/ready transitions from the same fetch wave into one task.
       setTimeout(() => {
         notificationScheduled = false;
-        if (runtime.disposed) return;
+        if (runtime.disposed || runtime.dataContent.get(manifest.id) !== query) return;
         runtime.handlers.onDataSourceContentChanged?.(manifest.id);
         runtime.handlers.onMutationsApplied?.();
       }, 0);
     };
-    runtime.dataContentDetachers.push(query.subscribe(notifyContentChanged));
+    runtime.dataContentSubscriptions.set(manifest.id, { manifest, unsubscribe: query.subscribe(notifyContentChanged) });
     runtime.dataContent.set(manifest.id, query);
   }
 }
@@ -1136,8 +1149,8 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   runtime.bootstrapDispose?.();
   detachCoreListeners(runtime);
   runtime.formula.disposeCalculationTasks();
-  for (const detach of runtime.dataContentDetachers) detach();
-  runtime.dataContentDetachers = [];
+  for (const subscription of runtime.dataContentSubscriptions.values()) subscription.unsubscribe();
+  runtime.dataContentSubscriptions.clear();
   runtime.dataContent.clear();
   runtime.collaboration?.attachTransport(undefined);
   runtime.collaboration = null;

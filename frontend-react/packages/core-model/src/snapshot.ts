@@ -7,7 +7,7 @@ import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
-import { isChartSubtypeForType } from './domain';
+import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, isChartSubtypeForType } from './domain';
 import type { ChartDrawingPayload } from './domain';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
@@ -518,6 +518,7 @@ function containsLegacyImageDataUrl(value: unknown): boolean {
 
 function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: WorkbookSnapshot, ownerSheetId: string): void {
   if (!isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
+  const owned = payload.nativeIdentity?.status !== 'preserved-native';
   if (payload.source.kind === 'worksheet-ranges') {
     if (payload.source.ranges.length === 0) throw new Error(`Chart ${payload.chartId} requires at least one source range`);
     for (const range of payload.source.ranges) validateDrawingSourceRange(range, snapshot, `Chart ${payload.chartId}`);
@@ -538,9 +539,13 @@ function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: Wo
   } else if (!payload.source.pivotId.trim()) {
     throw new Error(`Chart ${payload.chartId} Pivot source is invalid`);
   }
-  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow === series.range.endRow)) {
-    throw new Error(`Chart ${payload.chartId} row-oriented series must contain more than one column`);
+  if (payload.dataOrientation === 'rows' && payload.series?.some((series) => series.range.startRow !== series.range.endRow)) {
+    throw new Error(`Chart ${payload.chartId} row-oriented series must be horizontal vectors`);
   }
+  if (owned && payload.mapOptions && payload.chartType !== 'map') throw new Error(`Chart ${payload.chartId} map options require a map chart`);
+  if (owned && payload.histogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error(`Chart ${payload.chartId} histogram options require a histogram or pareto chart`);
+  if (owned && payload.boxWhiskerOptions && payload.chartType !== 'box-whisker') throw new Error(`Chart ${payload.chartId} box-whisker options require a box-whisker chart`);
+  if (owned && payload.waterfallOptions && payload.chartType !== 'waterfall') throw new Error(`Chart ${payload.chartId} waterfall options require a waterfall chart`);
   if (payload.categoryRange) validateDrawingSourceRange(payload.categoryRange, snapshot, `Chart ${payload.chartId} category`);
   for (const series of payload.series ?? []) {
     validateDrawingSourceRange(series.range, snapshot, `Chart ${payload.chartId} series`);
@@ -560,12 +565,26 @@ function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: Wo
         throw new Error(`Chart ${payload.chartId} ${seriesType} series requires explicit X/Y${seriesType === 'bubble' ? '/Size' : ''} ranges`);
       }
     }
-    if (seriesType === 'stock' && (!series.stockRoles?.high || !series.stockRoles.low || !series.stockRoles.close)) {
-      throw new Error(`Chart ${payload.chartId} stock series requires explicit High/Low/Close ranges`);
+    if (seriesType === 'stock') {
+      const stockSubtype = series.subtype ?? payload.subtype;
+      if (!series.stockRoles?.high || !series.stockRoles.low || !series.stockRoles.close) throw new Error(`Chart ${payload.chartId} stock series requires explicit High/Low/Close ranges`);
+      if (owned && stockSubtype.includes('open') !== Boolean(series.stockRoles.open)) throw new Error(`Chart ${payload.chartId} ${stockSubtype} Open role does not match its subtype`);
+      if (owned && stockSubtype.includes('volume') !== Boolean(series.stockRoles.volume)) throw new Error(`Chart ${payload.chartId} ${stockSubtype} Volume role does not match its subtype`);
     }
     if (series.errorBars?.type === 'custom' && (!series.errorBars.plusRange || !series.errorBars.minusRange)) {
       throw new Error(`Chart ${payload.chartId} custom error bars require explicit plus and minus ranges`);
     }
+    if (owned && (series.errorBars?.type === 'fixed' || series.errorBars?.type === 'percentage') && (!Number.isFinite(series.errorBars.value) || series.errorBars.value! < 0)) {
+      throw new Error(`Chart ${payload.chartId} fixed and percentage error bars require a non-negative finite value`);
+    }
+    if (owned && series.trendlines?.length && !chartSeriesSupportsTrendlines(seriesType)) throw new Error(`Chart ${payload.chartId} ${seriesType} series do not support trendlines`);
+    if (owned && series.errorBars && !chartSeriesSupportsErrorBars(seriesType)) throw new Error(`Chart ${payload.chartId} ${seriesType} series do not support error bars`);
+  }
+  for (const axis of [payload.elements.categoryAxis, payload.elements.valueAxis, payload.elements.secondaryCategoryAxis, payload.elements.secondaryValueAxis]) {
+    if (!axis || !owned) continue;
+    if ([axis.minimum, axis.maximum].some((value) => value !== undefined && !Number.isFinite(value))) throw new Error(`Chart ${payload.chartId} axis bounds must be finite`);
+    if (axis.minimum !== undefined && axis.maximum !== undefined && axis.minimum >= axis.maximum) throw new Error(`Chart ${payload.chartId} axis minimum must be less than maximum`);
+    if (axis.scale === 'logarithmic' && ((axis.minimum !== undefined && axis.minimum <= 0) || (axis.maximum !== undefined && axis.maximum <= 0))) throw new Error(`Chart ${payload.chartId} logarithmic axis bounds must be positive`);
   }
   if (payload.chartType === 'combo' && (!payload.series?.length || payload.series.some((series) => !series.chartType))) throw new Error(`Chart ${payload.chartId} Combo requires an explicit type for every series`);
   if (ownerSheetId.trim() === '') throw new Error('Chart owner sheet is required');

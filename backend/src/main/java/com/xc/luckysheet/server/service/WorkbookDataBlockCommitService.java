@@ -17,12 +17,14 @@ public class WorkbookDataBlockCommitService {
     private final WorkbookDataBlockStore store;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
+    private final WorkbookDataBlockReferenceGuard references;
 
     public WorkbookDataBlockCommitService(WorkbookDataBlockStore store, AccessControlService access,
-                                          WorkbookLifecycleService lifecycle) {
+                                          WorkbookLifecycleService lifecycle, WorkbookDataBlockReferenceGuard references) {
         this.store = store;
         this.access = access;
         this.lifecycle = lifecycle;
+        this.references = references;
     }
 
     @Transactional
@@ -30,7 +32,7 @@ public class WorkbookDataBlockCommitService {
         store.lockWorkbook(row.unitId());
         lifecycle.requireActive(row.unitId());
         access.require(row.unitId(), actor, WorkbookAclRole.EDITOR);
-        return store.upsertWithinQuota(row, maximumBytes, maximumBlocks);
+        return store.insertWithinQuota(row, maximumBytes, maximumBlocks);
     }
 
     @Transactional
@@ -38,6 +40,7 @@ public class WorkbookDataBlockCommitService {
         store.lockWorkbook(unitId);
         lifecycle.requireActive(unitId);
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        references.requireUnreferenced(unitId, sourceId, blockId);
         store.delete(unitId, sourceId, blockId);
     }
 }

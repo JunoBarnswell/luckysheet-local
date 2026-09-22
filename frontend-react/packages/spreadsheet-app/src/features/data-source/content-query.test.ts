@@ -16,6 +16,7 @@ import {
   DataSourceContentQuery,
   type DataBlockReader,
 } from './content-query';
+import { dataSourceCellPatchIdentity, resolveCanonicalDataSourceRegion } from './canonical-region';
 import {
   applyDataRegionMaterialization,
   migrateDataRegionCellPatches,
@@ -77,6 +78,32 @@ function manifest(sourceId: string, rowCount: number, blocks: DataBlockRef[]): D
   };
 }
 
+test('canonical data-source region rejects a reader with same revision but different metadata', async () => {
+  const sourceId = nextSourceId();
+  const stored = await buildBlock(sourceId, 'canonical-region-block', 0, [['A', 10], ['B', 20]]);
+  const source: DataSourceManifest = {
+    ...manifest(sourceId, 2, [stored.ref]),
+    sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+  };
+  const workbook = new WorkbookModel('canonical-region-workbook', 'Canonical region');
+  const sheet = workbook.getSheet('sheet-1');
+  workbook.addDataSource(source);
+  sheet.addDataRegion({ id: 'canonical-region', sourceId, range: structuredClone(source.sourceRange!), headerRow: 0, revision: 0 });
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  await store.put(stored.ref, stored.bytes);
+  const query = new DataSourceContentQuery(source, store);
+
+  const canonical = resolveCanonicalDataSourceRegion(workbook, sourceId, query);
+  assert.equal(canonical.region.id, 'canonical-region');
+  writeCellPatch(sheet, 1, 1, { schema: 'CellPatch', value: { kind: 'set', value: 11 } });
+  writeCellPatch(sheet, 2, 0, { schema: 'CellPatch', style: { kind: 'set', value: { bold: true } } });
+  assert.deepEqual(dataSourceCellPatchIdentity(canonical).map(({ row, column }) => [row, column]), [[0, 1]]);
+
+  const mismatched = new DataSourceContentQuery({ ...source, name: 'Different metadata' }, store);
+  assert.throws(() => resolveCanonicalDataSourceRegion(workbook, sourceId, mismatched), /does not match/i);
+});
+
 test('content query reads blocks, publishes loading/ready, and applies block-local overlays', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
@@ -123,13 +150,19 @@ test('distinct field values stay unloaded until requested and fail closed at the
       return store.get(ref);
     },
   };
-  const query = new DataSourceContentQuery(manifest(sourceId, 4, [first.ref, second.ref]), reader);
+  const source = manifest(sourceId, 4, [first.ref, second.ref]);
+  source.rowOrder = [2, 0, 3, 1];
+  const query = new DataSourceContentQuery(source, reader);
 
   assert.equal(reads, 0);
   const members = await query.getDistinctFieldValues('code');
-  assert.deepEqual(members.value, ['A', 'B', null]);
+  assert.deepEqual(members.value, ['A', null, 'B']);
   assert.equal(members.state.availability, 'ready');
   assert.equal(reads, 2);
+
+  const resolved = await query.getDistinctFieldValues('code', undefined,
+    (logicalRow, baseValue) => logicalRow === 1 ? 'Patched' : baseValue);
+  assert.deepEqual(resolved.value, ['A', 'Patched', null, 'B']);
 
   const limited = await query.getDistinctFieldValues('code', 2);
   assert.equal(limited.value, undefined);
@@ -246,6 +279,48 @@ test('missing blocks return an explicit missing state and remain retryable', asy
   assert.equal(result.state.availability, 'missing');
   assert.match(result.state.error ?? '', /missing from local storage/i);
   assert.equal(query.getLoadState(block.ref.id)?.availability, 'missing');
+});
+
+test('render reads retain failures until an explicit read retries the block', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const block = await buildBlock(sourceId, 'retry-block', 0, [['A', 1]]);
+  let reads = 0;
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), {
+    get: async (ref) => { reads += 1; return store.get(ref); },
+  });
+  assert.equal((await query.getRowValues(0)).state.availability, 'missing');
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(query.peekCellValue(0, 0).state.availability, 'missing');
+    query.prefetchRows(0, 1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(reads, 1);
+  await store.put(block.ref, block.bytes);
+  assert.deepEqual((await query.getRowValues(0)).value, ['A', 1]);
+  assert.equal(reads, 2);
+  assert.equal(query.peekCellValue(0, 1).value, 1);
+});
+
+test('a loading subscriber can reenter the reader without starting another request', async () => {
+  const sourceId = nextSourceId();
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const block = await buildBlock(sourceId, 'reentrant-block', 0, [['A', 1]]);
+  await store.put(block.ref, block.bytes);
+  let reads = 0;
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [block.ref]), {
+    get: async (ref) => { reads += 1; return store.get(ref); },
+  });
+  let nested: ReturnType<DataSourceContentQuery['getRowValues']> | undefined;
+  const unsubscribe = query.subscribe((state) => {
+    if (state.availability === 'loading') nested = query.getRowValues(0);
+  });
+  try {
+    assert.deepEqual((await query.getRowValues(0)).value, ['A', 1]);
+    assert.ok(nested);
+    assert.deepEqual((await nested).value, ['A', 1]);
+    assert.equal(reads, 1);
+  } finally { unsubscribe(); }
 });
 
 test('invalid stored byte length and uncovered rows return explicit errors without empty data', async () => {

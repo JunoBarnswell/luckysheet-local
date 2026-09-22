@@ -434,13 +434,13 @@ export class MemoryWorkspaceStore {
 
   private async readRecords(unitId?: string): Promise<WorkspaceRecord[]> {
     return this.coordinator.read((transaction) => {
-    const heads = transaction.getAll<WorkspaceHeadRecord>('workspaceHeads');
-    const snapshots = transaction.getAll<WorkspaceSnapshotRecord>('workspaceSnapshots');
+    const head = unitId === undefined ? undefined : transaction.get<WorkspaceHeadRecord>('workspaceHeads', unitId);
+    const heads = unitId === undefined ? transaction.getAll<WorkspaceHeadRecord>('workspaceHeads') : head ? [head] : [];
+    if (heads.length === 0) return [];
     const operations = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations');
-    const catalogs = transaction.getAll<WorkspaceCatalogRecord>('workspaceCatalog');
-    return heads.filter((candidate) => unitId === undefined || candidate.unitId === unitId).map((head) => {
-      const snapshot = snapshots.find((candidate) => candidate.unitId === head.unitId && candidate.revision === head.snapshotRevision);
-      const catalog = catalogs.find((candidate) => candidate.unitId === head.unitId);
+    return heads.map((head) => {
+      const snapshot = transaction.get<WorkspaceSnapshotRecord>('workspaceSnapshots', memoryKey(head.unitId, head.snapshotRevision));
+      const catalog = transaction.get<WorkspaceCatalogRecord>('workspaceCatalog', head.unitId);
       if (!snapshot || !catalog) throw schemaError(head.unitId);
       const pending = buildJournal(head.unitId, head.nextClientSequence, operations
         .filter((candidate) => candidate.unitId === head.unitId)

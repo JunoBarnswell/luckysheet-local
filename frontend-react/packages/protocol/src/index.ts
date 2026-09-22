@@ -858,7 +858,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
   const source = value as Record<string, unknown>;
-  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'rowOrder', 'revision'], 'Data source manifest');
+  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'rowOrder', 'sortState', 'revision'], 'Data source manifest');
   if (source.schema !== 'DataSourceManifest' || source.version !== 1 || !isNonEmptyString(source.id) || !isNonEmptyString(source.name)) {
     throw new Error('Invalid data source manifest identity');
   }
@@ -902,6 +902,22 @@ export function validateDataSourceManifest(value: unknown): asserts value is Dat
       throw new Error(`Invalid data source field: ${String(source.id)}`);
     }
     fieldIds.add(field.id);
+  }
+  if (source.sortState !== undefined) {
+    if (!source.sortState || typeof source.sortState !== 'object' || Array.isArray(source.sortState)) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+    const sortState = source.sortState as Record<string, unknown>;
+    validateExactKeys(sortState, ['criteria'], 'Data source sortState');
+    if (!Array.isArray(sortState.criteria) || sortState.criteria.length === 0) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+    const sortedFieldIds = new Set<string>();
+    for (const rawCriterion of sortState.criteria) {
+      if (!rawCriterion || typeof rawCriterion !== 'object' || Array.isArray(rawCriterion)) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+      const criterion = rawCriterion as Record<string, unknown>;
+      validateExactKeys(criterion, ['fieldId', 'ascending'], 'Data source sort criterion');
+      if (!isNonEmptyString(criterion.fieldId) || !fieldIds.has(criterion.fieldId) || sortedFieldIds.has(criterion.fieldId) || typeof criterion.ascending !== 'boolean') {
+        throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+      }
+      sortedFieldIds.add(criterion.fieldId);
+    }
   }
   const blockIds = new Set<string>();
   for (const rawBlock of source.blocks) {
@@ -1543,6 +1559,60 @@ export interface ServerQueryBlockResponse {
   hasMore: boolean;
 }
 
+function validateServerQueryColumns(value: Record<string, unknown>, label: string): { columns: string[]; columnTypes?: ServerQueryColumnType[] } {
+  if (!Array.isArray(value.columns) || value.columns.length < 1 || value.columns.length > 16_384) throw new Error(`${label} columns are invalid`);
+  const columns = value.columns.map((column) => {
+    if (!isNonEmptyString(column) || column.length > 200) throw new Error(`${label} column name is invalid`);
+    return column;
+  });
+  if (new Set(columns).size !== columns.length) throw new Error(`${label} columns must be unique`);
+  if (value.columnTypes === undefined) return { columns };
+  if (!Array.isArray(value.columnTypes) || value.columnTypes.length !== columns.length
+    || !value.columnTypes.every((type) => ['text', 'number', 'boolean', 'date', 'mixed'].includes(String(type)))) {
+    throw new Error(`${label} column types are invalid`);
+  }
+  return { columns, columnTypes: [...value.columnTypes] as ServerQueryColumnType[] };
+}
+
+function validateServerQueryScalar(value: unknown, label: string): asserts value is TableScalar {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return;
+  throw new Error(`${label} contains a non-scalar value`);
+}
+
+function validateServerQueryBlockExecutionResponse(value: unknown): ServerQueryBlockExecutionResponse {
+  const response = requireRecord(value, 'Server query block execution response');
+  validateExactKeys(response, ['queryId', 'executionId', 'connectorId', 'sourceRef', 'sourceRevision', 'columns', 'columnTypes', 'rowCount', 'blockRowCount', 'executedAt', 'durationMs'], 'Server query block execution response');
+  if (!isNonEmptyString(response.queryId) || response.queryId.length > 200 || !isNonEmptyString(response.executionId) || response.executionId.length > 200
+    || !isNonEmptyString(response.connectorId) || !isNonEmptyString(response.sourceRef) || response.sourceRef.length > 200) {
+    throw new Error('Server query block execution identity is invalid');
+  }
+  const { columns, columnTypes } = validateServerQueryColumns(response, 'Server query block execution response');
+  if (!columnTypes || !Number.isSafeInteger(response.sourceRevision) || Number(response.sourceRevision) < 0
+    || !Number.isSafeInteger(response.rowCount) || Number(response.rowCount) < 0
+    || !Number.isSafeInteger(response.blockRowCount) || Number(response.blockRowCount) < 1 || Number(response.blockRowCount) > 65_536
+    || !isNonEmptyString(response.executedAt) || !Number.isFinite(Date.parse(response.executedAt))
+    || !Number.isSafeInteger(response.durationMs) || Number(response.durationMs) < 0) {
+    throw new Error('Server query block execution metadata is invalid');
+  }
+  return { ...response, columns, columnTypes } as unknown as ServerQueryBlockExecutionResponse;
+}
+
+function validateServerQueryBlockResponse(value: unknown): ServerQueryBlockResponse {
+  const response = requireRecord(value, 'Server query block response');
+  validateExactKeys(response, ['queryId', 'executionId', 'offset', 'rows', 'hasMore'], 'Server query block response');
+  if (!isNonEmptyString(response.queryId) || response.queryId.length > 200 || !isNonEmptyString(response.executionId) || response.executionId.length > 200
+    || !Number.isSafeInteger(response.offset) || Number(response.offset) < 0 || typeof response.hasMore !== 'boolean'
+    || !Array.isArray(response.rows) || response.rows.length > 65_536) {
+    throw new Error('Server query block response metadata is invalid');
+  }
+  const rows = response.rows.map((rawRow, rowIndex) => {
+    if (!Array.isArray(rawRow) || rawRow.length > 16_384) throw new Error(`Server query block row ${String(rowIndex)} is invalid`);
+    rawRow.forEach((cell, columnIndex) => validateServerQueryScalar(cell, `Server query block cell ${String(rowIndex)}:${String(columnIndex)}`));
+    return [...rawRow] as TableScalar[];
+  });
+  return { ...response, rows } as unknown as ServerQueryBlockResponse;
+}
+
 export type GuestShareRole = 'viewer' | 'commenter' | 'editor';
 
 export interface GuestShareRequest {
@@ -1711,6 +1781,18 @@ export interface RemoteDataBlockMetadata {
   checksum: string;
   byteLength: number;
   updatedAt: string;
+}
+
+function validateRemoteDataBlockMetadata(value: unknown, expected: { unitId: string; sourceId: string; blockId: string }): RemoteDataBlockMetadata {
+  const metadata = requireRecord(value, 'Remote data block metadata');
+  validateExactKeys(metadata, ['unitId', 'sourceId', 'blockId', 'checksum', 'byteLength', 'updatedAt'], 'Remote data block metadata');
+  if (metadata.unitId !== expected.unitId || metadata.sourceId !== expected.sourceId || metadata.blockId !== expected.blockId
+    || typeof metadata.checksum !== 'string' || !/^[A-Fa-f0-9]{64}$/.test(metadata.checksum)
+    || !Number.isSafeInteger(metadata.byteLength) || Number(metadata.byteLength) < 1
+    || !isNonEmptyString(metadata.updatedAt) || !Number.isFinite(Date.parse(metadata.updatedAt))) {
+    throw new Error('Remote data block metadata is invalid or mismatched');
+  }
+  return metadata as unknown as RemoteDataBlockMetadata;
 }
 
 /** Metadata-only remote representation of a workbook-owned image asset. */
@@ -2106,18 +2188,18 @@ export class WorkbookApiClient {
   }
 
   async startServerQueryBlocks(unitId: string, request: ServerQueryRequest): Promise<ServerQueryBlockExecutionResponse> {
-    return this.json<ServerQueryBlockExecutionResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/queries/execute-blocks`, {
+    return validateServerQueryBlockExecutionResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/queries/execute-blocks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
-    });
+    }));
   }
 
   async getServerQueryBlock(unitId: string, queryId: string, executionId: string, offset: number): Promise<ServerQueryBlockResponse> {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Query block offset must be a non-negative integer');
-    return this.json<ServerQueryBlockResponse>(
+    return validateServerQueryBlockResponse(await this.json<unknown>(
       `/api/workbooks/${encodeURIComponent(unitId)}/queries/${encodeURIComponent(queryId)}/blocks/${encodeURIComponent(executionId)}?offset=${offset}`,
-    );
+    ));
   }
 
   async finishServerQueryBlocks(unitId: string, queryId: string, executionId: string): Promise<void> {
@@ -2158,7 +2240,7 @@ export class WorkbookApiClient {
     checksum: string,
     bytes: ArrayBuffer,
   ): Promise<RemoteDataBlockMetadata> {
-    return this.json<RemoteDataBlockMetadata>(
+    return validateRemoteDataBlockMetadata(await this.json<unknown>(
       `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
       {
         method: 'PUT',
@@ -2168,16 +2250,21 @@ export class WorkbookApiClient {
         },
         body: bytes,
       },
-    );
+    ), { unitId, sourceId, blockId });
   }
 
-  async getDataBlock(unitId: string, sourceId: string, blockId: string): Promise<{ bytes: ArrayBuffer; checksum: string }> {
+  async getDataBlock(unitId: string, sourceId: string, blockId: string): Promise<{ bytes: ArrayBuffer; checksum: string; byteLength: number }> {
     const response = await this.request(
       `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
     );
     const checksum = response.headers.get('x-content-sha256');
-    if (!checksum) throw new ApiRequestError('Data block response omitted checksum', response.status, 'INTERNAL_ERROR');
-    return { bytes: await response.arrayBuffer(), checksum };
+    if (!checksum || !/^[A-Fa-f0-9]{64}$/.test(checksum)) throw new ApiRequestError('Data block response omitted a valid checksum', response.status, 'INTERNAL_ERROR');
+    const declaredLength = response.headers.get('content-length');
+    const bytes = await response.arrayBuffer();
+    if (declaredLength === null || !/^[1-9][0-9]*$/.test(declaredLength) || Number(declaredLength) !== bytes.byteLength) {
+      throw new ApiRequestError('Data block response length is invalid', response.status, 'INTERNAL_ERROR');
+    }
+    return { bytes, checksum, byteLength: bytes.byteLength };
   }
 
   async deleteDataBlock(unitId: string, sourceId: string, blockId: string): Promise<void> {

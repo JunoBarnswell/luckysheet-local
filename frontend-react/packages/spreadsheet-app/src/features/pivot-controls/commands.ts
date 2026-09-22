@@ -263,7 +263,14 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
     id: 'pivot.control.timeline.period.set',
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
       if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
-      return { ...payload, period: createPivotTimelinePeriod(params.period) };
+      const period = createPivotTimelinePeriod(params.period);
+      const selected = normalizePivotTimelinePeriod(period);
+      const bounds = normalizePivotTimelinePeriod(payload.bounds);
+      if ((bounds.start !== undefined && selected.start !== undefined && selected.start < bounds.start)
+        || (bounds.endExclusive !== undefined && selected.endExclusive !== undefined && selected.endExclusive > bounds.endExclusive)) {
+        throw new Error(`Timeline period is outside cache bounds: ${params.drawingId}`);
+      }
+      return { ...payload, period, filterType: period.start === undefined && period.end === undefined ? 'unknown' : 'dateBetween' };
     }),
   });
   runtime.registry.registerCommand<PivotTimelineLevelSetParams>({
@@ -312,15 +319,15 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
     id: 'pivot.control.timeline.caption.set',
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
       if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
-      if (typeof params.caption !== 'string') throw new Error(`Invalid timeline caption: ${params.drawingId}`);
-      return { ...payload, caption: params.caption };
+      if (typeof params.caption !== 'string' || !params.caption.trim() || params.caption.length > 200) throw new Error(`Invalid timeline caption: ${params.drawingId}`);
+      return { ...payload, caption: params.caption.trim() };
     }),
   });
   runtime.registry.registerCommand<PivotTimelineStyleSetParams>({
     id: 'pivot.control.timeline.style.set',
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
       if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
-      if (!/^TimelineStyle(?:Light|Medium|Dark)\d+$/.test(params.styleName)) throw new Error(`Invalid timeline style: ${params.styleName}`);
+      if (!/^TimelineStyle(?:Light|Medium|Dark)[1-6]$/.test(params.styleName)) throw new Error(`Invalid timeline style: ${params.styleName}`);
       return { ...payload, styleName: params.styleName };
     }),
   });

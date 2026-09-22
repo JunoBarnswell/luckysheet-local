@@ -2,8 +2,79 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
+import { QueryLoadError } from './features/query/query-load-error';
 
 describe('WorkbookSession query integration', () => {
+  it('rejects an overlapping load of the same query without losing the first result', async () => {
+    const app = new WorkbookSession();
+    try {
+      const query = createInlineJsonQuery('single-query-flight', 'Single flight', [{ Value: 1 }]);
+      const first = app.loadQuery(query);
+      await assert.rejects(app.loadQuery(query), (error: unknown) => error instanceof QueryLoadError && error.code === 'QUERY_LOAD_IN_PROGRESS');
+      await first;
+      assert.equal((await app['runtime'].dataContent.get('query:single-query-flight')!.getCellValue(0, 0)).value, 1);
+      await app.refreshQuery(query.id);
+      assert.equal(app.getQuerySnapshot().lastResult?.sourceRevision, 1);
+    } finally { app.dispose(); }
+  });
+
+  it('rejects a queued load when its canonical definition changes before execution completes', async () => {
+    const app = new WorkbookSession();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const occupied = app['runtime'].connectors.withConnector('json', async () => gate);
+    try {
+      const query = createInlineJsonQuery('stale-query-definition', 'Original', [{ Value: 1 }]);
+      const pending = app.loadQuery(query);
+      const changed = { ...query, name: 'Updated', connectorConfig: { data: [{ Value: 2 }] } };
+      app.runCommand('query.definition.replace', { definition: changed });
+      const rejected = assert.rejects(pending, (error: unknown) => error instanceof QueryLoadError && error.code === 'QUERY_LOAD_STALE');
+      release();
+      await occupied;
+      await rejected;
+      assert.equal(app['runtime'].model.getQueryDefinition(query.id)?.name, 'Updated');
+      assert.equal(app['runtime'].model.dataModel.sources.has('query:stale-query-definition'), false);
+      await app.refreshQuery(query.id);
+      assert.equal((await app['runtime'].dataContent.get('query:stale-query-definition')!.getCellValue(0, 0)).value, 2);
+    } finally { release(); await occupied; app.dispose(); }
+  });
+
+  it('does not commit a queued query after the session is disposed', async () => {
+    const app = new WorkbookSession();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const occupied = app['runtime'].connectors.withConnector('json', async () => gate);
+    const query = createInlineJsonQuery('disposed-query', 'Disposed', [{ Value: 1 }]);
+    const pending = app.loadQuery(query);
+    app.dispose();
+    const rejected = assert.rejects(pending, (error: unknown) => error instanceof QueryLoadError && error.code === 'QUERY_LOAD_CANCELLED');
+    release();
+    await occupied;
+    await rejected;
+    assert.equal(app['runtime'].model.dataModel.sources.has('query:disposed-query'), false);
+  });
+
+  it('refreshes one query without discarding another sheet data source reader', async () => {
+    const app = new WorkbookSession();
+    try {
+      const firstSheetId = app.getActiveSheetId();
+      await app.loadQuery(createInlineJsonQuery('cache-first', 'First', [{ Value: 1 }]));
+      const firstReader = app['runtime'].dataContent.get('query:cache-first')!;
+      assert.equal((await firstReader.getCellValue(0, 0)).value, 1);
+      app.runCommand('sheet.add', { id: 'cache-second-sheet', name: 'Second' });
+      await app.loadQuery(createInlineJsonQuery('cache-second', 'Second', [{ Value: 2 }]), {
+        kind: 'range', sheetId: 'cache-second-sheet', range: { startRow: 0, startColumn: 0 },
+      });
+      const secondReader = app['runtime'].dataContent.get('query:cache-second')!;
+      assert.equal((await secondReader.getCellValue(0, 0)).value, 2);
+      app.selectSheet(firstSheetId);
+      await app.refreshQuery('cache-first');
+      assert.notEqual(app['runtime'].dataContent.get('query:cache-first'), firstReader);
+      assert.equal(app['runtime'].dataContent.get('query:cache-second'), secondReader);
+      assert.equal(secondReader.peekCellValue(0, 0).value, 2);
+    } finally { app.dispose(); }
+  });
+
   it('loads inline json queries into the active sheet', async () => {
     const app = new WorkbookSession();
     const query = createInlineJsonQuery('demo-query', 'Demo', [

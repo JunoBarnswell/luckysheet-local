@@ -814,6 +814,12 @@ export function chartStackingForSubtype(subtype: ChartSubtype): 'stacked' | 'per
       : undefined;
 }
 
+const TRENDLINE_CHART_TYPES = new Set<P1ChartType>(['column', 'bar', 'line', 'area', 'scatter']);
+const ERROR_BAR_CHART_TYPES = new Set<P1ChartType>(['column', 'bar', 'line', 'area', 'scatter', 'bubble']);
+
+export function chartSeriesSupportsTrendlines(type: P1ChartType): boolean { return TRENDLINE_CHART_TYPES.has(type); }
+export function chartSeriesSupportsErrorBars(type: P1ChartType): boolean { return ERROR_BAR_CHART_TYPES.has(type); }
+
 export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;
 export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
 export type ChartAxisScale = 'linear' | 'logarithmic';

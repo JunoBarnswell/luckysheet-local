@@ -698,10 +698,10 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
-    void pivotSparklineAndDrillDownReducersPreserveOnlyDomainDefinitionsAndDerivedDetailCells() throws Exception {
+    void pivotSparklineAndDrillDownReducersPreserveDefinitionsAndBlockBackedDetailMetadata() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
                 """);
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","family":"manual","fieldId":"sheet:sheet-1:column:0:range:0","scope":"report","mode":"all","memberKeys":[]}],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:amount","fieldId":"sheet:sheet-1:column:1:range:0","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
@@ -777,13 +777,15 @@ class MutationDescriptorRegistryTest {
         current = registry.prepare(current, sparkline, WorkbookAclRole.EDITOR).descriptor().apply(current, sparkline);
         assertEquals("spark-1", current.path("sheets").get(0).path("sparklines").get(0).path("id").asText());
 
-        OperationMutation drillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", mapper.readTree("""
+        ObjectNode drillDownParams = (ObjectNode) mapper.readTree("""
                 {"sheetId":"sheet-1","pivotId":"pivot-1","label":"East","sourceRowPaths":[{"sheetId":"sheet-1","row":1}],"targetSheetId":"detail-1","target":{"row":0,"column":0}}
-                """));
+                """);
+        drillDownParams.set("detail", drillDownDetail("detail-1", "detail-source-1", 1, List.of("Region", "Amount")));
+        OperationMutation drillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", drillDownParams);
         current = registry.prepare(current, drillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, drillDown);
         assertEquals("detail-1", current.path("sheets").get(1).path("id").asText());
         assertEquals("Region", current.path("sheets").get(1).path("cells").path("0").path("0").path("value").asText());
-        assertEquals("East", current.path("sheets").get(1).path("cells").path("1").path("0").path("value").asText());
+        assertEquals("detail-source-1", current.path("sheets").get(1).path("dataRegions").get(0).path("sourceId").asText());
 
         ObjectNode largeDrillDownParams = mapper.createObjectNode();
         largeDrillDownParams.put("sheetId", "sheet-1");
@@ -791,10 +793,11 @@ class MutationDescriptorRegistryTest {
         largeDrillDownParams.put("label", "Large");
         ArrayNode largePaths = largeDrillDownParams.putArray("sourceRowPaths");
         for (int index = 0; index < 1_001; index++) {
-            largePaths.addObject().put("sheetId", "sheet-1").put("row", 1);
+            largePaths.addObject().put("sheetId", "sheet-1").put("row", 1).put("recordId", "record-" + index);
         }
         largeDrillDownParams.put("targetSheetId", "detail-large");
         largeDrillDownParams.putObject("target").put("row", 0).put("column", 0);
+        largeDrillDownParams.set("detail", drillDownDetail("detail-large", "detail-source-large", 1_001, List.of("Region", "Amount")));
         OperationMutation largeDrillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", largeDrillDownParams);
         current = registry.prepare(current, largeDrillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, largeDrillDown);
         JsonNode largeDetail = current.path("sheets").get(2);
@@ -1346,6 +1349,28 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
                 """)), range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+    }
+
+    private ObjectNode drillDownDetail(String sheetId, String sourceId, int rowCount, List<String> headers) {
+        ObjectNode detail = mapper.createObjectNode();
+        ObjectNode source = detail.putObject("source");
+        source.put("schema", "DataSourceManifest").put("version", 1).put("id", sourceId).put("name", "Details")
+                .put("kind", "chunked-table").put("sourceSheetId", sheetId).put("rowCount", rowCount).put("blockRowCount", 65_536).put("revision", 0);
+        source.putObject("sourceRange").put("sheetId", sheetId).put("startRow", 0).put("endRow", rowCount)
+                .put("startColumn", 0).put("endColumn", headers.size() - 1);
+        ArrayNode fields = source.putArray("fields");
+        for (int index = 0; index < headers.size(); index++) fields.addObject().put("id", sourceId + ":field:" + index)
+                .put("name", headers.get(index)).put("ordinal", index).put("type", "mixed");
+        source.putArray("blocks").addObject().put("id", sourceId + ":block").put("dataSourceId", sourceId)
+                .put("startRow", 0).put("rowCount", rowCount).put("storageKey", sourceId + ":block")
+                .put("checksum", "b".repeat(64)).put("byteLength", 1).put("encoding", "columnar-v1").put("revision", 0);
+        ObjectNode region = detail.putObject("region");
+        region.put("id", sourceId + ":region").put("sourceId", sourceId).put("headerRow", 0).put("revision", 0);
+        region.putObject("range").put("sheetId", sheetId).put("startRow", 0).put("endRow", rowCount)
+                .put("startColumn", 0).put("endColumn", headers.size() - 1);
+        ArrayNode detailHeaders = detail.putArray("headers");
+        headers.forEach(detailHeaders::add);
+        return detail;
     }
 
     private OperationMutation withDataRegionContext(OperationMutation mutation, ObjectNode range, String ownerKind, String tableId, boolean hasHeader) {

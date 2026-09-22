@@ -50,9 +50,9 @@ export interface ResolvedChartSeries {
 export interface ChartBindingModel {
   source: ChartDataSourceKind;
   orientation: 'rows' | 'columns';
-  categories: PivotScalar[];
-  series: ResolvedChartSeries[];
-  hierarchyLevels: PivotScalar[][];
+  categories: readonly PivotScalar[];
+  series: readonly ResolvedChartSeries[];
+  hierarchyLevels: readonly (readonly PivotScalar[])[];
   nonContiguous: boolean;
   dynamicRangeIdentity?: string;
   tableStructuredReference?: string;
@@ -116,10 +116,15 @@ export interface PivotChartData {
  * series; no renderer is allowed to infer Pivot semantics from a cell.
  */
 export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): PivotChartData {
+  const fieldById = new Map(tree.fields.fields.map((field) => [field.fieldId, field]));
+  const memberLabelsByField = new Map<string, Map<string, string>>();
+  for (const field of tree.fields.fields) {
+    memberLabelsByField.set(field.fieldId, new Map((field.values ?? []).map((value) => [pivotMemberKey(createPivotMemberKey(value)), pivotScalarLabel(value)])));
+  }
   const leaves: Array<{ node: PivotResultNode; path: string[] }> = [];
   const collectLeaves = (nodes: readonly PivotResultNode[], parentPath: string[] = []): void => {
     for (const node of nodes) {
-      const path = node.path?.length ? pivotRowPathLabels(node, tree) : [...parentPath, node.label];
+      const path = node.path?.length ? pivotRowPathLabels(node, memberLabelsByField) : [...parentPath, node.label];
       if (node.children.length > 0) collectLeaves(node.children, path);
       else leaves.push({ node, path });
     }
@@ -144,42 +149,47 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
   if (columnPaths.length === 0) columnPaths.push([]);
 
   const valueFields = tree.valueFields ?? pivot?.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId })) ?? [];
-  const valueCount = Math.max(valueFields.length, ...leaves.flatMap(({ node }) => node.values.map((cell) => cell.values.length)), 0);
+  let valueCount = valueFields.length;
+  const cellsByLeafAndPath = leaves.map(({ node }) => {
+    const cells = new Map<string, PivotResultNode['values'][number]>();
+    for (const cell of node.values) {
+      valueCount = Math.max(valueCount, cell.values.length);
+      cells.set(pivotPathKey(cell.columnPath), cell);
+    }
+    return cells;
+  });
   const series: PivotChartSeries[] = [];
   for (const columnPath of columnPaths) {
+    const columnPathKey = pivotPathKey(columnPath);
     const columnCaption = columnPath.map(pivotScalarLabel).join(' / ');
     for (let valueIndex = 0; valueIndex < valueCount; valueIndex += 1) {
       const field = valueFields[valueIndex];
       const valueId = field?.valueId ?? pivot?.layout.values[valueIndex]?.valueId;
       const sourceFieldId = field?.sourceFieldId ?? field?.fieldId ?? pivot?.layout.values[valueIndex]?.fieldId;
-      const valueCaption = field?.displayName ?? fieldName(sourceFieldId, tree);
+      const valueCaption = field?.displayName ?? fieldById.get(sourceFieldId ?? '')?.name ?? sourceFieldId ?? 'Value';
       const name = columnCaption ? `${columnCaption} ${valueCaption}` : valueCaption;
       series.push({
-        id: `${pivotPathKey(columnPath)}|value:${valueIndex}:${valueId ?? 'unknown'}`,
+        id: `${columnPathKey}|value:${valueIndex}:${valueId ?? 'unknown'}`,
         name,
         columnPath: [...columnPath],
         ...(valueId ? { valueId } : {}),
         valueIndex,
-        values: leaves.map(({ node }) => {
-          const cell = node.values.find((candidate) => pivotPathKey(candidate.columnPath) === pivotPathKey(columnPath));
-          return cell?.values[valueIndex] ?? null;
-        }),
+        values: cellsByLeafAndPath.map((cells) => cells.get(columnPathKey)?.values[valueIndex] ?? null),
       });
     }
   }
   return { categories, series };
 }
 
-function pivotRowPathLabels(node: PivotResultNode, tree: PivotResultTree): string[] {
+function pivotRowPathLabels(node: PivotResultNode, memberLabelsByField: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
   if (!node.path?.length || (node.path.length === 1 && node.path[0] === '__root__')) return [node.label];
   return node.path.map((segment) => {
     const separator = segment.indexOf('=');
     if (separator <= 0) return segment;
     const fieldId = segment.slice(0, separator);
     const memberToken = segment.slice(separator + 1);
-    const field = tree.fields.fields.find((candidate) => candidate.fieldId === fieldId);
-    const matchingValue = field?.values?.find((value) => pivotMemberKey(createPivotMemberKey(value)) === memberToken);
-    if (matchingValue !== undefined) return pivotScalarLabel(matchingValue);
+    const matchingLabel = memberLabelsByField.get(fieldId)?.get(memberToken);
+    if (matchingLabel !== undefined) return matchingLabel;
     return pivotMemberTokenLabel(memberToken);
   });
 }
@@ -194,8 +204,6 @@ function pivotMemberTokenLabel(token: string): string {
 
 function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember(value); }
 function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
-function fieldName(fieldId: string | undefined, tree: PivotResultTree): string { return tree.fields.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Value'; }
-
 function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
   return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
 }
@@ -249,6 +257,10 @@ function sheetFor(getSheet: (sheetId: string) => StructuredChartSheet | undefine
   return sheet;
 }
 
+function assertVectorLength(seriesName: string, role: string, values: readonly PivotScalar[] | undefined, expected: number): void {
+  if (values && values.length !== expected) throw new Error(`INVALID_CHART_SOURCE: ${seriesName} ${role} range has ${values.length} points; expected ${expected}`);
+}
+
 function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries, getSheet: (sheetId: string) => StructuredChartSheet | undefined): ResolvedChartSeries {
   const valueRange = declared.yRange ?? declared.range;
   const sheet = sheetFor(getSheet, valueRange);
@@ -263,6 +275,20 @@ function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries
     close: scalarVector(sheetFor(getSheet, declared.stockRoles.close), declared.stockRoles.close, payload.elements.hiddenData),
     ...(declared.stockRoles.volume ? { volume: scalarVector(sheetFor(getSheet, declared.stockRoles.volume), declared.stockRoles.volume, payload.elements.hiddenData) } : {}),
   } : undefined;
+  const errorPlusValues = declared.errorBars?.plusRange ? scalarVector(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData) : undefined;
+  const errorMinusValues = declared.errorBars?.minusRange ? scalarVector(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData) : undefined;
+  const seriesLabel = declared.name || 'Series';
+  assertVectorLength(seriesLabel, 'X', xValues, values.length);
+  assertVectorLength(seriesLabel, 'Size', sizeValues, values.length);
+  assertVectorLength(seriesLabel, 'positive error', errorPlusValues, values.length);
+  assertVectorLength(seriesLabel, 'negative error', errorMinusValues, values.length);
+  if (stockValues) {
+    const stockLength = stockValues.high.length;
+    assertVectorLength(seriesLabel, 'stock Low', stockValues.low, stockLength);
+    assertVectorLength(seriesLabel, 'stock Close', stockValues.close, stockLength);
+    assertVectorLength(seriesLabel, 'stock Open', stockValues.open, stockLength);
+    assertVectorLength(seriesLabel, 'stock Volume', stockValues.volume, stockLength);
+  }
   return {
     id: declared.id ?? `series:${declared.name}:${valueRange.sheetId}:${valueRange.startRow}:${valueRange.startColumn}`,
     name: declared.name || seriesName(sheet, valueRange, 'Series'),
@@ -278,8 +304,8 @@ function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries
     smooth: declared.smooth,
     trendlines: declared.trendlines,
     errorBars: declared.errorBars,
-    ...(declared.errorBars?.plusRange ? { errorPlusValues: scalarVector(sheetFor(getSheet, declared.errorBars.plusRange), declared.errorBars.plusRange, payload.elements.hiddenData) } : {}),
-    ...(declared.errorBars?.minusRange ? { errorMinusValues: scalarVector(sheetFor(getSheet, declared.errorBars.minusRange), declared.errorBars.minusRange, payload.elements.hiddenData) } : {}),
+    ...(errorPlusValues ? { errorPlusValues } : {}),
+    ...(errorMinusValues ? { errorMinusValues } : {}),
     stockRoles: declared.stockRoles,
     ...(stockValues ? { stockValues } : {}),
   };
@@ -287,7 +313,13 @@ function chartSeriesFromDeclaration(payload: ChartPayload, declared: ChartSeries
 
 function rangeSourceData(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
   const binding = resolveWorksheetChartRanges(payload, range => scalarValue(sheetFor(getSheet, range), range.startRow, range.startColumn));
-  const categories = scalarVector(sheetFor(getSheet, binding.categoryRange), binding.categoryRange, payload.elements.hiddenData);
+  const explicitCategoryRanges = binding.series.flatMap((entry) => entry.categoryRange ? [entry.categoryRange] : []);
+  const categoryRangeKey = (range: RangeRef): string => `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
+  if (explicitCategoryRanges.length > 0 && (explicitCategoryRanges.length !== binding.series.length || explicitCategoryRanges.some((range) => categoryRangeKey(range) !== categoryRangeKey(explicitCategoryRanges[0]!)))) {
+    throw new Error('INVALID_CHART_SOURCE: all chart series must share one canonical category range');
+  }
+  const categoryRange = explicitCategoryRanges[0] ?? binding.categoryRange;
+  const categories = scalarVector(sheetFor(getSheet, categoryRange), categoryRange, payload.elements.hiddenData);
   const series = binding.series.filter(entry => {
     if (payload.elements.hiddenData === 'show') return true;
     const range = entry.yRange ?? entry.range;
@@ -295,14 +327,26 @@ function rangeSourceData(payload: ChartPayload, getSheet: (sheetId: string) => S
     return !(payload.elements.hiddenData === 'hideColumns' && range.startColumn === range.endColumn && containsHidden(sheet.hiddenColumns, range.startColumn))
       && !(payload.elements.hiddenData === 'hideRows' && range.startRow === range.endRow && containsHidden(sheet.hiddenRows, range.startRow));
   }).map(entry => chartSeriesFromDeclaration(payload, entry, getSheet));
+  for (const entry of series) {
+    const expected = entry.stockValues?.high.length ?? entry.values.length;
+    if (categories.length !== expected) throw new Error(`INVALID_CHART_SOURCE: ${entry.name} has ${expected} points but the category range has ${categories.length}`);
+  }
   return { categories, series };
 }
 
 function resolvePivotData(payload: ChartPayload, tree: PivotResultTree): { categories: PivotScalar[]; series: ResolvedChartSeries[] } {
   const projected = buildPivotChartData(tree);
   const declared = payload.series ?? [];
-  const series: ResolvedChartSeries[] = projected.series.map((entry, index) => {
-    const declaredSeries = declared[index];
+  const declaredById = new Map(declared.flatMap((entry) => entry.id ? [[entry.id, entry] as const] : []));
+  const declaredByName = new Map<string, ChartSeries[]>();
+  for (const entry of declared) {
+    const matches = declaredByName.get(entry.name);
+    if (matches) matches.push(entry);
+    else declaredByName.set(entry.name, [entry]);
+  }
+  const series: ResolvedChartSeries[] = projected.series.map((entry) => {
+    const byName = declaredByName.get(entry.name);
+    const declaredSeries = declaredById.get(entry.id) ?? (byName?.length === 1 ? byName[0] : undefined);
     const normalized = normalizeEmptyValues([...entry.values], payload.elements.emptyCells);
     const values = normalized.values;
     return {
@@ -328,9 +372,11 @@ function bindingFor(source: ChartSource, categories: PivotScalar[], series: Reso
   return {
     source: source.kind === 'worksheet-ranges' ? 'range' : source.kind,
     orientation: options.orientation ?? 'columns',
-    categories: structuredClone(categories),
-    series: structuredClone(series),
-    hierarchyLevels: structuredClone(options.hierarchyLevels ?? []),
+    // Resolved chart vectors are immutable projection output. Sharing them
+    // with the binding avoids duplicating every point for large charts.
+    categories,
+    series,
+    hierarchyLevels: options.hierarchyLevels ?? [],
     nonContiguous: options.nonContiguous ?? (source.kind === 'worksheet-ranges' && source.ranges.length > 1),
     ...(options.dynamicRangeIdentity ? { dynamicRangeIdentity: options.dynamicRangeIdentity } : {}),
     ...(options.tableStructuredReference ? { tableStructuredReference: options.tableStructuredReference } : {}),
@@ -426,7 +472,11 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
       const field = fieldById.get(binding.fieldId);
       if (!field) throw new Error(`Chart binding field not found: ${binding.fieldId}`);
       const numeric = chartNumericValue(sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value);
-      if (numeric !== undefined) byField.set(binding.fieldId, [...(byField.get(binding.fieldId) ?? []), numeric]);
+      if (numeric !== undefined) {
+        const values = byField.get(binding.fieldId);
+        if (values) values.push(numeric);
+        else byField.set(binding.fieldId, [numeric]);
+      }
     }
     buckets.set(category, byField);
   }

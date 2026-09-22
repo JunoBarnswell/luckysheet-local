@@ -37,6 +37,13 @@ export interface DataRegionRemoveCommandParams {
   regionId: string;
 }
 
+export interface DataSourceAutoFilterSortCommitParams {
+  sheetId: string;
+  source: DataSourceManifest;
+  filterCommandId: 'sheet.autoFilter.set' | 'sheetTable.autoFilter.set';
+  filterParams: unknown;
+}
+
 export const DATA_SOURCE_COMMAND_IDS = [
   'dataSource.add',
   'dataSource.update',
@@ -487,7 +494,24 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
     },
   });
 
-  return [...DATA_SOURCE_COMMAND_IDS];
+  runtime.registry.registerCommand<DataSourceAutoFilterSortCommitParams>({
+    id: 'dataSource.autoFilterSort.commit',
+    execute(params): CommandResult {
+      if (!isRecord(params) || typeof params.sheetId !== 'string'
+        || !['sheet.autoFilter.set', 'sheetTable.autoFilter.set'].includes(params.filterCommandId)) {
+        throw new Error('Invalid block-backed AutoFilter sort commit');
+      }
+      const sortResult = runtime.execute('dataSource.update', { sheetId: params.sheetId, source: params.source });
+      const filterResult = runtime.execute(params.filterCommandId, params.filterParams);
+      return {
+        ...filterResult,
+        mutationCount: sortResult.mutationCount + filterResult.mutationCount,
+        affectedRanges: [...sortResult.affectedRanges, ...filterResult.affectedRanges],
+      };
+    },
+  });
+
+  return [...DATA_SOURCE_COMMAND_IDS, 'dataSource.autoFilterSort.commit'];
 }
 
 export function registerDataSourceFeature(runtime: CommandRuntime): {
