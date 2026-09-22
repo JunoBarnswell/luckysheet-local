@@ -10,7 +10,7 @@ import {
   type TableScalar,
 } from '@react-sheets/core-model';
 import {
-  decodeColumnarBlock,
+  decodeOwnedColumnarBlock,
   validateSparseCellOverlay,
   type SparseCellOverlay,
 } from './codec';
@@ -108,7 +108,7 @@ function isSafeRowIndex(value: number): boolean {
  * sparse edits are applied only to the returned projection.
  */
 export class DataSourceContentQuery {
-  private readonly source: DataSourceManifest;
+  private source: DataSourceManifest;
   private readonly store: DataBlockReader;
   private readonly overlays: ReadonlyMap<string, SparseCellOverlay>;
   private readonly loadStates = new Map<string, DataSourceContentLoadState>();
@@ -154,7 +154,29 @@ export class DataSourceContentQuery {
       fields: this.source.fields.map(cloneField),
       blocks: this.source.blocks.map((block) => ({ ...block })),
       ...(this.source.rowOrder === undefined ? {} : { rowOrder: [...this.source.rowOrder] }),
+      ...(this.source.sortState === undefined ? {} : {
+        sortState: { criteria: this.source.sortState.criteria.map((criterion) => ({ ...criterion })) },
+      }),
     };
+  }
+
+  /** Preserve decoded immutable blocks when only logical source metadata changed. */
+  rebindManifest(manifest: DataSourceManifest): boolean {
+    const normalized = normalizeDataSourceManifest(structuredClone(manifest));
+    const contentIdentity = (source: DataSourceManifest): string => JSON.stringify({
+      id: source.id,
+      kind: source.kind,
+      sourceSheetId: source.sourceSheetId,
+      sourceRange: source.sourceRange,
+      rowCount: source.rowCount,
+      fields: source.fields,
+      blockRowCount: source.blockRowCount,
+      blocks: source.blocks,
+      revision: source.revision,
+    });
+    if (contentIdentity(normalized) !== contentIdentity(this.source)) return false;
+    this.source = normalized;
+    return true;
   }
 
   getField(fieldRef: DataSourceFieldRef): DataSourceField | undefined {
@@ -229,17 +251,22 @@ export class DataSourceContentQuery {
    * block projection to be readable, but do not need a second full row matrix.
    */
   async ensureAllBlocksLoaded(): Promise<DataSourceContentLoadState> {
-    let lastState = state(this.source.id, null, 'ready');
-    for (const ref of this.source.blocks) {
-      try {
-        await this.loadBlock(ref);
-      } catch (error) {
-        return this.loadStates.get(ref.id)
-          ?? state(this.source.id, ref.id, 'error', errorMessage(error));
-      }
-      lastState = state(this.source.id, ref.id, 'ready');
+    const settled = await Promise.allSettled(this.source.blocks.map((ref) => this.loadBlock(ref)));
+    const failedIndex = settled.findIndex((result) => result.status === 'rejected');
+    if (failedIndex >= 0) {
+      const ref = this.source.blocks[failedIndex]!;
+      const failure = settled[failedIndex] as PromiseRejectedResult;
+      return this.loadStates.get(ref.id) ?? state(this.source.id, ref.id, 'error', errorMessage(failure.reason));
     }
-    return lastState;
+    const last = this.source.blocks[this.source.blocks.length - 1];
+    return state(this.source.id, last?.id ?? null, 'ready');
+  }
+
+  /** Read a physical row after ensureAllBlocksLoaded without allocating a flat row matrix. */
+  getLoadedPhysicalRow(physicalRow: number): readonly TableScalar[] | undefined {
+    if (!isSafeRowIndex(physicalRow) || physicalRow >= this.source.rowCount) return undefined;
+    const ref = this.findBlock(physicalRow);
+    return ref === undefined ? undefined : this.loadedBlocks.get(ref.id)?.rows[physicalRow - ref.startRow];
   }
 
   /**
@@ -500,12 +527,12 @@ export class DataSourceContentQuery {
       throw new ContentQueryFailure('error', `Data block ${ref.id} byteLength does not match the manifest`);
     }
     try {
-      const decoded = await decodeColumnarBlock(record.bytes, {
+      const decoded = await decodeOwnedColumnarBlock(record.bytes, {
         expectedRowCount: ref.rowCount,
         expectedFields: this.source.fields,
         expectedChecksum: ref.checksum,
       });
-      const rows = cloneRows(decoded.rows);
+      const rows = decoded.rows;
       const overlay = this.overlays.get(ref.id);
       if (overlay !== undefined) {
         for (const cell of overlay.cells) rows[cell.row]![cell.column] = cell.value;

@@ -858,7 +858,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
   const source = value as Record<string, unknown>;
-  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'rowOrder', 'revision'], 'Data source manifest');
+  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'rowOrder', 'sortState', 'revision'], 'Data source manifest');
   if (source.schema !== 'DataSourceManifest' || source.version !== 1 || !isNonEmptyString(source.id) || !isNonEmptyString(source.name)) {
     throw new Error('Invalid data source manifest identity');
   }
@@ -902,6 +902,22 @@ export function validateDataSourceManifest(value: unknown): asserts value is Dat
       throw new Error(`Invalid data source field: ${String(source.id)}`);
     }
     fieldIds.add(field.id);
+  }
+  if (source.sortState !== undefined) {
+    if (!source.sortState || typeof source.sortState !== 'object' || Array.isArray(source.sortState)) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+    const sortState = source.sortState as Record<string, unknown>;
+    validateExactKeys(sortState, ['criteria'], 'Data source sortState');
+    if (!Array.isArray(sortState.criteria) || sortState.criteria.length === 0) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+    const sortedFieldIds = new Set<string>();
+    for (const rawCriterion of sortState.criteria) {
+      if (!rawCriterion || typeof rawCriterion !== 'object' || Array.isArray(rawCriterion)) throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+      const criterion = rawCriterion as Record<string, unknown>;
+      validateExactKeys(criterion, ['fieldId', 'ascending'], 'Data source sort criterion');
+      if (!isNonEmptyString(criterion.fieldId) || !fieldIds.has(criterion.fieldId) || sortedFieldIds.has(criterion.fieldId) || typeof criterion.ascending !== 'boolean') {
+        throw new Error(`Invalid data source sortState: ${String(source.id)}`);
+      }
+      sortedFieldIds.add(criterion.fieldId);
+    }
   }
   const blockIds = new Set<string>();
   for (const rawBlock of source.blocks) {

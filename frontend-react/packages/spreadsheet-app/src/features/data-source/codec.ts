@@ -450,7 +450,7 @@ function hexToBytes(value: string): Uint8Array {
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) fail('requires Web Crypto SHA-256 support');
-  const digest = await subtle.digest('SHA-256', bytes.slice().buffer as ArrayBuffer);
+  const digest = await subtle.digest('SHA-256', bytes as unknown as BufferSource);
   return bytesToHex(new Uint8Array(digest));
 }
 
@@ -689,9 +689,23 @@ export async function decodeColumnarBlock(
   input: ArrayBuffer | ArrayBufferView,
   options: DecodeColumnarBlockOptions = {},
 ): Promise<DecodedColumnarBlock> {
-  const bytes = toOwnedBytes(input);
+  return decodeColumnarBlockBytes(toOwnedBytes(input), options);
+}
+
+/** Decode a block whose ArrayBuffer is already owned by the caller. */
+export async function decodeOwnedColumnarBlock(
+  input: ArrayBuffer,
+  options: DecodeColumnarBlockOptions = {},
+): Promise<DecodedColumnarBlock> {
+  return decodeColumnarBlockBytes(new Uint8Array(input), options);
+}
+
+async function decodeColumnarBlockBytes(
+  bytes: Uint8Array,
+  options: DecodeColumnarBlockOptions,
+): Promise<DecodedColumnarBlock> {
   if (bytes.byteLength < FIXED_HEADER_BYTES + COLUMNAR_BLOCK_CHECKSUM_BYTES) fail('is truncated');
-  const view = new DataView(bytes.buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let index = 0; index < MAGIC_BYTES.length; index += 1) {
     if (bytes[index] !== MAGIC_BYTES[index]) fail('has an invalid magic header');
   }

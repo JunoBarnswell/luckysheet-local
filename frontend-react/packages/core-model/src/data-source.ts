@@ -33,6 +33,15 @@ export interface DataBlockRef {
   revision: number;
 }
 
+export interface DataSourceSortCriterion {
+  fieldId: string;
+  ascending: boolean;
+}
+
+export interface DataSourceSortState {
+  criteria: DataSourceSortCriterion[];
+}
+
 export interface DataSourceManifest {
   schema: typeof DATA_SOURCE_SCHEMA;
   version: typeof DATA_SOURCE_VERSION;
@@ -47,6 +56,7 @@ export interface DataSourceManifest {
   blocks: DataBlockRef[];
   /** Logical row -> immutable physical row mapping used by virtual sorts. */
   rowOrder?: number[];
+  sortState?: DataSourceSortState;
   revision: number;
 }
 
@@ -102,6 +112,19 @@ export function normalizeDataSourceManifest(input: DataSourceManifest): DataSour
     fieldIds.add(field.id);
     return { ...field };
   });
+  const sortState = input.sortState === undefined
+    ? undefined
+    : { criteria: input.sortState.criteria.map((criterion) => ({ ...criterion })) };
+  if (sortState !== undefined) {
+    if (sortState.criteria.length === 0) throw new Error('Data source sortState requires at least one criterion');
+    const sortedFieldIds = new Set<string>();
+    for (const criterion of sortState.criteria) {
+      if (!fieldIds.has(criterion.fieldId) || sortedFieldIds.has(criterion.fieldId) || typeof criterion.ascending !== 'boolean') {
+        throw new Error('Data source sortState criteria are invalid');
+      }
+      sortedFieldIds.add(criterion.fieldId);
+    }
+  }
   const blockIds = new Set<string>();
   const blocks = input.blocks.map((block) => {
     if (block.dataSourceId !== input.id) throw new Error(`Data block ${block.id} belongs to another data source`);
@@ -132,6 +155,7 @@ export function normalizeDataSourceManifest(input: DataSourceManifest): DataSour
     fields,
     blocks,
     ...(rowOrder === undefined ? {} : { rowOrder }),
+    ...(sortState === undefined ? {} : { sortState }),
     sourceRange: input.sourceRange ? { ...input.sourceRange } : undefined,
   };
 }

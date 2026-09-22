@@ -856,7 +856,13 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
   // Canonical mutations replace the affected manifest object. Keep readers
   // and decoded blocks for every unchanged source, including inactive sheets.
   for (const [sourceId, subscription] of runtime.dataContentSubscriptions) {
-    if (runtime.model.dataModel.sources.get(sourceId) === subscription.manifest) continue;
+    const current = runtime.model.dataModel.sources.get(sourceId);
+    if (current === subscription.manifest) continue;
+    const query = runtime.dataContent.get(sourceId);
+    if (current !== undefined && query?.rebindManifest(current)) {
+      subscription.manifest = current;
+      continue;
+    }
     subscription.unsubscribe();
     runtime.dataContentSubscriptions.delete(sourceId);
     runtime.dataContent.delete(sourceId);

@@ -213,6 +213,8 @@ import {
 } from './features/pivot-controls';
 import {
   applyCellPatch,
+  canonicalDataSourceManifestIdentity,
+  dataSourceCellPatchIdentity,
   prepareDataRegionMaterialization,
   computeColumnarBlockChecksum,
   createWorkbookCellResolver,
@@ -923,6 +925,7 @@ export class WorkbookSession {
   private clipboardSystemStatus: 'unknown' | 'published' | 'reduced' | 'failed' = 'unknown';
   private clipboardSystemFormats: readonly string[] = [];
   private readonly materializingDataRegions = new Map<string, Promise<void>>();
+  private readonly pendingDataSourceOperations = new Set<string>();
   private pendingCommandCount = 0;
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
@@ -1815,6 +1818,36 @@ export class WorkbookSession {
       || commandId === 'sheetTable.autoFilter.set';
   }
 
+  private lockDataSourceOperations(regions: readonly SheetDataRegion[]): string[] {
+    const sourceIds = [...new Set(regions.map((region) => region.sourceId))];
+    const busy = sourceIds.find((sourceId) => this.pendingDataSourceOperations.has(sourceId));
+    if (busy !== undefined) throw new Error(`Data source ${busy} already has an in-flight operation`);
+    for (const sourceId of sourceIds) this.pendingDataSourceOperations.add(sourceId);
+    return sourceIds;
+  }
+
+  private unlockDataSourceOperations(sourceIds: readonly string[]): void {
+    for (const sourceId of sourceIds) this.pendingDataSourceOperations.delete(sourceId);
+  }
+
+  private assertDataSourceOperationCurrent(
+    sourceId: string,
+    manifestIdentity: string,
+    query: object,
+    region: SheetDataRegion,
+  ): void {
+    const current = this.runtime.model.getDataSource(sourceId);
+    const currentRegion = this.runtime.model.getSheet(region.range.sheetId).dataRegions.find((candidate) => candidate.id === region.id);
+    if (this.runtime.dataContent.get(sourceId) !== query
+      || JSON.stringify(canonicalDataSourceManifestIdentity(current)) !== manifestIdentity
+      || !currentRegion
+      || currentRegion.sourceId !== region.sourceId
+      || currentRegion.revision !== region.revision
+      || !sameWorkbookRange(currentRegion.range, region.range)) {
+      throw new Error(`Data source ${sourceId} changed while the operation was loading blocks`);
+    }
+  }
+
   /**
    * Filtering changes only filter metadata, but the projection and filter
    * domain still resolve values through the canonical block query. Load all
@@ -1826,26 +1859,33 @@ export class WorkbookSession {
     params: unknown,
     regions: readonly SheetDataRegion[],
   ): Promise<DispatchOutcome> {
+    let lockedSourceIds: string[] = [];
     this.pendingCommandCount += 1;
     this.emit();
     try {
-      const loadedSources = new Set<string>();
-      for (const region of regions) {
-        if (loadedSources.has(region.sourceId)) continue;
-        loadedSources.add(region.sourceId);
+      lockedSourceIds = this.lockDataSourceOperations(regions);
+      const snapshots = regions.map((region) => {
         const manifest = this.runtime.model.getDataSource(region.sourceId);
         const query = this.runtime.dataContent.get(manifest.id);
         if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot filter block-backed data`);
+        return { region: structuredClone(region), manifest, query, identity: JSON.stringify(canonicalDataSourceManifestIdentity(manifest)) };
+      });
+      const sourceLoads = [...new Map(snapshots.map((snapshot) => [snapshot.manifest.id, snapshot])).values()];
+      await Promise.all(sourceLoads.map(async ({ manifest, query }) => {
         const loaded = await query.ensureAllBlocksLoaded();
         if (loaded.availability !== 'ready') {
           throw new Error(loaded.error ?? `Data source ${manifest.id} could not be fully loaded for filtering`);
         }
+      }));
+      for (const snapshot of snapshots) {
+        this.assertDataSourceOperationCurrent(snapshot.manifest.id, snapshot.identity, snapshot.query, snapshot.region);
       }
       const result = this.runCommand(commandId, params);
       return { status: 'committed', result };
     } catch (error) {
       return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source filter was rejected'));
     } finally {
+      this.unlockDataSourceOperations(lockedSourceIds);
       this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
       this.emit();
     }
@@ -1862,15 +1902,18 @@ export class WorkbookSession {
     params: unknown,
     regions: readonly SheetDataRegion[],
   ): Promise<DispatchOutcome> {
+    let lockedSourceIds: string[] = [];
     this.pendingCommandCount += 1;
     this.emit();
     try {
       if (regions.length !== 1) throw new Error('Sorting overlapping data regions in one command is not supported');
+      lockedSourceIds = this.lockDataSourceOperations(regions);
       const result = await this.sortDataRegionBlocks(commandId, params, regions[0]!);
       return { status: 'committed', result };
     } catch (error) {
       return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source sort was rejected'));
     } finally {
+      this.unlockDataSourceOperations(lockedSourceIds);
       this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
       this.emit();
     }
@@ -1886,10 +1929,12 @@ export class WorkbookSession {
     params: unknown,
     regions: readonly SheetDataRegion[],
   ): Promise<DispatchOutcome> {
+    let lockedSourceIds: string[] = [];
     this.pendingCommandCount += 1;
     this.emit();
     try {
       if (regions.length !== 1) throw new Error('Sorting overlapping data regions in one AutoFilter command is not supported');
+      lockedSourceIds = this.lockDataSourceOperations(regions);
       const input = params && typeof params === 'object' && !Array.isArray(params)
         ? params as Record<string, unknown>
         : {};
@@ -1916,7 +1961,7 @@ export class WorkbookSession {
         throw new Error(`Block-backed AutoFilter sort requires the complete data region ${region.id}`);
       }
 
-      const sortResult = await this.sortDataRegionBlocks('data.sort.rows', {
+      const nextSource = await this.prepareDataRegionSort('data.sort.rows', {
         ...input,
         range: sortRange,
         criteria: [{ column, ascending }],
@@ -1930,35 +1975,45 @@ export class WorkbookSession {
         }],
       };
       const next = { ...filter, sortState };
-      const filterResult = owner.kind === 'table'
-        ? this.runCommand('sheetTable.autoFilter.set', {
+      const filterCommandId = owner.kind === 'table' ? 'sheetTable.autoFilter.set' : 'sheet.autoFilter.set';
+      const filterParams = owner.kind === 'table'
+        ? {
           sheetId: region.range.sheetId,
           tableId: owner.tableId,
           autoFilter: next,
           dataRegionContext: input.dataRegionContext,
-        })
-        : this.runCommand('sheet.autoFilter.set', {
+        }
+        : {
           sheetId: region.range.sheetId,
           autoFilter: next,
           dataRegionContext: input.dataRegionContext,
+        };
+      const result = nextSource === null
+        ? this.runCommand(filterCommandId, filterParams)
+        : this.runCommand('dataSource.autoFilterSort.commit', {
+          sheetId: region.range.sheetId,
+          source: nextSource,
+          filterCommandId,
+          filterParams,
         });
-      return {
-        status: 'committed',
-        result: {
-          ...filterResult,
-          mutationCount: sortResult.mutationCount + filterResult.mutationCount,
-          affectedRanges: [...sortResult.affectedRanges, ...filterResult.affectedRanges],
-        },
-      };
+      return { status: 'committed', result };
     } catch (error) {
       return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Data source AutoFilter sort was rejected'));
     } finally {
+      this.unlockDataSourceOperations(lockedSourceIds);
       this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
       this.emit();
     }
   }
 
   private async sortDataRegionBlocks(commandId: string, params: unknown, region: SheetDataRegion): Promise<CommandResult> {
+    const nextSource = await this.prepareDataRegionSort(commandId, params, region);
+    return nextSource === null
+      ? { operationId: `data-source-sort-noop-${Date.now()}`, mutationCount: 0, affectedRanges: [] }
+      : this.runCommand('dataSource.update', { sheetId: region.range.sheetId, source: nextSource });
+  }
+
+  private async prepareDataRegionSort(commandId: string, params: unknown, region: SheetDataRegion): Promise<DataSourceManifest | null> {
     const input = params && typeof params === 'object' && !Array.isArray(params)
       ? params as Record<string, unknown>
       : {};
@@ -1969,6 +2024,7 @@ export class WorkbookSession {
       throw new Error(`Sort range must cover the complete data region ${region.id}`);
     }
 
+    const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
     let criteria: Array<{ column: number; ascending: boolean }>;
     if (commandId === 'data.sort.quick') {
       if (!Number.isSafeInteger(input.sortColumn)
@@ -1976,6 +2032,12 @@ export class WorkbookSession {
         throw new Error('Block-backed quick sort parameters are invalid');
       }
       criteria = [{ column: Number(input.sortColumn), ascending: input.ascending ?? true }];
+    } else if (commandId === 'data.sort.reapply') {
+      criteria = manifest.sortState?.criteria.map((criterion) => {
+        const field = manifest.fields.find((candidate) => candidate.id === criterion.fieldId);
+        if (!field) throw new Error(`Data source ${manifest.id} sortState references an unknown field`);
+        return { column: region.range.startColumn + field.ordinal, ascending: criterion.ascending };
+      }) ?? [];
     } else {
       criteria = Array.isArray(input.criteria)
         ? input.criteria.map((entry) => {
@@ -1987,58 +2049,67 @@ export class WorkbookSession {
         : [];
     }
     if (criteria.length === 0) {
-      return { operationId: `data-source-sort-noop-${Date.now()}`, mutationCount: 0, affectedRanges: [] };
+      return null;
     }
     const hasHeader = input.hasHeader !== false;
     if (!hasHeader || region.headerRow !== region.range.startRow) {
       throw new Error(`Block-backed sort requires a header row at the start of data region ${region.id}`);
     }
 
-    const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
     const query = this.runtime.dataContent.get(manifest.id);
     if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot sort block-backed data`);
-    const loaded = await query.getAllBlockRows();
-    if (!loaded.value || loaded.state.availability !== 'ready') {
-      throw new Error(loaded.state.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
+    const canonical = resolveCanonicalDataSourceRegion(this.runtime.model, manifest.id, query);
+    if (dataSourceCellPatchIdentity(canonical).length > 0) {
+      throw new Error(`Data source ${manifest.id} cannot be virtually sorted while value or formula CellPatch overlays exist`);
     }
-    const physicalRows = loaded.value.flatMap((block) => block.rows);
-    const currentOrder = manifest.rowOrder ?? physicalRows.map((_row, index) => index);
-    if (currentOrder.length !== physicalRows.length) {
+    const manifestIdentity = JSON.stringify(canonicalDataSourceManifestIdentity(manifest));
+    const loaded = await query.ensureAllBlocksLoaded();
+    if (loaded.availability !== 'ready') {
+      throw new Error(loaded.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
+    }
+    this.assertDataSourceOperationCurrent(manifest.id, manifestIdentity, query, region);
+    const currentOrder = manifest.rowOrder ?? Array.from({ length: manifest.rowCount }, (_unused, index) => index);
+    if (currentOrder.length !== manifest.rowCount) {
       throw new Error(`Data source ${manifest.id} rowOrder does not match rowCount`);
     }
     const width = manifest.fields.length;
+    const criterionColumns = new Set<number>();
     for (const criterion of criteria) {
       const offset = criterion.column - region.range.startColumn;
-      if (!Number.isSafeInteger(criterion.column) || offset < 0 || offset >= width) {
+      if (!Number.isSafeInteger(criterion.column) || offset < 0 || offset >= width || criterionColumns.has(criterion.column)) {
         throw new Error('Block-backed sort criterion is outside the data region');
       }
+      criterionColumns.add(criterion.column);
     }
 
-    const sorted = currentOrder.map((physicalIndex, logicalIndex) => {
-      const row = physicalRows[physicalIndex];
-      if (row === undefined) throw new Error(`Data source ${manifest.id} rowOrder references a missing row`);
-      return { row, physicalIndex, index: logicalIndex };
-    });
-    sorted.sort((left, right) => {
+    const previousPosition = new Uint32Array(manifest.rowCount);
+    for (let logicalRow = 0; logicalRow < currentOrder.length; logicalRow += 1) previousPosition[currentOrder[logicalRow]!] = logicalRow;
+    const sortedOrder = [...currentOrder];
+    sortedOrder.sort((leftPhysicalRow, rightPhysicalRow) => {
+      const leftRow = query.getLoadedPhysicalRow(leftPhysicalRow);
+      const rightRow = query.getLoadedPhysicalRow(rightPhysicalRow);
+      if (!leftRow || !rightRow) throw new Error(`Data source ${manifest.id} rowOrder references a missing row`);
       for (const criterion of criteria) {
         const column = criterion.column - region.range.startColumn;
-        const comparison = compareWorkbookValues(left.row[column] ?? null, right.row[column] ?? null);
+        const comparison = compareWorkbookValues(leftRow[column] ?? null, rightRow[column] ?? null);
         if (comparison !== 0) return criterion.ascending ? comparison : -comparison;
       }
-      return left.index - right.index;
+      return previousPosition[leftPhysicalRow]! - previousPosition[rightPhysicalRow]!;
     });
-    if (sorted.every((entry, index) => entry.index === index)) {
-      return { operationId: `data-source-sort-noop-${Date.now()}`, mutationCount: 0, affectedRanges: [] };
-    }
-
-    const nextRevision = manifest.revision + 1;
-    const nextSource: DataSourceManifest = {
-      ...manifest,
-      blocks: manifest.blocks.map((block) => ({ ...block, revision: nextRevision })),
-      rowOrder: sorted.map((entry) => entry.physicalIndex),
-      revision: nextRevision,
+    const sortState = {
+      criteria: criteria.map((criterion) => ({
+        fieldId: manifest.fields[criterion.column - region.range.startColumn]!.id,
+        ascending: criterion.ascending,
+      })),
     };
-    return this.runCommand('dataSource.update', { sheetId: region.range.sheetId, source: nextSource });
+    const orderChanged = sortedOrder.some((physicalRow, index) => physicalRow !== currentOrder[index]);
+    const stateChanged = JSON.stringify(sortState) !== JSON.stringify(manifest.sortState);
+    if (!orderChanged && !stateChanged) return null;
+    return {
+      ...manifest,
+      rowOrder: sortedOrder,
+      sortState,
+    };
   }
 
   /**

@@ -75,6 +75,9 @@ export function canonicalDataSourceManifestIdentity(manifest: DataSourceManifest
       revision: block.revision,
     })),
     rowOrder: manifest.rowOrder === undefined ? undefined : [...manifest.rowOrder],
+    sortState: manifest.sortState === undefined ? undefined : {
+      criteria: manifest.sortState.criteria.map((criterion) => ({ ...criterion })),
+    },
     revision: manifest.revision,
   };
 }

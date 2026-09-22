@@ -152,7 +152,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private ObjectNode validateSource(ObjectNode root, String mutationSheetId, ObjectNode source) {
         SnapshotMutationSupport.validateKnownKeys(source, Set.of(
                 "schema", "version", "id", "name", "kind", "sourceSheetId", "sourceRange",
-                "rowCount", "fields", "blockRowCount", "blocks", "rowOrder", "revision"
+                "rowCount", "fields", "blockRowCount", "blocks", "rowOrder", "sortState", "revision"
         ), "Data source manifest");
         if (!"DataSourceManifest".equals(source.path("schema").asText()) || source.path("version").asInt(-1) != 1) {
             throw ServiceException.validation("Data source manifest schema is invalid");
@@ -189,9 +189,34 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         }
 
         validateFields(source);
+        validateSortState(source);
         validateRowOrder(source, rowCount);
         validateBlocks(source, sourceId, rowCount);
         return source;
+    }
+
+    private void validateSortState(ObjectNode source) {
+        JsonNode raw = source.get("sortState");
+        if (raw == null) return;
+        if (!raw.isObject()) throw ServiceException.validation("Data source sortState must be an object");
+        ObjectNode sortState = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(sortState, Set.of("criteria"), "Data source sortState");
+        JsonNode criteria = sortState.get("criteria");
+        if (criteria == null || !criteria.isArray() || criteria.isEmpty()) {
+            throw ServiceException.validation("Data source sortState requires criteria");
+        }
+        Set<String> fieldIds = new HashSet<>();
+        for (JsonNode field : source.withArray("fields")) fieldIds.add(field.path("id").asText());
+        Set<String> sortedFieldIds = new HashSet<>();
+        for (JsonNode rawCriterion : criteria) {
+            if (!rawCriterion.isObject()) throw ServiceException.validation("Data source sort criterion must be an object");
+            ObjectNode criterion = (ObjectNode) rawCriterion;
+            SnapshotMutationSupport.validateKnownKeys(criterion, Set.of("fieldId", "ascending"), "Data source sort criterion");
+            String fieldId = criterion.path("fieldId").asText("");
+            if (!fieldIds.contains(fieldId) || !sortedFieldIds.add(fieldId) || !criterion.path("ascending").isBoolean()) {
+                throw ServiceException.validation("Data source sortState criteria are invalid");
+            }
+        }
     }
 
     private void validateRowOrder(ObjectNode source, long rowCount) {
