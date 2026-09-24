@@ -707,7 +707,7 @@ final class StructuralSnapshotReducer {
             shiftFilter(root, owner, targetSheetId, axis, at, count, direction);
             shiftPivots(root, owner, targetSheetId, axis, at, count, direction);
             shiftSparklines(root, owner, targetSheetId, axis, at, count, direction);
-            shiftChartPayloads(root, owner, targetSheetId, axis, at, count, direction);
+            shiftDrawingPayloads(root, owner, targetSheetId, axis, at, count, direction);
         }
         shiftWorkbookTables(root, targetSheetId, axis, at, count, direction);
         shiftHyperlinks(root, target, axis, at, count, direction);
@@ -964,12 +964,17 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void shiftChartPayloads(ObjectNode root, ObjectNode owner, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
+    private static void shiftDrawingPayloads(ObjectNode root, ObjectNode owner, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         ObjectNode payloads = SnapshotMutationSupport.object(owner, "drawingPayloads");
         payloads.fields().forEachRemaining(entry -> {
             JsonNode raw = entry.getValue();
             if (!raw.isObject()) throw ServiceException.validation("Drawing payload is invalid");
             ObjectNode chart = (ObjectNode) raw;
+            String kind = chart.path("kind").asText();
+            if ("camera".equals(kind) || "screenshot".equals(kind)) {
+                requireShiftedRange(root, chart.get("sourceRange"), targetSheetId, axis, at, count, direction, kind + " source range");
+                return;
+            }
             if ("form-control".equals(chart.path("kind").asText())) {
                 JsonNode linkRaw = chart.get("cellLink");
                 if (linkRaw != null && linkRaw.isObject() && targetSheetId.equals(linkRaw.path("sheetId").asText())) {
@@ -1039,6 +1044,7 @@ final class StructuralSnapshotReducer {
             if (!mapCellShiftAnchor(anchor, band, selected, axis, direction)) throw ServiceException.validation("Cell shift removes a merge anchor");
         }
 
+        List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             shiftCellBandRules(root, owner, "conditionalFormats", targetSheetId, selected, band, axis, direction);
@@ -1046,7 +1052,7 @@ final class StructuralSnapshotReducer {
             shiftCellBandDrawingPayloads(root, owner, targetSheetId, selected, band, axis, direction);
             shiftCellBandPivots(root, owner, targetSheetId, selected, band, axis, direction);
             shiftCellBandSparklines(root, owner, targetSheetId, selected, band, axis, direction);
-            shiftCellBandHyperlinks(root, owner, target, selected, band, axis, direction);
+            shiftCellBandHyperlinks(root, owner, target, selected, band, axis, direction, sheetOrder);
         }
 
         JsonNode filterRaw = target.get("autoFilter");
@@ -1338,7 +1344,8 @@ final class StructuralSnapshotReducer {
 
     private static void shiftCellBandHyperlinks(ObjectNode root, ObjectNode owner, ObjectNode targetSheet,
             FormulaReferenceTransformer.Range selection, RangeRef band, FormulaReferenceTransformer.Axis axis,
-            FormulaReferenceTransformer.Direction direction) {
+            FormulaReferenceTransformer.Direction direction,
+            List<FormulaReferenceTransformer.SheetIdentity> sheetOrder) {
         boolean ownerIsTarget = owner.path("id").asText().equals(targetSheet.path("id").asText());
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         for (JsonNode raw : SnapshotMutationSupport.array(owner, "hyperlinks")) {
@@ -1370,7 +1377,7 @@ final class StructuralSnapshotReducer {
             }
             JsonNode address = linkTarget.get("address");
             if (address != null && address.isTextual()) {
-                linkTarget.put("address", FormulaReferenceTransformer.remapCellShift(address.asText(), target, target, selection, axis, direction));
+                linkTarget.put("address", FormulaReferenceTransformer.remapCellShift(address.asText(), target, target, selection, axis, direction, sheetOrder));
             }
         }
     }
@@ -1545,6 +1552,7 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.Direction direction) {
         String targetSheetId = targetSheet.path("id").asText();
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
+        List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(rawOwner, "Sheet");
             boolean ownerIsTarget = targetSheetId.equals(owner.path("id").asText());
@@ -1561,7 +1569,7 @@ final class StructuralSnapshotReducer {
                 if (linkTarget.has("row")) shiftHyperlinkCoordinate(linkTarget, axis, at, count, direction, "hyperlink target");
                 JsonNode address = linkTarget.get("address");
                 if (address != null && address.isTextual()) {
-                    linkTarget.put("address", FormulaReferenceTransformer.remapAxis(address.asText(), target, target, axis, at, count, direction));
+                    linkTarget.put("address", FormulaReferenceTransformer.remapAxis(address.asText(), target, target, axis, at, count, direction, sheetOrder));
                 }
             }
         }
@@ -1578,12 +1586,13 @@ final class StructuralSnapshotReducer {
 
     private static void rewriteAxisFormulas(ObjectNode root, ObjectNode targetSheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
+        List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
             forEachFormulaCell(owner, cell -> {
                 String original = cell.path("formula").asText();
-                String rewritten = FormulaReferenceTransformer.remapAxis(original, ownerIdentity, target, axis, at, count, direction);
+                String rewritten = FormulaReferenceTransformer.remapAxis(original, ownerIdentity, target, axis, at, count, direction, sheetOrder);
                 if (!original.equals(rewritten)) cell.put("formula", rewritten);
                 cell.remove("formulaValue");
             });
@@ -1595,7 +1604,7 @@ final class StructuralSnapshotReducer {
                             ? ownerIdentity
                             : identity(SnapshotMutationSupport.sheet(root, formulaOwnerId));
                     rewriteRuleFormulas(rule, formula -> FormulaReferenceTransformer.remapAxis(
-                            formula, formulaOwner, target, axis, at, count, direction));
+                            formula, formulaOwner, target, axis, at, count, direction, sheetOrder));
                 }
             }
         }
@@ -1604,7 +1613,7 @@ final class StructuralSnapshotReducer {
         names.fields().forEachRemaining(entry -> {
             if (!entry.getValue().isTextual()) return;
             FormulaReferenceTransformer.SheetIdentity owner = definedNameProjectionOwner(definedNameOwners, entry.getKey(), target);
-            String rewritten = FormulaReferenceTransformer.remapAxis(entry.getValue().asText(), owner, target, axis, at, count, direction);
+            String rewritten = FormulaReferenceTransformer.remapAxis(entry.getValue().asText(), owner, target, axis, at, count, direction, sheetOrder);
             names.put(entry.getKey(), rewritten);
         });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
@@ -1621,7 +1630,7 @@ final class StructuralSnapshotReducer {
                 anchor.put(coordinateKey, shifted);
             }
             FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
-            String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), owner, target, axis, at, count, direction);
+            String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), owner, target, axis, at, count, direction, sheetOrder);
             name.put("formula", rewritten);
         }
     }
@@ -1638,6 +1647,12 @@ final class StructuralSnapshotReducer {
 
     private static FormulaReferenceTransformer.SheetIdentity identity(ObjectNode sheet) {
         return new FormulaReferenceTransformer.SheetIdentity(SnapshotMutationSupport.text(sheet, "id"), SnapshotMutationSupport.text(sheet, "name"));
+    }
+
+    private static List<FormulaReferenceTransformer.SheetIdentity> worksheetOrder(ObjectNode root) {
+        List<FormulaReferenceTransformer.SheetIdentity> result = new ArrayList<>();
+        for (JsonNode raw : SnapshotMutationSupport.sheets(root)) result.add(identity(requireObject(raw, "Sheet")));
+        return result;
     }
 
     private static Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameFormulaOwners(
@@ -1752,6 +1767,7 @@ final class StructuralSnapshotReducer {
 
     private static void rewriteCellShiftFormulas(ObjectNode root, ObjectNode targetSheet, RangeRef selection, String axis, String operation) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
+        List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
                 ? FormulaReferenceTransformer.Axis.ROW
                 : FormulaReferenceTransformer.Axis.COLUMN;
@@ -1765,7 +1781,7 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
             forEachFormulaCell(owner, cell -> {
                 String original = cell.path("formula").asText();
-                String rewritten = FormulaReferenceTransformer.remapCellShift(original, ownerIdentity, target, selected, shiftAxis, direction);
+                String rewritten = FormulaReferenceTransformer.remapCellShift(original, ownerIdentity, target, selected, shiftAxis, direction, sheetOrder);
                 if (!original.equals(rewritten)) cell.put("formula", rewritten);
                 cell.remove("formulaValue");
             });
@@ -1777,7 +1793,7 @@ final class StructuralSnapshotReducer {
                             ? ownerIdentity
                             : identity(SnapshotMutationSupport.sheet(root, formulaOwnerId));
                     rewriteRuleFormulas(rule, formula -> FormulaReferenceTransformer.remapCellShift(
-                            formula, formulaOwner, target, selected, shiftAxis, direction));
+                            formula, formulaOwner, target, selected, shiftAxis, direction, sheetOrder));
                 }
             }
         }
@@ -1787,7 +1803,7 @@ final class StructuralSnapshotReducer {
             if (!entry.getValue().isTextual()) return;
             FormulaReferenceTransformer.SheetIdentity owner = definedNameProjectionOwner(definedNameOwners, entry.getKey(), target);
             names.put(entry.getKey(), FormulaReferenceTransformer.remapCellShift(
-                    entry.getValue().asText(), owner, target, selected, shiftAxis, direction));
+                    entry.getValue().asText(), owner, target, selected, shiftAxis, direction, sheetOrder));
         });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
             ObjectNode name = requireObject(raw, "Defined name");
@@ -1803,7 +1819,7 @@ final class StructuralSnapshotReducer {
             }
             FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
             name.put("formula", FormulaReferenceTransformer.remapCellShift(
-                    name.path("formula").asText(), owner, target, selected, shiftAxis, direction));
+                    name.path("formula").asText(), owner, target, selected, shiftAxis, direction, sheetOrder));
         }
     }
 

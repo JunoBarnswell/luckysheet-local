@@ -1302,6 +1302,39 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowInsertMovesCameraAndScreenshotSourceRangesAcrossDrawingPayloads() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},
+                   "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"merges":[],"conditionalFormats":[],"dataValidations":[],
+                   "pivots":[],"sparklines":[],"drawings":[],"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "spillRanges":[],"protectionRules":[],"drawingPayloads":{
+                     "camera-1":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"refreshPolicy":"live"},
+                     "screenshot-1":{"kind":"screenshot","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":3,"startColumn":0,"endColumn":1},"includeGridlines":true,"capturedAt":"2026-01-01T00:00:00Z"}}},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{}}
+                ]}
+                """);
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, insert, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, insert);
+        JsonNode payloads = current.path("sheets").get(0).path("drawingPayloads");
+        assertEquals(1, payloads.path("camera-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(2, payloads.path("camera-1").path("sourceRange").path("endRow").asInt());
+        assertEquals(3, payloads.path("screenshot-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(4, payloads.path("screenshot-1").path("sourceRange").path("endRow").asInt());
+
+        OperationMutation removeCameraSource = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":2}
+                """));
+        ServiceException rejected = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, removeCameraSource, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+    }
+
+    @Test
     void rangeMoveRewritesFormulaOwnersAndRejectsOverlappingDestinations() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

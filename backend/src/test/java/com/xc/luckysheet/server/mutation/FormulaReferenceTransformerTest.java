@@ -1,10 +1,13 @@
 package com.xc.luckysheet.server.mutation;
 
+import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 class FormulaReferenceTransformerTest {
@@ -71,6 +74,49 @@ class FormulaReferenceTransformerTest {
         );
 
         assertEquals("=SUM(Sheet1!A3:B4,A1 B1,@C3#)", result);
+    }
+
+    @Test
+    void structuralEditsPreserveThreeDimensionalReferencesWhenTargetIsOutsideTheirSheetSpan() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-3", "Sheet3"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-4", "Sheet4"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(3);
+        String formula = "=SUM(Sheet1:Sheet3!A1)+A1";
+
+        assertEquals("=SUM(Sheet1:Sheet3!A1)+A2", FormulaReferenceTransformer.remapAxis(
+                formula, target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertEquals("=SUM(Sheet1:Sheet3!A1)+A2", FormulaReferenceTransformer.remapCellShift(
+                formula, target, target, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void structuralEditsRejectThreeDimensionalReferencesWhenTargetIsInsideTheirSheetSpan() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-3", "Sheet3"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(1);
+        String formula = "=SUM(Sheet1:Sheet3!A1)";
+
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapAxis(
+                formula, target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapCellShift(
+                formula, target, target, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void renameUpdatesOnlyMatchingEndpointsOfThreeDimensionalReferences() {
+        assertEquals("=SUM('New Name:Sheet3'!A1)+Old!B2",
+                FormulaReferenceTransformer.renameSheet("=SUM('Old Name:Sheet3'!A1)+Old!B2", "Old Name", "New Name"));
+        assertEquals("=SUM(Sheet1:'New Name'!A1)",
+                FormulaReferenceTransformer.renameSheet("=SUM(Sheet1:'Old Name'!A1)", "Old Name", "New Name"));
     }
 
     @Test

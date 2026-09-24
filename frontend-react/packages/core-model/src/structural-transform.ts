@@ -954,6 +954,7 @@ function rewriteReferencesForMovedRegion(
     const next = transformMovedFormula(cell.formula, owner.id);
     if (next !== cell.formula) plan.cells.push({ sheetId: owner.id, row: formulaOwner.row, column: formulaOwner.column, formula: next });
   }
+  for (const owner of workbook.getSheets()) {
     for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
       const ownerSheetId = rule.formulaAnchor?.sheetId ?? rule.sheetId;
       const addRuleFormula = (field: MoveRuleFormulaField, formula: string): void => {

@@ -32,14 +32,27 @@ final class FormulaReferenceTransformer {
             int count,
             Direction direction
     ) {
+        return remapAxis(formula, owner, target, axis, at, count, direction, List.of(owner, target));
+    }
+
+    static String remapAxis(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Axis axis,
+            int at,
+            int count,
+            Direction direction,
+            List<SheetIdentity> sheetOrder
+    ) {
         validateAxis(at, count);
-        assertNoThreeDimensionalReference(formula);
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
         String rewritten = rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target)) return reference;
             int position = axis == Axis.ROW ? reference.row() : reference.column();
             int mapped = mapAxisPoint(position, axis, at, count, direction);
             return mapped < 0 ? null : withAxisCoordinate(reference, axis, mapped);
-        }, parsed -> remapAxisRange(parsed, owner, target, axis, at, count, direction));
+        }, parsed -> remapAxisRange(parsed, owner, target, axis, at, count, direction), true);
         return remapWholeAxisReferences(rewritten, owner, target, axis, at, count, direction);
     }
 
@@ -51,14 +64,26 @@ final class FormulaReferenceTransformer {
             Axis axis,
             Direction direction
     ) {
-        assertNoThreeDimensionalReference(formula);
+        return remapCellShift(formula, owner, target, selection, axis, direction, List.of(owner, target));
+    }
+
+    static String remapCellShift(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            Axis axis,
+            Direction direction,
+            List<SheetIdentity> sheetOrder
+    ) {
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
         int count = axis == Axis.ROW
                 ? selection.endRow() - selection.startRow() + 1
                 : selection.endColumn() - selection.startColumn() + 1;
         return rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target)) return reference;
             return mapCellShiftPoint(reference, selection, axis, direction, count);
-        }, parsed -> remapCellShiftRange(parsed, owner, target, selection, axis, direction, count));
+        }, parsed -> remapCellShiftRange(parsed, owner, target, selection, axis, direction, count), true);
     }
 
     static Range remapCellShiftRangeCoordinates(Range range, Range selection, Axis axis, Direction direction) {
@@ -125,7 +150,7 @@ final class FormulaReferenceTransformer {
         return rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target) || !selection.contains(reference.row(), reference.column())) return reference;
             return reference.withCoordinates(reference.row() + rowDelta, reference.column() + columnDelta);
-        }, parsed -> remapMovedRange(parsed, owner, target, selection, rowDelta, columnDelta));
+        }, parsed -> remapMovedRange(parsed, owner, target, selection, rowDelta, columnDelta), true);
     }
 
     private static RangeMapping remapMovedRange(
@@ -164,6 +189,10 @@ final class FormulaReferenceTransformer {
     }
 
     private static void assertMovedThreeDimensionalReferences(String formula, SheetIdentity target, List<SheetIdentity> sheetOrder) {
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
+    }
+
+    private static void assertStructuralThreeDimensionalReferences(String formula, SheetIdentity target, List<SheetIdentity> sheetOrder) {
         if (formula == null) return;
         int index = 0;
         while (index < formula.length()) {
@@ -214,7 +243,7 @@ final class FormulaReferenceTransformer {
             throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved");
         }
         if (moved >= Math.min(start, end) && moved <= Math.max(start, end)) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells cannot rewrite one sheet inside a 3D reference");
+            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: structural edits cannot rewrite one sheet inside a 3D reference");
         }
     }
 
@@ -311,12 +340,12 @@ final class FormulaReferenceTransformer {
 
     static String renameSheet(String formula, String oldName, String newName) {
         if (oldName == null || oldName.isBlank() || newName == null || newName.isBlank()) throw ServiceException.validation("Worksheet names are required for formula rename");
-        assertNoThreeDimensionalReference(formula);
         String rewritten = rewrite(formula, reference -> {
             if (reference.sheetName() == null || !sameName(reference.sheetName(), oldName)) return reference;
             return reference.withSheetName(newName);
-        });
-        return rewriteWholeAxisSheetName(rewritten, oldName, newName, false);
+        }, null, true);
+        rewritten = rewriteWholeAxisSheetName(rewritten, oldName, newName, false);
+        return rewriteThreeDimensionalSheetNames(rewritten, oldName, newName);
     }
 
     static String invalidateSheet(String formula, String sheetId, String sheetName) {
@@ -343,10 +372,14 @@ final class FormulaReferenceTransformer {
     }
 
     private static String rewrite(String formula, ReferenceMapper mapper) {
-        return rewrite(formula, mapper, null);
+        return rewrite(formula, mapper, null, false);
     }
 
     private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper) {
+        return rewrite(formula, mapper, rangeMapper, false);
+    }
+
+    private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper, boolean preserveThreeDimensionalReferences) {
         if (formula == null) return null;
         StringBuilder output = new StringBuilder(formula.length());
         int index = 0;
@@ -364,6 +397,14 @@ final class FormulaReferenceTransformer {
                 output.append(formula, index, end);
                 index = end;
                 continue;
+            }
+            if (preserveThreeDimensionalReferences) {
+                int threeDimensionalEnd = threeDimensionalReferenceEnd(formula, index);
+                if (threeDimensionalEnd > index) {
+                    output.append(formula, index, threeDimensionalEnd);
+                    index = threeDimensionalEnd;
+                    continue;
+                }
             }
             ParsedReference parsed = parseQualifiedReference(formula, index);
             if (parsed == null) parsed = parseReference(formula, index, null, null);
@@ -411,6 +452,11 @@ final class FormulaReferenceTransformer {
             if (current == '[') {
                 int externalEnd = consumeExternalReference(formula, index);
                 index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            int threeDimensionalEnd = threeDimensionalReferenceEnd(formula, index);
+            if (threeDimensionalEnd > index) {
+                index = threeDimensionalEnd;
                 continue;
             }
 
@@ -478,6 +524,11 @@ final class FormulaReferenceTransformer {
                 index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
                 continue;
             }
+            int threeDimensionalEnd = threeDimensionalReferenceEnd(formula, index);
+            if (threeDimensionalEnd > index) {
+                index = threeDimensionalEnd;
+                continue;
+            }
             SheetPrefix prefix = parseSheetPrefix(formula, index);
             if (prefix == null || prefix.afterPrefix() >= formula.length() || formula.charAt(prefix.afterPrefix()) != '!') {
                 index = prefix == null ? index + 1 : Math.max(index + 1, prefix.afterPrefix());
@@ -499,6 +550,73 @@ final class FormulaReferenceTransformer {
         if (copied == 0) return formula;
         output.append(formula, copied, formula.length());
         return output.toString();
+    }
+
+    private static String rewriteThreeDimensionalSheetNames(String formula, String oldName, String newName) {
+        if (formula == null || formula.isEmpty()) return formula;
+        StringBuilder output = new StringBuilder(formula.length());
+        int copied = 0;
+        int index = 0;
+        while (index < formula.length()) {
+            char current = formula.charAt(index);
+            if (current == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            int referenceEnd = threeDimensionalReferenceEnd(formula, index);
+            if (referenceEnd <= index) {
+                index += 1;
+                continue;
+            }
+
+            SheetPrefix first = parseSheetPrefix(formula, index);
+            String replacement = null;
+            int prefixEnd = -1;
+            if (first != null && first.name().contains(":")
+                    && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
+                int separator = first.name().indexOf(':');
+                if (separator > 0 && separator == first.name().lastIndexOf(':') && separator < first.name().length() - 1) {
+                    String startName = first.name().substring(0, separator);
+                    String endName = first.name().substring(separator + 1);
+                    String renamedStart = renamedSheetName(startName, oldName, newName);
+                    String renamedEnd = renamedSheetName(endName, oldName, newName);
+                    if (!startName.equals(renamedStart) || !endName.equals(renamedEnd)) {
+                        replacement = renderSheetName(renamedStart + ":" + renamedEnd) + "!";
+                        prefixEnd = first.afterPrefix() + 1;
+                    }
+                }
+            } else if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
+                int secondStart = first.afterPrefix() + 1;
+                SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
+                if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
+                    String renamedStart = renamedSheetName(first.name(), oldName, newName);
+                    String renamedEnd = renamedSheetName(second.name(), oldName, newName);
+                    if (!first.name().equals(renamedStart) || !second.name().equals(renamedEnd)) {
+                        String renderedStart = first.name().equals(renamedStart) ? first.raw() : renderSheetName(renamedStart);
+                        String renderedEnd = second.name().equals(renamedEnd) ? second.raw() : renderSheetName(renamedEnd);
+                        replacement = renderedStart + ":" + renderedEnd + "!";
+                        prefixEnd = second.afterPrefix() + 1;
+                    }
+                }
+            }
+            if (replacement != null) {
+                output.append(formula, copied, index).append(replacement);
+                copied = prefixEnd;
+            }
+            index = referenceEnd;
+        }
+        if (copied == 0) return formula;
+        output.append(formula, copied, formula.length());
+        return output.toString();
+    }
+
+    private static String renamedSheetName(String current, String oldName, String newName) {
+        return sameName(current, oldName) ? newName : current;
     }
 
     private static int consumeExternalReference(String formula, int start) {

@@ -248,6 +248,36 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
   });
 
+  it('rewrites rule formulas and hyperlink addresses on other worksheets when a referenced range moves', () => {
+    const workbook = new WorkbookModel('unit-move-metadata-references', 'Move Metadata References');
+    const sheet = workbook.getSheet('sheet-1');
+    const other = workbook.addSheet('sheet-2', 'Other');
+    other.conditionalFormats.push({
+      id: 'cf-1', sheetId: other.id,
+      ranges: [{ sheetId: other.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'formula', value1: '=Sheet1!A1',
+    });
+    other.dataValidations.push({
+      id: 'dv-1', sheetId: other.id,
+      ranges: [{ sheetId: other.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=Sheet1!A1',
+    });
+    other.hyperlinks.set('0:0', {
+      id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: '=Sheet1!A1' },
+    });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(other.conditionalFormats[0]?.value1, '=Sheet1!C3');
+    assert.equal(other.dataValidations[0]?.formula1, '=Sheet1!C3');
+    const target = other.hyperlinks.get('0:0')?.target;
+    assert.equal(target?.kind === 'sheet' ? target.address : undefined, '=Sheet1!C3');
+  });
+
   it('rejects moving over destination-anchored hyperlinks without mutating either range', () => {
     const workbook = new WorkbookModel('unit-move-hyperlink-reject', 'Move Hyperlink Reject');
     const sheet = workbook.getSheet('sheet-1');
