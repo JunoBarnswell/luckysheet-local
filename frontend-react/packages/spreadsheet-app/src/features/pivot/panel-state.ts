@@ -1,6 +1,7 @@
 import type {
   PivotAggregateFunction,
   PivotFieldCatalog,
+  PivotFieldDefinition,
   PivotFieldPlacement,
   PivotFilter,
   PivotGroup,
