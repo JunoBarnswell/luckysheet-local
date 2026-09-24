@@ -79,7 +79,7 @@ export function transformReferenceInterval(
 }
 
 function sameSheet(left: string | undefined, right: string): boolean {
-  return left?.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+  return left?.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
 function referenceTargetsSheet(sheetId: string | undefined, context: StructuralReferenceContext): boolean {
@@ -332,7 +332,8 @@ export function mapAstStructuralReferences(
       const start = findSheetIndex(node.qualifier.startSheetId);
       const end = findSheetIndex(node.qualifier.endSheetId);
       if (start < 0 || end < 0) throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference sheet boundary is unresolved');
-      const target = context.sheetOrder?.findIndex((sheet) => sameSheet(sheet.id, context.targetSheetId)) ?? -1;
+      const target = context.sheetOrder?.findIndex((sheet) => sheet.id === context.targetSheetId) ?? -1;
+      if (target < 0) throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: target worksheet identity is unresolved');
       if (target >= Math.min(start, end) && target <= Math.max(start, end)) {
         throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: structural edits cannot rewrite one sheet inside a 3D reference');
       }
@@ -392,7 +393,7 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
       sameSheet(sheet.id, reference) || sameSheet(sheet.name, reference)) ?? -1;
     const start = sheetIndex(startSheetId);
     const end = sheetIndex(endSheetId);
-    const target = sheetIndex(context.targetSheetId);
+    const target = context.sheetOrder?.findIndex((sheet) => sheet.id === context.targetSheetId) ?? -1;
     if (start < 0 || end < 0 || target < 0) {
       throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved');
     }
@@ -616,9 +617,9 @@ export function renameAstSheetReferences(
   oldName: string,
   newName: string,
 ): FormulaAst {
-  const normalizedOld = oldName.trim().toLocaleLowerCase();
+  const normalizedOld = oldName.trim().toLowerCase();
   const mapped = mapAstReferences(node, (reference) => {
-    if (reference.sheetId?.trim().toLocaleLowerCase() !== normalizedOld) return reference;
+    if (reference.sheetId?.trim().toLowerCase() !== normalizedOld) return reference;
     return { ...reference, sheetId: newName };
   });
   return renameQualifiedSheets(mapped, normalizedOld, newName);
@@ -628,13 +629,13 @@ function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName:
   switch (node.type) {
     case 'whole-column-reference':
     case 'whole-row-reference':
-      return node.sheetId?.trim().toLocaleLowerCase() === normalizedOld ? { ...node, sheetId: newName } : node;
+      return node.sheetId?.trim().toLowerCase() === normalizedOld ? { ...node, sheetId: newName } : node;
     case 'sheet-range-reference':
       return {
         ...node,
         qualifier: {
-          startSheetId: node.qualifier.startSheetId.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.startSheetId,
-          endSheetId: node.qualifier.endSheetId.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.endSheetId,
+          startSheetId: node.qualifier.startSheetId.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.startSheetId,
+          endSheetId: node.qualifier.endSheetId.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.endSheetId,
         },
         reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
       };
@@ -643,7 +644,7 @@ function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName:
         ...node,
         qualifier: {
           ...node.qualifier,
-          sheetId: node.qualifier.sheetId?.trim().toLocaleLowerCase() === normalizedOld ? newName : node.qualifier.sheetId,
+          sheetId: node.qualifier.sheetId?.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.sheetId,
         },
         reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
       };

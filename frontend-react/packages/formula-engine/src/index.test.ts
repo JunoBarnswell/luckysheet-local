@@ -4,6 +4,7 @@ import {
   FormulaEngine,
   RangeIndex,
   mapAstMovedReferences,
+  mapAstStructuralReferences,
   formatFormula,
   formatCellAddress,
   isFormulaError,
@@ -77,6 +78,17 @@ test('structural reference index selects affected owners and retains invalid for
   assert.deepEqual(index.getInvalidFormulaOwners(), []);
 });
 
+test('reference index resolves worksheet names without host-locale casing', () => {
+  const index = new RangeIndex([
+    { id: 'sheet-1', name: 'INTEREST' },
+    { id: 'sheet-2', name: 'Owner' },
+  ]);
+  const owner = address('sheet-2', 8, 5);
+  index.set(owner, [{ kind: 'cell', address: address('interest', 4, 2) }]);
+
+  assert.deepEqual(index.getDependents(address('sheet-1', 4, 2)), [owner]);
+});
+
 test('range moves fail closed when whole-axis references would become non-contiguous', () => {
   const move: MoveRangeReferenceTransform = {
     selection: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
@@ -90,6 +102,29 @@ test('range moves fail closed when whole-axis references would become non-contig
   assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(A:A)'), move), /whole-column reference non-contiguous/);
   assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(1:1)'), move), /whole-row reference non-contiguous/);
   assert.equal(formatFormula(mapAstMovedReferences(parseFormula('=SUM(A:A)'), { ...move, columnDelta: 0 })), '=SUM(A:A)');
+});
+
+test('3-D structural references require a resolvable target worksheet identity', () => {
+  const formula = parseFormula('=SUM(Sheet1:Sheet2!A1)');
+  const sheetOrder = [
+    { id: 'sheet-1', name: 'Sheet1' },
+    { id: 'sheet-2', name: 'Sheet2' },
+    { id: 'sheet-3', name: 'Sheet3' },
+  ];
+  const shift = { axis: 'row' as const, at: 0, count: 1, op: 'insert' as const };
+
+  assert.equal(formatFormula(mapAstStructuralReferences(formula, {
+    shift,
+    ownerSheetId: 'sheet-3',
+    targetSheetId: 'sheet-3',
+    sheetOrder,
+  })), '=SUM(Sheet1:Sheet2!A1)');
+  assert.throws(() => mapAstStructuralReferences(formula, {
+    shift,
+    ownerSheetId: 'sheet-3',
+    targetSheetId: 'missing-sheet',
+    sheetOrder,
+  }), /target worksheet identity is unresolved/);
 });
 
 test('FormulaEngine input-address range index follows value, formula, clear and reset lifecycle', () => {

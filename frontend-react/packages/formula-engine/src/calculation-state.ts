@@ -63,7 +63,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   const sheetIds = new Set<string>();
   const sheetNames = new Set<string>();
   for (const sheet of value.sheetOrder) {
-    const normalizedName = sheet.name.toLocaleLowerCase();
+    const normalizedName = sheet.name.toLowerCase();
     if (sheetIds.has(sheet.id) || sheetNames.has(normalizedName)) {
       throw new Error('Calculation snapshot worksheet identities are not unique');
     }

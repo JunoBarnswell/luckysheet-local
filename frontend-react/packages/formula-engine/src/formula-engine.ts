@@ -1937,7 +1937,7 @@ function normalizeFormulaSheetOrder(
   const names = new Set<string>();
   const normalized = source.map((sheet) => {
     if (!sheet.id.trim() || !sheet.name.trim()) throw new Error('FormulaEngine worksheet identities cannot be empty');
-    const normalizedName = sheet.name.toLocaleLowerCase();
+    const normalizedName = sheet.name.toLowerCase();
     if (ids.has(sheet.id) || names.has(normalizedName)) throw new Error('FormulaEngine worksheet identities must be unique');
     ids.add(sheet.id);
     names.add(normalizedName);

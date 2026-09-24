@@ -357,9 +357,9 @@ function rectangleGeometry(
 
 function resolveSheetId(reference: string | undefined, ownerSheetId: string, sheetOrder: readonly SheetIdentity[]): string {
   const token = reference ?? ownerSheetId;
-  const normalized = token.trim().toLocaleLowerCase();
-  const sheet = sheetOrder.find((candidate) => candidate.id.toLocaleLowerCase() === normalized
-    || candidate.name.toLocaleLowerCase() === normalized);
+  const normalized = token.trim().toLowerCase();
+  const sheet = sheetOrder.find((candidate) => candidate.id.toLowerCase() === normalized
+    || candidate.name.toLowerCase() === normalized);
   if (!sheet && sheetOrder.length === 0) return token;
   if (!sheet) throw new FormulaReferenceError(`Reference worksheet cannot be resolved: ${token}`);
   return sheet.id;

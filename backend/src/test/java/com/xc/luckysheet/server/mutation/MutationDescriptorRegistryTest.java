@@ -1280,8 +1280,9 @@ class MutationDescriptorRegistryTest {
         OperationMutation deleteAnchoredCell = new OperationMutation("cells.deleted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"operation":"delete","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":2,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
+        JsonNode beforeDeleteAnchoredCell = current;
         ServiceException deletedCellAnchor = assertThrows(ServiceException.class,
-                () -> registry.applyPublicMutations(current, List.of(deleteAnchoredCell)));
+                () -> registry.applyPublicMutations(beforeDeleteAnchoredCell, List.of(deleteAnchoredCell)));
         assertEquals("VALIDATION_ERROR", deletedCellAnchor.code());
         assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
 
