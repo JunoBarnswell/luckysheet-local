@@ -415,28 +415,53 @@ function isDefaultMoveSpec(spec: PasteSpecialSpec): boolean {
 
 function isPasteSnapshot(value: unknown): value is PasteSnapshot {
   if (!isRecord(value) || !Array.isArray(value.cells)) return false;
-  const workbookTheme = value.workbookTheme;
-  const validWorkbookTheme = workbookTheme === undefined
-    || (isRecord(workbookTheme)
-      && typeof workbookTheme.id === 'string'
-      && workbookTheme.id.trim().length > 0
-      && isRecord(workbookTheme.colors)
-      && Object.values(workbookTheme.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)));
-  return (value.clearRanges === undefined || (Array.isArray(value.clearRanges) && value.clearRanges.every(isRange)))
-    && (value.clearMetadataRanges === undefined || (Array.isArray(value.clearMetadataRanges) && value.clearMetadataRanges.every(isRange)))
-    && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && (value.notes === undefined || (Array.isArray(value.notes) && value.notes.every((entry) => isRecord(entry)
-      && typeof entry.key === 'string' && (entry.value === undefined || isCellNoteSnapshot(entry.value))))
-    && (value.hyperlinks === undefined || (Array.isArray(value.hyperlinks) && value.hyperlinks.every((entry) => isRecord(entry)
-      && typeof entry.key === 'string' && (entry.value === undefined || isCellHyperlinkSnapshot(entry.value))))
-    && (value.commentCells === undefined || (Array.isArray(value.commentCells) && value.commentCells.every((key) => typeof key === 'string')))
-    && (value.comments === undefined || (Array.isArray(value.comments) && value.comments.every(isCommentThreadSnapshot)))
-    && (value.validations === undefined || Array.isArray(value.validations))
-    && (value.conditionalFormats === undefined || Array.isArray(value.conditionalFormats))
-    && (value.columnWidths === undefined || (Array.isArray(value.columnWidths) && value.columnWidths.every((entry) => isRecord(entry)
-      && Number.isSafeInteger(entry.column) && Number(entry.column) >= 0 && Number(entry.column) < MAX_SHEET_COLUMN_COUNT
-      && (entry.widthPx === undefined || (typeof entry.widthPx === 'number' && Number.isFinite(entry.widthPx) && entry.widthPx > 0)))))
-    && validWorkbookTheme;
+  if (value.clearRanges !== undefined) {
+    if (!Array.isArray(value.clearRanges) || !value.clearRanges.every(isRange)) return false;
+  }
+  if (value.clearMetadataRanges !== undefined) {
+    if (!Array.isArray(value.clearMetadataRanges) || !value.clearMetadataRanges.every(isRange)) return false;
+  }
+  for (const entry of value.cells) {
+    if (!isRecord(entry) || !Number.isInteger(entry.row) || !Number.isInteger(entry.column)) return false;
+    if (entry.value !== undefined && !isCellData(entry.value)) return false;
+  }
+  if (value.notes !== undefined) {
+    if (!Array.isArray(value.notes)) return false;
+    for (const entry of value.notes) {
+      if (!isRecord(entry) || typeof entry.key !== 'string') return false;
+      if (entry.value !== undefined && !isCellNoteSnapshot(entry.value)) return false;
+    }
+  }
+  if (value.hyperlinks !== undefined) {
+    if (!Array.isArray(value.hyperlinks)) return false;
+    for (const entry of value.hyperlinks) {
+      if (!isRecord(entry) || typeof entry.key !== 'string') return false;
+      if (entry.value !== undefined && !isCellHyperlinkSnapshot(entry.value)) return false;
+    }
+  }
+  if (value.commentCells !== undefined) {
+    if (!Array.isArray(value.commentCells) || !value.commentCells.every((key) => typeof key === 'string')) return false;
+  }
+  if (value.comments !== undefined) {
+    if (!Array.isArray(value.comments) || !value.comments.every(isCommentThreadSnapshot)) return false;
+  }
+  if (value.validations !== undefined && !Array.isArray(value.validations)) return false;
+  if (value.conditionalFormats !== undefined && !Array.isArray(value.conditionalFormats)) return false;
+  if (value.columnWidths !== undefined) {
+    if (!Array.isArray(value.columnWidths)) return false;
+    for (const entry of value.columnWidths) {
+      if (!isRecord(entry) || !Number.isSafeInteger(entry.column)
+        || Number(entry.column) < 0 || Number(entry.column) >= MAX_SHEET_COLUMN_COUNT) return false;
+      if (entry.widthPx !== undefined && (typeof entry.widthPx !== 'number' || !Number.isFinite(entry.widthPx) || entry.widthPx <= 0)) return false;
+    }
+  }
+  return isPasteWorkbookTheme(value.workbookTheme);
+}
+
+function isPasteWorkbookTheme(value: unknown): value is WorkbookTheme | undefined {
+  if (value === undefined) return true;
+  if (!isRecord(value) || typeof value.id !== 'string' || value.id.trim().length === 0 || !isRecord(value.colors)) return false;
+  return Object.values(value.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color));
 }
 
 function isCellNoteSnapshot(value: unknown): value is CellNote {
