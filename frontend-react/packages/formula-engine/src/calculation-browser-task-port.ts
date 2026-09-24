@@ -21,13 +21,27 @@ export interface CalculationBrowserWorker {
 export type CalculationBrowserWorkerFactory = () => CalculationBrowserWorker;
 
 export interface CalculationWorkerTaskRequest extends CalculationTaskRequest {
-  readonly snapshot: FormulaCalculationSnapshot;
+  /** Present only for the first task or after a calculation-context change. */
+  readonly snapshot?: FormulaCalculationSnapshot;
 }
 
 interface PendingCalculation {
   readonly request: CalculationTaskRequest;
   readonly generation: number;
+  readonly calculationContextGeneration: number;
+  readonly inputRevision: number;
   readonly resolve: (result: CalculationTaskResult) => void;
+}
+
+export interface CalculationTaskState {
+  /** Included only when the persistent Worker context must be bootstrapped. */
+  readonly snapshot?: FormulaCalculationSnapshot;
+  readonly generation: number;
+  /** Changes not yet acknowledged as applied by the persistent Worker. */
+  readonly inputs: readonly import('./calculation-task-port').CalculationInputUpdate[];
+  readonly inputRevision: number;
+  /** Context changes require one explicit Worker rebootstrap. */
+  readonly calculationContextGeneration: number;
 }
 
 /**
@@ -43,8 +57,9 @@ export class BrowserCalculationTaskPort implements CalculationTaskPort {
 
   constructor(
     private readonly worker: CalculationBrowserWorker,
-    private readonly snapshotForTask: () => { readonly snapshot: FormulaCalculationSnapshot; readonly generation: number },
-    private readonly consumeResult: (result: CalculationTaskResult, generation: number) => void,
+    private readonly snapshotForTask: (workerContextGeneration: number | null) => CalculationTaskState,
+    private readonly consumeResult: (result: CalculationTaskResult, generation: number) => boolean | void,
+    private readonly acknowledgeInputs: (inputRevision: number) => void = () => undefined,
   ) {
     this.worker.addEventListener('message', this.handleMessage);
     this.worker.addEventListener('error', this.handleFailure);
@@ -59,10 +74,25 @@ export class BrowserCalculationTaskPort implements CalculationTaskPort {
     }
 
     try {
-      const { snapshot, generation } = this.snapshotForTask();
-      const workerRequest: CalculationWorkerTaskRequest = { ...request, snapshot };
+      const state = this.snapshotForTask(this.workerContextGeneration);
+      const includesSnapshot = this.workerContextGeneration === null
+        || this.workerContextGeneration !== state.calculationContextGeneration;
+      if (includesSnapshot && !state.snapshot) {
+        throw new Error('CALCULATION_SNAPSHOT_MISSING: calculation context changed without a bootstrap snapshot');
+      }
+      const workerRequest: CalculationWorkerTaskRequest = {
+        ...request,
+        ...(includesSnapshot ? { snapshot: state.snapshot } : {}),
+        ...(state.inputs.length > 0 ? { inputs: state.inputs } : {}),
+      };
       return new Promise<CalculationTaskResult>((resolve) => {
-        this.pending.set(request.taskId, { request, generation, resolve });
+        this.pending.set(request.taskId, {
+          request,
+          generation: state.generation,
+          calculationContextGeneration: state.calculationContextGeneration,
+          inputRevision: state.inputRevision,
+          resolve,
+        });
         try {
           this.worker.postMessage(workerRequest);
         } catch (error) {
@@ -129,7 +159,13 @@ export class BrowserCalculationTaskPort implements CalculationTaskPort {
     }
     if (result.status === 'completed') {
       try {
-        this.consumeResult(result, pending.generation);
+        const applied = this.consumeResult(result, pending.generation);
+        if (applied === false) {
+          pending.resolve(result);
+          return;
+        }
+        this.workerContextGeneration = pending.calculationContextGeneration;
+        this.acknowledgeInputs(pending.inputRevision);
       } catch (error) {
         pending.resolve(failedResult(pending.request, 'CALCULATION_RESULT_APPLY_FAILED', errorMessage(error)));
         return;
@@ -137,6 +173,9 @@ export class BrowserCalculationTaskPort implements CalculationTaskPort {
     }
     pending.resolve(result);
   };
+
+  /** The calculation state is retained in the Worker between tasks. */
+  private workerContextGeneration: number | null = null;
 
   private readonly handleFailure = (event: { readonly message?: string }): void => {
     this.failAll('CALCULATION_WORKER_FAILED', event.message ?? 'Calculation worker failed');

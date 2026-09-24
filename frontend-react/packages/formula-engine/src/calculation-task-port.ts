@@ -2,6 +2,7 @@ import type { CellAddress } from './ast';
 import type { FormulaDependency } from './range-index';
 import type { ResolvedSpill } from './spill-resolver';
 import type { FormulaValue } from './values';
+import type { ScalarValue } from './values';
 
 /** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
@@ -22,6 +23,18 @@ export interface CalculationTaskRequest {
   readonly kind: CalculationTaskKind;
   readonly revision: number;
   readonly roots?: readonly CellAddress[];
+  /** Ctrl+Alt+F9 semantics: recalculate every formula, ignoring dirty roots. */
+  readonly full?: boolean;
+  /** Incremental authored-input changes applied to the persistent worker. */
+  readonly inputs?: readonly CalculationInputUpdate[];
+}
+
+export interface CalculationInputUpdate {
+  readonly address: CellAddress;
+  readonly input:
+    | { readonly kind: 'value'; readonly value: ScalarValue }
+    | { readonly kind: 'formula'; readonly formula: string }
+    | null;
 }
 
 export interface CalculationCellResult {
@@ -85,6 +98,12 @@ export function assertCalculationTaskRequest(request: CalculationTaskRequest): v
   if (request.roots !== undefined && !request.roots.every(isCellAddress)) {
     throw new Error('Calculation task roots must be valid cell addresses');
   }
+  if (request.full !== undefined && typeof request.full !== 'boolean') {
+    throw new Error('Calculation task full flag must be boolean');
+  }
+  if (request.inputs !== undefined && !request.inputs.every(isCalculationInputUpdate)) {
+    throw new Error('Calculation task inputs must be valid incremental cell updates');
+  }
 }
 
 export function isCalculationTaskCancellation(value: unknown): value is CalculationTaskCancellation {
@@ -139,6 +158,21 @@ function isCalculationTaskReport(value: unknown): value is CalculationTaskReport
 function isCalculationCellResult(value: unknown): value is CalculationCellResult {
   if (!isRecord(value) || !isCellAddress(value.address as CellAddress) || !Array.isArray(value.dependencies)) return false;
   return typeof value.formula === 'undefined' || typeof value.formula === 'string';
+}
+
+function isCalculationInputUpdate(value: unknown): value is CalculationInputUpdate {
+  if (!isRecord(value) || !isCellAddress(value.address as CellAddress)) return false;
+  if (value.input === null) return true;
+  if (!isRecord(value.input) || typeof value.input.kind !== 'string') return false;
+  if (value.input.kind === 'formula') return typeof value.input.formula === 'string';
+  return value.input.kind === 'value' && isScalarValue(value.input.value);
+}
+
+function isScalarValue(value: unknown): value is ScalarValue {
+  return value === null
+    || typeof value === 'number'
+    || typeof value === 'string'
+    || typeof value === 'boolean';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

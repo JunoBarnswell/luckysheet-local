@@ -2,7 +2,7 @@ import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
 import { WorkbookModel, type DataSourceManifest } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem } from '@react-sheets/formula-engine';
+import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem, type CalculationInputUpdate } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   assertOperationResultMatches,
@@ -26,8 +26,8 @@ import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
   configureFormulaSpillEnvironment,
   configureWorkbookSpillEnvironments,
+  syncFormulaSpillsToSheet,
   syncWorkbookSheetTables,
-  syncWorkbookSpills,
 } from './formula-spill-sync';
 import {
   OperationJournalStore,
@@ -48,6 +48,7 @@ export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
   onNotice?: (message: string) => void;
   onMutationsApplied?: () => void;
+  onCalculationApplied?: (addresses: readonly { readonly sheetId: string; readonly row: number; readonly column: number }[]) => void;
   onPhaseChange?: (phase: import('./types').AppPhase) => void;
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
@@ -238,6 +239,10 @@ export function createSpreadsheetRuntime(options: {
     disposed: false,
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
+  // The initial runtime has no workbook snapshot boundary yet, but it still
+  // needs a live spill environment so the first authored dynamic-array formula
+  // can resolve without rebuilding the whole calculation engine.
+  configureWorkbookSpillEnvironments(runtime.formula, runtime.model);
   // Recovery intent is written before HTTP submission. Java owns durable
   // workbook state; reconnection reconciles each original operation ID.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
@@ -289,7 +294,6 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'flashFill.restored',
   'range.clear',
   'range.paste',
-  'style.preset.set',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',
   'query.load.range',
@@ -353,23 +357,60 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'cells.deleted',
   'cells.inserted.restore',
   'cells.deleted.restore',
+  'dataRegion.materialize.commit',
+  'dataRegion.materialize.restore',
+  'query.load.range',
+  'query.load.sheet-table',
+  'query.load.pivot-source',
+  'query.load.workbook-table',
 ]);
 
-function synchronizeManualCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): void {
+/** These operations change the dependency address space, not just cell inputs. */
+const CALCULATION_CONTEXT_REBUILDS = new Set([
+  'cells.inserted',
+  'cells.deleted',
+  'cells.inserted.restore',
+  'cells.deleted.restore',
+  'rows.permuted',
+  'rows.inserted',
+  'rows.deleted',
+  'columns.inserted',
+  'columns.deleted',
+  'sheet.rename',
+  'sheet.remove',
+  'sheet.restore',
+  'sheet.add',
+  'sheet.duplicated',
+]);
+
+const CALCULATION_CONTEXT_UPDATES = new Set([
+  'sheetTable.add',
+  'sheetTable.remove',
+  'sheetTable.update',
+  'table.add',
+  'table.remove',
+  'name.set',
+  'name.remove',
+]);
+
+function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): readonly CellAddressInput[] {
+  const updates = new Map<string, CalculationInputUpdate>();
   for (const range of mutation.affectedRanges) {
     const sheet = workbook.getSheet(range.sheetId);
-    configureFormulaSpillEnvironment(engine, sheet);
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
         const cell = sheet.cells.get(row, column);
         const address = { sheetId: sheet.id, row, column };
-        if (!cell || (cell.formula === undefined && cell.value == null)) engine.clearCell(address);
-        else if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
-        else if (cell.value != null) engine.setValue(address, cell.value as never);
-        else engine.setValue(address, cell.value as never);
+        const input = !cell || (cell.formula === undefined && cell.value == null)
+          ? null
+          : cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly
+            ? { kind: 'formula' as const, formula: cell.formula }
+            : { kind: 'value' as const, value: (cell.value ?? null) as never };
+        updates.set(`${sheet.id}:${row}:${column}`, { address, input });
       }
     }
   }
+  return engine.synchronizeInputs([...updates.values()]);
 }
 
 /**
@@ -414,6 +455,7 @@ interface FormulaQueueState {
   scheduled: boolean;
   epoch: number;
   force: boolean;
+  full: boolean;
   roots?: readonly CellAddressInput[];
 }
 
@@ -431,20 +473,28 @@ function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').S
  * the active task and advances the epoch, so a late worker result cannot
  * mutate spills or render projections for an older workbook state.
  */
-export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false, roots?: readonly CellAddressInput[]): Promise<void> {
+export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false, roots?: readonly CellAddressInput[], full = false): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
   const state = formulaQueueStates.get(runtime) ?? {
     tail: Promise.resolve(),
     scheduled: false,
     epoch: 0,
     force: false,
+    full: false,
     roots: undefined,
   } satisfies FormulaQueueState;
   formulaQueueStates.set(runtime, state);
   state.epoch += 1;
   state.force ||= force;
-  if (roots !== undefined) state.roots = [...roots];
-  else state.roots = undefined;
+  state.full ||= full;
+  if (roots !== undefined) {
+    const merged = new Map<string, CellAddressInput>();
+    for (const root of state.roots ?? []) merged.set(typeof root === 'string' ? root : `${root.sheetId}:${root.row}:${root.column}`, root);
+    for (const root of roots) merged.set(typeof root === 'string' ? root : `${root.sheetId}:${root.row}:${root.column}`, root);
+    state.roots = [...merged.values()];
+  } else {
+    state.roots = undefined;
+  }
   runtime.formula.cancelCalculation();
   if (state.scheduled) return runtime.formulaCalculation;
 
@@ -456,12 +506,15 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       state.scheduled = false;
       const epoch = state.epoch;
       const forceCalculation = state.force;
-      const calculationRoots = state.roots;
+      const fullCalculation = state.full;
+      const requestedRoots = state.roots;
       state.force = false;
+      state.full = false;
       state.roots = undefined;
       const engine = runtime.formula;
       const workbook = runtime.model;
-      const formulaCount = loadFormulaInputs(engine, workbook);
+      const calculationRoots = requestedRoots;
+      const formulaCount = engine.getFormulaCount();
       if (formulaCount === 0) {
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
         return;
@@ -475,13 +528,17 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
 
       runtime.handlers.onSaveState?.('calculating');
       try {
-        await engine.recalculateAsync(calculationRoots);
+        const report = await engine.recalculateAsync(calculationRoots, undefined, fullCalculation);
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
-        syncWorkbookSpills(engine, workbook);
+        const affectedSheetIds = new Set(report.recalculated.map((address) => address.sheetId));
+        for (const sheetId of affectedSheetIds) {
+          syncFormulaSpillsToSheet(engine, workbook.getSheet(sheetId));
+        }
         void checkpointWorkspace(runtime, false).catch((error: unknown) => {
           runtime.handlers.onSaveState?.('error');
           runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local formula checkpoint failed');
         });
+        runtime.handlers.onCalculationApplied?.(report.recalculated);
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
       } catch (error) {
@@ -538,6 +595,28 @@ function serverCheckpoint(runtime: SpreadsheetRuntime): CheckpointCoordinator {
 }
 const persistenceWriteChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
 
+interface LocalPersistenceState {
+  journalChecksum: string | null;
+  queuedJournalChecksum: string | null;
+  storageRevision: number | null;
+  snapshotTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const localPersistenceStates = new WeakMap<SpreadsheetRuntime, LocalPersistenceState>();
+
+function localPersistenceState(runtime: SpreadsheetRuntime): LocalPersistenceState {
+  const existing = localPersistenceStates.get(runtime);
+  if (existing) return existing;
+  const created: LocalPersistenceState = {
+    journalChecksum: null,
+    queuedJournalChecksum: null,
+    storageRevision: runtime.workspaceRecord?.storageRevision ?? null,
+    snapshotTimer: null,
+  };
+  localPersistenceStates.set(runtime, created);
+  return created;
+}
+
 function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
   const previous = persistenceWriteChains.get(runtime) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(operation);
@@ -545,21 +624,77 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
   return next;
 }
 
-function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true, artifact?: NativeDocumentArtifact): Promise<void> {
-  if (runtime.disposed) return Promise.resolve();
-  if (advanceLocalRevision) runtime.localRevision += 1;
-  if (!runtime.localOnly) {
-    return (async () => {
-      await runtime.recoveryJournal?.flushed();
-      if (artifact) throw new Error('ARTIFACT_SAVE_OWNER_REQUIRED: 原生文件必须通过版本校验的保存命令提交');
-      runtime.handlers.onWorkspacePersisted?.();
-    })();
+function scheduleLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime): void {
+  if (runtime.disposed || !runtime.localOnly) return;
+  const state = localPersistenceState(runtime);
+  if (state.snapshotTimer !== null) return;
+  state.snapshotTimer = setTimeout(() => {
+    state.snapshotTimer = null;
+    void writeLocalSnapshotCheckpoint(runtime).catch((error: unknown) => {
+      runtime.handlers.onSaveState?.('error');
+      runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local snapshot checkpoint failed');
+    });
+  }, 1000);
+}
+
+function cancelLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime): void {
+  const state = localPersistenceState(runtime);
+  if (state.snapshotTimer === null) return;
+  clearTimeout(state.snapshotTimer);
+  state.snapshotTimer = null;
+}
+
+function commitLocalOperationJournal(runtime: SpreadsheetRuntime, pendingJournal: NonNullable<ReturnType<OperationJournalStore['read']>>): Promise<void> {
+  const state = localPersistenceState(runtime);
+  if (state.journalChecksum === pendingJournal.checksum || state.queuedJournalChecksum === pendingJournal.checksum) {
+    scheduleLocalSnapshotCheckpoint(runtime);
+    return Promise.resolve();
   }
+  state.queuedJournalChecksum = pendingJournal.checksum;
+  const localRevision = runtime.localRevision;
+  const previous = checkpointChains.get(runtime) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => enqueuePersistenceWrite(runtime, async () => {
+      if (runtime.disposed) return;
+      const expectedStorageRevision = state.storageRevision ?? runtime.workspaceRecord?.storageRevision;
+      const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
+        runtime.model.unitId,
+        pendingJournal.operations,
+        pendingJournal.nextClientSequence,
+        expectedStorageRevision,
+        localRevision,
+      );
+      state.storageRevision = storageRevision;
+      state.journalChecksum = pendingJournal.checksum;
+      if (state.queuedJournalChecksum === pendingJournal.checksum) state.queuedJournalChecksum = null;
+      if (runtime.workspaceRecord) {
+        runtime.workspaceRecord = {
+          ...runtime.workspaceRecord,
+          localRevision,
+          storageRevision,
+          pending: structuredClone(pendingJournal),
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      scheduleLocalSnapshotCheckpoint(runtime);
+      runtime.handlers.onWorkspacePersisted?.();
+    }));
+  checkpointChains.set(runtime, next);
+  void next.catch(() => {
+    if (state.queuedJournalChecksum === pendingJournal.checksum) state.queuedJournalChecksum = null;
+  });
+  return next;
+}
+
+function writeLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime, artifact?: NativeDocumentArtifact): Promise<void> {
+  if (runtime.disposed) return Promise.resolve();
+  cancelLocalSnapshotCheckpoint(runtime);
   const snapshot = runtime.model.snapshot();
   const localRevision = runtime.localRevision;
   const serverRevision = runtime.remoteRevision;
   const resolution = runtime.resolution;
-  const syncMode = resolution?.binding.syncMode ?? (runtime.localOnly ? 'local-only' as const : 'remote' as const);
+  const syncMode = resolution?.binding.syncMode ?? 'local-only';
   const metadata = resolution ? {
     location: resolution.binding.location,
     lifecycle: resolution.lifecycle,
@@ -577,8 +712,12 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
         : await runtime.workspacePersistence.checkpoint(snapshot, localRevision, serverRevision, syncMode, pendingJournal, metadata);
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
+      localPersistenceState(runtime).storageRevision = record.storageRevision;
+      localPersistenceState(runtime).journalChecksum = record.pending.checksum;
+      localPersistenceState(runtime).queuedJournalChecksum = null;
+      runtime.operationJournal.write(runtime.model.unitId, record.pending.operations, record.pending.nextClientSequence, record.localRevision);
       await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
-        ...(pendingJournal?.operations ?? []),
+        ...record.pending.operations,
         ...runtime.commands.getUndoEntries(),
         ...runtime.commands.getRedoEntries(),
       ]));
@@ -587,6 +726,23 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
     }));
   checkpointChains.set(runtime, next);
   return next;
+}
+
+function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true, artifact?: NativeDocumentArtifact): Promise<void> {
+  if (runtime.disposed) return Promise.resolve();
+  if (advanceLocalRevision) runtime.localRevision += 1;
+  if (!runtime.localOnly) {
+    return (async () => {
+      await runtime.recoveryJournal?.flushed();
+      if (artifact) throw new Error('ARTIFACT_SAVE_OWNER_REQUIRED: 原生文件必须通过版本校验的保存命令提交');
+      runtime.handlers.onWorkspacePersisted?.();
+    })();
+  }
+  const pendingJournal = runtime.operationJournal.read(runtime.model.unitId);
+  if (!artifact && runtime.workspaceRecord && pendingJournal && pendingJournal.operations.length > 0) {
+    return commitLocalOperationJournal(runtime, pendingJournal);
+  }
+  return writeLocalSnapshotCheckpoint(runtime, artifact);
 }
 
 function collectAssetReferences(snapshot: unknown, pending: readonly unknown[]): AssetRef[] {
@@ -613,12 +769,25 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
-      runtime.rowVisibilityResolver.invalidate();
-      runtime.formula.notifyVisibilityChanged();
+      if (VISIBILITY_MUTATIONS.has(mutation.id)) {
+        runtime.rowVisibilityResolver.invalidate();
+        runtime.formula.notifyVisibilityChanged();
+      }
       if (mutation.id === 'workbook.calculation.mode.set') {
         const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
         if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
-        runtime.formula.setCalculationSettings({ mode });
+        runtime.formula.setRecalculationMode(mode);
+      }
+      if (CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
+        // Structural changes alter the canonical address space. Rebuild only
+        // at this explicit boundary; ordinary cell writes remain delta based.
+        rebuildFormulaCalculation(runtime);
+      } else if (CALCULATION_CONTEXT_UPDATES.has(mutation.id)) {
+        if (mutation.id === 'name.set' || mutation.id === 'name.remove') {
+          runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
+        } else {
+          syncWorkbookSheetTables(runtime.formula, runtime.model, false);
+        }
       }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
@@ -639,10 +808,20 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         initializeDataContent(runtime);
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
-        if (runtime.formula.getRecalculationMode() !== 'automatic' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
-          synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
-        } else {
-          void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
+        const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
+        const roots = CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
+          ? undefined
+          : isDirectCellWrite
+            ? synchronizeCellMutation(runtime.formula, runtime.model, mutation)
+            : undefined;
+        const automatic = runtime.formula.getRecalculationMode() === 'automatic';
+        if (automatic || VISIBILITY_MUTATIONS.has(mutation.id) || !isDirectCellWrite || CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
+          void scheduleFormulaRecalculation(
+            runtime,
+            VISIBILITY_MUTATIONS.has(mutation.id),
+            isDirectCellWrite ? undefined : roots,
+            VISIBILITY_MUTATIONS.has(mutation.id),
+          );
         }
       }
     }),
@@ -737,7 +916,7 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
     record?.pending.nextClientSequence ?? 0,
     ...pending.map((operation) => operation.clientSequence),
   );
-  runtime.operationJournal.write(runtime.model.unitId, pending, nextClientSequence);
+  runtime.operationJournal.write(runtime.model.unitId, pending, nextClientSequence, record?.pending.snapshotRevision);
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     clientSessionId: runtime.recoveryJournal?.clientSessionId,
     loadPending: () => {
@@ -798,6 +977,19 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
   runtime.pivotResults = {};
   runtime.pivotRehydrationPending = true;
   void scheduleFormulaRecalculation(runtime);
+}
+
+/** Explicit Ctrl+Alt+Shift+F9 boundary: rebuild the dependency context once. */
+export function rebuildFormulaCalculation(runtime: SpreadsheetRuntime): void {
+  runtime.formula.disposeCalculationTasks();
+  runtime.formula = rebuildFormulaEngine(
+    runtime.model,
+    runtime.dateSystem,
+    runtime.canonicalReferenceDate,
+    runtime.rowVisibilityResolver,
+  );
+  runtime.formulaAudit.setFormula(runtime.formula);
+  runtime.formulaAudit.refresh();
 }
 
 export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: ExcelDateSystem, canonicalReferenceDate?: CanonicalExcelDateParts): void {
@@ -1157,6 +1349,7 @@ export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
   runtime.collaboration?.attachTransport(undefined);
   runtime.collaboration = null;
   runtime.collab = null;
+  cancelLocalSnapshotCheckpoint(runtime);
 }
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
@@ -1213,7 +1406,10 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         revision: resolution?.revision ?? localRecord.serverRevision,
       });
       replaceCollaborationSession(runtime, localRecord);
-      if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
+      const pendingLocalOperations = runtime.collaboration?.getPendingOperations() ?? [];
+      const journalBaseRevision = runtime.operationJournal.read(runtime.model.unitId)?.snapshotRevision ?? runtime.localRevision;
+      if (journalBaseRevision < runtime.localRevision) replayPendingOperations(runtime, pendingLocalOperations);
+      else if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
       runtime.handlers.onNotice?.('Workbook restored from the current memory session');
     }
   }

@@ -69,6 +69,8 @@ export interface WorkspaceRecord {
 export interface PendingOperationJournal {
   schema: 'PendingOperationJournal';
   unitId: string;
+  /** Local revision represented by the persisted snapshot base. */
+  snapshotRevision: number;
   nextClientSequence: number;
   operations: OperationEnvelope[];
   checksum: string;
@@ -134,12 +136,14 @@ function snapshotPayload(snapshot: WorkbookSnapshot): string {
 
 function journalPayload(
   unitId: string,
+  snapshotRevision: number,
   nextClientSequence: number,
   operations: readonly OperationEnvelope[],
 ): Omit<PendingOperationJournal, 'checksum'> {
   return {
     schema: 'PendingOperationJournal',
     unitId,
+    snapshotRevision,
     nextClientSequence,
     operations: operations.map((operation) => clone(operation)),
   };
@@ -149,8 +153,9 @@ function buildJournal(
   unitId: string,
   nextClientSequence: number,
   operations: readonly OperationEnvelope[],
+  snapshotRevision = 0,
 ): PendingOperationJournal {
-  const payload = journalPayload(unitId, nextClientSequence, operations);
+  const payload = journalPayload(unitId, snapshotRevision, nextClientSequence, operations);
   return { ...payload, checksum: computeChecksum(JSON.stringify(payload)) };
 }
 
@@ -254,6 +259,7 @@ function isSafeNonNegative(value: unknown): value is number {
 
 export function verifyPendingOperationJournal(journal: PendingOperationJournal): boolean {
   if (!journal || typeof journal !== 'object' || journal.schema !== 'PendingOperationJournal' || typeof journal.unitId !== 'string' || !journal.unitId.trim()) return false;
+  if (!isSafeNonNegative(journal.snapshotRevision)) return false;
   if (!isSafeNonNegative(journal.nextClientSequence) || !journal.checksum) return false;
   if (!Array.isArray(journal.operations)) return false;
   const seen = new Set<string>();
@@ -273,7 +279,7 @@ export function verifyPendingOperationJournal(journal: PendingOperationJournal):
     seen.add(operation.operationId);
     previousSequence = operation.clientSequence;
   }
-  const payload = journalPayload(journal.unitId, journal.nextClientSequence, journal.operations);
+  const payload = journalPayload(journal.unitId, journal.snapshotRevision, journal.nextClientSequence, journal.operations);
   return computeChecksum(JSON.stringify(payload)) === journal.checksum;
 }
 
@@ -309,7 +315,7 @@ export function buildWorkspaceRecord(input: WorkspaceRecordInput): WorkspaceReco
   }
   const snapshot = input.snapshot;
   if (snapshot.unitId !== input.unitId) throw new Error('Workspace snapshot unitId does not match record');
-  const pending = buildJournal(input.unitId, input.nextClientSequence, input.operations);
+  const pending = buildJournal(input.unitId, input.nextClientSequence, input.operations, input.localRevision);
   const record: WorkspaceRecord = {
     schema: 'WorkspaceRecord',
     unitId: input.unitId,
@@ -341,8 +347,8 @@ export class OperationJournalStore {
     this.journals.set(record.unitId, clone(record.pending));
   }
 
-  write(unitId: string, operations: readonly OperationEnvelope[], nextClientSequence: number): void {
-    const journal = buildJournal(unitId, nextClientSequence, operations);
+  write(unitId: string, operations: readonly OperationEnvelope[], nextClientSequence: number, snapshotRevision?: number): void {
+    const journal = buildJournal(unitId, nextClientSequence, operations, snapshotRevision ?? this.journals.get(unitId)?.snapshotRevision ?? 0);
     if (!verifyPendingOperationJournal(journal)) throw new Error('PendingOperationJournal failed validation');
     this.journals.set(unitId, journal);
   }
@@ -444,7 +450,7 @@ export class MemoryWorkspaceStore {
       if (!snapshot || !catalog) throw schemaError(head.unitId);
       const pending = buildJournal(head.unitId, head.nextClientSequence, operations
         .filter((candidate) => candidate.unitId === head.unitId)
-        .sort((left, right) => left.clientSequence - right.clientSequence));
+        .sort((left, right) => left.clientSequence - right.clientSequence), snapshot.localRevision);
       const record: WorkspaceRecord = normalizeWorkspaceRecord({
         schema: 'WorkspaceRecord',
         unitId: head.unitId,
@@ -474,7 +480,7 @@ export class MemoryWorkspaceStore {
     const record = normalizeWorkspaceRecord({
       schema: 'WorkspaceRecord', unitId, snapshot: snapshot.snapshot as WorkbookSnapshot, checksum: snapshot.checksum,
       localRevision: head.localRevision, serverRevision: head.serverRevision, storageRevision: head.storageRevision,
-      syncMode: head.syncMode, pending: buildJournal(unitId, head.nextClientSequence, operations), updatedAt: head.updatedAt,
+      syncMode: head.syncMode, pending: buildJournal(unitId, head.nextClientSequence, operations, snapshot.localRevision), updatedAt: head.updatedAt,
       metadata: catalog.metadata as WorkspaceRecordMetadata, userState: catalog.userState as WorkspaceUserState,
     });
     if (!verifyWorkspaceRecord(record)) throw schemaError(unitId);
@@ -693,6 +699,7 @@ export class WorkspacePersistence {
     operations: readonly OperationEnvelope[],
     nextClientSequence: number,
     expectedStorageRevision?: number,
+    localRevision?: number,
   ): Promise<number> {
     return this.withWorkbookWriter(unitId, async () => {
       return this.coordinator.transaction((transaction) => {
@@ -705,7 +712,7 @@ export class WorkspacePersistence {
       for (const operation of existing) if (operation.unitId === unitId) transaction.delete('workspaceOperations', memoryKey(unitId, operation.clientSequence));
       for (const operation of operations) transaction.set('workspaceOperations', memoryKey(unitId, operation.clientSequence), { ...clone(operation), unitId });
       const storageRevision = head.storageRevision + 1;
-      transaction.set('workspaceHeads', unitId, { ...head, storageRevision, nextClientSequence, updatedAt: new Date().toISOString() });
+      transaction.set('workspaceHeads', unitId, { ...head, storageRevision, nextClientSequence, ...(localRevision === undefined ? {} : { localRevision }), updatedAt: new Date().toISOString() });
       return storageRevision;
       });
     });

@@ -28,6 +28,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSett
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
+  type CalculationInputUpdate,
   type CalculationTaskPort,
   type CalculationTaskReport,
   type CalculationTaskRequest,
@@ -36,6 +37,7 @@ import {
 import {
   BrowserCalculationTaskPort,
   createBrowserCalculationWorker,
+  type CalculationTaskState,
   type CalculationBrowserWorkerFactory,
 } from './calculation-browser-task-port';
 import {
@@ -130,6 +132,11 @@ export class FormulaEngine {
   private pendingRecalculationRoots = new Set<string>();
   private sheetTables = new Map<string, SheetTableRef>();
   private calculationGeneration = 0;
+  private calculationContextGeneration = 0;
+  private inputUpdateSequence = 0;
+  private pendingInputUpdates = new Map<string, { sequence: number; update: CalculationInputUpdate }>();
+  private formulaTopologyGeneration = 0;
+  private cachedCircularComponents: { generation: number; components: ReturnType<typeof findFormulaComponents> } | null = null;
   private nextTaskSequence = 0;
   private activeTaskId: string | null = null;
   private activeTaskPort: CalculationTaskPort | null = null;
@@ -141,11 +148,12 @@ export class FormulaEngine {
   private calculationCycleSequence = 0;
   private activeCalculationEntropy?: CalculationEntropyContext;
   private readonly collationContext: WorkbookCollationContext;
-  private readonly rowVisibilityResolver?: RowVisibilityResolver;
+  private rowVisibilityResolver?: RowVisibilityResolver;
   private calculationSettings: WorkbookCalculationSettings;
   private iterationFallbackValues?: ReadonlyMap<string, FormulaValue>;
 
   private readonly cells = new Map<string, StoredCell>();
+  private formulaCount = 0;
 
   constructor(options: FormulaEngineOptions = {}) {
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
@@ -209,6 +217,7 @@ export class FormulaEngine {
   setValue(addressInput: CellAddressInput, value: ScalarValue): FormulaResult {
     const address = this.resolveAddress(addressInput);
     const result = this.loadValue(address, value);
+    this.recordInputUpdate(address, { kind: 'value', value });
     this.markCalculationStateChanged();
     if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
@@ -221,6 +230,7 @@ export class FormulaEngine {
   setFormula(addressInput: CellAddressInput, formula: string): FormulaResult {
     const address = this.resolveAddress(addressInput);
     const result = this.loadFormula(address, formula);
+    this.recordInputUpdate(address, { kind: 'formula', formula });
     this.markCalculationStateChanged();
     if (isAutomaticCalculationMode(this.recalculationMode)) {
       this.recalculate(address);
@@ -234,11 +244,15 @@ export class FormulaEngine {
   clearCell(addressInput: CellAddressInput): RecalculationReport {
     const address = this.resolveAddress(addressInput);
     const key = cellAddressKey(address);
+    const previous = this.cells.get(key);
     this.dependencies.remove(address);
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.volatileCells.delete(key);
     this.cells.delete(key);
+    if (previous?.formula !== undefined) this.formulaCount = Math.max(0, this.formulaCount - 1);
+    this.markFormulaTopologyChanged();
+    this.recordInputUpdate(address, null);
     this.markCalculationStateChanged();
     return this.scheduleRecalculation(address) ?? { recalculated: [], results: new Map() };
   }
@@ -254,6 +268,7 @@ export class FormulaEngine {
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): RecalculationReport {
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, ...settings });
     this.recalculationMode = this.calculationSettings.mode;
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
     const affected = this.allFormulaAddresses();
     if (this.recalculationMode !== 'automatic') {
@@ -297,8 +312,72 @@ export class FormulaEngine {
     return this.calculationGeneration;
   }
 
+  /** Context revisions are stable across ordinary cell edits. */
+  getCalculationContextGeneration(): number {
+    return this.calculationContextGeneration;
+  }
+
+  getFormulaCount(): number {
+    return this.formulaCount;
+  }
+
+  getPendingRecalculationRoots(): readonly CellAddress[] {
+    return this.pendingCalculationRoots();
+  }
+
+  /**
+   * Return input deltas that have not yet been acknowledged by the persistent
+   * calculation Worker.  The sequence is monotonic so newer edits cannot be
+   * accidentally removed when an older task completes late.
+   */
+  exportPendingCalculationInputs(): { inputs: readonly CalculationInputUpdate[]; inputRevision: number } {
+    const entries = [...this.pendingInputUpdates.values()]
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((entry) => structuredClone(entry.update));
+    return { inputs: entries, inputRevision: this.inputUpdateSequence };
+  }
+
+  acknowledgeCalculationInputUpdates(inputRevision: number): void {
+    if (!Number.isSafeInteger(inputRevision) || inputRevision < 0) return;
+    for (const [key, entry] of this.pendingInputUpdates) {
+      if (entry.sequence <= inputRevision) this.pendingInputUpdates.delete(key);
+    }
+  }
+
+  /** Apply a batch of canonical model inputs without per-cell recalculation. */
+  synchronizeInputs(updates: readonly CalculationInputUpdate[]): readonly CellAddress[] {
+    const addresses: CellAddress[] = [];
+    for (const update of updates) {
+      const address = this.resolveAddress(update.address);
+      addresses.push({ ...address });
+      this.applyInputUpdate(update, true);
+    }
+    if (updates.length === 0) return addresses;
+    for (const address of addresses) this.pendingRecalculationRoots.add(cellAddressKey(address));
+    this.markCalculationStateChanged();
+    if (this.recalculationMode !== 'automatic') {
+      for (const address of addresses) {
+        const key = cellAddressKey(address);
+        if (!this.cells.has(key)) continue;
+        this.pendingRecalculationRoots.add(key);
+        if (this.cells.get(key)?.formula !== undefined) this.evaluateChangedCell(address);
+      }
+    }
+    return addresses;
+  }
+
+  /** Worker-only input apply path; no host journal and no nested task cancel. */
+  applyCalculationTaskInputs(updates: readonly CalculationInputUpdate[]): void {
+    for (const update of updates) {
+      const address = this.resolveAddress(update.address);
+      this.applyInputUpdate(update, false);
+      this.pendingRecalculationRoots.add(cellAddressKey(address));
+    }
+  }
+
   /** Advance the calculation generation when visibility changes without cell writes. */
   notifyVisibilityChanged(): void {
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
 
@@ -312,10 +391,22 @@ export class FormulaEngine {
       if (worker) {
         return new BrowserCalculationTaskPort(
           worker,
-          () => ({ snapshot: this.exportCalculationSnapshot(), generation: this.calculationGeneration }),
-          (result, generation) => {
-            this.applyCalculationTaskResult(result, generation);
+          (workerContextGeneration): CalculationTaskState => {
+            const pending = this.exportPendingCalculationInputs();
+            const needsSnapshot = workerContextGeneration === null
+              || workerContextGeneration !== this.calculationContextGeneration;
+            return {
+              ...(needsSnapshot ? { snapshot: this.exportCalculationSnapshot() } : {}),
+              generation: this.calculationGeneration,
+              inputs: pending.inputs,
+              inputRevision: pending.inputRevision,
+              calculationContextGeneration: this.calculationContextGeneration,
+            };
           },
+          (result, generation) => {
+            return this.applyCalculationTaskResult(result, generation);
+          },
+          (inputRevision) => this.acknowledgeCalculationInputUpdates(inputRevision),
         );
       }
     }
@@ -331,6 +422,7 @@ export class FormulaEngine {
   async recalculateAsync(
     addressInput?: CellAddressInput | readonly CellAddressInput[],
     taskPort: CalculationTaskPort = this.defaultTaskPort ??= this.createCalculationTaskPort(),
+    full = false,
   ): Promise<RecalculationReport> {
     if (this.activeTaskId && this.activeTaskPort) {
       this.activeTaskPort.cancel(this.activeTaskId);
@@ -351,6 +443,7 @@ export class FormulaEngine {
       taskId,
       kind: 'recalculate',
       revision,
+      ...(full ? { full: true } : {}),
       ...(roots === undefined ? {} : { roots }),
     }).finally(() => {
       if (this.activeCalculationEntropy === calculationEntropy) this.activeCalculationEntropy = undefined;
@@ -384,8 +477,12 @@ export class FormulaEngine {
   executeCalculationTask(request: CalculationTaskRequest): CalculationTaskReport {
     assertCalculationTaskRequest(request);
     const reports = request.roots && request.roots.length > 0
-      ? request.roots.map((root) => this.recalculate(root))
-      : [this.recalculate()];
+      ? [this.recalculateRoots(request.roots)]
+      : [request.full ? this.recalculate() : this.recalculateSmart()];
+    if (request.roots && request.roots.length > 0) {
+      for (const root of request.roots) this.pendingRecalculationRoots.delete(cellAddressKey(this.resolveAddress(root)));
+    }
+    if (this.recalculationMode === 'automatic') this.pendingRecalculationRoots.clear();
     const recalculated: CellAddress[] = [];
     const seen = new Set<string>();
     const results = new Map<string, FormulaResult>();
@@ -416,6 +513,42 @@ export class FormulaEngine {
       spills: [...this.spills.values()].map(copySpill),
       pendingRoots: this.pendingCalculationRoots(),
     };
+  }
+
+  /** Excel F9 smart recalculation: only dirty roots, their dependents, and volatile formulas. */
+  private recalculateSmart(): RecalculationReport {
+    const affected = this.pendingRecalculationRoots.size > 0
+      ? this.collectAffectedFromRoots(this.pendingRecalculationRoots)
+      : new Map<string, CellAddress>();
+    for (const key of this.volatileCells) {
+      const cell = this.cells.get(key);
+      if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+    }
+    const report = this.recalculateAffected(affected);
+    this.pendingRecalculationRoots.clear();
+    return report;
+  }
+
+  /** Recalculate a union of roots once; never traverse the same dependency subtree per root. */
+  private recalculateRoots(addressInputs: readonly CellAddressInput[]): RecalculationReport {
+    const ownsEntropy = this.activeCalculationEntropy === undefined;
+    this.beginCalculationEntropy();
+    try {
+      const affected = new Map<string, CellAddress>();
+      const rootSheetIds = new Set<string>();
+      for (const addressInput of addressInputs) {
+        const address = this.resolveAddress(addressInput);
+        rootSheetIds.add(address.sheetId);
+        for (const [key, dependent] of this.collectAffected(address)) affected.set(key, dependent);
+      }
+      for (const key of this.volatileCells) {
+        const cell = this.cells.get(key);
+        if (cell?.formula !== undefined && rootSheetIds.has(cell.address.sheetId)) affected.set(key, { ...cell.address });
+      }
+      return this.recalculateAffected(affected);
+    } finally {
+      if (ownsEntropy) this.activeCalculationEntropy = undefined;
+    }
   }
 
   /** Return the structured-clone-safe inputs for a Worker calculation task. */
@@ -505,6 +638,7 @@ export class FormulaEngine {
   setRecalculationMode(mode: RecalculationMode): void {
     this.recalculationMode = mode;
     this.calculationSettings = normalizeWorkbookCalculationSettings({ ...this.calculationSettings, mode });
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
 
@@ -512,11 +646,12 @@ export class FormulaEngine {
     return this.pendingRecalculationRoots.size > 0;
   }
 
-  setSheetTables(tables: readonly SheetTableRef[]): RecalculationReport {
+  setSheetTables(tables: readonly SheetTableRef[], recalculate = true): RecalculationReport {
     this.sheetTables = normalizeSheetTables(tables);
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
     const affected = this.allFormulaAddresses();
-    if (this.recalculationMode !== 'automatic') {
+    if (!recalculate || this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
@@ -615,8 +750,9 @@ export class FormulaEngine {
     return this.setDefinedNameModels(models);
   }
 
-  setDefinedNameModels(names: readonly FormulaDefinedName[]): RecalculationReport {
+  setDefinedNameModels(names: readonly FormulaDefinedName[], recalculate = true): RecalculationReport {
     this.definedNameModels = normalizeDefinedNameModels(names);
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
     for (const cell of this.cells.values()) {
       if (cell.formula === undefined || !cell.ast) continue;
@@ -636,7 +772,7 @@ export class FormulaEngine {
       }
     }
     if (affected.size === 0) return { recalculated: [], results: new Map() };
-    if (this.recalculationMode !== 'automatic') {
+    if (!recalculate || this.recalculationMode !== 'automatic') {
       for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
       return { recalculated: [], results: new Map() };
     }
@@ -646,6 +782,7 @@ export class FormulaEngine {
   setSpillEnvironment(sheetId: string, environment: SpillEnvironment | undefined): void {
     if (!environment) this.spillEnvironments.delete(sheetId);
     else this.spillEnvironments.set(sheetId, environment);
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
 
@@ -684,6 +821,9 @@ export class FormulaEngine {
     this.pendingRecalculationRoots.clear();
     this.sheetTables.clear();
     this.dependencies.clear?.();
+    this.formulaCount = 0;
+    this.markFormulaTopologyChanged();
+    this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
 
@@ -798,19 +938,60 @@ export class FormulaEngine {
     return report;
   }
 
+  private applyInputUpdate(update: CalculationInputUpdate, trackForWorker: boolean): void {
+    const address = this.resolveAddress(update.address);
+    if (update.input === null) {
+      const key = cellAddressKey(address);
+      this.dependencies.remove(address);
+      this.spills.delete(spillKey(address));
+      this.detachNameReferences(key);
+      this.volatileCells.delete(key);
+      const previous = this.cells.get(key);
+      this.cells.delete(key);
+      if (previous?.formula !== undefined) this.formulaCount = Math.max(0, this.formulaCount - 1);
+      this.markFormulaTopologyChanged();
+    } else if (update.input.kind === 'formula') {
+      this.loadFormula(address, update.input.formula);
+    } else {
+      this.loadValue(address, update.input.value);
+    }
+    if (trackForWorker) this.recordInputUpdate(address, update.input);
+  }
+
+  private recordInputUpdate(address: CellAddress, input: CalculationInputUpdate['input']): void {
+    this.inputUpdateSequence += 1;
+    const update: CalculationInputUpdate = {
+      address: { ...address },
+      input: input === null ? null : structuredClone(input),
+    };
+    this.pendingInputUpdates.set(cellAddressKey(address), { sequence: this.inputUpdateSequence, update });
+  }
+
+  private markFormulaTopologyChanged(): void {
+    this.formulaTopologyGeneration += 1;
+    this.cachedCircularComponents = null;
+  }
+
   private loadValue(address: CellAddress, value: ScalarValue): FormulaResult {
     const key = cellAddressKey(address);
+    const previous = this.cells.get(key);
     this.dependencies.remove(address);
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.volatileCells.delete(key);
     const result: FormulaResult = { value, dependencies: [] };
     this.cells.set(key, { address: { ...address }, result });
+    if (previous?.formula !== undefined) {
+      this.formulaCount = Math.max(0, this.formulaCount - 1);
+      this.markFormulaTopologyChanged();
+    }
     return result;
   }
 
   private loadFormula(address: CellAddress, formula: string): FormulaResult {
     const key = cellAddressKey(address);
+    const previous = this.cells.get(key);
+    this.spills.delete(spillKey(address));
     let ast: FormulaAst | undefined;
     let formulaDependencies: readonly FormulaDependency[] = [];
     let parseError: FormulaError | undefined;
@@ -832,6 +1013,8 @@ export class FormulaEngine {
       : { value: null, formula, ast, dependencies: formulaDependencies };
     this.cells.set(key, { address: { ...address }, formula, ast, parseError, result });
     this.updateFormulaMetadata(key, ast);
+    if (previous?.formula === undefined) this.formulaCount += 1;
+    this.markFormulaTopologyChanged();
     return result;
   }
 
@@ -871,10 +1054,7 @@ export class FormulaEngine {
     const recalculated: CellAddress[] = [];
     const results = new Map<string, FormulaResult>();
 
-    const graphNodes = [...this.cells.values()]
-      .filter((cell) => cell.formula !== undefined)
-      .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
-    const circularComponents = findFormulaComponents(graphNodes).filter((component) =>
+    const circularComponents = this.getCircularComponents().filter((component) =>
       component.cyclic && component.members.some((address) => affected.has(cellAddressKey(address))),
     );
     const handledCircularCells = new Set<string>();
@@ -915,6 +1095,18 @@ export class FormulaEngine {
     }
 
     return { recalculated, results };
+  }
+
+  private getCircularComponents(): ReturnType<typeof findFormulaComponents> {
+    if (this.cachedCircularComponents?.generation === this.formulaTopologyGeneration) {
+      return this.cachedCircularComponents.components;
+    }
+    const graphNodes = [...this.cells.values()]
+      .filter((cell) => cell.formula !== undefined)
+      .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
+    const components = findFormulaComponents(graphNodes);
+    this.cachedCircularComponents = { generation: this.formulaTopologyGeneration, components };
+    return components;
   }
 
   private evaluateCircularComponent(
