@@ -106,6 +106,8 @@ final class StructuralSnapshotReducer {
             throw ServiceException.validation("Move destination exceeds worksheet bounds");
         }
         if (intersects(selected, destination)) throw ServiceException.validation("Move source and destination cannot overlap");
+        rejectMoveFormulaGroups(sheet, selected, "source");
+        rejectMoveFormulaGroups(sheet, destination, "destination");
         int rowDelta = destination.startRow() - selected.startRow();
         int columnDelta = destination.startColumn() - selected.startColumn();
 
@@ -421,11 +423,37 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
-            forEachFormulaCell(owner, cell -> {
-                String original = cell.path("formula").asText();
-                String rewritten = FormulaReferenceTransformer.remapMovedRegion(original, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
-                if (!original.equals(rewritten)) cell.put("formula", rewritten);
-                cell.remove("formulaValue");
+            forEachCell(owner, entry -> {
+                ObjectNode cell = entry.cell();
+                String original = cell.path("formula").isTextual() ? cell.path("formula").asText() : null;
+                String sourceFormula = cell.path("formulaMetadata").path("sourceFormula").isTextual()
+                        ? cell.path("formulaMetadata").path("sourceFormula").asText() : null;
+                JsonNode rawPresentation = cell.get("presentation");
+                JsonNode rawBarcodeSource = rawPresentation != null && rawPresentation.isObject()
+                        && "barcode".equals(rawPresentation.path("kind").asText())
+                        ? rawPresentation.get("source") : null;
+                String barcodeFormula = rawBarcodeSource != null && rawBarcodeSource.isObject()
+                        && "formula".equals(rawBarcodeSource.path("kind").asText())
+                        && rawBarcodeSource.path("formula").isTextual()
+                        ? rawBarcodeSource.path("formula").asText() : null;
+                String rewrittenFormula = original == null ? null
+                        : FormulaReferenceTransformer.remapMovedRegion(original, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
+                String rewrittenSourceFormula = sourceFormula == null ? null
+                        : FormulaReferenceTransformer.remapMovedRegion(sourceFormula, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
+                String rewrittenBarcodeFormula = barcodeFormula == null ? null
+                        : FormulaReferenceTransformer.remapMovedRegion(barcodeFormula, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
+                boolean formulaChanged = original != null && !original.equals(rewrittenFormula);
+                boolean sourceFormulaChanged = sourceFormula != null && !sourceFormula.equals(rewrittenSourceFormula);
+                boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);
+                if ((formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) && hasFormulaGroupMetadata(cell)) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
+                            + ownerIdentity.id() + "!" + entry.row() + ":" + entry.column()
+                            + " requires an explicit formula-group operation before range.move");
+                }
+                if (formulaChanged) cell.put("formula", rewrittenFormula);
+                if (sourceFormulaChanged) SnapshotMutationSupport.requiredObject(cell, "formulaMetadata").put("sourceFormula", rewrittenSourceFormula);
+                if (barcodeFormulaChanged) ((ObjectNode) rawBarcodeSource).put("formula", rewrittenBarcodeFormula);
+                if (original != null) cell.remove("formulaValue");
             });
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode rawRule : SnapshotMutationSupport.array(owner, property)) {
@@ -1724,15 +1752,33 @@ final class StructuralSnapshotReducer {
     }
 
     private static void forEachFormulaCell(ObjectNode sheet, java.util.function.Consumer<ObjectNode> consumer) {
+        forEachCell(sheet, entry -> {
+            if (entry.cell().path("formula").isTextual()) consumer.accept(entry.cell());
+        });
+    }
+
+    private static void forEachCell(ObjectNode sheet, java.util.function.Consumer<CellEntry> consumer) {
         ObjectNode cells = SnapshotMutationSupport.cells(sheet);
         cells.fields().forEachRemaining(row -> {
             if (!row.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
+            int rowIndex = integerKey(row.getKey(), SnapshotMutationSupport.MAX_ROW, "Cell row");
             ((ObjectNode) row.getValue()).fields().forEachRemaining(column -> {
                 if (!column.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
-                ObjectNode cell = (ObjectNode) column.getValue();
-                if (cell.path("formula").isTextual()) consumer.accept(cell);
+                int columnIndex = integerKey(column.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
+                consumer.accept(new CellEntry(rowIndex, columnIndex, (ObjectNode) column.getValue()));
             });
         });
+    }
+
+    private static void rejectMoveFormulaGroups(ObjectNode sheet, RangeRef range, String role) {
+        for (CellEntry entry : cellsInRange(sheet, range)) {
+            if (hasFormulaGroupMetadata(entry.cell())) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: "
+                        + entry.cell().path("formulaMetadata").path("kind").asText("unknown")
+                        + " formula metadata at " + range.sheetId() + "!" + entry.row() + ":" + entry.column()
+                        + " requires an explicit formula-group operation before range.move " + role);
+            }
+        }
     }
 
     private static void rewriteRuleFormulas(ObjectNode rule, Function<String, String> mapper) {

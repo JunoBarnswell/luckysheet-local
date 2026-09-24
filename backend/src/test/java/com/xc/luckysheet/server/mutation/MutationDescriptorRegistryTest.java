@@ -1467,7 +1467,7 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
                  "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,
-                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1"},"4":{"formula":"=A1"}},"2":{"3":{"value":"stale"}}},
+                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"4":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"5":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"2":{"3":{"value":"stale"}}},
                    "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                    "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
                    "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
@@ -1484,7 +1484,13 @@ class MutationDescriptorRegistryTest {
         JsonNode sheet = moved.path("sheets").get(0);
         assertEquals(7, sheet.path("cells").path("2").path("2").path("value").asInt());
         assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("presentation").path("source").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("5").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("5").path("presentation").path("source").path("formula").asText());
         assertTrue(sheet.path("cells").path("2").path("3").path("value").isMissingNode());
         assertEquals(7, snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
 
@@ -1493,6 +1499,47 @@ class MutationDescriptorRegistryTest {
                 """));
         ServiceException rejected = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(overlap)));
         assertEquals("VALIDATION_ERROR", rejected.code());
+
+        ObjectNode groupedSourceSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedSourceSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=1"}
+                        """));
+        JsonNode groupedSourceBefore = groupedSourceSnapshot.deepCopy();
+        OperationMutation singleCellMove = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":2,"column":2}}
+                """));
+        ServiceException groupedSourceRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedSourceSnapshot, List.of(singleCellMove)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedSourceRejection.code());
+        assertEquals(groupedSourceBefore, groupedSourceSnapshot);
+
+        ObjectNode groupedTargetSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedTargetSnapshot.path("sheets").get(0).path("cells").path("2"))
+                .putObject("2").put("formula", "=1").set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"C3:C4","sourceFormula":"=1"}
+                        """));
+        JsonNode groupedTargetBefore = groupedTargetSnapshot.deepCopy();
+        ServiceException groupedTargetRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedTargetSnapshot, List.of(singleCellMove)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedTargetRejection.code());
+        assertEquals(groupedTargetBefore, groupedTargetSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = ((ObjectNode) groupedDependentSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5");
+        groupedDependent.putNull("value");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"F1:F2","sourceFormula":"=A1"}
+                """));
+        groupedDependent.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(singleCellMove)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
 
         ObjectNode partialRangeSnapshot = (ObjectNode) snapshot.deepCopy();
         ((ObjectNode) partialRangeSnapshot.path("sheets").get(0).path("cells").path("0"))
