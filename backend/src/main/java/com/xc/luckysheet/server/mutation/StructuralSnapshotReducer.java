@@ -2034,27 +2034,15 @@ final class StructuralSnapshotReducer {
     private static ObjectNode shiftTemplateFormulaAnchor(
             ObjectNode anchor,
             String targetSheetId,
-            RangeRef selection,
+            FormulaReferenceTransformer.Range selection,
             FormulaReferenceTransformer.Axis axis,
             FormulaReferenceTransformer.Direction direction
-    ) {
-        String operation = direction == FormulaReferenceTransformer.Direction.INSERT ? "insert" : "delete";
-        return shiftTemplateFormulaAnchor(anchor, targetSheetId, selection, axis, operation);
-    }
-
-    private static ObjectNode shiftTemplateFormulaAnchor(
-            ObjectNode anchor,
-            String targetSheetId,
-            RangeRef selection,
-            FormulaReferenceTransformer.Axis axis,
-            String operation
     ) {
         String sheetId = SnapshotMutationSupport.text(anchor, "sheetId");
         if (!targetSheetId.equals(sheetId)) return anchor;
         int row = definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
         int column = definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
-        int[] mapped = FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, formulaRange(selection), axis,
-                "insert".equals(operation) ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
+        int[] mapped = FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, selection, axis, direction);
         if (mapped == null) throw ServiceException.validation("Structural mutation removes cell-style-template formula anchor");
         ObjectNode result = anchor.deepCopy();
         result.put("row", mapped[0]);
