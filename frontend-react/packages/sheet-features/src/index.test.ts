@@ -769,7 +769,7 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
   assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 
-test('cut paste is one cross-sheet transaction and preserves formula references', () => {
+test('cross-sheet cut paste fails closed before changing either worksheet', () => {
   const workbook = new WorkbookModel('unit-cut', 'Cut');
   const target = workbook.addSheet('sheet-2', 'Target');
   const runtime = new CommandRuntime(workbook);
@@ -785,23 +785,36 @@ test('cut paste is one cross-sheet transaction and preserves formula references'
     endColumn: 1,
   });
   payload.transfer = 'move';
-  const result = runtime.execute('sheet.range.paste', {
+  assert.throws(() => runtime.execute('sheet.range.paste', {
     sheetId: target.id,
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'move',
     spec: createPasteSpecialSpec(),
-  });
-  assert.equal(result.mutationCount, 1);
-  assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
-  assert.equal(target.cells.get(4, 4)?.value, null);
-  runtime.undo();
+  }), /UNSUPPORTED_FEATURE: cross-sheet cut\/paste requires a canonical structural move patch/);
+  const sourceRange = structuredClone(payload.range);
+  const targetRange = { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 4, endColumn: 4 };
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'range.paste',
+    unitId: workbook.unitId,
+    sheetId: target.id,
+    params: {
+      sheetId: target.id,
+      targetOrigin: { row: 4, column: 4 },
+      clipboard: payload,
+      sourceExtent: { rows: 1, columns: 1 },
+      transfer: 'move',
+      clearSource: true,
+      sourceRange,
+      snapshot: { clearRanges: [targetRange], cells: [] },
+      sourceSnapshot: { clearRanges: [sourceRange], cells: [] },
+      spec: createPasteSpecialSpec(),
+    },
+    affectedRanges: [targetRange, sourceRange],
+  }]), /UNSUPPORTED_FEATURE: cross-sheet cut\/paste requires a canonical structural move patch/);
   assert.equal(source.cells.get(1, 1)?.formula, '=A1+$B$1');
   assert.equal(target.cells.get(4, 4)?.value, 'old');
-  runtime.redo();
-  assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
+  assert.equal(runtime.getHistoryDepth().undo, 0);
 });
 
 test('copy paste shifts relative references while preserving mixed and absolute references', () => {
@@ -861,6 +874,44 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
   }]), /Invalid mutation history/);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(1, 1), undefined);
+});
+
+test('paste replay rejects a move source range that differs from its clipboard range', () => {
+  const workbook = new WorkbookModel('unit-paste-source-range', 'Paste Source Range');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 'source' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  payload.transfer = 'move';
+  const targetRange = { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 };
+  const mismatchedSourceRange = { ...payload.range, startRow: 1, endRow: 1 };
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'range.paste',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      targetOrigin: { row: 2, column: 2 },
+      clipboard: payload,
+      sourceExtent: { rows: 1, columns: 1 },
+      transfer: 'move',
+      clearSource: true,
+      sourceRange: mismatchedSourceRange,
+      snapshot: { clearRanges: [targetRange], cells: [] },
+      spec: createPasteSpecialSpec(),
+    },
+    affectedRanges: [targetRange, mismatchedSourceRange],
+  }]), /Invalid mutation history/);
+  assert.equal(sheet.cells.get(0, 0)?.value, 'source');
+  assert.equal(sheet.cells.get(2, 2), undefined);
 });
 
 test('copy paste rejects a malformed formula before creating a mutation', () => {

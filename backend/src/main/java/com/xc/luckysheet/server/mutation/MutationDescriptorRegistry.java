@@ -348,9 +348,6 @@ public class MutationDescriptorRegistry {
             if (params.path("clearSource").asBoolean(false)) {
                 RangeRef source = requireBoundedSourceRange(root, params);
                 ranges.add(source);
-                if (!mutation.sheetId().equals(source.sheetId())) {
-                    addColumnWidthRanges(root, source.sheetId(), SnapshotMutationSupport.requiredObject(params, "sourceSnapshot"), List.of(source), ranges);
-                }
             }
             return List.copyOf(ranges);
         }
@@ -412,14 +409,6 @@ public class MutationDescriptorRegistry {
         private void applyPaste(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params) {
             PasteShape shape = requirePasteShape(root, sheetId, params);
             applyPasteSnapshot(root, targetSheet, sheetId, SnapshotMutationSupport.requiredObject(params, "snapshot"), shape.allowedRanges());
-            if (params.path("clearSource").asBoolean(false)) {
-                RangeRef source = requireBoundedSourceRange(root, params);
-                if (!sheetId.equals(source.sheetId())) {
-                    JsonNode sourceSnapshot = params.get("sourceSnapshot");
-                    if (sourceSnapshot == null || !sourceSnapshot.isObject()) throw ServiceException.validation("Cross-sheet paste requires sourceSnapshot");
-                    applyPasteSnapshot(root, SnapshotMutationSupport.sheet(root, source.sheetId()), source.sheetId(), (ObjectNode) sourceSnapshot, List.of(source));
-                }
-            }
         }
 
         private void applyPasteSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges) {
@@ -569,6 +558,7 @@ public class MutationDescriptorRegistry {
         }
 
         private PasteShape requirePasteShape(ObjectNode root, String sheetId, ObjectNode params) {
+            if (!sheetId.equals(SnapshotMutationSupport.text(params, "sheetId"))) throw ServiceException.validation("Paste target sheet does not match its mutation envelope");
             String transfer = SnapshotMutationSupport.text(params, "transfer");
             if (!Set.of("copy", "move").contains(transfer)) throw ServiceException.validation("Paste transfer is invalid");
             if (!params.path("clearSource").isBoolean()) throw ServiceException.validation("Paste clearSource must be boolean");
@@ -577,6 +567,8 @@ public class MutationDescriptorRegistry {
             if ("copy".equals(transfer) && params.has("sourceRange")) throw ServiceException.validation("Copy paste cannot carry sourceRange");
             ObjectNode clipboard = SnapshotMutationSupport.requiredObject(params, "clipboard");
             if (!"SparseClipboardPayload".equals(clipboard.path("schema").asText())) throw ServiceException.validation("Paste clipboard schema is invalid");
+            if (!transfer.equals(SnapshotMutationSupport.text(clipboard, "transfer"))) throw ServiceException.validation("Paste transfer differs from its clipboard contract");
+            RangeRef clipboardRange = SnapshotMutationSupport.range(root, clipboard.get("range"));
             ObjectNode clipboardExtent = SnapshotMutationSupport.requiredObject(clipboard, "sourceExtent");
             ObjectNode declaredExtent = SnapshotMutationSupport.requiredObject(params, "sourceExtent");
             int clipboardRows = boundedValue(clipboardExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
@@ -584,6 +576,10 @@ public class MutationDescriptorRegistry {
             int sourceRows = boundedValue(declaredExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
             int sourceColumns = boundedValue(declaredExtent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
             if (clipboardRows != sourceRows || clipboardColumns != sourceColumns || sourceRows <= 0 || sourceColumns <= 0) throw ServiceException.validation("Paste source extent is inconsistent");
+            if (clipboardRange.endRow() - clipboardRange.startRow() + 1 != clipboardRows
+                    || clipboardRange.endColumn() - clipboardRange.startColumn() + 1 != clipboardColumns) {
+                throw ServiceException.validation("Clipboard range differs from its declared source extent");
+            }
             JsonNode occupied = clipboard.get("occupiedCells");
             if (occupied == null || !occupied.isArray() || occupied.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Sparse clipboard occupied cells are required and bounded");
             for (JsonNode cell : occupied) {
@@ -617,12 +613,17 @@ public class MutationDescriptorRegistry {
             int columns = transpose ? sourceRows : sourceColumns;
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
             if (row + rows > SnapshotMutationSupport.MAX_ROW + 1 || column + columns > SnapshotMutationSupport.MAX_COLUMN + 1) throw ServiceException.validation("Paste exceeds canonical worksheet limits");
-            return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null);
+            RangeRef source = params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null;
+            if (source != null && !source.equals(clipboardRange)) throw ServiceException.validation("Move source range differs from its clipboard range");
+            if (source != null && !sheetId.equals(source.sheetId())) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch");
+            }
+            return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), source);
         }
 
         private record PasteShape(RangeRef target, RangeRef source) {
             private List<RangeRef> allowedRanges() {
-                return source == null ? List.of(target) : source.sheetId().equals(target.sheetId()) ? List.of(target, source) : List.of(target);
+                return source == null ? List.of(target) : List.of(target, source);
             }
         }
 

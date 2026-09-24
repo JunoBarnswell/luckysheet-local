@@ -125,7 +125,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"move"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -137,6 +137,54 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, prepared.affectedRanges().size());
         assertEquals(true, next.path("sheets").get(0).path("cells").path("0").isMissingNode());
         assertEquals("move", next.path("sheets").get(0).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void crossSheetRangePasteFailsClosedBeforeApplyingSnapshots() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"source"}}}},
+                  {"id":"sheet-2","rowCount":20,"columnCount":20,"cells":{"1":{"1":{"value":"target"}}}}
+                ]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-2", mapper.readTree("""
+                {"sheetId":"sheet-2","targetOrigin":{"row":2,"column":2},"sourceExtent":{"rows":1,"columns":1},
+                 "clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "sourceSnapshot":{"cells":[]},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[{"row":2,"column":2,"value":{"value":"source"}}]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertTrue(error.getMessage().contains("UNSUPPORTED_FEATURE"));
+        assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("target", snapshot.path("sheets").get(1).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void rangePasteRejectsMoveSourceRangeDifferentFromClipboardRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"source"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":2,"column":2},"sourceExtent":{"rows":1,"columns":1},
+                 "clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"clearRanges":[{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":2,"endColumn":2}],"cells":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
     }
 
     private static String cellSetParams(int row, int column, String value, String status) {
@@ -152,7 +200,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"keep"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":100000,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -200,7 +248,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-1","ranges":[
@@ -224,7 +272,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-attack","ranges":[
@@ -249,7 +297,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":true,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"columnWidths":[{"column":0,"widthPx":120}]}}
