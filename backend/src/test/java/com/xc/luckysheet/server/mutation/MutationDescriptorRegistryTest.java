@@ -1531,13 +1531,16 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
-    void duplicateSheetRewritesConditionalAndValidationFormulaReferences() throws Exception {
+    void duplicateSheetRewritesEverySheetScopedFormulaOwner() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},
+                {"definedNameModels":[{"name":"LocalName","scope":"sheet","sheetId":"sheet-1","formula":"=Sheet1!A1","anchor":{"sheetId":"sheet-1","row":0,"column":0}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"formula":"=Sheet1!A1","formulaMetadata":{"kind":"normal","sourceFormula":"=Sheet1!A1"},"presentation":{"kind":"barcode","source":{"kind":"formula","formula":"=Sheet1!A1"}}}}},
+                  "tableSheet":{"columns":[{"fieldId":"calculated","formula":"=Sheet1!A1"}]},
                   "merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","operator":"formula","value1":"=Sheet1!A1"}],
                   "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"custom","formula1":"=Sheet1!A1","listSource":{"kind":"formula","formula":"=Sheet1!A1"}}],
-                  "pivots":[],"sparklines":[],"sparklineGroups":[],"drawings":[],"drawingGroups":[],"drawingPayloads":{},"sheetTables":[],
+                  "pivots":[{"id":"pivot-1"}],"sparklines":[],"sparklineGroups":[],"drawings":[],"drawingGroups":[],"drawingPayloads":{"shape-1":{"kind":"shape","propertyFormula":"=Sheet1!A1"},"screenshot-1":{"kind":"screenshot","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"timeline-1":{"kind":"timeline","pivotId":"pivot-1","connections":[{"pivotId":"pivot-1"}]}},"sheetTables":[],
                   "spillRanges":[],"protectionRules":[],"dataRegions":[],"hyperlinks":[],
                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
                 """);
@@ -1551,6 +1554,15 @@ class MutationDescriptorRegistryTest {
         assertEquals("='Sheet1 Copy'!A1", copy.path("conditionalFormats").get(0).path("value1").asText());
         assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("formula1").asText());
         assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("presentation").path("source").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("drawingPayloads").path("shape-1::sheet-2").path("propertyFormula").asText());
+        assertEquals("sheet-2", copy.path("drawingPayloads").path("screenshot-1::sheet-2").path("sourceRange").path("sheetId").asText());
+        assertEquals("pivot-1::sheet-2", copy.path("drawingPayloads").path("timeline-1::sheet-2").path("pivotId").asText());
+        assertEquals("pivot-1::sheet-2", copy.path("drawingPayloads").path("timeline-1::sheet-2").path("connections").get(0).path("pivotId").asText());
+        assertEquals("sheet-2", current.path("definedNameModels").get(1).path("anchor").path("sheetId").asText());
     }
 
     @Test
@@ -1815,6 +1827,199 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
                 """)), range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+    }
+
+    @Test
+    void sheetRenameRewritesAllPersistedFormulaOwnerCategories() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        ObjectNode sourceCells = source.putObject("cells");
+        ObjectNode sourceRow = sourceCells.putObject("0");
+        ObjectNode formulaCell = sourceRow.putObject("0");
+        formulaCell.put("formula", "='Source'!A1");
+        formulaCell.putObject("formulaMetadata").put("kind", "normal").put("sourceFormula", "='Source'!A1");
+        ObjectNode barcodeCell = sourceRow.putObject("1");
+        barcodeCell.putObject("presentation").put("kind", "barcode").putObject("source")
+                .put("kind", "formula").put("formula", "='Source'!A1");
+        ObjectNode tableSheet = source.putObject("tableSheet");
+        tableSheet.putArray("columns").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+        source.putObject("drawingPayloads").putObject("formula-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+
+        ObjectNode external = sheets.addObject().put("id", "owner").put("name", "Owner");
+        external.putObject("cells").putObject("1").putObject("0").putObject("formulaMetadata")
+                .put("kind", "normal").put("sourceFormula", "='Source'!A1");
+        external.putArray("conditionalFormats").addObject().put("id", "cf").put("formula1", "='Source'!A1");
+        external.putArray("dataValidations").addObject().put("id", "dv").put("listSource", mapper.createObjectNode()
+                .put("kind", "formula").put("formula", "='Source'!A1"));
+        external.putObject("drawingPayloads").putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+
+        snapshot.putArray("definedNameModels").addObject().put("name", "SourceName").put("formula", "='Source'!A1");
+        snapshot.putObject("definedNames").put("SourceName", "='Source'!A1");
+        snapshot.putObject("dataModel").putArray("views").addObject().put("id", "view")
+                .putArray("fields").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+        snapshot.putArray("cellStyleTemplates").addObject().put("id", "template").putObject("dataValidation")
+                .put("formula1", "='Source'!A1");
+
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed Sheet\"}"));
+        JsonNode renamed = new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename);
+
+        assertEquals("Renamed Sheet", renamed.path("sheets").get(0).path("name").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("1").path("presentation").path("source").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("formula-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("conditionalFormats").get(0).path("formula1").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("cellStyleTemplates").get(0).path("dataValidation").path("formula1").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("definedNames").path("SourceName").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsPreservedOnlyFormulaOwnersWithoutChangingInput() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        source.putObject("cells").putObject("0").putObject("0").putObject("formulaMetadata")
+                .put("kind", "dataTable").put("preservedOnly", true).put("sourceFormula", "='Source'!A1");
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(0).path("name").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+    }
+
+    @Test
+    void sheetRemovalRejectsAuxiliaryFormulaAndWorkbookReferenceOwners() {
+        ObjectNode formulaMetadata = sheetDeletionSnapshot();
+        sheetDeletionOwner(formulaMetadata).putObject("cells").putObject("0").putObject("0").putObject("formulaMetadata")
+                .put("sourceFormula", "='Source'!A1");
+
+        ObjectNode barcode = sheetDeletionSnapshot();
+        barcodeSourceCell(sheetDeletionOwner(barcode)).putObject("presentation").put("kind", "barcode")
+                .putObject("source").put("kind", "formula").put("formula", "='Source'!A1");
+
+        ObjectNode tableSheet = sheetDeletionSnapshot();
+        sheetDeletionOwner(tableSheet).putObject("tableSheet").putArray("columns").addObject()
+                .put("fieldId", "calculated").put("formula", "='Source'!A1");
+
+        ObjectNode ruleFormula = sheetDeletionSnapshot();
+        sheetDeletionOwner(ruleFormula).putArray("conditionalFormats").addObject().put("id", "cf").put("formula1", "='Source'!A1");
+
+        ObjectNode viewFormula = sheetDeletionSnapshot();
+        viewFormula.putObject("dataModel").putArray("views").addObject().put("id", "view")
+                .putArray("fields").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+
+        ObjectNode templateFormula = sheetDeletionSnapshot();
+        templateFormula.putArray("cellStyleTemplates").addObject().put("id", "template").putObject("dataValidation")
+                .put("formula1", "='Source'!A1");
+
+        ObjectNode drawingFormula = sheetDeletionSnapshot();
+        sheetDeletionOwner(drawingFormula).putObject("drawingPayloads").putObject("shape")
+                .put("kind", "shape").put("propertyFormula", "='Source'!A1");
+
+        ObjectNode tableRange = sheetDeletionSnapshot();
+        sheetDeletionOwner(tableRange).putObject("autoFilter").putObject("range").put("sheetId", "source");
+
+        ObjectNode queryTarget = sheetDeletionSnapshot();
+        queryTarget.putArray("queryDefinitions").addObject().put("id", "query").putObject("lastTarget").put("sheetId", "source");
+
+        ObjectNode printArea = sheetDeletionSnapshot();
+        printArea.putArray("printDocuments").addObject().put("sheetId", "owner").putArray("printAreas")
+                .addObject().put("sheetId", "source");
+
+        ObjectNode definedNameFormula = sheetDeletionSnapshot();
+        definedNameFormula.putArray("definedNameModels").addObject().put("name", "ExternalName")
+                .put("scope", "workbook").put("formula", "='Source'!A1");
+
+        ObjectNode definedNameAnchor = sheetDeletionSnapshot();
+        definedNameAnchor.putArray("definedNameModels").addObject().put("name", "RelativeName")
+                .put("scope", "workbook").put("formula", "=A1")
+                .putObject("anchor").put("sheetId", "source").put("row", 0).put("column", 0);
+
+        ObjectNode dataSource = sheetDeletionSnapshot();
+        dataSource.putObject("dataModel").putArray("sources").addObject()
+                .put("id", "source-data").put("sourceSheetId", "source");
+
+        ObjectNode templateAnchor = sheetDeletionSnapshot();
+        templateAnchor.putArray("cellStyleTemplates").addObject().put("id", "template")
+                .putObject("dataValidation").putObject("formulaAnchor").put("sheetId", "source").put("row", 0).put("column", 0);
+
+        ObjectNode reportTemplate = sheetDeletionSnapshot();
+        sheetDeletionOwner(reportTemplate).putObject("reportSheet").put("templateSheetId", "source");
+
+        ObjectNode shapeHyperlink = sheetDeletionSnapshot();
+        shapeHyperlinkOwner(shapeHyperlink).put("kind", "shape").putObject("hyperlink")
+                .put("kind", "sheet").put("sheetId", "source");
+
+        ObjectNode chartSeriesRange = sheetDeletionSnapshot();
+        ObjectNode chart = sheetDeletionOwner(chartSeriesRange).putObject("drawingPayloads").putObject("chart");
+        chart.put("kind", "chart").putObject("source").put("kind", "worksheet-ranges").putArray("ranges")
+                .addObject().put("sheetId", "owner");
+        chart.putArray("series").addObject().putObject("stockRoles").putObject("high").put("sheetId", "source");
+
+        for (ObjectNode snapshot : List.of(formulaMetadata, barcode, tableSheet, ruleFormula, viewFormula,
+                templateFormula, drawingFormula, tableRange, queryTarget, printArea, definedNameFormula,
+                definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange)) {
+            assertSheetRemovalRejected(snapshot);
+        }
+    }
+
+    @Test
+    void sheetRemovalAllowsUnreferencedSheetAndRemovesItsScopedDocuments() throws Exception {
+        ObjectNode snapshot = sheetDeletionSnapshot();
+        snapshot.putArray("definedNameModels").addObject().put("name", "LocalName").put("scope", "sheet").put("sheetId", "source");
+        snapshot.putArray("printDocuments").addObject().put("sheetId", "source");
+        OperationMutation remove = new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source"));
+
+        JsonNode next = new WorkbookStructureMutationDescriptor("sheet.remove").apply(snapshot, remove);
+
+        assertEquals(1, next.path("sheets").size());
+        assertEquals(0, next.path("definedNameModels").size());
+        assertEquals(0, next.path("printDocuments").size());
+        assertEquals(2, snapshot.path("sheets").size());
+    }
+
+    private void assertSheetRemovalRejected(ObjectNode snapshot) {
+        OperationMutation remove = new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source"));
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.remove").apply(snapshot, remove));
+        assertEquals(2, snapshot.path("sheets").size());
+    }
+
+    private ObjectNode sheetDeletionSnapshot() {
+        ObjectNode root = mapper.createObjectNode();
+        ArrayNode sheets = root.putArray("sheets");
+        ObjectNode owner = sheets.addObject().put("id", "owner").put("name", "Owner");
+        owner.putObject("cells");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        source.putObject("cells");
+        source.putArray("pivots");
+        source.putArray("sheetTables");
+        source.putArray("drawings");
+        return root;
+    }
+
+    private ObjectNode sheetDeletionOwner(ObjectNode snapshot) {
+        return (ObjectNode) snapshot.path("sheets").get(0);
+    }
+
+    private ObjectNode barcodeSourceCell(ObjectNode sheet) {
+        ObjectNode cells = (ObjectNode) sheet.get("cells");
+        ObjectNode row = (ObjectNode) cells.get("0");
+        if (row == null) row = cells.putObject("0");
+        return row.putObject("0");
+    }
+
+    private ObjectNode shapeHyperlinkOwner(ObjectNode snapshot) {
+        return sheetDeletionOwner(snapshot).putObject("drawingPayloads").putObject("shape");
     }
 
     private ObjectNode drillDownDetail(String sheetId, String sourceId, int rowCount, List<String> headers) {
